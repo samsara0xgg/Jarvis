@@ -185,7 +185,12 @@ final class TimelineState {
             withAnimation(TLMotion.dayChange(reduce: TLMotion.reduced)) { day = d }
         }
     }
-    func swipe(_ delta: Int) { setDay((pending ?? day) + delta) }
+    /// a swipe to another day, with a tick of the phone when there is one to go to (none past today)
+    func swipe(_ delta: Int) {
+        let from = pending ?? day
+        setDay(from + delta)
+        if (pending ?? day) != from { Haptic.selection() }
+    }
 
     /// A drag along the day: far enough and mostly sideways it is a day before (dragged right) or a day after (dragged left); a drag up and down is the list's own.
     static func swipe(dx: Double, dy: Double) -> Int? {

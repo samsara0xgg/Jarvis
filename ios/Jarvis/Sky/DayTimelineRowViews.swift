@@ -224,8 +224,8 @@ private struct DashedRail: Shape {
 
 // MARK: - the menu of a long press
 
-/// A long press on a row lifts the row opened as its preview and offers what the row can do, each only where it works: 问她, 打开对话, 改名字, 起个名字, 知道了, 是我的, 不是, 标为重要, 取消重要, and on a stretch 这段在干嘛 last. A row that
-/// offers none has no menu.
+/// A long press on a row lifts the row opened as its preview and offers 打开 (its page: SwiftUI has no tap on the preview that commits to it), then what the row can do, each only where it
+/// works: 问她, 打开对话, 改名字, 起个名字, 知道了, 是我的, 不是, 标为重要, 取消重要, and on a stretch 这段在干嘛 last. A row that opens to nothing and offers none has no menu.
 private struct TLMenu: ViewModifier {
     let e: TLEntry
     let tl: TimelineState
@@ -234,10 +234,13 @@ private struct TLMenu: ViewModifier {
     private var actions: [TLAction] { TLAction.menu.filter { e.actions.contains($0) } }
 
     func body(content: Content) -> some View {
-        if actions.isEmpty {
+        if actions.isEmpty && !e.opens {
             content
         } else {
             content.contextMenu {
+                if e.opens {
+                    Button { Haptic.selection(); tl.openRow = e.id } label: { Label("打开", systemImage: "arrow.up.left.and.arrow.down.right") }
+                }
                 ForEach(actions, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: { Label(a.title, systemImage: a.symbol) }
                 }

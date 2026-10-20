@@ -49,7 +49,7 @@ extension TimelineState {
         notes[e.id] = nil
         withAnimation(tlStarFade(reduce: TLMotion.reduced)) { highlights[day] = TLHeld(value: TLMarks.toggled(base, id: e.id, on: on), until: now.addingTimeInterval(Self.markHolds)) }
         if on { pop[e.id, default: 0] += 1 }
-        Haptic.impact(.light)
+        if on { Haptic.notify(.success) } else { Haptic.impact(.light) }          // marked: the tap of something done, with the star's pop; unmarked: a light one
         Task { @MainActor [self] in
             defer { markBusy = false }
             switch await brain.mark(day, e.id, on) {
