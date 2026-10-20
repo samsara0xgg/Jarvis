@@ -2,7 +2,7 @@ import { counted, hm, numbers, type Counted, type Num } from './barView.ts';
 import { ATTACHMENT, bars, fromTo, night, type Bar, type Night } from './dayOpen.ts';
 import { clean, clock, covered, dur, moneyText, moveWords, rideWords, stageMinutes, stageSlices, vitalsOf, workoutOf, type DayModel, type Icon, type LensKind, type Say } from './dayView.ts';
 
-// What a number of the day has behind it (ADR 0296): the card that hangs under the numbers when one is pinned. Pure (no DOM), so
+// What a number of the day has behind it (ADR 0308): the card that hangs under the numbers when one is pinned. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node and the phone can read the same lines. Everything is from the day reply: a line whose
 // inputs did not arrive is left out, never written as 0 or a dash, and a number with nothing behind it has no card.
 const MIN = 60_000;

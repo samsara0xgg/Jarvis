@@ -1,4 +1,4 @@
-/* The timeline pane (DayTimeline.tsx, ADR 0296): the notch's drop pane with the day in it. Black like the notch it grows out of;
+/* The timeline pane (DayTimeline.tsx, ADR 0308): the notch's drop pane with the day in it. Black like the notch it grows out of;
    a place's colour is its own (home warm, school blue, the rest a fixed hue each), the day's now is a warm white, and amber is
    the turn mark's: here it says "waiting on you" (the pill in the header, the badge on a row) and nothing else. */
 .notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; max-height:584px; padding-inline:4px; }

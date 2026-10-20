@@ -11,7 +11,7 @@ import { sayRange, type Said } from './dayOpen';
 import { Ic } from './dayIcons';
 import './day-bar.css';
 
-// The day in one bar (ADR 0296), above the rows: what each stretch is, written in it; now; what is still to come; the stars of what
+// The day in one bar (ADR 0308), above the rows: what each stretch is, written in it; now; what is still to come; the stars of what
 // mattered. The pointer reads it: a hairline and a card with what the stretch was and what else was going on, a click jumps the list
 // there, a drag chooses a range. Under it the day's numbers, each a lens. The rows are DayTimeline's: they meet this at a row's key.
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');

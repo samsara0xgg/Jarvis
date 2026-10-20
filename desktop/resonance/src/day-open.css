@@ -1,4 +1,4 @@
-/* An open row (RowOpen.tsx, AskDock.tsx; ADR 0296, spec-r3 section 8). The row's own two lines stay as they were and its content hangs under
+/* An open row (RowOpen.tsx, AskDock.tsx; ADR 0308, spec-r3 section 8). The row's own two lines stay as they were and its content hangs under
    them from the title's column; the row that holds one is a little lighter and has a hairline. Under the list: the note that a name was
    changed, and the input. All of it black and quiet like the pane; amber only where something waits on him (the 知道了 button). */
 .notch .dt-row,.notch .dt-sh { cursor:pointer; }

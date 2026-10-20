@@ -1,4 +1,4 @@
-# ADR 0296 — The right of the notch is one swappable module: the stars or the day's timeline
+# ADR 0308 — The right of the notch is one swappable module: the stars or the day's timeline
 
 **Status:** Accepted
 **Date:** 2026-10-19

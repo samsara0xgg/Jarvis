@@ -269,7 +269,7 @@ export function Companion() {
   const answerSecs = thoughts.at(-1)?.turn === s.turnId ? thoughts.at(-1)!.secs : 0;
   const [pressed, setPressed] = useState(false);
   const [wardrobe, setWardrobe] = useState(loadWardrobe);
-  // ADR 0296: right of the notch is the stars or the day's timeline. Today is read for the wing's line; the pane open below the island holds the notices back.
+  // ADR 0308: right of the notch is the stars or the day's timeline. Today is read for the wing's line; the pane open below the island holds the notices back.
   const day = useRoute<DayReply>(port, '/inherent/day', wardrobe.wing === 'timeline' && !detached, 30_000);
   const [timelineOpen, setTimelineOpen] = useState(false);
   // A skin change brings her out of the island for a moment.
@@ -512,7 +512,7 @@ export function Companion() {
   const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
   // Typed in the Dashboard: it is a line of the conversation under her too, above its answer.
   const ask = (text: string) => { dispatch({ type: 'you', text, at: Date.now() }); return submit(text); };
-  // A turn about a row of the day, from the timeline pane (ADR 0214, 0296): the same path with what it is about. A refusal comes back to the pane
+  // A turn about a row of the day, from the timeline pane (ADR 0214, 0308): the same path with what it is about. A refusal comes back to the pane
   // that asked (it says so); the link is not blamed for it.
   const askAbout = async (text: string, about?: About) => {
     if (!link.current) throw new Error('not connected');

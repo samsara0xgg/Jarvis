@@ -22,7 +22,7 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
-    // Retained original-home regression; verify-character-material covers the refined default. The stars are the wing it looks at (ADR 0296).
+    // Retained original-home regression; verify-character-material covers the refined default. The stars are the wing it looks at (ADR 0308).
     localStorage.setItem('companion-wardrobe-v1', JSON.stringify({ wing: 'marks', ...JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}'), homeFinish: 'original' }));
     localStorage.setItem('companion-settings-v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('companion-settings-v1') ?? '{}'), captions: 'all', talkButtons: true }));
     window.__state = { passthrough: true, glass: [], ready: 0 };

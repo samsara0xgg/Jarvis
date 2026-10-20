@@ -4,7 +4,7 @@ import type { L } from './companionSettings';
 import { SAY_MAX, type Ask } from './dayOpen';
 import { Ic } from './dayIcons';
 
-// The input at the pane's foot (ADR 0296, spec-r3 section 8): what the turn is about as a chip (its kind's glyph, its title, its time; the
+// The input at the pane's foot (ADR 0308, spec-r3 section 8): what the turn is about as a chip (its kind's glyph, its title, its time; the
 // × lets go of it and the turn is then asked alone), a field with the cursor in it, and send. Enter sends (not while an input method is
 // still composing). The chip's × and the send button do not take the cursor from the field. `nonce` changes each time a row asks again, so
 // the cursor comes back to the field when the chip is swapped for another.

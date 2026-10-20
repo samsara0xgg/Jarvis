@@ -29,7 +29,7 @@ import type { About } from './dayOpen';
 // A pinned bus trip (ADR 0200) is a pill after the marks: `🚌 28 · 12 分` counts down to when he must leave, amber from 5 min and
 // 该走了 until the bus goes; resting on it shows the whole trip, a click opens its card (ADR 0203). It never opens the panel,
 // and where the Dashboard leaves no room for it beside the marks it steps aside before they do.
-// The wing is a module (ADR 0296): the stars above, or the day's timeline. The timeline wing is the turn mark alone (it still
+// The wing is a module (ADR 0308): the stars above, or the day's timeline. The timeline wing is the turn mark alone (it still
 // opens the sessions panel on a click), then one line, the stay he is in and how long (`家 · 3:12`) or the way he is going
 // (`27 路 · 12 分`), then the pinned trip. Resting on the line, or a click on it, drops the day from the island as one more
 // pane of the drop; it summons and dismisses as the Dashboard does, and the two never hang together.
@@ -317,7 +317,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   // What a group's mark counts: its sessions, and for the turn its glows too.
   const size = (key: Kind) => members(key).length + (key === 'turn' ? L.current.glows.length : 0);
   const setPanel = (on: boolean) => { if (on === st.open) return; if (on) closeTl(); st.open = on; st.dirty = true; setOpen(on); };
-  // The day's pane (ADR 0296) is the drop pane's other content: the sessions or the day hang from the island, never both, and it tells
+  // The day's pane (ADR 0308) is the drop pane's other content: the sessions or the day hang from the island, never both, and it tells
   // her when it opens or folds (the Dashboard folds, notices wait).
   const closeTl = () => {
     const T = st.tl;
@@ -506,7 +506,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
           const pw = withPin ? pinW : 0, lead = kinds.length ? PIN_GAP : 0;
           st.seg = null;
           if (tlOn) {
-            // The timeline wing (ADR 0296): the turn mark alone, when something is on your turn; its line; the pinned trip. Centred in the wing like 点线环.
+            // The timeline wing (ADR 0308): the turn mark alone, when something is on your turn; its line; the pinned trip. Centred in the wing like 点线环.
             const dot = look === 'dot', mw = kinds.length ? dot ? DOT_COUNT_X + DIGIT_W * Math.min(3, String(size('turn')).length) : GCELL : 0;
             const words = wingText(tl!.day.data, Date.now(), L.current.say), line = segWidth(words.head, words.tail, SEG_MAX);
             const used = (mw ? mw + TL_GAP : 0) + line.w + (pw ? PIN_GAP + pw : 0);

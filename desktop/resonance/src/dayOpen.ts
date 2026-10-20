@@ -2,7 +2,7 @@ import type { L } from './companionSettings';
 import { endClock, hm } from './barView.ts';
 import { accountOf, askable, ATTACHMENT, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Say } from './dayView.ts';
 
-// What a row says when it is opened (ADR 0296, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
+// What a row says when it is opened (ADR 0308, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
 // shows, and an action exists only where its route works today (the rename of a kept place, the acknowledgement of a reminder that
 // rang, a turn that is handed to her). DayTimeline.tsx and RowOpen.tsx draw it.

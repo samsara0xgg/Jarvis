@@ -1,4 +1,4 @@
-// The notch's right side is a module (ADR 0296): the stars as before (`marks`), or the day's timeline (the default): the turn mark
+// The notch's right side is a module (ADR 0308): the stars as before (`marks`), or the day's timeline (the default): the turn mark
 // alone, one line (`家 · 3:12`, or the way he is going), the pinned trip. Resting on the line, or a click on it, drops the day from
 // the island as the Dashboard comes: rest opens it, a click pins it, leaving folds it, Esc folds it, and the two never hang together.
 // Headless Chrome against the built page with the native bridge stubbed and a fake daemon that serves /inherent/day.
@@ -176,7 +176,7 @@ const commitDay = (over = {}) => fullDay({
   ],
   ...over,
 });
-// Stays he has not named, with the point the phone had (ADR 0296): an address the phone knew (A&W), a spot it had no address for, one with no point at all, a
+// Stays he has not named, with the point the phone had (ADR 0308): an address the phone knew (A&W), a spot it had no address for, one with no point at all, a
 // kept school beside them, and a stop on the way (5 minutes between two walks), which is no place.
 const nameDay = (over = {}) => small([
   it('stay-uvic', 'stay', T(9, 0), T(12, 0), { place: 'University of Victoria, Victoria', kept_place: uvic, lat: 48.4634, lng: -123.3117 }),
@@ -825,7 +825,7 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && manyC.rows.has('code:h') && !manyC.rows.has('c1') && askOf(manyC, 'code:h', zh) === null, [ask('workout-1'), askOf(oneC, 'c1', zh), askOf(manyC, 'code:h', zh)].map(x => JSON.stringify(x?.about)).join(' '));
 }
 
-// ---------- a number's card, in node (ADR 0296): what is behind each number of the day ----------
+// ---------- a number's card, in node (ADR 0308): what is behind each number of the day ----------
 // A card as lines: the head, then each part (cells split by /, the entries of a list and the groups of bars by //, a hypnogram by its two ends).
 const cardLines = card => card === null ? null : [`${card.label}|${card.value}`, ...card.parts.map(p => p.type === 'cells' ? p.cells.map(c => `${c.label} ${c.value}`).join('/')
   : p.type === 'entries' ? p.entries.map(e => `${e.lead}: ${e.facts.join(' · ')}`).join('//') + (p.more ? ` +${p.more}` : '')

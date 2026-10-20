@@ -14,7 +14,7 @@ import { TimelineGuard } from './TimelineGuard';
 import './day-timeline.css';
 import './day-open.css';
 
-// The timeline pane (ADR 0296): the drop pane's other content, grown from the notch's right side. One story top to bottom: the date,
+// The timeline pane (ADR 0308): the drop pane's other content, grown from the notch's right side. One story top to bottom: the date,
 // her sentence about the day, one bar for the whole day (DayBar.tsx) with the day's numbers under it, and the day itself as a list; on
 // today a now line, with what is still to come below it. A row opens in place (RowOpen.tsx) and can be asked about (AskDock.tsx).
 // `feed` is today as the wing already reads it; other days are read here.

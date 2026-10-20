@@ -1,7 +1,7 @@
 import type { L } from './companionSettings';
 
 // The owner's day as GET /inherent/day serves it (docs/spec.html; ADR 0199, 0235): items in time order, structured and
-// never worded. This file reads them for the notch's timeline (ADR 0296): the wing's one line and the pane's rows; the bar
+// never worded. This file reads them for the notch's timeline (ADR 0308): the wing's one line and the pane's rows; the bar
 // above the rows is barView.ts. Nothing here is made up: a field that did not arrive is a row without it, a kind this file
 // does not know is left out. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in node.
 type Top = { name: string; seconds: number };

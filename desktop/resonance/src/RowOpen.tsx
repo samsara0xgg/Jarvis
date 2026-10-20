@@ -6,7 +6,7 @@ import { stageLook, type Inside as Line1 } from './dayView';
 import { Ic } from './dayIcons';
 import { talkLines, type Bar, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
 
-// What an open row holds (ADR 0296, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today. The row's
+// What an open row holds (ADR 0308, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today. The row's
 // own two lines stay as they were; this hangs under them from the title's column.
 export const EASE = 'cubic-bezier(.16, 1, .3, 1)';
 export const reduced = matchMedia('(prefers-reduced-motion: reduce)');
