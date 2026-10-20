@@ -19,6 +19,7 @@ struct TLOpenView: View {
     @State private var session: String? // the session of Claude Code opened to its recap
     @State private var draft = ""
     @FocusState private var typing: Bool
+    @State private var born = Date()    // when this page was made: its field is not given the keyboard while the page is still sliding in
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
@@ -306,7 +307,7 @@ struct TLOpenView: View {
     /// a place he keeps starts as the name it has; one he keeps none at starts as what the phone called it, if it did
     private func begin() {
         draft = e.place?.canName == true ? e.barName ?? "" : e.place?.keptName ?? e.title
-        DispatchQueue.main.async { typing = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, 0.35 - Date().timeIntervalSince(born))) { typing = true }
     }
 }
 
