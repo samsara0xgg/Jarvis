@@ -1371,6 +1371,27 @@ def test_the_replay_without_a_model_asks_nothing_and_says_how_large_each_questio
     assert printed[2].startswith("no model was called")
 
 
+def test_a_live_replay_fills_the_key_from_the_runtime_roots_saved_keys(
+    log: _Log, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With --live the saved keys are loaded first, as the daemon does; a dry run loads none."""
+    log.turn("I paid the rent")
+    log.conn.close()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    loaded: list[Path] = []
+    monkeypatch.setattr(turn_things_replay, "load_env_file", loaded.append)
+    monkeypatch.setattr(turn_things_replay, "_asker", lambda _config, _preset: _Model())
+    flags = [
+        "--event-log", str(log.paths.event_log), "--memory", str(log.memory),
+        "--since", "2026-10-14", "--zone", "America/Vancouver",
+    ]
+
+    assert turn_things_replay.main([*flags, "--out", str(tmp_path / "dry")]) == 0
+    assert loaded == []
+    assert turn_things_replay.main([*flags, "--live", "--out", str(tmp_path / "live")]) == 0
+    assert loaded == [tmp_path / "home" / ".jarvis"]
+
+
 def test_the_replay_refuses_the_live_runtime_root(
     log: _Log, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

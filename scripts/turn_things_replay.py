@@ -14,7 +14,8 @@ the loop reads it once its wait is over; what the pass wrote goes to the scratch
 printed, one JSON line per record: ``{record_id, at, words, asked, verdict, wrote, dropped,
 est_input_tokens}``, then a summary line. Without ``--live`` the model is not called (it answers
 nothing): the lines show which records would be asked and how large each question is. With
-``--live`` each question goes to the preset's real model (the key comes from the environment).
+``--live`` each question goes to the preset's real model; the key comes from the environment,
+filled from the runtime root's saved keys as the daemon does.
 The scratch directory stays for a look.
 """
 
@@ -35,6 +36,7 @@ from zoneinfo import ZoneInfo
 import yaml
 
 from jarvis.decision import turn_things as decision
+from jarvis.deployment import load_env_file
 from jarvis.deployment.launchd import default_runtime_root
 from jarvis.runtime import turn_things as runtime
 from jarvis.runtime.interview_reminders import local_zone
@@ -199,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
         datetime.combine(args.until.date(), time(), zone) + timedelta(days=1)
         if args.until else datetime.max.replace(tzinfo=UTC)
     )
+    if args.live:
+        load_env_file(default_runtime_root().expanduser())  # fill-only; never read here
     ask = _asker(args.config, args.preset) if args.live else (lambda _s, _u: _NOTHING)
     lines = replay(
         args.event_log, args.memory, out, since=since, until=until, zone=zone, ask=ask,
