@@ -1,8 +1,9 @@
 import SwiftUI
 
-// Her cards. Held down on the timeline (0.28 s, Sky/StarFlow.swift), she puts out a few tiles that grow from her into the quarter to her right and below, along an arc, over everything else:
-// 理一下, the history, the way back to today. A finger that is still down slides from tile to tile (a tick for each) and lifting it on one chooses it; lifting it anywhere else leaves the
-// tiles out for a tap. A tap on a tile chooses it, a tap anywhere else sends them back into her without a choice. The chosen tile pulses once and they all go back into her.
+// Her cards. Held down on the timeline (0.28 s), or touched and slid off at once (Sky/StarFlow.swift), she puts out a few small tiles in the quarter to her right and below, along an arc,
+// over everything else, like thoughts: two dots leave her first and each tile pops up where it sits, a little after the one before. 理一下, the history, the way back to today.
+// A finger that is still down slides from tile to tile (a tick for each) and lifting it on one chooses it; lifting it anywhere else leaves the tiles out for a tap. A tap on a tile
+// chooses it, a tap anywhere else puts them away without a choice. The chosen tile pulses once and they all go.
 
 /// what she offers, and whether each can be chosen now
 struct TLHerMenu {
@@ -17,9 +18,10 @@ struct TLHerMenu {
     }
 }
 
-/// where the tiles lie: on an arc centred on her, from 15° below the horizontal to 75° (toward straight down), in the chrome's design points
+/// where the tiles lie: on an arc centred on her, from 5° below the horizontal to 85° (toward straight down), in the chrome's design points
 enum TLArc {
-    static let tile = 66.0, corner = 18.0, radius = 160.0, first = 15.0, last = 75.0
+    static let tile = 52.0, corner = 14.0, radius = 105.0, first = 5.0, last = 85.0
+    static let dots: [(d: Double, r: Double)] = [(28, 2.5), (40, 4)]      // the thought dots off her toward the middle tile: distance from her, radius
     static let slop = 4.0                              // a finger this far off a tile is still on it
 
     static func centers(count n: Int, around c: CGPoint = TLLayout.her) -> [CGPoint] {
@@ -97,30 +99,26 @@ extension TimelineState {
     }
 }
 
-/// The cards over everything: a very light dim that takes a tap anywhere outside them as the way back, and the tiles on their arc.
+/// The cards over everything: a clear layer that takes a tap anywhere outside them as the way back, the thought dots, and the tiles on their arc.
 struct HerArc: View {
     let engine: StarEngine
     let ui: StarUI
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var tl: TimelineState { ui.tl }
+    private static let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)      // as the chat's tapback bar (Sky/StarTapback.swift)
 
     var body: some View {
         let items = tl.herItems
         let centers = TLArc.centers(count: items.count)
         ZStack(alignment: .topLeading) {
             if tl.arcMounted {
-                Color.black.opacity(tl.arcOpen ? 0.18 : 0).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
+                Color.clear.frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
                     .contentShape(Rectangle())
                     .onTapGesture { tl.closeArc() }
-                    .animation(.easeOut(duration: tl.arcOpen ? 0.25 : 0.2), value: tl.arcOpen)
                     .accessibilityHidden(true)
-                family {
-                    ZStack(alignment: .topLeading) {
-                        ForEach(Array(items.enumerated()), id: \.element.kind) { i, item in tile(item, rank: i, at: centers[i]) }
-                    }
-                    .frame(width: W, height: H, alignment: .topLeading)
-                }
+                ForEach(Array(TLArc.dots.enumerated()), id: \.offset) { i, d in dot(d.d, d.r, rank: i) }
+                ForEach(Array(items.enumerated()), id: \.element.kind) { i, item in tile(item, rank: i, at: centers[i]) }
             }
         }
         .frame(width: W, height: H, alignment: .topLeading)
@@ -130,49 +128,48 @@ struct HerArc: View {
         .accessibilityAction(.escape) { tl.closeArc() }
     }
 
-    /// Liquid Glass tiles read as one family where the system has it
-    @ViewBuilder private func family<C: View>(@ViewBuilder _ content: () -> C) -> some View {
-        if #available(iOS 26.0, *) { GlassEffectContainer(spacing: 12) { content() } } else { content() }
+    /// pops where it sits: from small to a touch over its size and back (a spring), `delay` after she is pressed; away, it shrinks and fades in place, all at once
+    private func pop(_ delay: Double) -> Animation {
+        reduce ? .easeOut(duration: TLMotion.reducedFade) : tl.arcOpen ? .spring(response: 0.3, dampingFraction: 0.58).delay(delay) : .easeIn(duration: 0.16)
     }
 
-    /// One tile: out of her centre, scaled from 0.4 to its size, each a little after the one before (a spring that overshoots a touch); and back into her, faster, with no stagger. Reduce Motion: a fade.
+    private func dot(_ d: Double, _ r: Double, rank: Int) -> some View {
+        let a = 45.0 * .pi / 180, out = tl.arcOpen
+        return Circle().fill(SetColor.ink.opacity(0.55)).frame(width: r * 2, height: r * 2)
+            .scaleEffect(out || reduce ? 1 : 0.2).opacity(out ? 1 : 0)
+            .position(x: TLLayout.her.x + d * cos(a), y: TLLayout.her.y + d * sin(a))
+            .animation(pop(Double(rank) * 0.04), value: out)
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    /// One tile, popping up in its place a little after the dots and the tile before it. Reduce Motion: a fade.
     private func tile(_ item: TLHerMenu.Item, rank: Int, at c: CGPoint) -> some View {
         let out = tl.arcOpen, lit = tl.arcHover == item.kind, picked = tl.arcPicked == item.kind
-        let here = out || reduce
-        let grow = reduce ? 1 : picked ? 1.14 : lit ? 1.06 : 1
+        let grow = reduce ? 1 : picked ? 1.14 : lit ? 1.08 : 1
         return Button { tl.pickArc(item.kind, engine: engine) } label: { face(item, lit: lit || picked) }
             .buttonStyle(.plain)
             .disabled(!item.enabled)
-            .scaleEffect(out || reduce ? grow : 0.4)
-            .offset(here ? .zero : CGSize(width: TLLayout.her.x - c.x, height: TLLayout.her.y - c.y))
+            .scaleEffect(out || reduce ? grow : 0.5)
             .opacity(out ? 1 : 0)
             .position(x: c.x, y: c.y)
-            .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : out ? .spring(response: 0.38, dampingFraction: 0.72).delay(Double(rank) * 0.035) : .easeIn(duration: 0.22), value: out)
+            .animation(pop(0.07 + Double(rank) * 0.045), value: out)
             .animation(.spring(response: 0.22, dampingFraction: 0.6), value: grow)
             .accessibilityLabel(item.title)
             .accessibilityHidden(!tl.arcOpen)
     }
 
-    /// the symbol on top, the word under it, on glass
+    /// the symbol on top, the word under it, on the chat's dark frosted ground
     private func face(_ item: TLHerMenu.Item, lit: Bool) -> some View {
         let working = item.kind == .tidy && tl.tidy == .running && !reduce
         let shape = RoundedRectangle(cornerRadius: TLArc.corner, style: .continuous)
-        return glassy(VStack(spacing: 6) {
-            Image(systemName: item.symbol).font(.system(size: 22)).symbolEffect(.pulse, options: .repeating, isActive: working)
-            Text(item.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
+        return VStack(spacing: 4) {
+            Image(systemName: item.symbol).font(.system(size: 18)).symbolEffect(.pulse, options: .repeating, isActive: working)
+            Text(item.title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
         }
         .foregroundStyle(SetColor.ink.opacity(item.enabled ? 0.95 : 0.45))
-        .frame(width: TLArc.tile, height: TLArc.tile), lit: lit, shape: shape)
-    }
-
-    @ViewBuilder private func glassy(_ content: some View, lit: Bool, shape: RoundedRectangle) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(lit ? .regular.tint(Color.white.opacity(0.22)) : .regular, in: shape)
-        } else {
-            content
-                .background(shape.fill(.ultraThinMaterial))
-                .background(shape.fill(Color.white.opacity(lit ? 0.18 : 0.06)))
-                .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(lit ? 0.5 : 0.24), Color.white.opacity(lit ? 0.2 : 0.08)], startPoint: .top, endPoint: .bottom), lineWidth: 0.6))
-        }
+        .frame(width: TLArc.tile, height: TLArc.tile)
+        .background(shape.fill(Color.white.opacity(lit ? 0.14 : 0)))
+        .background(shape.fill(.ultraThinMaterial)).background(shape.fill(Self.navy.opacity(0.8)))
+        .overlay(shape.strokeBorder(Color.white.opacity(lit ? 0.4 : 0.14), lineWidth: 0.5))
     }
 }

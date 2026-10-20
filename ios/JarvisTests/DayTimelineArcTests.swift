@@ -21,14 +21,14 @@ final class DayTimelineArcTests: XCTestCase {
 
     // MARK: where the tiles lie
 
-    func testTheTilesLieOnAnArcFromFifteenToSeventyFiveDegreesBelowHerAndClearEachOtherAndHer() {
+    func testTheTilesLieOnAnArcFromFiveToEightyFiveDegreesBelowHerAndClearEachOtherAndHer() {
         let her = TLLayout.her
         for n in [2, 3] {
             let cs = TLArc.centers(count: n)
             XCTAssertEqual(cs.count, n)
             let angles = cs.map { atan2($0.y - her.y, $0.x - her.x) * 180 / .pi }
-            XCTAssertEqual(angles.first ?? 0, 15, accuracy: 0.01)
-            XCTAssertEqual(angles.last ?? 0, 75, accuracy: 0.01)
+            XCTAssertEqual(angles.first ?? 0, 5, accuracy: 0.01)
+            XCTAssertEqual(angles.last ?? 0, 85, accuracy: 0.01)
             for c in cs {
                 XCTAssertEqual(hypot(c.x - her.x, c.y - her.y), TLArc.radius, accuracy: 0.01)
                 XCTAssertGreaterThan(c.x - TLArc.tile / 2, 0, "on the screen")

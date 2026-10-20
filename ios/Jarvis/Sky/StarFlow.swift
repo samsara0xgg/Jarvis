@@ -168,6 +168,11 @@ extension StarEngine {
         if cur.kind == .hold && tm > 0.5 { ui.tl.arcFollow(p); return }          // her cards are out and the finger is still down: it slides from card to card
         if cur.kind == .press && hypot(Double(p.x - cur.p0.x), Double(p.y - cur.p0.y)) > 7 {
             cur.timer?.cancel(); pressed = false
+            if cur.her && tm > 0.5 && talk == nil && !ui.panelOpen {          // touched and slid off her on the timeline: her cards come out at once, without the hold
+                cur.kind = .hold; g = cur
+                ui.tl.openArc(holding: true); herDrive?.herEffect("ripple", now: nowMs()); ui.tl.arcFollow(p)
+                return
+            }
             if (talk != nil && voiceState == .idle) || mon > 0.5 || tm > 0.5 { cur.kind = .none; g = cur; return }       // a scripted talk drives the dial itself; his voice talk leaves it to his finger
             cur.kind = .drag; mode = .drag; byHand = true; fs.velocity = 0; cur.a = nil
             if openId != nil { openId = nil; rowKey = "" }
