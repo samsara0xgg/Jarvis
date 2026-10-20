@@ -624,7 +624,7 @@ private struct TLList: View {
         } action: { _, v in nowInView = v }
         .onScrollGeometryChange(for: Double.self) { Double($0.contentOffset.y) } action: { _, y in at.y = y }
         .onScrollPhaseChange { _, phase in if phase == .interacting { engine.releaseTalk() } }          // he is at the list: the talk's place has said what it had to
-        .modifier(ScrollsOnRequest(tl: tl, model: model, room: room, pos: $pos))
+        .modifier(ScrollsOnRequest(tl: tl, model: model, room: room, pos: $pos, at: at))
         .onChange(of: model.entries.map(\.id)) { _, ids in tl.keep(only: Set(ids)) }
         .onAppear { nowInView = true }
     }
@@ -655,12 +655,13 @@ private struct ScrollsOnRequest: ViewModifier {
     let model: DayTimelineModel
     let room: Double
     @Binding var pos: ScrollPosition
+    let at: ScrollAt                    // where the list is now
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     func body(content: Content) -> some View {
         content.onChange(of: tl.request) { _, r in
             let y = r.y < 0 ? model.restY(room: room) : r.y
-            if r.animated || r.y < 0 { withAnimation(.easeOut(duration: 0.45)) { pos.scrollTo(y: y) } }
+            if r.animated || r.y < 0 { withAnimation(TLMotion.scrollTo(distance: abs(y - at.y))) { pos.scrollTo(y: y) } }
             else if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: y) } }
             else { pos.scrollTo(y: y) }
         }

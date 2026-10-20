@@ -1,7 +1,8 @@
 import SwiftUI
 
 // The motion of the timeline, in one place (docs: the day timeline's design, section 9), so that what moves does so by one rule: motion that says where a thing comes from, in under a
-// quarter of a second, and none that has nothing to say. Under Reduce Motion each one is a plain fade of 120 ms: no slides, no growth, no shimmer.
+// quarter of a second, and none that has nothing to say. Under Reduce Motion each one is a plain fade of 120 ms: no slides, no growth, no shimmer. What moves is a spring that does not bounce
+// (`.smooth`), which takes up a motion that is in the middle of itself where it is; what only fades is an ease.
 
 enum TLMotion {
     /// the bar's stretches grow in from the left, in the order of time, when the timeline opens
@@ -18,10 +19,10 @@ enum TLMotion {
     static var reduced: Bool { UIAccessibility.isReduceMotionEnabled }
 
     /// the bar growing in, or under Reduce Motion fading in
-    static func barGrowth(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : barGrow) }
+    static func barGrowth(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: barGrow) }
     /// row number `rank` of the first rows rising, each a little after the one before
     static func rise(rank: Int, reduce: Bool) -> Animation {
-        reduce ? .easeOut(duration: reducedFade) : .easeOut(duration: riseDuration).delay(Double(rank) * riseStagger)
+        reduce ? .easeOut(duration: reducedFade) : .smooth(duration: riseDuration).delay(Double(rank) * riseStagger)
     }
     /// words that are replaced by other words in the same place (her sentence, the tag after the date, the weather): the old ones leave over 70 ms and the new ones arrive over 140 ms
     /// after them, so that the two are never readable together; under Reduce Motion the same in 120 ms (a fade moves nothing)
@@ -36,16 +37,18 @@ enum TLMotion {
         return reveal && !reduce ? fade.delay(after * barGrow) : fade
     }
     /// a change of day
-    static func dayChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : dayDuration) }
+    static func dayChange(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: dayDuration) }
     /// the page that another day's page takes the place of goes in half that time, so that two days are never on show at the strength of one
-    static func dayLeave(reduce: Bool) -> Animation { .easeOut(duration: (reduce ? reducedFade : dayDuration) / 2) }
+    static func dayLeave(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade / 2) : .smooth(duration: dayDuration / 2) }
     /// another day's list, or its bar: it comes in the way time goes, `slide` pt, fading in as `dayChange`, and the old one leaves the other way as `dayLeave`; under Reduce Motion both only fade
     static func page(slide: Double, reduce: Bool) -> AnyTransition {
         let come = reduce ? AnyTransition.opacity : .opacity.combined(with: .offset(x: -slide)), go = reduce ? AnyTransition.opacity : .opacity.combined(with: .offset(x: slide))
         return .asymmetric(insertion: come.animation(dayChange(reduce: reduce)), removal: go.animation(dayLeave(reduce: reduce)))
     }
     /// what is new in the list, and the rows that make room for it
-    static func listChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : grow) }
+    static func listChange(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: grow) }
+    /// the list sent to a place (the way back to now, a row the waiting cards name): longer for a longer way, so that a short one is not slow and a long one is not a blur
+    static func scrollTo(distance: Double) -> Animation { .smooth(duration: min(0.8, 0.3 + distance / 4000)) }
     /// A row's page comes in from the right over the list, which goes a hand's breadth to the left as it fades; going back is the same the other way. A spring of 0.3 s that does not bounce, so
     /// that a tap or a swipe in the middle of it takes it over where it is; under Reduce Motion a cross-fade.
     static func detail(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .spring(response: 0.3, dampingFraction: 1) }

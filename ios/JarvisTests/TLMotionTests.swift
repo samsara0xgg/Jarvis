@@ -53,11 +53,14 @@ final class TLMotionTests: XCTestCase {
     }
 
     func testTheMotionsAreTheDesignsOtherwise() {
-        XCTAssertEqual(TLMotion.barGrowth(reduce: false), .easeOut(duration: 0.45))
-        XCTAssertEqual(TLMotion.rise(rank: 4, reduce: false), .easeOut(duration: 0.22).delay(0.1), "the fifth row waits for four")
-        XCTAssertEqual(TLMotion.dayChange(reduce: false), .easeOut(duration: 0.22))
-        XCTAssertEqual(TLMotion.dayLeave(reduce: false), .easeOut(duration: 0.11), "the page a new day replaces has gone in half of that")
+        XCTAssertEqual(TLMotion.barGrowth(reduce: false), .smooth(duration: 0.45), "what moves is a spring that does not bounce")
+        XCTAssertEqual(TLMotion.rise(rank: 4, reduce: false), .smooth(duration: 0.22).delay(0.1), "the fifth row waits for four")
+        XCTAssertEqual(TLMotion.dayChange(reduce: false), .smooth(duration: 0.22))
+        XCTAssertEqual(TLMotion.dayLeave(reduce: false), .smooth(duration: 0.11), "the page a new day replaces has gone in half of that")
         XCTAssertEqual(TLMotion.dayLeave(reduce: true), .easeOut(duration: 0.06), "and under Reduce Motion in half of its 120 ms")
-        XCTAssertEqual(TLMotion.listChange(reduce: false), .easeOut(duration: 0.24))
+        XCTAssertEqual(TLMotion.listChange(reduce: false), .smooth(duration: 0.24))
+        XCTAssertEqual(TLMotion.scrollTo(distance: 0), .smooth(duration: 0.3), "a short way is quick")
+        XCTAssertEqual(TLMotion.scrollTo(distance: 1000), .smooth(duration: 0.3 + 1000.0 / 4000), "a longer way takes longer")
+        XCTAssertEqual(TLMotion.scrollTo(distance: 100_000), .smooth(duration: 0.8), "and a long one takes no more than 0.8 s")
     }
 }

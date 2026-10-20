@@ -27,22 +27,28 @@ struct TLTopView: View {
         let said = bar.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
         return ZStack(alignment: .topLeading) {
             // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
-            if let line = model?.line {
-                Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
-                    .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-                    .fadeThrough(on: !holding && !talk, reduce: reduce)
-                    .accessibilityHidden(talk)
-                    .id(line).transition(TLMotion.swapWords(reduce: reduce))
-                    .offset(x: 30, y: TLLayout.lineY)
+            Group {          // each animation below is on what it moves, not on the whole of the header
+                if let line = model?.line {
+                    Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
+                        .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
+                        .fadeThrough(on: !holding && !talk, reduce: reduce)
+                        .accessibilityHidden(talk)
+                        .id(line).transition(TLMotion.swapWords(reduce: reduce))
+                        .offset(x: 30, y: TLLayout.lineY)
+                }
             }
+            .animation(TLMotion.dayChange(reduce: reduce), value: model?.line)
             if let said {
                 readout(said).fadeThrough(on: holding, reduce: reduce)
                     .offset(x: 30, y: TLLayout.lineY)
                     .allowsHitTesting(false).accessibilityHidden(!holding)
             }
-            if model == nil && loading {
-                TLTrack(loading: true, reduce: reduce).id(tl.day).transition(.opacity).offset(x: 30, y: TLLayout.barY)
+            Group {
+                if model == nil && loading {
+                    TLTrack(loading: true, reduce: reduce).id(tl.day).transition(.opacity).offset(x: 30, y: TLLayout.barY)
+                }
             }
+            .animation(TLMotion.dayChange(reduce: reduce), value: model == nil)
             if let m = model, let bar {
                 let lens = tl.activeLens(in: m)
                 ZStack(alignment: .topLeading) {
@@ -86,7 +92,6 @@ struct TLTopView: View {
             lastStretch = nil
             withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
         }
-        .animation(TLMotion.dayChange(reduce: reduce), value: model?.line)
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? TLMotion.reducedFade : 0.3) : 0.06), value: ui.tlHome)
