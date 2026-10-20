@@ -268,6 +268,9 @@ struct TLBarView: View {
     var reveal = true                       // false until the bar has grown in
     var reduce = false
     var breathe = true
+    var sweeping = false                    // the brain is tidying the day: a band of light goes along the pieces (Sky/DayTimelineTidy.swift)
+    var ghost: TLBarScene?                  // the drawing the bar had before a tidied day came in, over the new one until it has faded (`ghostGone`)
+    var ghostGone = false
 
     private let bw = TLLayout.barW, bh = TLLayout.barH
 
@@ -278,12 +281,15 @@ struct TLBarView: View {
                 ZStack(alignment: .topLeading) {
                     TLTrack()
                     BarCanvas(scene: scene, rects: rects).equatable()
+                    if sweeping { TLTidySweep(scene: scene).transition(.opacity) }
                     planned
                     dots
                     if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
                     labels
+                    if let g = ghost { ghostLayer(g) }
                 }
                 .animation(.easeOut(duration: 0.12), value: bracket != nil)  // it comes and goes with a fade; moving from one span to the next is as quick as the finger
+                .animation(.easeOut(duration: 0.25), value: sweeping)
                 .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
                 .mask(alignment: .leading) { GrowMask(shown: reduce || reveal) }          // grows in from the left, in the order of time, its leading edge soft
                 .opacity(reduce && !reveal ? 0 : 1)
@@ -303,6 +309,17 @@ struct TLBarView: View {
     }
 
     private func x(_ t: Double) -> Double { TLGeo.x(t, scene.span, bw) }
+
+    /// the bar as it was, its pieces and its words, over the one that has come in: it fades out to show it (a cross-fade with no dip, which the two fading together would have)
+    private func ghostLayer(_ g: TLBarScene) -> some View {
+        ZStack(alignment: .topLeading) {
+            BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, span: g.span, width: bw, height: bh)).equatable()
+            TLBarLabels(scene: g, reduce: reduce).equatable()
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
+        .opacity(ghostGone ? 0 : 1)
+        .allowsHitTesting(false)
+    }
 
     // MARK: words and stars
 

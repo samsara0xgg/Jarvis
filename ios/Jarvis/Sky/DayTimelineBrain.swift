@@ -8,6 +8,8 @@ struct TLBrain {
     var commit: @MainActor (_ hex: String, _ action: CommitAction) async -> CommitAnswer
     var name: @MainActor (_ name: String, _ lat: Double, _ lng: Double, _ role: String) async -> PlaceAdd
     var answer: @MainActor (_ day: String, _ startMs: Int64, _ endMs: Int64, _ text: String) async -> SpanAnswer
+    /// 理一下: the brain tidies today (it answers when a model is done, up to about a minute)
+    var tidy: @MainActor () async -> TidyAnswer
     /// the days are asked for again
     var refetch: @MainActor () -> Void
 
@@ -25,6 +27,9 @@ struct TLBrain {
         },
         answer: { day, startMs, endMs, text in
             do { return try await BrainLink.shared.call { try await BrainClient.stateSpan(day: day, startMs: startMs, endMs: endMs, text: text, bases: $0, token: $1) } } catch { return .failed }
+        },
+        tidy: {
+            do { return try await BrainLink.shared.call { try await BrainClient.tidyDay(bases: $0, token: $1) } } catch { return .failed }
         },
         refetch: { BrainLink.shared.opened() })
 }

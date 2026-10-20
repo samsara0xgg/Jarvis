@@ -90,6 +90,11 @@ final class TimelineState {
     var sayBusy = false                             // his words are on their way to the brain
     var sayNote: String?                            // why they did not go
     @ObservationIgnored var brain = TLBrain.live    // where his words go (a test or a debug scene gives another)
+    // 理一下 (Sky/DayTimelineTidy.swift)
+    var tidy = TLTidy.idle                          // what the button says
+    var tidied: UUID?                               // the brain wrote a new run: the serial of the reading of today the bar was drawn from, which it fades from once the next one is in
+    @ObservationIgnored var tidyHold: Task<Void, Never>?
+    @ObservationIgnored var tidyHolds = (nothing: 2.0, failed: 3.0)         // how long the button keeps what it says of an answer that changed nothing, and of one that failed
     var flash: String?                              // the row just scrolled to: it flashes
     var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
     @ObservationIgnored var sunHide: Task<Void, Never>?

@@ -1,8 +1,8 @@
 import Foundation
 
 // What he can do to a row of the day on the brain (ADR 0296, jarvis/surface/inherent_server.py): mark an item as what mattered (`POST /inherent/day/highlight`), say that an event his mail
-// made is his or is not (`POST /inherent/commitments/{hex}`), keep a place he was at under a name of his (`POST /inherent/memory/places`), and say what he was doing in a stretch of the
-// day (`POST /inherent/day/answer`, ADR 0302). Each answers by its status. A 404 that
+// made is his or is not (`POST /inherent/commitments/{hex}`), keep a place he was at under a name of his (`POST /inherent/memory/places`), say what he was doing in a stretch of the
+// day (`POST /inherent/day/answer`, ADR 0302) and have the day tidied (`POST /inherent/day/tidy`, ADR 0310). Each answers by its status. A 404 that
 // is the route's own (no such item, no such commitment) is told from the framework's, which a brain without the route gives (`{"detail": "Not Found"}`): that one is no answer.
 
 /// the brain's answer to his mark on an item of a day
@@ -71,6 +71,18 @@ enum SpanAnswer: Equatable {
     static func read(status: Int, data: Data) -> SpanAnswer { (200...299).contains(status) ? .done : .failed }
 }
 
+/// the brain's answer to 理一下 (`POST /inherent/day/tidy`, ADR 0310): a model writes today's doing lane afresh while the request waits, and the brain answers `{ok, written, outcome}`
+enum TidyAnswer: Equatable {
+    case written                    // ok and written: today has a new run, to be asked for again
+    case unchanged                  // ok and not written: there was nothing in it to change
+    case failed                     // not ok, an error status, a brain without the route, no answer in 90 s, or none at all
+
+    static func read(status: Int, data: Data) -> TidyAnswer {
+        guard (200...299).contains(status), let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], o["ok"] as? Bool == true else { return .failed }
+        return o["written"] as? Bool == true ? .written : .unchanged
+    }
+}
+
 enum BrainRoute {
     /// A 404 that says `Not Found` and nothing else is the framework's: this brain has no such route. A route's own 404 says what it did not find.
     static func missing(_ body: Data) -> Bool {
@@ -98,6 +110,12 @@ extension BrainClient {
         let body = try JSONSerialization.data(withJSONObject: ["day": day, "start_ms": startMs, "end_ms": endMs, "text": text])
         let r = try await send("POST", "/inherent/day/answer", body: body, also: [422, 502], bases: bases, token: token, unauthorized: .revoked)
         return SpanAnswer.read(status: r.status, data: r.data)
+    }
+
+    /// Have the brain tidy today's doing lane (no body). It answers when the model is done, so this one waits up to 90 s.
+    static func tidyDay(bases: [URL], token: String) async throws -> TidyAnswer {
+        let r = try await send("POST", "/inherent/day/tidy", patient: true, also: [422, 502], bases: bases, token: token, unauthorized: .revoked)
+        return TidyAnswer.read(status: r.status, data: r.data)
     }
 
     /// Keep the point (`lat`, `lng`) of a stay under his name for it; `role` is `home`, `school` or `other`.

@@ -135,7 +135,8 @@ struct StarChrome: View {
     /// what the top row leaves between the date and the settings button on the timeline (its gaps, and the empty place of the scale, counted)
     private var headRoom: Double {
         let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.talking ? 0 : ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
-        return W - 30 - 36 - 3 * 8 - (30 + TLLayout.dateShift) - date - 8
+        let tidy = ui.tl.tidyShown ? TLTidyButton.width(ui.tl.tidy) + 8 : 0          // and the capsule of 理一下 beside the settings button
+        return W - 30 - 36 - 3 * 8 - (30 + TLLayout.dateShift) - date - 8 - tidy
     }
 
     private var topRow: some View {
@@ -153,6 +154,7 @@ struct StarChrome: View {
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
                 .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
                 .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is the date's
+            if tlOn && ui.tl.tidyShown { TLTidyButton(tl: ui.tl).transition(.opacity) }        // at the right, left of the settings button: the brain tidies today
             Button { ui.settingsOpen = true } label: {
                 Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                     .frame(width: 36, height: 36).glass(Circle())
@@ -164,6 +166,7 @@ struct StarChrome: View {
         }
         .padding(.leading, tlOn ? 30 + TLLayout.dateShift : 30).padding(.trailing, 30)
         .animation(.easeOut(duration: 0.35), value: tlOn)
+        .animation(.easeOut(duration: 0.2), value: ui.tl.tidyShown)
         .frame(width: W, height: 38)
         .offset(y: 60)
     }

@@ -308,6 +308,8 @@ enum BrainClient {
     nonisolated(unsafe) static var session = makeSession(request: 4, resource: 8)      // var so a test can put a stub under it
     /// for the calls that wait on the brain: a picture going up, a question whose answer takes up to 25 s
     nonisolated(unsafe) static var slowSession = makeSession(request: 40, resource: 60)
+    /// for 理一下 alone: the brain holds the answer while a model writes the day (up to about a minute)
+    nonisolated(unsafe) static var tidySession = makeSession(request: 90, resource: 100)
 
     /// A tailnet address: the CGNAT range Tailscale hands out, a MagicDNS name, or a bare name that only MagicDNS can resolve.
     static func isTailnet(_ u: URL) -> Bool {
@@ -321,7 +323,7 @@ enum BrainClient {
 
     /// `path` on the first base that answers. A refusal that means "this address is wrong" (400, 404) moves on; one that means "this answer is final" (401) stops.
     /// `also` lists statuses that are the route's own answer (a card no longer waiting, a file refused): they come back as a `Reply` with that status.
-    static func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil, contentType: String = "application/json", slow: Bool = false, also: Set<Int> = [],
+    static func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data? = nil, contentType: String = "application/json", slow: Bool = false, patient: Bool = false, also: Set<Int> = [],
                      bases: [URL], token: String?, unauthorized: BrainError) async throws -> Reply {
         var worst: BrainError?
         func note(_ e: BrainError) { if worst == nil || (worst!.rank < e.rank) { worst = e } }
@@ -335,7 +337,7 @@ enum BrainClient {
             if let t = token { req.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization") }
             let t0 = Date()
             do {
-                let (data, resp) = try await (slow ? slowSession : session).data(for: req)
+                let (data, resp) = try await (patient ? tidySession : slow ? slowSession : session).data(for: req)
                 let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 let ms = Int(Date().timeIntervalSince(t0) * 1000)
                 switch status {

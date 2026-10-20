@@ -19,6 +19,9 @@ struct TLTopView: View {
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
     @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
+    @State private var ghost: TLBarScene?                                            // the bar as it was when the brain wrote a tidied day, which fades off the new one (`tl.tidied`)
+    @State private var ghostGone = false
+    @State private var ghostTask: Task<Void, Never>?
 
     private var tl: TimelineState { ui.tl }
 
@@ -53,7 +56,8 @@ struct TLTopView: View {
                 let lens = tl.activeLens(in: m)
                 ZStack(alignment: .topLeading) {
                     TLBarView(scene: scene, bracket: bracket(bar), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
-                              reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown)
+                              reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown,
+                              sweeping: tl.tidy == .running && tl.day == tl.today && !reduce, ghost: ghost, ghostGone: ghostGone)
                         .id(byPlace).transition(barSwap)          // the other drawing of the day comes in over the one that goes
                 }
                 .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
@@ -86,6 +90,8 @@ struct TLTopView: View {
         }
         .onDisappear { lastStretch = nil; tl.follow(nil, in: nil) }          // a finger that was on the bar when this went away is not on it when it comes back
         .onChange(of: tl.lens) { _, l in if let l { lastLens = l } }
+        .onChange(of: tl.tidied) { _, s in if s != nil { holdGhost() } }
+        .onChange(of: tl.reply?.serial) { _, _ in releaseGhost() }
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
         .onChange(of: touching) { _, on in
             guard !on else { return }
@@ -95,6 +101,27 @@ struct TLTopView: View {
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? TLMotion.reducedFade : 0.3) : 0.06), value: ui.tlHome)
+    }
+
+    /// A tidied day was written: the bar as it is now stays over what comes in, until the next reading of the day is in (or, if it does not come, for ten seconds).
+    private func holdGhost() {
+        ghostTask?.cancel()
+        ghost = scene; ghostGone = false
+        ghostTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            if !Task.isCancelled { ghost = nil }
+        }
+    }
+
+    /// the next reading is in: the old drawing fades off it, and is let go
+    private func releaseGhost() {
+        guard ghost != nil, !ghostGone else { return }
+        ghostTask?.cancel()
+        withAnimation(.easeInOut(duration: reduce ? TLMotion.reducedFade : 0.45)) { ghostGone = true }
+        ghostTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if !Task.isCancelled { ghost = nil }
+        }
     }
 
     /// the minute under his finger in words, where her sentence is: the stretch with its hours and length, under it what else was going on

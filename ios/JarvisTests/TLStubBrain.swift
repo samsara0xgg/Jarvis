@@ -12,6 +12,8 @@ final class TLStubBrain {
     var commitAnswer: CommitAnswer = .done
     var nameAnswer: PlaceAdd = .done(nil, change: nil)
     var spanAnswer: SpanAnswer = .done
+    var tidyAnswer: TidyAnswer = .unchanged
+    var tidies = 0
     var refetches = 0
     /// when set, an answer waits for `release()`
     var hold = false
@@ -23,6 +25,7 @@ final class TLStubBrain {
             commit: { [self] hex, action in committed.append((hex, action)); await pause(); return commitAnswer },
             name: { [self] name, lat, lng, role in named.append((name, lat, lng, role)); await pause(); return nameAnswer },
             answer: { [self] day, startMs, endMs, text in answered.append((day, startMs, endMs, text)); await pause(); return spanAnswer },
+            tidy: { [self] in tidies += 1; await pause(); return tidyAnswer },
             refetch: { [self] in refetches += 1 })
     }
 
