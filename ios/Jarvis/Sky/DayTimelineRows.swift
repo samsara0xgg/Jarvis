@@ -210,6 +210,45 @@ extension DayTimelineModel {
             let way = i.direction == "in" ? "收入" : "支出", code = tlText(i.currency)?.uppercased()
             let both = sum.map { s in way + " " + s + (code.flatMap { c in s.hasPrefix("$") || s.hasPrefix("¥") ? " " + c : nil } ?? "") }
             e.more = [both, via == nil ? tlText(i.source).map { "来自" + $0 } : nil].compactMap { $0 }
+        case "messages":
+            e.kind = .messages
+            e.symbol = "message.fill"
+            e.title = tlText(i.conversation) ?? tlText(i.app) ?? "消息"
+            e.detail = "发 \(max(0, i.sent ?? 0)) · 收 \(max(0, i.received ?? 0))"
+            e.right = dur ?? ""
+            e.glance = e.title
+        case "phone_call":
+            e.kind = .phoneCall
+            e.symbol = "phone.fill"
+            e.title = tlText(i.person) ?? "电话"
+            e.detail = [["sent": "打出", "received": "打进"][i.direction ?? ""], tlText(i.app)].compactMap { $0 }.joined(separator: " · ")
+            if e.detail?.isEmpty == true { e.detail = nil }
+            // a call is told in seconds when it was under a minute
+            e.right = i.duration_s.flatMap { $0.isFinite && $0 >= 1 ? ($0 < 60 ? "\(tlInt($0)) 秒" : tlDur(tlInt($0 / 60))) : nil } ?? dur ?? ""
+            e.glance = e.title
+        case "screen":
+            e.kind = .screen
+            e.symbol = i.device == "iPad" ? "ipad" : "iphone"
+            e.title = "用 " + (tlText(i.device) ?? "手机")
+            let apps = tops(i.apps).prefix(2).map { $0.name + " " + tlDur($0.minutes) }
+            e.detail = apps.isEmpty ? nil : apps.joined(separator: " · ")
+            e.right = i.active_s.flatMap { $0 >= 1 && $0.isFinite ? tlDur(tlInt($0 / 60)) : nil } ?? dur ?? ""
+            e.glance = e.title
+        case "media":
+            e.kind = .media
+            e.symbol = "music.note"
+            e.title = tlText(i.app) ?? "播放"
+            let top = i.titles?.first.flatMap { t in tlText(t.title).map { [$0, tlText(t.artist)].compactMap { $0 }.joined(separator: " · ") } }
+            e.detail = top
+            e.right = i.active_s.flatMap { $0 >= 1 && $0.isFinite ? tlDur(tlInt($0 / 60)) : nil } ?? dur ?? ""
+            e.glance = e.title
+        case "away_note":
+            e.kind = .away
+            e.symbol = "square.and.pencil"
+            e.title = tlText(i.title) ?? "离开电脑时写的"
+            e.detail = "TimeSink 里你写的"
+            e.right = dur ?? ""
+            e.glance = e.title
         case "claude_chat":
             e.kind = .claude
             e.symbol = "sparkles"
@@ -367,7 +406,7 @@ extension DayTimelineModel {
     ]
 
     /// the mark the chip wears: the one the dial gives the same item (`StarEngine.kdOf`)
-    private static func mark(_ i: DayItem, later: Bool) -> Kd {
+    static func mark(_ i: DayItem, later: Bool) -> Kd {
         if later { return .next }
         switch i.state {
         case "done": return i.lane == "her" ? .done : .lit

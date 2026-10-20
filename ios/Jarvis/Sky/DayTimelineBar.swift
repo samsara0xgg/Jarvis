@@ -8,7 +8,7 @@ import SwiftUI
 
 /// a span of the bar and what fills it
 struct TLPiece: Equatable, Identifiable {
-    enum Fill: Equatable { case place(RGB, kept: Bool), trip, sleep, blank, ahead }
+    enum Fill: Equatable { case place(RGB, kept: Bool), trip, sleep, doing(RGB), blank, ahead }
     let id: String                  // the item it is (a stay, a trip, the night), or what it is not; a stay that the night cuts in two is two pieces of one id
     var t0: Double, t1: Double
     var fill: Fill
@@ -72,6 +72,7 @@ extension DayTimelineModel {
                 case .place(let c, let kept): fill = .place(c, kept: kept)
                 case .move: fill = .trip
                 case .sleep: fill = .sleep
+                case .doing(let c): fill = c.map { .doing($0) } ?? .blank          // a stretch nobody could say anything of is a hole, as where nothing was recorded
                 }
                 p = TLPiece(id: s.id, t0: a, t1: b, fill: fill, name: byId[s.id]?.barName, icon: byId[s.id]?.barIcon, stages: fill == .sleep ? byId[s.id]?.sleep?.stages ?? [] : [])
             } else {
@@ -79,8 +80,6 @@ extension DayTimelineModel {
             }
             if let last = pieces.last, last.id == p.id || (last.fill == .blank && p.fill == .blank) { pieces[pieces.count - 1].t1 = b } else { pieces.append(p) }
         }
-        // a stay wears what he was doing when one span of it covers half of the piece; its colour and icon stay the place's
-        for k in pieces.indices { if case .place = pieces[k].fill, let words = wasDoing(over: pieces[k].t0, pieces[k].t1) { pieces[k].name = words } }
         var ahead: [TLAhead] = []
         if let now {
             for e in entries where e.kind == .event || e.kind == .reminder || e.kind == .departure {
@@ -112,6 +111,7 @@ enum TLPaint {
         case .place(let c, let kept): return (c, kept ? 0.9 : 0.32)
         case .trip: return (trip, 0.28)
         case .sleep: return (sleep, 0.9)
+        case .doing(let c): return (c, 0.85)
         case .blank, .ahead: return nil
         }
     }

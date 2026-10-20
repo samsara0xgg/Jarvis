@@ -20,7 +20,7 @@ extension TLEntry {
     /// its title (15) or its line (12) is wider than the row leaves them: the words column less the length at the right (and the amber 等你 beside a title)
     var cutShort: Bool {
         switch kind {
-        case .stay, .now, .pause: return false
+        case .stay, .now, .pause, .segment: return false
         default:
             let room = TLColumns.words - 8 - tlWidth(right, size: 11.5, weight: .medium, mono: true)
             return tlWidth(title, size: 15) + (waiting ? 46 : 0) > room || (detail.map { tlWidth($0, size: 12) > room } ?? false)
