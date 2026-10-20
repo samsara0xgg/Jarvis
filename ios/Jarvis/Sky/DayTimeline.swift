@@ -193,7 +193,10 @@ final class TimelineState {
         return dx > 0 ? -1 : 1
     }
 
-    /// A drag from the left edge of a row's page lets go as the way back when it went far enough to the right (80 pt, or its fling would have: 200 pt) and mostly sideways.
+    /// A drag on a row's page is the way back when it starts to the right and mostly sideways (`dx`, `dy` of its first 10 pt); else it is the page's own scroll.
+    static func backSwipeStarts(dx: Double, dy: Double) -> Bool { dx > 0 && dx > abs(dy) * 1.2 }
+
+    /// A swipe back lets go as the way back when it went far enough to the right (80 pt, or its fling would have: 200 pt) and mostly sideways.
     static func backSwipe(dx: Double, dy: Double, predicted: Double) -> Bool {
         dx > 0 && dx > abs(dy) * 1.2 && (dx > 80 || predicted > 200)
     }
@@ -422,8 +425,10 @@ struct DayTimelineView: View {
 
 // MARK: - the list, and the page of a row over it
 
-/// The list, and over it the page of the row he opened (Sky/DayTimelineDetail.swift): it comes in from the right while the list goes a little to the left and fades, and an edge swipe from the
-/// left brings it back, following the finger. The list stays where it is under the page, so the way back is to the same place in it.
+/// The list, and over it the page of the row he opened (Sky/DayTimelineDetail.swift): it comes in from the right while the list goes a little to the left and fades. A swipe to the right from
+/// anywhere on the page takes it back the way a pushed page goes back on iOS: the page follows the finger the whole way (back past where it began too: it stops at its place, it never sticks),
+/// the list comes out from under it at a third of the finger's pace, and on release the page goes on at the finger's own speed. The list stays where it is under the page, so the way back is to
+/// the same place in it.
 private struct TLPager: View {
     let model: DayTimelineModel
     let engine: StarEngine
@@ -431,40 +436,61 @@ private struct TLPager: View {
     let room: Double
     let lens: TLLens?
     @Binding var nowInView: Bool
-    @State private var drag = 0.0               // how far a finger from the edge has pulled the page to the right
+    @State private var drag = 0.0               // how far a swipe back has the page to the right
+    @State private var releasing = false        // a swipe let go and its page is on its way, out or back in
+    @GestureState private var sideways: Bool?   // what a drag on the page is, decided once as it starts: the way back (true), or the page's own scroll (false); none between drags
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
         let page = tl.openRow.flatMap { id in model.entries.first { $0.id == id } }
-        let shown = page == nil ? 0 : 1 - clamp(drag / W, 0, 1)                 // 1 with the page all the way in, 0 with the list
+        let back = page == nil ? 1 : clamp(drag / W, 0, 1)                    // 0 with the page all the way in, 1 with the list
         ZStack(alignment: .top) {
             TLList(model: model, engine: engine, tl: tl, room: room, lens: lens, nowInView: $nowInView)
-                .offset(x: reduce ? 0 : -TLMotion.detailShift * shown).opacity(1 - shown)
+                .offset(x: reduce ? 0 : -TLMotion.detailShift * (1 - back))
+                .opacity(TLMotion.listShows(back))
                 .allowsHitTesting(page == nil).accessibilityHidden(page != nil)
             if let page {
-                ZStack { TLDetailPage(e: page, tl: tl, engine: engine, back: back).id(page.id).transition(.opacity) }          // a turn to another row is a cross-fade in the same place
+                ZStack { TLDetailPage(e: page, tl: tl, engine: engine, back: goBack).id(page.id).transition(.opacity) }          // a turn to another row is a cross-fade in the same place
                     .offset(x: drag)
+                    .opacity(TLMotion.pageShows(back))
                     .transition(reduce ? .opacity : .move(edge: .trailing))
-                    .simultaneousGesture(edgeBack)
+                    .simultaneousGesture(swipeBack)
             }
         }
         .animation(TLMotion.detail(reduce: reduce), value: tl.openRow)
-        .onChange(of: tl.openRow) { _, id in if let r = tl.renaming, r != id { tl.cancelRename() } }          // the page with its field open went: the field goes with it
+        .onChange(of: tl.openRow) { _, id in
+            if let r = tl.renaming, r != id { tl.cancelRename() }          // the page with its field open went: the field goes with it
+            if !releasing { drag = 0 }
+        }
+        // a swipe the system took away (the page's scroll won it, a call came in) ends with no release: the page goes back to its place
+        .onChange(of: sideways) { _, s in if s == nil, !releasing, drag > 0 { withAnimation(TLMotion.detail(reduce: reduce)) { drag = 0 } } }
     }
 
-    private func back() { tl.openRow = nil }
+    private func goBack() { tl.openRow = nil }
 
-    /// A drag that begins at the left edge pulls the page after the finger (under Reduce Motion it only counts where it lets go) and lets go as the way back, or as the page staying.
-    private var edgeBack: some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .named("design"))
+    private var swipeBack: some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .named("design"))
+            .updating($sideways) { v, s, _ in if s == nil { s = TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height) } }
             .onChanged { v in
-                guard v.startLocation.x < TLMotion.edgeBack, !reduce, v.translation.width > abs(v.translation.height) else { return }
-                drag = v.translation.width
+                guard sideways ?? TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height), !reduce else { return }
+                releasing = false
+                drag = max(0, v.translation.width)
             }
             .onEnded { v in
-                guard v.startLocation.x < TLMotion.edgeBack else { return }
-                let goes = TimelineState.backSwipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width)
-                withAnimation(TLMotion.detail(reduce: reduce)) { if goes { back() }; drag = 0 }
+                if reduce {          // under Reduce Motion the page does not follow: only where the swipe lets go counts
+                    if TimelineState.backSwipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width) { withAnimation(TLMotion.detail(reduce: true)) { goBack() } }
+                    return
+                }
+                guard drag > 0 else { return }          // not a swipe back: the page's own scroll
+                let goes = TimelineState.backSwipe(dx: v.translation.width, dy: 0, predicted: v.predictedEndTranslation.width)
+                releasing = true
+                let to = goes ? W : 0
+                let speed = abs(to - drag) > 1 ? v.velocity.width / (to - drag) : 0          // the finger's own speed, in parts of the way left per second
+                withAnimation(TLMotion.release(speed: speed)) { drag = to } completion: {
+                    var t = Transaction(); t.disablesAnimations = true
+                    withTransaction(t) { if goes { goBack() }; drag = 0 }
+                    releasing = false
+                }
             }
     }
 }

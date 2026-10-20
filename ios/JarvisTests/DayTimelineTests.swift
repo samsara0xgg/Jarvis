@@ -830,6 +830,15 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertFalse(TimelineState.backSwipe(dx: -100, dy: 0, predicted: -300), "to the left is not back")
     }
 
+    func testASwipeBackIsDecidedAtItsStartAndThePageAndTheListCrossWithADip() {
+        XCTAssertTrue(TimelineState.backSwipeStarts(dx: 10, dy: 3))
+        XCTAssertFalse(TimelineState.backSwipeStarts(dx: 6, dy: 8), "mostly up and down: the page scrolls")
+        XCTAssertFalse(TimelineState.backSwipeStarts(dx: -10, dy: 0))
+        XCTAssertEqual([TLMotion.listShows(0), TLMotion.pageShows(0)], [0, 1], "the page all the way in")
+        XCTAssertEqual([TLMotion.listShows(1), TLMotion.pageShows(1)], [1, 0], "back at the list")
+        XCTAssertLessThan(max(TLMotion.listShows(0.5), TLMotion.pageShows(0.5)), 0.25, "half way, neither is strong")
+    }
+
     func testTheHomeScreenShowsTheTimelineUntilHeChoosesTheDialAndKeepsWhatHeChose() {
         let name = "test.homeModule.\(UUID().uuidString)"
         let d = UserDefaults(suiteName: name)!

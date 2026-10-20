@@ -50,8 +50,13 @@ enum TLMotion {
     /// that a tap or a swipe in the middle of it takes it over where it is; under Reduce Motion a cross-fade.
     static func detail(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .spring(response: 0.3, dampingFraction: 1) }
     static let detailShift = 80.0
-    /// a swipe back starts this near the left edge of the page (design points)
-    static let edgeBack = 28.0
+    /// a swipe back let go: the same spring, starting at the finger's speed (`speed`: parts of the way left per second), so the page goes on as it was moving
+    static func release(speed: Double) -> Animation { .interpolatingSpring(duration: 0.3, bounce: 0, initialVelocity: speed) }
+    /// how much of the list and of the page shows at `back` (0: the page all the way in, 1: the list) while a swipe back moves them: they cross with a dip, so that their words are never
+    /// both strong in one place
+    static func listShows(_ back: Double) -> Double { eased(clamp((back - 0.3) / 0.7, 0, 1)) }
+    static func pageShows(_ back: Double) -> Double { 1 - eased(clamp(back / 0.7, 0, 1)) }
+    private static func eased(_ t: Double) -> Double { t * t * (3 - 2 * t) }
 }
 
 // MARK: - what is new grows
