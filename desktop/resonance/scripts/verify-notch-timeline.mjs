@@ -361,8 +361,8 @@ check('the overview bar spans the day from the hour before he woke, and its now 
     && buildDay(makeDay({ weather: { condition: 'clear', high: 14, low: 8, sunrise_ms: 1e300, sunset_ms: T(18, 5) } }), NOW, zh).weather.sun === '日落 18:05');
   for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
     const night = it('s2', 'sleep', T(1, 0), T(8, 0), { minutes: 420, stages: [{ stage: name, start_ms: T(1, 0), end_ms: T(8, 0) }] }), d = buildDay(small([night, it('s3', 'stay', T(8, 0), null, { place: 'X' })]), NOW, zh);
-    const item = d.items.find(x => x.id === 's2'), piece = buildBar(d, zh).segs.find(x => x.row === 's2');
-    check(`a stage called ${name} is the stage nobody told: unspecified, with a look, on the bar and in the totals`, stageSlices(item, T(1, 0), T(8, 0)).every(x => x.stage === 'unspecified') && piece.shade.length > 0 && piece.shade.every(x => Array.isArray(x.rgb) && x.a === stageLook('unspecified').a)
+    const item = d.items.find(x => x.id === 's2');
+    check(`a stage called ${name} is the stage nobody told: unspecified, with a look, in the slices and in the totals`, stageSlices(item, T(1, 0), T(8, 0)).every(x => x.stage === 'unspecified')
       && stageLook(name) === stageLook('unspecified') && Object.keys(stageMinutes(item)).join() === 'unspecified');
   }
   check('a weather called constructor is no weather: the temperatures alone, or nothing', weatherOf({ condition: 'constructor', high: 14, low: 8, sunrise_ms: null, sunset_ms: null }, zh)?.sky === null && weatherOf({ condition: 'constructor', high: null, low: null, sunrise_ms: null, sunset_ms: null }, zh) === null);
@@ -395,7 +395,7 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('the hours are ticked every three: 09 12 15 18 21 24 from 08:00', bar0.ticks.map(k => k.label).join() === '09,12,15,18,21,24' && bar0.ticks.at(-1).f === 1);
   check('a stay he named is dark ink on its warm or blue fill; a haze and a way he went are ink', toneOn([255, 168, 150], .9) === 'dark' && toneOn([100, 200, 255], .9) === 'dark' && toneOn([196, 204, 238], .32) === 'light' && toneOn([196, 208, 255], .28) === 'light');
   const ms = Object.fromEntries(bar0.segs.map(x => [x.row, x]));
-  check('a sleep wins over the stay it lies on, a trip over a stay; sleep reads moon and duration, a ride its route', ms['sleep-1'].kind === 'sleep' && ms['sleep-1'].short === '7:50' && ms['ride-1'].short === '27' && ms['move-1'].short === '开车' && ms['stay-uvic'].short === 'UVic' && ms['stay-aw'].short === 'A&W');
+  check('a sleep wins over the stay it lies on, a trip over a stay; sleep reads its moon alone (its length is on the card), a ride its route', ms['sleep-1'].kind === 'sleep' && ms['sleep-1'].short === '' && ms['sleep-1'].icon === 'moon' && ms['ride-1'].short === '27' && ms['move-1'].short === '开车' && ms['stay-uvic'].short === 'UVic' && ms['stay-aw'].short === 'A&W');
   check('what is still to come on the bar: tonight\'s event as a box, the reminder and the bus as ticks', bar0.sched.map(x => `${x.kind}:${x.key}`).join() === 'reminder:reminder-1,event:event-1,departure:departure-1,event:event-2');
   check('the star of what mattered is at its item\'s start: 15:19 for the afternoon at UVic', bar0.stars.length === 1 && Math.abs(msOf(bar0, bar0.stars[0].f) - T(15, 19)) < 1000);
 
@@ -601,12 +601,9 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('where stages overlap the watch\'s wins over in_bed; in_bed shows only where nothing else was told; the slices run on without a gap or an overlap', wide.length === 16 && wide[0].stage === 'in_bed' && wide.at(-1).stage === 'in_bed' && wide.every((x, i) => i === 0 || x.s === wide[i - 1].e) && wide[0].s === T(23, 0, 18) && wide.at(-1).e === T(7, 10) && wide.slice(1, -1).map(x => x.stage).join() === 'core,deep,core,awake,rem,core,deep,rem,core,awake,core,rem,core,awake');
   check('a stretch nobody told, a stage it does not know and a night with no stages at all are all unspecified', stageSlices({ ...item, stages: [{ stage: 'asleep', start_ms: T(1, 0), end_ms: T(2, 0) }] }, T(0, 30), T(2, 30)).map(x => `${x.stage}:${(x.e - x.s) / 60_000}`).join() === 'unspecified:120'
     && stageSlices({ ...item, stages: [{ stage: 'deep', start_ms: T(1, 0), end_ms: T(2, 0) }] }, T(0, 30), T(2, 30)).map(x => `${x.stage}:${(x.e - x.s) / 60_000}`).join() === 'unspecified:30,deep:60,unspecified:30' && stageSlices({ ...item, stages: undefined }, T(1, 0), T(2, 0)).map(x => x.stage).join() === 'unspecified');
-  const sh = piece.shade.map(x => `${x.rgb.join(' ')}@${x.a}:${x.f0.toFixed(4)}-${x.f1.toFixed(4)}`).join();
-  check('the bar\'s sleep piece (06:00 to 07:00 of the axis) is shaded by stage under its label: REM the lighter hue at .8, core at .78, awake at .25, in the share each took', clock(fb.t0, TZ) === '06:00' && sh === '150 160 235@0.8:0.0000-0.4167,112 120 205@0.78:0.4167-0.8333,112 120 205@0.25:0.8333-1.0000', sh);
-  check('deep sleep is the sleep hue at 1 and unspecified at .6; a night with no stages keeps its one fill', [['deep', 1], ['unspecified', .6]].every(([stage, a]) => { const d = buildBar(buildDay(fullDay({ items: [it('sleep-1', 'sleep', T(5, 0), T(7, 0), { minutes: 120, stages: [{ stage, start_ms: T(5, 0), end_ms: T(7, 0) }] }), it('s', 'stay', T(7, 0), null, { place: 'X', kept_place: home })] }), NOW, zh), zh); return d.segs[0].shade.length === 1 && d.segs[0].shade[0].a === a && d.segs[0].shade[0].rgb.join() === '112,120,205'; })
-    && buildBar(buildDay(richDay(), NOW, zh), zh).segs.find(x => x.kind === 'sleep').shade === undefined);
+  check('the night on the bar is one plain piece with its moon, with or without stages: no shading by stage, the sleep hue at .9, no words', clock(fb.t0, TZ) === '06:00' && [piece, buildBar(buildDay(richDay(), NOW, zh), zh).segs.find(x => x.kind === 'sleep')].every(p => p.shade === undefined && p.rgb.join() === '112,120,205' && p.a === .9 && p.short === '' && p.icon === 'moon'));
   const note = t => peek(fm, buildBar(fm, t), T(6, 30), t).stretch;
-  check('on the sleep the hover card adds its deep sleep and REM: 深睡 1:10 · REM 1:40 (Deep 1:10 · REM 1:40); the night without stages adds nothing', note(zh).name === '睡觉' && note(zh).note === '深睡 1:10 · REM 1:40' && note(en).note === 'Deep 1:10 · REM 1:40' && note(zh).range === '昨天 23:10–07:00' && note(zh).length === '7 时 20 分'
+  check('on the sleep the hover card adds its deep sleep and REM and how often he woke: 深睡 1:10 · REM 1:40 · 醒 3 次 (Deep 1:10 · REM 1:40 · Woke 3×); the night without stages adds nothing', note(zh).name === '睡觉' && note(zh).note === '深睡 1:10 · REM 1:40 · 醒 3 次' && note(en).note === 'Deep 1:10 · REM 1:40 · Woke 3×' && note(zh).range === '昨天 23:10–07:00' && note(zh).length === '7 时 20 分'
     && peek(buildDay(richDay(), NOW, zh), buildBar(buildDay(richDay(), NOW, zh), zh), T(8, 30), zh).stretch.note === undefined);
   const only1 = (stage, mn) => { const d = buildDay(fullDay({ items: [it('sleep-1', 'sleep', T(5, 0), T(7, 0), { minutes: 120, stages: [{ stage, start_ms: T(5, 0), end_ms: T(5, 0) + mn * 60_000 }] }), it('s', 'stay', T(7, 0), null, { place: 'X', kept_place: home })] }), NOW, zh); return peek(d, buildBar(d, zh), T(6, 30), zh).stretch.note; };
   check('and says only the one it had: REM alone, deep alone, neither when it was core and awake', only1('rem', 90) === 'REM 1:30' && only1('deep', 45) === '深睡 0:45' && only1('core', 90) === undefined);
@@ -635,11 +632,9 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     const n2 = openOf(d, 'sleep-2', zh).parts.find(x => x.type === 'night').night;
     check('the open row\'s totals read it: 深睡 2:20 · 核心 3:30 · REM 1:30 · 醒 2 次, in English too', n2.totals === '深睡 2:20 · 核心 3:30 · REM 1:30 · 醒 2 次' && openOf(buildDay(small([sleep]), NOW, en), 'sleep-2', en).parts.find(x => x.type === 'night').night.totals === 'Deep 2:20 · Core 3:30 · REM 1:30 · Awake 2×', n2.totals);
     check('and its hypnogram is those runs', JSON.stringify(n2.slices.map(x => [x.stage, (x.s - N0) / 60_000, (x.e - N0) / 60_000])) === JSON.stringify(runs) && n2.at.join() === '23:00,07:00');
-    const b2 = buildBar(d, zh), p2 = b2.segs.find(x => x.row === 'sleep-2'), cover = (b2.t0 - N0) / 60_000, span2 = (p2.e - p2.s) / 60_000;
-    check('the hover card adds its deep sleep and REM from it: 深睡 2:20 · REM 1:30', peek(d, b2, T(3, 0), zh).stretch.note === '深睡 2:20 · REM 1:30');
-    check('the bar\'s shading reads it: one slice per run inside the piece, joined end to end from 0 to 1, each in the look of the stage that wins there',
-      clock(b2.t0, TZ) === '00:00' && p2.shade.length === runs.filter(r => r[2] > cover).length && p2.shade[0].f0 === 0 && Math.abs(p2.shade.at(-1).f1 - 1) < 1e-9 && p2.shade.every((x, i) => i === 0 || Math.abs(x.f0 - p2.shade[i - 1].f1) < 1e-9)
-      && p2.shade.every(x => { const look = stageLook(oracle(Math.floor(cover + (x.f0 + x.f1) / 2 * span2))); return x.rgb.join() === look.rgb.join() && x.a === look.a; }), JSON.stringify(p2.shade.map(x => `${x.a}:${x.f0.toFixed(3)}-${x.f1.toFixed(3)}`)));
+    const b2 = buildBar(d, zh), p2 = b2.segs.find(x => x.row === 'sleep-2');
+    check('the hover card adds its deep sleep, REM and wakings from it: 深睡 2:20 · REM 1:30 · 醒 2 次', peek(d, b2, T(3, 0), zh).stretch.note === '深睡 2:20 · REM 1:30 · 醒 2 次');
+    check('the bar draws that night as one plain piece too (the stages are on the card and in the open row)', p2.kind === 'sleep' && p2.shade === undefined);
   }
 
   // the two days the clocks change (2026-03-08 and 2026-11-01 in Vancouver): a time is the wall clock's, a minute is a real minute, and the
@@ -1810,17 +1805,17 @@ try {
         && rowsOf.home.title === 'Claude Code · 4 个会话' && rowsOf.home.detail === '周报草稿 · 给 verify 加 fixtures' && rowsOf.home.right === '2 时 40 分' && rowsOf.home.h === 52 && rowsOf.home.lk === 'work' && rowsOf.home.svg && rowsOf.home.rail
         && rowsOf.uvic.title === 'Claude Code · 2 个会话' && rowsOf.uvic.right === '1 时 30 分' && rowsOf.strays === 0, JSON.stringify(rowsOf));
 
-      // the bar: the night shaded by stage, the sun
+      // the bar: the night as one plain piece, the sun
       const sb = await a.page.locator('.dt-seg.is-sleep').boundingBox();
-      const sleep = await a.page.evaluate(() => { const e = document.querySelector('.dt-seg.is-sleep'); return { has: e.classList.contains('has-shade'), shade: e.style.getPropertyValue('--shade'), image: getComputedStyle(e).backgroundImage.slice(0, 15) }; });
-      check('the night on the bar is painted by stage: a gradient of hard stops, REM the lighter hue, core, then awake', sleep.has && sleep.image === 'linear-gradient' && sleep.shade === 'linear-gradient(to right, rgb(150 160 235 / 0.8) 0.00% 41.67%, rgb(112 120 205 / 0.78) 41.67% 83.33%, rgb(112 120 205 / 0.25) 83.33% 100.00%)', JSON.stringify(sleep));
+      const sleep = await a.page.evaluate(() => { const e = document.querySelector('.dt-seg.is-sleep'); return { has: e.classList.contains('has-shade'), shade: e.style.getPropertyValue('--shade'), image: getComputedStyle(e).backgroundImage, moon: !!e.querySelector('.dt-sl svg'), words: e.querySelector('.dt-sl b')?.textContent ?? null }; });
+      check('the night on the bar is one plain piece with its moon: no shade, no gradient, no words', !sleep.has && sleep.shade === '' && sleep.image === 'none' && sleep.moon && sleep.words === null, JSON.stringify(sleep));
       await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
       const clip = { x: sb.x - 3, y: sb.y - 3, width: sb.width + 6, height: sb.height + 6 };
       const [rem, core, awake] = await pixels(a, clip, [[3 + sb.width * .12, 5], [3 + sb.width * .78 * .98, 5], [3 + sb.width * .94, 5]].map(([x, y]) => [x, y]));
-      check('and it shows: the REM stretch is the lightest, core darker, awake the faintest of the three (the sleep hue at .8, .78 and .25 over the ground)', near(rem, [123, 131, 191], 10) && near(core, [91, 97, 163], 10) && near(awake, [39, 41, 63], 10) && rem[2] > core[2] && core[2] > awake[2], JSON.stringify({ rem, core, awake }));
+      check('and it is one fill from end to end (the sleep hue at .9 over the ground), whatever stage it was', near(rem, [102, 110, 186], 10) && near(core, [102, 110, 186], 10) && near(awake, [102, 110, 186], 10), JSON.stringify({ rem, core, awake }));
       await a.page.mouse.move(sb.x + sb.width / 2, sb.y + sb.height / 2); await a.page.waitForTimeout(400);
       const card = await a.page.evaluate(() => { const c = document.querySelector('.dt-card.is-on .dt-slot.is-cur'); return { head: c?.querySelector('.dt-ch b')?.textContent, note: c?.querySelector('.dt-cnote')?.textContent, range: c?.querySelector('.dt-ch span')?.textContent }; });
-      check('hovering the sleep says what the night had: 睡觉, 昨天 23:10–07:00 · 7 时 20 分, and 深睡 1:10 · REM 1:40 under it', card.head === '睡觉' && card.note === '深睡 1:10 · REM 1:40' && card.range === '昨天 23:10–07:00 · 7 时 20 分', JSON.stringify(card));
+      check('hovering the sleep says what the night had: 睡觉, 昨天 23:10–07:00 · 7 时 20 分, and 深睡 1:10 · REM 1:40 · 醒 3 次 under it', card.head === '睡觉' && card.note === '深睡 1:10 · REM 1:40 · 醒 3 次' && card.range === '昨天 23:10–07:00 · 7 时 20 分', JSON.stringify(card));
       await a.shot('data-02-sleep-card', { x: 40, y: 0, width: 560, height: 300 });
       await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
       const sun = await a.page.evaluate(() => {
