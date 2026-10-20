@@ -92,6 +92,13 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertNil(d6.detail)
     }
 
+    func testThePageOfARowSaysItsHoursHowLongAndWhere() throws {
+        let m = try day()
+        XCTAssertEqual(try entry(m, "d2").pageLine, "09:00–12:00 · 3 时 · 家 · 不太确定")
+        XCTAssertEqual(try entry(m, "d4").pageLine, "12:40–13:10 · 30 分", "no place: the hours and the length")
+        XCTAssertEqual(try entry(m, "d6").pageLine, "13:50 起 · 1 时 10 分", "a stretch that goes on says when it began")
+    }
+
     func testTheCountsAreThePicturesPaymentsCallsAndMessagesInsideInThatOrder() throws {
         let m = try day()
         XCTAssertEqual(try entry(m, "d2").counts, TLCounts(pictures: 1, payments: 0, calls: 0, messages: 0), "the talk is not counted, a work block and a session are not told in numbers")

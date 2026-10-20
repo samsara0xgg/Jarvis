@@ -719,15 +719,13 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertGreaterThan(holes, 100, "the scan did meet holes")
     }
 
-    func testAFingerOnTheBarLightsTheRowThereAndClosesTheOpenOneAndLettingGoClearsBoth() {
+    func testAFingerOnTheBarLightsTheRowThereAndLettingGoClearsBoth() {
         withTimeline { e in
             let m = build(TimelineFixture.today(cal))
-            e.ui.tl.openRow = "talk-1"
             let n = e.ui.tl.request.n
             e.ui.tl.follow(700, in: m)
             XCTAssertEqual(e.ui.tl.scrub, 700)
             XCTAssertEqual(e.ui.tl.hot, "move-3", "the drive covers 11:40")
-            XCTAssertNil(e.ui.tl.openRow, "a row that was open is closed: the list goes where the finger goes")
             XCTAssertEqual(e.ui.tl.request.y, m.top(of: "move-3"))
             XCTAssertFalse(e.ui.tl.request.animated)
             XCTAssertEqual(e.ui.tl.request.n, n + 1)
@@ -745,6 +743,26 @@ final class DayTimelineTests: XCTestCase {
             e.ui.tl.follow(nil, in: nil)
             XCTAssertNil(e.ui.tl.scrub)
             XCTAssertNil(e.ui.tl.hot)
+        }
+    }
+
+    func testWithARowsPageOpenAFingerOnTheBarTurnsItToTheRowThereAndTheListStaysWhereItIs() {
+        withTimeline { e in
+            let m = build(TimelineFixture.today(cal))
+            e.ui.tl.openRow = "talk-1"
+            let n = e.ui.tl.request.n
+            e.ui.tl.follow(1000, in: m)
+            XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "the call covers 16:40: the page is its page")
+            XCTAssertEqual(e.ui.tl.scrub, 1000)
+            XCTAssertNil(e.ui.tl.hot, "the list is under the page: nothing in it is lit")
+            XCTAssertEqual(e.ui.tl.request.n, n, "and it is not asked to go anywhere: the way back is to the same place")
+            e.ui.tl.follow(1315, in: m)
+            XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "past now, before what was planned, no row covers it: the page stays")
+            e.ui.tl.follow(nil, in: nil)
+            XCTAssertNil(e.ui.tl.scrub)
+            XCTAssertEqual(e.ui.tl.openRow, "call-demo-1", "a finger lifted leaves the page open")
+            e.ui.tl.letGo()
+            XCTAssertNil(e.ui.tl.openRow, "a day gone from or the timeline left lets the page go")
         }
     }
 
@@ -802,6 +820,14 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertNil(TimelineState.swipe(dx: 59, dy: 0), "not far enough")
         XCTAssertNil(TimelineState.swipe(dx: 100, dy: 60), "not sideways enough")
         XCTAssertNil(TimelineState.swipe(dx: 10, dy: 200), "the list's own")
+    }
+
+    func testAnEdgeSwipeBackNeedsToGoFarOrFastAndMostlySideways() {
+        XCTAssertTrue(TimelineState.backSwipe(dx: 90, dy: 20, predicted: 120), "far enough")
+        XCTAssertTrue(TimelineState.backSwipe(dx: 40, dy: 5, predicted: 260), "not far, but thrown")
+        XCTAssertFalse(TimelineState.backSwipe(dx: 40, dy: 5, predicted: 120), "neither")
+        XCTAssertFalse(TimelineState.backSwipe(dx: 100, dy: 120, predicted: 300), "mostly up and down: the page's own scroll")
+        XCTAssertFalse(TimelineState.backSwipe(dx: -100, dy: 0, predicted: -300), "to the left is not back")
     }
 
     func testTheHomeScreenShowsTheTimelineUntilHeChoosesTheDialAndKeepsWhatHeChose() {

@@ -260,8 +260,8 @@ final class DayTimelineActionsTests: XCTestCase {
         // the module or the world: all that was held goes together, the minute under a finger with it
         tl.day = tl.today
         let m = try model(tl)
-        tl.beginRename(home)
         tl.follow(600, in: m)
+        tl.beginRename(home)
         tl.sunSaid = true
         XCTAssertNotNil(tl.scrub)
         XCTAssertNotNil(tl.hot)

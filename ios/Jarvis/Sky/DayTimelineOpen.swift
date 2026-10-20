@@ -1,8 +1,8 @@
 import SwiftUI
 
-// What a row of the day opens to, in place under it: a place's map and words, what a trip, a ride, an event or a payment says that its line does not, the first lines of a talk, the picture,
+// What a row of the day opens to, on its page (Sky/DayTimelineDetail.swift; the menu of a long press shows it as the row's preview): a place's map and words, what a trip, a ride, an event or a payment says that its line does not, the first lines of a talk, the picture,
 // how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, and the buttons of what can be done with it (only those the row offers: `TLEntry.actions`) with the
-// star at their right and, for a stretch, 这段在干嘛 under them. The row's own title and line are not said again: they wrap, in the row, while it is open.
+// star at their right and, for a stretch, 这段在干嘛 under them. The row's own title and line are not said again: the page's head has them.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -15,6 +15,7 @@ struct TLOpenView: View {
     let tl: TimelineState
     let engine: StarEngine
     var interactive = true              // false in the preview of a long press, which has no buttons: the menu has them
+    var mapWidth = 296.0                // how wide the map of a place is taken: the room it is given
     @State private var session: String? // the session of Claude Code opened to its recap
     @State private var draft = ""
     @FocusState private var typing: Bool
@@ -60,7 +61,7 @@ struct TLOpenView: View {
     private var stay: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let p = e.place, let lat = p.lat, let lng = p.lng {
-                PlaceMapCard(places: [AnswerPlace(name: e.title, lat: lat, lng: lng, address: p.text, placeId: nil)], height: 120, radius: 10, named: false, width: 296)
+                PlaceMapCard(places: [AnswerPlace(name: e.title, lat: lat, lng: lng, address: p.text, placeId: nil)], height: 120, radius: 10, named: false, width: mapWidth)
             }
             facts(e.more)
         }

@@ -38,7 +38,7 @@ extension StarEngine {
         #endif
         return BrainLink.shared.hasToken
     }
-    /// what is open, as the host is told of it: in the timeline the row opened in the list, as that row shows it; else the star the dial has open
+    /// what is open, as the host is told of it: in the timeline the row whose page is open, as that row shows it; else the star the dial has open
     private func openAbout() -> About? {
         if HomeModule.shared.isTimeline {
             guard let id = ui.tl.openRow, let r = ui.tl.reply else { return nil }

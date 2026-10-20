@@ -46,6 +46,12 @@ enum TLMotion {
     }
     /// what is new in the list, and the rows that make room for it
     static func listChange(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : grow) }
+    /// A row's page comes in from the right over the list, which goes a hand's breadth to the left as it fades; going back is the same the other way. A spring of 0.3 s that does not bounce, so
+    /// that a tap or a swipe in the middle of it takes it over where it is; under Reduce Motion a cross-fade.
+    static func detail(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .spring(response: 0.3, dampingFraction: 1) }
+    static let detailShift = 80.0
+    /// a swipe back starts this near the left edge of the page (design points)
+    static let edgeBack = 28.0
 }
 
 // MARK: - what is new grows

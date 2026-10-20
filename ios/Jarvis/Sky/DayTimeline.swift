@@ -51,7 +51,7 @@ final class TimelineState {
     var reveal = false
     /// which way the last change of day went: +1 to an earlier day (the page moves right), -1 to a later one
     var slide = 1
-    var openRow: String?                // the row opened in the list, one at a time
+    var openRow: String?                // the row whose page is open over the list, one at a time
     var lens: TLLens?                   // the day's number he pressed: the bar and the list bring that kind forward
     var scrub: Double?                  // the minute under his finger on the overview bar
     @ObservationIgnored var finger: CGPoint?        // and where that finger is, in the chrome's design points: where her eyes look (Sky/DayTimelineGaze.swift); nothing draws from it
@@ -128,14 +128,18 @@ final class TimelineState {
 
     func scroll(to y: Double, animated: Bool) { request = ScrollRequest(y: y, animated: animated, n: request.n + 1) }
 
-    /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it, and a row he had open is closed. A minute off the bar is the
-    /// bar's start or end.
+    /// A finger on the overview bar at minute `t` (none: it has lifted): the list goes to the row that covers it and lights it. With a row's page open the list stays where it is, for the way
+    /// back, and the page turns to the row that covers `t` (one that opens to something). A minute off the bar is the bar's start or end.
     func follow(_ minute: Double?, in m: DayTimelineModel?) {
         let t = minute.map { m?.onBar($0) ?? $0 }
         scrub = t
         if t == nil { finger = nil }
         guard let t, let m else { hot = nil; seen = nil; return }
-        if openRow != nil { openRow = nil }
+        if openRow != nil {
+            hot = nil; seen = nil
+            if let e = m.lit(at: t), e.opens, e.id != openRow { openRow = e.id }
+            return
+        }
         hot = m.lit(at: t)?.id
         guard let e = m.entry(at: t), e.id != seen else { return }        // the same row as a moment ago: the list is already there
         seen = e.id
@@ -187,6 +191,11 @@ final class TimelineState {
     static func swipe(dx: Double, dy: Double) -> Int? {
         guard abs(dx) > 60, abs(dx) > abs(dy) * 1.8 else { return nil }
         return dx > 0 ? -1 : 1
+    }
+
+    /// A drag from the left edge of a row's page lets go as the way back when it went far enough to the right (80 pt, or its fling would have: 200 pt) and mostly sideways.
+    static func backSwipe(dx: Double, dy: Double, predicted: Double) -> Bool {
+        dx > 0 && dx > abs(dy) * 1.2 && (dx > 80 || predicted > 200)
     }
 
     /// The tick of the minute asks whether a new day has begun (midnight, or the phone was asleep past it). If so, and the day on show was the one that ended, it moves to the new today;
@@ -348,7 +357,7 @@ struct DayTimelineView: View {
             // a swipe along the page is a day before or after, whatever the page is (a list, a sentence, or nothing yet), so no day is a dead end; a drag up and down is the list's own
             .contentShape(Rectangle())
             .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
-                if let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height) { tl.swipe(d) }
+                if tl.openRow == nil, let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height) { tl.swipe(d) }          // not over a row's page, whose edge swipe is the way back
             })
             .mask(VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
@@ -381,7 +390,7 @@ struct DayTimelineView: View {
                 .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .model(let m):
-            TLList(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView)
+            TLPager(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView)
         }
     }
 
@@ -410,7 +419,54 @@ struct DayTimelineView: View {
     }
 }
 
-// MARK: - the list
+// MARK: - the list, and the page of a row over it
+
+/// The list, and over it the page of the row he opened (Sky/DayTimelineDetail.swift): it comes in from the right while the list goes a little to the left and fades, and an edge swipe from the
+/// left brings it back, following the finger. The list stays where it is under the page, so the way back is to the same place in it.
+private struct TLPager: View {
+    let model: DayTimelineModel
+    let engine: StarEngine
+    let tl: TimelineState
+    let room: Double
+    let lens: TLLens?
+    @Binding var nowInView: Bool
+    @State private var drag = 0.0               // how far a finger from the edge has pulled the page to the right
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    var body: some View {
+        let page = tl.openRow.flatMap { id in model.entries.first { $0.id == id } }
+        let shown = page == nil ? 0 : 1 - clamp(drag / W, 0, 1)                 // 1 with the page all the way in, 0 with the list
+        ZStack(alignment: .top) {
+            TLList(model: model, engine: engine, tl: tl, room: room, lens: lens, nowInView: $nowInView)
+                .offset(x: reduce ? 0 : -TLMotion.detailShift * shown).opacity(1 - shown)
+                .allowsHitTesting(page == nil).accessibilityHidden(page != nil)
+            if let page {
+                ZStack { TLDetailPage(e: page, tl: tl, engine: engine, back: back).id(page.id).transition(.opacity) }          // a turn to another row is a cross-fade in the same place
+                    .offset(x: drag)
+                    .transition(reduce ? .opacity : .move(edge: .trailing))
+                    .simultaneousGesture(edgeBack)
+            }
+        }
+        .animation(TLMotion.detail(reduce: reduce), value: tl.openRow)
+        .onChange(of: tl.openRow) { _, id in if let r = tl.renaming, r != id { tl.cancelRename() } }          // the page with its field open went: the field goes with it
+    }
+
+    private func back() { tl.openRow = nil }
+
+    /// A drag that begins at the left edge pulls the page after the finger (under Reduce Motion it only counts where it lets go) and lets go as the way back, or as the page staying.
+    private var edgeBack: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .named("design"))
+            .onChanged { v in
+                guard v.startLocation.x < TLMotion.edgeBack, !reduce, v.translation.width > abs(v.translation.height) else { return }
+                drag = v.translation.width
+            }
+            .onEnded { v in
+                guard v.startLocation.x < TLMotion.edgeBack else { return }
+                let goes = TimelineState.backSwipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width)
+                withAnimation(TLMotion.detail(reduce: reduce)) { if goes { back() }; drag = 0 }
+            }
+    }
+}
 
 private struct TLList: View {
     let model: DayTimelineModel
@@ -420,7 +476,7 @@ private struct TLList: View {
     let lens: TLLens?                   // the kind brought forward: the rest is dimmed
     @Binding var nowInView: Bool
     @State private var pos: ScrollPosition
-    @State private var opened: Double   // the room it was opened in, which the first rows' entry is laid out for
+    @State private var opened: Double   // the room it was made for, which the first rows' entry is laid out for
     @State private var at = ScrollAt()  // where the list is now (written as it moves, never drawn from)
     @Environment(\.accessibilityReduceMotion) private var reduce
 
@@ -444,8 +500,7 @@ private struct TLList: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(Array(model.entries.enumerated()), id: \.element.id) { i, e in
-                    TLRowView(e: e, open: tl.openRow == e.id, dim: dim(e), top: offs[i], room: room, tl: tl, engine: engine,
-                              tap: { toggle(e) }, opened: { ensureVisible(e, height: $0) })
+                    TLRowView(e: e, dim: dim(e), top: offs[i], room: room, tl: tl, engine: engine, tap: { open(e) })
                         .equatable()
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : TLGrow.transition)          // what is new grows in, and what he says is not his collapses out the same way
@@ -467,11 +522,6 @@ private struct TLList: View {
         .onScrollGeometryChange(for: Double.self) { Double($0.contentOffset.y) } action: { _, y in at.y = y }
         .onScrollPhaseChange { _, phase in if phase == .interacting { engine.releaseTalk() } }          // he is at the list: the talk's place has said what it had to
         .modifier(ScrollsOnRequest(tl: tl, model: model, room: room, pos: $pos))
-        // the field of a rename needs the keyboard, which covers the foot of the list: the row goes up under the header
-        .onChange(of: tl.renaming) { _, id in
-            guard let id, let y = model.top(of: id), let e = model.entries.first(where: { $0.id == id }) else { return }
-            tl.scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: true)
-        }
         .onChange(of: model.entries.map(\.id)) { _, ids in tl.keep(only: Set(ids)) }
         .onAppear { nowInView = true }
     }
@@ -482,24 +532,13 @@ private struct TLList: View {
         return e.lens == lens || e.lenses.contains(lens) || e.kind == .now ? 1 : e.kind == .stay ? 0.6 : 0.35
     }
 
-    /// one row open at a time, with a light tap of the phone as it opens and a spring of about 260 ms (a plain fade with Reduce Motion)
-    private func toggle(_ e: TLEntry) {
+    /// A tap on a row opens its page, with a light tick of the phone; the page slides in over the list (`TLPager`)
+    private func open(_ e: TLEntry) {
         guard e.opens else { return }
-        let opening = tl.openRow != e.id
-        if opening {
-            Haptic.impact(.light)
-            engine.releaseTalk()
-            if let top = model.top(of: e.id) { engine.glance(at: TLGaze.row(top: top + e.gap, height: e.base, scrolled: at.y)) }        // her eyes go to it once
-        }
-        withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(duration: 0.26, bounce: 0.08)) { tl.openRow = opening ? e.id : nil }
-    }
-
-    /// A row opened is as tall as it is (`h`, without the blank above it): when its foot is below the list, the list goes up as far as that takes, never so far that the row's own top is lost.
-    private func ensureVisible(_ e: TLEntry, height h: Double) {
-        guard tl.openRow == e.id, h > 0, let i = model.entries.firstIndex(where: { $0.id == e.id }) else { return }
-        let top = model.offsets[i] + e.gap, bottom = top + h
-        let want = min(bottom + 8 - room, top - TLLayout.fadeTop - 6)
-        if want > at.y + 0.5 { tl.scroll(to: want, animated: true) }
+        Haptic.selection()
+        engine.releaseTalk()
+        if let top = model.top(of: e.id) { engine.glance(at: TLGaze.row(top: top + e.gap, height: e.base, scrolled: at.y)) }        // her eyes go to it once
+        tl.openRow = e.id
     }
 }
 

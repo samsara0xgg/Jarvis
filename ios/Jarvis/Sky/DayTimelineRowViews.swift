@@ -2,8 +2,8 @@ import SwiftUI
 
 // One line of the day's list: the time, the icon in its circle (dashed for what has not happened, a lit star on what mattered), the title with its one muted line, and at the right how long
 // or the value. A place carries a rail in its hue through what happened there, a trip a dashed one through all of its run. The heights are `TLMetrics` (single 44, with a line 56, a place's
-// header 44, 12 between groups), so nothing crowds and every row is a target of at least 44. A stretch of what he was doing is a row like any other, its icon in its category's colour. Opened, a row says its own title and line whole (they wrap instead of being cut short); what
-// else opening it shows is in Sky/DayTimelineOpen.swift.
+// header 44, 12 between groups), so nothing crowds and every row is a target of at least 44. A stretch of what he was doing is a row like any other, its icon in its category's colour. A tap on a row opens
+// its page over the list (Sky/DayTimelineDetail.swift), which says the title and the line whole and what the row opens to (Sky/DayTimelineOpen.swift).
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -50,20 +50,18 @@ extension TLAction {
 
 struct TLRowView: View, Equatable {
     let e: TLEntry
-    let open: Bool
     let dim: Double                     // 1, less while a lens is on and this is not of its kind
-    let top: Double                     // where the row stands in the list and how tall the list is: what its closures were made with
+    let top: Double                     // where the row stands in the list and how tall the list is: what its closure was made with
     let room: Double
     let tl: TimelineState
     let engine: StarEngine
     let tap: () -> Void
-    let opened: (Double) -> Void        // how tall the row is while it is open (its line, which wraps, and what it opened to), for the list to bring it into view
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     /// Two rows are the same when what they draw is, and where they stand (the closures come from the list and know where): a row that is the same is not drawn again, which is what keeps
     /// the list cheap while it is scrolled to the minute under a finger. What lights a row is read by the row's own `TLRowHeat`.
     static func == (a: TLRowView, b: TLRowView) -> Bool {
-        a.e == b.e && a.open == b.open && a.dim == b.dim && a.top == b.top && a.room == b.room
+        a.e == b.e && a.dim == b.dim && a.top == b.top && a.room == b.room
     }
 
     /// the circle's size: a place's header has a dot, a stop on the way a smaller one
@@ -75,24 +73,17 @@ struct TLRowView: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: e.gap)
             line
-                .frame(minHeight: e.base, maxHeight: open ? .infinity : e.base, alignment: .top)        // opened, its words wrap and the line grows to them
+                .frame(height: e.base, alignment: .top)
                 .background { TLRowHeat(id: e.id, tl: tl) }
                 .contentShape(Rectangle())
                 .onTapGesture(perform: tap)
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(e.opens ? .isButton : [])
                 .modifier(TLMenu(e: e, tl: tl, engine: engine))
-            if open {
-                TLOpenView(e: e, tl: tl, engine: engine)
-                    .padding(.leading, TLColumns.text).padding(.top, 2).padding(.bottom, 14)
-                    .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.18).delay(0.06)), removal: .opacity.animation(.easeOut(duration: 0.1))))
-            }
         }
         .background(alignment: .topLeading) { rails }
-        .onGeometryChange(for: Double.self) { open ? Double($0.size.height) - e.gap : 0 } action: { if $0 > 0 { opened($0) } }
         .opacity(dim)
         .animation(.easeOut(duration: 0.15), value: dim)
-        .onChange(of: open) { _, now in if !now, tl.renaming == e.id { tl.cancelRename() } }          // shut with its field open: the field goes with it
     }
 
     // MARK: the line
@@ -135,7 +126,7 @@ struct TLRowView: View, Equatable {
             bead.padding(.leading, TLColumns.centre - TLColumns.bead / 2 - TLColumns.time).padding(.top, (e.base - TLColumns.bead) / 2)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(e.title).font(.system(size: 15)).foregroundStyle(e.unknown ? muted : ink).lineLimit(open ? 3 : 1)
+                    Text(e.title).font(.system(size: 15)).foregroundStyle(e.unknown ? muted : ink).lineLimit(1)
                     if e.waiting { badge }
                 }
                 .frame(minHeight: 18, alignment: .leading)
@@ -143,7 +134,7 @@ struct TLRowView: View, Equatable {
                 if e.hasLine {
                     // a stretch's line: where, then the small icons of what is inside it (they keep their room, and the words give way)
                     HStack(spacing: 8) {
-                        if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(open ? 4 : 1) }
+                        if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(1) }
                         TLCountsView(counts: e.counts)
                     }
                     .frame(minHeight: 15, alignment: .leading)
@@ -181,7 +172,7 @@ struct TLRowView: View, Equatable {
     // MARK: the rail
 
     /// A place's rail (2 pt in its hue at 0.35) runs from its dot through the rows that happened there, and a trip's (dashed) through all of a run; each piece stops short of the circle it
-    /// passes and runs on through what the row opened to. A row with no rail in or out has none.
+    /// passes. A row with no rail in or out has none.
     @ViewBuilder private var rails: some View {
         if e.rail != .none, e.railIn || e.railOut {
             let air = 3.0, above = max(0, (e.base - beadSize) / 2 - air)
