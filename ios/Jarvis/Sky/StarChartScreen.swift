@@ -291,6 +291,17 @@ struct StarChrome: View {
         if ui.attach.hasItems || !ui.text.trimmingCharacters(in: .whitespaces).isEmpty { sendComposer() } else { engine.micTap() }
     }
 
+    /// a chip of what he may say or ask, above the field
+    private func suggestion(_ words: String, symbol: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            if let symbol { Image(systemName: symbol).font(.system(size: 12.5, weight: .semibold)) }
+            Text(words)
+        }
+        .font(.system(size: 14)).foregroundStyle(Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.92)).lineLimit(1).fixedSize()
+        .padding(.horizontal, 14).frame(height: 34).background(Color(red: 18 / 255, green: 22 / 255, blue: 52 / 255).opacity(0.66), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+    }
+
     private var composer: some View {
         let at = ui.attach
         return VStack(spacing: 0) {
@@ -310,12 +321,11 @@ struct StarChrome: View {
         .glass(RoundedRectangle(cornerRadius: 24), focused: focused)
         .overlay(alignment: .topLeading) {
             WrapLayout(spacing: 8) {
+                if HomeModule.shared.isTimeline && ui.tl.tidyShown {          // on today's timeline the first of them has the brain tidy the day: it sends her nothing, and the keyboard goes down
+                    Button { ui.tl.tidyDay(); engine.endEditing?() } label: { suggestion(ui.tl.tidy == .running ? "在理…" : "理一下", symbol: "sparkles") }.buttonStyle(PressScale())
+                }
                 ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
-                    Button { engine.send(t.q) } label: {
-                        Text(t.q).font(.system(size: 14)).foregroundStyle(Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.92)).lineLimit(1).fixedSize()
-                            .padding(.horizontal, 14).frame(height: 34).background(Color(red: 18 / 255, green: 22 / 255, blue: 52 / 255).opacity(0.66), in: Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
-                    }.buttonStyle(PressScale())
+                    Button { engine.send(t.q) } label: { suggestion(t.q) }.buttonStyle(PressScale())
                 }
             }
             .frame(width: W - 40, alignment: .leading)
