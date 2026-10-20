@@ -60,7 +60,8 @@ extension DayTimelineModel {
     /// The one-off things of the past that have a lens (a payment he made, a picture, a talk: a moment, not a span), in the order of the day. What is still to come is drawn as it is planned (`ahead`).
     var dots: [TLDot] {
         let hi = now ?? span.upperBound
-        return lensMarks.flatMap { lens, marks in marks.filter { $0.t1 - $0.t0 < 1 && $0.t0 >= span.lowerBound && $0.t0 <= hi }.map { TLDot(lens: lens, t: $0.t0) } }
+        return lensMarks.filter { $0.key != .talk }.flatMap { lens, marks in marks.filter {          // talk with her is never on the timeline: her chip alone brings it forward
+             $0.t1 - $0.t0 < 1 && $0.t0 >= span.lowerBound && $0.t0 <= hi }.map { TLDot(lens: lens, t: $0.t0) } }
             .sorted { ($0.t, TLLens.allCases.firstIndex(of: $0.lens) ?? 0) < ($1.t, TLLens.allCases.firstIndex(of: $1.lens) ?? 0) }
     }
 
