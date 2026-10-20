@@ -251,8 +251,15 @@ final class Reporter {
     }
 
     /// Motion history says what he is doing now; the location collector follows (adaptive updates).
-    func movement(_ activity: Activity?) {
-        (collectors[.location]?.first as? LocationCollector)?.motion(activity)
+    func movement(_ sample: MotionSample?) {
+        (collectors[.location]?.first as? LocationCollector)?.motion(sample)
+    }
+
+    /// Location woke from its deep sleep: the motion history is read now, not at the next wake, so the brain hears when the move began
+    /// even when GPS came late (ADR 0312).
+    func readMotionNow() {
+        guard let motion = collectors[.motion]?.first(where: { $0 is MotionCollector }) else { return }
+        Task { await withBackgroundTime("jarvis.report.motion") { await motion.wake() } }
     }
 
     /// The iOS Settings page of the app, where Location can be set to Always and Precise.
@@ -279,7 +286,7 @@ final class Reporter {
 
     private static func sense(of o: Sensed) -> ReportSense {
         switch o {
-        case .visit, .location: .location
+        case .visit, .location, .track: .location
         case .motion: .motion
         case .health(let metric, _, _, _, _, _): metric.isTotal ? .motion : .health
         case .measure: .health

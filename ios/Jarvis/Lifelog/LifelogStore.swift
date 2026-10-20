@@ -1,10 +1,11 @@
 import Foundation
 
 // His recorded day (ADR 0238): what the recorder (LifelogRecorder), the uploader (LifelogUploader) and the switches (control, Live Activity,
-// settings) share. The switch's state lives in the App Group's defaults, so the control in the widget extension reads it too.
+// settings) share. The outbox also holds the device motion recorded while he rides (DriveMotion, ADR 0312), sent the same way. The switch's state lives in the App Group's defaults, so the control in the widget extension reads it too.
 //
 // The outbox, Application Support/lifelog-outbox/ (kept out of backups, readable after the first unlock):
 //   open/<id>.<ext>         the piece being written now; one at most. Left over at launch: closed if it reads, else moved to held/broken/
+//   open-motion/<id>.csv    the motion piece being written now (DriveMotion); closed the same way at launch
 //   <id>.<ext> + <id>.json  closed pieces waiting for the brain (`LifelogPiece`); deleted only when the brain's sha256 matches
 //   held/<why>/…            pieces never sent again and never deleted: conflict (409), rejected (400/411/413/415/422), broken
 
@@ -68,7 +69,7 @@ enum LifelogStore {
     }
 }
 
-/// One closed piece, as `<id>.json` beside its audio. The query of the PUT is `startedMs` and `durationMs`.
+/// One closed piece, as `<id>.json` beside its file. The query of the PUT is `startedMs` and `durationMs`.
 struct LifelogPiece: Codable, Equatable {
     /// a UUID string: 36 of A-Za-z0-9_- (the brain takes 1 to 64)
     var id: String
@@ -76,13 +77,17 @@ struct LifelogPiece: Codable, Equatable {
     var startedMs: Int64
     /// from the samples written, not the clock
     var durationMs: Int64
-    /// `ogg` (Opus) or `m4a` (HE-AAC, the fallback)
+    /// `ogg` (Opus) or `m4a` (HE-AAC, the fallback); `csv.gz` for motion
     var ext: String
     /// sends tried so far, and not before this (UTC milliseconds); 0 means now
     var attempts: Int = 0
     var nextTryMs: Int64 = 0
+    /// `motion` (ADR 0312); nil is audio, which every piece written before motion is
+    var kind: String?
 
-    var audio: URL { LifelogStore.outbox.appendingPathComponent("\(id).\(ext)") }
+    /// The archive's route for the piece: `audio` or `motion`.
+    var route: String { kind ?? "audio" }
+    var file: URL { LifelogStore.outbox.appendingPathComponent("\(id).\(ext)") }
     var sidecar: URL { LifelogStore.outbox.appendingPathComponent("\(id).json") }
 
     func save() throws { try JSONEncoder().encode(self).write(to: sidecar, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }

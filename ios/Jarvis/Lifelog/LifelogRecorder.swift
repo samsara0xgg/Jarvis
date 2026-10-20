@@ -165,7 +165,7 @@ final class LifelogWriter: @unchecked Sendable {
         defer { try? fm.removeItem(at: meta) }
         guard p.durationMs > 0 else { try? fm.removeItem(at: from); return }
         LifelogStore.ensure()
-        guard (try? fm.moveItem(at: from, to: p.audio)) != nil, (try? p.save()) != nil else { return }
+        guard (try? fm.moveItem(at: from, to: p.file)) != nil, (try? p.save()) != nil else { return }
         LifelogStore.addClosed(ms: p.durationMs)
     }
 

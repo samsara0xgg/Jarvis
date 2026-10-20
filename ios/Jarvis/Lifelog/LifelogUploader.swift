@@ -16,14 +16,14 @@ enum LifelogVerdict: Equatable {
     case repair
 }
 
-/// Sends closed pieces to the paired brain (PUT /inherent/lifelog/audio/{id}) on a background session, so a piece finishes after the app is suspended
-/// or killed. One at a time, oldest first, on Wi-Fi only. A piece is deleted only when the brain answers with the sha256 of the same bytes.
+/// Sends closed pieces to the paired brain (PUT /inherent/lifelog/audio/{id}, or /motion/{id} for a ride's device motion) on a background session,
+/// so a piece finishes after the app is suspended or killed. One at a time, oldest first, on Wi-Fi only. A piece is deleted only when the brain answers with the sha256 of the same bytes.
 @MainActor
 @Observable
 final class LifelogUploader {
     static let shared = LifelogUploader()
 
-    /// pieces closed and not yet in the brain, for the settings line
+    /// recordings closed and not yet in the brain, for the settings line (a ride's motion is not a recording he turned on)
     private(set) var waiting = 0
     /// the brain refused this pairing's token; clears by itself when he pairs again
     private(set) var needsRepair = false
@@ -79,7 +79,7 @@ final class LifelogUploader {
 
     /// the pieces waiting and whether the token was refused, from the outbox and the defaults
     func refresh() {
-        waiting = LifelogStore.waiting().count
+        waiting = LifelogStore.waiting().filter { $0.kind == nil }.count
         needsRepair = endpoint.map { UserDefaults.standard.string(forKey: Self.repairKey) == Self.fingerprint($0.token) } ?? false
     }
 
@@ -114,19 +114,19 @@ final class LifelogUploader {
         if !(await session.allTasks).isEmpty { return }
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let pieces = LifelogStore.waiting()
-        for p in pieces where !FileManager.default.fileExists(atPath: p.audio.path) {
-            Self.log("\(p.id) audio is gone, dropping its record")
+        for p in pieces where !FileManager.default.fileExists(atPath: p.file.path) {
+            Self.log("\(p.id) file is gone, dropping its record")
             try? FileManager.default.removeItem(at: p.sidecar)
         }
-        guard let p = pieces.first(where: { FileManager.default.fileExists(atPath: $0.audio.path) }) else { return refresh() }
+        guard let p = pieces.first(where: { FileManager.default.fileExists(atPath: $0.file.path) }) else { return refresh() }
         guard p.nextTryMs <= nowMs else { return scheduleWake(at: p.nextTryMs) }
-        var url = ep.base.appendingPathComponent("inherent/lifelog/audio/\(p.id)")
+        var url = ep.base.appendingPathComponent("inherent/lifelog/\(p.route)/\(p.id)")
         url.append(queryItems: [.init(name: "started_ms", value: String(p.startedMs)), .init(name: "duration_ms", value: String(p.durationMs))])
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue("Bearer \(ep.token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        let task = session.uploadTask(with: req, fromFile: p.audio)
+        let task = session.uploadTask(with: req, fromFile: p.file)
         task.taskDescription = p.id
         task.resume()
         Self.log("\(p.id) sending \(p.durationMs / 1000)s")
@@ -135,13 +135,13 @@ final class LifelogUploader {
     /// An answer (or a failure) for the piece `id`: the verdict is applied to its files.
     fileprivate func finished(id: String, status: Int?, body: Data?) async {
         guard let p = LifelogStore.waiting().first(where: { $0.id == id }) else { return refresh() }
-        let local = await Task.detached { Self.sha256Hex(of: p.audio) }.value
+        let local = await Task.detached { Self.sha256Hex(of: p.file) }.value
         let v = local.map { Self.verdict(status: status, body: body, localSha: $0) } ?? .backoff
         let fm = FileManager.default
         var next = p
         switch v {
         case .delete:
-            try? fm.removeItem(at: p.audio); try? fm.removeItem(at: p.sidecar)
+            try? fm.removeItem(at: p.file); try? fm.removeItem(at: p.sidecar)
             UserDefaults.standard.removeObject(forKey: Self.repairKey)      // an answer under this token: it is accepted after all
             Self.log("\(id) stored (\(status ?? 0))")
         case .backoff, .wait:
@@ -153,7 +153,7 @@ final class LifelogUploader {
             scheduleWake(at: next.nextTryMs)
         case .hold(let why):
             let dir = LifelogStore.ensure(LifelogStore.heldDir(why))
-            for f in [p.audio, p.sidecar] {
+            for f in [p.file, p.sidecar] {
                 let to = dir.appendingPathComponent(f.lastPathComponent)
                 try? fm.removeItem(at: to); try? fm.moveItem(at: f, to: to)
             }

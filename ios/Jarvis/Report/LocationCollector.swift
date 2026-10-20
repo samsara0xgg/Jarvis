@@ -1,36 +1,44 @@
+import AVFoundation
 import CoreLocation
 import CoreMotion
 import os
 
-/// The knobs of the adaptive mode, all here. Visits, significant changes and one rest geofence are always
-/// armed and cost next to nothing; standard updates run only while he moves, then stop by themselves. Opening the
-/// app starts nothing: he does not want the app on screen to be locating him.
+/// The knobs of location, all here. Visits, significant changes and one rest geofence are always armed and cost next to nothing;
+/// standard updates run while he moves and sleep in two steps when he stops (ADR 0312, `LocationModes`). Opening the app starts
+/// nothing: he does not want the app on screen to be locating him.
 enum LocationTuning {
-    /// While moving: GPS at its second-best accuracy, every fix delivered (`kCLDistanceFilterNone`); the thinning
-    /// below decides what is sent, but it does not make the GPS cheaper. The battery cost of a trip is this.
+    /// While moving: GPS at its second-best accuracy, every fix delivered. Each fix goes into the track; the thinning below decides
+    /// which also go out as sampled fixes, and does not make the GPS cheaper. The battery cost of a trip is this.
     static let movingAccuracy: CLLocationAccuracy = kCLLocationAccuracyNearestTenMeters
-    static let movingDistanceFilter: CLLocationDistance = kCLDistanceFilterNone
-    /// Updates running without proof that he moves (a visit's departure): Wi-Fi and cell positioning.
-    static let watchAccuracy: CLLocationAccuracy = kCLLocationAccuracyHundredMeters
-    static let watchDistanceFilter: CLLocationDistance = 50
-    /// Standard updates stop after this long without a fix `idleRadius` away from the last one that counted.
-    /// The radius is above the jitter of a 100 m fix, so a phone lying still does not keep the mode alive.
+    /// In a vehicle: GPS at its best.
+    static let vehicleAccuracy: CLLocationAccuracy = kCLLocationAccuracyBest
+    /// Light sleep: cell and Wi-Fi positioning only, which keeps the app running (and live motion coming) without GPS.
+    static let sleepAccuracy: CLLocationAccuracy = kCLLocationAccuracyThreeKilometers
+    /// Moving, outside a vehicle: updates sleep after this long without a fix `idleRadius` away from the last one that counted. The
+    /// radius is above the jitter of a 100 m fix, so a phone lying still does not keep GPS on.
     static let idleTimeout: TimeInterval = 5 * 60
     static let idleRadius: CLLocationDistance = 150
-    /// Live motion says stationary for this long (a red light is not a stop): updates stop.
+    /// Moving, outside a vehicle: live motion says stationary for this long, updates sleep.
     static let stationaryGrace: TimeInterval = 90
-    /// While updating: at most one frame per `minInterval`, at least `minSeparation` from the last frame.
+    /// In a vehicle: GPS stays on through a stop this long (a red light, a pull-over, a queue); the fixes say when the car moves.
+    static let vehicleStop: TimeInterval = 10 * 60
+    /// Fixes at this speed (25 km/h) for this long, and motion not saying cycling, mean a vehicle.
+    static let vehicleSpeed: CLLocationSpeed = 25 / 3.6
+    static let vehicleSpeedFor: TimeInterval = 10
+    /// How long the light sleep lasts before the deep one.
+    static let lightSleep: TimeInterval = 30 * 60
+    /// While updating: at most one sampled fix per `minInterval`, at least `minSeparation` from the last one sent.
     static let minInterval: TimeInterval = 30
     static let minSeparation: CLLocationDistance = 50
     /// One fix this fast (m/s, walking pace) says he is moving even when no motion history is read.
     static let movingSpeed: CLLocationSpeed = 1.0
-    /// The geofence armed where he rests; leaving it restarts tracking (and relaunches a terminated app).
-    static let restRadius: CLLocationDistance = 200
+    /// The geofence armed where the deep sleep begins; leaving it restarts tracking (and relaunches a terminated app).
+    static let restRadius: CLLocationDistance = 100
     /// Reverse geocoding: once per new place, never more often than this, never longer than `geocodeTimeout`.
     static let geocodeSpacing: TimeInterval = 60
     static let geocodeTimeout: TimeInterval = 6
 
-    /// Whether a fix taken while updating is sent: far enough and late enough after the last one sent.
+    /// Whether a fix taken while updating is sent as a sampled fix: far enough and late enough after the last one sent.
     static func passesThinning(_ loc: CLLocation, after last: CLLocation?) -> Bool {
         guard let last else { return true }
         return loc.timestamp.timeIntervalSince(last.timestamp) >= minInterval && loc.distance(from: last) >= minSeparation
@@ -47,9 +55,9 @@ enum LocationTuning {
     }
 }
 
-/// Where he goes. Always armed: visits, significant changes (iOS relaunches the app for both) and a rest geofence
-/// around where he last stopped. Adaptive: standard updates while he moves. The coordinates leave this object only
-/// as frames.
+/// Where he goes. Always armed: visits, significant changes (iOS relaunches the app for both) and a rest geofence where the deep sleep
+/// began. While updates run: every fix into the track (`phone.track_observed`), a sample of them as `phone.location_observed`, and in a
+/// vehicle the device motion (`DriveMotion`). The coordinates leave this object only as frames.
 @MainActor
 final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
     let name = "location"
@@ -60,19 +68,23 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
     private let motionManager = CMMotionActivityManager()
     /// States only, never a coordinate.
     private let log = Logger(subsystem: "com.allen.jarvis", category: "location")
+    private var modes = LocationModes()
+    /// What `apply` last set up.
+    private var applied: (mode: LocationModes.Mode, plan: LocationModes.Plan)?
     /// Standard updates are running.
     private(set) var updating = false
-    /// Updates are running and he is known to be moving: the fine accuracy applies.
-    private(set) var moving = false
-    private var activity: Activity?
+    private var watchingMotion = false
+    private var chunker = TrackChunker()
     private var oneShotPending = false
     private var begunAt: Date?
     private var lastFix: CLLocation?
+    /// The last fix taken while moving: where the rest fence goes, never a coarse fix of the light sleep.
+    private var lastGood: CLLocation?
     private var lastSent: CLLocation?
-    private var thinned: CLLocation?  // newest fix dropped by the thinning, sent when updates stop
-    private var anchor: CLLocation?   // last fix that counted as moving, for the idle timeout
-    private var idle: Task<Void, Never>?
-    private var rest: Task<Void, Never>?
+    private var thinned: CLLocation?  // newest fix dropped by the thinning, sent when updates sleep
+    private var clock: Task<Void, Never>?
+    private var clockFor: Date?
+    private var route: NSObjectProtocol?
     private var geocoded: (loc: CLLocation, place: String?)?
     private var geocodedAt: Date?
 
@@ -98,11 +110,19 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
 
     func start() {
         manager.delegate = self
+        DriveMotion.shared.recover()
+        // CarPlay is a car: the route change wakes nothing by itself, but while the app runs it is the earliest sign.
+        route = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.routeChanged() }
+        }
         authorizationChanged()
     }
 
     func stop() {
-        exitUpdates()
+        route.map(NotificationCenter.default.removeObserver)
+        route = nil
+        modes.deepSleep()
+        apply()
         removeRestFence()
         manager.stopMonitoringVisits()
         manager.stopMonitoringSignificantLocationChanges()
@@ -111,13 +131,11 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
     func wake() async {}
 
     /// Motion history says what he is doing now (`Reporter.movement`).
-    func motion(_ now: Activity?) {
-        note("motion says \(String(describing: now)), updating \(updating)")
-        switch now {
-        case .walking, .running, .cycling, .automotive: enterMoving(activity: now)
-        case .stationary: if moving { exitUpdates() }
-        default: break
-        }
+    func motion(_ sample: MotionSample?) {
+        note("motion says \(String(describing: sample?.activity)), still \(sample?.still ?? false), mode \(modes.mode)")
+        guard let sample, authorizedToTrack else { return }
+        modes.motion(sample, now: Date())
+        apply()
     }
 
     // MARK: Authorization
@@ -143,7 +161,8 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         case .authorizedAlways:
             begin()
         default:
-            exitUpdates()
+            modes.deepSleep()
+            apply()
             removeRestFence()
         }
         Reporter.shared.refreshStatus()
@@ -192,7 +211,7 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         }
         emit(nil)
         // Leaving a place is a wake that says he is on the move; arriving is where the rest geofence goes.
-        if departed != nil { enterMoving() } else if !updating { armRestFence(at: loc) }
+        if departed != nil { moved() } else if modes.mode == .deepSleep { armRestFence(at: loc) }
         // The place name is a second frame (the brain keeps the later row of a visit), never a wait for the first.
         if let place = await place(for: loc) { emit(place) }
     }
@@ -216,51 +235,54 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         let hold = MainActor.assumeIsolated { BackgroundHold.begin("jarvis.location.fence") }
         Task { @MainActor in
             self.note("left the rest fence")
-            self.enterMoving()
+            self.moved()
             hold.end()
         }
     }
 
     private func fix(_ loc: CLLocation) {
         lastFix = loc
-        if moving {
-            track(loc)
+        switch modes.mode {
+        case .moving:
+            lastGood = loc
+            keep(loc)
+            modes.fix(loc, now: Date())
             send(loc)
-            return
-        }
-        // Not known to be moving: a significant-change fix, the one-shot, or a fix while the app watches.
-        // A fresh significant-change fix means he went about 500 m, so tracking starts; so does a fix at walking
-        // pace. The one-shot, and an old fix iOS hands over when monitoring starts, do not count.
-        let oneShot = oneShotPending
-        oneShotPending = false
-        send(loc)
-        // iOS also hands over the current fix right after monitoring starts; that is not a move. It does count when
-        // iOS launched the app for this very event (`launchedForLocation`).
-        let settled = Reporter.shared.launchedForLocation || begunAt.map { Date().timeIntervalSince($0) > 10 } ?? true
-        let freshSignificantChange = !oneShot && !updating && settled && loc.timestamp.timeIntervalSinceNow > -120
-        if freshSignificantChange || loc.speed >= LocationTuning.movingSpeed {
-            enterMoving(from: loc)
-        } else if updating {
-            track(loc)
-        } else {
-            armRestFence(at: loc)
-        }
-    }
-
-    /// Sent unless the thinning holds it back while updating; a held fix goes out when updates stop.
-    private func send(_ loc: CLLocation) {
-        if updating && !LocationTuning.passesThinning(loc, after: lastSent) {
-            thinned = loc
-        } else {
+            apply()
+        case .lightSleep:
+            // A coarse fix: into the track as it is, never a sampled fix (a stay is read from the gap between sampled fixes).
+            keep(loc)
+            modes.fix(loc, now: Date())
+            apply()
+        case .deepSleep:
+            // A significant-change fix, the one-shot, or the current fix iOS hands over when monitoring starts. A fresh significant
+            // change means he went about 500 m, so tracking starts; so does a fix at walking pace. The one-shot, and an old fix iOS
+            // hands over when monitoring starts, do not count. It does count when iOS launched the app for this very event.
+            let oneShot = oneShotPending
+            oneShotPending = false
             report(loc)
+            let settled = Reporter.shared.launchedForLocation || begunAt.map { Date().timeIntervalSince($0) > 10 } ?? true
+            let freshSignificantChange = !oneShot && settled && loc.timestamp.timeIntervalSinceNow > -120
+            if freshSignificantChange || loc.speed >= LocationTuning.movingSpeed {
+                lastGood = loc
+                moved(at: loc)
+            } else {
+                armRestFence(at: loc)
+            }
         }
     }
 
-    /// Moves the idle clock when a fix is far enough from the last one that counted.
-    private func track(_ loc: CLLocation) {
-        if anchor == nil || loc.distance(from: anchor!) >= LocationTuning.idleRadius {
-            anchor = loc
-            armIdle()
+    /// Into the track; a frame that closed goes out.
+    private func keep(_ loc: CLLocation) {
+        if let frame = chunker.add(TrackFix(loc)) { Reporter.shared.emit([.track(frame)]) }
+    }
+
+    /// Sent unless the thinning holds it back; a held fix goes out when updates sleep.
+    private func send(_ loc: CLLocation) {
+        if LocationTuning.passesThinning(loc, after: lastSent) {
+            report(loc)
+        } else {
+            thinned = loc
         }
     }
 
@@ -280,79 +302,90 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         }
     }
 
-    // MARK: Adaptive updates
+    // MARK: Modes
 
     private var authorizedToTrack: Bool {
         manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse
     }
 
-    /// He is moving: updates run at the fine accuracy until he stops.
-    private func enterMoving(from loc: CLLocation? = nil, activity now: Activity? = nil) {
+    /// A sign he is on the move. Waking from the deep sleep also reads the motion history now, so the brain hears when the move began
+    /// even when GPS came late.
+    private func moved(activity: Activity? = nil, at loc: CLLocation? = nil) {
         guard authorizedToTrack else { return }
-        moving = true
-        activity = now ?? activity
-        anchor = loc ?? anchor
-        rest?.cancel()
-        rest = nil
-        startUpdates()
+        if modes.moved(Date(), activity: activity, at: loc) { Reporter.shared.readMotionNow() }
+        apply()
     }
 
-    /// Starts standard updates if they are not running, applies the accuracy for the state, and (re)arms the
-    /// idle timeout.
-    private func startUpdates() {
-        guard authorizedToTrack else { return }
-        removeRestFence()
-        manager.desiredAccuracy = moving ? LocationTuning.movingAccuracy : LocationTuning.watchAccuracy
-        manager.distanceFilter = moving ? LocationTuning.movingDistanceFilter : LocationTuning.watchDistanceFilter
-        manager.activityType = LocationTuning.activityType(for: activity)
-        armIdle()
-        guard !updating else { return }
-        updating = true
-        // A pause would end tracking without a word; the idle timeout and live motion decide when to stop.
-        manager.pausesLocationUpdatesAutomatically = false
-        // Background updates only with Always: with "while using" iOS would add its blue bar for them.
-        manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
-        manager.startUpdatingLocation()
-        note("updates started, moving \(moving), activity \(String(describing: activity)), background \(manager.allowsBackgroundLocationUpdates)")
-        // No CLBackgroundActivitySession: it puts the location badge in the Dynamic Island for the whole trip. Always plus
-        // allowsBackgroundLocationUpdates keeps the app running through it without one.
-        watchMotion()
+    /// Sets the manager, live motion and device motion to what the modes say, and does what a change of mode does: a sleep sends the
+    /// held fix and the open track frame, the deep sleep arms the rest fence.
+    private func apply() {
+        let plan = modes.plan, mode = modes.mode
+        let was = applied
+        applied = (mode, plan)
+        if was?.mode != mode {
+            note("mode \(mode), vehicle \(modes.vehicle), activity \(String(describing: modes.activity))")
+            if mode != .moving {
+                if let t = thinned, lastSent.map({ t.distance(from: $0) >= LocationTuning.minSeparation }) ?? true { report(t) }
+                thinned = nil
+                if let frame = chunker.close() { Reporter.shared.emit([.track(frame)]) }
+            }
+        } else if was?.plan != plan {
+            note("vehicle \(modes.vehicle), activity \(String(describing: modes.activity))")
+        }
+        if plan.updates {
+            if was?.plan != plan || !updating {
+                manager.desiredAccuracy = plan.accuracy
+                manager.distanceFilter = kCLDistanceFilterNone
+                manager.activityType = plan.activityType
+            }
+            if !updating {
+                updating = true
+                removeRestFence()
+                // A pause would end tracking without a word; the modes decide when to sleep.
+                manager.pausesLocationUpdatesAutomatically = false
+                // Background updates only with Always: with "while using" iOS would add its blue bar for them.
+                manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
+                manager.startUpdatingLocation()
+                note("updates started, background \(manager.allowsBackgroundLocationUpdates)")
+                // No CLBackgroundActivitySession: it puts the location badge in the Dynamic Island for the whole trip. Always plus
+                // allowsBackgroundLocationUpdates keeps the app running through it without one.
+            }
+        } else if updating {
+            updating = false
+            manager.stopUpdatingLocation()
+            manager.allowsBackgroundLocationUpdates = false
+            note("updates stopped")
+            if let at = lastGood ?? lastFix { armRestFence(at: at) }
+        }
+        if plan.liveMotion { watchMotion() } else { stopWatchingMotion() }
+        if plan.recordMotion { DriveMotion.shared.start() } else { DriveMotion.shared.stop() }
+        armClock()
     }
 
-    /// Back to visits, significant changes and the rest geofence only. The newest fix the thinning dropped goes
-    /// out first, so the place he stopped at is not lost.
-    private func exitUpdates() {
-        idle?.cancel()
-        idle = nil
-        rest?.cancel()
-        rest = nil
-        anchor = nil
-        guard updating else { return }
-        updating = false
-        moving = false
-        activity = nil
-        manager.stopUpdatingLocation()
-        note("updates stopped")
-        manager.allowsBackgroundLocationUpdates = false
-        motionManager.stopActivityUpdates()
-        if let t = thinned, let last = lastSent, t.distance(from: last) >= LocationTuning.minSeparation { report(t) }
-        thinned = nil
-        if let at = lastFix ?? lastSent { armRestFence(at: at) }
-    }
-
-    private func armIdle() {
-        idle?.cancel()
-        idle = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(LocationTuning.idleTimeout))
-            guard !Task.isCancelled else { return }
-            self?.exitUpdates()
+    /// One task that wakes the modes at their deadline. A later deadline needs no new task: the one armed finds nothing due, and
+    /// re-arms for the current one.
+    private func armClock() {
+        guard let due = modes.deadline else {
+            clock?.cancel(); clock = nil; clockFor = nil
+            return
+        }
+        if let armed = clockFor, armed <= due { return }
+        clock?.cancel()
+        clockFor = due
+        clock = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, due.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self else { return }
+            self.clockFor = nil
+            self.modes.tick(Date())
+            self.apply()
         }
     }
 
-    /// While updates run, live motion (only now, never otherwise) ends them sooner than the idle timeout, and tunes
-    /// the activity type. Needs Motion access that the motion switch already asked for; it is not asked here.
+    /// While updates run, live motion (only then, never otherwise) says when he stops, gets out of a car or sets off. Needs Motion
+    /// access that the motion switch already asked for; it is not asked here.
     private func watchMotion() {
-        guard CMMotionActivityManager.isActivityAvailable(), CMMotionActivityManager.authorizationStatus() == .authorized else { return }
+        guard !watchingMotion, CMMotionActivityManager.isActivityAvailable(), CMMotionActivityManager.authorizationStatus() == .authorized else { return }
+        watchingMotion = true
         motionManager.startActivityUpdates(to: .main) { [weak self] a in
             guard let a else { return }
             let sample = MotionCollector.sample(a)
@@ -360,20 +393,23 @@ final class LocationCollector: NSObject, Collector, CLLocationManagerDelegate {
         }
     }
 
+    private func stopWatchingMotion() {
+        guard watchingMotion else { return }
+        watchingMotion = false
+        motionManager.stopActivityUpdates()
+    }
+
     private func live(_ s: MotionSample) {
-        guard let now = MotionCollector.current([s]) else { return }
-        if now == .stationary {
-            guard rest == nil else { return }
-            rest = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(LocationTuning.stationaryGrace))
-                guard !Task.isCancelled else { return }
-                self?.exitUpdates()
-            }
-        } else {
-            rest?.cancel()
-            rest = nil
-            enterMoving(activity: now)
-        }
+        guard authorizedToTrack else { return }
+        modes.motion(s, now: Date())
+        apply()
+    }
+
+    /// CarPlay is a car.
+    private func routeChanged() {
+        guard AVAudioSession.sharedInstance().currentRoute.outputs.contains(where: { $0.portType == .carAudio }) else { return }
+        note("CarPlay")
+        moved(activity: .automotive)
     }
 
     // MARK: Rest geofence

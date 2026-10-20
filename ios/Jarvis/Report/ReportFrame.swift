@@ -129,6 +129,20 @@ enum StateChange {
     }
 }
 
+/// One fix of the dense track (ADR 0312) exactly as iOS gave it; nil where iOS reported the value as invalid.
+struct TrackFix: Equatable {
+    var at: Date
+    var lat, lng, accuracyM: Double
+    var altitudeM, verticalAccuracyM: Double?
+    var speedMps, speedAccuracyMps: Double?
+    /// degrees clockwise from true north
+    var courseDeg, courseAccuracyDeg: Double?
+    /// iOS says software simulated it (`isSimulatedBySoftware`)
+    var simulated = false
+    /// iOS says an external accessory produced it (`isProducedByAccessory`)
+    var accessory = false
+}
+
 enum Sensed {
     case visit(lat: Double, lng: Double, accuracyM: Double, arrivedAt: Date, departedAt: Date?, place: String?)
     /// `requestId`: the brain asked for this fix (a silent push, Map/LocatePush); it comes back on the frame so the brain knows which request it answers
@@ -137,6 +151,8 @@ enum Sensed {
     case health(metric: HealthMetric, start: Date, end: Date, value: Double, detail: String?, extra: HealthExtra = .none)
     case measure(MeasureRecord)
     case state(StateChange, at: Date, detail: String?)
+    /// every fix of a stretch of location updates, oldest first; one frame holds at most `ReportFrame.maxTrackFixes` and ten minutes
+    case track([TrackFix])
 }
 
 /// One encoded event frame. The bytes are what the queue stores and the batch sends, so a resend is the same
@@ -203,6 +219,9 @@ extension ReportFrame {
     static let maxMetaChars = 128
     /// Beats in one frame (the brain's cap); a longer series is cut into parts
     static let maxBeats = 4000
+    /// Fixes in one track frame, and the longest stretch one frame covers (the brain's caps)
+    static let maxTrackFixes = 300
+    static let maxTrackSpanMs: Int64 = 10 * 60 * 1000
     static let sleepStages: Set = ["in_bed", "awake", "unspecified", "core", "deep", "rem"]
     static let standStates: Set = ["stood", "idle"]
 
@@ -310,6 +329,12 @@ extension ReportFrame {
                     metric: m.metric.rawValue, startMs: s, endMs: e, value: isSeries ? Double(m.beats.count) : m.value, unit: unit,
                     sampleUuid: m.uuid, source: Self.text(m.source, Self.maxSourceChars), device: Self.text(m.device, Self.maxSourceChars),
                     meta: Self.meta(m.meta), beats: isSeries ? m.beats.map { [max($0.offsetMs, 0), $0.gap ? 1 : 0] } : nil, part: m.part))
+            case let .track(fixes):
+                guard let (s, e, body) = Self.trackPayload(fixes, now: now) else { return nil }
+                type = "phone.track_observed"
+                key = "\(s),\(e),\(fixes.count)"
+                ts = e
+                payload = body
             case let .state(change, when, detail):
                 if case .battery(let percent) = change, !(0...100).contains(percent) { return nil }
                 let t = Self.at(when, now)
@@ -334,6 +359,47 @@ extension ReportFrame {
         out.append(payload)
         out.append(Data("}".utf8))
         self.init(eventUid: uid, json: out)
+    }
+
+    /// `{"ended_at_ms":…,"fixes":[[t_ms, lat, lng, accuracy_m, altitude_m, vertical_accuracy_m, speed_mps, speed_accuracy_mps, course_deg,
+    /// course_accuracy_deg, flags],…],"started_at_ms":…}` with its start and end, or nil when the brain would refuse it. Written by hand: a
+    /// row is positional, holds nulls, and its numbers are rounded to what the sensor resolves (1 cm, 1 cm/s, a tenth of a degree).
+    private static func trackPayload(_ fixes: [TrackFix], now: Date) -> (Int64, Int64, Data)? {
+        guard !fixes.isEmpty, fixes.count <= maxTrackFixes,
+              fixes.allSatisfy({ validPlace($0.lat, $0.lng, $0.accuracyM) }) else { return nil }
+        let start = at(fixes[0].at, now)
+        var rows: [String] = []
+        var last: Int64 = 0
+        for f in fixes {
+            let t = max(at(f.at, now) - start, last)  // never earlier than the row before (the brain wants time order)
+            last = t
+            let flags = (f.simulated ? 1 : 0) | (f.accessory ? 2 : 0)
+            rows.append("[\(t),\(fixed(f.lat, 7)),\(fixed(f.lng, 7)),\(fixed(f.accuracyM, 2)),\(opt(f.altitudeM, 2)),"
+                        + "\(opt(f.verticalAccuracyM, 2, min: 0)),\(opt(f.speedMps, 2, min: 0)),\(opt(f.speedAccuracyMps, 2, min: 0)),"
+                        + "\(course(f.courseDeg)),\(opt(f.courseAccuracyDeg, 1, min: 0)),\(flags)]")
+        }
+        guard last <= maxTrackSpanMs else { return nil }
+        let body = #"{"ended_at_ms":"# + String(start + last) + #","fixes":["# + rows.joined(separator: ",") + #"],"started_at_ms":"#
+            + String(start) + "}"
+        return (start, start + last, Data(body.utf8))
+    }
+
+    private static func fixed(_ v: Double, _ digits: Int) -> String {
+        let s = String(format: "%.\(digits)f", v)
+        return s.hasPrefix("-") && Double(s) == 0 ? String(s.dropFirst()) : s  // no "-0.00"
+    }
+
+    /// A value iOS may not have: null when absent, not finite or below `min`.
+    private static func opt(_ v: Double?, _ digits: Int, min: Double = -.infinity) -> String {
+        guard let v, v.isFinite, v >= min else { return "null" }
+        return fixed(v, digits)
+    }
+
+    /// A course rounded to a tenth of a degree; 359.96 rounds to 360, which is north again.
+    private static func course(_ v: Double?) -> String {
+        guard let v, v.isFinite, v >= 0 else { return "null" }
+        let r = (v * 10).rounded() / 10
+        return fixed(r >= 360 ? r - 360 : r, 1)
     }
 
     private static func validPlace(_ lat: Double, _ lng: Double, _ accuracy: Double) -> Bool {

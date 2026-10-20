@@ -5,6 +5,8 @@ struct MotionSample: Equatable {
     var start: Date
     var activity: Activity
     var confidence: Confidence
+    /// The coprocessor's stationary flag, which can come with `automotive` (a car at a red light): the activity says automotive, this says still.
+    var still = false
 }
 
 /// Walking, riding or staying put, read as history in short wakes (never streamed): the coprocessor keeps about
@@ -52,7 +54,7 @@ final class MotionCollector: Collector {
         }
         Reporter.shared.emit(emitted)
         ReportMemory.set(date: openStart, for: "motion.cursor")
-        Reporter.shared.movement(Self.current(samples))
+        Reporter.shared.movement(Self.latest(samples))
     }
 
     private func history(from: Date, to: Date) async -> [MotionSample] {
@@ -71,7 +73,7 @@ final class MotionCollector: Collector {
         case .medium: .medium
         default: .low
         }
-        return MotionSample(start: a.startDate, activity: activity, confidence: confidence)
+        return MotionSample(start: a.startDate, activity: activity, confidence: confidence, still: a.stationary)
     }
 
     /// Segments of one activity, ended where the next one starts; the last one stays open. A segment's
@@ -98,8 +100,11 @@ final class MotionCollector: Collector {
     }
 
     /// What the newest sample says he is doing, or nil when it is not sure (low confidence or unknown).
-    nonisolated static func current(_ samples: [MotionSample]) -> Activity? {
+    nonisolated static func current(_ samples: [MotionSample]) -> Activity? { latest(samples)?.activity }
+
+    /// The newest sample, or nil when it is not sure (low confidence or unknown).
+    nonisolated static func latest(_ samples: [MotionSample]) -> MotionSample? {
         guard let last = samples.max(by: { $0.start < $1.start }), last.confidence != .low, last.activity != .unknown else { return nil }
-        return last.activity
+        return last
     }
 }
