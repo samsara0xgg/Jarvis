@@ -1,6 +1,6 @@
 import type { L } from './companionSettings';
 import { endClock, hm } from './barView.ts';
-import { accountOf, askable, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Say } from './dayView.ts';
+import { accountOf, askable, ATTACHMENT, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0296, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
@@ -24,7 +24,9 @@ export type Part =
   | { type: 'bars'; heading: string; bars: Bar[] }
   | { type: 'night'; night: Night }
   | { type: 'sessions'; list: Session[] }
-  | { type: 'titles'; list: string[] };
+  | { type: 'titles'; list: string[] }
+  | { type: 'inside'; list: Inside[] }
+  | { type: 'knows'; text: string };
 // `rename`: the kept place under a stay, and the name it has; `ack`: the reminder that rang and waits for a `知道了`; `summarize`: a work block
 // can be handed to her at one tap; `star`: the item can be marked as what mattered (every item with an id the brain takes; a folded row of
 // sessions is no one item); `commit`: the hex of a commitment mail noted that is not his yet, which he can say is his or is not;
@@ -32,9 +34,10 @@ export type Part =
 export type Open = { key: string; kind: string; parts: Part[]; rename: { id: string; name: string } | null; name: { lat: number; lng: number } | null; ack: string | null; summarize: boolean; star: boolean; commit: string | null };
 // What a turn about a row carries (ADR 0214): exactly these four, the brain refuses a turn whose `about` has more or a bad id.
 export type About = { kind: string; id: string; title: string; start_ms: number };
-export type Ask = { about: About; icon: Icon; at: string };
+// `lead`: words put before what he types, for a turn the brain's `about` cannot take (a stretch of what he was doing is no kind it knows): the chip says it, the turn carries it as text.
+export type Ask = { about: About; icon: Icon; at: string; lead?: string };
 
-export const ATTACHMENT = /^[0-9a-f]{32}$/;
+export { ATTACHMENT };
 // A commitment's item is `commitment-<hex>@<day>` (ADR 0274); the route that confirms or drops it takes the hex between the two.
 const COMMITMENT = /^commitment-([0-9a-f]{32})@/;
 const say = (text: string, tone: Tone = 'muted'): Words => ({ text, tone });
@@ -83,7 +86,18 @@ export function night(it: DayItem, m: DayModel, t: Say): Night | null {
 const session = (it: DayItem, m: DayModel, t: Say): Session => ({ id: it.id, at: clock(it.start_ms, m.tz), title: clean(it.title) || t(['Claude Code', 'Claude Code']), meta: [clean(it.project), accountOf(it)].filter(Boolean).join(' · '),
   length: dur(Math.max(1, lengthOf(it, m)), t), recap: clean(it.detail) });
 
+// A stretch of what he was doing opens to its detail, what is inside it (the items it lists, one compact line each) and how she knows.
+function openSegment(m: DayModel, key: string): Open | null {
+  const seg = m.segs.get(key);
+  if (!seg) return null;
+  const parts: Part[] = [];
+  if (seg.detail) parts.push(lines(say(seg.detail, 'ink')));
+  if (seg.inside.length) parts.push({ type: 'inside', list: seg.inside });
+  if (seg.knows) parts.push({ type: 'knows', text: seg.knows });
+  return { key, kind: 'doing', parts, rename: null, name: null, ack: null, summarize: false, star: false, commit: null };
+}
 export function openOf(m: DayModel, key: string, t: Say): Open | null {
+  if (m.segs.has(key)) return openSegment(m, key);
   const sessions = m.folds.get(key), it = sessions ? sessions[0] : m.items.find(x => x.id === key);
   if (!it) return null;
   const parts: Part[] = [];
@@ -201,6 +215,11 @@ export const hasBody = (o: Open, canAsk: boolean) => o.parts.length > 0 || !!o.r
 // What a turn about this row carries and what the input row shows of it: null when the brain would refuse it (a kind it does not take, an id
 // of the wrong shape, a folded row that is no one item).
 export function askOf(m: DayModel, key: string, t: Say): Ask | null {
+  const seg = m.segs.get(key), srow = m.rows.get(key);
+  if (seg && srow) {
+    const range = `${clock(seg.start, m.tz)}–${endClock(seg.end, m.reply, m.tz)}`;
+    return { about: { kind: 'doing', id: key, title: srow.title, start_ms: Math.round(seg.start) }, icon: seg.icon, at: clock(seg.start, m.tz), lead: `${[range, seg.words].filter(Boolean).join(' ')}${t([': ', '：'])}` };
+  }
   const it = m.items.find(x => x.id === key);
   if (!it || !askable(it.kind, it.id)) return null;
   const head = m.heads.get(key), row = m.rows.get(key), title = (head?.name ?? row?.title ?? '').trim();
@@ -218,6 +237,8 @@ export function sayRange(m: DayModel, a: number, b: number): Said | null {
 }
 // The range of a row that is one item (a folded row of sessions is none), or null when the row is no stretch.
 export function sayOf(m: DayModel, key: string): Said | null {
+  const seg = m.segs.get(key);
+  if (seg) return sayRange(m, seg.start, seg.span.end_ms ?? Infinity);
   const it = m.items.find(x => x.id === key);
   return !it || it.lane === 'her' || NOT_STRETCH.has(it.kind) ? null : sayRange(m, it.start_ms, it.end_ms ?? Infinity);
 }
