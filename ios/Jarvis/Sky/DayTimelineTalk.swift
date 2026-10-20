@@ -100,7 +100,7 @@ struct TLTalkArea: View {
             .fixedSize(horizontal: false, vertical: true)
             .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { tall = $0 }
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .frame(height: tall > 0 ? min(tall, room) : room, alignment: .topLeading)          // as high as they are, and no higher than the room: the line of what waits comes right under them
+            .animation(reduce ? nil : .smooth(duration: 0.2)) { $0.frame(height: tall > 0 ? min(tall, room) : room, alignment: .topLeading) }          // as high as they are, and no higher than the room: the line of what waits comes right under them, and goes with them as they grow
             .clipped()
             .mask(alignment: .top) {
                 VStack(spacing: 0) {

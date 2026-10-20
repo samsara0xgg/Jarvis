@@ -26,7 +26,7 @@ struct TLTopView: View {
         let holding = tl.scrub != nil, talk = ui.tlTalk
         let said = bar.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
         return ZStack(alignment: .topLeading) {
-            // her sentence, and in its place while a finger is on the bar the readout of the minute under it: a fade-through, not a cross-fade (the two are never both on show)
+            // her sentence, and in its place while a finger is on the bar the readout of the minute under it: they cross, blurred (`fadeThrough`), so the two are never readable together
             Group {          // each animation below is on what it moves, not on the whole of the header
                 if let line = model?.line {
                     Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
@@ -54,7 +54,7 @@ struct TLTopView: View {
                 ZStack(alignment: .topLeading) {
                     TLBarView(scene: scene, bracket: bracket(bar), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
                               reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown)
-                        .id(byPlace).transition(.opacity)          // the other drawing of the day comes in as a cross-fade
+                        .id(byPlace).transition(barSwap)          // the other drawing of the day comes in over the one that goes
                 }
                 .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
                 .gesture(scrubGesture(m, bar))
@@ -153,6 +153,12 @@ struct TLTopView: View {
             }
     }
 
+    /// The other drawing of the bar arrives faster than the one it replaces leaves (140 ms, 280 ms), so that the two never both stand half faded and the bar dips in between: the new one is
+    /// whole while the old one still goes behind it. Under Reduce Motion a plain cross-fade.
+    private var barSwap: AnyTransition {
+        reduce ? .opacity : .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.14)), removal: .opacity.animation(.easeOut(duration: 0.28)))
+    }
+
     /// another day's bar comes in from the way time goes, a hair, as the list does
     private var barTransition: AnyTransition { TLMotion.page(slide: TLMotion.barSlide * Double(tl.slide), reduce: reduce) }
 }
@@ -227,7 +233,7 @@ struct TLBarMode: View {
     private func set(_ place: Bool) {
         guard place != byPlace else { return }
         Haptic.selection()
-        withAnimation(.easeOut(duration: reduce ? TLMotion.reducedFade : 0.2)) { byPlace = place }
+        withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .bouncy(duration: 0.35, extraBounce: 0)) { byPlace = place }          // the glass goes as it does when a finger lets it go
     }
 }
 
@@ -290,12 +296,11 @@ extension TimelineState {
     }
 }
 
-/// The change of what the header says as a fade-through: what goes out leaves over 50 ms (ease-in) and what comes in arrives over 90 ms from 40 ms on (ease-out, 2 pt up
-/// into its place), so the two are not on show together for more than a frame. With Reduce Motion a plain 120 ms fade.
+/// The change of what the header says: what goes and what comes cross for 300 ms (a spring that does not bounce) and are blurred while they do, so that the two are never readable together
+/// and no moment is left with nothing on show. With Reduce Motion a plain 120 ms fade.
 extension View {
     func fadeThrough(on: Bool, reduce: Bool) -> some View {
-        let enter = reduce ? Animation.easeOut(duration: 0.12) : .easeOut(duration: 0.09).delay(0.04), leave = reduce ? Animation.easeOut(duration: 0.12) : .easeIn(duration: 0.05)
-        return opacity(on ? 1 : 0).animation(on ? enter : leave, value: on)
-            .offset(y: on || reduce ? 0 : 2).animation(on ? enter : nil, value: on)
+        opacity(on ? 1 : 0).blur(radius: on || reduce ? 0 : 4)
+            .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .smooth(duration: 0.3), value: on)
     }
 }
