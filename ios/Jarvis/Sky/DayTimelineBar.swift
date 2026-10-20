@@ -165,8 +165,19 @@ enum TLBarLabel {
         let nameW = name.map(measure)
         if hasIcon, let nameW, icon + gap + nameW <= room { return .iconName }
         if let nameW, nameW <= room { return .name }
-        if hasIcon, icon <= room { return .icon }
+        if hasIcon, icon + 4 <= width { return .icon }          // an icon alone needs only 2 pt each side, so a short stretch still says what it was
         return .none
+    }
+
+    /// how wide what it wears is
+    static func labelWidth(_ f: Fit, name: String?, measure: (String) -> Double) -> Double {
+        let nameW = name.map(measure) ?? 0
+        switch f {
+        case .iconName: return icon + gap + nameW
+        case .name: return nameW
+        case .icon: return icon
+        case .none: return 0
+        }
     }
 
     /// the width of a word set 11 pt semibold, the bar's type
@@ -176,7 +187,7 @@ enum TLBarLabel {
 
     struct Placed: Equatable, Identifiable {
         let item: String                // the piece or box it is on (a stay the night cuts in two has a piece on each side of it, and a word on each that has room)
-        var x: Double                   // where its icon or word begins
+        var x: Double                   // where its icon or word begins: centred on what it is on
         var fit: Fit
         var name: String?, icon: String?
         var dark: Bool                  // dark ink on a light fill
@@ -188,12 +199,12 @@ enum TLBarLabel {
         var out: [Placed] = []
         for (p, r) in zip(scene.pieces, TLGeo.rects(scene.pieces, span: scene.span, width: width, height: 1)) {
             let f = fit(name: p.name, icon: p.icon != nil, width: r.width, measure: measure)
-            if f != .none { out.append(Placed(item: p.id, x: r.minX + pad, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill))) }
+            if f != .none { out.append(Placed(item: p.id, x: r.midX - labelWidth(f, name: p.name, measure: measure) / 2, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill))) }
         }
         for a in scene.ahead where a.shape == .box {
             let x0 = TLGeo.x(a.t0, scene.span, width), x1 = TLGeo.x(a.t1, scene.span, width)
             let f = fit(name: a.name, icon: a.icon != nil, width: x1 - x0, measure: measure)
-            if f != .none { out.append(Placed(item: a.id, x: x0 + pad, fit: f, name: a.name, icon: a.icon, dark: false)) }
+            if f != .none { out.append(Placed(item: a.id, x: (x0 + x1) / 2 - labelWidth(f, name: a.name, measure: measure) / 2, fit: f, name: a.name, icon: a.icon, dark: false)) }
         }
         return out
     }

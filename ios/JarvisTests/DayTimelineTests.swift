@@ -508,18 +508,18 @@ final class DayTimelineTests: XCTestCase {
 
     func testAPieceWearsTheRichestOfIconAndNameNameIconNothingThatFits() {
         func fit(_ name: String?, _ icon: Bool, _ w: Double) -> TLBarLabel.Fit { TLBarLabel.fit(name: name, icon: icon, width: w, measure: measure) }
-        // UVic is 24 wide: icon (12) + 4 + 24 + 6 each side is 52, the name alone 36, the icon alone 24
+        // UVic is 24 wide: icon (12) + 4 + 24 + 6 each side is 52, the name alone 36, the icon alone 16 (2 each side)
         XCTAssertEqual(fit("UVic", true, 60), .iconName)
         XCTAssertEqual(fit("UVic", true, 52), .iconName)
         XCTAssertEqual(fit("UVic", true, 51.9), .name)
         XCTAssertEqual(fit("UVic", true, 36), .name)
         XCTAssertEqual(fit("UVic", true, 35.9), .icon)
-        XCTAssertEqual(fit("UVic", true, 24), .icon)
-        XCTAssertEqual(fit("UVic", true, 23.9), .none)
+        XCTAssertEqual(fit("UVic", true, 16), .icon)
+        XCTAssertEqual(fit("UVic", true, 15.9), .none)
         XCTAssertEqual(fit("UVic", false, 60), .name, "no symbol: the word")
         XCTAssertEqual(fit("UVic", false, 30), .none)
         XCTAssertEqual(fit(nil, true, 30), .icon, "no word: the symbol")
-        XCTAssertEqual(fit(nil, true, 20), .none)
+        XCTAssertEqual(fit(nil, true, 15.9), .none)
         XCTAssertEqual(fit(nil, false, 400), .none)
         XCTAssertEqual(fit("开车", true, 50), .iconName)
         XCTAssertEqual(fit("开车", true, 49), .name)
@@ -533,7 +533,8 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(words["stay-9"]?.fit, .iconName, "UVic")
         XCTAssertEqual(words["stay-13"]?.fit, .iconName)
         for id in ["move-4", "stay-5", "move-6", "ride-8", "ride-12", "event-demo-1"] { XCTAssertNil(words[id], "\(id) is too narrow to say anything") }
-        XCTAssertEqual(words["sleep-0"]?.x, TLBarLabel.pad, "the word begins 6 points inside its piece")
+        let night = TLGeo.rects(sc.pieces, span: sc.span, width: TLLayout.barW, height: 1)[0]
+        XCTAssertEqual(try XCTUnwrap(words["sleep-0"]?.x), night.midX - TLBarLabel.icon / 2, accuracy: 0.001, "the moon in the middle of its piece")
         XCTAssertEqual(words["sleep-0"]?.dark, false, "light text on the night's indigo")
         XCTAssertEqual(words["stay-1"]?.dark, true, "dark ink on the pale hue of home")
         XCTAssertEqual(words["stay-9"]?.dark, true)
