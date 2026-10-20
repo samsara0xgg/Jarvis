@@ -231,6 +231,17 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertNotNil(TLPaint.look(.doing(RGB(91, 140, 255))))
     }
 
+    func testOneOffThingsOfThePastAreDotsOnTheBarAndWhatIsToComeIsNot() throws {
+        let m = try day()
+        XCTAssertEqual(m.scene.dots, [TLDot(lens: .picture, t: 600), TLDot(lens: .payment, t: 800)],
+                       "a picture and a payment he made; the talk, the call and the work have a length, a message or a reminder has no chip")
+        let pay = #""amount": "5.00", "currency": "CAD", "direction": "out""#
+        let later = DayTimelineModel.build(try reply([item("p-past", "payment", 800, 800, pay), item("p-later", "payment", 1000, 1000, pay)]), now: 900)
+        XCTAssertEqual(later.scene.dots, [TLDot(lens: .payment, t: 800)], "after now there is no dot: what is planned is drawn as it is")
+        let money = #""amount": "5.00", "currency": "CAD", "direction": "in""#
+        XCTAssertTrue(DayTimelineModel.build(try reply([item("p-in", "payment", 800, 800, money)]), now: 900).scene.dots.isEmpty, "money in is in no chip")
+    }
+
     func testAFingerOnTheBarReadsWhatHeWasDoingItsHoursAndLength() throws {
         let m = try day()
         let r = m.readout(at: 600)

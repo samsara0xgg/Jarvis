@@ -25,6 +25,12 @@ struct TLAhead: Equatable, Identifiable {
     var name: String?, icon: String?
 }
 
+/// a one-off thing that happened (a payment, a picture, a talk), drawn as a small dot on its minute in the colour of its chip
+struct TLDot: Equatable {
+    let lens: TLLens
+    let t: Double
+}
+
 struct TLBarScene: Equatable {
     var span: ClosedRange<Double>
     var now: Double?
@@ -33,6 +39,7 @@ struct TLBarScene: Equatable {
     var stars: [TLStar]
     var ticks: [Int]                // the hours under the bar
     var sun: TLSun?                 // when the sun rose and set, in the row of the hours
+    var dots: [TLDot] = []          // the moments of the past
 
     static let empty = TLBarScene(span: 360...DAY, now: nil, pieces: [], ahead: [], stars: [], ticks: [])
 }
@@ -50,6 +57,13 @@ extension TLBarScene {
 }
 
 extension DayTimelineModel {
+    /// The one-off things of the past that have a lens (a payment he made, a picture, a talk: a moment, not a span), in the order of the day. What is still to come is drawn as it is planned (`ahead`).
+    var dots: [TLDot] {
+        let hi = now ?? span.upperBound
+        return lensMarks.flatMap { lens, marks in marks.filter { $0.t1 - $0.t0 < 1 && $0.t0 >= span.lowerBound && $0.t0 <= hi }.map { TLDot(lens: lens, t: $0.t0) } }
+            .sorted { ($0.t, TLLens.allCases.firstIndex(of: $0.lens) ?? 0) < ($1.t, TLLens.allCases.firstIndex(of: $1.lens) ?? 0) }
+    }
+
     /// The bar as pieces. The night is on top of a trip and a trip of a stay (`seg(at:)`); where nothing was recorded there is a blank piece, and on today everything after now
     /// is one piece that has not happened. A piece that goes on across a cut (the night under a stay, a long stay split by nothing) is one piece.
     var scene: TLBarScene {
@@ -89,7 +103,7 @@ extension DayTimelineModel {
                 ahead.append(TLAhead(id: e.id, shape: box ? .box : .tick, t0: e.t0, t1: box ? end : e.t0, name: e.barName, icon: e.barIcon))
             }
         }
-        return TLBarScene(span: span, now: now, pieces: pieces, ahead: ahead, stars: stars, ticks: ticks, sun: sun)
+        return TLBarScene(span: span, now: now, pieces: pieces, ahead: ahead, stars: stars, ticks: ticks, sun: sun, dots: dots)
     }
 }
 
@@ -262,6 +276,7 @@ struct TLBarView: View {
                     TLTrack()
                     BarCanvas(scene: scene, rects: rects)
                     planned
+                    dots
                     if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
                     labels
                 }
@@ -320,6 +335,18 @@ struct TLBarView: View {
         .frame(width: bw, height: bh, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
         .animation(tlStarFade(reduce: reduce), value: scene.ahead.map(\.id))
+        .allowsHitTesting(false)
+    }
+
+    /// the one-off things of the past as dots on their minute, half over the bar's lower edge, each in the colour of its chip and ringed in the ground so that it is seen on any fill
+    private var dots: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(scene.dots.enumerated()), id: \.offset) { _, d in
+                Circle().fill(d.lens.color.color).overlay(Circle().strokeBorder(TLPaint.ground.color, lineWidth: 1))
+                    .frame(width: 6, height: 6).offset(x: x(d.t) - 3, y: bh - 3)
+            }
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
         .allowsHitTesting(false)
     }
 
