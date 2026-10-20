@@ -1114,7 +1114,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       if (body?.day !== day.date || !Number.isInteger(body.start_ms) || !Number.isInteger(body.end_ms) || body.end_ms <= body.start_ms || body.start_ms < day.start_ms || body.end_ms > day.end_ms || body.end_ms > at
         || !day.items.some(x => x.start_ms < body.end_ms && (x.end_ms ?? at) > body.start_ms) || !text || [...text].length > 200) return refused('not a range of that day', 422);
       const span = { ...sp(`d-said-${s.posts.length}`, 0, null), start_ms: body.start_ms, end_ms: body.end_ms, title: text, category: 'unknown', basis: 'stated' };
-      (day.spans ??= []).push(span);
+      (s.answered ??= []).push(span);          // kept by the daemon; the day it serves has no stretches in this test, so the list stays the places (a brain that cut the day serves them all, and the pane draws those)
       return json({ ok: true, span });
     }
     if (post && url.pathname === '/inherent/submit') {
@@ -3154,7 +3154,8 @@ try {
       return { head: norm(cur.querySelector('.dt-ch')), place: cur.querySelector('.dt-cnote.is-place')?.innerText ?? null };
     });
     const c1 = await card();
-    check('what he wrote shows through the doing words the brain serves: on the bar, 14:30 is 躺着休息 with its own time, and the place 家 under it', c1 && c1.head === '躺着休息 14:05–14:50 · 45 分' && c1.place === '家', JSON.stringify(c1));
+    check('what he wrote is kept as his own words for the range (stated), and a day the brain served with no stretches is still drawn by its places: 14:30 on the bar is 家 as before', a.s.answered.length === 1 && a.s.answered[0].title === '躺着休息' && a.s.answered[0].basis === 'stated' && a.s.answered[0].start_ms === T(14, 5)
+      && c1 && c1.head === '家 14:05–14:50 · 45 分' && c1.place === null, JSON.stringify(c1));
 
     // a save that fails stays under the input until he edits it; the same words go again
     await tap(a, 'move-1'); await rest(a, 480);
