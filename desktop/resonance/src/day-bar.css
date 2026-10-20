@@ -35,6 +35,9 @@
 .notch .dt-lm.is-point { width:3px !important; margin-left:-1.5px; }
 /* over the track, free of its rounding: now, what mattered, the pointer, a row's span, a range */
 .notch .dt-over { position:absolute; inset:0; pointer-events:none; }
+/* a moment or a short call or talk: a dot on the bar's lower edge at its minute, in its kind's colour, ringed in the ground so it reads over any piece; under a lens the other kinds step back */
+.notch .dt-bdot { position:absolute; top:100%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:rgb(var(--k)); box-shadow:0 0 0 1px rgb(15 15 15); transition:opacity 150ms; }
+.notch .dt-bar.is-lens .dt-bdot:not(.is-on) { opacity:.25; }
 .notch .dt-nowtick { position:absolute; top:-5px; bottom:-5px; width:2px; margin-left:-1px; border-radius:1px; background:rgb(var(--now)); }
 .notch .dt-nowtick::after { content:''; position:absolute; inset:0; border-radius:1px; box-shadow:0 0 6px rgb(var(--now) / .6); animation:dt-breathe 2.4s ease-in-out infinite; }
 @keyframes dt-breathe { 0%,100% { opacity:.5; } 50% { opacity:1; } }

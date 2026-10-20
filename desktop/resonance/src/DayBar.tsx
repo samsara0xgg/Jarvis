@@ -253,6 +253,7 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
           {sel && a !== null && b !== null && <i className="dt-band" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {!sel && ui.filter && a !== null && b !== null && <i className="dt-band is-applied" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {[spanned, opened].map((x, i) => x && x.t1 >= bar.t0 && x.t0 <= bar.t1 && <i key={i} className={`dt-bracket${i ? ' is-open' : ''}`} style={{ left: bx(fOf(bar, x.t0)), width: `max(3px, ${(clamp(fOf(bar, x.t1), 0, 1) - clamp(fOf(bar, x.t0), 0, 1)) * 100}%)` }}/>)}
+          {bar.dots.map(d => <i key={d.key} className={`dt-bdot${lens === d.kind ? ' is-on' : ''}`} data-dot={d.key} style={{ left: bx(d.f), '--k': rgb(KIND[d.kind]) } as CSSProperties}/>)}
           <Stars key={model.reply.date} stars={bar.stars}/>
           {bar.nowF !== null && <i className="dt-nowtick" style={{ left: bx(bar.nowF) }}/>}
           {hover && !band && <i className="dt-hair" style={{ left: hover.x }}/>}

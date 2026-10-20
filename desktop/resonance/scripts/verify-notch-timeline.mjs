@@ -2517,6 +2517,34 @@ try {
     await a.ctx.close();
   }
 
+  // ---- the dots on the bar's lower edge (ONLY=dots): a moment, or a call or talk shorter than 3 minutes, at its minute in its kind's colour ----
+  if (all || only === 'dots') {
+    const m = buildDay(richDay(), NOW, zh), bar = buildBar(m, zh), t0 = bar.t0, t1 = T(24);
+    check('the model has a dot for a payment, a photo and a talk of one line, and none for a call of 18 minutes, a talk of 6 or 7, or a reminder that rang, in the order of the day',
+      bar.dots.map(d => `${d.key}:${d.kind}`).join() === 'pay-1:payment,picture-1:picture,talk-3:talk', bar.dots.map(d => `${d.key}:${d.kind}`).join());
+    const edge = buildBar(buildDay(small([it('call-s', 'call', T(11, 0), T(11, 0) + 179_000, { app: 'FaceTime' }), it('call-l', 'call', T(12, 0), T(12, 3), { app: 'FaceTime' }), it('talk-s', 'talk', T(13, 0), T(13, 2), { turns: 3 }, 'her'),
+      it('talk-l', 'talk', T(14, 0), T(14, 3), { turns: 5 }, 'her'), it('pay-f', 'payment', T(23, 0), T(23, 0), { amount: '5.00', currency: 'CAD', direction: 'out' })]), NOW, zh), zh);
+    check('a call or talk is a dot under 3 minutes (2 min 59 s, 2 min) and none from 3 minutes; nothing still to come is one', edge.dots.map(d => d.key).join() === 'call-s,talk-s', edge.dots.map(d => d.key).join());
+    const a = await boot({ served: richDay() });
+    await openDay(a);
+    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+    const dots = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-bdot')].map(e => { const r = e.getBoundingClientRect(), c = getComputedStyle(e); return { key: e.dataset.dot, cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width, h: r.height, bg: c.backgroundColor, op: c.opacity, ev: c.pointerEvents, ring: c.boxShadow }; }));
+    await a.shot('dots-01-bar', { x: 40, y: 90, width: 560, height: 180 });
+    const d0 = await dots(), px = ms => g.left + (ms - t0) / (t1 - t0) * g.width, want = { 'pay-1': T(13, 20), 'picture-1': T(13, 30), 'talk-3': T(14, 55) };
+    check('the bar draws them: three dots, each centred on its minute and on the bar\'s lower edge', d0.length === 3 && d0.every(d => Math.abs(d.cx - px(want[d.key])) < 1 && Math.abs(d.cy - (g.top + g.height)) < 1), JSON.stringify(d0));
+    check('they are small (6 px), ringed in the ground, in the lens colour of their kind (pink, cream, violet), and the pointer goes through them to the bar',
+      d0.every(d => d.w === 6 && d.h === 6 && d.ring !== 'none' && d.ev === 'none') && d0.find(d => d.key === 'pay-1').bg === 'rgb(240, 132, 218)' && d0.find(d => d.key === 'picture-1').bg === 'rgb(255, 240, 220)' && d0.find(d => d.key === 'talk-3').bg === 'rgb(172, 124, 255)', JSON.stringify(d0));
+    check('the hours under the bar are not touched by them (the hours row begins below the lower edge)', await a.page.evaluate(() => { const h = document.querySelector('.dt-hours').getBoundingClientRect(), t = document.querySelector('.dt-track').getBoundingClientRect(); return [...document.querySelectorAll('.dt-bdot')].every(e => e.getBoundingClientRect().bottom <= h.top + .5 && h.top >= t.bottom); }));
+    await a.move(px(T(13, 20)), g.top + g.height / 2); await a.page.waitForTimeout(360);
+    const lines = await a.page.locator('.dt-card.is-on .dt-cline').allInnerTexts();
+    check('the pointer on the payment\'s dot shows the bar\'s ordinary card, with the payment\'s line in it', lines.some(l => l.includes('A&W')), lines.join(' | '));
+    await a.move(g.left + 200, g.top - 48); await a.page.waitForTimeout(300);
+    await a.page.locator('.dt-num', { hasText: '花' }).click(); await a.page.waitForTimeout(300);
+    const lens = await dots();
+    check('under the payment lens the other kinds\' dots step back (a quarter) and the payment\'s stays', lens.find(d => d.key === 'pay-1').op === '1' && lens.filter(d => d.key !== 'pay-1').every(d => d.op === '0.25'), JSON.stringify(lens.map(d => [d.key, d.op])));
+    await a.ctx.close();
+  }
+
   if (all || only === 'doing') {
     // ADR 0302, 0307: the list is the stretches of what he was doing. The wing, the bar and the card say it; a row has its words, its place under it with the counts of what is inside, and opens to that.
     const dm = buildDay(segDay(), NOW, zh), dbar = buildBar(dm, zh), t0 = dbar.t0, t1 = T(24);

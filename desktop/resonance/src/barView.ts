@@ -47,8 +47,12 @@ export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: 
 export type BarStar = { id: string; f: number; label: string; hers: boolean };
 export type BarModel = {
   t0: number; t1: number; segs: BarSeg[]; sched: Sched[]; stars: BarStar[]; ticks: { label: string; f: number }[]; nowF: number | null;
-  lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>; sun: { kind: 'rise' | 'set'; f: number }[];
+  lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>; sun: { kind: 'rise' | 'set'; f: number }[]; dots: BarDot[];
 };
+// A moment (a photo, a payment) or a call or talk shorter than 3 minutes is a dot on the bar's lower edge, at its minute, in its kind's colour; the kinds are the ones the
+// chips count. A longer call or talk is no dot (the chip's lens shows where it was).
+export type BarDot = { key: string; kind: LensKind; f: number };
+const DOT_KINDS = ['picture', 'payment', 'call', 'talk'] as const, DOT_MAX = 3 * MIN;
 // The clock an end is written in: the day's end is 24:00, never the next day's 00:00 (the card, the band's edge and the cut all say it so).
 export const endClock = (ms: number, reply: { end_ms: number }, tz: string) => ms >= reply.end_ms ? '24:00' : clock(ms, tz);
 export const fOf = (bar: { t0: number; t1: number }, ms: number) => (ms - bar.t0) / (bar.t1 - bar.t0);
@@ -145,7 +149,10 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
   // Where the sun comes up and goes down, when the day has them on its bar.
   const sun: BarModel['sun'] = [];
   for (const [kind, ms] of [['rise', reply.weather?.sunrise_ms], ['set', reply.weather?.sunset_ms]] as const) if (ms != null && f(ms) >= 0 && f(ms) <= 1) sun.push({ kind, f: f(ms) });
-  return { t0, t1, segs, sched, stars, ticks, nowF: today ? clamp(f(now), 0, 1) : null, lens, sun };
+  const dots: BarDot[] = [], by = counted(model);
+  for (const kind of DOT_KINDS) for (const { it, s, e } of by[kind]) if (s >= t0 && s <= limit && (kind === 'payment' || kind === 'picture' || e - s < DOT_MAX)) dots.push({ key: it.id, kind, f: f(s) });
+  dots.sort((x, y) => x.f - y.f);
+  return { t0, t1, segs, sched, stars, ticks, nowF: today ? clamp(f(now), 0, 1) : null, lens, sun, dots };
 }
 
 // ---------- what the pointer finds ----------
