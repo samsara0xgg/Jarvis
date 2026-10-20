@@ -69,37 +69,47 @@ extension TimelineState {
     }
 }
 
-/// the capsule: the look of 今天 beside it, with sparkles that pulse while the brain works (not under Reduce Motion: the words alone)
+/// At rest a small round button with the sparkles alone (the header keeps the room it has for the weather); while the brain works or says how it went it widens into a capsule with its words, and
+/// goes back to the circle after. The sparkles pulse while it works (not under Reduce Motion: the words alone). Liquid Glass where the system has it, the chips' fill before.
 struct TLTidyButton: View {
     let tl: TimelineState
     @Environment(\.accessibilityReduceMotion) private var reduce
 
+    static let height = 26.0
     static func hasIcon(_ s: TLTidy) -> Bool { s == .idle || s == .running }
-    /// how wide the capsule is for what it says, which the top row takes from the weather's room
-    static func width(_ s: TLTidy) -> Double { 18 + (hasIcon(s) ? 15 : 0) + tlWidth(s.words, size: 12, weight: .semibold) }
+    /// how wide it is for what it says, which the top row takes from the weather's room
+    static func width(_ s: TLTidy) -> Double { s == .idle ? height : 20 + (hasIcon(s) ? 15 : 0) + tlWidth(s.words, size: 12, weight: .semibold) }
 
     var body: some View {
         let s = tl.tidy, running = s == .running
         Button { tl.tidyDay() } label: {
-            ZStack {
-                HStack(spacing: 4) {
-                    if Self.hasIcon(s) {
-                        Image(systemName: "sparkles").font(.system(size: 11, weight: .semibold))
-                            .symbolEffect(.pulse, options: .repeating, isActive: running && !reduce)
-                    }
-                    Text(s.words).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            HStack(spacing: 4) {
+                if Self.hasIcon(s) {
+                    Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold))
+                        .symbolEffect(.pulse, options: .repeating, isActive: running && !reduce)
+                        .transition(.opacity)
                 }
-                .id(s).transition(TLMotion.swapWords(reduce: reduce))
+                if s != .idle { Text(s.words).font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize().id(s).transition(TLMotion.swapWords(reduce: reduce)) }
             }
-            .fixedSize()
-            .foregroundStyle(ink.opacity(0.9)).padding(.horizontal, 9).frame(height: 22)
-            .background(Color.white.opacity(0.1), in: Capsule())
+            .foregroundStyle(ink.opacity(0.9))
+            .frame(width: Self.width(s), height: Self.height)
+            .clipShape(Capsule())
+            .background { backing }
             .contentShape(Rectangle().inset(by: -9))
         }
         .buttonStyle(PressScale())
-        .animation(.easeOut(duration: 0.2), value: s)
+        .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .smooth(duration: 0.3), value: s)
         .accessibilityLabel(running ? "正在整理" : "理一下这一天")
         .accessibilityValue(s == .nothing || s == .failed ? s.words : "")
+    }
+
+    /// the glass: Liquid Glass where the system has it, the fill of the header's chips before
+    @ViewBuilder private var backing: some View {
+        if #available(iOS 26.0, *) {
+            Color.clear.glassEffect(.regular, in: Capsule())
+        } else {
+            Capsule().fill(Color.white.opacity(0.1))
+        }
     }
 }
 

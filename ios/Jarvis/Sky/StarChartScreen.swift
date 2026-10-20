@@ -167,6 +167,7 @@ struct StarChrome: View {
         .padding(.leading, tlOn ? 30 + TLLayout.dateShift : 30).padding(.trailing, 30)
         .animation(.easeOut(duration: 0.35), value: tlOn)
         .animation(.easeOut(duration: 0.2), value: ui.tl.tidyShown)
+        .animation(.smooth(duration: 0.3), value: ui.tl.tidy)          // the weather gives way as the button widens, and comes back as it shrinks
         .frame(width: W, height: 38)
         .offset(y: 60)
     }
