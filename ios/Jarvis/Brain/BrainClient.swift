@@ -105,7 +105,9 @@ struct DayWeather: Decodable {
 }
 
 /// One span of the doing lane (`spans` of `GET /inherent/day`): what he was doing for a stretch of the day. Only what the phone reads is here. `title` may be nil; `basis` says who wrote it
-/// (`observed` the program, from facts; `inferred` a model; `stated` his own answer); `end_ms` nil is still going. One that is not this shape costs only itself.
+/// (`observed` the program, from facts; `inferred` a model; `stated` his own answer); `end_ms` nil is still going. `detail` is the model's one line about the stretch, `place_id` the stay he
+/// was at, `item_ids` the day's items that overlap it (ADR 0307: a lasting item in every stretch it overlaps, a point in the one it falls in), `clues` what the model went by. One that is
+/// not this shape costs only itself.
 struct DaySpan: Decodable {
     let id: String, lane: String, kind: String
     let start_ms: Int64
@@ -113,6 +115,16 @@ struct DaySpan: Decodable {
     @Soft var title: String?
     @Soft var category: String?
     @Soft var basis: String?
+    @Soft var detail: String?
+    @Soft var confidence: String?
+    @Soft var place_id: String?
+    @SoftList var item_ids: [String]?
+    @SoftList var clues: [DayClue]?
+}
+
+/// one thing the model went by for a stretch of the day; its words
+struct DayClue: Decodable {
+    @Soft var text: String?
 }
 
 /// How much of his waking time the doing lane explains (`coverage`), in epoch milliseconds
@@ -158,9 +170,10 @@ struct DayItem: Decodable {
         init(from d: Decoder) throws {
             let c = try d.container(keyedBy: Keys.self)
             name = try c.decode(String.self, forKey: .name)
-            seconds = (try? c.decodeIfPresent(Double.self, forKey: .seconds)) ?? 0
+            // the apps of a block of phone use are counted in minutes, the Mac's in seconds
+            seconds = (try? c.decodeIfPresent(Double.self, forKey: .seconds)) ?? (try? c.decodeIfPresent(Double.self, forKey: .minutes)).map { $0 * 60 } ?? 0
         }
-        private enum Keys: String, CodingKey { case name, seconds }
+        private enum Keys: String, CodingKey { case name, seconds, minutes }
     }
     let id: String, lane: String, kind: String, state: String
     let start_ms: Int64
@@ -215,6 +228,21 @@ struct DayItem: Decodable {
     @Soft var account: String?
     @Soft var session_id: String?
     @Soft var detail: String?
+    /// what his devices sync to the Mac (ADR 0305): a block of phone or tablet use (`device`, `active_s`, `apps` with their minutes), music or video (`app`, `active_s`, `titles`), his messages in
+    /// one conversation (`conversation`, `sent`, `received`) and a call on the phone (`person`, `direction` sent or received, `duration_s`)
+    @Soft var device: String?
+    @SoftList var titles: [MediaTitle]?
+    @Soft var conversation: String?
+    @Soft var sent: Int?
+    @Soft var received: Int?
+    @Soft var person: String?
+    @Soft var duration_s: Double?
+}
+
+/// a track or a video of a block of playing
+struct MediaTitle: Decodable {
+    @Soft var title: String?
+    @Soft var artist: String?
 }
 
 /// One stretch of a night as Health recorded it: `core`, `deep`, `rem`, `awake`, `in_bed` or `unspecified`, from and to in epoch milliseconds
