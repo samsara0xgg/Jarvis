@@ -249,7 +249,11 @@ final class TimelineState {
 
 // MARK: - the screen
 
-private enum Shown { case loading, sentence(String), model(DayTimelineModel) }
+private enum Shown {
+    case loading, sentence(String), model(DayTimelineModel)
+    /// which of the three, for what animates when it changes
+    var kind: Int { switch self { case .loading: 0; case .sentence: 1; case .model: 2 } }
+}
 
 struct DayTimelineView: View {
     let engine: StarEngine
@@ -408,17 +412,26 @@ struct DayTimelineView: View {
 
     private var slideTransition: AnyTransition { TLMotion.page(slide: TLMotion.daySlide * Double(tl.slide), reduce: reduce) }
 
+    /// What the page of a day is: nothing yet, a sentence, or the list. The day's data arriving (or its sentence) is not a pop: it comes in as the first rows of a day do, a fade from 6 pt below.
     @ViewBuilder private func page(_ shown: Shown) -> some View {
-        switch shown {
-        case .loading: Color.clear
-        case .sentence(let s):
-            Text(s).font(.system(size: 15)).lineSpacing(4).foregroundStyle(muted)
-                .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case .model(let m):
-            TLPager(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView)
+        Group {
+            switch shown {
+            case .loading: Color.clear
+            case .sentence(let s):
+                Text(s).font(.system(size: 15)).lineSpacing(4).foregroundStyle(muted)
+                    .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(arrival)
+            case .model(let m):
+                TLPager(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView)
+                    .transition(arrival)
+            }
         }
+        .animation(TLMotion.dayChange(reduce: reduce), value: shown.kind)
     }
+
+    /// not the first day of the timeline's opening, whose rows rise by themselves once the bar has grown (`tl.reveal`)
+    private var arrival: AnyTransition { !tl.reveal ? .identity : reduce ? .opacity : .opacity.combined(with: .offset(y: TLMotion.riseOffset)) }
 
     /// what waits on him: amber rows pinned over the list, each opening into its card; as tall as they are, up to a limit, then they scroll
     @ViewBuilder private var waiting: some View {
