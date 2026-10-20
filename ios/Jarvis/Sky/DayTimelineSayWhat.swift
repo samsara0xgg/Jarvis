@@ -17,9 +17,9 @@ struct TLSayWhat: Identifiable {
     static let cap = 200
     /// the day's last minute: 24:00 is the next day's
     static let lastMinute = 1439
-    /// what lasts and happened to him: the night, a place, the way, work, a call, a run, the sessions of Claude Code, a chat with Claude. Not her rows (a talk, a reminder), not a moment (a picture,
+    /// what lasts and happened to him: the night, a stretch of what he was doing, a place, the way, work, a call, a run, the sessions of Claude Code, a chat with Claude. Not her rows (a talk, a reminder), not a moment (a picture,
     /// a payment, a bus waiting), not an event, not a stop on the way, and not what has not begun.
-    private static let kinds: Set<TLEntry.Kind> = [.sleep, .stay, .trip, .work, .call, .workout, .code, .claude]
+    private static let kinds: Set<TLEntry.Kind> = [.sleep, .stay, .trip, .work, .call, .workout, .code, .claude, .segment]
 
     /// The stretch a row stands for as whole minutes of its day, the end no later than now (on today) or the day's last minute; none where the row is not a stretch or is under a minute long.
     /// A place with no end goes on to the day's last minute (only on a day gone by: on today it goes on to now).

@@ -1,8 +1,8 @@
 import Foundation
 
 // The whole day as one list for the home screen (Sky/DayTimeline.swift draws it), built from the brain's answer for that day (`DayReply`).
-// One story: sleep, then the places he stayed in as groups with what happened there as rows, the trips between the groups as rows of their own,
-// a line for now, and what is still to come after it. Plain values only, so the order, the words and the places on the day can be tested without a screen.
+// One story: sleep, then one row for each stretch of what he was doing (Sky/DayTimelineDoing.swift; a brain that serves none gets the places he stayed in as groups with what happened
+// there as rows, and the trips between the groups as rows of their own), a line for now, and what is still to come after it. Plain values only, so the order, the words and the places on the day can be tested without a screen.
 // The words of each row are in Sky/DayTimelineRows.swift. Times are minutes from the day's own midnight by the wall clock of the brain's zone (a stay that began the evening before
 // starts below 0).
 
@@ -205,7 +205,13 @@ struct TLSession: Equatable, Identifiable {
 
 /// one line of the list
 struct TLEntry: Identifiable, Equatable {
-    enum Kind: Equatable { case sleep, stay, trip, pause, talk, picture, event, reminder, departure, work, call, payment, claude, workout, code, now }
+    enum Kind: Equatable {
+        case sleep, stay, trip, pause, talk, picture, event, reminder, departure, work, call, payment, claude, workout, code, now
+        case media, messages, phoneCall, screen, away           // what his devices sync (ADR 0305) and what he wrote in TimeSink: only ever a line inside a stretch (`insideOnly`)
+        case segment                                            // a stretch of what he was doing (the brain's doing lane): the list's row up to now
+        /// a kind that is a line inside a stretch of the day and never a row of the old list, which is what a day with no stretches still draws
+        var insideOnly: Bool { [.media, .messages, .phoneCall, .screen, .away].contains(self) }
+    }
     let id: String
     var kind: Kind
     var t0: Double
@@ -248,27 +254,35 @@ struct TLEntry: Identifiable, Equatable {
     var sessions: [TLSession] = []  // Claude Code: its session, or, for one row that stands for several, each of them
     var spans: [TLMark] = []        // where it is on the bar when that is not one span
     var cut = false                 // its own words are cut short at the right of the columns (`cutShort`, measured once when the day is built, not whenever a row asks)
+    var unknown = false             // a stretch nobody could say anything of: its title is `不知道在干嘛`, in the muted colour
+    var counts = TLCounts()         // a stretch: what is inside it, as the small icons under its title
+    var lenses: Set<TLLens> = []    // a stretch: the kinds of the day's numbers that have something inside it (a talk too, which is not drawn)
+    var note: String?               // a stretch: the model's one line about it, the first thing it opens to
+    var lines: [TLLine] = []        // a stretch: what is inside it, a line each, in time order
+    var knows: String?              // a stretch: how she knows what he was doing, and what she went by
 
     /// It is an item of the brain's day that his mark can go on: not the line for now, not a stop on the way, not the one row that stands for several sessions of Claude Code, and an id
     /// the brain would take.
-    var starrable: Bool { kind != .now && kind != .pause && !id.hasPrefix("code-group-") && About.fits(id: id) }
+    var starrable: Bool { kind != .now && kind != .pause && kind != .segment && !id.hasPrefix("code-group-") && About.fits(id: id) }
 
     /// the height of the row without the gap above it
     var base: Double {
         switch kind {
         case .stay: TLMetrics.stay
         case .now: TLMetrics.now
-        default: detail == nil ? TLMetrics.row : TLMetrics.rowDetail
+        default: hasLine ? TLMetrics.rowDetail : TLMetrics.row
         }
     }
     var height: Double { base + gap }
+    /// the muted line under the title: its words, or for a stretch the small icons with what is in it
+    var hasLine: Bool { detail != nil || !counts.isEmpty }
     /// one row that stands for several Claude Code sessions
     var holdsSessions: Bool { kind == .code && sessions.count > 1 }
     /// a tap on it opens something: what its line does not say, the first exchange of a talk, the picture, a map, what can be done with it, or its own words whole where the row cuts them short
     var opens: Bool {
         switch kind {
         case .now, .pause: false
-        default: kind == .talk || kind == .picture || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut
+        default: kind == .talk || kind == .picture || kind == .segment || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut
         }
     }
 }
@@ -362,13 +376,6 @@ struct TLTold: Equatable {
     var text: String
 }
 
-/// what he was doing for a stretch of the day, in words (`doingWords`): a span of the brain's doing lane that has some, in minutes from the day's midnight
-struct TLDoing: Equatable {
-    var t0: Double, t1: Double
-    var words: String
-    var when: String                // its own hours and length, as a stretch says them: `09:30–11:20 · 1 时 50 分`, `19:35 起 · 1 时 05 分`
-}
-
 /// What a finger on the bar reads out: the stretch of the day under it, and what else was going on there.
 struct TLReadout: Equatable {
     var hue: RGB?                   // the colour of the stretch (a dot); none when there is no stretch
@@ -390,12 +397,12 @@ struct TLMark: Equatable {
 
 /// a span of the day on the overview bar
 struct TLSeg: Equatable {
-    enum Kind: Equatable { case place(RGB, kept: Bool), move, sleep }
+    enum Kind: Equatable { case place(RGB, kept: Bool), move, sleep, doing(RGB?) }         // a stretch of what he was doing has its category's colour, or none (a hole)
     var id: String
     var t0: Double, t1: Double
     var kind: Kind
     /// what is on top where spans overlap
-    var priority: Int { switch kind { case .sleep: 3; case .move: 2; case .place: 1 } }
+    var priority: Int { switch kind { case .sleep: 3; case .move: 2; case .place, .doing: 1 } }
 }
 
 struct DayTimelineModel: Equatable {
@@ -413,7 +420,7 @@ struct DayTimelineModel: Equatable {
     var sun: TLSun?
     var waiting: [String] = []      // the rows that wait on him, in the order of the day
     var told: [TLTold] = []         // what the readout can say of a minute: what each row was doing, a Claude Code session each
-    var doing: [TLDoing] = []       // what he was doing, by the brain's doing lane, in the order of the day: the words the bar and the readout lead with (none from a brain that does not serve it)
+    var lensMarks: [TLLens: [TLMark]] = [:]     // where the things of each kind are on the bar
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
     var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
@@ -459,14 +466,6 @@ struct DayTimelineModel: Equatable {
     }
     /// its id, or none
     func stretch(at t: Double) -> String { seg(at: t)?.id ?? "" }
-    /// what he was doing at minute `t` (the one at the end of the last span, when `t` is that end, as for a stretch)
-    func wasDoing(at t: Double) -> TLDoing? {
-        doing.first { $0.t0 <= t && t < $0.t1 } ?? doing.first { $0.t0 <= t.nextDown && t.nextDown < $0.t1 }
-    }
-    /// the words of the one span that covers at least half of `a`..`b`, if any
-    func wasDoing(over a: Double, _ b: Double) -> String? {
-        doing.first { 2 * (min($0.t1, b) - max($0.t0, a)) >= b - a }?.words
-    }
     /// the row to light for a finger at minute `t`: the one that covers it. Past now only what was planned is lit (what began before now is not what goes on then),
     /// and where nothing was recorded only what goes on through the hole.
     func lit(at t: Double) -> TLEntry? {
@@ -482,7 +481,7 @@ struct DayTimelineModel: Equatable {
     func readout(at minute: Double) -> TLReadout {
         let t = onBar(minute)
         var hue: RGB?, strong = true, head: String
-        let ahead = now.map { t > $0 } ?? false, d = ahead ? nil : wasDoing(at: t)
+        let ahead = now.map { t > $0 } ?? false
         if ahead {
             head = "还没到"
         } else if let s = seg(at: t) ?? seg(at: t.nextDown), let e = entries.first(where: { $0.id == s.id }) {          // the end of a stretch with nothing after it (a stay up to now) is still in it
@@ -490,13 +489,9 @@ struct DayTimelineModel: Equatable {
             case .place(let c, let kept): hue = c; strong = kept
             case .move: hue = TLPaint.trip
             case .sleep: hue = TLPaint.sleep
+            case .doing(let c): hue = c; strong = c != nil
             }
             head = e.head ?? e.title
-            // what he was doing leads: in a stay with its own hours and the place after it, on a way or in the night before them unless it says the same
-            if let d, case .place = s.kind { head = [d.words, d.words == e.title ? nil : e.title, d.when].compactMap { $0 }.joined(separator: " · ") }
-            else if let d, head.components(separatedBy: " · ").first != d.words { head = d.words + " · " + head }
-        } else if let d {
-            head = d.words + " · " + d.when          // nothing was recorded, but he said (or a model wrote) what he was doing
         } else {
             let lo = segs.filter { $0.t1 <= t }.map(\.t1).max() ?? span.lowerBound
             let hi = max(lo, min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY))          // a hole ends no earlier than it begins
@@ -512,8 +507,13 @@ struct DayTimelineModel: Equatable {
     }
 
     /// where the things of a lens's kind are on the bar
-    func marks(of lens: TLLens) -> [TLMark] {
-        entries.filter { $0.lens == lens }.flatMap { e in e.spans.isEmpty ? [TLMark(t0: e.t0, t1: max(e.t0, e.t1 ?? e.t0))] : e.spans }
+    func marks(of lens: TLLens) -> [TLMark] { lensMarks[lens] ?? [] }
+
+    /// where the things of each lens's kind are, from the list's entries, or from the day's items when the list is stretches (their things are inside them)
+    static func lensMarks(_ list: [TLEntry]) -> [TLLens: [TLMark]] {
+        var out: [TLLens: [TLMark]] = [:]
+        for e in list { if let l = e.lens { out[l, default: []] += e.spans.isEmpty ? [TLMark(t0: e.t0, t1: max(e.t0, e.t1 ?? e.t0))] : e.spans } }
+        return out
     }
 
     // MARK: building
@@ -539,12 +539,16 @@ struct DayTimelineModel: Equatable {
         // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
         let reach = 30 * DAY, window = 31.0 * 86_400_000
         var taken: Set<String> = ["now"]
+        // what he was doing, as stretches of the day: with some, the list is those up to now; with none (an older brain, a day it cannot serve) it is the day's records as it always was
+        let doings = doingStretches(r, now: now, m)
+        let segmented = !doings.isEmpty
         var items: [DayItem] = [], rows: [TLEntry] = []
         for i in r.items {
             guard !i.id.isEmpty, !done.dropped.contains(i.id), abs(Double(i.start_ms) - Double(r.start_ms)) <= window, i.end_ms.map({ abs(Double($0) - Double(r.start_ms)) <= window }) ?? true,
                   taken.insert(i.id).inserted else { continue }
             let t0 = m(i.start_ms), t1 = i.end_ms.map(m)
-            guard t0.isFinite, abs(t0) <= reach, t1.map({ $0.isFinite && abs($0) <= reach && $0 >= t0 }) ?? true, let e = row(i, t0: t0, t1: t1, frame) else { continue }
+            guard t0.isFinite, abs(t0) <= reach, t1.map({ $0.isFinite && abs($0) <= reach && $0 >= t0 }) ?? true, let e = row(i, t0: t0, t1: t1, frame),
+                  segmented || !e.kind.insideOnly else { continue }
             items.append(i); rows.append(e)
         }
 
@@ -566,10 +570,10 @@ struct DayTimelineModel: Equatable {
                 if let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .sleep) }
             case .stay:
                 // on another day a stay with no end goes on to that day's midnight
-                if let hue = rows[k].color, let end = rows[k].t1 ?? (now == nil ? DAY : nil) { seg(rows[k].id, rows[k].t0, end, .place(hue, kept: rows[k].kept)) }
+                if !segmented, let hue = rows[k].color, let end = rows[k].t1 ?? (now == nil ? DAY : nil) { seg(rows[k].id, rows[k].t0, end, .place(hue, kept: rows[k].kept)) }
             case .trip:
                 rows[k].lens = .trip; minutes[.trip, default: 0] += length(span)
-                if let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .move) }
+                if !segmented, let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .move) }
             case .work: rows[k].lens = .work; minutes[.work, default: 0] += length(i.active_s.map { $0 / 60 } ?? span)      // the time he was at it, not the whole stretch
             case .code: rows[k].lens = .work                                                                                // lit with the Mac's work, not added to it
             case .call: rows[k].lens = .call; minutes[.call, default: 0] += length(span)
@@ -583,24 +587,35 @@ struct DayTimelineModel: Equatable {
             }
         }
 
-        // in the order of the day; at the same minute a night comes first, then the place, then the trip, then what happened
-        func rank(_ k: TLEntry.Kind) -> Int { k == .sleep ? 0 : k == .stay ? 1 : k == .trip ? 2 : 3 }
-        let sorted = rows.enumerated().sorted { ($0.element.t0, rank($0.element.kind), $0.offset) < ($1.element.t0, rank($1.element.kind), $1.offset) }.map(\.element)
-        var entries = arrange(sorted, now: now)
+        // in the order of the day; at the same minute a night comes first, then the place, then the trip, then what happened (a stretch, where the list is stretches, after the night)
+        func rank(_ k: TLEntry.Kind) -> Int { k == .sleep ? 0 : k == .stay || k == .segment ? 1 : k == .trip ? 2 : 3 }
+        func inOrder(_ list: [TLEntry]) -> [TLEntry] { list.enumerated().sorted { ($0.element.t0, rank($0.element.kind), $0.offset) < ($1.element.t0, rank($1.element.kind), $1.offset) }.map(\.element) }
+        var entries = segmented ? segmentList(doings, items: items, rows: rows, now: now, frame) : arrange(inOrder(rows), now: now)
+        if segmented { entries = inOrder(entries) }
         if let now {
             var line = TLEntry(id: "now", kind: .now, t0: now, title: "现在 " + clock(now))
             line.time = clock(now)
             entries.insert(line, at: entries.firstIndex { $0.t0 > now } ?? entries.count)
         }
-        space(&entries)
+        if segmented {
+            for k in entries.indices where entries[k].kind == .segment {
+                entries[k].railIn = k > 0 && entries[k - 1].kind == .segment
+                entries[k].railOut = entries.indices.contains(k + 1) && entries[k + 1].kind == .segment
+                if let end = entries[k].t1 { seg(entries[k].id, entries[k].t0, end, .doing(entries[k].color)) }
+            }
+        } else {
+            space(&entries)
+        }
         for k in entries.indices { entries[k].actions = actions(of: entries[k], now: now); entries[k].cut = entries[k].cutShort }
 
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
         let wake = items.compactMap { $0.kind == "sleep" ? $0.end_ms.map(m) : nil }.filter { $0 >= 0 && $0 < DAY }.min()
-        let early = zip(items, rows).filter { axisKinds.contains($0.0.kind) }.map { $0.1.t0 }
+        let early = segmented ? doings.map(\.t0) : zip(items, rows).filter { axisKinds.contains($0.0.kind) }.map { $0.1.t0 }
         // what mattered, at the time of each item that did
         var starred = Set<String>()
-        let stars = highlights.compactMap { h in entries.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0, hers: hers.contains(h.id)) : nil } }.sorted { $0.t < $1.t }
+        // (where the list is stretches, an item inside one has its star on the bar too; a talk and a place are not drawn, and so have none)
+        let starred0 = segmented ? entries + rows.filter { $0.kind != .talk && $0.kind != .stay } : entries
+        let stars = highlights.compactMap { h in starred0.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0, hers: hers.contains(h.id)) : nil } }.sorted { $0.t < $1.t }
         var chips: [TLChip] = []
         for l in TLLens.allCases {
             switch l {
@@ -618,7 +633,7 @@ struct DayTimelineModel: Equatable {
         }
         // what each row was doing, for the readout: a Claude Code row that stands for several says each of them
         var told: [TLTold] = []
-        for e in entries where e.kind != .now {
+        for e in (segmented ? rows : entries) where e.kind != .now {
             if e.holdsSessions { told += e.sessions.map { TLTold(kind: .code, t0: $0.t0, t1: $0.t1, text: $0.told) } }
             else if let g = e.glance { told.append(TLTold(kind: e.kind, t0: e.t0, t1: max(e.t1 ?? e.t0, e.t0), text: g)) }
         }
@@ -629,13 +644,7 @@ struct DayTimelineModel: Equatable {
         model.sun = sunOf(r.weather, m)
         model.waiting = entries.filter(\.waiting).map(\.id)
         model.told = told
-        // what he was doing, in words; a planned span is not what he did, and one with no end goes on to now
-        model.doing = r.spans.compactMap { s in
-            guard s.lane == "doing", s.kind != "planned", let words = doingWords(s) else { return nil }
-            let a = m(s.start_ms), b = s.end_ms.map(m) ?? now ?? DAY
-            guard a.isFinite, b.isFinite, b > a else { return nil }
-            return TLDoing(t0: a, t1: b, words: words, when: [s.end_ms == nil ? "\(clockDay(a, frame)) 起" : rangeText(a, b, running: false, frame), tlDur(tlInt(b - a))].joined(separator: " · "))
-        }.sorted { $0.t0 < $1.t0 }
+        model.lensMarks = lensMarks(segmented ? rows : entries)
         return model
     }
 
@@ -723,13 +732,16 @@ struct DayTimelineModel: Equatable {
             let line = from != nil && to != nil ? "\(from ?? "") → \(to ?? "")" : from.map { "从 \($0) 出发" } ?? to.map { "到 \($0)" }
             out[k].more = line.map { [$0] } ?? []
         }
-        // what is still to come within two hours says how long it is until it (a point with a value of its own keeps it)
-        if let now {
-            for k in out.indices where out[k].later && !out[k].strongRight && out[k].t0 - now <= 120 {
-                out[k].right = "还有 " + tlDur(max(1, tlInt((out[k].t0 - now).rounded(.up)))); out[k].soon = true
-            }
-        }
+        soon(&out, now: now)
         return out
+    }
+
+    /// what is still to come within two hours says how long it is until it (a point with a value of its own keeps it)
+    static func soon(_ list: inout [TLEntry], now: Double?) {
+        guard let now else { return }
+        for k in list.indices where list[k].later && !list[k].strongRight && list[k].t0 - now <= 120 {
+            list[k].right = "还有 " + tlDur(max(1, tlInt((list[k].t0 - now).rounded(.up)))); list[k].soon = true
+        }
     }
 
     /// the blank between one group and the next: above a place, above the first leg of a run of trips, and above a row that is in no place after a place or a run
