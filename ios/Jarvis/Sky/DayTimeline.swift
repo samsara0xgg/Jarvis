@@ -493,13 +493,15 @@ private struct TLPager: View {
         withAnimation(TLMotion.detail(reduce: reduce)) { turn = d > 0 ? .bottom : .top; tl.openRow = rows[i + d].id } completion: { turn = nil }
     }
 
+    private static let slop = 10.0
+
     private var swipeBack: some Gesture {
-        DragGesture(minimumDistance: 10, coordinateSpace: .named("design"))
+        DragGesture(minimumDistance: Self.slop, coordinateSpace: .named("design"))
             .updating($sideways) { v, s, _ in if s == nil { s = TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height) } }
             .onChanged { v in
                 guard sideways ?? TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height), !reduce else { return }
                 releasing = false
-                drag = max(0, v.translation.width)
+                drag = max(0, v.translation.width - Self.slop)          // the gesture fires 10 pt in: start from there, or the page jumps by that on its first frame
             }
             .onEnded { v in
                 if reduce {          // under Reduce Motion the page does not follow: only where the swipe lets go counts
