@@ -6,11 +6,13 @@ builds the input and gates the answer; L2 appends the run. A run that fails or i
 stores nothing and the run before it stays.
 
 :class:`DoingSchedule` looks at today and the last few days every quarter of an hour, in a thread
-off the loop, and asks the model only when the inputs changed:
+off the loop, and asks the model only when the inputs changed (ADR 0310):
 
-- today: a draft, at most once an hour;
-- a day that is over (it is a day before today, or he has gone to bed): one final run, and
-  another when late rows change its inputs.
+- today: a short run at most every two hours, which writes only the time from where the last
+  written span starts and keeps the spans before it (:func:`narrow`); and one at once when he asks
+  (:meth:`DoingSchedule.tidy`);
+- a day that is over (it is a day before today, or he has gone to bed): one final run of the
+  whole day, and another when late rows change its inputs.
 
 The inputs are told apart by a digest of the facts and clues (:func:`inputs_digest`).
 """
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
@@ -31,6 +34,7 @@ from jarvis.decision.doing_run import (
     asked_again,
     build_messages,
     inputs_digest,
+    narrow,
     read_run,
 )
 from jarvis.runtime.session_compaction import build_compact_client
@@ -54,8 +58,8 @@ LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "doing_run"
 DEFAULT_PRESET: Final[str] = "haiku-bg"
-DRAFT_EVERY: Final[timedelta] = timedelta(hours=1)
-"""A day is written at most this often, however often its inputs change."""
+SHORT_EVERY: Final[timedelta] = timedelta(hours=2)
+"""A day is written at most this often, however often its inputs change, unless he asks."""
 CHECK_EVERY: Final[timedelta] = timedelta(minutes=15)
 """How often a day is folded to see whether its inputs changed."""
 RECENT_DAYS: Final[int] = 3
@@ -174,9 +178,10 @@ def compose_run(
 
 
 def store_run(memory_db: Path, brief: Brief, composed: Composed) -> str:
-    """Append the gated spans as the day's newest run; the run id.
+    """Append the gated spans, after those ``brief`` keeps, as the day's newest run; the run id.
 
-    A run under way is a draft; it covers the waking window up to where it ends.
+    A run under way is a draft; it covers the waking window up to where it ends. ``brief`` is
+    the whole day's: its digest is what the next look compares.
     """
     if composed.spans is None:
         msg = "a rejected answer is not stored"
@@ -215,6 +220,8 @@ class DoingSchedule:
         self._poll_s = poll_s
         self._client = client
         self._looked: dict[str, datetime] = {}
+        self._writing = threading.Lock()
+        """One day is written at a time: the clock's pass and his asking never write two runs."""
 
     def tick(self, now: datetime) -> dict[str, str]:
         """Look at each day not looked at for :data:`CHECK_EVERY`, oldest first; what was done.
@@ -231,19 +238,31 @@ class DoingSchedule:
             if looked is not None and now - looked < CHECK_EVERY:
                 continue
             self._looked[key] = now
-            try:
-                outcome = self._day(day, now)
-            except Exception:
-                LOGGER.exception("doing: %s failed; the previous run stands", key)
-                outcome = "failed"
+            outcome = self._guarded(day, now, asked=False)
             if outcome == "failed" or outcome.startswith("rejected"):
-                # A call that did not land is not made again for an hour, as a draft would not be.
-                self._looked[key] = now + DRAFT_EVERY - CHECK_EVERY
+                # A call that did not land is not made again until a short run would be.
+                self._looked[key] = now + SHORT_EVERY - CHECK_EVERY
             if outcome not in _QUIET:
                 outcomes[key] = outcome
         return outcomes
 
-    def _day(self, day: date, now: datetime) -> str:
+    def tidy(self, now: datetime | None = None) -> str:
+        """He asked to have today tidied (ADR 0310): a run now, whenever the last one was.
+
+        Blocking for as long as the model writes; what was done, as :meth:`tick` says it.
+        """
+        moment = now or local_now()
+        return self._guarded(moment.astimezone(self._sources.zone).date(), moment, asked=True)
+
+    def _guarded(self, day: date, now: datetime, *, asked: bool) -> str:
+        with self._writing:
+            try:
+                return self._day(day, now, asked=asked)
+            except Exception:
+                LOGGER.exception("doing: %s failed; the previous run stands", day)
+                return "failed"
+
+    def _day(self, day: date, now: datetime, *, asked: bool) -> str:
         brief = read_brief(day, self._sources, self._event_log_path, now)
         if brief is None:
             return "no waking window"
@@ -255,19 +274,24 @@ class DoingSchedule:
             # A draft whose inputs did not change still becomes the final run once the day is over.
             if latest.inputs_digest == inputs_digest(brief) and not (brief.final and latest.draft):
                 return "unchanged"
-            if now - datetime.fromisoformat(latest.written_at).astimezone() < DRAFT_EVERY:
+            written = datetime.fromisoformat(latest.written_at).astimezone()
+            if not asked and now - written < SHORT_EVERY:
                 return "waiting"
+        # Today's newest part is written after what the last draft said; a final run rewrites all.
+        short = latest is not None and latest.draft and not brief.final
+        writing = narrow(brief, latest.spans) if short and latest is not None else brief
         if self._client is None:
             self._client = build_compact_client(self._llm_config, self._settings.preset)
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
             recorder = CostRecorder(conn, pricing_table=self._pricing_table)
-            composed = compose_run(brief, self._settings, self._client, recorder)
+            composed = compose_run(writing, self._settings, self._client, recorder)
         if composed.spans is None:
             return f"rejected ({composed.why})"
-        store_run(self._memory_db, brief, composed)
-        asked = sum(span["question"] is not None for span in composed.spans)
-        kind = "final" if brief.final else "draft"
-        return f"landed ({kind}, {len(composed.spans)} spans, {asked} questions)"
+        spans = [*map(dict, writing.kept), *composed.spans]
+        store_run(self._memory_db, brief, composed._replace(spans=spans))
+        questions = sum(span["question"] is not None for span in spans)
+        kind = "final" if brief.final else "short" if writing.kept else "draft"
+        return f"landed ({kind}, {len(spans)} spans, {questions} questions)"
 
     async def run(self) -> None:
         """The loop; a failed pass is logged and the next one tries again."""
@@ -285,9 +309,9 @@ class DoingSchedule:
 __all__ = [
     "CHECK_EVERY",
     "DEFAULT_PRESET",
-    "DRAFT_EVERY",
     "KIND",
     "RECENT_DAYS",
+    "SHORT_EVERY",
     "Composed",
     "DoingSchedule",
     "DoingSettings",

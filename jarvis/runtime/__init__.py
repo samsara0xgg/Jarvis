@@ -154,6 +154,7 @@ from jarvis.execution.path_resolver import (
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.places_api import turn_places
+from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -200,6 +201,7 @@ from jarvis.runtime.day_plan import day_ends_of
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.departures import Departures
+from jarvis.runtime.doing_run import DoingSchedule, DoingSettings
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
@@ -725,6 +727,8 @@ class JarvisRuntime:
     home: Home | None = None
     # ADR 0176: what the Dashboard shows (``dashboard.view.enabled``). None = off.
     view: ViewState | None = None
+    # ADR 0302, 0310: the writer of the doing lane, on its clock and when he asks. None = off.
+    doing: DoingSchedule | None = None
     # ADR 0147: the Dashboard's mail page's reply drafts (``dashboard.mail.enabled``, which
     # needs the view: a draft goes under the letter the view has open). None = off.
     mail_drafts: MailDrafts | None = None
@@ -1397,6 +1401,31 @@ def _highlight_marks(
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
         ),
+    )
+
+
+def _doing_schedule(
+    full_config: Mapping[str, Any], memory: MemorySettings, paths: RuntimePaths,
+    device: DeviceLink | None, pricing_path: Path,
+) -> DoingSchedule | None:
+    """ADR 0302, 0310: the writer of the doing lane, over the day line `GET /inherent/day` folds."""
+    settings = DoingSettings.from_config(full_config.get("doing"))
+    if settings is None:
+        return None
+    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
+    llm_config = full_config.get("llm")
+    return DoingSchedule(
+        settings=settings,
+        sources=DaySources(
+            zone, _timesink_db_path(full_config), memory.db_path,
+            None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
+            paths.artifacts_root / ATTACHMENTS_DIRNAME,
+            shipped=paths.root / imports.IMPORTS_DIRNAME,
+        ),
+        memory_db=memory.db_path,
+        event_log_path=paths.event_log,
+        llm_config=llm_config if isinstance(llm_config, Mapping) else {},
+        pricing_table=load_pricing_table(pricing_path),
     )
 
 
@@ -2108,6 +2137,12 @@ def _register_archive(
     """``archive`` (ADR 0259): the payments and Claude conversations he handed over."""
     embedder = embedding.shared(default_meaning_dir(runtime_root))
     for tool in build_archive_tool(memory_db, zone, embedder=embedder):
+        registry.register(tool)
+
+
+def _register_tidy(registry: ToolRegistry, doing: DoingSchedule | None) -> None:
+    """``tidy_day`` (ADR 0310): he asks her to tidy today's timeline now."""
+    for tool in build_tidy_tool(None if doing is None else doing.tidy):
         registry.register(tool)
 
 
@@ -3269,6 +3304,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
         maps_key, _maps_monthly_usd(full_config), memory.db_path, local_zone,
     )
+    doing = _doing_schedule(
+        full_config, memory, paths, device, repo_root / "data" / "pricing.json",
+    )
     registry = build_default_registry(
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
@@ -3477,6 +3515,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     _register_mail(registry, home, local_zone)
     _register_conversation(registry, memory.db_path, local_zone, paths.root)
     _register_archive(registry, memory.db_path, local_zone, paths.root)
+    _register_tidy(registry, doing)
     _register_my_day(
         registry,
         LedgerSources(
@@ -3558,6 +3597,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         projects=projects,
         home=home,
         view=view,
+        doing=doing,
         mail_drafts=mail_drafts,
         ambient=ambient,
         live_context=(

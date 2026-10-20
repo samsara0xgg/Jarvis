@@ -79,7 +79,7 @@ REPO = Path(__file__).resolve().parent.parent
 _DBS = ("mac_events.db", "memory.db")
 _RESULT_CHARS = 2000
 _LATE_TOOLS = (  # registered after the MCP group
-    "job_ledger", "record_application", "mail", "conversation", "archive", "my_day",
+    "job_ledger", "record_application", "mail", "conversation", "archive", "tidy_day", "my_day",
 )
 
 # --- the tool classification (decided per handler; the run refuses an unclassified tool) -------
@@ -105,6 +105,7 @@ STUB = frozenset({
     "open_url", "open_path", "read_file", "write_file", "read_clipboard", "screen_look",
     "start_night_run", "end_night_run", "refresh_work_state", "daily_work_report", "set_voice",
     "write_mail_draft", "open_plugin", "disable_plugin", "remove_plugin",
+    "tidy_day",  # asks the doing lane's model (Opus) and writes a run
 })
 _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}

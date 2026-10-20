@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
@@ -24,6 +24,7 @@ from jarvis.state.doing import (
     CONFIDENCES,
     DOING_KINDS,
     Doing,
+    Waking,
     coverage,
     primary_place,
 )
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import tzinfo
 
-    from jarvis.state.doing import Segment, Span, Waking
+    from jarvis.state.doing import Segment, Span
     from jarvis.state.doing_clues import Clue
 
 TITLE_MAX_CHARS: Final = 40
@@ -66,7 +67,8 @@ class Brief:
     are the day line's, which give a fact its details; ``signals`` are the observed signals of a
     segment that has any (its Mac, phone and watch), by the segment's start. ``screen`` says how
     far his phone and tablet app use is known: ``None`` when none of it reaches the brain, else
-    each device whose records stop before the window does, with where they stop.
+    each device whose records stop before the window does, with where they stop. ``kept`` are the
+    spans before the window that a short run keeps as written (ADR 0310, :func:`narrow`).
     """
 
     day: str
@@ -82,6 +84,7 @@ class Brief:
     clues: Sequence[Clue]
     signals: Mapping[int, str]
     screen: Mapping[str, int] | None
+    kept: Sequence[Mapping[str, Any]] = ()
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -121,6 +124,38 @@ def _marks(clue: Clue) -> bool:
     if clue.kind == "words":
         return clue.text.startswith(HIS_WORDS)
     return clue.kind in _DOING_CLUES
+
+
+def narrow(brief: Brief, written: Sequence[Mapping[str, Any]]) -> Brief:
+    """``brief`` cut to the time from where the last written span starts (ADR 0310).
+
+    The spans of ``written`` before its last one are kept as written and shown to the writer
+    only as context; the last stays open, so what he is still doing may grow or be renamed. The
+    segments are clipped to the window and the clues inside the day before it are left out. A
+    run that does not tile the window up to its last span (late facts moved where the day
+    starts) or has a single span leaves the whole day to write.
+    """
+    kept = sorted(written, key=lambda s: s["start_ms"])[:-1]
+    start, end = brief.waking
+    at = start
+    for span in kept:
+        if span["start_ms"] != at:
+            return brief
+        at = span["end_ms"]
+    if not kept or not start < at < end:
+        return brief
+    segments, signals = [], {}
+    for segment in brief.segments:
+        if segment.end_ms <= at:
+            continue
+        clipped = replace(segment, start_ms=max(segment.start_ms, at))
+        segments.append(clipped)
+        if segment.start_ms in brief.signals:
+            signals[clipped.start_ms] = brief.signals[segment.start_ms]
+    return replace(
+        brief, waking=Waking(at, end), segments=segments, signals=signals, kept=kept,
+        clues=[c for c in brief.clues if not start <= c.at_ms < at],
+    )
 
 
 def inputs_digest(brief: Brief) -> str:
@@ -210,8 +245,22 @@ def _clue_line(index: int, clue: Clue, brief: Brief) -> str:
     return f"c{index} | {when} | {clue.kind} | {clue.text}"
 
 
+def _kept_lines(brief: Brief) -> list[str]:
+    if not brief.kept:
+        return []
+    rows = "\n".join(
+        f"{_clock(s['start_ms'], brief.zone)}-{_clock(s['end_ms'], brief.zone)} | "
+        f"{s['title'] or 'unknown'} | {s['category']}"
+        for s in brief.kept
+    )
+    return [f"WRITTEN ALREADY (local | title | category; kept as they are):\n{rows}"]
+
+
 def build_messages(brief: Brief) -> list[dict[str, Any]]:
-    """The one user message the writer sees: the day, its times, its segments and its clues."""
+    """The one user message the writer sees: the day, its times, its segments and its clues.
+
+    A short run (:func:`narrow`) also shows the spans it keeps, before the window it writes.
+    """
     labels = {ms: f"t{n}" for n, ms in enumerate(times(brief))}
     start, end = brief.waking
     state = (
@@ -225,6 +274,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
     content = "\n\n".join((
         f"DAY: {brief.day} {brief.weekday}, timezone {zone}; {state}",
         f"TITLE LANGUAGE: {brief.language}",
+        *_kept_lines(brief),
         f"WAKING WINDOW: {labels[start]} {_clock(start, brief.zone, seconds=True)} to "
         f"{labels[end]} {_clock(end, brief.zone, seconds=True)}",
         "TIMES (local; a span starts and ends only at one of these):\n" + "\n".join(time_lines),
@@ -477,8 +527,9 @@ def read_run(
     why = _tiled(spans, brief) or "; ".join(filter(None, (_joined(s, brief) for s in spans)))
     if why:
         return why
-    if sum(s["question"] is not None for s in spans) > MAX_QUESTIONS:
-        return f"more than {MAX_QUESTIONS} questions"
+    kept_questions = sum(s.get("question") is not None for s in brief.kept)
+    if kept_questions + sum(s["question"] is not None for s in spans) > MAX_QUESTIONS:
+        return f"more than {MAX_QUESTIONS} questions in the day ({kept_questions} kept)"
     return sorted(spans, key=lambda s: s["start_ms"])
 
 
@@ -494,6 +545,7 @@ __all__ = [
     "asked_again",
     "build_messages",
     "inputs_digest",
+    "narrow",
     "read_run",
     "times",
 ]

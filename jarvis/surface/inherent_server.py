@@ -67,6 +67,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   ADR 0294; a paired terminal's scheduled copy of TimeSink and Claude Code sessions, kept raw
 - ``POST /inherent/day/highlight`` — ADR 0296; body ``{"day", "id", "on", "label"?}`` marks or
   unmarks one item of a day as a highlight for him; ``{"ok", "highlights"}``
+- ``POST /inherent/day/tidy`` — ADR 0310; no body: today's newest part of the doing lane is
+  written now; ``{ok, written, outcome}``.
 - ``POST /inherent/day/answer`` — ADR 0302; body ``{"day", "span_id", "choice"?, "text"?}`` is
   his answer about a span of what he was doing; ``{"ok", "span"}``
 - ``POST /inherent/commitments/{hex}`` — ADR 0274, 0296, 0299; body ``{"action":
@@ -828,6 +830,9 @@ class InherentDeps:
             Awaitable[dict[str, Any]],
         ] | None
     ) = None
+    # ADR 0310: he asked to have today's timeline tidied -> what the writer did, off the loop
+    # thread, after the model writes; ``None`` leaves ``POST /inherent/day/tidy`` unregistered.
+    doing_tidy: Callable[[], Awaitable[str]] | None = None
     # ADR 0296, 0299: ``(thing hex, "confirm" | "cancel")`` -> whether anything changed, off the
     # loop thread. LookupError (none such, or closed) is 404 and a False is 409; ``None`` leaves
     # ``POST /inherent/commitments/{hex}`` unregistered.
@@ -1970,6 +1975,24 @@ def _register_doing_answer_route(app: FastAPI, deps: InherentDeps) -> None:
             LOGGER.warning("answer route failed: %s: %s", type(exc).__name__, exc)
             raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
         return {"ok": True, "span": span}
+
+
+def _register_doing_tidy_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0310: he asks to have today's timeline tidied now, by a tap."""
+    if deps.doing_tidy is None:
+        return
+    doing_tidy = deps.doing_tidy
+
+    @app.post("/inherent/day/tidy", status_code=200)
+    async def day_tidy() -> dict[str, Any]:
+        """``{ok, written, outcome}`` once the writer is done with today.
+
+        ``written`` is true when a new run of today was stored, which ``GET /inherent/day``
+        serves from then on; ``outcome`` says what happened otherwise (``unchanged``, ``no
+        waking window``, ``rejected (...)``, ``failed``). Waits for the model, up to a minute.
+        """
+        outcome = await doing_tidy()
+        return {"ok": True, "written": outcome.startswith("landed"), "outcome": outcome}
 
 
 def _register_commitment_route(app: FastAPI, deps: InherentDeps) -> None:
@@ -3378,6 +3401,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
     _register_day_route(app, deps)
     _register_highlight_route(app, deps)
     _register_doing_answer_route(app, deps)
+    _register_doing_tidy_route(app, deps)
     _register_commitment_route(app, deps)
     _register_home_routes(app, deps)
     _register_mail_page_routes(app, deps)

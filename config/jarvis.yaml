@@ -124,14 +124,6 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       max_tokens: 16384
       reasoning_effort: medium
-    # 同 haiku-bg，输出上限放到 32768：一整天的「在做什么」（ADR 0302）连思考带答案，
-    # 事多的一天会超过 16384 被截断。上限只是上限，按实际用的 token 计费。
-    haiku-long:
-      provider: anthropic
-      model: claude-haiku-5-5
-      api_key_env: ANTHROPIC_API_KEY
-      max_tokens: 32768
-      reasoning_effort: medium
     # Claude Sonnet 5.5，直连 Anthropic，默认对话用（ADR 0253）。
     # 自适应思考加 effort；Sonnet 5.5 不收 thinking disabled 和 budget_tokens，所以别写
     # reasoning_effort: none；强制调工具的请求由 LLMClient 改成 tool_choice auto，调用方
@@ -183,6 +175,15 @@ llm:
       images: true
       spoken_structured: false
       speed: fast
+    # 在干嘛那条线（ADR 0310）。输出上限 32768：一整天连思考带答案，事多的一天会超过 16384
+    # 被截断；上限只是上限，按实际用的 token 计费。2026-10-20 同一份 10-19 输入，Haiku 写
+    # 25 段、Sonnet 8 段、Opus 10 段，Opus 的粗细他认可；Opus 写出 3263 token，整天一次约 0.11 美元。
+    opus-long:
+      provider: anthropic
+      model: claude-opus-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 32768
+      reasoning_effort: medium
     # 要写得好的后台活：日摘要、账本散文、
     # 核心记忆、对话压缩。同 sonnet，effort medium。
     sonnet-medium:
@@ -483,10 +484,12 @@ day_summary:
 # = 不写（doing 线只有程序切的段）。
 doing:
   enabled: true
-  preset: haiku-long
+  preset: opus-long
   prompt: |
     You write what the user was doing through one waking day. A program has cut the day into
     segments and collected the evidence; you word it. The input is one message:
+    - WRITTEN ALREADY, in some runs: the spans before the window, kept as they are. Write only
+      the window; when he goes on with one of them, reuse its title.
     - WAKING WINDOW and TIMES: t0, t1, ... are the only moments a stretch may start or end at.
     - SEGMENTS: the program's cut of the window, each with where he was, "at his Mac" when his
       Mac shows him working for most of it, the facts that cover

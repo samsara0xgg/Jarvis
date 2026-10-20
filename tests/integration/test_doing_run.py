@@ -1,4 +1,4 @@
-"""ADR 0302 — the writer of the doing lane: clues, the prompt, the gates, the run, the schedule.
+"""ADR 0302, 0310 — the doing lane's writer: clues, the prompt, the gates, the run, the schedule.
 
 Real memory.db, Event Log, day-line fold and cut in ``tmp_path``; the model is the only fake, a
 client that answers from a function of the prompt it was shown and records what it was asked.
@@ -14,13 +14,18 @@ The checks, as tables of input to expected output:
   what it covers, his answers over it; a rejected or failed call stores nothing and the run before
   it stays;
 - the digest, which the clock does not move;
-- the schedule, on a fake clock: a draft at most hourly and only when the inputs changed, a
-  final run once the day is over, a rewrite when late rows change a past day;
+- a short run (ADR 0310): the spans before the last kept and shown as context only, the window
+  from where the last one starts, the questions counted over the day;
+- the schedule, on a fake clock: a run at most every two hours and only when the inputs changed,
+  after the first one only the newest part, at once when he asks (her tool and the timeline's
+  route), a final run once the day is over, a rewrite when late rows change a past day;
 - the replay script, with and without ``--dry-run``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import re
 from contextlib import closing
@@ -42,13 +47,16 @@ from jarvis.decision.doing_run import (
     Brief,
     build_messages,
     inputs_digest,
+    narrow,
     read_run,
     times,
 )
 from jarvis.decision.llm import ChatResult
+from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.runtime import doing_run as runtime
 from jarvis.runtime.doing_run import (
     CHECK_EVERY,
+    SHORT_EVERY,
     DoingSchedule,
     DoingSettings,
     compose_run,
@@ -80,6 +88,7 @@ from jarvis.state.memory_db import (
 )
 from jarvis.state.shipments import Shipments
 from scripts import doing_replay
+from tests.integration.test_timeline_actions import _peers, _refused_without_credentials
 
 if TYPE_CHECKING:
     import sqlite3
@@ -1111,7 +1120,63 @@ def test_no_category_word_is_missing_from_the_gate(brief: Brief) -> None:
         assert "says where, not what" in got
 
 
+# --- a short run (ADR 0310) ---------------------------------------------------------------------
+
+
+def _written(brief: Brief) -> list[dict[str, Any]]:
+    """The spans of the good answer, as a stored run holds them."""
+    got = read_run(_good_text(build_messages(brief)[0]["content"]), "stop", brief)
+    assert not isinstance(got, str), got
+    return got
+
+
+def test_a_short_run_keeps_the_spans_before_the_last_and_writes_from_where_it_starts(
+    brief: Brief,
+) -> None:
+    """The window starts where the last written span does; the ones before are context only."""
+    written = _written(brief)
+    short = narrow(brief, written)
+    assert short.kept == written[:-1]
+    assert short.waking == (_ms(_at(14, 45)), brief.waking.end_ms)
+    lines = build_messages(short)[0]["content"].split("\n")
+    assert "WRITTEN ALREADY (local | title | category; kept as they are):" in lines
+    assert "08:00-11:30 | 写论文 | study" in lines
+    assert "11:30-12:00 | unknown | unknown" in lines
+    assert "WAKING WINDOW: t0 14:45:00 to t1 15:00:00" in lines
+    assert not any(line.startswith("c") and "图书馆" in line for line in lines)  # 09:05 is kept
+    got = read_run(_tile(build_messages(short)[0]["content"]), "stop", short)
+    assert not isinstance(got, str), got
+    assert [(s["start_ms"], s["end_ms"]) for s in got] == [(_ms(_at(14, 45)), _ms(_at(15)))]
+
+
+def test_a_run_that_does_not_tile_up_to_its_last_span_leaves_the_whole_day(brief: Brief) -> None:
+    """Late facts that moved where the day starts, or a single span: nothing is kept."""
+    written = _written(brief)
+    assert narrow(brief, written[1:]) is brief  # it no longer starts where the window does
+    assert narrow(brief, written[:1]) is brief  # one span: it is the open one
+
+
+def test_the_questions_of_a_short_run_count_with_the_ones_it_keeps(brief: Brief) -> None:
+    """The day's cap holds over the kept spans and the new ones together."""
+    written = _written(brief)
+    asking = {"id": "q:x", "text": "What was it?", "options": ["a", "b"]}
+    kept_full = [{**span, "question": asking} for span in written[:MAX_QUESTIONS]]
+    short = narrow(brief, [*kept_full, written[-1]])
+    assert sum(s["question"] is not None for s in short.kept) == MAX_QUESTIONS
+    answer = json.loads(_tile(build_messages(short)[0]["content"]))
+    assert not isinstance(read_run(json.dumps(answer), "stop", short), str)  # none new: fine
+    answer["spans"][0]["question"] = {"text": "What was it?", "options": ["a", "b"]}
+    assert read_run(json.dumps(answer), "stop", short) == (
+        f"more than {MAX_QUESTIONS} questions in the day ({MAX_QUESTIONS} kept)"
+    )
+
+
 # --- the run: stored, served, and what stays when a call does not land -------------------------
+
+
+def _latest(memory: Path) -> Any:  # noqa: ANN401 — the stored run
+    with closing(open_memory_db(memory)) as conn:
+        return latest_doing_run(conn, KEY)
 
 
 def _rows(memory: Path) -> list[tuple[Any, ...]]:
@@ -1255,13 +1320,16 @@ def test_the_doing_block_of_the_config(name: str) -> None:
     assert DoingSettings.from_config(raw) == expected
 
 
-def test_the_shipped_block_is_on_on_haiku_and_holds_the_prompt() -> None:
-    """The shipped block is on, on haiku, and holds the prompt."""
-    block = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["doing"]
-    settings = DoingSettings.from_config(block)
+def test_the_shipped_block_is_on_on_opus_and_holds_the_prompt() -> None:
+    """The shipped block is on, on Opus (ADR 0310), and holds the prompt."""
+    shipped = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    settings = DoingSettings.from_config(shipped["doing"])
     assert settings is not None
-    assert settings.preset == "haiku-long"
-    for needle in ("TITLE LANGUAGE", "never says where", "at most 5", "unknown", "stated"):
+    assert settings.preset == "opus-long"
+    assert shipped["llm"]["presets"]["opus-long"]["model"] == "claude-opus-5-5"
+    for needle in (
+        "TITLE LANGUAGE", "never says where", "at most 5", "unknown", "stated", "WRITTEN ALREADY",
+    ):
         assert needle in settings.prompt
 
 
@@ -1280,6 +1348,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     """The brain's clock, which stamps each run's ``written_at``."""
     ticking = Clock(NOW)
     monkeypatch.setattr("jarvis.state.memory_db.local_now", lambda: ticking.now)
+    monkeypatch.setattr("jarvis.runtime.doing_run.local_now", lambda: ticking.now)
     return ticking
 
 
@@ -1295,10 +1364,10 @@ def _schedule(world: World, writer: _Writer) -> DoingSchedule:
     )
 
 
-def test_the_schedule_drafts_once_an_hour_and_only_when_the_inputs_changed(
+def test_the_schedule_writes_every_two_hours_and_then_only_the_newest_part(
     world: World, clock: Clock,
 ) -> None:
-    """The schedule drafts once an hour and only when the inputs changed."""
+    """At most every two hours, only on changed inputs; after the first run, from the last span."""
     writer = _Writer(_tile)
     schedule = _schedule(world, writer)
 
@@ -1307,17 +1376,70 @@ def test_the_schedule_drafts_once_an_hour_and_only_when_the_inputs_changed(
         return schedule.tick(now)
 
     assert tick(NOW) == {KEY: "landed (draft, 7 spans, 0 questions)"}  # the other days: no inputs
-    assert len(writer.prompts) == 1
+    first = _latest(world.memory).spans
     assert tick(NOW + timedelta(minutes=5)) == {}  # looked at a moment ago
     assert tick(NOW + CHECK_EVERY) == {}  # nothing changed
-    assert len(writer.prompts) == 1
     _say(world.memory, "n1", _at(15, 10), "allen", "back at the library")
-    assert tick(_at(15, 30)) == {}  # changed, but the last run is not an hour old
+    assert tick(_at(16, 30)) == {}  # changed, but the last run is not two hours old
     assert len(writer.prompts) == 1
-    assert tick(_at(16, 5)) == {KEY: "landed (draft, 7 spans, 0 questions)"}
-    assert len(writer.prompts) == 2
+    assert tick(NOW + SHORT_EVERY + CHECK_EVERY) == {KEY: "landed (short, 7 spans, 0 questions)"}
+    shown = writer.prompts[1]
+    assert "WRITTEN ALREADY (local | title | category; kept as they are):" in shown
+    assert "13:30-14:45 | Work on it | work" in shown  # a span it keeps, as context
+    assert "WAKING WINDOW: t0 14:45:00 to t2 17:15:00" in shown  # from where the last one starts
+    assert "我在图书馆写论文" not in shown  # a clue of the kept part is not shown again
+    second = _latest(world.memory).spans
+    assert second[:-1] == first[:-1]  # the spans before the last are kept as written
+    assert (second[-1]["start_ms"], second[-1]["end_ms"]) == (_ms(_at(14, 45)), _ms(_at(17, 15)))
     assert [row[1] for row in _rows(world.memory)] == [1, 1]
-    assert tick(_at(16, 30)) == {}  # unchanged again
+    assert tick(_at(17, 30)) == {}  # unchanged again
+
+
+def test_his_asking_writes_today_at_once_and_twice_asking_writes_once(
+    world: World, clock: Clock,
+) -> None:
+    """Her tool writes today's newest part whenever the last run was; unchanged inputs ask none."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer)
+    clock.now = NOW
+    schedule.tick(NOW)
+    (tool,) = build_tidy_tool(schedule.tidy)
+    assert tool.name == "tidy_day"
+    assert not tool.read_only
+    _say(world.memory, "n1", _at(15, 10), "allen", "back at the library")
+    clock.now = _at(15, 20)  # twenty minutes after the last run
+    assert tool.handler({}, None) == {  # type: ignore[arg-type]
+        "done": True, "outcome": "landed (short, 7 spans, 0 questions)",
+    }
+    assert len(writer.prompts) == 2
+    assert tool.handler({}, None) == {"done": False, "outcome": "unchanged"}  # type: ignore[arg-type]
+    assert len(writer.prompts) == 2
+    assert len(_rows(world.memory)) == 2
+
+
+def test_the_timeline_asks_by_its_route_and_the_day_serves_what_was_written(
+    world: World, clock: Clock, tmp_path: Path,
+) -> None:
+    """``POST /inherent/day/tidy`` writes today now; ``GET /inherent/day`` serves the new run."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer)
+    clock.now = NOW
+    peers = _peers(tmp_path, doing_tidy=functools.partial(asyncio.to_thread, schedule.tidy))
+    _refused_without_credentials(peers, "/inherent/day/tidy", {})
+    assert writer.prompts == []
+    reply = peers.paired.post("/inherent/day/tidy")
+    assert reply.status_code == 200
+    assert reply.json() == {
+        "ok": True, "written": True, "outcome": "landed (draft, 7 spans, 0 questions)",
+    }
+    served = _read_day(world.log, VANCOUVER, world.memory, None, DAY, _ms(NOW))
+    titles = {
+        s["title"] for s in served["spans"] if s["lane"] == "doing" and s["basis"] != "planned"
+    }
+    assert titles == {"Work on it"}  # what was just written, not the program's wordless cut
+    assert peers.paired.post("/inherent/day/tidy").json() == {
+        "ok": True, "written": False, "outcome": "unchanged",
+    }
 
 
 def test_a_day_that_is_over_gets_a_final_run_even_when_nothing_changed(
@@ -1339,10 +1461,10 @@ def test_a_day_that_is_over_gets_a_final_run_even_when_nothing_changed(
     assert len(writer.prompts) == 2
 
 
-def test_late_rows_rewrite_a_past_day_and_a_failed_call_waits_an_hour(
+def test_late_rows_rewrite_a_past_day_and_a_failed_call_waits_two_hours(
     world: World, clock: Clock,
 ) -> None:
-    """Late rows rewrite a past day and a failed call waits an hour."""
+    """Late rows rewrite a past day, whole, and a failed call waits as long as a short run."""
     writer = _Writer(_tile)
     schedule = _schedule(world, writer)
     morning = _at(8, day=DAY + timedelta(days=1))
@@ -1358,15 +1480,16 @@ def test_late_rows_rewrite_a_past_day_and_a_failed_call_waits_an_hour(
     assert schedule.tick(clock.now) == {KEY: "failed"}
     assert len(_rows(world.memory)) == 2  # nothing stored; the run before stands
     clock.now += CHECK_EVERY
-    assert schedule.tick(clock.now) == {}  # not tried again for an hour
+    assert schedule.tick(clock.now) == {}  # not tried again for two hours
     writer.reply = lambda _p: "not json"
-    clock.now = morning + timedelta(hours=5, minutes=1)
+    clock.now = morning + timedelta(hours=6, minutes=1)
     outcome = schedule.tick(clock.now)
     assert outcome == {KEY: "rejected (not valid JSON)"}
     assert len(_rows(world.memory)) == 2
     writer.reply = _tile
-    clock.now = morning + timedelta(hours=6, minutes=2)
+    clock.now = morning + timedelta(hours=8, minutes=2)
     assert schedule.tick(clock.now) == {KEY: "landed (final, 7 spans, 0 questions)"}
+    assert "WRITTEN ALREADY" not in writer.prompts[-1]  # a final run writes the whole day
     assert len(_rows(world.memory)) == 3
 
 
