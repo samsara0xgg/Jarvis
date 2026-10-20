@@ -1125,6 +1125,15 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("source", "device", "meta", "beats", "part"),
         schema_version=1,
     ),
+    # ADR 0312: every fix of a run of location updates, a stretch of at most ten minutes a row.
+    EventTypeSchema(
+        event_type="phone.track_observed",
+        owner_layer="L5",
+        actor="observer",
+        required_payload=("started_at_ms", "ended_at_ms", "fixes"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     EventTypeSchema(
         event_type="phone.state_observed",
         owner_layer="L5",

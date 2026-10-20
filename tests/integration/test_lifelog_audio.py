@@ -274,8 +274,8 @@ def test_each_piece_and_each_refusal_is_one_log_line_without_its_bytes(
 
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("lifelog:")]
     assert lines == [
-        f"lifelog: kept a 600 s piece from iphone ({len(CAF)} bytes)",
-        f"lifelog: already had a 600 s piece from iphone ({len(CAF)} bytes)",
-        "lifelog: refused a piece from iphone with 415: "
+        f"lifelog: kept 600 s of audio from iphone ({len(CAF)} bytes)",
+        f"lifelog: already had 600 s of audio from iphone ({len(CAF)} bytes)",
+        "lifelog: refused audio from iphone with 415: "
         "send audio in a CAF, Ogg or MPEG-4 container",
     ]

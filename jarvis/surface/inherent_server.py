@@ -77,6 +77,10 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
 - ``POST /inherent/memory/places`` â€” ADR 0234, 0296; body ``{"name", "lat", "lng", "role"?}``
   keeps a place at a point, as ``save_place`` does; ``{"ok", "place", "change"}``
 - ``PUT /inherent/lifelog/audio/{id}`` â€” ADR 0238; one piece of the phone's day recording, kept
+- ``PUT /inherent/lifelog/motion/{id}`` â€” ADR 0312; one piece of the phone's device motion
+  while he rode, kept in the same archive
+- ``GET /inherent/track?from_ms=&to_ms=`` â€” ADR 0312; every fix the phones kept in a window
+  of at most 12 hours, per device, as rows of :data:`jarvis.state.phone_track.COLUMNS`
 """
 
 from __future__ import annotations
@@ -814,6 +818,10 @@ class InherentDeps:
     # for today in the owner's zone, to the response document. Off the loop thread. A ValueError
     # is a 400; ``None`` leaves the route unregistered.
     day_read: Callable[[date | None], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0312: ``(from_ms, to_ms)`` -> every fix the phones kept in that window, per device, read
+    # from the log off the loop thread. A ValueError (a window backwards or over 12 hours) is a
+    # 400; ``None`` leaves ``GET /inherent/track`` unregistered.
+    track_read: Callable[[int, int], Awaitable[dict[str, Any]]] | None = None
     # ADR 0296: ``(day, item id, on, label)`` -> the day's highlights after his mark, off the loop
     # thread. LookupError (no such item on that day) is 404, ``HighlightCapReached`` 409, a
     # ValueError 422; ``None`` leaves ``POST /inherent/day/highlight`` unregistered.
@@ -1830,6 +1838,23 @@ def _register_day_route(app: FastAPI, deps: InherentDeps) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return await _home_call(day_read(wanted))
+
+
+def _register_track_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0312: ``GET /inherent/track``, the dense track over a window; open as the day is."""
+    if deps.track_read is None:
+        return
+    track_read = deps.track_read
+
+    @app.get("/inherent/track")
+    async def track(
+        from_ms: Annotated[int, Query(ge=0)], to_ms: Annotated[int, Query(ge=0)],
+    ) -> dict[str, Any]:
+        """``{from_ms, to_ms, columns, tracks: [{device, fixes}]}``, fixes oldest first."""
+        try:
+            return await track_read(from_ms, to_ms)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 _ITEM_ID: Final = r"^[A-Za-z0-9_\-=+/.|:@]{1,256}$"
@@ -3036,15 +3061,12 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     if deps.lifelog is not None and deps.device_name is not None:
         lifelog_name, lifelog = deps.device_name, deps.lifelog
+        savers = {"audio": lifelog.save_audio, "motion": lifelog.save_motion}
 
-        @app.put("/inherent/lifelog/audio/{piece_id}")
-        async def put_lifelog_audio(
-            piece_id: str,
-            request: Request,
-            started_ms: Annotated[int, Query()],
-            duration_ms: Annotated[int, Query()],
+        async def _keep_piece(
+            kind: str, piece_id: str, request: Request, started_ms: int, duration_ms: int,
         ) -> JSONResponse:
-            """ADR 0238: one closed piece of a paired phone's day recording, kept for good.
+            """ADR 0238, 0312: one closed piece of a paired phone's recording, kept for good.
 
             Only a paired device's own token opens it, as on ``/inherent/device/events``. 201 when
             the piece is new, 200 when it was already kept with the same bytes; the phone deletes
@@ -3061,21 +3083,42 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
             data = await _capped_body(request, MAX_PIECE_BYTES)
             try:
                 kept = await asyncio.to_thread(
-                    lifelog.save_audio, name, piece_id, started_ms, duration_ms, data,
+                    savers[kind], name, piece_id, started_ms, duration_ms, data,
                 )
             except PieceRefused as exc:
                 LOGGER.warning(
-                    "lifelog: refused a piece from %s with %d: %s", name, exc.status, exc,
+                    "lifelog: refused %s from %s with %d: %s", kind, name, exc.status, exc,
                 )
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from None
             LOGGER.info(
-                "lifelog: %s a %d s piece from %s (%d bytes)",
-                "kept" if kept.created else "already had", duration_ms // 1000, name, kept.size,
+                "lifelog: %s %d s of %s from %s (%d bytes)",
+                "kept" if kept.created else "already had", duration_ms // 1000, kind, name,
+                kept.size,
             )
             return JSONResponse(
                 {"id": kept.id, "sha256": kept.sha256, "bytes": kept.size},
                 status_code=201 if kept.created else 200,
             )
+
+        @app.put("/inherent/lifelog/audio/{piece_id}")
+        async def put_lifelog_audio(
+            piece_id: str,
+            request: Request,
+            started_ms: Annotated[int, Query()],
+            duration_ms: Annotated[int, Query()],
+        ) -> JSONResponse:
+            """ADR 0238: one closed piece of a paired phone's day recording."""
+            return await _keep_piece("audio", piece_id, request, started_ms, duration_ms)
+
+        @app.put("/inherent/lifelog/motion/{piece_id}")
+        async def put_lifelog_motion(
+            piece_id: str,
+            request: Request,
+            started_ms: Annotated[int, Query()],
+            duration_ms: Annotated[int, Query()],
+        ) -> JSONResponse:
+            """ADR 0312: one closed piece of the phone's device motion while he rode."""
+            return await _keep_piece("motion", piece_id, request, started_ms, duration_ms)
 
     if deps.lifelog_coverage is not None and deps.device_name is not None:
         coverage_name, coverage_read = deps.device_name, deps.lifelog_coverage
@@ -3399,6 +3442,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     _register_turn_timings_route(app, deps)
     _register_day_route(app, deps)
+    _register_track_route(app, deps)
     _register_highlight_route(app, deps)
     _register_doing_answer_route(app, deps)
     _register_doing_tidy_route(app, deps)

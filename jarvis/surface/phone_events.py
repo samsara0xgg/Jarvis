@@ -9,7 +9,7 @@ under its device token. A frame has the shape of the ``/terminal/ws`` event fram
      "ts_epoch_ms": 1700000000000, "payload": {...}}
 
 The brain appends a frame through :meth:`BrainEvents.record_phone_batch`, which holds the
-dedupe, the clock clamp and the append; this module holds what is the phone's own: the six
+dedupe, the clock clamp and the append; this module holds what is the phone's own: the seven
 types, the fields and ranges of their payloads, and the shape of a frame. The registry in
 :mod:`jarvis.state.event_log` holds which fields each type requires.
 
@@ -29,6 +29,7 @@ from jarvis.state.event_log import EventTypeRegistry
 from jarvis.state.locate_wait import valid_request_id
 from jarvis.state.phone_day import HEALTH_EVENT, MEASURE_EVENT, MOTION_EVENT
 from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
+from jarvis.state.phone_track import FIX_COLUMNS, FROM_ACCESSORY, SIMULATED, TRACK_EVENT
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -40,7 +41,10 @@ PHONE_EVENTS_PATH: Final = "/inherent/device/events"
 STATE_EVENT: Final = "phone.state_observed"
 
 PHONE_EVENT_TYPES: Final = frozenset(
-    {VISIT_EVENT, LOCATION_EVENT, MOTION_EVENT, HEALTH_EVENT, STATE_EVENT, MEASURE_EVENT},
+    {
+        VISIT_EVENT, LOCATION_EVENT, MOTION_EVENT, HEALTH_EVENT, STATE_EVENT, MEASURE_EVENT,
+        TRACK_EVENT,
+    },
 )
 """Every type a phone may write, and nothing else: no confirmation, no utterance, no tool
 result, and none of the types a terminal sends over its link."""
@@ -72,6 +76,10 @@ MAX_BEATS: Final = 4000
 """Beats one event carries: [offset_ms, gap] is about ten characters, and a frame stays under
 64 KiB. A longer series is sent as several events, told apart by ``part``."""
 MAX_PARTS: Final = 1000
+MAX_TRACK_FIXES: Final = 300
+"""Fixes one track frame carries: a row is about a hundred characters, and a frame stays under
+64 KiB. The phone sends a minute at a time, about 60 at one fix a second."""
+MAX_TRACK_SPAN_MS: Final = 10 * 60 * 1000
 MAX_UNIT_CHARS: Final = 16
 MAX_SOURCE_CHARS: Final = 128
 MAX_META_KEYS: Final = 12
@@ -170,6 +178,60 @@ def _beats(value: object, _now_ms: int) -> bool:
     )
 
 
+def _nullable(check: Check) -> Check:
+    def nullable(value: object, now_ms: int) -> bool:
+        return value is None or check(value, now_ms)
+
+    return nullable
+
+
+_FLAGS: Final = SIMULATED | FROM_ACCESSORY
+
+
+def _offset(value: object, _now_ms: int) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _course(value: object, _now_ms: int) -> bool:
+    """Degrees clockwise from true north, 0 up to but not 360."""
+    number = _number(value)
+    return number is not None and 0 <= number < 360  # noqa: PLR2004 — a full turn
+
+
+def _flags(value: object, _now_ms: int) -> bool:
+    return type(value) is int and 0 <= value <= _FLAGS
+
+
+def _fix_checks() -> tuple[Check, ...]:
+    """One check per column of :data:`FIX_COLUMNS`, in order."""
+    return (
+        _offset, _within(-90, 90), _within(-180, 180), _non_negative,
+        _nullable(_finite), _nullable(_non_negative),
+        _nullable(_non_negative), _nullable(_non_negative),
+        _nullable(_course),
+        _nullable(_non_negative), _flags,
+    )
+
+
+_FIX: Final = _fix_checks()
+
+
+def _fixes(value: object, now_ms: int) -> bool:
+    """Rows of :data:`FIX_COLUMNS`, at most :data:`MAX_TRACK_FIXES`, in time order."""
+    if not isinstance(value, list) or not 0 < len(value) <= MAX_TRACK_FIXES:
+        return False
+    last = 0
+    for fix in value:
+        if not (
+            isinstance(fix, list) and len(fix) == len(FIX_COLUMNS)
+            and all(check(item, now_ms) for check, item in zip(_FIX, fix, strict=True))
+            and fix[0] >= last
+        ):
+            return False
+        last = fix[0]
+    return True
+
+
 def _part(value: object, _now_ms: int) -> bool:
     return type(value) is int and 0 <= value < MAX_PARTS
 
@@ -205,6 +267,7 @@ _CHECKS: Final[Mapping[str, Mapping[str, Check]]] = {
         "unit": _UNIT, "sample_uuid": _uuid, "source": _SOURCE, "device": _SOURCE,
         "meta": _meta, "beats": _beats, "part": _part,
     },
+    TRACK_EVENT: {"started_at_ms": _time, "ended_at_ms": _time, "fixes": _fixes},
     STATE_EVENT: {
         "signal": _one_of((*SIGNAL_VALUES, BATTERY_SIGNAL)),
         "value": _DETAIL,  # which texts fit which signal is checked in payload_valid
@@ -218,6 +281,7 @@ _WINDOWS: Final[Mapping[str, tuple[str, str]]] = {
     MOTION_EVENT: ("started_at_ms", "ended_at_ms"),
     HEALTH_EVENT: ("start_ms", "end_ms"),
     MEASURE_EVENT: ("start_ms", "end_ms"),
+    TRACK_EVENT: ("started_at_ms", "ended_at_ms"),
 }
 """The (start, end) fields of the types that cover a span; the end may not precede the start."""
 
@@ -277,8 +341,18 @@ def _state_valid(payload: Mapping[str, object]) -> bool:
     return value in SIGNAL_VALUES[signal]
 
 
+def _track_valid(payload: Mapping[str, object]) -> bool:
+    """The first fix is at the start, the last at the end, and the span is ten minutes at most."""
+    start, end, fixes = payload["started_at_ms"], payload["ended_at_ms"], payload["fixes"]
+    return (
+        isinstance(start, int) and isinstance(end, int) and isinstance(fixes, list)
+        and end - start <= MAX_TRACK_SPAN_MS and fixes[0][0] == 0 and fixes[-1][0] == end - start
+    )
+
+
 _RULES: Final[Mapping[str, Callable[[Mapping[str, object]], bool]]] = {
     HEALTH_EVENT: _health_valid, MEASURE_EVENT: _measure_valid, STATE_EVENT: _state_valid,
+    TRACK_EVENT: _track_valid,
 }
 """What a type's fields must also satisfy together, beyond each field's own check."""
 

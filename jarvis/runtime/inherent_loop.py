@@ -220,6 +220,7 @@ from jarvis.shared.steps import StepFold
 from jarvis.state import (
     embedding,
     meaning,
+    phone_track,
     picture_notes,
     places,
     quiet_mode,
@@ -7114,6 +7115,27 @@ def _read_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[
     return {"now_ms": int(time.time() * 1000), "turns": turns}
 
 
+def _read_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
+    """``GET /inherent/track`` (ADR 0312): the phones' dense track over a window.
+
+    The log is read on a connection of its own, so this runs on a worker thread.
+    """
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        tracks = phone_track.track(conn, from_ms, to_ms)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return {
+        "from_ms": from_ms, "to_ms": to_ms, "columns": list(phone_track.COLUMNS), "tracks": tracks,
+    }
+
+
+async def _serve_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
+    """:func:`_read_track` off the loop thread."""
+    return await asyncio.to_thread(_read_track, event_log_path, from_ms, to_ms)
+
+
 async def _serve_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
     """:func:`_read_turn_timings` off the loop thread."""
     return await asyncio.to_thread(_read_turn_timings, event_log_path, since_ms, limit)
@@ -8039,6 +8061,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             turn_timings_read=functools.partial(
                 _serve_turn_timings, runtime.runtime_paths.event_log,
             ),
+            track_read=functools.partial(_serve_track, runtime.runtime_paths.event_log),
             card_read=_read_card,
             card_decide=_decide_card,
             question_read=_read_question,

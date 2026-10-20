@@ -2,7 +2,7 @@
 
 Acceptance checks, each against the real code and a real event log:
 
-- the strict payload check of the six phone types, as a table of input to verdict;
+- the strict payload check of the seven phone types, as a table of input to verdict;
 - ``POST /inherent/device/events``: a batch of mixed good and bad frames is answered with one ack
   per frame in order and stores exactly the good ones, a resend writes nothing twice, the
   ``ingestion_node`` is the paired device's name, a frame whose append fails with a database error
@@ -36,6 +36,7 @@ from jarvis.state.device_tokens import (
     unpair_device,
 )
 from jarvis.state.event_log import EventTypeRegistry, open_event_log
+from jarvis.state.phone_track import FIX_COLUMNS
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface import phone_events
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -100,6 +101,15 @@ GOOD: dict[str, dict[str, Any]] = {
         "value": 64.0, "unit": "count/min", "sample_uuid": UUID, "source": "Allen's Apple Watch",
         "device": "Watch7,1", "meta": {"motion_context": "sedentary"},
     },
+    # ADR 0312: three fixes of a drive, the second with nothing iOS could not measure
+    "phone.track_observed": {
+        "started_at_ms": NOW - 2 * MINUTE, "ended_at_ms": NOW - 2 * MINUTE + 2000,
+        "fixes": [
+            [0, 48.4284123, -123.3656456, 4.7, 21.3, 3.1, 13.42, 0.6, 271.5, 4.2, 0],
+            [1000, 48.4284201, -123.3658311, 4.7, None, None, None, None, None, None, 0],
+            [2000, 48.4284299, -123.3660122, 9.5, 21.1, 3.3, 13.9, 0.7, 0.0, 12.0, 3],
+        ],
+    },
 }
 MINIMAL: dict[str, dict[str, Any]] = {
     "phone.visit_observed": {"lat": 0, "lng": 0, "accuracy_m": 0, "arrived_at_ms": NOW},
@@ -112,6 +122,10 @@ MINIMAL: dict[str, dict[str, Any]] = {
     "phone.measure_observed": {
         "metric": "vo2_max", "start_ms": NOW, "end_ms": NOW, "value": 0, "unit": "mL/(kg*min)",
         "sample_uuid": UUID,
+    },
+    "phone.track_observed": {
+        "started_at_ms": NOW, "ended_at_ms": NOW,
+        "fixes": [[0, 0, 0, 0, None, None, None, None, None, None, 0]],
     },
 }
 
@@ -145,10 +159,26 @@ def _span(metric: str, value: float, detail: str | None = None) -> dict[str, Any
 
 # --- the payload check, as a table --------------------------------------------------------------
 
-VISIT, LOCATION, MOTION, HEALTH, STATE, MEASURE = (
+VISIT, LOCATION, MOTION, HEALTH, STATE, MEASURE, TRACK = (
     "phone.visit_observed", "phone.location_observed", "phone.motion_observed",
     "phone.health_observed", "phone.state_observed", "phone.measure_observed",
+    "phone.track_observed",
 )
+FIX = GOOD[TRACK]["fixes"][0]
+
+
+def _track(*fixes: list[Any], start: int = NOW - HOUR) -> dict[str, Any]:
+    """A track frame of ``fixes`` from ``start``; its end is the last fix's offset."""
+    return {"started_at_ms": start, "ended_at_ms": start + fixes[-1][0], "fixes": list(fixes)}
+
+
+def _fix(t_ms: int, **changes: Any) -> list[Any]:  # noqa: ANN401
+    """The first good fix at ``t_ms``, with columns changed by name."""
+    row = [t_ms, *FIX[1:]]
+    for name, value in changes.items():
+        row[FIX_COLUMNS.index(name)] = value
+    return row
+
 VALID: list[tuple[str, dict[str, Any]]] = [
     *((kind, payload) for kind, payload in GOOD.items()),
     *((kind, payload) for kind, payload in MINIMAL.items()),
@@ -199,6 +229,12 @@ VALID: list[tuple[str, dict[str, Any]]] = [
     (MEASURE, _changed(
         MEASURE, metric="heartbeat_series", value=4000, beats=[[i * 800, 0] for i in range(4000)],
     )),
+    # a track: 300 fixes of a second each, ten minutes from first to last, two fixes at one moment
+    (TRACK, _track(*(_fix(i * 1000) for i in range(300)))),
+    (TRACK, _track(_fix(0), _fix(10 * MINUTE))),
+    (TRACK, _track(_fix(0), _fix(0))),
+    (TRACK, _track(_fix(0, course_deg=359.99, altitude_m=-12.5, flags=1))),
+    (TRACK, _track(_fix(0, lat=-90, lng=180, speed_mps=0, flags=2))),
 ]
 NAN, INF = float("nan"), float("inf")
 
@@ -345,6 +381,36 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
     (MOTION, _changed(MOTION, ended_at_ms=NOW + 10 * MINUTE)),
     (HEALTH, _changed(HEALTH, end_ms=NOW + HOUR)),
     (MEASURE, _changed(MEASURE, start_ms=NOW + HOUR, end_ms=NOW + HOUR)),
+    # a track's fixes: rows of eleven, in time order, from its start to its end, ten minutes at most
+    (TRACK, _changed(TRACK, fixes=[])),
+    (TRACK, _changed(TRACK, fixes=FIX)),
+    (TRACK, _track(*(_fix(i * 1000) for i in range(301)))),
+    (TRACK, _track(_fix(0), _fix(10 * MINUTE + 1))),
+    (TRACK, _track(_fix(0), _fix(2000), _fix(1000))),
+    (TRACK, _changed(TRACK, ended_at_ms=GOOD[TRACK]["ended_at_ms"] + 1)),
+    (TRACK, _changed(TRACK, started_at_ms=GOOD[TRACK]["started_at_ms"] - 1)),
+    (TRACK, _track(_fix(1000))),
+    (TRACK, _track(_fix(0)[:10])),
+    (TRACK, _track([*_fix(0), 0])),
+    (TRACK, _track(_fix(-1))),
+    (TRACK, _changed(TRACK, fixes=[_fix(0), [1.5, *FIX[1:]]])),
+    (TRACK, _track(_fix(0, lat=90.1))),
+    (TRACK, _track(_fix(0, lat=None))),
+    (TRACK, _track(_fix(0, lng=True))),
+    (TRACK, _track(_fix(0, accuracy_m=None))),
+    (TRACK, _track(_fix(0, accuracy_m=-1))),
+    (TRACK, _track(_fix(0, altitude_m=NAN))),
+    (TRACK, _track(_fix(0, vertical_accuracy_m=-1))),
+    (TRACK, _track(_fix(0, speed_mps=-1))),  # CoreLocation's "unknown" travels as null
+    (TRACK, _track(_fix(0, speed_accuracy_mps=INF))),
+    (TRACK, _track(_fix(0, course_deg=360))),
+    (TRACK, _track(_fix(0, course_deg=-1))),
+    (TRACK, _track(_fix(0, course_accuracy_deg="4"))),
+    (TRACK, _track(_fix(0, flags=4))),
+    (TRACK, _track(_fix(0, flags=True))),
+    (TRACK, _track(_fix(0, flags=None))),
+    (TRACK, _changed(TRACK, ended_at_ms=GOOD[TRACK]["started_at_ms"] - 1)),
+    (TRACK, _track(_fix(0), start=NOW + 6 * MINUTE)),
 ]
 
 
@@ -352,7 +418,7 @@ INVALID: list[tuple[str, dict[str, Any]]] = [
 def test_a_payload_that_is_exactly_what_the_phone_type_carries_is_valid(
     kind: str, payload: dict[str, Any],
 ) -> None:
-    """Every field and enum of the six types, at its edges."""
+    """Every field and enum of the seven types, at its edges."""
     assert payload_valid(kind, payload, NOW)
 
 
@@ -364,7 +430,7 @@ def test_a_payload_the_phone_type_does_not_carry_is_refused(
     assert not payload_valid(kind, payload, NOW)
 
 
-def test_only_the_six_phone_types_have_a_check_and_the_registry_names_the_same_fields() -> None:
+def test_only_the_seven_phone_types_have_a_check_and_the_registry_names_the_same_fields() -> None:
     """The check knows each registered field and no other, and a non-phone type is not valid."""
     assert set(GOOD) == PHONE_EVENT_TYPES
     for kind in PHONE_EVENT_TYPES:

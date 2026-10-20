@@ -1,12 +1,14 @@
 """What his phone records through the day, kept as the raw archive (ADR 0238).
 
 A paired phone records while he has the switch on and sends each piece of audio here once it is
-closed. One directory holds the pieces and keeps them for good: no age sweep, not in the export
-zip, not in "clear recordings"; erasing all data removes them only while the directory sits under
-the runtime root. A piece is filed by the device that sent it and the UTC moment it started, as
-``audio/<device>/<YYYY-MM-DD>/<YYYYMMDDTHHMMSS.fffZ>_<duration>ms_<id>.<ext>``, so the archive
-reads without an index. The container is read from the first bytes, never from what the sender
-claims; the codec inside it is the phone's choice.
+closed; while he rides in a vehicle it also sends pieces of its device motion (ADR 0312). One
+directory holds the pieces and keeps them for good: no age sweep, not in the export zip, not in
+"clear recordings"; erasing all data removes them only while the directory sits under the
+runtime root. A piece is filed by its kind, the device that sent it and the UTC moment it
+started, as ``<kind>/<device>/<YYYY-MM-DD>/<YYYYMMDDTHHMMSS.fffZ>_<duration>ms_<id>.<ext>``, so
+the archive reads without an index. The format is read from the first bytes, never from what the
+sender claims: for audio the container (the codec inside it is the phone's choice), for motion a
+gzip stream whose text opens with :data:`MOTION_HEADER`.
 
 A piece is written whole or not at all (a temporary file, fsynced, then renamed), so a stored
 name always holds complete bytes and the phone may delete its copy once the answer's SHA-256
@@ -22,6 +24,7 @@ import os
 import re
 import shutil
 import uuid
+import zlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -33,6 +36,9 @@ if TYPE_CHECKING:
 LIFELOG_DIRNAME: Final = "lifelog"
 """Under the runtime root unless ``lifelog.dir`` names another place."""
 AUDIO_DIRNAME: Final = "audio"
+MOTION_DIRNAME: Final = "motion"
+MOTION_HEADER: Final = b"# jarvis motion "
+"""How the text of a motion piece begins; the rest of that line names its version and frame."""
 
 MAX_PIECE_BYTES: Final = 32 * 1024 * 1024
 """Ten minutes of stereo at 256 kbps is 19 MB; a phone sends pieces of about ten minutes."""
@@ -82,6 +88,17 @@ def container_ext(data: bytes) -> str | None:
     return None
 
 
+def motion_ext(data: bytes) -> str | None:
+    """``csv.gz`` when ``data`` is gzip whose text opens with :data:`MOTION_HEADER`, or ``None``."""
+    if data[:2] != b"\x1f\x8b":
+        return None
+    try:
+        head = zlib.decompressobj(zlib.MAX_WBITS | 16).decompress(data[:4096], len(MOTION_HEADER))
+    except zlib.error:
+        return None
+    return "csv.gz" if head == MOTION_HEADER else None
+
+
 def piece_name(started_ms: int, duration_ms: int, piece_id: str, ext: str) -> str:
     """The file name a piece is kept under: its UTC start, its length and its id."""
     start = datetime.fromtimestamp(started_ms / 1000, tz=UTC)
@@ -123,10 +140,29 @@ class Lifelog:
         self, device: str, piece_id: str, started_ms: int, duration_ms: int, data: bytes,
     ) -> StoredPiece:
         """Keep one piece of ``device``'s audio, or say why not with a :class:`PieceRefused`."""
-        ext = _checked(device, piece_id, started_ms, duration_ms, data)
+        _checked(device, piece_id, started_ms, duration_ms, data)
+        ext = container_ext(data)
+        if ext is None:
+            raise PieceRefused(415, "send audio in a CAF, Ogg or MPEG-4 container")
+        return self._keep(AUDIO_DIRNAME, device, piece_id, started_ms, duration_ms, data, ext)
+
+    def save_motion(
+        self, device: str, piece_id: str, started_ms: int, duration_ms: int, data: bytes,
+    ) -> StoredPiece:
+        """Keep one piece of ``device``'s device motion (ADR 0312), or a :class:`PieceRefused`."""
+        _checked(device, piece_id, started_ms, duration_ms, data)
+        ext = motion_ext(data)
+        if ext is None:
+            raise PieceRefused(415, "send motion as gzip text that opens with '# jarvis motion'")
+        return self._keep(MOTION_DIRNAME, device, piece_id, started_ms, duration_ms, data, ext)
+
+    def _keep(  # noqa: PLR0913 — the piece's identity, its bytes and where they go
+        self, kind: str, device: str, piece_id: str, started_ms: int, duration_ms: int,
+        data: bytes, ext: str,
+    ) -> StoredPiece:
         digest = hashlib.sha256(data).hexdigest()
         day = datetime.fromtimestamp(started_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
-        folder = self.directory / AUDIO_DIRNAME / device / day
+        folder = self.directory / kind / device / day
         name = piece_name(started_ms, duration_ms, piece_id, ext)
         _make_dirs(folder)
         kept = [p for p in folder.glob(f"*_{piece_id}.*") if not p.name.startswith(".")]
@@ -199,8 +235,8 @@ def _end_ms(name: str) -> int | None:
     return round(start.timestamp() * 1000) + int(found[2])
 
 
-def _checked(device: str, piece_id: str, started_ms: int, duration_ms: int, data: bytes) -> str:
-    """The container extension of a piece the archive takes, or the :class:`PieceRefused`."""
+def _checked(device: str, piece_id: str, started_ms: int, duration_ms: int, data: bytes) -> None:
+    """Raise the :class:`PieceRefused` for a piece no kind of the archive takes."""
     if not _DEVICE.fullmatch(device):
         raise PieceRefused(400, "the device name cannot name a folder")
     if not PIECE_ID.fullmatch(piece_id):
@@ -213,7 +249,3 @@ def _checked(device: str, piece_id: str, started_ms: int, duration_ms: int, data
         raise PieceRefused(400, "the piece is empty")
     if len(data) > MAX_PIECE_BYTES:
         raise PieceRefused(413, "the piece is larger than 32 MiB")
-    ext = container_ext(data)
-    if ext is None:
-        raise PieceRefused(415, "send audio in a CAF, Ogg or MPEG-4 container")
-    return ext
