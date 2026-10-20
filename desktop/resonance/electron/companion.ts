@@ -220,6 +220,9 @@ if (locked) app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   app.dock?.hide();
+  // The dev build runs as Electron.app, so the Dock (shown while the Agents window is open) would wear Electron's icon;
+  // the installed app carries hers in its bundle (scripts/package.mjs). Jarvis-dock.png is assets/Jarvis.icns at 512 px.
+  if (!app.isPackaged) app.dock?.setIcon(path.join(here, '../assets/Jarvis-dock.png'));
   if (app.isPackaged && !demo) process.env.JARVIS_INHERENT_BRIDGE_PORT = port = await startDaemon();
   if (await needsSetup()) firstRun(); else companion();
 });
