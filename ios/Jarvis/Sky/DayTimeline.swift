@@ -456,11 +456,8 @@ private struct TLPager: View {
                 .opacity(TLMotion.listShows(back))
                 .allowsHitTesting(page == nil).accessibilityHidden(page != nil)
             if let page {
-                ZStack {          // a step to the row before or after pushes the page up or down; a turn from the bar is a cross-fade in the same place
-                    TLDetailPage(e: page, tl: tl, engine: engine, back: goBack, step: { step($0, from: page) }, steps: steps(from: page))
-                        .id(page.id).transition(turn.map { reduce ? .opacity : .push(from: $0) } ?? .opacity)
-                }
-                .clipped()
+                // a step to the row before or after pushes only the page's body up or down under its fixed head; a turn from the bar is a cross-fade in the same place
+                TLDetailPage(e: page, tl: tl, engine: engine, back: goBack, step: { step($0, from: page) }, steps: steps(from: page), turn: turn)
                     .offset(x: drag)
                     .opacity(TLMotion.pageShows(back))
                     .transition(reduce ? .opacity : .move(edge: .trailing))
@@ -490,7 +487,8 @@ private struct TLPager: View {
         let rows = opening
         guard let i = rows.firstIndex(where: { $0.id == e.id }), rows.indices.contains(i + d) else { return }
         Haptic.selection()
-        withAnimation(TLMotion.detail(reduce: reduce)) { turn = d > 0 ? .bottom : .top; tl.openRow = rows[i + d].id } completion: { turn = nil }
+        turn = d > 0 ? .bottom : .top          // the way is set first and the row changes on the next turn, so the body that leaves goes by the same way as the one that comes
+        DispatchQueue.main.async { withAnimation(TLMotion.step(reduce: reduce)) { tl.openRow = rows[i + d].id } completion: { turn = nil } }
     }
 
     private static let slop = 10.0

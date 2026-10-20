@@ -50,6 +50,9 @@ enum TLMotion {
     /// that a tap or a swipe in the middle of it takes it over where it is; under Reduce Motion a cross-fade.
     static func detail(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .spring(response: 0.3, dampingFraction: 1) }
     static let detailShift = 80.0
+    /// A step to the row before or after: the page's head stays where it is and only its body is pushed, a hand's breadth (`stepShift` pt) up or down, fading; under Reduce Motion a cross-fade
+    static let stepShift = 14.0
+    static func step(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: 0.25) }
     /// a swipe back let go: the same spring, starting at the finger's speed (`speed`: parts of the way left per second), so the page goes on as it was moving
     static func release(speed: Double) -> Animation { .interpolatingSpring(duration: 0.3, bounce: 0, initialVelocity: speed) }
     /// how much of the list and of the page shows at `back` (0: the page all the way in, 1: the list) while a swipe back moves them: they cross with a dip, so that their words are never
