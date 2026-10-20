@@ -1,4 +1,4 @@
-import { clean, clock, covered, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageLook, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
+import { clean, clock, covered, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
 
 // The day in one bar (ADR 0296): the axis, the pieces the bar is made of, what the pointer finds at a minute (the stretch it is in and
 // what else was going on), a range of the bar, and the day's numbers. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in
@@ -37,11 +37,10 @@ export function axisOf(model: DayModel) {
 }
 
 // ---------- the pieces ----------
-// `shade`: a night with stages is painted by stage, each slice the share of the piece it covers (f0 to f1, 0 to 1) in its own colour.
 // With stretches of what he was doing (ADR 0302) the waking part is those, each in its category's colour (`doing`; a way he went is `trip`) and its row is the stretch's;
 // one nothing says the words of is a `hole`: drawn as the track's own white, with no words. `place` is the stretch's place (empty when it has none).
 export type BarSeg = { key: string; row: string; kind: 'stay' | 'trip' | 'sleep' | 'doing'; s: number; e: number; f0: number; f1: number; rgb: Rgb; a: number; tone: 'dark' | 'light'; icon: Icon; name: string; place: string; short: string; mono: boolean;
-  shade?: { f0: number; f1: number; rgb: Rgb; a: number }[]; hole?: boolean };
+  hole?: boolean };
 // What is still to come on today: an event as a dashed box over its time, a reminder or a departure as a tick.
 // `leaving`: an event he has just said is not his, on its way out.
 export type Sched = { key: string; kind: 'event' | 'reminder' | 'departure'; s: number; e: number; f0: number; f1: number; short: string; leaving: boolean };
@@ -109,10 +108,9 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
       return { ...base, kind: 'stay', rgb: look.rgb, a, tone: toneOn(look.rgb, a), icon: look.icon, name: look.name, place: look.name, short: look.unnamed ? '' : look.name, mono: false };
     }
     if (it.kind === 'sleep') {
-      const minutes = it.minutes ?? ((it.end_ms ?? limit) - it.start_ms) / MIN;
-      const shade = it.stages?.length ? stageSlices(it, s, e).map(x => ({ f0: (x.s - s) / (e - s), f1: (x.e - s) / (e - s), rgb: stageLook(x.stage).rgb, a: stageLook(x.stage).a })) : undefined;
+      // One plain piece with its moon, like every other: the stages and the length are on the card under the pointer, the stages drawn when the row opens.
       const name = t(['Sleep', '睡觉']);
-      return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, tone: toneOn(SLEEP, .9), icon: 'moon', name, place: name, short: hm(minutes), mono: true, shade };
+      return { ...base, kind: 'sleep', rgb: SLEEP, a: .9, tone: toneOn(SLEEP, .9), icon: 'moon', name, place: name, short: '', mono: false };
     }
     // A way he went is a light haze with a hatch over it (drawn by the style), so it reads as dark ground.
     const ride = it.kind === 'ride', route = clean(it.route).replace(/\s*→\s*/g, '→'), name = ride ? rideWords(it, t) : moveWords(it.activity, t);
@@ -189,11 +187,13 @@ export type Peek = {
   // `place`: the piece's own name as a second line, when `name` is what he was doing there instead.
   stretch: { name: string; place?: string; rgb: Rgb | null; a: number; range: string; length: string; note?: string };
 };
-// A night with stages says its deep sleep and its REM on the card (`深睡 1:10 · REM 1:40`), whichever of them it had.
+// A night with stages says its deep sleep, its REM and how often he woke on the card (`深睡 1:10 · REM 1:40 · 醒 2 次`), whichever it had.
 function stageNote(it: DayItem, t: Say) {
   if (!it.stages?.length) return undefined;
-  const mins = stageMinutes(it);
-  return ([['deep', t(['Deep', '深睡'])], ['rem', 'REM']] as const).filter(([k]) => (mins[k] ?? 0) >= 1).map(([k, word]) => `${word} ${hm(mins[k])}`).join(' · ') || undefined;
+  const mins = stageMinutes(it), woke = stageSlices(it, it.start_ms, it.end_ms ?? it.start_ms).filter(x => x.stage === 'awake').length;
+  const parts = ([['deep', t(['Deep', '深睡'])], ['rem', 'REM']] as const).filter(([k]) => (mins[k] ?? 0) >= 1).map(([k, word]) => `${word} ${hm(mins[k])}`);
+  if (woke) parts.push(t([`Woke ${woke}×`, `醒 ${woke} 次`]));
+  return parts.join(' · ') || undefined;
 }
 // The row of the piece of the bar at a minute: the stretch there, or an event still to come. A gap has none, so the pointer in one lifts nothing.
 export const pieceAt = (bar: BarModel, ms: number): string | null =>

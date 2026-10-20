@@ -13,7 +13,6 @@
 .notch .dt-ground.is-future { right:0; width:auto; background:rgb(255 255 255 / .035); }
 .notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); transition:filter 120ms,opacity 150ms; }
 .notch .dt-seg.is-trip { background:repeating-linear-gradient(45deg, rgb(var(--ink) / .16) 0 2px, transparent 2px 5px), rgb(var(--c) / var(--a)); }
-.notch .dt-seg.has-shade { background:var(--shade); }
 .notch .dt-seg.is-lift { filter:brightness(1.22); }
 .notch .dt-seg.is-hot,.notch .dt-sched.is-hot { filter:brightness(1.12); }
 /* the words in a stretch: icon and name, or one of them, 6 px in from each side */
