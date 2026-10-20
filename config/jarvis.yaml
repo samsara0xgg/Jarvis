@@ -479,12 +479,14 @@ day_summary:
 # 调用（preset，类别 doing_run）回答整天的段；时间和线索只能按程序给的编号引用。答案没过检查
 # （时间不在给定的边界上、段重叠或有缝、词表外的值、标题只是地点或类别词、超过 40 个字符、
 # 引用的线索不存在、stated 没有他的话撑着、问题超过 5 个……）就整份丢掉，不存，重问一次，
-# 还不过上一份继续有效。今天：内容有变化时最多每小时写一份草稿；过完的一天（今天之前，或他已睡下）
-# 写一份终稿，之后晚到的数据让输入变了就再写一份；只看最近 3 天。enabled 不是 true 或没有 prompt
-# = 不写（doing 线只有程序切的段）。
+# 还不过上一份继续有效。今天：只在他要（理一下 / tidy_day）时写，第一份之后只写最新的部分
+# （ADR 0310）；clock_drafts 为 true 时另外最多每两小时自己写一次（ADR 0311：这个月 API 额度紧，
+# 他选了关掉）。过完的一天（今天之前，或他已睡下）写一份终稿，之后晚到的数据让输入变了就再写一份；
+# 只看最近 3 天。enabled 不是 true 或没有 prompt = 不写（doing 线只有程序切的段）。
 doing:
   enabled: true
   preset: opus-long
+  clock_drafts: false
   prompt: |
     You write what the user was doing through one waking day. A program has cut the day into
     segments and collected the evidence; you word it. The input is one message:

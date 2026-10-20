@@ -6,11 +6,11 @@ builds the input and gates the answer; L2 appends the run. A run that fails or i
 stores nothing and the run before it stays.
 
 :class:`DoingSchedule` looks at today and the last few days every quarter of an hour, in a thread
-off the loop, and asks the model only when the inputs changed (ADR 0310):
+off the loop, and asks the model only when the inputs changed (ADR 0310, ADR 0311):
 
-- today: a short run at most every two hours, which writes only the time from where the last
-  written span starts and keeps the spans before it (:func:`narrow`); and one at once when he asks
-  (:meth:`DoingSchedule.tidy`);
+- today: a run when he asks (:meth:`DoingSchedule.tidy`), and with ``doing.clock_drafts`` one at
+  most every two hours as well; after the first, each writes only the time from where the last
+  written span starts and keeps the spans before it (:func:`narrow`);
 - a day that is over (it is a day before today, or he has gone to bed): one final run of the
   whole day, and another when late rows change its inputs.
 
@@ -78,6 +78,8 @@ class DoingSettings:
 
     preset: str
     prompt: str
+    clock_drafts: bool = False
+    """Today is also written on the clock every two hours, not only when he asks (ADR 0311)."""
 
     @classmethod
     def from_config(cls, raw: object) -> DoingSettings | None:
@@ -91,6 +93,7 @@ class DoingSettings:
         return cls(
             preset=preset if isinstance(preset, str) and preset.strip() else DEFAULT_PRESET,
             prompt=prompt.strip(),
+            clock_drafts=raw.get("clock_drafts") is True,
         )
 
 
@@ -272,13 +275,15 @@ class DoingSchedule:
             return "no inputs"
         with closing(open_memory_db(self._memory_db)) as conn:
             latest = latest_doing_run(conn, brief.day)
+        recent = False
         if latest is not None:
             # A draft whose inputs did not change still becomes the final run once the day is over.
             if latest.inputs_digest == inputs_digest(brief) and not (brief.final and latest.draft):
                 return "unchanged"
-            written = datetime.fromisoformat(latest.written_at).astimezone()
-            if not asked and now - written < SHORT_EVERY:
-                return "waiting"
+            recent = now - datetime.fromisoformat(latest.written_at).astimezone() < SHORT_EVERY
+        # Unasked, today is written on the clock only with clock_drafts (ADR 0311).
+        if not asked and (recent or not (brief.final or self._settings.clock_drafts)):
+            return "waiting"
         # Today's newest part is written after what the last draft said; a final run rewrites all.
         short = latest is not None and latest.draft and not brief.final
         writing = narrow(brief, latest.spans) if short and latest is not None else brief

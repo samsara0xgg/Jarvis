@@ -290,6 +290,7 @@ def _recorder(tmp_path: Path) -> tuple[CostRecorder, sqlite3.Connection]:
 
 
 SETTINGS = DoingSettings(preset="p", prompt="write what he was doing")
+CLOCKED = replace(SETTINGS, clock_drafts=True)
 
 
 # --- the clues ---------------------------------------------------------------------------------
@@ -1376,6 +1377,14 @@ SETTINGS_CASES = {
     "the default preset": (
         {"enabled": True, "prompt": "write"}, DoingSettings("haiku-bg", "write"),
     ),
+    "drafts on the clock": (
+        {"enabled": True, "prompt": "write", "clock_drafts": True},
+        DoingSettings("haiku-bg", "write", clock_drafts=True),
+    ),
+    "drafts on the clock only when true": (
+        {"enabled": True, "prompt": "write", "clock_drafts": "yes"},
+        DoingSettings("haiku-bg", "write"),
+    ),
 }
 
 
@@ -1392,6 +1401,7 @@ def test_the_shipped_block_is_on_on_opus_and_holds_the_prompt() -> None:
     settings = DoingSettings.from_config(shipped["doing"])
     assert settings is not None
     assert settings.preset == "opus-long"
+    assert not settings.clock_drafts  # today is written when he asks and at night (ADR 0311)
     assert shipped["llm"]["presets"]["opus-long"]["model"] == "claude-opus-5-5"
     for needle in (
         "TITLE LANGUAGE", "never says where", "at most 5", "unknown", "stated", "WRITTEN ALREADY",
@@ -1423,9 +1433,9 @@ def _down(_prompt: str) -> str:
     raise TimeoutError(msg)
 
 
-def _schedule(world: World, writer: _Writer) -> DoingSchedule:
+def _schedule(world: World, writer: _Writer, settings: DoingSettings = CLOCKED) -> DoingSchedule:
     return DoingSchedule(
-        settings=SETTINGS, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
+        settings=settings, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
         llm_config={}, pricing_table={}, client=writer,  # type: ignore[arg-type]
     )
 
@@ -1459,6 +1469,31 @@ def test_the_schedule_writes_every_two_hours_and_then_only_the_newest_part(
     assert (second[-1]["start_ms"], second[-1]["end_ms"]) == (_ms(_at(14, 45)), _ms(_at(17, 15)))
     assert [row[1] for row in _rows(world.memory)] == [1, 1]
     assert tick(_at(17, 30)) == {}  # unchanged again
+
+
+def test_without_clock_drafts_today_waits_for_his_asking_and_the_night(
+    world: World, clock: Clock,
+) -> None:
+    """Off (as shipped, ADR 0311): the clock never writes today; he asks, and the night writes."""
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer, SETTINGS)
+
+    def tick(now: datetime) -> dict[str, str]:
+        clock.now = now
+        return schedule.tick(now)
+
+    assert tick(NOW) == {}
+    _say(world.memory, "n1", _at(15, 10), "allen", "back at the library")
+    assert tick(NOW + SHORT_EVERY + CHECK_EVERY) == {}  # changed, and two hours on: still not
+    assert writer.prompts == []
+    clock.now = _at(17, 30)
+    assert schedule.tidy() == "landed (draft, 7 spans, 0 questions)"
+    _say(world.memory, "n2", _at(17, 40), "allen", "still here")
+    assert tick(_at(20)) == {}  # what he asked for stands until he asks again or the day ends
+    next_morning = _at(8, day=DAY + timedelta(days=1))
+    assert tick(next_morning) == {KEY: "landed (final, 7 spans, 0 questions)"}
+    assert len(writer.prompts) == 2
+    assert [row[1] for row in _rows(world.memory)] == [1, 0]
 
 
 def test_his_asking_writes_today_at_once_and_twice_asking_writes_once(
@@ -1587,7 +1622,7 @@ def test_the_schedule_builds_its_client_from_the_preset_when_none_is_given(
 
     monkeypatch.setattr(runtime, "build_compact_client", build)
     schedule = DoingSchedule(
-        settings=SETTINGS, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
+        settings=CLOCKED, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
         llm_config={"presets": {"p": {}}}, pricing_table={},
     )
     clock.now = NOW

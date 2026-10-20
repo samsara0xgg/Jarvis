@@ -1,6 +1,6 @@
 # ADR 0310 — The doing lane is written in short runs every two hours, when he asks, and once a night
 
-**Status:** Accepted
+**Status:** Superseded-by-0311
 **Date:** 2026-10-20
 **Supersedes:** the clauses of ADR 0302 that draft a day under way at most hourly, rewriting the whole day each time, with Haiku. Everything else in ADR 0302 stands.
 
