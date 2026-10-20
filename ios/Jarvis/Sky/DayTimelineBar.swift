@@ -462,28 +462,48 @@ private struct TLBarLabels: View, Equatable {
     }
 }
 
-/// The line for now: 2 pt of warm white with a glow that breathes over 2.4 s. The glow is a layer of its own, a shadow drawn once whose opacity an animation lifts and lowers (0.3 to 0.8 of the
-/// shadow), and not a shadow redrawn 30 times a second; paused it stands half lit.
-private struct TLNowGlow: View {
+/// The line for now: 2 pt of warm white with a glow that breathes over 2.4 s. The glow is a layer of its own, a shadow drawn once (and kept as it is drawn) whose opacity Core Animation lifts and
+/// lowers from 0.3 to 0.8 of the shadow, on its own and with nothing asked of the app: not a shadow redrawn 30 times a second, nor an animation the app has to step. Paused it stands half lit.
+private struct TLNowGlow: UIViewRepresentable {
     let height: Double
     let breathe: Bool
-    @State private var lit = false
 
-    var body: some View {
-        let warm = TLPaint.warm.color
-        ZStack {
-            RoundedRectangle(cornerRadius: 1).fill(warm).frame(width: 2, height: height)
-                .shadow(color: warm.opacity(0.8), radius: 4)
-                .opacity(breathe ? (lit ? 1 : 0.375) : 0.6875)
-            RoundedRectangle(cornerRadius: 1).fill(warm).frame(width: 2, height: height)
+    func makeUIView(context: Context) -> GlowView { GlowView() }
+    func updateUIView(_ v: GlowView, context: Context) { v.breathing = breathe }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: GlowView, context: Context) -> CGSize? { CGSize(width: 2, height: height) }
+
+    final class GlowView: UIView {
+        private let glow = CALayer(), line = CALayer()
+        var breathing = false {
+            didSet {
+                guard breathing != oldValue else { return }
+                if breathing {
+                    let a = CABasicAnimation(keyPath: "opacity")
+                    a.fromValue = 0.375; a.toValue = 1; a.duration = 1.2; a.autoreverses = true; a.repeatCount = .infinity
+                    a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    glow.add(a, forKey: "breathe")
+                } else {
+                    glow.removeAnimation(forKey: "breathe")
+                    glow.opacity = 0.6875
+                }
+            }
         }
-        .onAppear { sync() }
-        .onChange(of: breathe) { _, _ in sync() }
-    }
 
-    private func sync() {
-        lit = false
-        if breathe { withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { lit = true } }
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            let warm = UIColor(red: 1, green: 240 / 255, blue: 220 / 255, alpha: 1).cgColor
+            for l in [glow, line] { l.backgroundColor = warm; l.cornerRadius = 1; layer.addSublayer(l) }
+            glow.shadowColor = warm; glow.shadowOpacity = 0.8; glow.shadowRadius = 4; glow.shadowOffset = .zero
+            glow.shouldRasterize = true; glow.rasterizationScale = UIScreen.main.scale
+            glow.opacity = 0.6875
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            glow.frame = bounds; line.frame = bounds
+            glow.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: 1).cgPath
+        }
     }
 }
 
