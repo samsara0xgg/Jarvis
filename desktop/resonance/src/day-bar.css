@@ -130,11 +130,19 @@
 .notch .dt-num em { font-size:11.5px; line-height:16px; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
 .notch .dt-num:hover,.notch .dt-num.is-pinned { background:rgb(255 255 255 / .1); }
 .notch .dt-num.is-pinned { box-shadow:inset 0 0 0 1px rgb(var(--ink) / .6); }
-/* what the bar is drawn from (a day with stretches): his stretches or the places, at the numbers' right end */
-.notch .dt-by { display:inline-flex; align-items:center; gap:2px; height:24px; margin-left:auto; padding:2px; box-sizing:border-box; border-radius:12px; background:rgb(255 255 255 / .06); }
-.notch .dt-by button { height:20px; padding:0 9px; border-radius:10px; font-size:11px; white-space:nowrap; color:var(--p-faint); transition:background 120ms,color 120ms; }
-.notch .dt-by button:hover { color:var(--p-ink); }
-.notch .dt-by button.is-on { background:rgb(255 255 255 / .14); color:var(--p-ink); }
+/* what the bar is drawn from (a day with stretches), at the numbers' right end: two sides and a glass thumb under the one that is on (DayBar.tsx). The thumb is a translucent
+   pill (blur and saturate of what is behind it, a half-pixel light rim, a soft highlight on top); held, it grows 8%; it springs to a side when it is let go or a side is clicked. */
+.notch .dt-by { position:relative; display:inline-grid; grid-template-columns:1fr 1fr; align-items:center; height:24px; margin-left:auto; padding:2px; box-sizing:border-box; border-radius:12px; background:rgb(255 255 255 / .06); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .08); touch-action:none; }
+.notch .dt-gl { position:absolute; left:2px; top:2px; bottom:2px; width:calc((100% - 4px) / 2); pointer-events:none; transition:transform 320ms cubic-bezier(.34,1.45,.5,1); }
+.notch .dt-gl > i { position:absolute; inset:0; border-radius:10px; background:linear-gradient(180deg, rgb(255 255 255 / .26), rgb(255 255 255 / .1)); -webkit-backdrop-filter:blur(10px) saturate(1.8); backdrop-filter:blur(10px) saturate(1.8);
+  box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .4), inset 0 1px 0 rgb(255 255 255 / .35), 0 2px 6px rgb(0 0 0 / .3); transition:transform 160ms var(--ease-out), box-shadow 160ms; }
+.notch .dt-by[data-by="place"] .dt-gl { transform:translateX(100%); }
+.notch .dt-by.is-held .dt-gl { transform:translateX(var(--x)); transition:none; }
+.notch .dt-by.is-held .dt-gl > i { transform:scale(1.08); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .5), inset 0 1px 0 rgb(255 255 255 / .45), 0 4px 12px rgb(0 0 0 / .4); }
+.notch .dt-by button { position:relative; height:20px; padding:0 9px; border-radius:10px; font-size:11px; white-space:nowrap; color:var(--p-faint); touch-action:none; transition:color 120ms; }
+.notch .dt-by button:hover,.notch .dt-by button[aria-pressed="true"] { color:var(--p-ink); }
+.notch .dt-by button[aria-pressed="true"] { cursor:grab; }
+.notch .dt-by.is-held button { cursor:grabbing; }
 .notch .dt-vitals { display:flex; align-items:center; gap:10px; height:24px; padding-inline:4px; }
 .notch .dt-vit { display:inline-flex; align-items:baseline; gap:4px; font-size:11.5px; line-height:16px; white-space:nowrap; color:var(--p-faint); }
 .notch .dt-vit small { font-size:inherit; }

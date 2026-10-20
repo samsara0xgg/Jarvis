@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
+import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarBy, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { cardOf } from './numberCard';
 import { CardBody, Swap } from './CardView';
@@ -77,6 +77,33 @@ function RangeBody({ s, say, onSay, onOnly, t }: { s: Summary; say: Said | null;
     <div className="dt-cbtns"><button type="button" className="dt-cbtn" onClick={onOnly}>{t(['Show only this', '只看这段'])}</button>
       {say && <SayWhat press={() => onSay(say)} t={t}/>}</div>
   </>;
+}
+
+// What the bar is drawn from, on a day with stretches: a glass thumb under the side that is on. A click on a side moves it there. It can be pressed and dragged along the
+// toggle: it grows while it is held, the bar switches the moment its middle crosses the toggle's, and on release it springs to the nearer side (the side that is on).
+function ByToggle({ value, onChange, t }: { value: BarBy; onChange: (by: BarBy) => void; t: (l: L) => string }) {
+  const box = useRef<HTMLDivElement>(null), held = useRef<{ x0: number; base: number; w: number } | null>(null), live = useRef(value), [drag, setDrag] = useState<number | null>(null);
+  live.current = value;
+  const down = (e: ReactPointerEvent) => {
+    if (e.button !== 0 || !(e.target as Element).closest('button[aria-pressed="true"]')) return;
+    const w = (box.current!.clientWidth - 4) / 2, base = value === 'place' ? w : 0;
+    held.current = { x0: e.clientX, base, w };
+    box.current!.setPointerCapture(e.pointerId);
+    setDrag(base);
+  };
+  const move = (e: ReactPointerEvent) => {
+    const h = held.current;
+    if (!h) return;
+    const x = clamp(h.base + e.clientX - h.x0, 0, h.w), side: BarBy = x + h.w / 2 > h.w ? 'place' : 'doing';
+    setDrag(x);
+    if (side !== live.current) { live.current = side; onChange(side); }
+  };
+  const up = () => { held.current = null; setDrag(null); };
+  return <div ref={box} className={`dt-by${drag !== null ? ' is-held' : ''}`} data-by={value} role="group" aria-label={t(['What the bar shows', '总览条画的是'])} style={drag !== null ? { '--x': `${drag}px` } as CSSProperties : undefined}
+    onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={up}>
+    <i className="dt-gl" aria-hidden="true"><i/></i>
+    {(['doing', 'place'] as const).map(k => <button key={k} type="button" aria-pressed={value === k} onClick={() => onChange(k)}>{k === 'doing' ? t(['Doing', '在干嘛']) : t(['Place', '在哪'])}</button>)}
+  </div>;
 }
 
 // What mattered: a lit star at the start of each highlighted item, his filled and hers outlined. One that comes fades in (the style does it); one
@@ -227,9 +254,7 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
   // By place on a day with stretches the pointer lifts the place under it, but a click or the span marked is the stretch's (the list's row there).
   const lifted = live?.row ?? null, hit = barBy === 'place' && model.segs.size && live ? bar.segs.find(x => x.s <= live.ms && live.ms < x.e)?.row ?? null : lifted;
   const spanned = hot && hot !== hit && hot !== open ? model.span.get(hot) : null, opened = open ? model.span.get(open) : null;
-  const by = model.segs.size > 0 && <div className="dt-by" role="group" aria-label={t(['What the bar shows', '总览条画的是'])}>
-    {(['doing', 'place'] as const).map(k => <button key={k} type="button" className={barBy === k ? 'is-on' : ''} aria-pressed={barBy === k} onClick={() => setSettings({ barBy: k })}>{k === 'doing' ? t(['Doing', '在干嘛']) : t(['Place', '在哪'])}</button>)}
-  </div>;
+  const by = model.segs.size > 0 && <ByToggle value={barBy} onChange={k => setSettings({ barBy: k })} t={t}/>;
   return <>
     <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
       <div className="dt-scrub" aria-hidden="true">
