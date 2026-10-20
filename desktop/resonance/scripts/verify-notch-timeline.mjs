@@ -237,7 +237,7 @@ const yesterday = () => ({
 
 // What he was doing (ADR 0302), laid over makeDay's stays, each as the brain serves a span of the doing lane: titled from facts (work at home with a project, a
 // ride by its route, sleep), a home span with no title, his own answer (stated), and two that must never show: a planned one over now and one of another lane.
-const sp = (id, from, to, over = {}) => ({ id, lane: 'doing', kind: 'segment', start_ms: at4(from), end_ms: to === null ? null : at4(to), title: null, detail: null, category: 'unknown', basis: 'observed', confidence: 1,
+const sp = (id, from, to, over = {}) => ({ id, lane: 'doing', kind: 'doing', start_ms: at4(from), end_ms: to === null ? null : at4(to), title: null, detail: null, category: 'unknown', basis: 'observed', confidence: 'high',
   confirmed: false, clues: [], question: null, place_id: null, item_ids: [], ...over });
 const SPANS = [
   sp('d-sleep', 55, 905, { title: 'sleep', category: 'sleep' }),
@@ -251,6 +251,39 @@ const SPANS = [
   sp('d-plan', 2100, 2300, { title: '睡前读书', category: 'rest', kind: 'planned', basis: 'inferred' }),
 ];
 const doingDay = (over = {}) => makeDay({ spans: SPANS, ...over });
+
+// The same day as a brain that cuts it into stretches serves it (ADR 0302, 0307): twelve from waking to now, each with the items that fall in it by id (a stay that spans many
+// of them, a Claude Code session that spans two, a lasting item that runs past its stretch, an id the day does not have, a kind the pane does not draw), and the night as its item.
+const segItems = () => [
+  ev('screen-1', 'screen', 920, 1005, { device: 'iPhone', active_s: 1500, apps: [{ name: '微信', bundle: 'com.tencent.xin', minutes: 12, category: 'social' }, { name: '小红书', bundle: 'com.xingin', minutes: 8, category: null }] }),
+  ev('away-1', 'away_note', 1415, 1445, { title: '躺着休息' }),
+  ev('code-1', 'code', 1750, 1830, { title: 'Verify the day list', project: 'jarvis', account: 'A', detail: 'Rewrote the list.' }),
+  ev('code-2', 'code', 2000, 2130, { title: 'Doing rows', project: 'jarvis', account: 'A' }),
+  ev('pic-3', 'picture', 1710, 1710, { attachment: 'c'.repeat(32), note: '图书馆的窗边' }),
+  ev('pic-4', 'picture', 1740, 1740, { attachment: 'd'.repeat(32), note: '写完的笔记' }),
+  ev('media-1', 'media', 1900, 1930, { device: 'iPhone', app: '音乐', active_s: 1500, titles: [{ title: '晴天', artist: '周杰伦' }], route: 'AirPods' }),
+  ev('messages-1', 'messages', 1905, 1912, { device: 'iPhone', app: '微信', conversation: '妈妈', sent: 3, received: 5 }),
+  ev('phone-call-1', 'phone_call', 1915, 1919, { device: 'iPhone', app: '电话', person: '妈妈', direction: 'received', duration_s: 240 }),
+  ev('earbuds-1', 'earbuds', 1855, 1935, { device: 'iPhone', device_name: 'AirPods' }),
+];
+const SEGS = [
+  sp('doing-1', 905, 1030, { title: '在家刷手机', category: 'rest', basis: 'inferred', confidence: 'medium', place_id: 'stay-home-1', detail: '早上起来，在手机上看了一会儿微信和小红书。',
+    clues: [{ kind: 'screen', at_ms: at4(930), text: '手机上用了 25 分钟' }, { kind: 'words', at_ms: null, text: '没有工作记录' }], item_ids: ['stay-home-1', 'reminder-2', 'screen-1', 'talk-1', 'gone-1', 'earbuds-1'] }),
+  sp('doing-2', 1030, 1125, { title: 'Jarvis', category: 'work', place_id: 'stay-home-1', item_ids: ['stay-home-1', 'work-1'] }),
+  sp('doing-3', 1125, 1315, { kind: 'unknown', title: null, category: 'commute', confidence: 'low', item_ids: ['move-1', 'move-2'] }),
+  sp('doing-4', 1315, 1355, { title: '在 A&W 吃午饭', category: 'meal', basis: 'inferred', place_id: 'stay-aw', item_ids: ['stay-aw', 'pay-1', 'picture-1'] }),
+  sp('doing-5', 1355, 1450, { title: '在家休息', category: 'rest', basis: 'inferred', confidence: 'low', place_id: 'stay-home-2', item_ids: ['move-3', 'stay-home-2', 'away-1'] }),
+  sp('doing-6', 1450, 1519, { title: '27', category: 'commute', item_ids: ['ride-1', 'talk-3'] }),
+  sp('doing-7', 1519, 1640, { title: '在图书馆写作业', category: 'study', basis: 'stated', confirmed: true, place_id: 'stay-uvic', item_ids: ['stay-uvic'] }),
+  sp('doing-8', 1640, 1700, { title: 'FaceTime', category: 'unknown', place_id: 'stay-uvic', item_ids: ['stay-uvic', 'call-1'] }),
+  sp('doing-9', 1700, 1815, { title: '在 UVic 学习', category: 'study', basis: 'inferred', confidence: 'medium', place_id: 'stay-uvic', item_ids: ['stay-uvic', 'pic-3', 'pic-4', 'code-1'] }),
+  sp('doing-10', 1815, 1850, { title: '27', category: 'commute', item_ids: ['ride-2', 'code-1'] }),
+  sp('doing-11', 1850, 1935, { title: '在家休息，听音乐，回消息', category: 'rest', basis: 'inferred', place_id: 'stay-home-3', item_ids: ['stay-home-3', 'media-1', 'messages-1', 'phone-call-1', 'talk-2'] }),
+  sp('doing-12', 1935, null, { title: 'Jarvis', category: 'work', place_id: 'stay-home-3', item_ids: ['stay-home-3', 'work-2', 'code-2', 'chat-1', 'claude-day-1'] }),
+  sp('doing-p', 2200, 2300, { title: '睡前读书', category: 'rest', kind: 'planned', basis: 'inferred' }),
+  { ...sp('doing-l', 2000, 2200, { title: '不该看到' }), lane: 'place' },
+];
+const segDay = (over = {}) => richDay({ items: [...richDay().items, ...segItems()], spans: SEGS, ...over });
 
 // ---------- the model, in node ----------
 const zh = l => l[1], en = l => l[0];
@@ -420,7 +453,7 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && doingOf(sp('a', 900, 1000, { title: 7 })).title === null && doingOf(sp('a', 900, 1000, { category: undefined })).category === 'unknown' && doingOf(sp('a', 900, null)).end_ms === null);
   const tidied = tidyReply(doingDay()).spans;
   check('the day keeps its doing spans (not the planned one, not another lane) and drops the rest of what a span carries; an older brain has none', tidied.map(x => x.id).join() === 'd-sleep,d-work,d-snack,d-home,d-ride,d-study,d-eve'
-    && tidied.every(x => Object.keys(x).join() === 'id,lane,start_ms,end_ms,title,category,basis') && tidyReply(makeDay()).spans.length === 0 && tidyReply({ ...makeDay(), spans: 'x' }).spans.length === 0 && tidyReply({ ...makeDay(), spans: [null, 7, { lane: 'doing' }] }).spans.length === 0);
+    && tidied.every(x => Object.keys(x).join() === 'id,lane,kind,start_ms,end_ms,title,detail,category,basis,confidence,clues,place_id,item_ids') && tidyReply(makeDay()).spans.length === 0 && tidyReply({ ...makeDay(), spans: 'x' }).spans.length === 0 && tidyReply({ ...makeDay(), spans: [null, 7, { lane: 'doing' }] }).spans.length === 0);
   check('what began last is what he is doing, if two spans cover a minute; one with no words does not count', doingAt(tidied, T(10, 0), zh).words === '做 Jarvis' && doingAt(tidied, T(14, 20), zh) === null && doingAt(tidied, T(11, 20), zh) === null
     && doingAt([...tidied, doingOf(sp('later', 940, 1100, { title: '回邮件', basis: 'inferred' }))], T(10, 0), zh).words === '回邮件' && doingAt([...tidied, doingOf(sp('later', 940, 1100, { title: null }))], T(10, 0), zh).words === '做 Jarvis' && doingAt(undefined, T(10, 0), zh) === null);
 
@@ -470,6 +503,52 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
   check('the card\'s id changes with the span, so its words swap as they do for another stretch, and it is the piece\'s when there is no span', hp(T(10, 0)).id.includes('~d-work') && hp(T(13, 20)).id !== hp(T(13, 40)).id && !hp(T(11, 22)).id.includes('~') && hp(T(10, 0)).id === hp(T(10, 1)).id);
   const peeks = [T(10, 0), T(14, 20), T(16, 50), T(20, 15), T(22, 35), T(22, 10), T(8, 30)].map(at => peek(buildDay(makeDay(), NOW, zh), plain, at, zh)), peeks0 = [T(10, 0), T(14, 20), T(16, 50), T(20, 15), T(22, 35), T(22, 10), T(8, 30)].map(at => peek(buildDay(makeDay({ spans: [] }), NOW, zh), buildBar(buildDay(makeDay({ spans: [] }), NOW, zh), zh), at, zh));
   check('a day with no spans has the card it always had: no second line, the piece\'s own id', JSON.stringify(peeks) === JSON.stringify(peeks0) && peeks.every(x => x.stretch.place === undefined && !x.id.includes('~')));
+}
+
+// ---------- the list of what he was doing, in node (ADR 0302, 0307) ----------
+{
+  const dm = buildDay(segDay(), NOW, zh), r = flat(dm.blocks), seg = r.filter(x => x.kind === 'doing'), titles = r.map(x => x.title).join('|');
+  check('doing spans keep what they carry: the detail, the confidence, the clues (text only), the place and the ids; the planned one and the place lane are not stretches', (s => s.length === 12 && s[0].detail.startsWith('早上') && s[0].confidence === 'medium' && s[0].clues.length === 2 && s[0].place_id === 'stay-home-1' && s[0].item_ids.length === 6 && s[11].end_ms === null)(tidyReply(segDay()).spans)
+    && tidyReply(segDay({ spans: [{ ...SEGS[0], clues: [7, { text: ' ' }, { kind: 'x', text: ' a ' }], item_ids: ['a', 7, ''], place_id: 7, confidence: 3 }] })).spans[0].clues.map(x => x.text).join() === 'a');
+  check('the list is the night, then one row per stretch in time order, then the now line and what is still to come: no place groups, no talk, none of the moves, the call or the payment as rows of their own',
+    titles === '睡觉|在家刷手机|给银行打电话|做 Jarvis|不知道在干嘛|在 A&W 吃午饭|在家休息|27 路|在图书馆写作业|FaceTime 通话|在 UVic 学习|27 路|在家休息，听音乐，回消息|做 Jarvis|现在 21:50|把垃圾拿出去|小组讨论|27 · Shelbourne at Pear|私事'
+    && r.every(x => x.as !== 'stay') && dm.heads.size === 0 && seg.length === 12);
+  check('what waits on him stays a row at its time, between the stretches: the reminder that rang at 09:30, and the event mail noted; the count says two', r.find(x => x.title === '给银行打电话').wait && dm.waiting.join() === 'reminder-2,event-1');
+  check('a row says the time it began, its length, and the place under it with 不太确定 when she is not sure', seg.map(x => `${x.at} ${x.right} ${x.detail}`).join('|') ===
+    '09:05 1 时 25 分 家|10:30 55 分 家|11:25 1 时 50 分 不太确定|13:15 40 分 A&W|13:55 55 分 家 · 不太确定|14:50 29 分 |15:19 1 时 21 分 UVic|16:40 20 分 UVic|17:00 1 时 15 分 UVic|18:15 35 分 |18:50 45 分 家|19:35 2 时 15 分 家');
+  check('a stretch no words say is 不知道在干嘛 (No idea), muted, with the question mark; the ride is 27 路 with the bus; his own words are his; a program-cut call is FaceTime 通话 with the phone',
+    seg[2].title === '不知道在干嘛' && seg[2].seg.unknown && seg[2].icon === 'unknown' && seg[2].seg.rgb === null && !seg[0].seg.unknown && seg[5].icon === 'bus' && seg[6].title === '在图书馆写作业' && seg[7].icon === 'call'
+    && flat(buildDay(segDay(), NOW, en).blocks).find(x => x.kind === 'doing' && x.seg.unknown).title === 'No idea');
+  check('the category is the colour and the glyph: work blue, study violet, meal amber, rest blue-grey, with the glyph of each; a way he went keeps the haze of a move', seg.map(x => `${x.icon}:${x.seg.rgb}`).join('|') ===
+    'rest:111,168,200|work:91,140,255|unknown:null|meal:240,176,79|rest:111,168,200|bus:196,208,255|school:155,123,255|call:null|school:155,123,255|bus:196,208,255|rest:111,168,200|work:91,140,255', seg.map(x => `${x.icon}:${x.seg.rgb}`).join('|'));
+  check('under a row the counts of what is inside, as icons with numbers, in the order pictures, payments, calls, messages, and only when not nothing: 13:15 has a picture and a payment, 19:50 a call and a message',
+    seg.map(x => x.seg.counts.map(c => `${c.icon}${c.n}`).join('+')).join('|') === '|||picture1+payment1||||call1|picture2||call1+message1|', seg.map(x => x.seg.counts.map(c => `${c.icon}${c.n}`).join('+')).join('|'));
+  check('a stretch lights for the lens of what is inside it: the call for 通话, the talk with her for 和她, the ride for the way', seg[7].seg.lenses.join() === 'call' && seg[10].seg.lenses.join() === 'talk' && seg[5].seg.lenses.join() === 'trip,talk' && seg[0].seg.lenses.join() === 'talk', seg.map(x => x.seg.lenses.join('+')).join('|'));
+  const ins = key => dm.segs.get(key).inside.map(x => `${x.icon}|${x.title}|${x.detail}|${x.side}`).join('\n');
+  check('inside a stretch: the items it lists by id in time order, each as its own row says it; the stay, the talk, the id the day has not, and a kind the pane does not draw are not there', ins('doing-1') === 'device|微信 · 小红书|iPhone|25 分\nreminder|给银行打电话|响过了|09:30'
+    && ins('doing-4') === 'payment|A&W|Teen Burger combo · 支付宝|$12.40\npicture|照片|汉堡和薯条|13:30' && ins('doing-6') === 'bus|27 路|Shelbourne at Pear → UVic Exchange|29 分');
+  check('media is the app and the top title; messages the conversation and what he sent and got; a phone call the person, the way and the length; work the project and the app; the Mac call its app and the length',
+    ins('doing-11') === 'music|音乐|晴天|30 分\nmessage|妈妈|发 3 · 收 5|7 分\ncall|妈妈|打进|4 分' && ins('doing-2') === 'work|在 Mac 上工作|Jarvis · Xcode|活跃 42 分' && ins('doing-8') === 'call|通话 · FaceTime||18 分'
+    && dm.segs.get('doing-11').inside.length === 3);
+  check('a lasting item that runs past its stretch says its length inside it: the session from 17:50 to 18:30 is 25 min in the stretch to 18:15 and 15 min in the next; one that does not is whole; a session still going keeps its length so far',
+    ins('doing-9').split('\n').at(-1) === 'code|Claude Code · Verify the day list|jarvis · A|25 分' && ins('doing-10').split('\n')[0] === 'code|Claude Code · Verify the day list|jarvis · A|15 分'
+    && ins('doing-12') === 'work|在 Mac 上工作|Jarvis · Ghostty|活跃 1 时 55 分\ncode|Claude Code · Doing rows|jarvis · A|1 时 30 分\nchat|The bar for the day|和 Claude|14 条', [ins('doing-9'), ins('doing-10'), ins('doing-12')].join('\n--\n'));
+  check('a picture keeps its id and its note for the thumbnail; the others have none', dm.segs.get('doing-9').inside.filter(x => x.picture).map(x => `${x.picture[0]}:${x.note}`).join() === 'c:图书馆的窗边,d:写完的笔记' && dm.segs.get('doing-4').inside.find(x => x.icon === 'picture').picture === 'a'.repeat(32) && dm.segs.get('doing-2').inside.every(x => !x.picture));
+  check('how she knows: the basis in words, then the clues joined with ；; his own words say so; the program’s own cut says it came from the records', dm.segs.get('doing-1').knows === '她猜的：手机上用了 25 分钟；没有工作记录' && dm.segs.get('doing-7').knows === '你说的' && dm.segs.get('doing-2').knows === '记录里看到的'
+    && buildDay(segDay(), NOW, en).segs.get('doing-1').knows === 'Her guess: 手机上用了 25 分钟; 没有工作记录' && buildDay(segDay({ spans: [sp('z', 905, 1000, { basis: '', title: 'x' })] }), NOW, zh).segs.get('z').knows === '');
+  const open = key => openOf(dm, key, zh);
+  check('opening a stretch: its detail first in ink, then what is inside, then how she knows; without a detail the inside leads; the buttons it has are 问她 and 这段在干嘛, never a star or a summary',
+    open('doing-1').parts.map(p => p.type).join() === 'lines,inside,knows' && open('doing-1').parts[0].lines[0].tone === 'ink' && open('doing-7').parts.map(p => p.type).join() === 'knows' && open('doing-2').parts.map(p => p.type).join() === 'inside,knows'
+    && !open('doing-1').star && !open('doing-2').summarize && hasBody(open('doing-7'), true));
+  const a = askOf(dm, 'doing-2', zh), said = sayOf(dm, 'doing-1'), sayLast = sayOf(dm, 'doing-12');
+  check('a turn about a stretch carries its range and words as text (the brain’s about has no such kind): the chip has its glyph, words and time', a.about.kind === 'doing' && a.lead === '10:30–11:25 做 Jarvis：' && a.icon === 'work' && a.at === '10:30' && a.about.title === '做 Jarvis'
+    && askOf(dm, 'doing-3', zh).lead === '11:25–13:15：' && askOf(buildDay(segDay(), NOW, en), 'doing-12', en).lead === '19:35–21:50 On Jarvis: ');
+  check('every stretch up to now can be told what it was: the range is its own, cut to now', said.range === '09:05–10:30' && sayLast.range === '19:35–21:50' && sayLast.b === NOW && said.day === DATE);
+  check('a stretch’s span for the bar to bracket is its time, cut to now for the one that goes on', dm.span.get('doing-4').t0 === T(13, 15) && dm.span.get('doing-4').t1 === T(13, 55) && dm.span.get('doing-12').t1 === NOW);
+  check('a reply with no doing spans, or none that are stretches, is the list it always was', [undefined, [], [SEGS[12], SEGS[13]], 'x'].every(spans => JSON.stringify(flat(buildDay(richDay({ spans }), NOW, zh).blocks)) === JSON.stringify(flat(buildDay(richDay(), NOW, zh).blocks)) && buildDay(richDay({ spans }), NOW, zh).segs.size === 0)
+    && flat(buildDay(richDay(), NOW, zh).blocks).some(x => x.as === 'stay') && flat(buildDay(richDay(), NOW, zh).blocks).some(x => x.title === '和她说话'));
+  check('a day of only stretches (no item at all) is not empty, and a stretch before the day began says so (昨)', !buildDay(makeDay({ items: [], line: null, labels: [], spans: [SEGS[11]] }), NOW, zh).empty
+    && flat(buildDay(makeDay({ items: [], spans: [sp('y', 0, 1000, { title: '熬夜', start_ms: T(22, 0, 18) })] }), NOW, zh).blocks).find(x => x.kind === 'doing').ago === '昨');
 }
 
 // ---------- the list's anatomy, in node ----------
