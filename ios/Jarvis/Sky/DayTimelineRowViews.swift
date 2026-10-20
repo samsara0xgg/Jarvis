@@ -76,7 +76,7 @@ struct TLRowView: View, Equatable {
                 .frame(height: e.base, alignment: .top)
                 .background { TLRowHeat(id: e.id, tl: tl) }
                 .contentShape(Rectangle())
-                .onTapGesture(perform: tap)
+                .modifier(TLRowTap(opens: e.opens, tap: tap))
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(e.opens ? .isButton : [])
                 .modifier(TLMenu(e: e, tl: tl, engine: engine))
@@ -219,6 +219,31 @@ private struct DashedRail: Shape {
         var p = Path()
         p.move(to: CGPoint(x: r.midX, y: r.minY)); p.addLine(to: CGPoint(x: r.midX, y: r.maxY))
         return p
+    }
+}
+
+// MARK: - the tap on a row
+
+/// A row that opens is a button, so that the row answers the touch itself: a wash of white (0.07, as the finger on the bar lights it) comes on quickly at touch-down and goes more slowly on
+/// lift. The long press that lifts the menu (`TLMenu`) goes on over it. A row that opens to nothing has no tap.
+private struct TLRowTap: ViewModifier {
+    let opens: Bool
+    let tap: () -> Void
+
+    func body(content: Content) -> some View {
+        if opens { Button(action: tap) { content }.buttonStyle(TLRowPress()) } else { content }
+    }
+}
+
+private struct TLRowPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let down = configuration.isPressed
+        configuration.label
+            .background {
+                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(down ? 0.07 : 0)).padding(.horizontal, -8)
+                    .animation(down ? .snappy(duration: 0.12) : .smooth(duration: 0.25), value: down)
+            }
+            .onChange(of: down) { _, on in if on { Haptic.prepare() } }
     }
 }
 
