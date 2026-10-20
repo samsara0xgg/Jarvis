@@ -55,7 +55,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Jarvis/Resources/Assets.xcassets: her black ball and two eyes
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Jarvis/Resources/Assets.xcassets: her glass ball under a night sky
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIconFlat   # the flat one, picked in Settings › 首页 › App 图标
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Jarvis

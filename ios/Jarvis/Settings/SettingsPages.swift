@@ -26,6 +26,17 @@ struct SettingsMainPage: View {
     let isCurrent: Bool
     var tuneNear: () -> Void = {}
     let push: (SettingsPage) -> Void
+    /// The home-screen icon: the glass one (primary, AppIcon) or the flat one (the alternate AppIconFlat, project.yml).
+    @State private var flatIcon = UIApplication.shared.alternateIconName == "AppIconFlat"
+
+    /// iOS confirms the change with its own alert; if it refuses, the switch goes back.
+    private func pickIcon(flat: Bool) {
+        guard flat != flatIcon else { return }
+        flatIcon = flat
+        Task {
+            do { try await UIApplication.shared.setAlternateIconName(flat ? "AppIconFlat" : nil) } catch { flatIcon = !flat }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,6 +45,8 @@ struct SettingsMainPage: View {
                 SegmentedRow(title: "中间显示", options: ["星盘", "时间线"],
                              selection: Binding(get: { HomeModule.shared.isTimeline ? 1 : 0 },
                                                 set: { HomeModule.shared.kind = $0 == 1 ? .timeline : .stars }))
+                SegmentedRow(title: "App 图标", options: ["玻璃", "平面"],
+                             selection: Binding(get: { flatIcon ? 1 : 0 }, set: { pickIcon(flat: $0 == 1) }))
             }
             SetSection(header: "大脑", footer: model.showsConversationModel ? "下一句起生效" : nil) {
                 InfoRow(label: "连接的大脑", detail: model.brainName)
