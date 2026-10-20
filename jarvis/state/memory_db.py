@@ -1750,6 +1750,18 @@ def doing_answers(conn: sqlite3.Connection, day: str) -> list[DoingAnswer]:
     return [_doing_answer(row) for row in rows]
 
 
+def doing_answers_between(
+    conn: sqlite3.Connection, first_day: str, before_day: str,
+) -> list[DoingAnswer]:
+    """Every answer given about a day in ``[first_day, before_day)``, the oldest first."""
+    rows = conn.execute(
+        "SELECT id, day, span_id, start_ms, end_ms, choice, text, lat, lng, place_id, origin, ts "
+        "FROM doing_answers WHERE day >= ? AND day < ? ORDER BY day, rowid",
+        (first_day, before_day),
+    ).fetchall()
+    return [_doing_answer(row) for row in rows]
+
+
 def doing_answers_near(
     conn: sqlite3.Connection, at: tuple[float, float], radius_m: float, before_ms: int,
     limit: int = 20,
@@ -1925,6 +1937,7 @@ __all__ = [
     "current_core_memory",
     "day_records",
     "doing_answers",
+    "doing_answers_between",
     "doing_answers_near",
     "drop_due_section",
     "due_items",

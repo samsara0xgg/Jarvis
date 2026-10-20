@@ -25,8 +25,8 @@ the source has nothing for the segment:
 
 :func:`foreground` reads, for each quarter hour of the window, what was in front of him at his
 Mac: the minutes each app, site or document held and the seconds he typed in it, from TimeSink's
-spans as the terminal shipped them. It is where his attention was at the Mac, which a block's
-list of app names does not say.
+spans as the terminal shipped them, and the one that held more than half of it (its lead). It is
+where his attention was at the Mac, which a block's list of app names does not say.
 
 Nothing is stored and nothing is guessed. A source that cannot be read leaves its part out,
 logged. A phone picked up is not a signal: the phone reports no row for it (its battery and
@@ -42,7 +42,7 @@ from collections import Counter
 from contextlib import closing
 from datetime import datetime
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.state import imports, timesink
 from jarvis.state.day_line import DaySources, shipped_conn
@@ -343,12 +343,33 @@ def _quarter(held: Mapping[tuple[str, str], list[Any]]) -> str:
     return ", ".join(parts)
 
 
-def foreground(sources: DaySources, window: tuple[int, int]) -> list[tuple[int, int, str]]:
+class Quarter(NamedTuple):
+    """What was in front of him at his Mac in one quarter hour, clipped to the window.
+
+    ``text`` is the minutes each app, site or document held with the seconds he typed in it;
+    ``lead`` names the one that held more than half of the quarter's time in front, None when no
+    one did (a mixed quarter).
+    """
+
+    start_ms: int
+    end_ms: int
+    text: str
+    lead: str | None
+
+
+def _lead(held: Mapping[tuple[str, str], list[Any]]) -> str | None:
+    """The name of the one that held more than half of the time in front, else None."""
+    total = sum(one[1] for one in held.values())
+    name, ms, _typed = max(held.values(), key=lambda one: one[1])
+    return name if 2 * ms > total else None
+
+
+def foreground(sources: DaySources, window: tuple[int, int]) -> list[Quarter]:
     """What was in front of him at his Mac in each quarter hour of ``window``, oldest first.
 
-    Each is (start, end, text): the quarter hour, clipped to the window, and the minutes each
-    app, site or document held with the seconds he typed in it (a span's typing shared by the
-    time it spent in each quarter). A quarter with under half a minute in front is left out.
+    Each is a :class:`Quarter`: the quarter hour clipped to the window, the minutes each app,
+    site or document held with the seconds he typed in it (a span's typing shared by the time it
+    spent in each quarter), and its lead. A quarter with under half a minute in front is left out.
     """
     start, end = window
 
@@ -373,7 +394,9 @@ def foreground(sources: DaySources, window: tuple[int, int]) -> list[tuple[int, 
     found = []
     for at, held in sorted(quarters.items()):
         if text := _quarter(held):
-            found.append((max(at, start), min(at + FOREGROUND_SLICE_MS, end), text))
+            found.append(
+                Quarter(max(at, start), min(at + FOREGROUND_SLICE_MS, end), text, _lead(held)),
+            )
     return found
 
 
@@ -455,6 +478,7 @@ __all__ = [
     "MAX_FOREGROUND_ITEMS",
     "MAX_STRETCHES",
     "SIGNALS_MAX_CHARS",
+    "Quarter",
     "foreground",
     "gather",
 ]

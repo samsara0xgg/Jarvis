@@ -44,6 +44,7 @@ DEFAULT_SECTION: Final[str] = "经历"
 DUE_SECTION: Final[str] = "承诺和待办"
 ID_FREE_SECTION: Final[str] = "证件和硬期限"
 GOALS_SECTION: Final[str] = "生活里的几件事"
+PEOPLE_SECTION: Final[str] = "身边的人"
 # The six sections of ADR 0146 and where an older version's items go.
 _LEGACY: Final[dict[str, str]] = {
     "关于你": "经历",

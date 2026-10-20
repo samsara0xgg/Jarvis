@@ -41,6 +41,7 @@ from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
 from jarvis.state.doing import cut, fact_spans, his_facts, waking_window
+from jarvis.state.doing_about import gather as gather_about
 from jarvis.state.doing_clues import HIS_WORDS, gather
 from jarvis.state.doing_signals import foreground
 from jarvis.state.doing_signals import gather as gather_signals
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
+    from jarvis.state.doing import Span
     from jarvis.state.doing_clues import Clue
 
 LOGGER = logging.getLogger(__name__)
@@ -114,6 +116,11 @@ def _title_language(clues: Sequence[Clue], memory_db: Path | None) -> str:
     return lang.language_name(lang.reply_language(heard))
 
 
+def _mentioned(clues: Sequence[Clue], facts: Sequence[Span]) -> str:
+    """What the day names: its clue texts and fact titles, joined."""
+    return "\n".join([*(c.text for c in clues), *(str(s["title"]) for s in facts if s["title"])])
+
+
 def read_brief(
     day: date, sources: DaySources, event_log_path: Path, now: datetime,
 ) -> Brief | None:
@@ -136,12 +143,13 @@ def read_brief(
         clues = gather(conn, sources.memory_db, day, items, (waking.start_ms, waking.end_ms), zone)
         segments = cut(facts, waking)
         signals = gather_signals(conn, sources, segments, items)
+        about = gather_about(sources.memory_db, conn, day, zone, _mentioned(clues, facts))
     return Brief(
         day=day.isoformat(), weekday=f"{day:%A}", zone=zone, now_ms=now_ms,
         final=waking.end_ms < now_ms, language=_title_language(clues, sources.memory_db),
         waking=waking, segments=segments, facts=facts, items=items, clues=clues, signals=signals,
         screen=_screen_reach(line, sources),
-        foreground=foreground(sources, (waking.start_ms, waking.end_ms)),
+        foreground=foreground(sources, (waking.start_ms, waking.end_ms)), about=about,
     )
 
 

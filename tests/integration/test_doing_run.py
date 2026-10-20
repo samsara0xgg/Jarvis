@@ -66,8 +66,8 @@ from jarvis.runtime.doing_run import (
     store_run,
 )
 from jarvis.runtime.inherent_loop import _read_day
+from jarvis.state import core_memory, doing_about, places, routines
 from jarvis.state import picture_notes as note_records
-from jarvis.state import places
 from jarvis.state.attachments import AttachmentRef
 from jarvis.state.day_line import DaySources, day_window
 from jarvis.state.doing import CATEGORIES, CLUE_KINDS, cut, fact_spans
@@ -78,7 +78,7 @@ from jarvis.state.doing_clues import (
     Clue,
     gather,
 )
-from jarvis.state.doing_signals import SIGNALS_MAX_CHARS
+from jarvis.state.doing_signals import SIGNALS_MAX_CHARS, Quarter, foreground
 from jarvis.state.doing_signals import gather as gather_signals
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import upsert_mail
@@ -87,6 +87,7 @@ from jarvis.state.memory_db import (
     append_doing_run,
     latest_doing_run,
     open_memory_db,
+    remember_fact,
 )
 from jarvis.state.shipments import Shipments
 from scripts import doing_replay
@@ -665,6 +666,166 @@ def test_the_digest_follows_the_facts_and_clues_and_not_the_clock(
     assert inputs_digest(moved) not in (inputs_digest(brief), inputs_digest(changed))
 
 
+# --- the background ----------------------------------------------------------------------------
+
+
+ABOUT_BEFORE = DAY - timedelta(days=3)
+
+
+def _run(memory: Path, day: date, *spans: tuple[int, int, str | None]) -> None:
+    """A stored run of ``day`` whose spans are (start hour, end hour, title)."""
+    append_doing_run(
+        memory, day=day.isoformat(), draft=False, covers_until_ms=_ms(_at(23, day=day)),
+        model="m", inputs_digest="d", spans=[
+            {"id": f"doing-{start}", "start_ms": _ms(_at(start, day=day)),
+             "end_ms": _ms(_at(end, day=day)), "title": title}
+            for start, end, title in spans
+        ],
+    )
+
+
+def _told(memory: Path, day: date, hour: int, *, text: str | None = None, choice: str | None = None,
+          ) -> None:
+    append_doing_answer(
+        memory, day=day.isoformat(), span_id=f"doing-{hour}", start_ms=_ms(_at(hour, day=day)),
+        end_ms=_ms(_at(hour + 1, day=day)), choice=choice, text=text, lat=None, lng=None,
+        place_id=None, origin="test",
+    )
+
+
+def _about(world: World, mentioned: str = "") -> doing_about.About:
+    with closing(open_event_log(world.log)) as conn:
+        return doing_about.gather(world.memory, conn, DAY, VANCOUVER, mentioned)
+
+
+def test_the_background_holds_his_projects_the_people_the_day_names_and_his_dated_corrections(
+    world: World,
+) -> None:
+    """Projects as stored; people only when named; each correction one dated instance."""
+    goals = core_memory.GOALS_SECTION
+    remember_fact(world.memory, "Thesis", "chapter three due in December", goals)
+    remember_fact(world.memory, "Spanish", "twenty minutes a day", goals)
+    remember_fact(world.memory, "小明", "roommate, plays badminton", core_memory.PEOPLE_SECTION)
+    remember_fact(world.memory, "Dana", "supervisor", core_memory.PEOPLE_SECTION)
+    remember_fact(world.memory, "X", "a single letter", core_memory.PEOPLE_SECTION)
+    remember_fact(world.memory, "Mum", "lives in Shanghai", core_memory.DEFAULT_SECTION)
+    _run(world.memory, DAY - timedelta(days=1), (10, 11, "写论文"))
+    _run(world.memory, ABOUT_BEFORE, (12, 13, "旧的标题"))
+    _run(world.memory, ABOUT_BEFORE, (12, 13, "午饭"), (13, 14, "休息"))  # the newest run wins
+    _told(world.memory, ABOUT_BEFORE, 12, text="和朋友吃饭聊天")
+    _told(world.memory, DAY - timedelta(days=1), 10, text="写论文")  # as it was written
+    _told(world.memory, DAY - timedelta(days=2), 9, choice="Reading")  # no run that day
+    _told(world.memory, DAY - timedelta(days=31), 9, text="too old")
+    _told(world.memory, DAY, 9, text="today is not a correction")
+    about = _about(world, "he: 小明 says hi\nx met X at noon")
+    assert about.projects == (
+        "Thesis: chapter three due in December", "Spanish: twenty minutes a day",
+    )  # as core memory holds them
+    assert about.people == ("小明: roommate, plays badminton",)  # Dana is not named; X is too short
+    assert about.corrections == (  # oldest first; the last was written as he said it
+        '10-04 12:00-13:00: written as "午饭"; he said "和朋友吃饭聊天"',
+        '10-05 09:00-10:00: he said "Reading"',
+        '10-06 10:00-11:00: he said "写论文"',
+    )
+    assert about.routines == ()
+
+
+def test_the_routines_of_the_weekday_are_told_with_the_weeks_they_were_counted_over(
+    world: World,
+) -> None:
+    """A habit of four Wednesdays reads with its times, place and weeks; nothing else is made up."""
+    for number, ago in enumerate((7, 14, 21, 28)):
+        past = DAY - timedelta(days=ago)
+        _visit(world.log, f"w{number}", _at(12, day=past), _at(13, day=past), "Corner Cafe", 1.01)
+    places.save(world.memory, name="Corner Cafe", lat=1.01, lng=2.0, role="other", origin="user")
+    assert _about(world).routines == ("12:00-13:00 Corner Cafe, seen 4 of 4 weeks",)
+
+
+def test_the_background_parts_are_capped_and_the_corrections_are_the_newest_twenty(
+    world: World,
+) -> None:
+    """Items are left off the end to fit; of the corrections the oldest go."""
+    for number in range(40):
+        remember_fact(world.memory, f"Project {number:02d}", "x" * 200, core_memory.GOALS_SECTION)
+    everything = core_memory.GOALS_SECTION
+    with closing(open_memory_db(world.memory)) as conn:
+        stored = [i["text"] for i in core_memory.current(conn, "2026-10-07").doc[everything]]
+    about = _about(world)
+    assert 0 < len(about.projects) < len(stored)
+    assert about.projects == tuple(stored[: len(about.projects)])
+    shown = "\n".join(f"- {line}" for line in about.projects)
+    assert len(shown) <= doing_about.ABOUT_SECTION_MAX_CHARS
+    for number in range(25):  # 25 answers on 25 different days, all within the 30
+        _told(world.memory, DAY - timedelta(days=number + 1), 9, text=f"said {number:02d}")
+    corrections = _about(world).corrections
+    assert len(corrections) == doing_about.MAX_CORRECTIONS == 20
+    assert corrections[0].endswith('he said "said 19"')  # oldest of the newest twenty first
+    assert corrections[-1].endswith('he said "said 00"')
+
+
+def test_a_background_part_that_cannot_be_read_is_empty_and_the_rest_stands(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing read is logged and leaves its part empty."""
+    remember_fact(world.memory, "Thesis", "chapter three", core_memory.GOALS_SECTION)
+
+    def failing(*_args: object, **_kwargs: object) -> object:
+        raise OSError
+
+    monkeypatch.setattr(routines, "for_day", failing)
+    monkeypatch.setattr(doing_about, "doing_answers_between", failing)
+    about = _about(world)
+    assert about.projects == ("Thesis: chapter three",)
+    assert (about.routines, about.corrections) == ((), ())
+    with closing(open_event_log(world.log)) as conn:
+        assert doing_about.gather(None, conn, DAY, VANCOUVER, "x") == doing_about.About(
+            (), (), (), (),
+        )
+
+
+def test_the_brief_carries_the_background_and_the_prompt_tells_it_after_the_title_language(
+    world: World,
+) -> None:
+    """``read_brief`` fills it from the day's clues and facts; each empty part reads (none)."""
+    remember_fact(world.memory, "Thesis", "chapter three", core_memory.GOALS_SECTION)
+    remember_fact(world.memory, "Dana", "supervisor", core_memory.PEOPLE_SECTION)
+    _told(world.memory, DAY - timedelta(days=2), 9, choice="Reading")
+    found = read_brief(DAY, world.sources, world.log, NOW)
+    assert found is not None
+    assert found.about is not None
+    assert found.about.projects == ("Thesis: chapter three",)
+    assert found.about.people == ()  # Dana is in no clue text or fact title of the day
+    content = build_messages(found)[0]["content"]
+    lines = content.split("\n")
+    at = lines.index("TITLE LANGUAGE: Simplified Chinese")
+    assert lines[at + 2 : at + 15] == [
+        "ABOUT HIM (background from his memory and his past answers; it helps tell what things"
+        " are, it never shows what he did today):",
+        "",
+        "PROJECTS AND ONGOING THINGS:",
+        "- Thesis: chapter three",
+        "",
+        "ROUTINE ON THIS WEEKDAY (counted over past weeks):",
+        "(none)",
+        "",
+        "PEOPLE NAMED TODAY:",
+        "(none)",
+        "",
+        "HIS EARLIER CORRECTIONS (each one day only):",
+        '- 10-05 09:00-10:00: he said "Reading"',
+    ]
+    assert lines[at + 15] == ""
+    assert "ABOUT HIM" not in build_messages(replace(found, about=None))[0]["content"]
+
+
+def test_the_background_does_not_move_the_digest(brief: Brief) -> None:
+    """Background must not make the day be written again."""
+    about = doing_about.About(("p",), ("r",), ("q",), ("c",))
+    assert inputs_digest(replace(brief, about=about)) == inputs_digest(brief)
+    other = replace(brief, about=doing_about.About((), (), (), ()))
+    assert inputs_digest(other) == inputs_digest(replace(brief, about=about))
+
+
 # --- the signals -------------------------------------------------------------------------------
 
 
@@ -828,18 +989,120 @@ def test_the_brief_tells_what_was_in_front_at_his_mac_each_quarter_hour(
     found = read_brief(DAY, replace(world.sources, shipped=directory), world.log, NOW)
     assert found is not None
     assert found.foreground == [
-        (_ms(_at(12)), _ms(_at(12, 15)), "Claude Jarvis - Claude Code 5m typed 30s"),
-        (_ms(_at(12, 15)), _ms(_at(12, 30)), (
+        Quarter(
+            _ms(_at(12)), _ms(_at(12, 15)), "Claude Jarvis - Claude Code 5m typed 30s",
+            "Claude Jarvis - Claude Code",
+        ),
+        Quarter(_ms(_at(12, 15)), _ms(_at(12, 30)), (
             "Claude Jarvis - Claude Code 5m typed 30s, Google Chrome olevod.com (挽救计划) 2m, "
             "WeChat Weixin 1m"
-        )),
+        ), "Claude Jarvis - Claude Code"),
     ]
     lines = build_messages(found)[0]["content"].split("\n")
     at = lines.index(
-        "MAC FOREGROUND (local | what was in front of him, minutes in front, seconds typed):",
+        "MAC FOREGROUND (local | lead: what held over half its minutes, or mixed | what was in "
+        "front of him, minutes in front, seconds typed):",
     )
-    assert lines[at + 1] == "12:00-12:15 | Claude Jarvis - Claude Code 5m typed 30s"
+    assert lines[at + 1] == (
+        "12:00-12:15 | lead Claude Jarvis - Claude Code | Claude Jarvis - Claude Code 5m typed 30s"
+    )
     assert inputs_digest(found) != inputs_digest(replace(found, foreground=[]))
+
+
+def test_a_quarter_names_its_lead_only_when_one_held_more_than_half_of_its_time_in_front(
+    world: World, tmp_path: Path,
+) -> None:
+    """Over half of the quarter's whole time in front, short visits counted in the total."""
+    directory = tmp_path / "imports"
+    minute, second = timedelta(minutes=1), timedelta(seconds=1)
+    _foreground(directory, [
+        # 12:00 Claude 8m of 15m: its lead
+        (_at(12), _at(12) + 8 * minute, {"appName": "Claude"}),
+        (_at(12, 8), _at(12, 15), {"appName": "Safari"}),
+        # 12:15 7m 30s each: exactly half is not over half
+        (_at(12, 15), _at(12, 15) + 7 * minute + 30 * second, {"appName": "Claude"}),
+        (_at(12, 22) + 30 * second, _at(12, 30), {"appName": "Safari"}),
+        # 12:30 7m, 7m and 20 s too short to be named: the 20 s still count in the total
+        (_at(12, 30), _at(12, 37), {"appName": "Claude"}),
+        (_at(12, 37), _at(12, 44), {"appName": "Safari"}),
+        (_at(12, 44), _at(12, 44) + 20 * second, {"appName": "WeChat"}),
+        # 12:45 one site 10m of 11m: the lead is named like the text names it
+        (_at(12, 45), _at(12, 55), {"appName": "Google Chrome", "domain": "olevod.com"}),
+        (_at(12, 55), _at(12, 56), {"appName": "Claude"}),
+    ])
+    window = (_ms(_at(12)), _ms(_at(13)))
+    got = foreground(replace(world.sources, shipped=directory), window)
+    assert [(_clock(q.start_ms), q.lead) for q in got] == [
+        ("12:00", "Claude"), ("12:15", None), ("12:30", None),
+        ("12:45", "Google Chrome olevod.com"),
+    ]
+    assert got[2].text == "Claude 7m, Safari 7m"  # the 20 s is under half a minute: not named
+    assert isinstance(got[0], Quarter)
+    assert (got[0].start_ms, got[0].end_ms) == (_ms(_at(12)), _ms(_at(12, 15)))
+
+
+def _clock(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, VANCOUVER).strftime("%H:%M")
+
+
+def test_the_edges_of_the_quarters_at_his_mac_inside_the_window_are_times_and_inner_times(
+    brief: Brief,
+) -> None:
+    """Only a quarter in the brief gives its edges, and only those strictly inside the window."""
+    quarters = [
+        Quarter(_ms(_at(12, 15)), _ms(_at(12, 30)), "Claude 9m", "Claude"),
+        Quarter(_ms(_at(12, 30)), _ms(_at(12, 45)), "Claude 5m, Safari 5m", None),
+        Quarter(_ms(_at(14, 45)), _ms(_at(15)), "Claude 12m", "Claude"),  # the window's end
+    ]
+    assert [_clock(t) for t in times(brief)] == [
+        "06:00", "08:00", "09:05", "10:00", "11:30", "12:00", "12:20", "13:00", "13:30", "14:45",
+        "15:00",
+    ]
+    held = replace(brief, foreground=quarters)
+    assert [_clock(t) for t in times(held)] == [
+        "06:00", "08:00", "09:05", "10:00", "11:30", "12:00", "12:15", "12:20", "12:30", "12:45",
+        "13:00", "13:30", "14:45", "15:00",
+    ]  # 12:20 stays once; 13:00 is a fact edge; no quarter at 11:00 or 13:15 gives a time
+    lines = build_messages(held)[0]["content"].split("\n")
+    clock_of = dict(
+        line.split(" ") for line in lines if re.fullmatch(r"t\d+ \d\d:\d\d:\d\d", line)
+    )
+    cafe = next(line for line in lines if line.startswith("t") and "| 12:00-13:00 |" in line)
+    inner = cafe.rsplit("inner times: ", 1)[1].split()
+    assert [clock_of[label][:5] for label in inner] == ["12:15", "12:20", "12:30", "12:45"]
+    # a short run keeps what is inside its window only
+    short = narrow(held, _written(held))
+    assert [_clock(t) for t in times(short)] == ["14:45", "15:00"]
+
+
+def test_each_quarter_is_told_with_its_lead_or_as_mixed(brief: Brief) -> None:
+    """``HH:MM-HH:MM | lead <name> | <text>`` or ``| mixed |``, under the header that says so."""
+    quarters = [
+        Quarter(_ms(_at(12, 15)), _ms(_at(12, 30)), "Claude Jarvis 9m typed 40s", "Claude Jarvis"),
+        Quarter(_ms(_at(12, 30)), _ms(_at(12, 45)), "Claude 5m, Safari 5m", None),
+    ]
+    lines = build_messages(replace(brief, foreground=quarters))[0]["content"].split("\n")
+    at = lines.index(
+        "MAC FOREGROUND (local | lead: what held over half its minutes, or mixed | what was in "
+        "front of him, minutes in front, seconds typed):",
+    )
+    assert lines[at + 1 : at + 3] == [
+        "12:15-12:30 | lead Claude Jarvis | Claude Jarvis 9m typed 40s",
+        "12:30-12:45 | mixed | Claude 5m, Safari 5m",
+    ]
+
+
+def test_narrowing_clips_a_quarter_and_keeps_its_lead_and_the_background(brief: Brief) -> None:
+    """The quarter that crosses where the window starts begins there and keeps its lead."""
+    about = doing_about.About(("p",), ("r",), ("q",), ("c",))
+    wide = replace(brief, about=about, foreground=[
+        Quarter(_ms(_at(14, 30)), _ms(_at(14, 45)), "WeChat 4m", None),
+        Quarter(_ms(_at(14, 40)), _ms(_at(15)), "Claude 12m", "Claude"),
+    ])
+    short = narrow(wide, _written(wide))
+    assert short.waking.start_ms == _ms(_at(14, 45))
+    assert short.foreground == [Quarter(_ms(_at(14, 45)), _ms(_at(15)), "Claude 12m", "Claude")]
+    assert short.about is about
 
 
 def test_a_mac_stretch_is_closed_by_its_mark_or_by_timesinks_own_stop_else_runs_to_the_end(
@@ -1208,9 +1471,9 @@ def test_a_short_run_keeps_the_spans_before_the_last_and_writes_from_where_it_st
 def test_a_short_run_tells_the_mac_foreground_from_where_its_window_starts(brief: Brief) -> None:
     """The quarter hours that end by the time the window starts are left out."""
     quarters = [
-        (_ms(_at(14, 15)), _ms(_at(14, 30)), "Claude 9m"),
-        (_ms(_at(14, 30)), _ms(_at(14, 45)), "WeChat Weixin 4m"),
-        (_ms(_at(14, 45)), _ms(_at(15)), "Claude Jarvis 12m typed 15s"),
+        Quarter(_ms(_at(14, 15)), _ms(_at(14, 30)), "Claude 9m", "Claude"),
+        Quarter(_ms(_at(14, 30)), _ms(_at(14, 45)), "WeChat Weixin 4m", None),
+        Quarter(_ms(_at(14, 45)), _ms(_at(15)), "Claude Jarvis 12m typed 15s", "Claude Jarvis"),
     ]
     short = narrow(replace(brief, foreground=quarters), _written(brief))
     assert short.foreground == [quarters[2]]
@@ -1683,6 +1946,7 @@ def test_a_brief_only_replay_prints_the_writers_input_and_asks_no_model(world: W
     assert (found["outcome"], found["segments"], found["clues"]) == ("brief only", 7, 4)
     assert found["brief"].startswith(f"DAY: {KEY} ")
     assert "\nSEGMENTS (the program's cut of the window;" in found["brief"]
+    assert "\nABOUT HIM (background from his memory and his past answers;" in found["brief"]
     assert "spans" not in found
     assert _rows(world.memory) == []
 

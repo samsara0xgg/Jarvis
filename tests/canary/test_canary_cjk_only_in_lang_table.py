@@ -90,8 +90,11 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # consolidation prompt and the `remember` enum name; they are not translated.
     "jarvis/state/core_memory.py": frozenset(
         {"SECTION_CAPS", "DEFAULT_SECTION", "DUE_SECTION", "ID_FREE_SECTION", "GOALS_SECTION",
-         "_LEGACY"},
+         "PEOPLE_SECTION", "_LEGACY"},
     ),
+    # The background of the doing lane's writer (ADR 0312) reads a person's name off the front of
+    # an item he wrote in his own words, up to the first of the stops either language uses.
+    "jarvis/state/doing_about.py": frozenset({"_NAME_ENDS"}),
     "jarvis/state/daily_report.py": frozenset({"MILESTONES", "_QUESTION"}),
     # The WeChat Pay and Alipay statements (ADR 0259) name their columns and statuses in Chinese.
     # The Claude daily letter's subject (ADR 0295) is written in Chinese by his Claude task.

@@ -35,7 +35,9 @@ if TYPE_CHECKING:
     from datetime import tzinfo
 
     from jarvis.state.doing import Segment, Span
+    from jarvis.state.doing_about import About
     from jarvis.state.doing_clues import Clue
+    from jarvis.state.doing_signals import Quarter
 
 TITLE_MAX_CHARS: Final = 40
 """The longest title of a span: a short activity phrase."""
@@ -69,8 +71,10 @@ class Brief:
     far his phone and tablet app use is known: ``None`` when none of it reaches the brain, else
     each device whose records stop before the window does, with where they stop. ``kept`` are the
     spans before the window that a short run keeps as written (ADR 0310, :func:`narrow`).
-    ``foreground`` is what was in front of him at his Mac in each quarter hour of the window, as
-    (start, end, text).
+    ``foreground`` is what was in front of him at his Mac in each quarter hour of the window,
+    each with the one that held over half of it (:class:`~jarvis.state.doing_signals.Quarter`).
+    ``about`` is the background from his memory and his past answers; it is not what happened
+    that day (:mod:`jarvis.state.doing_about`).
     """
 
     day: str
@@ -87,7 +91,8 @@ class Brief:
     signals: Mapping[int, str]
     screen: Mapping[str, int] | None
     kept: Sequence[Mapping[str, Any]] = ()
-    foreground: Sequence[tuple[int, int, str]] = ()
+    foreground: Sequence[Quarter] = ()
+    about: About | None = None
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -108,9 +113,9 @@ def times(brief: Brief) -> list[int]:
     """The moments a span may start or end at, oldest first.
 
     The window's two edges, the edges of every segment, the edges of every fact inside the
-    window, and the time of every clue that shows what he was doing then (:func:`_marks`): a
-    long block at his Mac is one fact, and only such a clue dates the change of what he did
-    inside it.
+    window, the time of every clue that shows what he was doing then (:func:`_marks`), and the
+    edges of every quarter hour at his Mac that lie inside the window: a long block at his Mac is
+    one fact, and only such a clue or a quarter's lead dates the change of what he did inside it.
     """
     start, end = brief.waking
     found = {start, end}
@@ -119,6 +124,7 @@ def times(brief: Brief) -> list[int]:
     for span in brief.facts:
         found.update(t for t in (span["start_ms"], _reach(span, brief)) if start < t < end)
     found.update(c.at_ms for c in brief.clues if _marks(c) and start < c.at_ms < end)
+    found.update(t for q in brief.foreground for t in (q.start_ms, q.end_ms) if start < t < end)
     return sorted(found)
 
 
@@ -159,13 +165,15 @@ def narrow(brief: Brief, written: Sequence[Mapping[str, Any]]) -> Brief:
         brief, waking=Waking(at, end), segments=segments, signals=signals, kept=kept,
         clues=[c for c in brief.clues if not start <= c.at_ms < at],
         foreground=[
-            (max(lo, at), hi, text) for lo, hi, text in brief.foreground if hi > at
+            q._replace(start_ms=max(q.start_ms, at)) for q in brief.foreground if q.end_ms > at
         ],
     )
 
 
 def inputs_digest(brief: Brief) -> str:
     """A short hash of what the writer is shown: facts, clues, signals and where the window starts.
+
+    ``brief.about`` is left out: background must not make the day be written again.
 
     The window's end is left out: for a day under way it is the clock, which moves on its own,
     and for a day that is over it follows from the facts. The signals of the segment still going
@@ -267,12 +275,33 @@ def _foreground_lines(brief: Brief) -> list[str]:
     if not brief.foreground:
         return []
     rows = "\n".join(
-        f"{_clock(lo, brief.zone)}-{_clock(hi, brief.zone)} | {text}"
-        for lo, hi, text in brief.foreground
+        f"{_clock(q.start_ms, brief.zone)}-{_clock(q.end_ms, brief.zone)} | "
+        f"{'mixed' if q.lead is None else f'lead {q.lead}'} | {q.text}"
+        for q in brief.foreground
     )
     return [
-        "MAC FOREGROUND (local | what was in front of him, minutes in front, seconds typed):\n"
-        + rows,
+        "MAC FOREGROUND (local | lead: what held over half its minutes, or mixed | what was in "
+        "front of him, minutes in front, seconds typed):\n" + rows,
+    ]
+
+
+def _about_lines(brief: Brief) -> list[str]:
+    if brief.about is None:
+        return []
+    about = brief.about
+
+    def part(heading: str, lines: Sequence[str]) -> str:
+        return f"{heading}\n" + ("\n".join(f"- {line}" for line in lines) or "(none)")
+
+    return [
+        "ABOUT HIM (background from his memory and his past answers; it helps tell what things"
+        " are, it never shows what he did today):\n\n"
+        + "\n\n".join((
+            part("PROJECTS AND ONGOING THINGS:", about.projects),
+            part("ROUTINE ON THIS WEEKDAY (counted over past weeks):", about.routines),
+            part("PEOPLE NAMED TODAY:", about.people),
+            part("HIS EARLIER CORRECTIONS (each one day only):", about.corrections),
+        )),
     ]
 
 
@@ -294,6 +323,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
     content = "\n\n".join((
         f"DAY: {brief.day} {brief.weekday}, timezone {zone}; {state}",
         f"TITLE LANGUAGE: {brief.language}",
+        *_about_lines(brief),
         *_kept_lines(brief),
         f"WAKING WINDOW: {labels[start]} {_clock(start, brief.zone, seconds=True)} to "
         f"{labels[end]} {_clock(end, brief.zone, seconds=True)}",
