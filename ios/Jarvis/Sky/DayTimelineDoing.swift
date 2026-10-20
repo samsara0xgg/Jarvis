@@ -96,8 +96,9 @@ extension DayTimelineModel {
         e.time = clock(st.t0); e.t1 = st.t1; e.going = st.going
         e.unknown = words == nil
         e.right = tlDur(tlInt(st.t1 - st.t0))
-        // a trip wears the way he went: a bus for a ride, else the trip's symbol
-        e.symbol = s.category == "commute" ? inside.first { $0.row.kind == .trip }?.row.symbol ?? cat.symbol : cat.symbol
+        // a trip wears the way he went: a bus for a ride, else the trip's symbol; an observed call (the one fact the program titles without a category) wears the phone, as on the Mac
+        e.symbol = s.category == "commute" ? inside.first { $0.row.kind == .trip }?.row.symbol ?? cat.symbol
+            : s.category == "unknown" && s.basis == "observed" && words != nil ? "phone.fill" : cat.symbol
         e.color = cat.color
         e.rail = .place(cat.color ?? PlaceTint.lineNeutral)
         let under = [place, s.confidence == "low" ? "不太确定" : nil].compactMap { $0 }.joined(separator: " · ")
