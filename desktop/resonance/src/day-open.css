@@ -1,17 +1,10 @@
-/* An open row (RowOpen.tsx, AskDock.tsx; ADR 0308, spec-r3 section 8). The row's own two lines stay as they were and its content hangs under
-   them from the title's column; the row that holds one is a little lighter and has a hairline. Under the list: the note that a name was
-   changed, and the input. All of it black and quiet like the pane; amber only where something waits on him (the 知道了 button). */
+/* A row's detail page (RowOpen.tsx, AskDock.tsx; ADR 0308, spec-r3 section 8): what the row holds and its buttons, under its title (day-timeline.css has the page's frame);
+   a row with a quiet line under it. Under the list: the note that a name was changed, and the input. All of it black and quiet like the pane; amber only
+   where something waits on him (the 知道了 button). */
 .notch .dt-row,.notch .dt-sh { cursor:pointer; }
 .notch .dt-row.is-still,.notch .dt-sh.is-still { cursor:default; }
-/* what is still to come is drawn quiet; one that is open is looked at, so it is not */
-.notch .dt-row.is-future.is-open { opacity:1; }
 .notch .dt-row:has(> .dt-fold),.notch .dt-sh:has(> .dt-fold) { height:auto; grid-template-rows:var(--head) auto; }
-.notch .dt-row:has(> .dt-fold:not(.is-line)),.notch .dt-sh:has(> .dt-fold:not(.is-line)) { background:rgb(255 255 255 / .055); box-shadow:inset 0 0 0 1px rgb(255 255 255 / .08); }
-/* the day's rail runs inside an open card, not across its hairline: it stops 1 px short of the edge it would cross (a rail that begins or ends at a glyph is inside already) */
-.notch .dt-row.is-rail:not(.is-top):has(> .dt-fold:not(.is-line))::before { top:1px; }
-.notch .dt-row.is-rail:not(.is-end):has(> .dt-fold:not(.is-line))::before { bottom:1px; }
-.notch .dt-sh.has-rows:has(> .dt-fold:not(.is-line))::after { bottom:1px; }
-/* under a shut row the fold holds only a quiet line, not the open look */
+/* under a row the fold holds only a quiet line */
 .notch .dt-fold.is-line > .dt-body { padding-bottom:4px; }
 .notch .dt-fold { grid-column:3 / -1; grid-row:2; min-width:0; overflow:hidden; cursor:default; }
 .notch .dt-body { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:2px 4px 12px 2px; font-size:13px; line-height:18px; color:var(--p-muted); user-select:text; -webkit-user-select:text; }
@@ -112,11 +105,9 @@
 .notch .dt-role:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
 .notch .dt-role.is-on { background:rgb(var(--ink) / .22); color:var(--p-ink); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .5); }
 
-/* the hover's actions on a stay's header too; where the row is open its own buttons are there */
+/* the hover's actions on a stay's header too */
 .notch .dt-sh.is-hot .dt-quick,.notch .dt-sh.is-pick .dt-quick { opacity:1; pointer-events:auto; }
 .notch .dt-sh.is-hot .dt-quick + .dt-tm,.notch .dt-sh.is-pick .dt-quick + .dt-tm { opacity:0; }
-.notch .dt-row:has(> .dt-fold:not(.is-line)) > .dt-quick,.notch .dt-sh:has(> .dt-fold:not(.is-line)) > .dt-quick { display:none; }
-.notch .dt-row:has(> .dt-fold:not(.is-line)) > .dt-quick + .dt-tm,.notch .dt-sh:has(> .dt-fold:not(.is-line)) > .dt-quick + .dt-tm { opacity:1; }
 
 /* the star that marks what mattered: his mark filled warm white, her pick the same outlined, nothing a dim outline; sparks fly from it when it is set */
 .notch .dt-starbtn { position:relative; display:grid; place-items:center; flex:none; width:24px; height:24px; border-radius:50%; background:rgb(255 255 255 / .12); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }

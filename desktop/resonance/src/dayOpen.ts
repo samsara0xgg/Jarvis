@@ -96,6 +96,14 @@ function openSegment(m: DayModel, key: string): Open | null {
   if (seg.knows) parts.push({ type: 'knows', text: seg.knows });
   return { key, kind: 'doing', parts, rename: null, name: null, ack: null, summarize: false, star: false, commit: null };
 }
+// What a detail page says over its content: the row's title, and its time range, length and place in one line (a moment has its time alone).
+export type Head = { title: string; meta: string };
+export function headOf(m: DayModel, key: string, t: Say): Head | null {
+  const row = m.rows.get(key), seg = m.segs.get(key), stay = m.heads.get(key), it = m.items.find(x => x.id === key);
+  if (row && seg) return { title: row.title, meta: [seg.end > seg.start ? `${clock(seg.start, m.tz)}–${endClock(seg.end, m.reply, m.tz)}` : row.at, seg.end > seg.start ? row.right : '', row.detail].filter(Boolean).join(' · ') };
+  if (stay) return { title: stay.name, meta: [stay.when, stay.dur].join(' · ') };
+  return row ? { title: row.title, meta: it ? span(it, m, t) : [row.at, row.right].filter(Boolean).join(' · ') } : null;
+}
 export function openOf(m: DayModel, key: string, t: Say): Open | null {
   if (m.segs.has(key)) return openSegment(m, key);
   const sessions = m.folds.get(key), it = sessions ? sessions[0] : m.items.find(x => x.id === key);

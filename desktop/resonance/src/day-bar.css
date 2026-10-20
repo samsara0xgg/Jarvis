@@ -44,6 +44,8 @@
 @media (prefers-reduced-motion:reduce) { .notch .dt-lit { animation-duration:120ms; transition-duration:120ms; } }
 .notch .dt-hair { position:absolute; top:-4px; bottom:-4px; width:1px; margin-left:-.5px; background:rgb(var(--ink) / .7); }
 .notch .dt-bracket { position:absolute; top:0; bottom:0; box-sizing:border-box; border:1.5px solid rgb(var(--ink) / .92); border-radius:5px; }
+/* with a detail page up its row's span stays marked; the piece the pointer is on is only hinted */
+.notch .dt-bar.has-open .dt-bracket:not(.is-open) { border-width:1px; border-color:rgb(var(--ink) / .5); }
 .notch .dt-band { position:absolute; top:-3px; bottom:-3px; box-sizing:border-box; border-inline:1px solid rgb(var(--ink) / .5); background:rgb(255 255 255 / .12); }
 .notch .dt-band.is-applied { border-color:rgb(var(--ink) / .3); background:rgb(255 255 255 / .07); }
 .notch .dt-void { position:absolute; top:0; bottom:0; left:0; display:grid; place-items:center; font-size:11px; white-space:nowrap; color:var(--p-faint); pointer-events:none; }

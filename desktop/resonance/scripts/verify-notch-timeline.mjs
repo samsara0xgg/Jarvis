@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { askable, buildDay, changeId, clock, covered, dateTitle, doingAt, doingOf, doingWords, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within, workoutOf } from '../src/dayView.ts';
 import { axisOf, buildBar, counted, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
-import { answerOf, askOf, fromTo, hasBody, openOf, sayOf, sayRange, talkLines } from '../src/dayOpen.ts';
+import { answerOf, askOf, fromTo, hasBody, headOf, openOf, sayOf, sayRange, talkLines } from '../src/dayOpen.ts';
 import { cardOf } from '../src/numberCard.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
@@ -2101,9 +2101,9 @@ try {
       let go = await anims(a);
       const out = go.filter(x => x.opt.duration === 80), inn = go.filter(x => x.opt.duration === 140), cls = x => x.cls.split(' ')[0];
       check('going to the day before: the day that was leaves first, each part sliding to the right and fading (80 ms): the list 16 px, the bar and the rest 8',
-        out.length >= 4 && out.every(x => x.kf.length === 1 && x.kf[0].opacity === 0 && x.opt.fill === 'forwards' && x.kf[0].transform === `translateX(${cls(x) === 'dt-list' ? 16 : 8}px)`) && ['dt-line', 'dt-bar', 'dt-numbers', 'dt-list'].every(c => out.some(x => cls(x) === c)), JSON.stringify(out.map(x => [cls(x), x.kf[0].transform])));
+        out.length >= 4 && out.every(x => x.kf.length === 1 && x.kf[0].opacity === 0 && x.opt.fill === 'forwards' && x.kf[0].transform === `translateX(${cls(x) === 'dt-stage' ? 16 : 8}px)`) && ['dt-line', 'dt-bar', 'dt-numbers', 'dt-stage'].every(c => out.some(x => cls(x) === c)), JSON.stringify(out.map(x => [cls(x), x.kf[0].transform])));
       check('then the new day enters from the left (140 ms), after the first has gone: -16 px for the list, -8 for the rest',
-        inn.length >= 2 && inn.every(x => x.kf.length === 2 && x.kf[0].opacity === 0 && x.kf[0].transform === `translateX(-${cls(x) === 'dt-list' ? 16 : 8}px)` && x.opt.fill === 'backwards') && Math.min(...inn.map(x => x.at)) >= Math.max(...out.map(x => x.at)) + 70, JSON.stringify({ out: out.map(x => x.at), inn: inn.map(x => [cls(x), x.at, x.kf[0].transform]) }));
+        inn.length >= 2 && inn.every(x => x.kf.length === 2 && x.kf[0].opacity === 0 && x.kf[0].transform === `translateX(-${cls(x) === 'dt-stage' ? 16 : 8}px)` && x.opt.fill === 'backwards') && Math.min(...inn.map(x => x.at)) >= Math.max(...out.map(x => x.at)) + 70, JSON.stringify({ out: out.map(x => x.at), inn: inn.map(x => [cls(x), x.at, x.kf[0].transform]) }));
       check('and when it is over nothing is left faded or shifted', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.effect.target?.closest?.('.dt')).length === 0));
       await a.page.evaluate(() => { window.__anims.length = 0; });
       await a.page.keyboard.press('ArrowRight');
@@ -2561,35 +2561,38 @@ try {
     check('hovering the stretch nothing says the words of: 不知道在干嘛 with its own time and a hollow dot', c && c.head === '不知道在干嘛 11:25–13:15 · 1 时 50 分' && c.hollow, JSON.stringify(c));
     await a.move(g.left + 30, y + 150); await settle(300);
     // opening: a long work stretch, then a rest, then one with pictures and the session that spans two stretches
-    const inside = k => a.page.evaluate(k => { const q = document.querySelector(`[data-key="${k}"]`); return { open: q.getAttribute('aria-expanded'), lines: [...q.querySelectorAll('.dt-ins .dt-cline')].map(l => [l.querySelector('.dt-ctx').childNodes[0]?.textContent, l.querySelector('.dt-ctx em')?.textContent ?? '', l.querySelector('.dt-cside').textContent].join('|')),
+    // a click on a row opens its detail page over the list (the page's `data-page` is the row's key); to open another, the page is gone back from first
+    const pg = () => a.page.locator('.dt-page[data-page]');
+    const go = async k => { if (await pg().count()) { await a.page.locator('.dt-pb').click(); await settle(320); } await row(k).scrollIntoViewIfNeeded(); await row(k).click({ position: { x: 170, y: 14 } }); await settle(560); };
+    const inside = k => a.page.evaluate(k => { const q = document.querySelector(`.dt-page[data-page="${k}"]`) ?? document.createElement('div'); return { open: q.isConnected ? 'true' : 'false', lines: [...q.querySelectorAll('.dt-ins .dt-cline')].map(l => [l.querySelector('.dt-ctx').childNodes[0]?.textContent, l.querySelector('.dt-ctx em')?.textContent ?? '', l.querySelector('.dt-cside').textContent].join('|')),
       thumbs: [...q.querySelectorAll('.dt-ins img.dt-thumb')].map(i => i.getAttribute('src').split('/').pop()[0]), knows: q.querySelector('.dt-knows')?.textContent ?? null, lead: q.querySelector('.dt-lines p')?.textContent ?? null,
       btns: [...q.querySelectorAll('.dt-acts .dt-btn')].map(b => b.textContent), say: !!q.querySelector('.dt-sayhow'), star: !!q.querySelector('.dt-starbtn') }; }, k);
-    await row('doing-12').scrollIntoViewIfNeeded(); await row('doing-12').click({ position: { x: 170, y: 14 } }); await settle(560);
+    await go('doing-12');
     let o = await inside('doing-12');
     check('opening the long work stretch: the work block (projects and apps, active time), the Claude Code session and the chat inside it in time order, how she knows, and the two buttons it has (问她 and 这段在干嘛), no star',
       o.open === 'true' && o.lines.join('\n') === '在 Mac 上工作|Jarvis · Ghostty|活跃 1 时 55 分\nClaude Code · Doing rows|jarvis · A|1 时 30 分\nThe bar for the day|和 Claude|14 条' && o.knows === '记录里看到的' && o.btns.join() === '问她' && o.say && !o.star, JSON.stringify(o));
     await a.shot('doing-03-open-work', { x: 40, y: 0, width: 560, height: 760 });
-    await row('doing-11').scrollIntoViewIfNeeded(); await row('doing-11').click({ position: { x: 170, y: 14 } }); await settle(560);
+    await go('doing-11');
     o = await inside('doing-11');
     check('opening the rest stretch (phone use, music, messages, a call): each in a compact line with its time or length at the right, and her guess; the first stretch closed', o.open === 'true' && (await inside('doing-12')).open === 'false'
       && o.lines.join('\n') === '音乐|晴天|30 分\n妈妈|发 3 · 收 5|7 分\n妈妈|打进|4 分' && o.knows === '她猜的', JSON.stringify(o));
     await a.shot('doing-04-open-rest', { x: 40, y: 0, width: 560, height: 760 });
-    await row('doing-9').scrollIntoViewIfNeeded(); await row('doing-9').click({ position: { x: 170, y: 14 } }); await settle(560);
+    await go('doing-9');
     o = await inside('doing-9');
     check('a stretch with pictures shows their thumbnails (the one the daemon has, an icon for the one it has not), and the session that spans two stretches is 25 min here', o.lines.length === 3 && o.thumbs.join() === 'c' && o.lines.at(-1) === 'Claude Code · Verify the day list|jarvis · A|25 分' && o.knows === '她猜的');
-    await row('doing-9').locator('img.dt-thumb').click(); await settle(300);
+    await pg().locator('img.dt-thumb').click(); await settle(300);
     check('a click on a thumbnail opens the picture large with its note', await a.page.locator('.dt-viewer img').getAttribute('src').then(x => x.endsWith(`/inherent/attachments/${'c'.repeat(32)}`)) && await a.page.locator('.dt-viewer p').innerText() === '图书馆的窗边');
     await a.page.keyboard.press('Escape'); await settle(300);
     // 问她 about a stretch: the chip has its glyph, words and time; the turn is sent as text with the range and words in front, with no `about`
-    await row('doing-2').scrollIntoViewIfNeeded(); await row('doing-2').click({ position: { x: 170, y: 14 } }); await settle(560);
-    await row('doing-2').locator('.dt-acts .dt-btn', { hasText: '问她' }).click(); await settle(520);
+    await go('doing-2');
+    await pg().locator('.dt-acts .dt-btn', { hasText: '问她' }).click(); await settle(520);
     const chip = await a.page.evaluate(() => { const c = document.querySelector('.dt-dock .dt-about'); return c && { title: c.querySelector('b').textContent, at: c.querySelector('time').textContent, icon: !!c.querySelector('svg') }; });
     await a.page.keyboard.type('这段进展怎么样'); await a.page.keyboard.press('Enter'); await settle(500);
     const turn = a.s.posts.filter(p => p.path === '/inherent/submit').at(-1)?.body;
     check('问她 on a stretch: the chip is 做 Jarvis at 10:30 with its glyph; Enter sends the range and words with his, and no about (the brain takes none for a stretch)', chip && chip.title === '做 Jarvis' && chip.at === '10:30' && chip.icon && turn?.text === '10:30–11:25 做 Jarvis：这段进展怎么样' && turn.about === undefined, JSON.stringify([chip, turn]));
     await a.page.waitForTimeout(1700);
-    await row('doing-9').scrollIntoViewIfNeeded(); await row('doing-9').click({ position: { x: 170, y: 14 } }); await settle(560);
-    await row('doing-9').locator('.dt-sayhow').click(); await settle(520);
+    await go('doing-9');
+    await pg().locator('.dt-sayhow').click(); await settle(520);
     await a.page.keyboard.type('在图书馆看书'); await a.page.keyboard.press('Enter'); await settle(500);
     const said1 = a.s.posts.filter(p => p.path === '/inherent/day/answer').at(-1)?.body;
     check('这段在干嘛 on a stretch hands his words for its range to the day’s one route', said1 && said1.text === '在图书馆看书' && said1.start_ms === T(17, 0) && said1.end_ms === T(18, 15), JSON.stringify(said1));
@@ -2612,78 +2615,100 @@ try {
   // The full day and a picture that has to be cut to 240 tall (640 x 420), at 16:20.
   const bigDay = () => fullDay({ items: [...fullDay().items, it('picture-2', 'picture', T(16, 20), T(16, 20), { attachment: BIG, note: '傍晚的海边，风很大' })] });
   const orow = (a, key) => a.page.locator(`[data-key="${key}"]`).first();
-  const tap = async (a, key) => { await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).click({ position: { x: 170, y: 14 } }); };
+  // A click on a row slides the list away to the row's detail page (its `data-page` is the row's key); `back` is the page's ‹, and `tap` goes back first when a page is up.
   const rest = (a, ms = 520) => a.page.waitForTimeout(ms);
-  const folds = a => a.page.locator('.dt-list .dt-fold').count();
-  const expanded = (a, key) => orow(a, key).getAttribute('aria-expanded');
-  const said = async (a, key) => (await orow(a, key).locator('.dt-body').first().innerText()).split('\n').filter(Boolean);
-  const shotRow = async (a, name, key) => {
-    const box = await orow(a, key).boundingBox(), list = await a.page.locator('.dt-list').boundingBox(), top = Math.max(0, Math.min(box.y, list.y + list.height - 60) - 150);
+  const pgOf = a => a.page.locator('.dt-page[data-page]');
+  const folds = a => pgOf(a).count();
+  const back = async a => { if (await folds(a)) { await a.page.locator('.dt-pb').click(); await rest(a, 320); } };
+  const tap = async (a, key) => { await back(a); await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).click({ position: { x: 170, y: 14 } }); };
+  const expanded = async (a, key) => String(await pgOf(a).getAttribute('data-page', { timeout: 300 }).catch(() => null) === key);
+  const said = async (a, key) => (await pgOf(a).locator('.dt-body').first().innerText()).split('\n').filter(Boolean);
+  const shotRow = async (a, name) => {
+    const box = await a.page.locator('.dt-stage').boundingBox(), top = Math.max(0, box.y - 150);
     await a.shot(name, { x: 40, y: top, width: 560, height: Math.min(560, 760 - top) });
   };
   if (all || only === 'open') {
     const full = buildDay(bigDay(), NOW, zh), fbar = buildBar(full, zh);
     const a = await boot({ served: bigDay() });
     await openDay(a);
-    const geo = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, width: r.width }; });
+    const geo = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
     const px = ms => geo.left + Math.min(1, Math.max(0, fOf(fbar, ms))) * geo.width;
     const bracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
     const sameSpan = (b, key) => { const x = full.span.get(key), w = { left: px(x.t0), width: Math.max(3, px(x.t1) - px(x.t0)) }; return !!b && Math.abs(b.left - w.left) < 1.6 && Math.abs(b.width - w.width) < 1.6; };
 
-    // ---- opening and closing ----
-    const before = await a.page.evaluate(() => { const r = document.querySelector('[data-key="move-1"]'); r.scrollIntoView({ block: 'center' }); const q = el => el.getBoundingClientRect(); return { top: q(r).top, h: q(r).height, next: q(document.querySelector('[data-key="move-1"]').nextElementSibling).top }; });
-    // the open is read as it runs: the height of the content frame by frame, its opacity, and the timings the animations were given
-    const run = await a.page.evaluate(async () => {
-      const el = document.querySelector('[data-key="move-1"]');
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await new Promise(r => requestAnimationFrame(r));
-      const fold = el.querySelector('.dt-fold'), body = fold.querySelector('.dt-body'), t0 = performance.now(), samples = [];
-      const timings = fold.getAnimations({ subtree: true }).map(x => { const t = x.effect.getTiming(); return { on: x.effect.target === fold ? 'fold' : 'body', duration: t.duration, delay: t.delay, easing: t.easing }; });
-      await new Promise(done => { const tick = () => { samples.push({ t: performance.now() - t0, h: fold.getBoundingClientRect().height, o: Number(getComputedStyle(body).opacity) }); if (performance.now() - t0 < 420) requestAnimationFrame(tick); else done(); }; tick(); });
-      return { timings, samples, final: body.getBoundingClientRect().height };
+    // ---- opening and going back ----
+    // A click on a row slides the list away to the row's detail page and the header, the bar and the chips stay; going back slides the list in again where it was.
+    const openBracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket.is-open')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
+    await a.page.evaluate(() => { document.querySelector('[data-key="move-1"]').scrollIntoView({ block: 'center' }); });
+    await rest(a, 150);
+    const stat = () => a.page.evaluate(() => {
+      const q = s => document.querySelector(s)?.getBoundingClientRect(), l = document.querySelector('.dt-list'), p = document.querySelector('.dt-page');
+      return { head: q('.dt-head').top, bar: q('.dt-bar').top, nums: q('.dt-numbers')?.top, stage: q('.dt-stage').toJSON(), page: p && q('.dt-page').toJSON(), scroll: l.scrollTop, lv: getComputedStyle(l).visibility, pv: p && getComputedStyle(p).visibility, move: q('.dt-list [data-key="move-1"]').top };
     });
-    const first = run.samples[0], last = run.samples.at(-1), grown = run.samples.find(x => x.h >= run.final - .5);
-    check('a row opens with a spring of 260 ms and its words fade in after 60 ms (200 ms long), the same ease the rest of the pane uses', run.timings.some(x => x.on === 'fold' && x.duration === 260 && x.delay === 0 && x.easing === 'cubic-bezier(0.16, 1, 0.3, 1)') && run.timings.some(x => x.on === 'body' && x.duration === 200 && x.delay === 60), JSON.stringify(run.timings));
-    check('what it holds grows from nothing to its height frame by frame, never back, and the words are not there at first', first.h < run.final * .5 && run.samples.every((x, i, l) => i === 0 || x.h >= l[i - 1].h - .5) && first.o < .05 && last.h >= run.final - .5 && last.o > .99 && grown.t > 120 && grown.t < 380, JSON.stringify({ first, last, final: run.final, grown: grown?.t }));
-    const after = await a.page.evaluate(() => { const r = document.querySelector('[data-key="move-1"]'), q = el => el.getBoundingClientRect(), b = r.querySelector('.dt-body p'), title = r.querySelector('.dt-tx b'); return { top: q(r).top, h: q(r).height, bodyLeft: q(b).left, titleLeft: q(title).left, open: r.getAttribute('aria-expanded'), next: q(r.nextElementSibling).top, folds: document.querySelectorAll('.dt-list .dt-fold').length }; });
-    check('the row stays where it was and grows downward by its content: the content hangs from the title\'s column and the rows under it move down by as much', Math.abs(after.top - before.top) < 40 && after.h > before.h + 60 && Math.abs(after.bodyLeft - after.titleLeft) < 1.5 && after.open === 'true' && after.folds === 1 && Math.abs((after.next - before.next) - (after.h - before.h)) < 2, JSON.stringify({ before, after }));
-    await rest(a, 200);
+    const before = await stat();
+    // the slide is read as it runs: where the list and the page are, frame by frame, and the timings the animations were given
+    const run = await a.page.evaluate(async () => {
+      document.querySelector('[data-key="move-1"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r));
+      const st = document.querySelector('.dt-stage'), l = document.querySelector('.dt-list'), p = document.querySelector('.dt-page'), t0 = performance.now(), samples = [];
+      const timings = [st, l, p].flatMap(el => el.getAnimations().map(x => { const t = x.effect.getTiming(); return { on: el.className.split(' ')[0], duration: t.duration, easing: t.easing }; }));
+      await new Promise(done => { const tick = () => { samples.push({ t: performance.now() - t0, l: l.getBoundingClientRect().left, p: p.getBoundingClientRect().left }); if (performance.now() - t0 < 420) requestAnimationFrame(tick); else done(); }; tick(); });
+      return { timings, samples };
+    });
+    const width = before.stage.width, left0 = before.stage.left, last = run.samples.at(-1);
+    check('a row opens with a slide of 240 ms on the pane\'s ease, the same for the list, the page and the stage\'s height', ['dt-list', 'dt-page', 'dt-stage'].every(on => run.timings.some(x => x.on === on && x.duration === 240 && x.easing === 'cubic-bezier(0.16, 1, 0.3, 1)')), JSON.stringify(run.timings));
+    check('the list slides out to the left and the page in from the right, side by side all the way and never back, and they end the list one width left of where it was and the page where it was',
+      run.samples.every((x, i, l) => Math.abs(x.p - x.l - width) < 1.5 && (i === 0 || x.l <= l[i - 1].l + .5 && x.p <= l[i - 1].p + .5)) && run.samples.some(x => x.l < left0 - 20 && x.l > left0 - width + 20) && Math.abs(last.l - (left0 - width)) < 1.5 && Math.abs(last.p - left0) < 1.5, JSON.stringify({ left0, width, samples: run.samples.filter((_, i) => i % 4 === 0) }));
+    const open1 = await stat();
+    check('the header, the bar and the chips stay where they were; the list waits out of the way, hidden, at the scroll it had, and the page is in the stage', open1.head === before.head && open1.bar === before.bar && open1.nums === before.nums && open1.lv === 'hidden' && open1.pv === 'visible' && open1.scroll === before.scroll
+      && Math.abs(open1.page.left - left0) < 1.5 && await folds(a) === 1 && await a.page.locator('.dt-stage.is-page').count() === 1, JSON.stringify({ before, open1 }));
+    const head1 = headOf(full, 'move-1', zh);
+    check('the page has a back control with the row\'s title, and under it when it was and how long: 11:25–13:05 · 1 时 40 分', head1.meta === '11:25–13:05 · 1 时 40 分' && await a.page.locator('.dt-ph .dt-pb').count() === 1 && await a.page.locator('.dt-ph b').innerText() === head1.title && await a.page.locator('.dt-pm').innerText() === head1.meta, JSON.stringify(head1));
+    check('what the row holds is on the page (move-1: where it went from and to), with its buttons', (await said(a, 'move-1')).join('|') === '家 → A&W|问她|这段在干嘛', (await said(a, 'move-1')).join('|'));
+    check('and the open row\'s span is marked on the bar', sameSpan(await openBracket(), 'move-1'), JSON.stringify(await openBracket()));
+    await a.page.locator('.dt-pb').click(); await rest(a, 450);
+    const back1 = await stat();
+    check('the back control slides the list in again: at the scroll it had, the row it came from where it was, and the page is gone', back1.scroll === before.scroll && Math.abs(back1.move - before.move) < .5 && back1.lv === 'visible' && back1.page === null && await folds(a) === 0 && await a.page.locator('.dt-bracket.is-open').count() === 0, JSON.stringify({ before, back1 }));
     await tap(a, 'talk-1'); await rest(a);
-    check('only one row is open at a time: opening another closes the one that was', await folds(a) === 1 && await expanded(a, 'move-1') === 'false' && await expanded(a, 'talk-1') === 'true');
-    await tap(a, 'talk-1'); await rest(a, 450);
-    check('a click on the open row closes it (it folds away, and nothing is left of it)', await folds(a) === 0 && await expanded(a, 'talk-1') === 'false');
+    check('a row that has the page up is the one that was clicked', await expanded(a, 'talk-1') === 'true' && await expanded(a, 'move-1') === 'false' && await folds(a) === 1);
     await tap(a, 'stay-home-1'); await rest(a);
-    await orow(a, 'stay-home-1').locator('.dt-lines p').first().click(); await rest(a, 300);
-    check('a click inside what is open does not close it', await expanded(a, 'stay-home-1') === 'true' && await folds(a) === 1);
+    await pgOf(a).locator('.dt-lines p').first().click(); await rest(a, 300);
+    check('a click inside the page does not take it away', await expanded(a, 'stay-home-1') === 'true' && await folds(a) === 1);
     await a.move(...Object.values(await a.page.locator('.dt-head').boundingBox().then(b => [b.x + 60, b.y + b.height / 2]))); await a.page.waitForTimeout(350);
-    check('and the open row keeps its bracket on the bar when the pointer goes away', sameSpan(await bracket(), 'stay-home-1'), JSON.stringify(await bracket()));
+    check('and the open row keeps its span marked on the bar when the pointer goes away', sameSpan(await openBracket(), 'stay-home-1'), JSON.stringify(await openBracket()));
+    // the bar while a page is up: another piece changes the page to its row, the open one changes nothing, a place with nothing recorded goes back
+    await a.page.mouse.click(px(T(16, 0)), geo.top + 12); await rest(a, 450);
+    check('a click on another piece of the bar changes the page to that row (UVic at 16:00)', await expanded(a, 'stay-uvic') === 'true' && await folds(a) === 1 && sameSpan(await openBracket(), 'stay-uvic'), `${await expanded(a, 'stay-uvic')} ${JSON.stringify(await openBracket())}`);
+    await a.page.mouse.click(px(T(16, 30)), geo.top + 12); await rest(a, 450);
+    check('a click on the open row\'s own span changes nothing', await expanded(a, 'stay-uvic') === 'true' && await folds(a) === 1);
+    await a.page.mouse.click(px(T(23, 35)), geo.top + 12); await rest(a, 450);
+    check('a click on the bar where nothing is recorded goes back to the list', await folds(a) === 0 && await a.page.locator('.dt-stage.is-page').count() === 0);
 
     // ---- the keys: Enter or Space opens the row they chose; Esc lets go of one thing at a time ----
     const key = async (k, ms = 420) => { await a.page.keyboard.press(k); await a.page.waitForTimeout(ms); };
     const chosen = () => a.page.evaluate(() => document.querySelector('.is-pick')?.dataset.key);
+    await tap(a, 'stay-home-1'); await rest(a);
     await key('Escape');
-    check('Esc closes the open row first, and the pane stays up', await folds(a) === 0 && (await a.read()).tl === 'pinned', JSON.stringify(await a.read()));
+    check('Esc closes the open page first, and the pane stays up', await folds(a) === 0 && (await a.read()).tl === 'pinned', JSON.stringify(await a.read()));
     await key('ArrowDown');
     const next = await chosen();
     check('↓ chooses the row after the one the click chose', next === 'workout-1', next);
     await key('Enter');
     check('Enter opens the row the keys chose', await expanded(a, next) === 'true' && await folds(a) === 1);
     await key('Enter');
-    check('Enter again closes it', await expanded(a, next) === 'false' && await folds(a) === 0);
+    check('Enter again goes back', await expanded(a, next) === 'false' && await folds(a) === 0);
     await key(' ');
     check('Space opens it too', await expanded(a, next) === 'true' && await folds(a) === 1);
     await key('ArrowDown');
-    check('moving the choice on leaves what is open open, and the bar\'s bracket follows the choice', await expanded(a, next) === 'true' && await chosen() !== next && sameSpan(await bracket(), await chosen()), `${await chosen()} ${JSON.stringify(await bracket())}`);
-    await key('Enter');
-    check('and Enter on the new choice opens that one and closes the first', await folds(a) === 1 && await expanded(a, next) === 'false' && await expanded(a, await chosen()) === 'true');
+    check('with a page up ↓ is the page\'s, not the list\'s: the choice does not move and the page stays', await expanded(a, next) === 'true' && await chosen() === next && await folds(a) === 1);
     await key('Escape');
-    // the order of Esc: the open row, then the lens, then the pane
+    // the order of Esc: the open page, then the lens, then the pane
     await a.page.locator('.dt-num').first().click(); await a.page.waitForTimeout(250);
     await tap(a, 'move-1'); await rest(a);
     const lens = () => a.page.locator('.dt').getAttribute('data-lens');
-    check('a lens can be pinned while a row is open', !!await lens() && await folds(a) === 1, `${await lens()} ${await folds(a)}`);
+    check('a lens can be pinned while a page is up', !!await lens() && await folds(a) === 1, `${await lens()} ${await folds(a)}`);
     await key('Escape');
-    check('Esc: the open row first, the lens stays', await folds(a) === 0 && !!await lens() && (await a.read()).tl === 'pinned');
+    check('Esc: the open page first, the lens stays', await folds(a) === 0 && !!await lens() && (await a.read()).tl === 'pinned');
     await key('Escape');
     check('Esc: then the lens, the pane stays', !await lens() && (await a.read()).tl === 'pinned');
     await key('Escape', 700);
@@ -2721,15 +2746,12 @@ try {
     }
     check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it', bad.length === 0, bad.join('\n'));
     // what the row says in its two lines is not said again
-    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="event-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded') }; });
-    await tap(a, 'event-1'); await rest(a, 480);
-    check('a row that opens has the pointer and says whether it is open; a row still to come is drawn at full strength while it is open (and quiet again when it is closed)', lit.cursor === 'pointer' && lit.expanded === 'false' && await orow(a, 'event-1').evaluate(r => getComputedStyle(r).opacity) === '1', JSON.stringify(lit));
-    await tap(a, 'event-1'); await rest(a, 500);
-    check('and quiet again when it is closed', Number(await orow(a, 'event-1').evaluate(r => getComputedStyle(r).opacity)) < .7);
+    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="event-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded'), opacity: Number(getComputedStyle(r).opacity) }; });
+    check('a row that opens has the pointer and no expanded state (it opens a page, not itself), and a row still to come is drawn quiet', lit.cursor === 'pointer' && lit.expanded === null && lit.opacity < .7, JSON.stringify(lit));
 
     // the talk: his line and hers from the day's records, one line each, clipped; the records were read once
     await tap(a, 'talk-1'); await rest(a, 520);
-    const talk = await orow(a, 'talk-1').locator('.dt-body').evaluate(b => ({ lines: [...b.querySelectorAll('.dt-said p')].map(p => ({ who: p.querySelector('small').textContent, text: p.querySelector('span').textContent, h: p.getBoundingClientRect().height, clipped: p.querySelector('span').scrollWidth > p.querySelector('span').clientWidth })), all: b.innerText.split('\n').filter(Boolean) }));
+    const talk = await pgOf(a).locator('.dt-body').evaluate(b => ({ lines: [...b.querySelectorAll('.dt-said p')].map(p => ({ who: p.querySelector('small').textContent, text: p.querySelector('span').textContent, h: p.getBoundingClientRect().height, clipped: p.querySelector('span').scrollWidth > p.querySelector('span').clientWidth })), all: b.innerText.split('\n').filter(Boolean) }));
     check('a talk shows his first line in it and her first reply to that, one line each and clipped to the row (his line break is a space), and 共 6 句 under them', talk.lines.length === 2 && talk.lines[0].who === '你' && talk.lines[0].text === '帮我看看今天下午有什么安排，顺便提醒我给银行打电话 这件事别忘了' && talk.lines[1].who === '她' && talk.lines[1].text.startsWith('下午三点有一个小组讨论')
       && talk.lines.every(x => x.h <= 20) && talk.lines[1].clipped && talk.all.includes('共 6 句'), JSON.stringify(talk));
     await shotRow(a, 'open-03-talk', 'talk-1');
@@ -2739,21 +2761,21 @@ try {
 
     // pictures
     await tap(a, 'picture-1'); await rest(a, 600);
-    const small = await orow(a, 'picture-1').evaluate(r => { const b = r.querySelector('.dt-pic'), i = b.querySelector('img'), c = getComputedStyle(i), q = x => x.getBoundingClientRect(), note = r.querySelector('.is-note'); return { w: Math.round(q(i).width), h: Math.round(q(i).height), max: c.maxHeight, radius: c.borderRadius, box: getComputedStyle(b).borderRadius, nat: [i.naturalWidth, i.naturalHeight], cursor: getComputedStyle(b).cursor, note: note.innerText, noteBreaks: getComputedStyle(note).whiteSpace }; });
+    const small = await pgOf(a).evaluate(r => { const b = r.querySelector('.dt-pic'), i = b.querySelector('img'), c = getComputedStyle(i), q = x => x.getBoundingClientRect(), note = r.querySelector('.is-note'); return { w: Math.round(q(i).width), h: Math.round(q(i).height), max: c.maxHeight, radius: c.borderRadius, box: getComputedStyle(b).borderRadius, nat: [i.naturalWidth, i.naturalHeight], cursor: getComputedStyle(b).cursor, note: note.innerText, noteBreaks: getComputedStyle(note).whiteSpace }; });
     check('a picture is read from the daemon by its id and shown as it is (96 x 96 here), with a 240 tall cap and 10 px round, and its note in full under it, line break and all', small.nat.join('x') === '96x96' && small.w === 96 && small.h === 96 && small.max === '240px' && small.radius === '10px' && small.box === '10px' && small.note === '汉堡和薯条\n在 A&W 吃的午饭' && small.cursor === 'zoom-in' && a.s.pictures.some(x => x.endsWith(PIC)), JSON.stringify(small));
     await tap(a, 'picture-2'); await rest(a, 700);
-    const big = await orow(a, 'picture-2').evaluate(r => { const i = r.querySelector('.dt-pic img'), q = i.getBoundingClientRect(); return { w: Math.round(q.width), h: Math.round(q.height), nat: [i.naturalWidth, i.naturalHeight] }; });
-    check('one taller than 240 is cut to 240 and keeps its proportions (640 x 420 shows at 366 x 240); its note is one short line, which the row already says, so it is not said again', big.nat.join('x') === '640x420' && big.h === 240 && Math.abs(big.w - 366) <= 1 && await orow(a, 'picture-2').locator('.is-note').count() === 0, JSON.stringify(big));
+    const big = await pgOf(a).evaluate(r => { const i = r.querySelector('.dt-pic img'), q = i.getBoundingClientRect(); return { w: Math.round(q.width), h: Math.round(q.height), nat: [i.naturalWidth, i.naturalHeight] }; });
+    check('one taller than 240 is cut to 240 and keeps its proportions (640 x 420 shows at 366 x 240); its note is one short line, which the row already says, so it is not said again', big.nat.join('x') === '640x420' && big.h === 240 && Math.abs(big.w - 366) <= 1 && await pgOf(a).locator('.is-note').count() === 0, JSON.stringify(big));
     await shotRow(a, 'open-04-picture', 'picture-2');
 
     // the bars of a work block: the same columns on every line, a bar as long as its share of the active time
     await tap(a, 'work-2'); await rest(a, 520);
-    const bars = await orow(a, 'work-2').evaluate(r => [...r.querySelectorAll('.dt-bar-row')].map(x => { const [name, track, len] = x.children; return { name: name.textContent, track: Math.round(track.getBoundingClientRect().width * 10) / 10, left: Math.round(track.getBoundingClientRect().left), share: Math.round(track.firstElementChild.getBoundingClientRect().width / track.getBoundingClientRect().width * 100), len: len.textContent }; }));
+    const bars = await pgOf(a).evaluate(r => [...r.querySelectorAll('.dt-bar-row')].map(x => { const [name, track, len] = x.children; return { name: name.textContent, track: Math.round(track.getBoundingClientRect().width * 10) / 10, left: Math.round(track.getBoundingClientRect().left), share: Math.round(track.firstElementChild.getBoundingClientRect().width / track.getBoundingClientRect().width * 100), len: len.textContent }; }));
     check('work: Jarvis 87 % of the active time, Ghostty 61 %, Claude 26 %, in tracks of one width that start at one place', bars.map(x => `${x.name} ${x.share}`).join() === 'Jarvis 87,Ghostty 61,Claude 26' && new Set(bars.map(x => x.track)).size === 1 && new Set(bars.map(x => x.left)).size === 1, JSON.stringify(bars));
 
     // the night
     await tap(a, 'sleep-1'); await rest(a, 520);
-    const night = await orow(a, 'sleep-1').evaluate(r => { const plot = r.querySelector('.dt-hyp-plot'), w = plot.getBoundingClientRect().width; return { n: plot.querySelectorAll('i').length, joins: plot.querySelectorAll('u').length, tops: [...new Set([...plot.querySelectorAll('i')].map(x => x.style.top))].sort(), lefts: [...plot.querySelectorAll('i')].map(x => parseFloat(x.style.left)), h: Math.round(plot.getBoundingClientRect().height), w, labels: [...r.querySelectorAll('.dt-hyp-l span')].map(x => x.textContent) }; });
+    const night = await pgOf(a).evaluate(r => { const plot = r.querySelector('.dt-hyp-plot'), w = plot.getBoundingClientRect().width; return { n: plot.querySelectorAll('i').length, joins: plot.querySelectorAll('u').length, tops: [...new Set([...plot.querySelectorAll('i')].map(x => x.style.top))].sort(), lefts: [...plot.querySelectorAll('i')].map(x => parseFloat(x.style.left)), h: Math.round(plot.getBoundingClientRect().height), w, labels: [...r.querySelectorAll('.dt-hyp-l span')].map(x => x.textContent) }; });
     const slices = openOf(full, 'sleep-1', zh).parts.find(x => x.type === 'night').night.slices.filter(x => x.stage !== 'in_bed');
     check('a night is drawn as a hypnogram 48 tall: four lanes (清醒, REM, 核心, 深睡), a block for each stretch of a stage in the order they happened, and a hairline where a stage gives way to another',
       night.h === 48 && night.labels.join() === '清醒,REM,核心,深睡' && night.n === slices.length && night.tops.join() === '14px,2px,26px,38px'.split(',').sort().join() && night.lefts.every((x, i, l) => i === 0 || x >= l[i - 1]) && night.joins > 5 && night.joins < night.n, JSON.stringify(night));
@@ -2761,17 +2783,17 @@ try {
     // Claude Code: four sessions, each opens to its recap in full, one at a time
     await tap(a, 'code:stay-home-1'); await rest(a, 520);
     await shotRow(a, 'open-10-claude-code', 'code:stay-home-1');
-    const sess = () => orow(a, 'code:stay-home-1').evaluate(r => ({ n: r.querySelectorAll('.dt-sess li').length, recaps: [...r.querySelectorAll('.dt-recap')].map(x => x.textContent), open: [...r.querySelectorAll('.dt-sess button[aria-expanded="true"]')].length }));
+    const sess = () => pgOf(a).evaluate(r => ({ n: r.querySelectorAll('.dt-sess li').length, recaps: [...r.querySelectorAll('.dt-recap')].map(x => x.textContent), open: [...r.querySelectorAll('.dt-sess button[aria-expanded="true"]')].length }));
     let sv = await sess();
     check('a folded row opens to its sessions: four, none opened yet', sv.n === 4 && sv.recaps.length === 0 && sv.open === 0, JSON.stringify(sv));
-    await orow(a, 'code:stay-home-1').locator('.dt-sess button').first().click(); await rest(a, 420);
+    await pgOf(a).locator('.dt-sess button').first().click(); await rest(a, 420);
     sv = await sess();
     check('a session opens to its recap in full', sv.recaps.join() === 'Phase A 的 review 修复 的小结' && sv.open === 1, JSON.stringify(sv));
     await shotRow(a, 'open-11-claude-code-recap', 'code:stay-home-1');
-    await orow(a, 'code:stay-home-1').locator('.dt-sess button').nth(2).click(); await rest(a, 420);
+    await pgOf(a).locator('.dt-sess button').nth(2).click(); await rest(a, 420);
     sv = await sess();
     check('another session opens its own and closes the first; the row itself stays open', sv.recaps.join() === '给 verify 加 fixtures 的小结' && sv.open === 1 && await expanded(a, 'code:stay-home-1') === 'true', JSON.stringify(sv));
-    await orow(a, 'code:stay-home-1').locator('.dt-sess button').nth(2).click(); await rest(a, 420);
+    await pgOf(a).locator('.dt-sess button').nth(2).click(); await rest(a, 420);
     check('and a click on the open session closes it', (await sess()).recaps.length === 0);
     await a.ctx.close();
   }
@@ -2812,15 +2834,15 @@ try {
     const names = () => a.page.evaluate(() => ({ heads: [...document.querySelectorAll('.dt-sh')].map(h => h.querySelector('.dt-tx b')?.textContent ?? h.dataset.key).filter(Boolean), bar: [...document.querySelectorAll('.dt-seg b')].map(b => b.textContent) }));
     await tap(a, 'stay-home-1'); await rest(a, 480);
     check('a hover-opened pane has no key focus, and opening a row asks for none', await focusLog(a) === '' && (await a.read()).tl === 'open', await focusLog(a));
-    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 400);
-    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(), b = f.closest('.dt-sh').querySelector('.dt-dot').getBoundingClientRect(); return { value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('[data-key="stay-home-1"] .dt-acts .dt-btn, [data-key="stay-home-1"] .dt-sayhow')].map(x => x.textContent) }; });
-    check('改名字 turns the name in the stay\'s header into a field with the cursor in it and the name selected, in the header\'s own type, and says Enter saves and Esc cancels', field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她,这段在干嘛', JSON.stringify(field));
+    await pgOf(a).getByRole('button', { name: '改名字' }).click(); await rest(a, 400);
+    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(); return { inTitle: !!f.closest('.dt-ph'), value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('.dt-page .dt-acts .dt-btn, .dt-page .dt-sayhow')].map(x => x.textContent) }; });
+    check('改名字 turns the title of the page into a field with the cursor in it and the name selected, in the title\'s own type, and says Enter saves and Esc cancels', field.inTitle && field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她,这段在干嘛', JSON.stringify(field));
     check('the field takes the window\'s key focus (it was a pane opened by a rest, with none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
     await shotRow(a, 'open-13-rename-field', 'stay-home-1');
     // the pane is held while the field is there, wherever the pointer goes
     await a.move(a.far.x, a.far.y); await a.page.waitForTimeout(1300);
     check('and the pane stays up while the field has the cursor, though the pointer has gone', (await a.read()).tl === 'open' && (await a.read()).dt, JSON.stringify(await a.read()));
-    const back = await orow(a, 'stay-home-1').boundingBox();
+    const back = await a.page.locator('.dt-page').boundingBox();
     await a.move(back.x + back.width / 2, back.y + 20);
     await a.page.keyboard.type('新家'); await a.page.keyboard.press('Enter'); await a.page.waitForTimeout(500);
     check('Enter saves it: the one route the brain has for it, with exactly the new name', sent(a).join('|') === '/inherent/memory/places/p-home {"name":"新家"}', sent(a).join('|'));
@@ -2843,20 +2865,20 @@ try {
     const undone = await names();
     check('撤销 asks the brain to undo that change by its id, and the name comes back everywhere', sent(a).at(-1) === '/inherent/memory/places/undo {"change_id":"chg-1"}' && undone.heads.filter(x => x === '家').length === 3 && undone.bar.includes('家') && await a.page.locator('.dt-note').count() === 0, `${sent(a).at(-1)} ${JSON.stringify(undone)}`);
     // Esc lets go of the field and leaves the row; nothing is sent
-    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
+    await pgOf(a).getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
     await a.page.keyboard.type('乱写的'); await a.page.keyboard.press('Escape'); await rest(a, 300);
     check('Esc lets go of the name being changed first: nothing is sent, the name is as it was, and the row stays open', sent(a).length === 2 && (await names()).heads.filter(x => x === '家').length === 3 && await a.page.locator('.dt-rename').count() === 0 && await expanded(a, 'stay-home-1') === 'true', sent(a).join('|'));
     check('and the key focus goes back when the field is gone', (await focusLog(a)).endsWith('false'), await focusLog(a));
     // the same name, or none, sends nothing
-    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
+    await pgOf(a).getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
     await a.page.keyboard.press('Enter'); await rest(a, 300);
     check('Enter on the name as it was sends nothing and closes the field', sent(a).length === 2 && await a.page.locator('.dt-rename').count() === 0);
     // a refusal says so and keeps the field
     a.s.refuse.add('rename');
-    await orow(a, 'stay-home-1').getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
+    await pgOf(a).getByRole('button', { name: '改名字' }).click(); await rest(a, 300);
     await a.page.keyboard.type('新家'); await a.page.keyboard.press('Enter'); await rest(a, 500);
     const refusedView = { field: await a.page.locator('.dt-rename').inputValue(), hint: await a.page.locator('.dt-hint').innerText(), heads: (await names()).heads, notes: await a.page.locator('.dt-note').count() };
-    check('a rename the brain refuses says so under the field, keeps the field with what was typed, and changes no name', refusedView.field === '新家' && refusedView.hint === '没改成，再试一次' && refusedView.heads.filter(x => x === '家').length === 2 && refusedView.notes === 0, JSON.stringify(refusedView));
+    check('a rename the brain refuses says so under the field, keeps the field with what was typed, and changes no name', refusedView.field === '新家' && refusedView.hint === '没改成，再试一次' && refusedView.heads.filter(x => x === '家').length === 3 && refusedView.notes === 0, JSON.stringify(refusedView));
     a.s.refuse.delete('rename');
     await a.page.keyboard.press('Enter'); await rest(a, 500);
     check('and Enter again, when it can, saves it', (await names()).heads.filter(x => x === '新家').length === 3 && await a.page.locator('.dt-note').innerText() === '改好了 · 撤销');
@@ -2875,11 +2897,11 @@ try {
     const reads = a.s.hits.length;
     // read while it happens: the old number still in the pill rolling out, the badge going (not cut), then gone
     const watching = a.page.evaluate(async () => { const out = { rolled: false, faded: false }; const end = performance.now() + 900; while (performance.now() < end) { out.rolled ||= !!document.querySelector('.dt-roll .is-old'); out.faded ||= !!document.querySelector('[data-key="reminder-2"] .dt-wait.is-gone'); await new Promise(r => requestAnimationFrame(r)); } out.gone = !document.querySelector('[data-key="reminder-2"] .dt-wait'); return out; });
-    await orow(a, 'reminder-2').getByRole('button', { name: '知道了' }).click();
+    await pgOf(a).getByRole('button', { name: '知道了' }).click();
     const seen = await watching;
     check('知道了 sends the one thing the brain takes for it: the reminder\'s id and "dismissed"', sent(a).join('|') === '/inherent/notices/reminder-2 {"action":"dismissed"}', sent(a).join('|'));
     check('the amber badge fades out and goes, and the count in the header rolls down (2 to 1) instead of changing', seen.rolled && seen.faded && seen.gone && await pill() === '1 件等你', JSON.stringify({ seen, pill: await pill() }));
-    check('the button is gone from the row, which says it is known (the row\'s own second line: 你知道了); the day was read again, and the brain has it acknowledged', (await said(a, 'reminder-2')).join('|') === '问她' && await orow(a, 'reminder-2').locator('.dt-tx em').innerText() === '你知道了' && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'reminder-2').acknowledged === true, `${(await said(a, 'reminder-2')).join('|')} ${a.s.hits.length} ${reads}`);
+    check('the button is gone from the row, which says it is known (the row\'s own second line: 你知道了); the day was read again, and the brain has it acknowledged', (await said(a, 'reminder-2')).join('|') === '问她' && await orow(a, 'reminder-2').locator('.dt-tx em').textContent() === '你知道了' && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'reminder-2').acknowledged === true, `${(await said(a, 'reminder-2')).join('|')} ${a.s.hits.length} ${reads}`);
     await a.ctx.close();
   }
   if (all || only === 'open') {
@@ -2888,8 +2910,8 @@ try {
     a.s.refuse.add('notices');
     await hoverDay(a);
     await tap(a, 'reminder-2'); await rest(a, 480);
-    await orow(a, 'reminder-2').getByRole('button', { name: '知道了' }).click(); await rest(a, 500);
-    check('a refusal leaves the button and the badge and the count as they were, and says so under the button', await orow(a, 'reminder-2').getByRole('button', { name: '知道了' }).count() === 1 && await orow(a, 'reminder-2').locator('.dt-wait').count() === 1 && await a.page.locator('.dt-waits').innerText() === '2 件等你' && await orow(a, 'reminder-2').locator('.dt-hint').innerText() === '没成功，再试一次');
+    await pgOf(a).getByRole('button', { name: '知道了' }).click(); await rest(a, 500);
+    check('a refusal leaves the button and the badge and the count as they were, and says so under the button', await pgOf(a).getByRole('button', { name: '知道了' }).count() === 1 && await orow(a, 'reminder-2').locator('.dt-wait').count() === 1 && await a.page.locator('.dt-waits').innerText() === '2 件等你' && await pgOf(a).locator('.dt-hint').innerText() === '没成功，再试一次');
     await a.ctx.close();
   }
   if (all || only === 'open') {
@@ -2899,7 +2921,7 @@ try {
     check('with one thing waiting the pill says 1 件等你', await a.page.locator('.dt-waits').innerText() === '1 件等你');
     await tap(a, 'rm'); await rest(a, 480);
     const watching = a.page.evaluate(async () => { let faded = false; const end = performance.now() + 900; while (performance.now() < end) { faded ||= !!document.querySelector('.dt-waits.is-gone'); await new Promise(r => requestAnimationFrame(r)); } return faded; });
-    await orow(a, 'rm').getByRole('button', { name: '知道了' }).click();
+    await pgOf(a).getByRole('button', { name: '知道了' }).click();
     check('and when it is known the pill fades away and is gone: no 0', await watching && await a.page.locator('.dt-waits').count() === 0);
     await a.ctx.close();
   }
@@ -2946,10 +2968,11 @@ try {
     // a second look: the button in an open row, asking about another row while one is asked, the ×, and the field being held
     await hoverDay(a);
     await tap(a, 'stay-aw'); await rest(a, 480);
-    await orow(a, 'stay-aw').getByRole('button', { name: '问她' }).click(); await rest(a, 520);
+    await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 520);
     const d2 = await dockOf(a);
-    check('the 问她 button of an open row does the same, and the row stays open', d2 && d2.chip.title === about('stay-aw').about.title && d2.chip.at === about('stay-aw').at && d2.focused && await expanded(a, 'stay-aw') === 'true', JSON.stringify(d2));
+    check('the 问她 button of an open page does the same, and the page stays up', d2 && d2.chip.title === about('stay-aw').about.title && d2.chip.at === about('stay-aw').at && d2.focused && await expanded(a, 'stay-aw') === 'true', JSON.stringify(d2));
     await a.page.keyboard.type('abc');
+    await back(a);
     await orow(a, 'event-1').scrollIntoViewIfNeeded();
     await orow(a, 'event-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 250);
     await orow(a, 'event-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 450);
@@ -2964,7 +2987,7 @@ try {
 
     // a turn the daemon refuses, and the order of Esc
     await tap(a, 'move-1'); await rest(a, 480);
-    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
     a.s.refuse.add('submit');
     await a.page.keyboard.type('xyz'); await a.page.keyboard.press('Enter'); await rest(a, 450);
     const d5 = await dockOf(a), hint = await a.page.locator('.dt-dock + .dt-hint').innerText().catch(() => null);
@@ -2975,15 +2998,15 @@ try {
     await a.page.keyboard.press('Enter'); await rest(a, 350);
     check('and Enter again, when it can, sends the same words', turns(a).length === 4 && JSON.stringify(turns(a)[3].body) === JSON.stringify({ text: 'xyz!', about: about('move-1').about }) && (await dockOf(a)).sent, JSON.stringify(turns(a).slice(2)));
     await noDock(a);
-    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
     check('the words that were sent do not come back into the next input', (await dockOf(a)).draft === '');
     await a.page.keyboard.type('half'); await a.page.keyboard.press('Escape'); await rest(a, 450);
-    check('Esc lets go of the input first (and what was typed in it); the open row and the pane stay', await a.page.locator('.dt-dock').count() === 0 && await expanded(a, 'move-1') === 'true' && (await a.read()).tl === 'open' && turns(a).length === 4, JSON.stringify(await a.read()));
+    check('Esc lets go of the input first (and what was typed in it); the open page and the pane stay', await a.page.locator('.dt-dock').count() === 0 && await expanded(a, 'move-1') === 'true' && (await a.read()).tl === 'open' && turns(a).length === 4, JSON.stringify(await a.read()));
     await a.page.keyboard.press('Escape'); await rest(a, 450);
-    check('and the next Esc closes the row', await folds(a) === 0 && (await a.read()).tl === 'open');
-    await orow(a, 'move-1').getByRole('button', { name: '问她' }).count();
+    check('and the next Esc goes back', await folds(a) === 0 && (await a.read()).tl === 'open');
+    await pgOf(a).getByRole('button', { name: '问她' }).count();
     await tap(a, 'move-1'); await rest(a, 480);
-    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
     check('and the words left in a closed input are gone', (await dockOf(a)).draft === '');
     await a.ctx.close();
   }
@@ -2993,11 +3016,11 @@ try {
     const a = await boot({ served: small([it('w1', 'workout', T(7, 0), T(7, 30), { activity: 'running', distance_m: 3200 }), it('sa', 'stay', T(8, 0), T(9, 30), { place: 'X' }), it('c1', 'code', T(8, 10), T(8, 40), { title: '周报草稿', project: 'notes', account: 'b' }),
       it('sb', 'stay', T(10, 0), T(12, 0), { place: 'Y' }), it('c2', 'code', T(10, 10), T(10, 40), { title: '第二个' }), it('c3', 'code', T(10, 50), T(11, 20), { title: '第三个' })]) });
     await hoverDay(a);
-    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
+    const btns = key => pgOf(a).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
     for (const [key, kind, title, start] of [['w1', 'workout', '跑步', T(7, 0)], ['c1', 'code', 'Claude Code · 周报草稿', T(8, 10)]]) {
       await tap(a, key); await rest(a, 480);
       check(`an opened ${kind} row offers 问她`, (await btns(key)).includes('问她'), (await btns(key)).join('|'));
-      await orow(a, key).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
+      await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
       const d = await dockOf(a);
       check(`its input holds ${key} as the chip: the row's own title and time`, d && d.chip.title === title && d.chip.at === clock(start, TZ), JSON.stringify(d));
       await a.page.keyboard.type('怎么样'); await a.page.keyboard.press('Enter'); await rest(a, 400);
@@ -3005,7 +3028,7 @@ try {
       await noDock(a); await tap(a, key); await rest(a, 480);
     }
     await tap(a, 'code:sb'); await rest(a, 480);
-    check('the folded row of two sessions opens to its list and offers no 问她, in the row or on the hover', await a.page.locator('[data-key="code:sb"] .dt-sess li').count() === 2 && !(await btns('code:sb')).includes('问她') && await orow(a, 'code:sb').locator(':scope > .dt-quick > .dt-ask').count() === 0, (await btns('code:sb')).join('|'));
+    check('the folded row of two sessions opens to its list and offers no 问她, in the row or on the hover', await pgOf(a).locator('.dt-sess li').count() === 2 && !(await btns('code:sb')).includes('问她') && await orow(a, 'code:sb').locator(':scope > .dt-quick > .dt-ask').count() === 0, (await btns('code:sb')).join('|'));
     await a.ctx.close();
   }
 
@@ -3015,13 +3038,13 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await tap(a, 'work-2'); await rest(a, 520);
-    const buttons = () => orow(a, 'work-2').locator('.dt-acts, .dt-sayhow').allInnerTexts().then(x => x.join('\n').split('\n').map(y => y.trim()).filter(Boolean).join('|'));
+    const buttons = () => pgOf(a).locator('.dt-acts, .dt-sayhow').allInnerTexts().then(x => x.join('\n').split('\n').map(y => y.trim()).filter(Boolean).join('|'));
     check('a work block offers 让她总结这段, and 问她 and the quiet 这段在干嘛 after it', await buttons() === '让她总结这段|问她|这段在干嘛', await buttons());
     a.s.refuse.add('submit');
-    await orow(a, 'work-2').getByRole('button', { name: '让她总结这段' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: '让她总结这段' }).click(); await rest(a, 450);
     check('one tap is one submit; the daemon refusing it leaves the button, which says 没发出去，再试一次', turns(a).length === 1 && await buttons() === '没发出去，再试一次|问她|这段在干嘛', `${turns(a).length} ${await buttons()}`);
     a.s.refuse.delete('submit');
-    await orow(a, 'work-2').getByRole('button', { name: '没发出去，再试一次' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: '没发出去，再试一次' }).click(); await rest(a, 450);
     check('and the next tap sends the same: the words and the block as `about` (work, its id, its title, its start), without any input opening', turns(a).length === 2 && turns(a).every(x => JSON.stringify(x.body) === want) && (await dockOf(a)) === null, JSON.stringify(turns(a)));
     check('then 已发给她 stands where the button was; 问她 stays', await buttons() === '已发给她|问她|这段在干嘛', await buttons());
     await shotRow(a, 'open-12-work-sent', 'work-2');
@@ -3033,14 +3056,14 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await tap(a, 'picture-2'); await rest(a, 700);
-    await a.page.locator('[data-key="picture-2"] .dt-pic').click(); await rest(a, 500);
+    await a.page.locator('.dt-page .dt-pic').click(); await rest(a, 500);
     const v = await a.page.evaluate(() => { const d = document.querySelector('.dt-viewer'), i = d?.querySelector('img'), r = i?.getBoundingClientRect(); return d && { hit: d.hasAttribute('data-hit'), body: d.parentElement === document.body, src: i.getAttribute('src'), w: Math.round(r.width), h: Math.round(r.height), vw: innerWidth, vh: innerHeight, note: d.querySelector('p')?.textContent, role: d.getAttribute('role'), covers: (b => b.width === innerWidth && b.height === innerHeight)(d.getBoundingClientRect()) }; });
     check('a click on the picture opens it large over the whole window: the daemon\'s picture at 88% of the width and 78% of the height, its note in full under it, on a surface of its own', v && v.hit && v.body && v.src.endsWith(`/inherent/attachments/${BIG}`) && v.w === Math.round(v.vw * .88) && v.h === Math.round(v.vh * .78) && v.note === '傍晚的海边，风很大' && v.role === 'dialog' && v.covers, JSON.stringify(v));
-    check('it takes the window\'s key focus, and the row under it stays open', (await focusLog(a)).endsWith('true') && await expanded(a, 'picture-2') === 'true', await focusLog(a));
+    check('it takes the window\'s key focus, and the page stays up', (await focusLog(a)).endsWith('true') && await expanded(a, 'picture-2') === 'true', await focusLog(a));
     await a.shot('open-16-picture-large', { x: 0, y: 0, width: 640, height: 900 });
     await a.page.keyboard.press('Escape'); await rest(a, 350);
-    check('Esc closes the picture first: the row stays open and so does the pane, and the key focus goes back', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true' && (await a.read()).tl === 'open' && (await focusLog(a)).endsWith('false'), `${JSON.stringify(await a.read())} ${await focusLog(a)}`);
-    await a.page.locator('[data-key="picture-2"] .dt-pic').click(); await rest(a, 400);
+    check('Esc closes the picture first: the page stays up and so does the pane, and the key focus goes back', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true' && (await a.read()).tl === 'open' && (await focusLog(a)).endsWith('false'), `${JSON.stringify(await a.read())} ${await focusLog(a)}`);
+    await a.page.locator('.dt-page .dt-pic').click(); await rest(a, 400);
     await a.page.mouse.click(320, 450); await rest(a, 350);
     check('a click on it closes it too', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true');
     await a.ctx.close();
@@ -3051,23 +3074,23 @@ try {
     const m = buildDay(bigDay(), NOW, en);
     const a = await boot({ served: bigDay(), lang: 'en' });
     await hoverDay(a);
-    const btns = key => orow(a, key).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
+    const btns = key => pgOf(a).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
     await tap(a, 'stay-home-1'); await rest(a, 480);
     check('in English a kept place (named as he named it) says Rename and Ask her', (await btns('stay-home-1')).join() === 'Rename,Ask her,What was this' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
-    await orow(a, 'stay-home-1').getByRole('button', { name: 'Rename' }).click(); await rest(a, 350);
-    check('and Rename says how it ends', await orow(a, 'stay-home-1').locator('.dt-hint').innerText() === 'Enter saves · Esc cancels');
+    await pgOf(a).getByRole('button', { name: 'Rename' }).click(); await rest(a, 350);
+    check('and Rename says how it ends', await pgOf(a).locator('.dt-hint').innerText() === 'Enter saves · Esc cancels');
     await a.page.keyboard.type('My place'); await a.page.keyboard.press('Enter'); await rest(a, 500);
     check('a name changed says Renamed · Undo', await a.page.locator('.dt-note').innerText() === 'Renamed · Undo', await a.page.locator('.dt-note').innerText());
     await tap(a, 'reminder-2'); await rest(a, 480);
     check('a reminder that rang offers Got it, and Ask her', (await btns('reminder-2')).join() === 'Got it,Ask her' && (await said(a, 'reminder-2')).join('|') === 'Got it|Ask her', (await said(a, 'reminder-2')).join('|'));
     await tap(a, 'talk-1'); await rest(a, 700);
-    const talk = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'); return { who: [...r.querySelectorAll('.dt-said small')].map(x => x.textContent), text: r.querySelector('.dt-body').innerText }; });
+    const talk = await a.page.evaluate(() => { const r = document.querySelector('.dt-page'); return { who: [...r.querySelectorAll('.dt-said small')].map(x => x.textContent), text: r.querySelector('.dt-body').innerText }; });
     check('a talk labels the two lines You and Her and counts its lines', talk.who.join() === 'You,Her' && /6 lines in all/.test(talk.text), JSON.stringify(talk));
     await tap(a, 'work-2'); await rest(a, 520);
     check('a work block offers Have her sum this up', (await btns('work-2')).join() === 'Have her sum this up,Ask her,What was this' && (await said(a, 'work-2')).includes('Active 1 h 55 min · 2 h 5 min in all'), (await said(a, 'work-2')).join('|'));
-    await orow(a, 'work-2').getByRole('button', { name: 'Have her sum this up' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: 'Have her sum this up' }).click(); await rest(a, 450);
     check('it hands her the words in English, with the block as about; then Sent to her', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: 'Summarize this stretch', about: askOf(m, 'work-2', en).about }) && (await btns('work-2')).join() === 'Sent to her,Ask her,What was this', `${JSON.stringify(turns(a))} ${(await btns('work-2')).join()}`);
-    await orow(a, 'work-2').getByRole('button', { name: 'Ask her' }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: 'Ask her' }).click(); await rest(a, 500);
     const d = await dockOf(a);
     check('the input is Ask her about this…, with the chip in English', d && d.placeholder === 'Ask her about this…' && d.chip.title === askOf(m, 'work-2', en).about.title && d.chip.x === 'Take it off', JSON.stringify(d));
     a.s.refuse.add('submit');
@@ -3087,7 +3110,7 @@ try {
   const bad = a => a.page.locator('.dt-dock + .dt-hint').innerText().catch(() => null);
   const gone = a => a.page.waitForFunction(() => !document.querySelector('.dt-dock'), null, { timeout: 4000 });
   const savedAs = a => a.page.waitForFunction(() => document.querySelector('.dt-dock.is-sent'), null, { timeout: 4000 });
-  const lastOf = async (a, key) => { const acts = orow(a, key).locator('.dt-acts').first(); await acts.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {}); return await acts.count() ? acts.evaluate(el => { const say = el.nextElementSibling?.matches('.dt-sayhow') ? el.nextElementSibling : null, last = say ?? el.lastElementChild; return { text: last?.textContent, cls: last?.className, all: el.innerText + (say ? say.innerText : '') }; }) : { text: null, cls: null, all: '' }; };
+  const lastOf = async (a, key) => { const acts = pgOf(a).locator('.dt-acts').first(); await acts.waitFor({ state: 'attached', timeout: 1500 }).catch(() => {}); return await acts.count() ? acts.evaluate(el => { const say = el.nextElementSibling?.matches('.dt-sayhow') ? el.nextElementSibling : null, last = say ?? el.lastElementChild; return { text: last?.textContent, cls: last?.className, all: el.innerText + (say ? say.innerText : '') }; }) : { text: null, cls: null, all: '' }; };
   if (all || only === 'say') {
     const sm = buildDay(bigDay(), NOW, zh), sbar = buildBar(sm, zh), t0 = sbar.t0, t1 = T(24);
     const a = await boot({ served: bigDay() });
@@ -3122,9 +3145,9 @@ try {
     await tap(a, 'stay-home-2'); await rest(a, 480);
     await shotRow(a, 'say-01-open-row', 'stay-home-2');
     const quiet = async sel => { const e = a.page.locator(sel), read = () => e.evaluate(el => { const c = getComputedStyle(el), r = el.getBoundingClientRect(), p = el.previousElementSibling.getBoundingClientRect(); return { bg: c.backgroundColor, radius: c.borderRadius, color: c.color, svg: !!el.querySelector('svg'), size: c.fontSize, under: r.top >= p.bottom - .5, cls: el.previousElementSibling.className }; }), idle = await read(); await e.hover(); await rest(a, 300); const lit = await read(); await a.page.mouse.move(0, 0); return { idle, lit }; };
-    const ql = await quiet('[data-key="stay-home-2"] .dt-sayhow');
+    const ql = await quiet('.dt-page .dt-sayhow');
     check('in an open row 这段在干嘛 is a faint line under the buttons, not a capsule: a pencil glyph and the words, no fill, no rounding, the muted colour, brighter when the pointer is on it', ql.idle.bg === 'rgba(0, 0, 0, 0)' && ql.idle.radius === '0px' && ql.idle.svg && ql.idle.under && ql.idle.cls === 'dt-acts' && ql.idle.size === '12px' && ql.idle.color !== ql.lit.color, JSON.stringify(ql));
-    await orow(a, 'stay-home-2').getByRole('button', { name: SAY }).click(); await rest(a, 520);
+    await pgOf(a).getByRole('button', { name: SAY }).click(); await rest(a, 520);
     const d1 = await sayDock(a);
     check('it slides an input up at the pane\'s foot: the stretch\'s range as its chip (14:05–14:50, nothing to take off), the cursor in the field, the placeholder, the field held to 200, send greyed; the row stays open',
       d1 && d1.chip === '14:05–14:50' && !d1.drop && d1.focused && d1.placeholder === '这段在干嘛？比如：躺着休息' && d1.max === 200 && d1.canSend === false && await expanded(a, 'stay-home-2') === 'true', JSON.stringify(d1));
@@ -3159,7 +3182,7 @@ try {
 
     // a save that fails stays under the input until he edits it; the same words go again
     await tap(a, 'move-1'); await rest(a, 480);
-    await orow(a, 'move-1').getByRole('button', { name: SAY }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: SAY }).click(); await rest(a, 500);
     a.s.refuse.add('answer');
     const h1 = a.s.hits.length;
     await a.page.keyboard.type('开车去 A&W'); await a.page.keyboard.press('Enter'); await rest(a, 450);
@@ -3175,20 +3198,20 @@ try {
     await gone(a);
 
     // the two inputs share the foot: the words of one are not carried into the other; Esc lets go of it first, the row and the pane stay
-    await orow(a, 'move-1').getByRole('button', { name: SAY }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: SAY }).click(); await rest(a, 500);
     check('the words that were saved do not come back into the next input', (await sayDock(a)).draft === '');
     await a.page.keyboard.type('abc');
-    await orow(a, 'move-1').getByRole('button', { name: '问她' }).click(); await rest(a, 480);
+    await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 480);
     const d3 = await dockOf(a), about = askOf(sm, 'move-1', zh);
     check('asking her from the same row swaps the input for hers: its chip, its placeholder, and not the words typed for the other', d3 && d3.chip && d3.chip.title === about.about.title && d3.chip.at === '11:25' && d3.draft === '' && d3.placeholder === '问她这一条…', JSON.stringify(d3));
     await a.page.keyboard.type('xyz');
-    await orow(a, 'move-1').getByRole('button', { name: SAY }).click(); await rest(a, 480);
+    await pgOf(a).getByRole('button', { name: SAY }).click(); await rest(a, 480);
     const d4 = await sayDock(a);
     check('and back: the range chip, and not the words typed for her', d4 && d4.chip === '11:25–13:05' && d4.draft === '' && d4.placeholder === '这段在干嘛？比如：躺着休息', JSON.stringify(d4));
     await a.page.keyboard.type('half'); await a.page.keyboard.press('Escape'); await rest(a, 450);
     check('Esc lets go of the input first (and what was typed in it); the open row and the pane stay, and nothing was sent', await a.page.locator('.dt-dock').count() === 0 && await expanded(a, 'move-1') === 'true' && (await a.read()).tl === 'pinned' && answers(a).length === 3 && turns(a).length === 0, JSON.stringify(await a.read()));
     await a.page.keyboard.press('Escape'); await rest(a, 450);
-    check('and the next Esc closes the row', await folds(a) === 0);
+    check('and the next Esc goes back', await folds(a) === 0);
     await a.ctx.close();
   }
   if (all || only === 'say') {
@@ -3234,7 +3257,7 @@ try {
     await openDay(a);
     await tap(a, 'stay-home-2'); await rest(a, 480);
     check('in English the button is What was this', (await lastOf(a, 'stay-home-2')).text === 'What was this');
-    await orow(a, 'stay-home-2').getByRole('button', { name: 'What was this' }).click(); await rest(a, 500);
+    await pgOf(a).getByRole('button', { name: 'What was this' }).click(); await rest(a, 500);
     const e1 = await sayDock(a);
     check('the input says What were you doing? e.g. lying down', e1 && e1.placeholder === 'What were you doing? e.g. lying down' && e1.chip === '14:05–14:50', JSON.stringify(e1));
     a.s.refuse.add('answer');
@@ -3246,169 +3269,24 @@ try {
     await a.ctx.close();
   }
 
-  // ---- the list holds what he is working on (ONLY=steady): the row he presses stays under his hand, an open row keeps 24 px clear of the foot, an input there does not cover it ----
-  if (all || only === 'steady') {
-    // where a row is in the list's view and how far its foot is above the list's foot, and the room the list was given
-    const spot = (a, key) => a.page.evaluate(k => { const l = document.querySelector('.dt-list'), lr = l.getBoundingClientRect(), r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect();
-      return { top: r ? r.top - lr.top : null, under: r ? lr.bottom - r.bottom : null, st: l.scrollTop, sh: l.scrollHeight, lh: lr.height, head: parseFloat(l.style.paddingTop) || 0, foot: parseFloat(l.style.paddingBottom) || 0 }; }, key);
-    // the frames a change takes, each read as the frame will be painted: a resize observer made in the frame's callback is told after the page's own (resize observers are told in the order they were made;
-    // the pane scrolls the list in its own, DayTimeline.tsx), where a frame callback or a task between frames would read the layout before it
-    const frames = async (a, key, act, ms = 800) => {
-      await a.page.evaluate(k => {
-        const l = document.querySelector('.dt-list'), probe = document.createElement('i'), out = window.__frames = [];
-        probe.style.cssText = 'position:fixed;left:-9px;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
-        document.body.append(probe);
-        const grab = () => { const lr = l.getBoundingClientRect(), r = document.querySelector(`[data-key="${k}"]`)?.getBoundingClientRect(); out.push({ top: r ? r.top - lr.top : null, under: r ? lr.bottom - r.bottom : null, st: l.scrollTop, ft: l.firstElementChild.getBoundingClientRect().top - lr.top }); };
-        let on = true;
-        const tick = () => { if (!on) return; const look = new ResizeObserver(() => { look.disconnect(); if (on) grab(); }); look.observe(probe); requestAnimationFrame(tick); };
-        grab(); requestAnimationFrame(tick);
-        window.__framesStop = () => { on = false; probe.remove(); };
-      }, key);
-      await act(); await a.page.waitForTimeout(ms);
-      return a.page.evaluate(() => { window.__framesStop(); return window.__frames; });
-    };
-    const dev = fr => Math.max(...fr.map(f => Math.abs(f.top - fr[0].top)));
-    const press = (a, key) => orow(a, key).click({ position: { x: 170, y: 14 } });
-    // the list moved (no animation) so that the row's top is `y` into its view
-    const place = async (a, key, y) => { await a.page.evaluate(([k, y]) => { const l = document.querySelector('.dt-list'); l.scrollTop += document.querySelector(`[data-key="${k}"]`).getBoundingClientRect().top - l.getBoundingClientRect().top - y; }, [key, y]); await rest(a, 300); };
-    const toEnd = async a => { await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await rest(a, 300); };
-    // the first row after `key` that opens and lies whole in the view with `room` px to spare under it
-    const below = (a, key, room) => a.page.evaluate(([k, room]) => { const l = document.querySelector('.dt-list'), lr = l.getBoundingClientRect(), rows = [...l.querySelectorAll('[data-key][aria-expanded]')], i = rows.findIndex(e => e.dataset.key === k);
-      return rows.slice(i + 1).find(e => { const r = e.getBoundingClientRect(); return r.top >= document.querySelector(`[data-key="${k}"]`).getBoundingClientRect().bottom - 1 && r.bottom <= lr.bottom - room; })?.dataset.key ?? null; }, [key, room]);
-    const lastRow = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key][aria-expanded]')].at(-1).dataset.key);
-    const dockTop = a => a.page.evaluate(() => document.querySelector('.dt-fold.is-dock .dt-dock')?.getBoundingClientRect().top ?? null);
-    const listFoot = a => a.page.evaluate(() => document.querySelector('.dt-list').getBoundingClientRect().bottom);
-
-    const a = await boot({ served: bigDay() });
-    await openDay(a);
-    // 1 and 2: in the middle of the day, with room above: a stay opens where it is (it fits: nothing scrolls) and a second row pressed under it, the stay closing above it, stays where it was
-    await place(a, 'stay-home-2', 24);
-    const x0 = await spot(a, 'stay-home-2');
-    await press(a, 'stay-home-2'); await rest(a, 700);
-    const x1 = await spot(a, 'stay-home-2');
-    check('a row that fits under the foot opens without the list moving a pixel, and its top stays', Math.abs(x1.st - x0.st) <= .5 && Math.abs(x1.top - x0.top) <= .5, JSON.stringify({ x0, x1 }));
-    const Y = await below(a, 'stay-home-2', 120);
-    const y0 = await spot(a, Y), yf = await frames(a, Y, () => press(a, Y)), y1 = await spot(a, Y);
-    check('pressing a row while another is open above it: it stays within 1 px of where it was in every frame of the opening and when it is over, though the rows above give back their height',
-      Y && yf.length > 8 && dev(yf) <= 1 && Math.abs(y1.top - y0.top) <= 1 && y1.under >= 24 && y0.st - y1.st > 30 && await expanded(a, Y) === 'true' && await expanded(a, 'stay-home-2') === 'false', JSON.stringify({ Y, y0, y1, dev: dev(yf), tops: yf.map(f => +f.top.toFixed(1)), sts: yf.map(f => +f.st.toFixed(1)) }));
-    const yc = await frames(a, Y, () => press(a, Y)), y2 = await spot(a, Y);
-    check('and pressing it again, it closes in place: its top does not move in any frame', dev(yc) <= 1 && Math.abs(y2.top - y0.top) <= 1 && await expanded(a, Y) === 'false', JSON.stringify({ dev: dev(yc), y0, y2 }));
-    // Esc closes the open row in place too
-    await press(a, 'stay-home-2'); await rest(a, 600);
-    const e0 = await spot(a, 'stay-home-2'), ef = await frames(a, 'stay-home-2', () => a.page.keyboard.press('Escape'));
-    check('Esc closes the open row where it is', dev(ef) <= 1 && Math.abs((await spot(a, 'stay-home-2')).top - e0.top) <= 1 && await expanded(a, 'stay-home-2') === 'false', JSON.stringify({ dev: dev(ef) }));
-
-    // at the top of the list there is no scroll to give back and no room is made above the first row (a blank band is worse than rows that move): the rows move with the closing, only by the part that has no scroll
-    const firstTop = () => a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return l.firstElementChild.getBoundingClientRect().top - l.getBoundingClientRect().top + l.scrollTop; });
-    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await rest(a, 300);
-    const ft0 = await firstTop();
-    await press(a, 'stay-home-1'); await rest(a, 700);
-    const Z = await below(a, 'stay-home-1', 120), z0 = await spot(a, Z), zf = await frames(a, Z, () => press(a, Z)), z1 = await spot(a, Z);
-    check('at the top of the list no room is made above the first row: its top is the list\'s top in every frame, and there is no padding above it; the pressed row moves with the closing above it',
-      Z && zf.length > 8 && zf.every(f => f.st === 0 && Math.abs(f.ft - ft0) <= .5) && z1.head === 0 && z1.st === 0 && z0.top - z1.top > 30, JSON.stringify({ Z, z0, z1, ft0, fts: zf.map(f => +f.ft.toFixed(1)) }));
-    await press(a, Z); await rest(a, 500);
-    // with some scroll to give (here 40 px) the pressed row holds while there is any, and moves only by the rest
-    await press(a, 'stay-home-1'); await rest(a, 700);
-    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 40; }); await rest(a, 300);
-    const W = await below(a, 'stay-home-1', 120), w0 = await spot(a, W), wf = await frames(a, W, () => press(a, W)), w1 = await spot(a, W);
-    const held = wf.filter(f => f.st > .5);
-    check('with only some scroll to give, the pressed row stays within 1 px in every frame that has scroll left, and the list ends at its top with no band above the first row',
-      W && held.length >= 2 && held.every(f => Math.abs(f.top - w0.top) <= 1) && wf.every(f => f.st > .5 || Math.abs(f.ft - ft0) <= .5) && w1.st === 0 && w1.head === 0 && w0.top - w1.top > 30, JSON.stringify({ W, w0, w1, held: held.length, tops: wf.map(f => +f.top.toFixed(1)), sts: wf.map(f => +f.st.toFixed(1)) }));
-    await press(a, W); await rest(a, 500);
-
-    await a.ctx.close();
-    const b = await boot({ served: bigDay() });
-    await openDay(b);
-    // the last row of the list: 24 px under it when it opens, as under any row, the list scrolling with it
-    await toEnd(b);
-    const last = await lastRow(b), l0 = await spot(b, last), lf = await frames(b, last, () => press(b, last)), l1 = await spot(b, last);
-    check('the last row of the list opens with 24 px under it, not flush: the list scrolls with its opening, smoothly and never back',
-      Math.abs(l1.under - 24) <= 1 && l1.foot >= 23 && lf.every((f, i) => i === 0 || f.st >= lf[i - 1].st - .01) && new Set(lf.map(f => f.st)).size >= 5 && l1.st - l0.st > 60, JSON.stringify({ last, l0, l1, steps: new Set(lf.map(f => f.st)).size }));
-    // 问她 from it: the input slides up under it and the row is brought up to 24 px clear of the list's new foot
-    await orow(b, last).locator('.dt-fold .dt-btn', { hasText: '问她' }).click(); await rest(b, 700);
-    const d1 = await spot(b, last), dt1 = await dockTop(b), lb1 = await listFoot(b);
-    check('the input at the pane\'s foot does not cover the open row: it ends 24 px above the list\'s foot, which is above the input', dt1 !== null && Math.abs(d1.under - 24) <= 1 && lb1 <= dt1 + .5 && d1.lh < l1.lh - 30, JSON.stringify({ d1, dt1, lb1 }));
-    await b.page.keyboard.press('Escape'); await rest(b, 500);
-    const lc = await frames(b, last, () => press(b, last)), l2 = await spot(b, last);
-    check('closing the last row leaves it where it was: its top does not move in any frame, the list keeping the room', dev(lc) <= 1 && Math.abs(l2.top - (await spot(b, last)).top) <= 1 && l2.under >= 60, JSON.stringify({ dev: dev(lc), l2 }));
-    await b.page.evaluate(() => { document.querySelector('.dt-list').scrollTop -= 50; }); await rest(b, 250);
-    const l3 = await spot(b, last);
-    check('and the room is given back as he scrolls up out of it, without the row moving for it', Math.abs(l3.top - (l2.top + 50)) <= 1 && l3.foot <= l2.foot - 40, JSON.stringify({ l2, l3 }));
-
-    // b stay near the foot that does not fit opens with the list scrolling just enough, 24 px clear; the input that comes up under it moves it again by as much as it takes
-    await b.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await rest(b, 300);
-    await place(b, 'stay-home-3', (await spot(b, 'stay-home-3')).lh - 60);
-    const s0 = await spot(b, 'stay-home-3'), sf = await frames(b, 'stay-home-3', () => press(b, 'stay-home-3')), s1 = await spot(b, 'stay-home-3');
-    check('a row near the foot that would not fit opens with the list scrolling just enough to leave 24 px under it, together with its opening', Math.abs(s1.under - 24) <= 1 && s1.st - s0.st > 40 && sf.length > 8 && new Set(sf.map(f => f.st)).size >= 5 && sf.every((f, i) => i === 0 || f.st >= sf[i - 1].st - .01), JSON.stringify({ s0, s1, steps: new Set(sf.map(f => f.st)).size }));
-    await orow(b, 'stay-home-3').getByRole('button', { name: SAY }).click(); await rest(b, 700);
-    const s2 = await spot(b, 'stay-home-3'), dt2 = await dockTop(b), lb2 = await listFoot(b);
-    check('the input of 这段在干嘛 does not cover it either: the open stay stays 24 px above the list\'s foot', dt2 !== null && Math.abs(s2.under - 24) <= 1 && lb2 <= dt2 + .5 && s2.st > s1.st + 30, JSON.stringify({ s1, s2, dt2, lb2 }));
-    await b.page.keyboard.press('Escape'); await rest(b, 500); await press(b, 'stay-home-3'); await rest(b, 600);
-    // an open row that still fits above the input's top does not move for it
-    await place(b, 'stay-home-2', 40);
-    await press(b, 'stay-home-2'); await rest(b, 700);
-    const f0 = await spot(b, 'stay-home-2');
-    await orow(b, 'stay-home-2').getByRole('button', { name: '问她' }).click(); await rest(b, 700);
-    const f1 = await spot(b, 'stay-home-2');
-    check('an open row that still has 24 px above the new foot does not scroll when the input comes up', Math.abs(f1.st - f0.st) <= .5 && f1.under >= 23 && f1.lh < f0.lh - 30, JSON.stringify({ f0, f1 }));
-    await b.ctx.close();
-
-    // reduced motion: nothing animates, and the pressed row is where it was when the frame is drawn
-    const r = await boot({ served: bigDay() });
-    await openDay(r);
-    await r.page.emulateMedia({ reducedMotion: 'reduce' }); await rest(r, 150);
-    await place(r, 'stay-home-2', 24);
-    await press(r, 'stay-home-2'); await rest(r, 400);
-    const Yr = await below(r, 'stay-home-2', 120), r0 = await spot(r, Yr), rf = await frames(r, Yr, () => press(r, Yr), 400), r1 = await spot(r, Yr);
-    check('with reduced motion the pressed row is where it was in the first frame after it is pressed, though the row above it closed at once', Yr && dev(rf) <= 1 && Math.abs(r1.top - r0.top) <= 1 && r0.st - r1.st > 30 && await expanded(r, 'stay-home-2') === 'false', JSON.stringify({ Yr, r0, r1, dev: dev(rf) }));
-    await r.ctx.close();
-  }
-
-  // ---- the rail of an opened row stays inside its card (ONLY=rail) ----
-  if (all || only === 'rail') {
-    const a = await boot({ served: bigDay() });
-    await openDay(a);
-    // ::before / ::after are not elements: what a rail is, read from its style against the row's box
-    const rail = (key, which) => a.page.evaluate(([k, which]) => { const e = document.querySelector(`[data-key="${k}"]`), c = getComputedStyle(e, which), r = e.getBoundingClientRect(); return { top: r.top + parseFloat(c.top), bottom: r.bottom - parseFloat(c.bottom), row: [r.top, r.bottom], w: c.width, cls: e.className }; }, [key, which]);
-    const mids = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list .dt-row.is-rail[aria-expanded]')].filter(e => !e.classList.contains('is-top') && !e.classList.contains('is-end')).map(e => e.dataset.key));
-    check('there are rows in the middle of a rail to open', mids.length >= 2, mids.join());
-    const shut = await rail(mids[0], '::before');
-    check('a row that is shut has its rail from edge to edge', shut.top === shut.row[0] && shut.bottom === shut.row[1], JSON.stringify(shut));
-    await tap(a, mids[0]); await rest(a, 600);
-    const mid = await rail(mids[0], '::before');
-    check('an opened row in the middle of a rail has the rail inside its card: it begins and ends 1 px in, so it never crosses the card\'s hairline',
-      mid.top > mid.row[0] && mid.bottom < mid.row[1] && Math.abs(mid.top - mid.row[0] - 1) < .6 && Math.abs(mid.row[1] - mid.bottom - 1) < .6, JSON.stringify(mid));
-    await tap(a, mids[0]); await rest(a, 400);
-    const ends = await a.page.evaluate(() => ({ top: [...document.querySelectorAll('.dt-list .dt-row.is-rail.is-top[aria-expanded]')].map(e => e.dataset.key), end: [...document.querySelectorAll('.dt-list .dt-row.is-rail.is-end[aria-expanded]')].map(e => e.dataset.key) }));
-    if (ends.top[0]) { await tap(a, ends.top[0]); await rest(a, 600); const t = await rail(ends.top[0], '::before'); check('the first row of a rail, opened, still begins at its glyph (inside the card already); its rail ends 1 px in', t.top - t.row[0] > 10 && Math.abs(t.row[1] - t.bottom - 1) < .6, JSON.stringify(t)); await tap(a, ends.top[0]); await rest(a, 400); }
-    if (ends.end[0]) { await tap(a, ends.end[0]); await rest(a, 600); const t = await rail(ends.end[0], '::before'); check('the last row of a rail, opened, still ends at its glyph (inside the card already); its rail begins 1 px in', t.row[1] - t.bottom > 10 && Math.abs(t.top - t.row[0] - 1) < .6, JSON.stringify(t)); await tap(a, ends.end[0]); await rest(a, 400); }
-    const hk = await a.page.evaluate(() => document.querySelector('.dt-list .dt-sh.has-rows[aria-expanded]')?.dataset.key);
-    const head0 = await rail(hk, '::after');
-    await tap(a, hk); await rest(a, 600);
-    const head1 = await rail(hk, '::after');
-    check('a stay\'s rail, from its dot down, stops 1 px inside the bottom of its card when it is opened, and reaches the bottom of its header when it is not', head0.bottom === head0.row[1] && Math.abs(head1.row[1] - head1.bottom - 1) < .6 && head1.top > head1.row[0], JSON.stringify({ head0, head1 }));
-    await shotRow(a, 'steady-01-rail-in-card', mids[0]);
-    await a.ctx.close();
-  }
-
-  // ---- reduced motion: a row does not grow, its words fade in over 120 ms; nothing slides ----
+  // ---- reduced motion: the page does not slide, the list and the page cross-fade over 120 ms, and the stage's height does not animate ----
   if (all || only === 'open') {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await a.page.emulateMedia({ reducedMotion: 'reduce' }); await a.page.waitForTimeout(150);
-    const run = await a.page.evaluate(async () => {
-      const el = document.querySelector('[data-key="reminder-2"]');
-      el.scrollIntoView({ block: 'center' });
-      el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await new Promise(r => requestAnimationFrame(r));
-      const fold = el.querySelector('.dt-fold'), body = fold.querySelector('.dt-body');
-      const live = fold.getAnimations({ subtree: true }).map(x => ({ on: x.effect.target === fold ? 'fold' : 'body', duration: x.effect.getTiming().duration, props: [...new Set(x.effect.getKeyframes().flatMap(k => Object.keys(k)).filter(k => !['offset', 'easing', 'composite', 'computedOffset'].includes(k)))].join() }));
-      return { live, h: fold.getBoundingClientRect().height, final: body.getBoundingClientRect().height };
-    });
-    check('with reduced motion an opening row does not grow (its height is its height at once) and its words fade in over 120 ms', run.live.length === 1 && run.live[0].on === 'body' && run.live[0].duration === 120 && run.live[0].props === 'opacity' && Math.abs(run.h - run.final) < 1, JSON.stringify(run));
+    const timings = () => a.page.evaluate(() => ['dt-stage', 'dt-list', 'dt-page'].flatMap(c => document.querySelector('.' + c)?.getAnimations().map(x => ({ on: c, duration: x.effect.getTiming().duration,
+      props: [...new Set(x.effect.getKeyframes().flatMap(k => Object.keys(k)).filter(k => !['offset', 'easing', 'composite', 'computedOffset'].includes(k)))].join() })) ?? []));
+    await a.page.evaluate(() => { const el = document.querySelector('[data-key="reminder-2"]'); el.scrollIntoView({ block: 'center' }); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await a.page.waitForTimeout(20);
+    const opening = await timings();
+    check('with reduced motion an opening row cross-fades the list and the page over 120 ms, with no slide (the transform is none) and no change of height', opening.length === 2 && opening.every(x => x.on !== 'dt-stage' && x.duration === 120 && x.props.split(',').sort().join() === 'opacity,transform,visibility'), JSON.stringify(opening));
     await rest(a, 250);
-    await orow(a, 'reminder-2').click({ position: { x: 170, y: 14 } }); await a.page.waitForTimeout(80);
-    check('and closing it takes it away at once', await folds(a) === 0 && await expanded(a, 'reminder-2') === 'false');
+    check('and the page is up when it is over, with the list hidden where it was', await expanded(a, 'reminder-2') === 'true' && await a.page.locator('.dt-stage.is-page').count() === 1);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(20);
+    const closing = await timings();
+    check('going back is the same cross-fade', closing.length === 2 && closing.every(x => x.duration === 120), JSON.stringify(closing));
+    await rest(a, 250);
+    check('and the list is back, the page gone', await folds(a) === 0 && await a.page.locator('.dt-stage.is-page').count() === 0);
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 200);
     await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await a.page.waitForTimeout(80);
     const dockRun = await a.page.evaluate(() => { const f = document.querySelector('.dt-fold.is-dock .dt-dock')?.closest('.dt-fold'); return f && { anims: f.getAnimations({ subtree: true }).map(x => x.effect.getTiming().duration), h: f.getBoundingClientRect().height, full: f.firstElementChild.getBoundingClientRect().height }; });
@@ -3632,7 +3510,7 @@ try {
   const wears = (a, key) => orow(a, key).evaluate(r => { const b = r.querySelector(r.classList.contains('dt-sh') ? '.dt-star' : '.dt-badge'); return b ? { gone: b.classList.contains('is-gone'), hers: b.classList.contains('is-hers') } : null; });
   const quickStar = (a, key) => orow(a, key).locator(':scope > .dt-quick .dt-starbtn');
   const starOf = (a, btn) => btn.evaluate(b => ({ on: b.getAttribute('aria-pressed') === 'true', his: b.classList.contains('is-his'), hers: b.classList.contains('is-hers'), label: b.getAttribute('aria-label') }));
-  const hoverOn = async (a, key) => { await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).hover({ position: { x: 170, y: 14 } }); await rest(a, 280); };
+  const hoverOn = async (a, key) => { await back(a); await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).hover({ position: { x: 170, y: 14 } }); await rest(a, 280); };
   const under = (a, key) => orow(a, key).locator(':scope > .dt-fold .dt-hint').allInnerTexts().then(x => x.join('|'));
   // The star's own animations, held at each moment in turn, in one sheet (the click starts them; they are paused at once, so each tile is the star at that moment).
   const frames = async (a, key, name, offsets) => {
@@ -3728,7 +3606,7 @@ try {
     const shook = (await anims(a)).filter(x => x.cls.includes('dt-starbtn') && x.kf.some(k => k.transform === 'translateX(-3px)'));
     check('the star shook once, in 120 ms', shook.length === 1 && shook[0].opt.duration === 120, JSON.stringify(shook));
     const grown = await orow(a, 'talk-3').boundingBox();
-    check('the line opens under the row in place (the rows under it move down), the row is not open (no open look, no expanded state, the star is still there to press again)', grown.y > rows0.y + 10 && await orow(a, 'ride-1').getAttribute('aria-expanded') === 'false' && await orow(a, 'ride-1').locator(':scope > .dt-fold.is-line').count() === 1 && await orow(a, 'ride-1').locator(':scope > .dt-quick').evaluate(q => getComputedStyle(q).display !== 'none' && getComputedStyle(q).opacity === '1'), JSON.stringify({ rows0, grown }));
+    check('the line opens under the row in place (the rows under it move down), the row is not open (no page, the star is still there to press again)', grown.y > rows0.y + 10 && await folds(a) === 0 && await orow(a, 'ride-1').locator(':scope > .dt-fold.is-line').count() === 1 && await orow(a, 'ride-1').locator(':scope > .dt-quick').evaluate(q => getComputedStyle(q).display !== 'none' && getComputedStyle(q).opacity === '1'), JSON.stringify({ rows0, grown }));
     await shotRow(a, 'd-03-cap-line', 'ride-1');
     await a.page.waitForTimeout(4300);
     check('the line goes by itself after four seconds and the rows come back', await under(a, 'ride-1') === '' && await orow(a, 'ride-1').locator(':scope > .dt-fold').count() === 0 && Math.abs((await orow(a, 'talk-3').boundingBox()).y - rows0.y) < 2);
@@ -3767,14 +3645,14 @@ try {
     await a.page.keyboard.press('Escape'); await rest(a, 500);
     // the open row: the star is among its buttons, before 问她, and does the same
     await tap(a, 'talk-1'); await rest(a, 520);
-    const btns = await orow(a, 'talk-1').locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const btns = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     check('the open row has the star among its buttons, before 问她', btns === 'star|问她', btns);
-    const open = orow(a, 'talk-1').locator('.dt-acts .dt-starbtn');
+    const open = pgOf(a).locator('.dt-acts .dt-starbtn');
     await open.click(); await rest(a, 500);
     check('pressed there it marks the same item, and the star in the open row is filled', writes(a).at(-1).body.id === 'talk-1' && writes(a).at(-1).body.on === true && (await starOf(a, open)).on && (await starOf(a, open)).his && await orow(a, 'talk-1').locator(':scope > .dt-quick').isHidden());
     a.s.refuse.add('highlight');
     await open.click(); await rest(a, 600);
-    check('a refusal says so under the buttons of the open row, in the row\'s own hint (the star is filled again, as it was)', (await starOf(a, open)).on && await orow(a, 'talk-1').locator('.dt-body .dt-hint').innerText() === '没标上，稍后再试', await orow(a, 'talk-1').locator('.dt-body .dt-hint').innerText());
+    check('a refusal says so under the buttons of the open row, in the row\'s own hint (the star is filled again, as it was)', (await starOf(a, open)).on && await pgOf(a).locator('.dt-body .dt-hint').innerText() === '没标上，稍后再试', await pgOf(a).locator('.dt-body .dt-hint').innerText());
     await a.ctx.close();
   }
   if (all || only === 'write') {
@@ -3825,14 +3703,14 @@ try {
     out.gone = !document.querySelector(`[data-key="${key}"]`); out.boxGone = !document.querySelector(`[data-sched="${key}"]`); out.badge = !!document.querySelector(`[data-key="${key}"] .dt-wait`);
     return out;
   }, [key, ms]);
-  const btn = (a, key, name) => orow(a, key).locator('.dt-acts').getByRole('button', { name, exact: true });
+  const btn = (a, key, name) => pgOf(a).locator('.dt-acts').getByRole('button', { name, exact: true });
   if (all || only === 'write') {
     const a = await boot({ served: commitDay(), init: record });
     await openDay(a);
     check('three things wait on him at first: the reminder that rang and the two events mail has not confirmed, each with its badge and a dashed box on the bar', await pillOf(a) === '3 件等你' && await a.page.locator('.dt-wait').count() === 3 && await a.page.locator('[data-sched]').count() === 3, await pillOf(a));
     await tap(a, CM.a); await rest(a, 520);
-    const btns = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
-    check('an unconfirmed mail event opens to 是我的 and 不是, before the star and 问她, under its time range and state (its source, that it is not confirmed and its place are the row\'s second line already)', btns === '是我的|不是|star|问她' && (await said(a, CM.a))[0] === '22:10–22:50 · 40 分 · 还没开始' && await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 还没确认 · Library', `${btns} ${(await said(a, CM.a)).join('|')}`);
+    const btns = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    check('an unconfirmed mail event opens to 是我的 and 不是, before the star and 问她, under its time range and state (its source, that it is not confirmed and its place are the row\'s second line already)', btns === '是我的|不是|star|问她' && (await said(a, CM.a))[0] === '22:10–22:50 · 40 分 · 还没开始' && await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 还没确认 · Library', `${btns} ${(await said(a, CM.a)).join('|')}`);
     await sheetRow(a, 'd-04-commitment-open', CM.a, [['.dt-head', 'the header: three things wait on him (the reminder that rang and the two events mail has not confirmed)', 1.3]], 'the commitment opened: 是我的 and 不是 before the star and 问她, the amber 等你 badge on the row');
     const reads = a.s.hits.length, watching = watchRow(a, CM.a, 900);
     await btn(a, CM.a, '是我的').click();
@@ -3842,11 +3720,11 @@ try {
     await rest(a, 300);
     const lines = await said(a, CM.a);
     check('the row\'s second line says he confirmed it, the open lines say confirmed, the two buttons are gone (the star and 问她 stay), the day was read again and the brain has it confirmed',
-      await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 你确认了 · Library' && lines.join('|').includes('已确认') && await btn(a, CM.a, '是我的').count() === 0 && await btn(a, CM.a, '不是').count() === 0 && await orow(a, CM.a).locator('.dt-acts .dt-starbtn').count() === 1 && a.s.hits.length > reads && a.s.served.items.find(x => x.id === CM.a).confirmed === true, `${lines.join('|')} ${a.s.hits.length} ${reads}`);
+      await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 你确认了 · Library' && lines.join('|').includes('已确认') && await btn(a, CM.a, '是我的').count() === 0 && await btn(a, CM.a, '不是').count() === 0 && await pgOf(a).locator('.dt-acts .dt-starbtn').count() === 1 && a.s.hits.length > reads && a.s.served.items.find(x => x.id === CM.a).confirmed === true, `${lines.join('|')} ${a.s.hits.length} ${reads}`);
     await sheetRow(a, 'd-05-commitment-confirmed', CM.a, [['.dt-head', 'the header after 是我的: two wait now', 1.3]], 'the same row after 是我的: no badge, the second line says 你确认了, the two buttons are gone');
     // he is the one who confirmed it: the words stay when the day is read again (the brain only says it is confirmed)
     await a.page.waitForTimeout(100);
-    check('and after another read of the day the row still says he confirmed it (what the brain sends does not say who)', await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 你确认了 · Library');
+    check('and after another read of the day the row still says he confirmed it (what the brain sends does not say who)', await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 你确认了 · Library');
 
     // 不是: the row collapses out (240 ms), the bar's box fades, the count rolls down; the day is read again once the row has gone
     await tap(a, CM.b); await rest(a, 520);
@@ -3875,12 +3753,12 @@ try {
     const reads = a.s.hits.length;
     await btn(a, CM.a, '是我的').click(); await rest(a, 450);
     check('a refusal leaves the row, its badge and the count as they were, the two buttons are there again, and the line says so', await btn(a, CM.a, '是我的').isEnabled() && await btn(a, CM.a, '不是').isEnabled() && await orow(a, CM.a).locator('.dt-wait').count() === 1 && await pillOf(a) === '3 件等你'
-      && await orow(a, CM.a).locator('.dt-body .dt-hint').innerText() === '没成功，再试一次' && await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 还没确认 · Library' && a.s.hits.length === reads, await orow(a, CM.a).locator('.dt-body .dt-hint').innerText().catch(() => '-'));
+      && await pgOf(a).locator('.dt-body .dt-hint').innerText() === '没成功，再试一次' && await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 还没确认 · Library' && a.s.hits.length === reads, await pgOf(a).locator('.dt-body .dt-hint').innerText().catch(() => '-'));
     await btn(a, CM.a, '不是').click(); await rest(a, 450);
     check('so does a refused 不是: the row is still there', await orow(a, CM.a).count() === 1 && await a.page.locator(`[data-sched="${CM.a}"]`).count() === 1 && cm(a).length === 2);
     a.s.refuse.delete('commitments');
     await btn(a, CM.a, '是我的').click(); await rest(a, 500);
-    check('and when the brain takes it the next time the line is gone with the buttons', await orow(a, CM.a).locator('.dt-body .dt-hint').count() === 0 && await btn(a, CM.a, '是我的').count() === 0 && await pillOf(a) === '2 件等你');
+    check('and when the brain takes it the next time the line is gone with the buttons', await pgOf(a).locator('.dt-body .dt-hint').count() === 0 && await btn(a, CM.a, '是我的').count() === 0 && await pillOf(a) === '2 件等你');
     await a.ctx.close();
   }
   if (all || only === 'write') {
@@ -3890,7 +3768,7 @@ try {
     await tap(a, CM.a); await rest(a, 520);
     a.s.served.items.find(x => x.id === CM.a).confirmed = true;
     await btn(a, CM.a, '是我的').click(); await rest(a, 600);
-    check('a confirm of one that is confirmed already (409) is shown as confirmed, with no failure line', await orow(a, CM.a).locator('.dt-tx em').innerText() === '邮件 · 你确认了 · Library' && await orow(a, CM.a).locator('.dt-body .dt-hint').count() === 0 && await pillOf(a) === '2 件等你', await pillOf(a));
+    check('a confirm of one that is confirmed already (409) is shown as confirmed, with no failure line', await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 你确认了 · Library' && await pgOf(a).locator('.dt-body .dt-hint').count() === 0 && await pillOf(a) === '2 件等你', await pillOf(a));
     // and one the brain no longer has (a 404) goes the way of one he dropped
     await tap(a, CM.b); await rest(a, 520);
     a.s.served.items = a.s.served.items.filter(x => x.id !== CM.b);
@@ -3904,9 +3782,9 @@ try {
     await a.page.emulateMedia({ reducedMotion: 'reduce' });
     await openDay(a);
     await tap(a, CM.a); await rest(a, 400);
-    const names = await orow(a, CM.a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const names = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     await btn(a, CM.a, 'Mine').click(); await rest(a, 400);
-    check('in English the buttons say Mine and Not mine, and the row says you confirmed it', names === 'Mine|Not mine|star|Ask her' && await orow(a, CM.a).locator('.dt-tx em').innerText() === 'Mail · you confirmed it · Library', `${names} ${await orow(a, CM.a).locator('.dt-tx em').innerText()}`);
+    check('in English the buttons say Mine and Not mine, and the row says you confirmed it', names === 'Mine|Not mine|star|Ask her' && await orow(a, CM.a).locator('.dt-tx em').textContent() === 'Mail · you confirmed it · Library', `${names} ${await orow(a, CM.a).locator('.dt-tx em').textContent()}`);
     await tap(a, CM.b); await rest(a, 400);
     const watching = watchRow(a, CM.b, 1400);
     await btn(a, CM.b, 'Not mine').click();
@@ -3919,19 +3797,19 @@ try {
   const kept = a => a.s.posts.filter(p => p.path === '/inherent/memory/places').map(p => JSON.stringify(p.body));
   const hueOf = (a, key) => orow(a, key).evaluate(el => getComputedStyle(el.closest('.dt-stay')).getPropertyValue('--c').trim());
   const field = a => a.page.evaluate(() => { const i = document.querySelector('.dt-name-in'); return i && { value: i.value, focused: document.activeElement === i, placeholder: i.placeholder, chips: [...document.querySelectorAll('.dt-role')].map(c => `${c.textContent}${c.getAttribute('aria-pressed') === 'true' ? '*' : ''}`).join('|') }; });
-  const chip = (a, key, name) => orow(a, key).locator('.dt-role', { hasText: name });
+  const chip = (a, key, name) => pgOf(a).locator('.dt-role', { hasText: name });
   const barNames = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-seg.is-stay .dt-sl b')].map(b => b.textContent));
   if (all || only === 'write') {
     const a = await boot({ served: nameDay(), init: record });
     await openDay(a);
     const before = { spot: await hueOf(a, 'stay-spot'), school: await hueOf(a, 'stay-uvic'), bar: await barNames(a) };
     await tap(a, 'stay-spot'); await rest(a, 520);
-    const btns = await orow(a, 'stay-spot').locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const btns = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
     check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (before the star, 问她 and 这段在干嘛), and a spot the phone had no words for says nothing else', btns === '起个名字|star|问她|这段在干嘛' && (await said(a, 'stay-spot')).length === 3, `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
-    await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
     const f0 = await field(a);
     check('it opens a field with the cursor in it and the kinds of place under it (home, school, other: the brain\'s own three), none picked, and the line says Enter saves and Esc cancels; the button is gone',
-      f0 && f0.value === '' && f0.focused && f0.placeholder === '给这个地方起个名字' && f0.chips === '家|学校|其他' && await orow(a, 'stay-spot').locator('.dt-body .dt-hint').innerText() === '回车保存 · Esc 取消' && await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).count() === 0, JSON.stringify(f0));
+      f0 && f0.value === '' && f0.focused && f0.placeholder === '给这个地方起个名字' && f0.chips === '家|学校|其他' && await pgOf(a).locator('.dt-body .dt-hint').innerText() === '回车保存 · Esc 取消' && await pgOf(a).getByRole('button', { name: '起个名字' }).count() === 0, JSON.stringify(f0));
     await a.page.keyboard.type('图书馆');
     await chip(a, 'stay-spot', '学校').click(); await rest(a, 200);
     const f1 = await field(a);
@@ -3941,10 +3819,10 @@ try {
     await a.page.keyboard.press('Enter');
     await a.until(() => document.querySelector('[data-key="stay-spot"] .dt-tx b')?.textContent === '图书馆', undefined, 8000); await rest(a, 300);
     check('Enter keeps it: the one route the brain has, with exactly the name, the stay\'s own lat and lng, and the kind he picked', kept(a).join('|') === '{"name":"图书馆","lat":48.4631,"lng":-123.3123,"role":"school"}', kept(a).join('|'));
-    const after = { head: await orow(a, 'stay-spot').locator('.dt-tx b').first().innerText(), spot: await hueOf(a, 'stay-spot'), bar: await barNames(a) };
+    const after = { head: await orow(a, 'stay-spot').locator('.dt-tx b').first().textContent(), spot: await hueOf(a, 'stay-spot'), bar: await barNames(a) };
     check('the stay is named in the list and on the bar, and it has the hue of a school (the same as UVic\'s) where it had the neutral one; the day was read again and the brain keeps it',
       after.head === '图书馆' && after.spot === before.school && before.spot !== before.school && after.bar.includes('图书馆') && !before.bar.includes('图书馆') && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'stay-spot').kept_place.name === '图书馆', JSON.stringify({ before, after }));
-    check('the field is gone, and the open row has the rename now (it is a place he keeps)', await a.page.locator('.dt-name').count() === 0 && await orow(a, 'stay-spot').getByRole('button', { name: '改名字' }).count() === 1 && await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).count() === 0 && await expanded(a, 'stay-spot') === 'true');
+    check('the field is gone, and the open row has the rename now (it is a place he keeps)', await a.page.locator('.dt-name').count() === 0 && await pgOf(a).getByRole('button', { name: '改名字' }).count() === 1 && await pgOf(a).getByRole('button', { name: '起个名字' }).count() === 0 && await expanded(a, 'stay-spot') === 'true');
     await sheetRow(a, 'd-07-named', 'stay-spot', [['.dt-bar', 'the bar after the name was kept: 图书馆 in the school\'s blue', 1.4]], 'the row: the name, the hue, and 改名字 where 起个名字 was');
     await a.ctx.close();
   }
@@ -3953,7 +3831,7 @@ try {
     const a = await boot({ served: nameDay(), init: record });
     await openDay(a);
     await tap(a, 'stay-aw'); await rest(a, 520);
-    await orow(a, 'stay-aw').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
     await a.page.keyboard.press('Enter'); await rest(a, 200);
     check('Enter on an empty name asks the brain nothing', kept(a).length === 0 && (await field(a)).focused);
     await a.page.keyboard.type('  快餐  店 ');
@@ -3961,21 +3839,21 @@ try {
     check('a kind pressed twice is put down again', (await field(a)).chips === '家|学校|其他');
     a.s.refuse.add('place');
     await a.page.keyboard.press('Enter');
-    await a.until(() => document.querySelector('[data-key="stay-aw"] .dt-body .dt-hint')?.textContent === '没记下，再试一次', undefined, 8000);
+    await a.until(() => document.querySelector('.dt-page .dt-body .dt-hint')?.textContent === '没记下，再试一次', undefined, 8000);
     const failed = await field(a);
-    check('a brain that refuses (a 400) leaves the field with what was typed, the cursor in it, and says it did not keep it; nothing changed on the list', failed.value === '  快餐  店 ' && failed.focused && await orow(a, 'stay-aw').locator('.dt-body .dt-hint').innerText() === '没记下，再试一次' && await orow(a, 'stay-aw').locator('.dt-tx b').first().innerText() === 'A&W' && kept(a).length === 1, JSON.stringify(failed));
+    check('a brain that refuses (a 400) leaves the field with what was typed, the cursor in it, and says it did not keep it; nothing changed on the list', failed.value === '  快餐  店 ' && failed.focused && await pgOf(a).locator('.dt-body .dt-hint').innerText() === '没记下，再试一次' && await orow(a, 'stay-aw').locator('.dt-tx b').first().textContent() === 'A&W' && kept(a).length === 1, JSON.stringify(failed));
     a.s.refuse.delete('place');
     await a.page.keyboard.press('Enter');
     await a.until(() => document.querySelector('[data-key="stay-aw"] .dt-tx b')?.textContent === '快餐 店', undefined, 8000); await rest(a, 200);
-    check('and the next time it is kept: the name trimmed (the brain makes the spaces inside one), no role in the body (none was picked), and the row shows the name the brain kept', kept(a).at(-1) === '{"name":"快餐  店","lat":48.4284,"lng":-123.3656}' && await orow(a, 'stay-aw').locator('.dt-tx b').first().innerText() === '快餐 店', kept(a).join('|'));
+    check('and the next time it is kept: the name trimmed (the brain makes the spaces inside one), no role in the body (none was picked), and the row shows the name the brain kept', kept(a).at(-1) === '{"name":"快餐  店","lat":48.4284,"lng":-123.3656}' && await orow(a, 'stay-aw').locator('.dt-tx b').first().textContent() === '快餐 店', kept(a).join('|'));
     // Esc, then Esc
     await tap(a, 'stay-spot'); await rest(a, 520);
-    await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
     await a.page.keyboard.type('x');
     await a.page.keyboard.press('Escape'); await rest(a, 350);
-    check('Esc lets go of the field (what was typed with it, nothing asked) and the row stays open; the button is back', await a.page.locator('.dt-name').count() === 0 && await expanded(a, 'stay-spot') === 'true' && await orow(a, 'stay-spot').getByRole('button', { name: '起个名字' }).count() === 1 && kept(a).length === 2);
+    check('Esc lets go of the field (what was typed with it, nothing asked) and the row stays open; the button is back', await a.page.locator('.dt-name').count() === 0 && await expanded(a, 'stay-spot') === 'true' && await pgOf(a).getByRole('button', { name: '起个名字' }).count() === 1 && kept(a).length === 2);
     await a.page.keyboard.press('Escape'); await rest(a, 350);
-    check('and the next Esc closes the row', await expanded(a, 'stay-spot') === 'false');
+    check('and the next Esc goes back', await expanded(a, 'stay-spot') === 'false');
     await a.ctx.close();
   }
   if (all || only === 'write') {
@@ -3983,14 +3861,15 @@ try {
     const a = await boot({ served: nameDay(), init: record, lang: 'en' });
     await openDay(a);
     const offered = {};
-    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await orow(a, key).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
-    const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, open: r.getAttribute('aria-expanded') }; });
+    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
+    await tap(a, 'stay-stop'); await rest(a, 520);
+    const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, name: document.querySelectorAll('.dt-page .dt-name').length }; });
     check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'star|Ask her|What was this' && offered['stay-uvic'] === 'Rename|star|Ask her|What was this' && offered['stay-aw'] === 'Name this place|star|Ask her|What was this', JSON.stringify(offered));
     await tap(a, 'stay-aw'); await rest(a, 520);
-    await orow(a, 'stay-aw').getByRole('button', { name: 'Name this place' }).click(); await rest(a, 450);
+    await pgOf(a).getByRole('button', { name: 'Name this place' }).click(); await rest(a, 450);
     const f = await a.page.evaluate(() => ({ placeholder: document.querySelector('.dt-name-in').placeholder, chips: [...document.querySelectorAll('.dt-role')].map(c => c.textContent).join('|'), hint: document.querySelector('.dt-body .dt-hint').textContent }));
     check('in English the field and its kinds read A name for this place, Home, School, Other, and Enter saves · Esc cancels', f.placeholder === 'A name for this place' && f.chips === 'Home|School|Other' && f.hint === 'Enter saves · Esc cancels', JSON.stringify(f));
-    check('a stop on the way (five minutes between two walks) is no place: it is a row of the trip, which opens to its star alone', stop.kind === 'stay' && await orow(a, 'stay-stop').locator('.dt-acts, .dt-name').count() === 0);
+    check('a stop on the way (five minutes between two walks) is no place: it is a row of the trip, which opens to its star alone', stop.kind === 'stay' && stop.name === 0 && await orow(a, 'stay-stop').locator('.dt-acts, .dt-name').count() === 0, JSON.stringify(stop));
     await a.ctx.close();
   }
 
@@ -4236,7 +4115,7 @@ try {
     const f = now => {
       if (!window.__tapeOn) return;
       const l = document.querySelector('.dt-list'), pr = drop.getBoundingClientRect();
-      window.__tape.push({ t: now, op: l ? +getComputedStyle(l).opacity : null, keys: l ? [...l.querySelectorAll('[data-key]')].map(e => e.dataset.key).join() : '', scroll: l?.scrollTop ?? null,
+      window.__tape.push({ t: now, op: l ? +getComputedStyle(l.parentElement).opacity : null, keys: l ? [...l.querySelectorAll('[data-key]')].map(e => e.dataset.key).join() : '', scroll: l?.scrollTop ?? null,
         pane: pr.height, left: pr.left, width: pr.width, inn: inn.getBoundingClientRect().height, date: document.querySelector('.dt-date')?.textContent ?? null, dim: !!document.querySelector('.dt.is-loading') });
       requestAnimationFrame(f);
     };
@@ -4249,7 +4128,7 @@ try {
   if (all || only === 'polish') {
     const state = a => a.page.evaluate(() => {
       const l = document.querySelector('.dt-list'), lr = l?.getBoundingClientRect(), now = l?.querySelector('.dt-now')?.getBoundingClientRect();
-      return { date: document.querySelector('.dt-date')?.textContent, scroll: l ? l.scrollTop : null, open: [...document.querySelectorAll('.dt-list [aria-expanded="true"]')].map(e => e.dataset.key).join(),
+      return { date: document.querySelector('.dt-date')?.textContent, scroll: l ? l.scrollTop : null, open: document.querySelector('.dt-page[data-page]')?.dataset.page ?? '',
         nowAt: now && lr ? now.top - lr.top : null, view: lr?.height, yesterday: !!document.querySelector('.dt-list [data-key^="y-"]') };
     });
     // A click on the line: it opens the day pinned, and folds it again.
@@ -4320,7 +4199,7 @@ try {
       const cutKeys = frames.at(-1).keys;
       check('showing only a range: the list fades out, goes through 0, and is swapped for the cut while it is not there (no frame shows both)', s.at > 0 && s.low <= .02 && s.frame.op <= .05 && frames[0].keys.includes('c-talk') && !cutKeys.includes('c-talk') && cutKeys.includes('c-lib'), JSON.stringify({ at: s.at, low: s.low, op: s.frame?.op, first: frames[0].keys, last: cutKeys }));
       check('over 80 ms out and 140 ms in: it is seen going and coming (the in is quick: the day change\'s own easing), the list alone, without a slide', s.out >= 3 && s.inn >= 1, JSON.stringify({ out: s.out, inn: s.inn }));
-      let log = (await anims(a)).filter(l => /dt-list/.test(l.cls));
+      let log = (await anims(a)).filter(l => /dt-stage/.test(l.cls));
       check('the animations are the day change\'s own: 80 ms out (ease-in, held), 140 ms in (backwards), at the same place (0 px)', log.length === 2 && log[0].opt.duration === 80 && log[0].opt.fill === 'forwards' && log[0].kf[0].transform === 'translateX(0px)' && log[1].opt.duration === 140 && log[1].opt.fill === 'backwards', JSON.stringify(log.map(l => [l.opt, l.kf])));
       check('and the pane takes the height of what is in it at once: never more than 4 px of it empty', emptiest(sizes) <= 4, emptied(sizes));
       await tape(a);

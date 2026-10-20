@@ -95,7 +95,8 @@ function Stars({ stars }: { stars: BarStar[] }) {
   return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
 }
 
-export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; hot: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
+// `open`: the row whose detail page is up; its span stays marked, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
+export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; hot: string | null; open: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t), [model, lang]), nums = useMemo(() => numbers(model, t), [model, lang]);
   const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
@@ -172,6 +173,7 @@ export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, on
     const x = at(e), a = snap(ms(p.x0)), b = snap(ms(x));
     setBand(null);
     if (p.drag && a !== b) { ui.setSel({ a: Math.min(a, b), b: Math.max(a, b) }); return; }
+    if (open) { onPage(pieceAt(bar, ms(x))); return; }
     const key = rowAt(model, bar, ms(x));
     if (key) onJump(key);
   };
@@ -222,9 +224,9 @@ export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, on
   const hours = bar.ticks.map(k => ({ k, px: k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width }));
   const suns = bar.sun.map(x => { const px = clamp(x.f * width, 6, Math.max(6, width - 6)); return { ...x, px, bare: hours.some(h => Math.abs(h.px - px) < 14) }; });
   const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
-  const lifted = live?.row ?? null, spanned = hot && hot !== lifted ? model.span.get(hot) : null;
+  const lifted = live?.row ?? null, spanned = hot && hot !== lifted && hot !== open ? model.span.get(hot) : null, opened = open ? model.span.get(open) : null;
   return <>
-    <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
+    <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
       <div className="dt-scrub" aria-hidden="true">
         {bar.nowF !== null && !hover && !sel && <span className="dt-time is-now" style={{ left: `clamp(16px, ${bar.nowF * 100}%, calc(100% - 16px))` }}>{clock(model.now, model.tz)}</span>}
         {hover && !band && <span className="dt-time" style={edge(hover.x)}>{live?.at}</span>}
@@ -250,7 +252,7 @@ export function DayBar({ model, port, ui, cut, hot, onHot, onJump, onPicture, on
         <div className="dt-over" aria-hidden="true">
           {sel && a !== null && b !== null && <i className="dt-band" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {!sel && ui.filter && a !== null && b !== null && <i className="dt-band is-applied" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
-          {spanned && spanned.t1 >= bar.t0 && spanned.t0 <= bar.t1 && <i className="dt-bracket" style={{ left: bx(fOf(bar, spanned.t0)), width: `max(3px, ${(clamp(fOf(bar, spanned.t1), 0, 1) - clamp(fOf(bar, spanned.t0), 0, 1)) * 100}%)` }}/>}
+          {[spanned, opened].map((x, i) => x && x.t1 >= bar.t0 && x.t0 <= bar.t1 && <i key={i} className={`dt-bracket${i ? ' is-open' : ''}`} style={{ left: bx(fOf(bar, x.t0)), width: `max(3px, ${(clamp(fOf(bar, x.t1), 0, 1) - clamp(fOf(bar, x.t0), 0, 1)) * 100}%)` }}/>)}
           <Stars key={model.reply.date} stars={bar.stars}/>
           {bar.nowF !== null && <i className="dt-nowtick" style={{ left: bx(bar.nowF) }}/>}
           {hover && !band && <i className="dt-hair" style={{ left: hover.x }}/>}

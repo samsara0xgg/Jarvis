@@ -2,7 +2,7 @@
    a place's colour is its own (home warm, school blue, the rest a fixed hue each), the day's now is a warm white, and amber is
    the turn mark's: here it says "waiting on you" (the pill in the header, the badge on a row) and nothing else. */
 .notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; max-height:584px; padding-inline:4px; }
-.notch .dt > :not(.dt-list) { flex:none; }
+.notch .dt > :not(.dt-stage) { flex:none; }
 .notch .dt.is-loading > :not(.dt-head) { opacity:.45; transition:opacity var(--motion-fast); }
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
 .notch .dt-date { flex:none; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; }
@@ -34,15 +34,29 @@
 
 /* the day: stays as groups, the ways between them as trips, the now line, what is still to come muted */
 .notch .dt { --tcol:50px; }
-.notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
+.notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+/* the list and a row's detail page are two sides of one stage (DayTimeline.tsx slides them): the side that is not shown waits out of the flow, hidden, its scroll place kept */
+.notch .dt-stage { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; overflow:hidden; }
+.notch .dt-stage.is-page > .dt-list,.notch .dt-stage:not(.is-page) > .dt-page { position:absolute; inset:0; visibility:hidden; pointer-events:none; }
+.notch .dt-stage.is-page > .dt-list { transform:translateX(-100%); }
+.notch .dt-stage:not(.is-page) > .dt-page { transform:translateX(100%); }
+.notch .dt-page { display:flex; flex:0 1 auto; flex-direction:column; min-height:0; box-sizing:border-box; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+.notch .dt-pin { flex:none; }
+.notch .dt-ph { display:flex; align-items:center; gap:8px; min-height:32px; }
+.notch .dt-pb { display:grid; place-items:center; flex:none; width:28px; height:28px; border-radius:50%; background:rgb(255 255 255 / .08); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }
+.notch .dt-pb:hover { background:rgb(255 255 255 / .16); color:var(--p-ink); }
+.notch .dt-ph b { min-width:0; overflow:hidden; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-ph .dt-rename { margin:0; }
+.notch .dt-pm { margin:0 0 4px 36px; font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .dt-pin .dt-body { padding:6px 4px 12px 38px; }
 /* the list's edges fade over 16 px where there is more past them, so a row half under the chips reads as scrolling, not as cut words */
 .notch .dt-list.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 16px),transparent); mask-image:linear-gradient(#000 calc(100% - 16px),transparent); }
 .notch .dt-list.more-above { -webkit-mask-image:linear-gradient(transparent,#000 16px); mask-image:linear-gradient(transparent,#000 16px); }
 .notch .dt-list.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 16px),transparent); mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 16px),transparent); }
 .notch .dt-list > *,.notch .dt-stay > * { flex:none; }
 /* a row is 40 px tall (--head), 52 with a second line; a stay's header is 40; a unit (a stay, a trip) starts 12 px under the one before it;
-   a row that is open is taller by its content (day-open.css), and its head keeps --head */
+   a row with a quiet line under it is taller by the line (day-open.css), and its head keeps --head */
 .notch .dt-row,.notch .dt-sh { --head:40px; position:relative; display:grid; grid-template-columns:var(--tcol) 28px minmax(0,1fr) auto; gap:0 8px; align-items:center; box-sizing:border-box; height:var(--head); padding:0 6px; border-radius:10px;
   font-size:14px; line-height:18px; transition:background var(--motion-fast),box-shadow var(--motion-fast),opacity 150ms; }
 .notch .dt-row.has-detail { --head:52px; }

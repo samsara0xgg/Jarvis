@@ -1,20 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
+import { CaretLeft, CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
 import { stageLook, type Inside as Line1 } from './dayView';
 import { Ic } from './dayIcons';
-import { talkLines, type Bar, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
+import { talkLines, type Bar, type Head, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
 
-// What an open row holds (ADR 0308, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today. The row's
-// own two lines stay as they were; this hangs under them from the title's column.
+// What a row's detail page holds (ADR 0308, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today, under
+// the row's title and when it was.
 export const EASE = 'cubic-bezier(.16, 1, .3, 1)';
 export const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 
-// What opens in place (a row's content, the input and the note at the pane's foot): its height grows from nothing in 260 ms with its words
-// fading in after 60 ms; closing is the same backwards in 200 ms; and while it is open a change in what it holds (the talk's lines coming, a
-// recap unfolding, a picture loading) is a 180 ms glide of the height, not a jump. Reduced motion: nothing moves, what appears fades in
-// over 120 ms. The content is drawn only while it is open or closing (`render`), so a closed row costs nothing.
+// What opens in place (the quiet line under a row, the input and the note at the pane's foot): its height grows from nothing in 260 ms with its words
+// fading in after 60 ms; closing is the same backwards in 200 ms; and while it is open a change in what it holds is a 180 ms glide of the height, not a jump.
+// Reduced motion: nothing moves, what appears fades in over 120 ms. The content is drawn only while it is open or closing (`render`), so a closed row costs nothing.
 export function Unfold({ open, render, tick, onSettle, className = 'dt-fold' }: { open: boolean; render: () => ReactNode; tick?: () => void; onSettle?: () => void; className?: string }) {
   const [here, setHere] = useState(open);
   if (open && !here) setHere(true);
@@ -214,13 +213,36 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
   </>;
 }
 
-export function OpenBody({ open, acts }: { open: Open; acts: Acts }) {
+function OpenBody({ open, acts }: { open: Open; acts: Acts }) {
   const { t } = acts;
   const say = acts.rename?.state === 'editing' || acts.name?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.name?.state === 'failed' ? t(["Couldn't keep it. Try again.", '没记下，再试一次']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' || acts.commit?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
   return <>
     {open.parts.map((p, i) => <PartView key={`${p.type}${i}`} part={p} acts={acts}/>)}
     <Buttons acts={acts} say={say}/>
   </>;
+}
+
+// The name of a kept place being changed, in the page's own header: the cursor is in it with the name selected; Enter saves, Esc lets go.
+export type Rename = { draft: string; busy: boolean; set: (text: string) => void; save: () => void; field: (on: boolean) => void };
+function RenameField({ draft, busy, set, save, field, t }: Rename & { t: (l: L) => string }) {
+  const box = useRef<HTMLInputElement>(null);
+  useEffect(() => { box.current?.focus({ preventScroll: true }); box.current?.select(); }, []);
+  return <input ref={box} className="dt-rename" type="text" autoComplete="off" spellCheck={false} aria-label={t(['Rename', '改名字'])} value={draft} readOnly={busy}
+    onChange={e => set(e.target.value)} onFocus={() => field(true)} onBlur={() => field(false)} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); save(); } }}/>;
+}
+
+// A row's detail page (it slides over the list: DayTimeline.tsx): a back control with the row's title, when it was and how long, then what the row holds and the
+// buttons that work for it. The title is the field while a kept place is being renamed.
+export function DetailPage({ head, open, acts, rename, back }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void }) {
+  const { t } = acts;
+  return <div className="dt-pin">
+    <header className="dt-ph">
+      <button type="button" className="dt-pb" aria-label={t(['Back to the day', '回到这一天'])} onClick={back}><CaretLeft size={14} weight="bold" aria-hidden="true"/></button>
+      {rename ? <RenameField {...rename} t={t}/> : <b>{head.title}</b>}
+    </header>
+    {head.meta && <p className="dt-pm">{head.meta}</p>}
+    <div className="dt-body"><OpenBody open={open} acts={acts}/></div>
+  </div>;
 }
 
 // The picture large over the window: a click anywhere or Esc closes it (DayTimeline.tsx hears the key). It hangs from the body, outside

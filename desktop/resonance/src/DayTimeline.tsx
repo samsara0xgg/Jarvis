@@ -3,12 +3,12 @@ import { CaretLeft, CaretRight, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
 import { askable, buildDay, changeId, dateTitle, keptOf, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
-import { answerOf, askOf, hasBody, openOf, sayOf, type About, type Ask, type Rec, type Said } from './dayOpen';
+import { answerOf, askOf, hasBody, headOf, openOf, sayOf, type About, type Ask, type Rec, type Said } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState } from './DayBar';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
-import { EASE, OpenBody, reduced, Unfold, Viewer, type Acts } from './RowOpen';
+import { DetailPage, EASE, reduced, Unfold, Viewer, type Acts } from './RowOpen';
 import { StarToggle, type StarMark } from './StarToggle';
 import { TimelineGuard } from './TimelineGuard';
 import './day-timeline.css';
@@ -16,7 +16,8 @@ import './day-open.css';
 
 // The timeline pane (ADR 0308): the drop pane's other content, grown from the notch's right side. One story top to bottom: the date,
 // her sentence about the day, one bar for the whole day (DayBar.tsx) with the day's numbers under it, and the day itself as a list; on
-// today a now line, with what is still to come below it. A row opens in place (RowOpen.tsx) and can be asked about (AskDock.tsx).
+// today a now line, with what is still to come below it. A click on a row slides the list away to that row's detail page (RowOpen.tsx), which can be
+// asked about (AskDock.tsx); going back slides the list in again, where it was.
 // `feed` is today as the wing already reads it; other days are read here.
 const rgb = (c: readonly number[]) => c.join(' ');
 // Where `el` is inside the scrolling `list`.
@@ -38,6 +39,8 @@ function rise(list: HTMLElement) {
   watch.observe(pane, { attributes: true, attributeFilter: ['class'] });
   return () => watch.disconnect();
 }
+// The list and a row's detail page slide for 240 ms (the same ease).
+const SLIDE = 240;
 // An item that arrives while the day is open grows out of nothing: its height from 0 and a fade, 240 ms.
 function grow(el: HTMLElement) {
   const style = getComputedStyle(el), full = { height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: style.opacity };
@@ -54,18 +57,17 @@ function away(el: HTMLElement) {
 // other side (140 ms). Never both at once, so two days' words are never on top of each other. The list moves 16 px, the rest of the pane 8.
 // The list cut to a range, or whole again, goes the same way without the slide (`dir` 0): only the list fades.
 const parts = (root: HTMLElement | null) => [...(root?.children ?? [])].filter((el): el is HTMLElement => el instanceof HTMLElement && !el.classList.contains('dt-head'));
-const reach = (el: HTMLElement) => el.classList.contains('dt-list') ? 16 : 8;
+const reach = (el: HTMLElement) => el.classList.contains('dt-stage') ? 16 : 8;
 const leave = (els: HTMLElement[], dir: number) => els.map(el => el.animate([{ opacity: 0, transform: `translateX(${-dir * reach(el)}px)` }], { duration: 80, easing: 'ease-in', fill: 'forwards' }));
 const enter = (els: HTMLElement[], dir: number) => els.forEach(el => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: `translateX(${dir * reach(el)}px)` }, {}], { duration: reduced.matches ? 120 : 140, easing: EASE, fill: 'backwards' }));
 
-// What the rows and the stays' headers share: which one is open, what a click on one does, what an open one holds, which can be asked about and
-// which marked, the quiet line under a row, and the name being changed in a stay's header.
+// What the rows and the stays' headers share: what a click on one does, which can be asked about, which open to a detail page and which can be
+// marked, and the quiet line under a row.
 type Cx = {
-  opened: string | null; click: (e: MouseEvent, key: string) => void; body: (key: string) => ReactNode; tick: () => void;
+  click: (e: MouseEvent, key: string) => void; tick: () => void;
   asks: ReadonlySet<string>; opens: ReadonlySet<string>; ask: ((key: string) => void) | null;
   star: { can: ReadonlySet<string>; marks: ReadonlyMap<string, StarMark>; refused: Readonly<Record<string, number>>; press: (key: string) => void };
   line: { key: string; text: string; on: boolean };
-  rename: { key: string; draft: string; busy: boolean; set: (text: string) => void; save: () => void; field: (on: boolean) => void } | null;
 };
 // hot: what the pointer is on; pick: what the keys chose. Both are bracketed on the bar; the pointer's wins while it is on something.
 type Hover = { hot: string | null; onHot: (key: string | null) => void; pick: string | null; t: (l: L) => string; cx: Cx };
@@ -105,38 +107,27 @@ function Lit({ on, hers, className }: { on: boolean; hers: boolean; className: s
   const here = useFade(on);
   return here ? <Star size={10} weight={hers ? 'bold' : 'fill'} className={`${className}${hers ? ' is-hers' : ''}${on ? '' : ' is-gone'}`} aria-label="★"/> : null;
 }
-// What hangs under a row or a stay's header: its open body, or, while it is shut, the quiet line that has something to say about it (4 s); each opens
-// and closes in place, and what it was showing is what it shows while it closes.
-function Under({ keyed, open, cx }: { keyed: string; open: boolean; cx: Cx }) {
-  const lined = cx.line.on && cx.line.key === keyed && !open, shows = useRef<'body' | 'line'>('body');
-  if (open) shows.current = 'body'; else if (lined) shows.current = 'line';
-  return <Unfold open={open || lined} className={shows.current === 'line' ? 'dt-fold is-line' : 'dt-fold'} tick={cx.tick} onSettle={cx.tick}
-    render={() => shows.current === 'line' ? <p className="dt-hint" role="status">{cx.line.text}</p> : cx.body(keyed)}/>;
+// What hangs under a row or a stay's header: the quiet line that has something to say about it (4 s). It opens and closes in place; its words stay while it closes.
+function Under({ keyed, cx }: { keyed: string; cx: Cx }) {
+  return <Unfold open={cx.line.on && cx.line.key === keyed} className="dt-fold is-line" tick={cx.tick} onSettle={cx.tick} render={() => <p className="dt-hint" role="status">{cx.line.text}</p>}/>;
 }
 
 // A row: the time it began, its glyph (a lit star on it when it mattered), its words (an amber badge when it waits on him), and at the
-// right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail. A click opens it in place.
+// right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail. A click opens its detail page.
 // The pointer lights a row by moving on it, not by arriving: a list that scrolls under a resting pointer (the keys, the wheel) leaves what the keys chose alone.
 function RowView({ row, hot, onHot, pick, t, how, cx }: { row: Row; how: string } & Hover) {
-  const open = cx.opened === row.key, badge = useFade(row.wait), plain = !cx.opens.has(row.key), box = useRef<HTMLDivElement>(null), seg = row.seg, sub = !!row.detail || !!seg?.counts.length;
+  const badge = useFade(row.wait), plain = !cx.opens.has(row.key), box = useRef<HTMLDivElement>(null), seg = row.seg, sub = !!row.detail || !!seg?.counts.length;
   useLayoutEffect(() => { if (row.leaving && box.current) away(box.current); }, [row.leaving]);
-  return <div ref={box} className={`dt-row${sub ? ' has-detail' : ''}${seg ? ` is-seg${seg.unknown ? ' is-unknown' : ''}` : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}${row.leaving ? ' is-leaving' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={seg ? seg.lenses.join(' ') || undefined : row.lens ?? undefined} style={seg?.rgb ? { '--c': rgb(seg.rgb) } as CSSProperties : undefined}
-    aria-current={pick === row.key ? 'true' : undefined} aria-expanded={plain ? undefined : open} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)}>
+  return <div ref={box} className={`dt-row${sub ? ' has-detail' : ''}${seg ? ` is-seg${seg.unknown ? ' is-unknown' : ''}` : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${plain ? ' is-still' : ''}${row.leaving ? ' is-leaving' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={seg ? seg.lenses.join(' ') || undefined : row.lens ?? undefined} style={seg?.rgb ? { '--c': rgb(seg.rgb) } as CSSProperties : undefined}
+    aria-current={pick === row.key ? 'true' : undefined} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)}>
     <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
     <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}<Lit on={row.star} hers={row.hers} className="dt-badge"/></i>
     <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{badge && <i className={`dt-wait${row.wait ? '' : ' is-gone'}`}>{t(['Waiting', '等你'])}</i>}</span>
       {seg ? sub && <em className="dt-sub">{row.detail && <span>{row.detail}</span>}{seg.counts.map(c => <i key={c.icon} className="dt-cn"><Ic icon={c.icon} size={11}/>{c.n}</i>)}</em> : row.detail && <em>{row.detail}</em>}</span>
     <Quick keyed={row.key} cx={cx} t={t}/>
     <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
-    <Under keyed={row.key} open={open} cx={cx}/>
+    <Under keyed={row.key} cx={cx}/>
   </div>;
-}
-// The name of a kept place being changed, in the stay's own header: the cursor is in it with the name selected; Enter saves, Esc lets go.
-function RenameField({ draft, busy, set, save, field, t }: NonNullable<Cx['rename']> & { t: (l: L) => string }) {
-  const box = useRef<HTMLInputElement>(null);
-  useEffect(() => { box.current?.focus({ preventScroll: true }); box.current?.select(); }, []);
-  return <input ref={box} className="dt-rename" type="text" autoComplete="off" spellCheck={false} aria-label={t(['Rename', '改名字'])} value={draft} readOnly={busy}
-    onChange={e => set(e.target.value)} onFocus={() => field(true)} onBlur={() => field(false)} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); save(); } }}/>;
 }
 // The day's weather after its date: a glyph, a word, the high and the low. A condition this does not know is just the temperatures.
 function Forecast({ w }: { w: WeatherLook }) {
@@ -168,15 +159,15 @@ function Waits({ n, first, t }: { n: number; first: () => void; t: (l: L) => str
 const onWay = (b?: Block) => b?.type === 'row' && (b.row.connector || b.row.onWay);
 // A stay: its header (the place, how long, a star when it mattered) and what happened in it, hung on the stay's own rail.
 function StayView({ b, gap, hot, onHot, pick, t, cx }: { b: Extract<Block, { type: 'stay' }>; gap: string } & Hover) {
-  const open = cx.opened === b.key, plain = !cx.opens.has(b.key);
+  const plain = !cx.opens.has(b.key);
   return <section className={`dt-stay${gap}`} style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
-    <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}${pick === b.key ? ' is-pick' : ''}${open ? ' is-open' : ''}${plain ? ' is-still' : ''}`} data-key={b.key} aria-current={pick === b.key ? 'true' : undefined} aria-expanded={plain ? undefined : open}
+    <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}${pick === b.key ? ' is-pick' : ''}${plain ? ' is-still' : ''}`} data-key={b.key} aria-current={pick === b.key ? 'true' : undefined}
       onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, b.key)}>
       <span className="dt-at"/><i className="dt-dot"/>
-      <span className="dt-tx"><span className="dt-ttl">{cx.rename?.key === b.key ? <RenameField {...cx.rename} t={t}/> : <b>{b.head.name}</b>}<Lit on={b.head.star !== null} hers={b.head.hers} className="dt-star"/></span>{b.head.star && <em>{b.head.star}</em>}</span>
+      <span className="dt-tx"><span className="dt-ttl"><b>{b.head.name}</b><Lit on={b.head.star !== null} hers={b.head.hers} className="dt-star"/></span>{b.head.star && <em>{b.head.star}</em>}</span>
       <Quick keyed={b.key} cx={cx} t={t}/>
       <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
-      <Under keyed={b.key} open={open} cx={cx}/>
+      <Under keyed={b.key} cx={cx}/>
     </header>
     {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx} inside/></div>}
   </section>;
@@ -315,7 +306,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   const [slow, setSlow] = useState(false);
   useEffect(() => { setSlow(false); if (reply) return; const timer = setTimeout(() => setSlow(true), 6000); return () => clearTimeout(timer); }, [!!reply, date]);
 
-  const [hot, setHot] = useState<string | null>(null), [pick, setPick] = useState<string | null>(null), [opened, setOpened] = useState<string | null>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
+  const [hot, setHot] = useState<string | null>(null), [pick, setPick] = useState<string | null>(null), [opened, setOpened] = useState<string | null>(null), [parting, setParting] = useState<string | null>(null), stage = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
   uiRef.current = ui;
   // The range the list is cut to as it is drawn: it follows `ui.filter` once the list has faded out (the bar answers at once; the list and the chip that
   // says so change together), and the list comes in cut, or whole, as a day does. `wanted` is a row to go to when the whole day is back.
@@ -349,12 +340,12 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     fresh.filter(el => !fresh.some(o => o !== el && o.contains(el))).forEach(grow);
   }, [model]);
   // The list scrolls to `to` in `ms`, easing out (at once under reduced motion); a new one takes over from wherever the last had got to.
-  const glide = useRef(0), still = useRef<{ key: string; y: number; scroll: boolean; armed: boolean } | null>(null);
+  const glide = useRef(0);
   const slide = (to: number, ms: number) => {
     const l = list.current;
     if (!l) return;
     const from = l.scrollTop, end = Math.max(0, Math.min(l.scrollHeight - l.clientHeight, to)), began = performance.now();
-    cancelAnimationFrame(glide.current); still.current = null;
+    cancelAnimationFrame(glide.current);
     if (reduced.matches || Math.abs(end - from) < 1) { l.scrollTop = end; return; }
     const tick = (at: number) => { const k = Math.min(1, (at - began) / ms); l.scrollTop = from + (end - from) * (1 - (1 - k) ** 3); if (k < 1) glide.current = requestAnimationFrame(tick); };
     glide.current = requestAnimationFrame(tick);
@@ -370,52 +361,30 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     flashed.current = el; clearTimeout(flashEnd.current); flashEnd.current = window.setTimeout(() => { flashed.current = null; }, 600);
     slide(offsetIn(el, l) - 12, 300);
   };
-  // The row he presses stays where his hand is. Each frame while rows open and close (and once after), the list scrolls to put that row back where its
-  // top was, whatever changes above it; an open row (or one with a line under it) that would end under the list's foot, or under an input that
-  // comes up there, is brought up to 24 px clear of it (its top stays in view when it is taller than the list), together with its opening. Where
-  // the list has no scroll left to give at its foot (the last row opening or closing) it is given room below its last row, which stays only while it is in
-  // view (trim), and never more than a third of the list: so nothing moves under the pointer, and the foot is not flush. At its top there is no room to give
-  // (a blank band above the first row is worse than the rows moving): the rows move with the closing above the pressed row for the part that has no scroll.
+  // A quiet line that opens under a row (what did not go through) is brought up to 24 px clear of the list's foot. Where the list has no scroll left to give at
+  // its foot it is given room below its last row, which stays only while it is in view (trim), and never more than a third of the list.
   const follow = () => {
-    const l = list.current, hold = still.current;
-    if (!l) return;
-    const el = hold ? l.querySelector<HTMLElement>(`[data-key="${CSS.escape(hold.key)}"]`) : l.querySelector<HTMLElement>('[aria-expanded="true"]') ?? l.querySelector<HTMLElement>(':has(> .dt-fold.is-line)');
-    if (!el) { still.current = null; return; }
-    if (hold ? hold.scroll : l.scrollHeight > l.clientHeight) {
-      const view = l.getBoundingClientRect(), box = el.getBoundingClientRect(), top = box.top - view.top, y = hold?.y ?? top, margin = 24;
-      const shown = el.getAttribute('aria-expanded') === 'true' || !!el.querySelector(':scope > .dt-fold.is-line'), want = shown ? Math.min(y, Math.max(margin, view.height - margin - box.height)) : y;
-      if (Math.abs(top - want) >= .5) {
-        const to = l.scrollTop + top - want, max = l.scrollHeight - l.clientHeight, room = parseFloat(l.style.paddingBottom) || 0;
-        if (to > max) l.style.paddingBottom = `${Math.min(room + to - max, Math.max(room, view.height / 3))}px`;
-        l.scrollTop = Math.max(0, to);
-      }
-    }
-    if (hold?.armed && !l.getAnimations({ subtree: true }).some(a => a.playState === 'running' && (a.effect as KeyframeEffect | null)?.target?.classList.contains('dt-fold'))) { still.current = null; trim(); }
+    const l = list.current, el = l?.querySelector<HTMLElement>(':has(> .dt-fold.is-line)');
+    if (!l || !el || l.scrollHeight <= l.clientHeight) return;
+    const view = l.getBoundingClientRect(), box = el.getBoundingClientRect(), top = box.top - view.top, margin = 24, want = Math.min(top, Math.max(margin, view.height - margin - box.height));
+    if (Math.abs(top - want) < .5) return;
+    const to = l.scrollTop + top - want, max = l.scrollHeight - l.clientHeight, room = parseFloat(l.style.paddingBottom) || 0;
+    if (to > max) l.style.paddingBottom = `${Math.min(room + to - max, Math.max(room, view.height / 3))}px`;
+    l.scrollTop = Math.max(0, to);
   };
   const trim = () => {
     const l = list.current;
-    if (!l || still.current || !l.style.paddingBottom) return;
+    if (!l || !l.style.paddingBottom) return;
     const foot = Math.min(parseFloat(l.style.paddingBottom) || 0, l.scrollHeight - l.clientHeight - l.scrollTop);
     if (foot > 0) l.style.paddingBottom = `${(parseFloat(l.style.paddingBottom) || 0) - foot}px`;
   };
-  const release = () => { const l = list.current; if (l) { l.style.paddingBottom = ''; } still.current = null; };
-  // A row that is pressed to open or close (the click, the keys, Esc): where its top is in the list's view now. It is held there until the rows have stopped
-  // moving (the first frame after the change, which is all there is under reduced motion, arms the end of it).
-  const press = (key: string, then: () => void) => {
-    const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
-    if (l && el) {
-      cancelAnimationFrame(glide.current);
-      const hold = still.current = { key, y: el.getBoundingClientRect().top - l.getBoundingClientRect().top, scroll: l.scrollHeight > l.clientHeight, armed: false as boolean };
-      requestAnimationFrame(() => { follow(); hold.armed = true; follow(); });
-    }
-    then();
-  };
+  const release = () => { const l = list.current; if (l) l.style.paddingBottom = ''; };
   // The waiting pill takes the first row that waits on him to the top of the list (the whole day again when the list is cut).
   const waitFirst = (key: string) => { if (cut) { wanted.current = key; ui.setFilter(null); } else jump(key); };
   // A tap on the bar goes to its row; a row the cut has left out is not there to go to, so the whole day comes back first.
   const reveal = (key: string) => { if (cut && !list.current?.querySelector(`[data-key="${CSS.escape(key)}"]`)) { wanted.current = key; ui.setFilter(null); } else jump(key); };
   // What shows the rows (the list, or the line that says the cut has none) fades out, is swapped for the new cut, and comes in; a row asked for is gone to once it is there.
-  const rowsEl = () => root.current?.querySelector<HTMLElement>(':scope > .dt-list, :scope > .dt-say') ?? null;
+  const rowsEl = () => root.current?.querySelector<HTMLElement>(':scope > .dt-stage, :scope > .dt-say') ?? null;
   useEffect(() => {
     if (ui.filter === cut) return;
     const el = rowsEl();
@@ -444,11 +413,50 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   const marks = useMemo<ReadonlyMap<string, StarMark>>(() => new Map([...model?.stars ?? []].map(([k, m]) => [k, m.by === 'her' ? 'her' : 'him'])), [model]);
   // Which rows open to something (a part, or a button that works): a row never opens to nothing, and one that does not is drawn as it is.
   const opens = useMemo<ReadonlySet<string>>(() => new Set(model ? [...model.rows.keys(), ...model.heads.keys()].filter(k => { const o = openOf(model, k, t); return !!o && hasBody(o, !!ask && asks.has(k)); }) : []), [model, asks, !!ask]);
-  const toggle = (key: string) => { if (opened === key) press(key, () => setOpened(null)); else if (opens.has(key)) press(key, () => setOpened(key)); };
+  // A row opens to its detail page: the list slides away and the page comes in over it, and going back slides the list in again where it was. `parting` keeps the
+  // page there while it slides out; `drop` takes it away at once (another day, a cut list, a row the day no longer has).
+  const openRow = (key: string) => { setParting(null); setOpened(key); };
+  const closeRow = () => { if (opened) { setParting(opened); setOpened(null); } };
+  const drop = () => { setOpened(null); setParting(null); };
+  const toggle = (key: string) => { if (opened === key) closeRow(); else if (opens.has(key)) openRow(key); };
   const click = (e: MouseEvent, key: string) => {
     if ((e.target as Element).closest('.dt-fold, button, input, a')) return;
-    setPick(key); toggle(key);
+    setPick(key); if (opens.has(key)) openRow(key);
   };
+  // A click on the bar while a page is open: on another piece that opens, the page changes to its row; anywhere else outside the open one, it goes back.
+  const onPage = (piece: string | null) => {
+    if (piece === opened) return;
+    if (piece && opens.has(piece)) { setPick(piece); setOpened(piece); } else closeRow();
+  };
+  useEffect(() => {
+    if (!parting) return;
+    const timer = setTimeout(() => setParting(null), reduced.matches ? 120 : SLIDE + 20);
+    return () => clearTimeout(timer);
+  }, [parting]);
+  // The list and the page are two sides of one stage; the side not shown waits out of the flow, hidden, its scroll place kept (day-timeline.css). Between them they slide
+  // (240 ms, the pane's ease-out; under reduced motion a 120 ms cross-fade) and the stage's height goes to the new side's meanwhile, so nothing jumps. A press that comes
+  // mid-slide takes over from the place the slide had got to. A page that changes to another row fades in over 160 ms.
+  const side = useRef({ page: false, key: null as string | null, h: 0 });
+  useLayoutEffect(() => {
+    const s = stage.current, was = side.current, now = { page: !!opened, key: opened, h: was.h };
+    side.current = now;
+    if (!s) return;
+    const running = s.getAnimations().length > 0, quiet = reduced.matches, opt = { duration: quiet ? 120 : SLIDE, easing: quiet ? 'linear' : EASE };
+    if (was.page === now.page) {
+      if (!running) now.h = s.getBoundingClientRect().height;
+      if (now.page && was.key && opened && was.key !== opened) s.querySelector('.dt-pin')?.animate(quiet ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: 'translateY(4px)' }, {}], { duration: quiet ? 120 : 160, easing: EASE });
+      return;
+    }
+    const from = running ? s.getBoundingClientRect().height : was.h, ls = s.querySelector<HTMLElement>(':scope > .dt-list'), pg = s.querySelector<HTMLElement>(':scope > .dt-page');
+    const where = (el: HTMLElement | null, rest: string) => el?.getAnimations().length ? `${new DOMMatrixReadOnly(getComputedStyle(el).transform).m41}px` : rest;
+    const a = where(ls, now.page ? '0px' : '-100%'), b = where(pg, now.page ? '100%' : '0px');
+    for (const el of [s, ls, pg]) el?.getAnimations().forEach(x => x.cancel());
+    const to = now.h = s.getBoundingClientRect().height;
+    const go = (el: HTMLElement | null, x: string, y: string, fade: [number, number]) => el?.animate(quiet ? [{ opacity: fade[0], transform: 'none', visibility: 'visible' }, { opacity: fade[1], transform: 'none', visibility: 'visible' }]
+      : [{ transform: `translateX(${x})`, visibility: 'visible' }, { transform: `translateX(${y})`, visibility: 'visible' }], opt);
+    if (now.page) { go(ls, a, '-100%', [1, 0]); go(pg, b, '0px', [0, 1]); } else { go(ls, a, '0px', [0, 1]); go(pg, b, '100%', [1, 0]); }
+    if (!quiet && from > 0 && Math.abs(from - to) >= 1) s.animate([{ height: `${from}px` }, { height: `${to}px` }], opt);
+  });
   // After a change the day is read again at once (today's too when it is another day that is open, for the wing's line).
   const again = () => { route.reload(); if (route !== feed) feed.reload(); };
   // What each button is doing, by `what:key`: busy, failed, or (a turn handed over) sent.
@@ -476,6 +484,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     if (!mine && !out) { put('commit', key, 'failed'); return; }
     put('commit', key, '');
     if (mine) { setSure(s => new Set(s).add(key)); again(); return; }
+    if (opened === key) closeRow();
     setDropping(s => new Set(s).add(key));
     setTimeout(() => { setGone(s => new Set(s).add(key)); setPick(p => p === key ? null : p); again(); }, reduced.matches ? 120 : 240);
   };
@@ -597,18 +606,18 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   const [left, setLeft] = useState(false);
   const holding = !!viewer || (!!dock || !!rename || !!naming) && !left;
   useEffect(() => { hold?.(holding); return () => hold?.(false); }, [holding]);
-  // The open row, the field, the input and the picture are the day's: they go with it. The field, the input and the picture go with the pane
-  // too; the open row stays through a fold, for the pane that comes back as it was (one that comes back later is made afresh, with nothing open).
-  useEffect(() => { setPick(null); setHot(null); setOpened(null); }, [date, shown?.date, cut]);
+  // The open page, the field, the input and the picture are the day's: they go with it. The field, the input and the picture go with the pane
+  // too; the open page stays through a fold, for the pane that comes back as it was (one that comes back later is made afresh, with nothing open).
+  useEffect(() => { setPick(null); setHot(null); drop(); }, [date, shown?.date, cut]);
   useEffect(() => { if (dock?.say) { setDock(null); setDraft(''); } }, [date, shown?.date]);
-  useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) setOpened(null); }, [model]);
+  useEffect(() => { if (opened && model && !model.rows.has(opened) && !model.heads.has(opened)) drop(); }, [model]);
   useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
   useEffect(() => { if (naming && opened !== naming.key) setNaming(null); }, [opened]);
   useEffect(() => { if (!open) { release(); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); } }, [open]);
-  // The body of an open row: what dayOpen made of it, and the buttons that work for it, each with what it is doing.
-  const body = (key: string): ReactNode => {
-    const o = model && openOf(model, key, t);
-    if (!o) return null;
+  // The detail page of a row: its title and when, what dayOpen made of it, and the buttons that work for it, each with what it is doing.
+  const detail = (key: string): ReactNode => {
+    const o = model && openOf(model, key, t), head = model && headOf(model, key, t);
+    if (!o || !head) return null;
     const said = model && sayOf(model, key), sum = work[`sum:${key}`] as 'busy' | 'sent' | 'failed' | undefined, acking = o.ack ? work[`ack:${o.ack}`] : '', saying = work[`commit:${key}`];
     const acts: Acts = {
       port, t, records: readDay, picture: (id, text) => setViewer({ id, note: text }),
@@ -623,12 +632,13 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
       star: o.star ? <StarToggle mark={marks.get(key) ?? null} nth={refused[key] ?? 0} press={() => void star(key)} t={t}/> : null,
       line: line.on && line.key === key ? line.text : '',
     };
-    return <OpenBody open={o} acts={acts}/>;
+    const renaming = rename?.key === key ? { draft: rename.draft, busy: rename.state === 'busy', set: (text: string) => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: (on: boolean) => setLeft(!on) } : null;
+    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={closeRow}/>;
   };
-  const cx: Cx = { opened, click, body, tick: () => { follow(); edges(); }, asks, opens, ask: ask ? openAsk : null, line, star: { can: starrables, marks, refused, press: key => void star(key) },
-    rename: rename && { key: rename.key, draft: rename.draft, busy: rename.state === 'busy', set: text => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: on => setLeft(!on) } };
+  // A line under a row waits while a page is open: the page says it itself.
+  const cx: Cx = { click, tick: () => { follow(); edges(); }, asks, opens, ask: ask ? openAsk : null, line: opened ? { ...line, on: false } : line, star: { can: starrables, marks, refused, press: key => void star(key) } };
 
-  // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the open row, the bar's lens, its range and
+  // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the open page, the bar's lens, its range and
   // the list's cut to a range, and then the pane itself (the pane's own Esc listener was added after this one, so this one answers first). A folded
   // pane, which stays mounted, answers nothing.
   const back = useRef<() => boolean>(() => false);
@@ -638,7 +648,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
     else if (naming) setNaming(null);
-    else if (opened) press(opened, () => setOpened(null));
+    else if (opened) closeRow();
     else return uiRef.current.escape();
     return true;
   };
@@ -652,7 +662,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); setCut(null); }, [date, shown?.date]);
 
   // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
-  // before and after, which the bar brackets and the list keeps in view, Enter or Space opens the one chosen (or closes it), S marks it (or takes the mark off). With nothing
+  // before and after, which the bar brackets and the list keeps in view (with a page open they are the page's), Enter or Space opens the one chosen (or goes back), S marks it (or takes the mark off). With nothing
   // chosen they start from where he is looking: ↓ at the first row under the now line (else the top of the list), ↑ at the last row above it
   // (else the bottom).
   const go = (days: number) => { if (at && !(days > 0 && date === null)) step(days); };
@@ -672,14 +682,14 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     if (top < l.scrollTop + margin) slide(top - margin, 180);
     else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, 180);
   };
-  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables });
-  keys.current = { open, go, walk, pick, toggle, star, can: starrables };
+  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables, paged: !!opened });
+  keys.current = { open, go, walk, pick, toggle, star, can: starrables, paged: !!opened };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const k = keys.current, target = e.target as Element | null;
       if (!k.open || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target?.closest?.('input,textarea,select,[contenteditable]')) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') k.walk(e.key === 'ArrowDown' ? 1 : -1);
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { if (k.paged) return; k.walk(e.key === 'ArrowDown' ? 1 : -1); }
       else if ((e.key === 'Enter' || e.key === ' ') && k.pick && !target?.closest?.('button,a')) { if (!e.repeat) k.toggle(k.pick); }
       else if (e.key.toLowerCase() === 's' && k.pick && k.can.has(k.pick)) { if (!e.repeat) void k.star(k.pick); }
       else return;
@@ -709,8 +719,11 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} cut={cut} hot={hot ?? pick ?? opened} onHot={setHot} onJump={reveal} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
-        {rows.length > 0 ? <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => { cancelAnimationFrame(glide.current); still.current = null; }}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
+        <DayBar model={model} port={port} ui={ui} cut={cut} hot={hot ?? pick} open={opened} onHot={setHot} onJump={reveal} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
+        {rows.length > 0 ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}`}>
+          <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}><Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/></div>
+          {(opened ?? parting) && <div className="dt-page" data-page={opened ?? undefined}>{detail((opened ?? parting)!)}</div>}
+        </div>
           : cut && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
       {model.foot && <p className="dt-foot">{model.foot}</p>}
