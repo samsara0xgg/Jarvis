@@ -30,6 +30,9 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=%h/jarvis-brain
 Environment=JARVIS_RUNTIME_ROOT=%h/.jarvis
+# SQLite's spill files (a large ORDER BY's sort) go to RAM-backed /tmp, not the SD card's
+# /var/tmp: the card polls alone spilled ~65 MB a minute there.
+Environment=SQLITE_TMPDIR=/tmp
 ExecStart=%h/jarvis-brain/.venv/bin/python -m jarvis serve
 UMask=0077
 # always, not on-failure: the Settings page's restart and a chosen settings change (ADR 0227) end
