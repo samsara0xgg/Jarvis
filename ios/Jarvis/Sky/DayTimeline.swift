@@ -208,9 +208,10 @@ final class TimelineState {
         if (pending ?? day) != from { Haptic.selection() }
     }
 
-    /// A drag along the day: far enough and mostly sideways it is a day before (dragged right) or a day after (dragged left); a drag up and down is the list's own.
-    static func swipe(dx: Double, dy: Double) -> Int? {
-        guard abs(dx) > 60, abs(dx) > abs(dy) * 1.8 else { return nil }
+    /// A drag along the day: mostly sideways, and either 40 pt far or flung (it would have gone on past 150 pt: `predicted`, where it would come to rest) it is a day before (dragged right) or a
+    /// day after (dragged left); a drag up and down is the list's own.
+    static func swipe(dx: Double, dy: Double, predicted: Double = 0) -> Int? {
+        guard abs(dx) > abs(dy) * 1.8, abs(dx) > 40 || abs(predicted) > 150 else { return nil }
         return dx > 0 ? -1 : 1
     }
 
@@ -387,7 +388,7 @@ struct DayTimelineView: View {
             // a swipe along the page is a day before or after, whatever the page is (a list, a sentence, or nothing yet), so no day is a dead end; a drag up and down is the list's own
             .contentShape(Rectangle())
             .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
-                if tl.openRow == nil, let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height) { tl.swipe(d) }          // not over a row's page, whose edge swipe is the way back
+                if tl.openRow == nil, let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width) { tl.swipe(d) }          // not over a row's page, whose edge swipe is the way back
             })
             .mask(VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)

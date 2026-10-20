@@ -840,7 +840,10 @@ final class DayTimelineTests: XCTestCase {
     func testASwipeAlongTheDayIsADayBeforeOrAfterAndADragUpAndDownIsTheListsOwn() {
         XCTAssertEqual(TimelineState.swipe(dx: 80, dy: 10), -1, "dragged right: the day before")
         XCTAssertEqual(TimelineState.swipe(dx: -80, dy: -10), 1, "dragged left: the day after")
-        XCTAssertNil(TimelineState.swipe(dx: 59, dy: 0), "not far enough")
+        XCTAssertNil(TimelineState.swipe(dx: 39, dy: 0), "not far enough, and not flung")
+        XCTAssertEqual(TimelineState.swipe(dx: 41, dy: 0), -1, "40 pt is far enough")
+        XCTAssertEqual(TimelineState.swipe(dx: -30, dy: 0, predicted: -200), 1, "a short fling that would have gone on past 150 pt is a swipe")
+        XCTAssertNil(TimelineState.swipe(dx: 30, dy: 0, predicted: 100), "a slow one is not")
         XCTAssertNil(TimelineState.swipe(dx: 100, dy: 60), "not sideways enough")
         XCTAssertNil(TimelineState.swipe(dx: 10, dy: 200), "the list's own")
     }
