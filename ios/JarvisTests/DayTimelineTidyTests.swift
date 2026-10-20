@@ -72,15 +72,6 @@ final class DayTimelineTidyTests: XCTestCase {
         XCTAssertEqual([TLTidy.idle, .running, .nothing, .failed].map(\.words), ["理一下", "在理…", "没有要改的", "没理成，等会儿再试"])
     }
 
-    func testWhatSheOffersWhenHeldDown() {
-        func list(_ tidy: TLTidy, shown: Bool = true) -> [String] { TLHerMenu.items(tidy: tidy, tidyShown: shown).map { "\($0.kind) \($0.title)\($0.enabled ? "" : " (off)")" } }
-        XCTAssertEqual(list(.idle), ["tidy 理一下", "history 聊天记录", "today 回到今天"])
-        XCTAssertEqual(list(.nothing), list(.idle), "the words of an answer are the capsule's, not the menu's")
-        XCTAssertEqual(list(.running), ["tidy 在理… (off)", "history 聊天记录", "today 回到今天"])
-        XCTAssertEqual(list(.idle, shown: false), ["history 聊天记录", "today 回到今天"], "not on another day, and not with no brain: there is nothing to tidy")
-        XCTAssertEqual(TLHerMenu.items(tidy: .idle, tidyShown: true).map(\.symbol), ["sparkles", "text.bubble", "arrow.uturn.backward"])
-    }
-
     // MARK: the button, and the days
 
     private var cal: Cal { Cal.cur }

@@ -95,6 +95,13 @@ final class TimelineState {
     var tidied: UUID?                               // the brain wrote a new run: the serial of the reading of today the bar was drawn from, which it fades from once the next one is in
     @ObservationIgnored var tidyHold: Task<Void, Never>?
     @ObservationIgnored var tidyHolds = (nothing: 2.0, failed: 3.0)         // how long the button keeps what it says of an answer that changed nothing, and of one that failed
+    // her cards (Sky/DayTimelineArc.swift)
+    var arcMounted = false                          // the cards are on screen: from the moment she puts them out until they have gone back into her
+    var arcOpen = false                             // and out of her (false while they come out, and as they go back)
+    var arcHover: TLHerMenu.Kind?                   // the card a finger that is still down is over
+    var arcPicked: TLHerMenu.Kind?                  // the card chosen: it pulses before they go back
+    var arcHolding = false                          // the finger that held her down is still down
+    @ObservationIgnored var arcTask: Task<Void, Never>?
     var flash: String?                              // the row just scrolled to: it flashes
     var sunSaid = false                             // the weather in the header was just tapped: it says when the sun rose and set, in its place
     @ObservationIgnored var sunHide: Task<Void, Never>?
@@ -200,6 +207,7 @@ final class TimelineState {
     /// the composer away while it is open) and the sun's words.
     func letGo() {
         openRow = nil; renaming = nil; renameNote = nil; sunSaid = false
+        closeArc()
         follow(nil, in: nil)
     }
 

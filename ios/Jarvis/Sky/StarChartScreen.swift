@@ -72,6 +72,7 @@ struct StarChrome: View {
             composer
             AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
             TapbackOverlay(engine: engine, ui: ui).animation(.easeOut(duration: 0.15), value: ui.tapback != nil)
+            HerArc(engine: engine, ui: ui)          // her cards, over everything
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .onChange(of: focused) { _, f in
