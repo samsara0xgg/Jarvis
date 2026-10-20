@@ -479,7 +479,7 @@ private struct TLList: View {
     /// under a lens the rows of that kind stay as they are, a place's header goes to 0.6 so the day keeps its shape, the rest to 0.35
     private func dim(_ e: TLEntry) -> Double {
         guard let lens else { return 1 }
-        return e.lens == lens || e.kind == .now ? 1 : e.kind == .stay ? 0.6 : 0.35
+        return e.lens == lens || e.lenses.contains(lens) || e.kind == .now ? 1 : e.kind == .stay ? 0.6 : 0.35
     }
 
     /// one row open at a time, with a light tap of the phone as it opens and a spring of about 260 ms (a plain fade with Reduce Motion)

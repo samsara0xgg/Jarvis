@@ -8,6 +8,7 @@ private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let faint = SetColor.faint
 private let prose = Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.86)
+private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
 
 struct TLOpenView: View {
     let e: TLEntry
@@ -38,6 +39,7 @@ struct TLOpenView: View {
         case .work: work
         case .sleep: sleep
         case .code: code
+        case .segment: segment
         case .now, .pause: EmptyView()
         default: facts(e.more)
         }
@@ -61,6 +63,38 @@ struct TLOpenView: View {
                 PlaceMapCard(places: [AnswerPlace(name: e.title, lat: lat, lng: lng, address: p.text, placeId: nil)], height: 120, radius: 10, named: false, width: 296)
             }
             facts(e.more)
+        }
+    }
+
+    // MARK: a stretch of what he was doing
+
+    /// the model's line about it, what was inside it a line each in time order, and how she knows what he was doing and what she went by (two lines at most)
+    private var segment: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let n = e.note { Text(n).font(.system(size: 13.5)).foregroundStyle(prose).fixedSize(horizontal: false, vertical: true) }
+            if !e.lines.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(e.lines) { insideLine($0) }
+                }
+            }
+            if let k = e.knows { Text(k).font(.system(size: 12)).foregroundStyle(muted).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
+        }
+    }
+
+    /// one thing inside a stretch: its icon, the words its own row has, and at the right how long of it was inside, what it came to, or the time; a picture has its thumbnail under it
+    private func insideLine(_ l: TLLine) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: l.symbol).font(.system(size: 12)).foregroundStyle(iconColor).frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(l.title).font(.system(size: 13.5)).foregroundStyle(ink).lineLimit(1)
+                    if let d = l.detail { Text(d).font(.system(size: 11.5)).foregroundStyle(muted).lineLimit(1) }
+                }
+                Spacer(minLength: 6)
+                Text(l.right).font(AT.mono(11.5)).foregroundStyle(l.strong ? ink : muted).lineLimit(1).fixedSize()
+            }
+            .frame(minHeight: 36)
+            if let a = l.attachment { TLPicture(attachment: a, tall: 150).padding(.bottom, 4) }
         }
     }
 
@@ -280,6 +314,7 @@ struct TLOpenView: View {
 /// A picture he sent: the picture as the talk shows it (up to 240 high; a tap opens it full screen). One the brain has swept is a plain line.
 struct TLPicture: View {
     let attachment: String
+    var tall = 240.0                // the picture opened is up to 240 high, one among a stretch's lines less
     @State private var swept = false
 
     var body: some View {
@@ -287,7 +322,7 @@ struct TLPicture: View {
             if swept {
                 Text("图片已过期").font(.system(size: 13)).foregroundStyle(muted)
             } else {
-                PictureCell(item: SentItem(id: attachment, attachment: attachment, isImage: true, title: ""), size: nil, tall: 240) {
+                PictureCell(item: SentItem(id: attachment, attachment: attachment, isImage: true, title: ""), size: nil, tall: tall) {
                     PictureViewer.present([ViewerPicture(id: attachment, gone: false, small: PictureStore.shared.peek(id: attachment, maxPixel: 0))], index: 0)
                 }
             }
