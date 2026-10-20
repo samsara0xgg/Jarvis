@@ -119,15 +119,28 @@ final class TimelineState {
         #endif
         return BrainLink.shared.days[Cal.cur.iso(day)]
     }
-    /// the day on show as the list has it
-    func model(_ r: DayReply) -> DayTimelineModel {
-        let now = Date()
-        return DayTimelineModel.build(r, now: nowMinute(in: r), topic: { TalkTopics.shared.topic($0) }, acked: Set(acked.filter { $0.value > now }.keys),
-                                      renamed: renamed.compactMapValues { $0.until > now ? $0.name : nil },
-                                      done: TLDone(highlights: highlights[r.date].flatMap { $0.until > now ? $0.value : nil },
-                                                   confirmed: Set(confirmed.filter { $0.value > now }.keys), dropped: Set(dropped.filter { $0.value > now }.keys),
-                                                   named: named.compactMapValues { $0.until > now ? $0.value : nil }))
+    /// everything a day is made of on the screen: the reading of it, the minute, what was said of talks, and what he has just done to it that holds
+    private struct BuiltKey: Equatable {
+        var reply: UUID, minute: Double?, version: Int, topics: Int
+        var acked: Set<String>, renamed: [String: String], done: TLDone
     }
+    @ObservationIgnored private var kept: (key: BuiltKey, built: TLBuilt)?
+
+    /// The day on show as the screen has it. It is made again only when something it is made of has changed (`BuiltKey`), not on every run of the screen's body, which a keyboard rising, a
+    /// pull of the history and a ticking minute all ask for.
+    func built(_ r: DayReply) -> TLBuilt {
+        let now = Date(), minute = nowMinute(in: r)
+        let acked = Set(acked.filter { $0.value > now }.keys), renamed = renamed.compactMapValues { $0.until > now ? $0.name : nil }
+        let done = TLDone(highlights: highlights[r.date].flatMap { $0.until > now ? $0.value : nil },
+                          confirmed: Set(confirmed.filter { $0.value > now }.keys), dropped: Set(dropped.filter { $0.value > now }.keys),
+                          named: named.compactMapValues { $0.until > now ? $0.value : nil })
+        let key = BuiltKey(reply: r.serial, minute: minute.map { $0.rounded(.down) }, version: version, topics: TalkTopics.shared.version, acked: acked, renamed: renamed, done: done)
+        if let k = kept, k.key == key { return k.built }
+        let b = TLBuilt(DayTimelineModel.build(r, now: minute, topic: { TalkTopics.shared.topic($0) }, acked: acked, renamed: renamed, done: done))
+        kept = (key, b)
+        return b
+    }
+    func model(_ r: DayReply) -> DayTimelineModel { built(r).model }
 
     func scroll(to y: Double, animated: Bool, glide: Bool = false) { request = ScrollRequest(y: y, animated: animated, glide: glide, n: request.n + 1) }
 
@@ -248,10 +261,25 @@ final class TimelineState {
     }
 }
 
+/// A day as the screen draws it: its model, and the bar's two drawings of it (from what he was doing, and from where he was) with their scenes, which the body of the screen asks for on every run
+struct TLBuilt {
+    let model: DayTimelineModel
+    private let place: DayTimelineModel
+    private let scenes: [TLBarScene]            // from what he was doing, and from where he was
+
+    init(_ m: DayTimelineModel) {
+        model = m; place = m.byPlace
+        scenes = [m.scene, m.hasPlaces ? place.scene : m.scene]
+    }
+    /// what the bar, its readout and its bracket read; the list is the model's own
+    func bar(places: Bool) -> DayTimelineModel { places ? place : model }
+    func scene(places: Bool) -> TLBarScene { scenes[places ? 1 : 0] }
+}
+
 // MARK: - the screen
 
 private enum Shown {
-    case loading, sentence(String), model(DayTimelineModel)
+    case loading, sentence(String), model(TLBuilt)
     /// which of the three, for what animates when it changes
     var kind: Int { switch self { case .loading: 0; case .sentence: 1; case .model: 2 } }
 }
@@ -272,22 +300,22 @@ struct DayTimelineView: View {
         _ = tl.version
         return TimelineView(.everyMinute) { context in
             let shown = shownNow()
-            let model: DayTimelineModel? = { if case .model(let m) = shown { return m } else { return nil } }()
-            let bar = model.map { byPlace ? $0.byPlace : $0 }          // the day as the bar draws it
+            let built: TLBuilt? = { if case .model(let b) = shown { return b } else { return nil } }()
+            let model = built?.model, bar = built?.bar(places: byPlace)          // the day as the list has it, and as the bar draws it
             ZStack(alignment: .topLeading) {
                 scrim(away: away)
                 ZStack(alignment: .topLeading) {
-                    TLTopView(ui: ui, model: model, bar: bar, scene: bar?.scene ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
+                    TLTopView(ui: ui, model: model, bar: bar, scene: built?.scene(places: byPlace) ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
                     TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
                 }
                 .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
                 .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
-                handle
+                TLHandle(engine: engine, ui: ui, pull: $pull)
                 TLWaitPill(count: away ? 0 : model?.waiting.count ?? 0) { if let model { tl.revealWaiting(in: model) } }
                     .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.pillsY + 2)
-                pill(show: tl.day == tl.today && !nowInView && !away)
+                TLNowPill(tl: tl, nowInView: $nowInView, away: away)
             }
             .frame(width: W, height: H, alignment: .topLeading)
             .onChange(of: context.date) { _, _ in tl.rollOver() }          // the day may have turned
@@ -309,14 +337,14 @@ struct DayTimelineView: View {
         if tl.fixture != nil {
             if tl.fixture?.loading == true { return .loading }
             guard let r = tl.reply else { return .sentence("这一天没有记下什么。") }
-            return .model(tl.model(r))
+            return .model(tl.built(r))
         }
         #endif
         let link = BrainLink.shared
         guard link.hasToken else { return .sentence("还没连上大脑，连上以后这里会排出你的一天。") }
         guard let r = tl.reply else { return link.errorMessage.map { .sentence($0) } ?? .loading }
-        let m = tl.model(r)
-        return m.isEmpty ? .sentence("这一天没有记下什么。") : .model(m)
+        let b = tl.built(r)
+        return b.model.isEmpty ? .sentence("这一天没有记下什么。") : .model(b)
     }
     private func isReady(_ s: Shown) -> Bool { if case .loading = s { return false }; return true }
     /// the day is there with a bar to grow: a sentence in its place (no brain yet, nothing recorded) has none, and the day that comes after it grows in as the first one does
@@ -339,33 +367,7 @@ struct DayTimelineView: View {
             .allowsHitTesting(false)
     }
 
-    // MARK: the history's handle and the way back
-
-    /// The way into the history, which opens from the bottom: a chevron over the composer, where there is room (not while he types, the panel is open, the voice's line is up or a place is being named).
-    /// A tap opens the panel, and so does a pull up; it rises with the composer.
-    private var handle: some View {
-        let hide = ui.typing || ui.panelOpen || ui.voiceNote != nil || tl.renaming != nil
-        return Image(systemName: "chevron.compact.up").font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.4))
-            .frame(width: 120, height: TLLayout.handleH)
-            .contentShape(Rectangle())
-            .gesture(panelDrag(engine, $pull, opens: true, tap: true))
-            .opacity(hide ? 0 : 1)
-            .allowsHitTesting(!hide)
-            .animation(.easeOut(duration: 0.3), value: hide)
-            .offset(x: (W - 120) / 2, y: H - StarUI.restGap - 48 - TLLayout.handleH - ui.attach.rise - ui.kbLift)
-            .accessibilityLabel("展开对话")
-    }
-
-    /// 回到现在, in the look of the one under the dial, on the row of the pills at the right: on today, when the line for now is out of view (another day has its way back in the header)
-    private func pill(show: Bool) -> some View {
-        Button { tl.goToday() } label: { TLBackLabel(text: "回到现在") }
-        .buttonStyle(PressScale())
-        .frame(width: W - 60, alignment: .trailing)
-        .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)
-        .animation(.easeOut(duration: 0.25), value: show)
-        .offset(x: 30, y: TLLayout.pillsY + 2)
-    }
+    // MARK: the history's handle and the way back (each its own view: they follow the keyboard, the voice's line and the scroll, which are not the day's)
 
     /// a rename he can take back, for a few seconds, over the foot of the list
     private func undoToast(away: Bool) -> some View {
@@ -396,14 +398,7 @@ struct DayTimelineView: View {
             })
         }
         .frame(width: W, height: TLLayout.viewport + TLLayout.fade, alignment: .top)
-        // the foot fades out over the composer, and goes up with it when the keyboard (or what he is sending) raises it: no row shows through the field
-        .mask(alignment: .top) {
-            VStack(spacing: 0) {
-                Color.black.frame(height: max(0, TLLayout.viewport - ui.kbLift - ui.attach.rise))
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
-                Color.clear
-            }
-        }
+        .modifier(FootFade(ui: ui))
         // the history takes the place of the list when it opens: it goes up and out, and comes back when the history has gone
         .opacity(away ? 0 : 1).offset(y: away && !reduce ? -6 : 0)
         .allowsHitTesting(!away)
@@ -423,8 +418,8 @@ struct DayTimelineView: View {
                     .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .transition(arrival)
-            case .model(let m):
-                TLPager(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView)
+            case .model(let b):
+                TLPager(model: b.model, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: b.model), nowInView: $nowInView)
                     .transition(arrival)
             }
         }
@@ -456,6 +451,62 @@ struct DayTimelineView: View {
             .overlay(alignment: .bottom) { Rectangle().fill(hair).frame(height: 0.5) }
             .padding(.bottom, 4)
         }
+    }
+}
+
+/// The foot of the list fades out over the composer, and goes up with it when the keyboard (or what he is sending) raises it: no row shows through the field. A modifier of its own, so
+/// that the keyboard rising draws this and not the whole screen.
+private struct FootFade: ViewModifier {
+    let ui: StarUI
+
+    func body(content: Content) -> some View {
+        content.mask(alignment: .top) {
+            VStack(spacing: 0) {
+                Color.black.frame(height: max(0, TLLayout.viewport - ui.kbLift - ui.attach.rise))
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
+                Color.clear
+            }
+        }
+    }
+}
+
+/// The way into the history, which opens from the bottom: a chevron over the composer, where there is room (not while he types, the panel is open, the voice's line is up or a place is being named).
+/// A tap opens the panel, and so does a pull up; it rises with the composer.
+private struct TLHandle: View {
+    let engine: StarEngine
+    let ui: StarUI
+    @Binding var pull: Double?
+
+    var body: some View {
+        let hide = ui.typing || ui.panelOpen || ui.voiceNote != nil || ui.tl.renaming != nil
+        Image(systemName: "chevron.compact.up").font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.4))
+            .frame(width: 120, height: TLLayout.handleH)
+            .contentShape(Rectangle())
+            .gesture(panelDrag(engine, $pull, opens: true, tap: true))
+            .opacity(hide ? 0 : 1)
+            .allowsHitTesting(!hide)
+            .animation(.easeOut(duration: 0.3), value: hide)
+            .offset(x: (W - 120) / 2, y: H - StarUI.restGap - 48 - TLLayout.handleH - ui.attach.rise - ui.kbLift)
+            .accessibilityLabel("展开对话")
+    }
+}
+
+/// 回到现在, in the look of the one under the dial, on the row of the pills at the right: on today, when the line for now is out of view (another day has its way back in the header)
+private struct TLNowPill: View {
+    let tl: TimelineState
+    @Binding var nowInView: Bool
+    let away: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    var body: some View {
+        let show = tl.day == tl.today && !nowInView && !away
+        Button { tl.goToday() } label: { TLBackLabel(text: "回到现在") }
+        .buttonStyle(PressScale())
+        .frame(width: W - 60, alignment: .trailing)
+        .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)
+        .animation(.easeOut(duration: 0.25), value: show)
+        .offset(x: 30, y: TLLayout.pillsY + 2)
     }
 }
 

@@ -47,6 +47,8 @@ enum BrainError: Error, Equatable {
 }
 
 struct DayReply: Decodable {
+    /// which reading of the day this is, so that what is made of it can be kept for as long as it is the one on show (each decoding is a new one)
+    let serial = UUID()
     let date: String
     let tz: String
     let start_ms: Int64
