@@ -20,6 +20,8 @@ struct TLDetailPage: View {
     let tl: TimelineState
     let engine: StarEngine
     let back: () -> Void
+    var step: (Int) -> Void = { _ in }          // to the row before (-1) or after (+1) it in the list
+    var steps: (up: Bool, down: Bool) = (false, false)          // whether there is one
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,9 +34,14 @@ struct TLDetailPage: View {
                 .accessibilityLabel("返回")
                 Text(e.title).font(.system(size: 17, weight: .semibold)).foregroundStyle(e.unknown ? muted : ink)
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true).padding(.top, 10)
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                // the row before and the row after, as Mail goes from message to message
+                HStack(spacing: 0) {
+                    stepButton("chevron.up", "上一段", on: steps.up) { step(-1) }
+                    stepButton("chevron.down", "下一段", on: steps.down) { step(1) }
+                }
             }
-            .padding(.leading, 16).padding(.trailing, 30)
+            .padding(.leading, 16).padding(.trailing, 18)
             Text(e.pageLine).font(.system(size: 12.5)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 30).padding(.top, 2)
             ScrollView(showsIndicators: false) {
@@ -47,5 +54,15 @@ struct TLDetailPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityAction(.escape, back)
+    }
+
+    private func stepButton(_ symbol: String, _ label: String, on: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(on ? ink : muted.opacity(0.4))
+                .frame(width: 40, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .disabled(!on)
+        .accessibilityLabel(label)
     }
 }

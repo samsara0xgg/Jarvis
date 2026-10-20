@@ -444,6 +444,7 @@ private struct TLPager: View {
     @State private var drag = 0.0               // how far a swipe back has the page to the right
     @State private var releasing = false        // a swipe let go and its page is on its way, out or back in
     @GestureState private var sideways: Bool?   // what a drag on the page is, decided once as it starts: the way back (true), or the page's own scroll (false); none between drags
+    @State private var turn: Edge?              // the edge the page of a step comes in from: below for the next row, above for the one before (none: a turn from the bar, a cross-fade)
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
@@ -455,7 +456,11 @@ private struct TLPager: View {
                 .opacity(TLMotion.listShows(back))
                 .allowsHitTesting(page == nil).accessibilityHidden(page != nil)
             if let page {
-                ZStack { TLDetailPage(e: page, tl: tl, engine: engine, back: goBack).id(page.id).transition(.opacity) }          // a turn to another row is a cross-fade in the same place
+                ZStack {          // a step to the row before or after pushes the page up or down; a turn from the bar is a cross-fade in the same place
+                    TLDetailPage(e: page, tl: tl, engine: engine, back: goBack, step: { step($0, from: page) }, steps: steps(from: page))
+                        .id(page.id).transition(turn.map { reduce ? .opacity : .push(from: $0) } ?? .opacity)
+                }
+                .clipped()
                     .offset(x: drag)
                     .opacity(TLMotion.pageShows(back))
                     .transition(reduce ? .opacity : .move(edge: .trailing))
@@ -472,6 +477,21 @@ private struct TLPager: View {
     }
 
     private func goBack() { tl.openRow = nil }
+
+    /// the rows that open, in the list's order: what a step goes through
+    private var opening: [TLEntry] { model.entries.filter(\.opens) }
+
+    private func steps(from e: TLEntry) -> (up: Bool, down: Bool) {
+        guard let i = opening.firstIndex(where: { $0.id == e.id }) else { return (false, false) }
+        return (i > 0, i < opening.count - 1)
+    }
+
+    private func step(_ d: Int, from e: TLEntry) {
+        let rows = opening
+        guard let i = rows.firstIndex(where: { $0.id == e.id }), rows.indices.contains(i + d) else { return }
+        Haptic.selection()
+        withAnimation(TLMotion.detail(reduce: reduce)) { turn = d > 0 ? .bottom : .top; tl.openRow = rows[i + d].id } completion: { turn = nil }
+    }
 
     private var swipeBack: some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .named("design"))
