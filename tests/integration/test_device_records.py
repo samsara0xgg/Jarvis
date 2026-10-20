@@ -10,6 +10,10 @@ Acceptance checks, on synthetic data and no network:
   uuid stay apart, a send again adds nothing), caps the long text, moves its cursors only after the
   brain kept the batch, reads everything the first time and when a device or stream is new, and
   hands the apps' names to the ``device-apps`` source;
+- ADR 0309: the helper reads the Mac's own Photos, Messages and Safari databases (fixtures, by
+  column name, the words decoded from a typedstream), and the step ships a row per photo, message
+  and visit under its own id, so a change is a newer revision of the same row, with its own
+  window and a whole read once a day;
 - the day line folds the rows into ``media``, ``earbuds``, ``messages`` and ``phone_call``, and says
   ``device_records`` is missing only when a shipped store holds no such row.
 """
@@ -18,7 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import plistlib
 import shutil
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -239,7 +245,16 @@ def test_the_helper_reads_each_stream_into_named_fields(tmp_path: Path) -> None:
     binary = ensure_screen_time_app() / "Contents" / "MacOS" / "jarvis-screen-time"
     out = tmp_path / "out.json"
     subprocess.run(  # noqa: S603 - the repo's own helper on a fixture folder
-        [str(binary), str(out), "--root", str(root), "--streams", records.STREAMS],
+        [
+            str(binary),
+            str(out),
+            "--root",
+            str(root),
+            "--home",
+            str(tmp_path),
+            "--streams",
+            records.STREAMS,
+        ],
         check=True,
         capture_output=True,
         timeout=60,
@@ -329,6 +344,8 @@ def test_the_helper_reads_each_stream_into_named_fields(tmp_path: Path) -> None:
             str(out),
             "--root",
             str(root),
+            "--home",
+            str(tmp_path),
             "--streams",
             records.STREAMS,
             "--since-ms",
@@ -458,18 +475,35 @@ class Mac:
             "now_playing": [],
             "bluetooth": [],
             "interactions": [],
+            "photos": [],
+            "messages": [],
+            "safari": [],
         }
         self.reads: list[tuple[int | None, str | None]] = []
+        self.local_reads: list[int | None] = []
+        self.unavailable: dict[str, str] = {}
         self.store: dict[str, tuple[str | None, str | None] | None] = {}
 
-    def read(self, since_ms: int | None, streams: str | None) -> dict[str, Any]:
-        """The helper's answer: the records at or after ``since_ms``."""
+    def read(
+        self, since_ms: int | None, streams: str | None, local_since_ms: int | None
+    ) -> dict[str, Any]:
+        """The records at or after ``since_ms``; of the Mac's databases, those touched later."""
         self.reads.append((since_ms, streams))
+        self.local_reads.append(local_since_ms)
+
+        def _after(at: int, name: str) -> bool:
+            floor = local_since_ms if name in records.LOCAL_STREAMS else since_ms
+            return floor is None or at >= floor
+
         kept = {
-            name: [r for r in rows if since_ms is None or r["at_ms"] >= since_ms]
+            name: [
+                r
+                for r in rows
+                if _after(r["seen_ms"] if name in records.LOCAL_STREAMS else r["at_ms"], name)
+            ]
             for name, rows in self.streams.items()
         }
-        return {"devices": DEVICES, "events": [], "streams": kept}
+        return {"devices": DEVICES, "events": [], "streams": kept, "unavailable": self.unavailable}
 
     def pass_(self, now_ms: int) -> None:
         """One pass of the step at ``now_ms``."""
@@ -747,7 +781,7 @@ def test_a_helper_with_no_access_logs_once_and_does_nothing(
 ) -> None:
     """A helper with no access logs once and ships nothing."""
 
-    def refused(_since: int | None, _streams: str | None) -> dict[str, Any]:
+    def refused(_since: int | None, _streams: str | None, _local: int | None) -> dict[str, Any]:
         msg = "no_access: grant Full Disk Access to the test helper"
         raise ScreenTimeUnavailable(msg)
 
@@ -971,3 +1005,509 @@ def test_the_phone_may_have_the_new_kinds_open() -> None:
     """The new item kinds are kinds the phone can have open."""
     for kind in KINDS:
         assert clean_about({"kind": kind, "id": "x"})["kind"] == kind
+
+
+# --- ADR 0309: this Mac's own databases (Photos, Messages, Safari) --------------------------------
+
+
+def _typedstream(text: str) -> bytes:
+    """An NSAttributedString typedstream as Messages archives it: the words after ``NSString``."""
+    raw = text.encode()
+    length = bytes([len(raw)]) if len(raw) < 0x80 else b"\x81" + struct.pack("<H", len(raw))
+    return (
+        b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString\x00\x84\x84"
+        b"\x08NSObject\x00\x85\x92\x84\x84\x84\x08NSString\x01\x94\x84\x01+"
+        + length
+        + raw
+        + b"\x86\x84\x02iI\x01"
+    )
+
+
+def _place(address: str, city: str) -> bytes:
+    """A Photos reverse-geocoded location: a keyed archive of a postal address."""
+    return plistlib.dumps(
+        {
+            "$archiver": "NSKeyedArchiver",
+            "$top": {"root": plistlib.UID(1)},
+            "$objects": [
+                "$null",
+                {
+                    "addressString": plistlib.UID(2),
+                    "postalAddress": plistlib.UID(3),
+                    "countryCode": plistlib.UID(4),
+                    "isHome": False,
+                },
+                address,
+                {"_city": plistlib.UID(5), "_street": plistlib.UID(0)},  # no street: "$null"
+                "CA",
+                city,
+            ],
+        },
+        fmt=plistlib.FMT_BINARY,
+    )
+
+
+def _photos(home: Path, cf: float) -> None:
+    """A Photos library with a live photo, a screenshot and a trashed burst clip."""
+    folder = home / "Pictures" / "Photos Library.photoslibrary" / "database"
+    folder.mkdir(parents=True)
+    with closing(sqlite3.connect(folder / "Photos.sqlite")) as db:
+        db.executescript(
+            """
+            CREATE TABLE ZASSET (Z_PK INTEGER PRIMARY KEY, ZUUID VARCHAR, ZKIND INTEGER,
+                ZKINDSUBTYPE INTEGER, ZDATECREATED REAL, ZADDEDDATE REAL, ZMODIFICATIONDATE REAL,
+                ZLATITUDE REAL, ZLONGITUDE REAL, ZWIDTH INTEGER, ZHEIGHT INTEGER, ZFAVORITE INTEGER,
+                ZTRASHEDSTATE INTEGER, ZPLAYBACKSTYLE INTEGER, ZAVALANCHEKIND INTEGER,
+                ZISDETECTEDSCREENSHOT INTEGER, ZMOMENT INTEGER, ZFILENAME VARCHAR);
+            CREATE TABLE ZADDITIONALASSETATTRIBUTES (ZASSET INTEGER, ZORIGINALFILENAME VARCHAR,
+                ZTIMEZONENAME VARCHAR, ZREVERSELOCATIONDATA BLOB);
+            CREATE TABLE ZEXTENDEDATTRIBUTES (ZASSET INTEGER, ZCAMERAMAKE VARCHAR, ZISO INTEGER);
+            CREATE TABLE ZMOMENT (Z_PK INTEGER PRIMARY KEY, ZTITLE VARCHAR);
+            INSERT INTO ZMOMENT VALUES (1, 'Lake day');
+            INSERT INTO ZEXTENDEDATTRIBUTES VALUES (1, 'Apple', 64);
+            INSERT INTO ZADDITIONALASSETATTRIBUTES VALUES (2, 'Screenshot.png', NULL, NULL);
+            """
+        )
+        place = _place("1 Main St", "Town")
+        db.execute(
+            "INSERT INTO ZADDITIONALASSETATTRIBUTES"
+            " VALUES (1, 'IMG_0001.HEIC', 'America/Vancouver', ?)",
+            (place,),
+        )
+        db.executemany(
+            "INSERT INTO ZASSET VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    1,
+                    "UUID-LIVE",
+                    0,
+                    2,
+                    cf,
+                    cf + 5,
+                    None,
+                    49.5,
+                    -123.1,
+                    4032,
+                    3024,
+                    1,
+                    0,
+                    3,
+                    0,
+                    0,
+                    1,
+                    "a.heic",
+                ),
+                (
+                    2,
+                    "UUID-SHOT",
+                    0,
+                    0,
+                    cf + 60,
+                    cf + 61,
+                    cf + 99,
+                    -180.0,
+                    -180.0,
+                    1170,
+                    2532,
+                    0,
+                    0,
+                    1,
+                    0,
+                    1,
+                    None,
+                    "b.png",
+                ),
+                (
+                    3,
+                    "UUID-CLIP",
+                    1,
+                    0,
+                    cf + 120,
+                    cf + 121,
+                    None,
+                    0.0,
+                    0.0,
+                    1920,
+                    1080,
+                    0,
+                    1,
+                    4,
+                    1,
+                    0,
+                    None,
+                    "c.mov",
+                ),
+            ],
+        )
+        db.commit()
+
+
+def _chats(home: Path, cf: float) -> None:
+    """A Messages database: words in `text`, words only in `attributedBody`, none, and a tapback."""
+    folder = home / "Library" / "Messages"
+    folder.mkdir(parents=True)
+    ns = 1_000_000_000
+    with closing(sqlite3.connect(folder / "chat.db")) as db:
+        db.executescript(
+            """
+            CREATE TABLE message (ROWID INTEGER PRIMARY KEY, guid TEXT, text TEXT,
+                attributedBody BLOB, service TEXT, date INTEGER, date_read INTEGER,
+                date_delivered INTEGER,
+                is_from_me INTEGER, handle_id INTEGER, associated_message_guid TEXT,
+                associated_message_type INTEGER, reply_to_guid TEXT);
+            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+            CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, guid TEXT, chat_identifier TEXT,
+                display_name TEXT, style INTEGER, service_name TEXT);
+            CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+            CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+            CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, guid TEXT, filename TEXT,
+                mime_type TEXT, uti TEXT, transfer_name TEXT, total_bytes INTEGER,
+                is_sticker INTEGER, is_outgoing INTEGER, transfer_state INTEGER);
+            CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+            INSERT INTO handle VALUES (1, '+15550100'), (2, 'sam@example.com');
+            INSERT INTO chat VALUES (1, 'chat-guid', 'chat-id', 'Study group', 43, 'iMessage');
+            INSERT INTO chat_message_join VALUES (1, 1), (1, 2), (1, 3);
+            INSERT INTO chat_handle_join VALUES (1, 2), (1, 1);
+            INSERT INTO attachment VALUES
+                (1, 'A1', '~/pic.jpg', 'image/jpeg', 'public.jpeg', 'pic.jpg', 2048, 0, 1, 5);
+            INSERT INTO message_attachment_join VALUES (1, 1);
+            """
+        )
+        wide = "词" * 100  # 300 bytes: a length that needs the two-byte form
+        db.executemany(
+            "INSERT INTO message VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    1,
+                    "G-PLAIN",
+                    "hello",
+                    None,
+                    "iMessage",
+                    cf * ns,
+                    (cf + 30) * ns,
+                    None,
+                    1,
+                    1,
+                    None,
+                    0,
+                    None,
+                ),
+                (
+                    2,
+                    "G-BODY",
+                    None,
+                    _typedstream("from the body"),
+                    "SMS",
+                    (cf + 60) * ns,
+                    0,
+                    (cf + 61) * ns,
+                    0,
+                    1,
+                    None,
+                    0,
+                    "G-PLAIN",
+                ),
+                (
+                    3,
+                    "G-WIDE",
+                    None,
+                    _typedstream(wide),
+                    "iMessage",
+                    (cf + 90) * ns,
+                    0,
+                    None,
+                    0,
+                    1,
+                    None,
+                    0,
+                    None,
+                ),
+                (
+                    4,
+                    "G-NONE",
+                    None,
+                    None,
+                    "iMessage",
+                    (cf + 120) * ns,
+                    0,
+                    None,
+                    0,
+                    1,
+                    "p:0/G-PLAIN",
+                    2001,
+                    None,
+                ),  # in no chat
+            ],
+        )
+        db.commit()
+
+
+def _safari(home: Path, cf: float) -> None:
+    """A Safari history with two visits at one moment to one address."""
+    folder = home / "Library" / "Safari"
+    folder.mkdir(parents=True)
+    with closing(sqlite3.connect(folder / "History.db")) as db:
+        db.executescript(
+            """
+            CREATE TABLE history_items (id INTEGER PRIMARY KEY, url TEXT);
+            CREATE TABLE history_visits (id INTEGER PRIMARY KEY, history_item INTEGER,
+                visit_time REAL, title TEXT, load_successful INTEGER, origin INTEGER,
+                redirect_source INTEGER,
+                redirect_destination INTEGER);
+            INSERT INTO history_items VALUES (1, 'https://example.com/a');
+            """
+        )
+        db.executemany(
+            "INSERT INTO history_visits VALUES (?,?,?,?,?,?,?,?)",
+            [(1, 1, cf, "Page A", 1, 0, None, 2), (2, 1, cf, None, 1, 1, 1, None)],
+        )
+        db.commit()
+
+
+def _helper_on(home: Path, *more: str) -> dict[str, Any]:
+    """The helper's answer for the three databases under ``home`` and nothing from Biome."""
+    binary = ensure_screen_time_app() / "Contents" / "MacOS" / "jarvis-screen-time"
+    out = home / "out.json"
+    subprocess.run(  # noqa: S603 - the repo's own helper on fixture databases
+        [
+            *(str(binary), str(out), "--root", str(home / "none"), "--home", str(home)),
+            *("--streams", "photos,messages,safari", *more),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return json.loads(out.read_text())  # type: ignore[no-any-return]
+
+
+def _only(row: dict[str, Any], *names: str) -> dict[str, Any]:
+    """The named fields of a record, the missing ones as ``None``."""
+    return {name: row.get(name) for name in names}
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("swiftc") is None, reason="needs macOS and swiftc"
+)
+def test_the_helper_reads_photos_messages_and_safari_into_named_fields(tmp_path: Path) -> None:
+    """Each database is read by column name, whole or from a time, with the words decoded."""
+    when = 1_790_000_000_000
+    cf = when / 1000 - 978_307_200
+    _photos(tmp_path, cf)
+    _chats(tmp_path, cf)
+    _safari(tmp_path, cf)
+    answer = _helper_on(tmp_path)
+    assert "unavailable" not in answer
+
+    live, shot, clip = answer["streams"]["photos"]
+    assert _only(live, "uuid", "kind", "live", "burst", "favorite", "latitude", "moment_title") == {
+        "uuid": "UUID-LIVE",
+        "kind": "photo",
+        "live": True,
+        "burst": False,
+        "favorite": True,
+        "latitude": 49.5,
+        "moment_title": "Lake day",
+    }
+    assert _only(live, "original_filename", "camera_make", "iso", "added_ms", "modified_ms") == {
+        "original_filename": "IMG_0001.HEIC",
+        "camera_make": "Apple",
+        "iso": 64,
+        "added_ms": when + 5000,
+        "modified_ms": None,
+    }
+    assert live["place"] == {
+        "address": "1 Main St",
+        "city": "Town",
+        "country_code": "CA",
+        "is_home": False,
+    }  # no street: the archive's "$null" is not a street
+    assert _only(shot, "screenshot", "latitude", "modified_ms") == {
+        "screenshot": True,
+        "latitude": None,  # -180 is Photos' "no location"
+        "modified_ms": when + 99_000,
+    }
+    assert _only(clip, "kind", "trashed", "burst", "seen_ms") == {
+        "kind": "video",
+        "trashed": True,
+        "burst": True,
+        "seen_ms": when + 121_000,
+    }
+
+    plain, body, wide, bare = answer["streams"]["messages"]
+    assert _only(plain, "text", "text_source", "from_me", "read_ms", "service") == {
+        "text": "hello",
+        "text_source": "text",
+        "from_me": True,
+        "read_ms": when + 30_000,
+        "service": "iMessage",
+    }
+    assert _only(body, "text", "text_source", "delivered_ms", "reply_to_guid") == {
+        "text": "from the body",
+        "text_source": "attributed_body",
+        "delivered_ms": when + 61_000,
+        "reply_to_guid": "G-PLAIN",
+    }
+    assert _only(body, "chat_display_name", "is_group", "handle", "participants") == {
+        "chat_display_name": "Study group",
+        "is_group": True,
+        "handle": "+15550100",
+        "participants": ["+15550100", "sam@example.com"],
+    }
+    assert wide["text"] == "词" * 100
+    assert _only(bare, "text", "chat_guid", "associated_guid", "associated_type") == {
+        "text": None,
+        "chat_guid": None,
+        "associated_guid": "p:0/G-PLAIN",
+        "associated_type": 2001,
+    }
+    assert plain["attachments"] == [
+        {
+            "guid": "A1",
+            "filename": "~/pic.jpg",
+            "transfer_name": "pic.jpg",
+            "mime_type": "image/jpeg",
+            "uti": "public.jpeg",
+            "bytes": 2048,
+            "sticker": False,
+            "outgoing": True,
+            "transfer_state": 5,
+        }
+    ]
+
+    first, second = answer["streams"]["safari"]
+    assert _only(first, "url", "title", "origin", "redirect_destination", "load_successful") == {
+        "url": "https://example.com/a",
+        "title": "Page A",
+        "origin": 0,
+        "redirect_destination": 2,
+        "load_successful": True,
+    }
+    assert _only(second, "at_ms", "origin", "redirect_source", "title") == {
+        "at_ms": first["at_ms"],
+        "origin": 1,
+        "redirect_source": 1,
+        "title": None,
+    }
+
+    # from a time: only rows made, changed or read at or after it
+    later = _helper_on(tmp_path, "--local-since-ms", str(when + 95_000))
+    assert [r["uuid"] for r in later["streams"]["photos"]] == ["UUID-SHOT", "UUID-CLIP"]
+    assert [r["guid"] for r in later["streams"]["messages"]] == ["G-NONE"]
+    assert later["streams"]["safari"] == []
+
+    # a database that is not there is said, not an error
+    (tmp_path / "Library" / "Safari" / "History.db").unlink()
+    gone = _helper_on(tmp_path)
+    assert gone["unavailable"] == {"safari": "missing"}
+    assert gone["streams"]["safari"] == []
+    assert len(gone["streams"]["photos"]) == 3
+
+
+def local(
+    stream: str,
+    when: int,
+    ident: str,
+    seen: int | None = None,
+    **more: Any,  # noqa: ANN401
+) -> dict[str, Any]:
+    """A helper-shaped record of the Mac's own databases."""
+    keys = {"photos": "uuid", "messages": "guid", "safari": "url"}
+    extra = {"visit_id": 1} if stream == "safari" else {}
+    return {"at_ms": when, "seen_ms": seen or when, keys[stream]: ident, **extra, **more}
+
+
+def test_a_photo_a_message_and_a_visit_are_rows_of_their_own_and_a_change_is_a_newer_revision(
+    mac: Mac,
+) -> None:
+    """A record's key names it, so a later change is the same row at a newer revision."""
+    mac.streams["photos"] = [local("photos", at(100), "UUID-1", kind="photo", favorite=False)]
+    mac.streams["messages"] = [local("messages", at(110), "G-1", text="hello", from_me=True)]
+    mac.streams["safari"] = [
+        local("safari", at(120), "https://a.example/", visit_id=7, origin=1),
+        local("safari", at(120), "https://a.example/", visit_id=8, origin=0, redirect_source=7),
+    ]
+    mac.pass_(at(700))
+    (photo,) = mac.rows(imports.RECORD_PHOTO)
+    (message,) = mac.rows(imports.RECORD_CHAT_MESSAGE)
+    first, second = mac.rows(imports.RECORD_SAFARI_VISIT)
+    (photo_key,) = mac.keys(imports.RECORD_PHOTO)
+    (message_key,) = mac.keys(imports.RECORD_CHAT_MESSAGE)
+    assert photo_key == f"photo:mac:UUID-1:{digest(photo.fields)}"
+    assert message_key == f"chat_message:mac:G-1:{digest(message.fields)}"
+    assert (photo.fields["device_id"], photo.fields["device"]) == ("mac", "Mac")
+    assert message.text == "hello"
+    assert (first.fields["visit_id"], second.fields["visit_id"]) == (
+        7,
+        8,
+    )  # one moment, one address
+    assert mac.intake.added == [4]
+
+    # he favourites the photo and reads the message: the same rows, a newer revision each
+    mac.streams["photos"] = [
+        local("photos", at(100), "UUID-1", at(710), kind="photo", favorite=True)
+    ]
+    mac.streams["messages"] = [
+        local("messages", at(110), "G-1", at(712), text="hello", from_me=True, read_ms=at(712))
+    ]
+    mac.pass_(at(700) + 16 * MIN)
+    assert mac.intake.added == [4, 2]
+    (photo,) = mac.rows(imports.RECORD_PHOTO)
+    (message,) = mac.rows(imports.RECORD_CHAT_MESSAGE)
+    assert photo.fields["favorite"] is True
+    assert message.fields["read_ms"] == at(712)
+    assert len(mac.keys(imports.RECORD_PHOTO)) == 2
+    mac.pass_(at(700) + 32 * MIN)  # nothing changed: nothing sent
+    assert mac.intake.added == [4, 2]
+
+
+def test_words_and_addresses_are_kept_up_to_four_kilobytes_and_say_so(mac: Mac) -> None:
+    """A message's text, a visit's address and its title are cut at 4096 bytes and marked."""
+    mac.streams["messages"] = [local("messages", at(110), "G-1", text="词" * 2000)]
+    mac.streams["safari"] = [
+        local("safari", at(120), "https://a.example/" + "x" * 5000, title="t" * 5000)
+    ]
+    mac.pass_(at(700))
+    (message,) = mac.rows(imports.RECORD_CHAT_MESSAGE)
+    (visit,) = mac.rows(imports.RECORD_SAFARI_VISIT)
+    assert len(message.fields["text"].encode()) == 4095
+    assert message.fields["text_truncated"] is True
+    assert len(visit.fields["url"]) == 4096
+    assert visit.fields["url_truncated"] is True
+    assert len(visit.fields["title"]) == 4096
+    assert visit.fields["title_truncated"] is True
+
+
+def test_the_mac_databases_have_their_own_window_and_are_read_whole_once_a_day(mac: Mac) -> None:
+    """The window catches rows touched late; the daily whole read catches rows that arrive late."""
+    mac.streams["messages"] = [local("messages", at(600), "G-1", text="a")]
+    mac.pass_(at(700))
+    assert mac.local_reads == [None]  # nothing met yet: all of it
+    mac.pass_(at(700) + 16 * MIN)
+    assert mac.local_reads[1] == at(600) + 1 - records.LOCAL_OVERLAP_MS
+    quiet = at(600) + 20 * 24 * H  # a quiet database is not read back more than the lookback
+    mac.pass_(quiet)
+    assert mac.local_reads[2] is None  # a day has passed since the whole read
+    mac.pass_(quiet + 16 * MIN)
+    assert mac.local_reads[3] == quiet + 16 * MIN - records.LOCAL_LOOKBACK_MS
+    # an old message that iCloud brings down late is outside the window but not the daily read
+    mac.streams["messages"].append(local("messages", at(600) - 30 * 24 * H, "G-OLD", text="late"))
+    mac.pass_(quiet + 32 * MIN)
+    assert len(mac.rows(imports.RECORD_CHAT_MESSAGE)) == 1
+    mac.pass_(quiet + 25 * H)
+    assert mac.local_reads[-1] is None
+    assert len(mac.rows(imports.RECORD_CHAT_MESSAGE)) == 2
+
+
+def test_a_database_that_cannot_be_read_is_said_once_and_the_rest_ships(
+    mac: Mac, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A missing grant for one database logs once; the other kinds still ship."""
+    mac.unavailable = {"photos": "no_access"}
+    mac.streams["safari"] = [local("safari", at(120), "https://a.example/")]
+    records.WARNED.clear()
+    with caplog.at_level(logging.WARNING):
+        mac.pass_(at(700))
+        mac.pass_(at(700) + 16 * MIN)
+    assert len([r for r in caplog.records if "photos unavailable" in r.message]) == 1
+    assert len(mac.rows(imports.RECORD_SAFARI_VISIT)) == 1
+    assert mac.rows(imports.RECORD_PHOTO) == []

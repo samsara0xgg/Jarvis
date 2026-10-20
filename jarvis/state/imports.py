@@ -60,12 +60,18 @@ DEVICE_NAME: Final = "app_name"
 RECORDS_SOURCE: Final = "device-records"
 """The other streams his iPhone and iPad sync to the Mac (ADR 0305): one row per record, kinds
 ``RECORD_NOW_PLAYING``, ``RECORD_BLUETOOTH``, ``RECORD_MESSAGE``, ``RECORD_CALL`` (who and when, no
-words) and ``RECORD_INTENT`` (the other things Siri remembers)."""
+words) and ``RECORD_INTENT`` (the other things Siri remembers). The Mac's own databases (ADR 0309)
+add ``RECORD_PHOTO`` (one asset of the Photos library, metadata only), ``RECORD_CHAT_MESSAGE`` (one
+message of chat.db, with its words) and ``RECORD_SAFARI_VISIT``; unlike the kinds above, their keys
+carry the record's own id, so a record that changes later is a new revision of the same row."""
 RECORD_NOW_PLAYING: Final = "now_playing"
 RECORD_BLUETOOTH: Final = "bluetooth"
 RECORD_MESSAGE: Final = "message"
 RECORD_CALL: Final = "call"
 RECORD_INTENT: Final = "intent"
+RECORD_PHOTO: Final = "photo"
+RECORD_CHAT_MESSAGE: Final = "chat_message"
+RECORD_SAFARI_VISIT: Final = "safari_visit"
 SHIPPED_DB: Final = "shipped.db"
 """Under the imports directory; the same ``import_entries`` table as memory.db's."""
 IMPORT_ENTRIES_DDL: Final = """CREATE TABLE IF NOT EXISTS import_entries (

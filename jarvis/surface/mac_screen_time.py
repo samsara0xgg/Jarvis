@@ -73,15 +73,22 @@ def parse_helper_output(text: str, app: Path | None = None) -> dict[str, Any]:
     answer: dict[str, Any] = {"devices": list(devices), "events": list(events)}
     if isinstance(data.get("streams"), dict):
         answer["streams"] = data["streams"]
+    if isinstance(data.get("unavailable"), dict):
+        answer["unavailable"] = data["unavailable"]
     return answer
 
 
-def read_screen_time(since_ms: int | None = None, streams: str | None = None) -> dict[str, Any]:
+def read_screen_time(
+    since_ms: int | None = None, streams: str | None = None, local_since_ms: int | None = None
+) -> dict[str, Any]:
     """``{"devices": [...], "events": [...]}`` for the synced iPhone/iPad, at or after ``since_ms``.
 
     Each event is ``{"device", "bundle_id", "focus": "in"|"out", "at_ms"}`` (unix milliseconds).
     ``streams`` (comma separated: ``now_playing``, ``bluetooth``, ``interactions``) adds a
-    ``"streams"`` object of those streams' records (ADR 0305, :mod:`mac_ship_records`).
+    ``"streams"`` object of those streams' records (ADR 0305, :mod:`mac_ship_records`). With
+    ``photos``, ``messages`` and ``safari`` (this Mac's own databases, ADR 0309) it adds theirs,
+    limited to rows touched at or after ``local_since_ms`` (``since_ms`` does not apply to them),
+    and ``"unavailable"`` says which could not be read and why.
     """
     if sys.platform != "darwin":
         msg = "this machine has no synced device usage"
@@ -95,6 +102,8 @@ def read_screen_time(since_ms: int | None = None, streams: str | None = None) ->
                 argv += ["--since-ms", str(int(since_ms))]
             if streams:
                 argv += ["--streams", streams]
+            if local_since_ms is not None:
+                argv += ["--local-since-ms", str(int(local_since_ms))]
             subprocess.run(  # noqa: S603 - fixed argv, repo-owned app, our own temp file
                 argv,
                 check=False,  # the answer is the file; the helper's exit code adds nothing
