@@ -1112,6 +1112,17 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
       (s.answered ??= []).push(span);          // kept by the daemon; the day it serves has no stretches in this test, so the list stays the places (a brain that cut the day serves them all, and the pane draws those)
       return json({ ok: true, span });
     }
+    // ADR 0310: today's newest stretch is written now. As the brain does it: no body, and it waits for the model (`tidyGate`, a promise the test lets go of) before it answers {ok, written, outcome}.
+    // `tidied` is the day it serves from then on (a new run); `tidy-same` answers that nothing changed, `tidy-no` that it did not go (ok false), `tidy` refuses the route (a 502).
+    if (post && url.pathname === '/inherent/day/tidy') {
+      s.posts.push({ path: url.pathname, body: sent(), raw: req.postData(), type: req.headers()['content-type'] ?? null });
+      if (s.tidyGate) await s.tidyGate;
+      if (s.refuse.has('tidy')) return refused('it cannot be written', 502);
+      if (s.refuse.has('tidy-no')) return json({ ok: false, written: false, outcome: 'failed' });
+      if (s.refuse.has('tidy-same') || !s.tidied) return json({ ok: true, written: false, outcome: 'unchanged' });
+      s.served = s.tidied; s.tidied = null;
+      return json({ ok: true, written: true, outcome: 'landed 11 spans' });
+    }
     if (post && url.pathname === '/inherent/submit') {
       s.posts.push({ path: url.pathname, body: sent() });
       return s.refuse.has('submit') ? refused('refused', 422) : json({ turn_id: `turn-${s.posts.length}` });
@@ -1788,7 +1799,7 @@ try {
         return { order: [...h.children].map(e => e.className.split(' ')[0]).join(), words: [...wx.querySelectorAll('span, em')].map(e => e.textContent).join('|'), sky: wx.dataset.sky, svg: !!wx.querySelector('svg'), mono: /JetBrains|Menlo|monospace/.test(getComputedStyle(wx.querySelector('em')).fontFamily),
           afterTag: Math.round(box(wx).left - box(h.querySelector('.dt-today')).right), beforeChips: Math.round(box(h.querySelector('.dt-chips')).left - box(wx).right), inside: [...h.children].every(e => box(e).left >= hb.left - .5 && box(e).right <= hb.right + .5) };
       });
-      check('the header: the weather after the date and its tag, before the chips: a glyph, 多云, and 14° / 8° in mono; nothing leaves the header', head.order === 'dt-date,dt-today,dt-wx,dt-chips,dt-waits,dt-nav' && head.words === '多云|14° / 8°' && head.sky === 'cloudSun' && head.svg && head.mono && head.afterTag === 8 && head.beforeChips === 8 && head.inside, JSON.stringify(head));
+      check('the header: the weather after the date and its tag, before the chips: a glyph, 多云, and 14° / 8° in mono; nothing leaves the header', head.order === 'dt-date,dt-today,dt-wx,dt-chips,dt-waits,dt-tidy,dt-nav' && head.words === '多云|14° / 8°' && head.sky === 'cloudSun' && head.svg && head.mono && head.afterTag === 8 && head.beforeChips === 8 && head.inside, JSON.stringify(head));
       const nums = await a.page.evaluate(() => {
         const box = document.querySelector('.dt-numbers'), g = box.querySelector('.dt-vitals'), vit = [...g.querySelectorAll('.dt-vit')], cs = getComputedStyle(vit[0]);
         return { chips: [...box.querySelectorAll('.dt-num')].map(b => [...b.querySelectorAll('span, em')].map(e => e.textContent).join(' ')), vitals: vit.map(v => [...v.children].map(c => c.textContent).join(' ')), after: g.previousElementSibling?.className.split(' ')[0],
@@ -1890,7 +1901,8 @@ try {
         return { inside: [...h.children].every(e => e.getBoundingClientRect().right <= hb.right + .5 && e.getBoundingClientRect().left >= hb.left - .5), between: chips.left >= box('.dt-wx').right + 7.5 && chips.right <= box('.dt-waits').left - 7.5,
           labels: [...document.querySelectorAll('.dt-chip')].map(c => c.textContent).join(), cut: [...document.querySelectorAll('.dt-chip')].some(c => c.scrollWidth > c.clientWidth), waits: document.querySelector('.dt-waits').textContent, one: h.getBoundingClientRect().height };
       });
-      check('the header on a crowded day (weather, three labels, 2 件等你, the day buttons): nothing leaves it, the labels that do not fit whole become +2, none shows half a word, and the header stays one line', r.inside && r.between && r.labels === '期中周,+2' && !r.cut && r.waits === '2 件等你' && r.one < 30, JSON.stringify(r));
+      // With the 理一下 pill (a sparkle alone here) 7 px short of room for the first label and the +2, the first label stays and is cut to fit (`cut`).
+      check('the header on a crowded day (weather, three labels, 2 件等你, the pill, the day buttons): nothing leaves it, the labels that do not fit whole become +2, and the header stays one line', r.inside && r.between && r.labels === '期中周,+2' && r.waits === '2 件等你' && r.one < 30, JSON.stringify(r));
       await a.shot('data-05-crowded-header', { x: 40, y: 20, width: 560, height: 190 });
       await a.ctx.close();
     }
@@ -4465,6 +4477,136 @@ try {
       await a.shot('polish-durations', { x: 40, y: 30, width: 560, height: 640 });
       await a.ctx.close();
     }
+  }
+
+  // ---- 理一下 (ONLY=tidy, ADR 0310): a pill at the date line's right end, on today only. A press posts the route with no body and waits for the brain's model (up to 90 s): the pill says 在理…, its sparkle turns
+  // and a band of light crosses the bar. A new run is read through the same read as every update and drawn as one: the bar crosses over, new rows grow, gone rows collapse, the rest stay. Nothing to change and a failure say so for a moment ----
+  if (all || only === 'tidy') {
+    const later = () => segDay({ spans: [...SEGS.filter(x => x.id !== 'doing-4' && x.id !== 'doing-5'), sp('doing-45', 1315, 1450, { title: '吃完午饭回家休息', category: 'meal', basis: 'inferred', place_id: 'stay-home-2', item_ids: ['stay-aw', 'pay-1', 'picture-1', 'move-3', 'stay-home-2', 'away-1'] })] });
+    const pieces = day => buildBar(buildDay(day, NOW, zh), zh).segs.length;
+    const hold = a => { let go; a.s.tidyGate = new Promise(r => { go = r; }); return go; };
+    const posts = a => a.s.posts.filter(p => p.path === '/inherent/day/tidy');
+    const pill = a => a.page.locator('.dt-tidy');
+    // how long the pill says `text`, in ms (-1: it never did)
+    const says = async (a, text) => {
+      const end = Date.now() + 4000;
+      while (Date.now() < end && !(await pill(a).count() && await pill(a).innerText() === text)) await a.page.waitForTimeout(30);
+      const t0 = Date.now();
+      if (t0 >= end) return -1;
+      while (await pill(a).innerText() === text) await a.page.waitForTimeout(30);
+      return Date.now() - t0;
+    };
+    const a = await boot({ served: segDay(), init: record });
+    await a.page.evaluate(() => { const timeout = AbortSignal.timeout.bind(AbortSignal); AbortSignal.timeout = ms => { (window.__timeouts ??= []).push(ms); return timeout(ms); }; });
+    await openDay(a);
+    const head = await a.page.evaluate(() => {
+      const h = document.querySelector('.dt-head'), p = h.querySelector('.dt-tidy'), tag = getComputedStyle(h.querySelector('.dt-today')), me = getComputedStyle(p), box = e => e.getBoundingClientRect();
+      return { text: p.innerText, svg: !!p.querySelector('svg'), order: [...h.children].map(e => e.className.split(' ')[0]).join(), same: me.backgroundColor === tag.backgroundColor && me.borderRadius === tag.borderRadius && me.fontSize === tag.fontSize,
+        gap: Math.round(box(h.querySelector('.dt-nav')).left - box(p).right), inside: box(p).right <= box(h).right && box(p).left >= box(h).left, one: box(h).height < 30 };
+    });
+    check('on today the date line ends with a pill, a sparkle and 理一下, just before the day buttons, in the tag\'s own colour, radius and size, and the line stays one line', head.text === '理一下' && head.svg && head.order.endsWith('dt-waits,dt-tidy,dt-nav') && head.same && head.gap === 8 && head.inside && head.one, JSON.stringify(head));
+    await a.shot('tidy-00-pill', { x: 40, y: 20, width: 560, height: 120 });
+    await a.page.locator('.dt-nav button').first().click(); await a.page.waitForTimeout(700);
+    const yd = await pill(a).count();
+    await a.page.locator('.dt-nav button').nth(1).click(); await a.page.waitForTimeout(700);
+    check('and only on today: the day before has no pill, and today has it again', yd === 0 && await pill(a).count() === 1);
+
+    // a press: the run waits on the brain
+    a.s.tidied = later();
+    const release = hold(a), before = { pieces: await a.page.locator('.dt-seg').count(), todays: a.s.hits.filter(h => h === '').length };
+    await pill(a).click(); await a.page.waitForTimeout(400);
+    await pill(a).click(); await a.page.waitForTimeout(200);
+    const run = await a.page.evaluate(() => {
+      const p = document.querySelector('.dt-tidy'), sw = document.querySelector('.dt-track > .dt-sweep'), css = sw && getComputedStyle(sw), turn = getComputedStyle(p.querySelector('svg'));
+      return { text: p.innerText, cls: p.className, busy: p.getAttribute('aria-busy'), turn: `${turn.animationName} ${turn.animationDuration} ${turn.animationIterationCount}`, clip: getComputedStyle(document.querySelector('.dt-track')).overflow,
+        sweep: css && { name: css.animationName, dur: css.animationDuration, ease: css.animationTimingFunction, loop: css.animationIterationCount, img: css.backgroundImage }, timeouts: window.__timeouts };
+    });
+    check('a press posts the route once with no body and the model\'s time to answer (90 s); a press while it runs does nothing', posts(a).length === 1 && posts(a)[0].raw === null && run.timeouts.includes(90000), JSON.stringify([posts(a), run.timeouts]));
+    check('the pill says 在理… and is busy, its sparkle turning slowly (2.4 s, over and over)', run.text === '在理…' && run.cls.includes('is-running') && run.busy === 'true' && run.turn === 'dt-turn 2.4s infinite', JSON.stringify(run));
+    check('a band of light is in the bar, clipped by it: 1.6 s a pass, ease in and out, over and over, white at 20 % at its centre', run.sweep && run.sweep.name === 'dt-sweep' && run.sweep.dur === '1.6s' && run.sweep.ease === 'ease-in-out' && run.sweep.loop === 'infinite' && run.sweep.img.includes('rgba(255, 255, 255, 0.2)') && run.clip === 'hidden', JSON.stringify(run));
+    const sweepAt = () => a.page.evaluate(() => { const r = document.querySelector('.dt-sweep').getBoundingClientRect(), t = document.querySelector('.dt-track').getBoundingClientRect(); return (r.left - t.left) / t.width; });
+    const xs = []; for (let i = 0; i < 6; i++) { xs.push(await sweepAt()); await a.page.waitForTimeout(80); }
+    check('the band goes left to right', xs.filter((x, i) => i && x > xs[i - 1]).length >= 4 && xs.every(x => x > -.41 && x < 1.01), JSON.stringify(xs));
+    // held in the middle of a pass for the picture, then let go
+    const pass = ms => a.page.evaluate(ms => document.getAnimations().filter(x => x.animationName === 'dt-sweep').forEach(x => { if (ms === null) x.play(); else { x.pause(); x.currentTime = ms; } }), ms);
+    await pass(800);
+    await a.shot('tidy-01-running', { x: 40, y: 20, width: 560, height: 330 });
+    await pass(null);
+    // the pane stays usable, and another day has neither pill nor band; the run is still on when today comes back
+    await a.page.locator('.dt-nav button').first().click(); await a.page.waitForTimeout(2300);
+    const gone = { pill: await pill(a).count(), band: await a.page.locator('.dt-sweep').count() };
+    await a.page.locator('.dt-nav button').nth(1).click(); await a.page.waitForTimeout(700);
+    check('on another day while it runs: no pill and no band (the pass it was on finished); back on today the run is still going on', gone.pill === 0 && gone.band === 0 && await pill(a).innerText() === '在理…' && await a.page.locator('.dt-sweep').count() === 1, JSON.stringify(gone));
+
+    // the brain answers with a new run
+    const n0 = (await anims(a)).length;
+    release();
+    await a.page.waitForSelector('[data-key="doing-45"]', { timeout: 5000 });
+    await a.page.waitForTimeout(700);
+    const fx = (await anims(a)).slice(n0), dom = await a.page.evaluate(() => ({ keys: [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key).join(), title: document.querySelector('[data-key="doing-45"] .dt-ttl b')?.textContent, ghosts: document.querySelectorAll('.is-ghost, .dt-list .dt-row:not([data-key])').length, pieces: document.querySelectorAll('.dt-seg').length, text: document.querySelector('.dt-tidy').innerText }));
+    check('written: today is read again by the pane\'s own read, and the bar and the list are the new run\'s (12 pieces, not 13; the two rows are one)', a.s.hits.filter(h => h === '').length > before.todays && before.pieces === pieces(segDay()) && dom.pieces === pieces(later()) && dom.pieces === before.pieces - 1
+      && !dom.keys.includes('doing-4,') && !dom.keys.includes('doing-5,') && dom.title === '吃完午饭回家休息' && dom.ghosts === 0 && dom.text === '理一下', JSON.stringify([before, dom]));
+    check('the bar crosses over: the bar as it was fades out over the new one in 240 ms; the new row grows in from nothing; the two rows that are gone collapse out; no row that stayed moves',
+      fx.filter(x => x.cls.includes('dt-track') && x.cls.includes('is-ghost') && x.kf[0].opacity === 1 && x.kf[1].opacity === 0 && x.opt.duration === 240).length === 1
+      && fx.filter(x => x.key === 'doing-45' && x.kf[0].height === '0px').length === 1 && fx.filter(x => x.cls.includes('dt-row') && !x.key && x.kf.at(-1).height === '0px' && x.opt.duration === 240).length === 2
+      && fx.filter(x => x.key && x.key !== 'doing-45').length === 0, JSON.stringify(fx.map(x => [x.cls, x.key, x.opt.duration])));
+    await a.page.waitForTimeout(1700);
+    check('and the band leaves once its pass is done', await a.page.locator('.dt-sweep').count() === 0);
+
+    // nothing to change, and a failure, each for a moment
+    a.s.refuse.add('tidy-same');
+    const reads = a.s.hits.filter(h => h === '').length;
+    await pill(a).click();
+    const same = await says(a, '没有要改的');
+    check('nothing to change: 没有要改的 for about 2 s, then the pill again; today was not read again for it', same > 1700 && same < 2700 && await pill(a).innerText() === '理一下' && posts(a).length === 2 && a.s.hits.filter(h => h === '').length === reads, String(same));
+    a.s.refuse.delete('tidy-same'); a.s.refuse.add('tidy');
+    await pill(a).click();
+    const failed = await says(a, '没理成，等会儿再试');
+    check('the brain refuses (a 502): 没理成，等会儿再试 for about 3 s, then the pill again', failed > 2700 && failed < 3700 && await pill(a).innerText() === '理一下', String(failed));
+    a.s.refuse.delete('tidy'); a.s.refuse.add('tidy-no');
+    await pill(a).click();
+    check('the brain answers ok false: the same words', await says(a, '没理成，等会儿再试') > 0);
+    a.s.refuse.delete('tidy-no');
+    // reduced motion: no band, the sparkle still, the words the same
+    await a.page.emulateMedia({ reducedMotion: 'reduce' }); await a.page.waitForTimeout(150);
+    const release2 = hold(a);
+    await pill(a).click(); await a.page.waitForTimeout(400);
+    const calm = await a.page.evaluate(() => ({ text: document.querySelector('.dt-tidy').innerText, band: document.querySelectorAll('.dt-sweep').length, turn: getComputedStyle(document.querySelector('.dt-tidy svg')).animationName }));
+    check('under reduced motion the pill says 在理… and nothing moves: no band, the sparkle still', calm.text === '在理…' && calm.band === 0 && calm.turn === 'none', JSON.stringify(calm));
+    release2();
+    check('and it ends the same way', await says(a, '没有要改的') > 0);
+    await a.ctx.close();
+
+    // a header with no room for the first label beside the whole pill: the pill is its sparkle only (a label of his stays whole); it has its words while it runs and again when it has done
+    const c = await boot({ served: fullDay() });
+    await openDay(c);
+    const tight = () => c.page.evaluate(() => { const p = document.querySelector('.dt-tidy'), chip = document.querySelector('.dt-chip'); return { cls: p.className, text: p.innerText, label: p.getAttribute('aria-label'), title: p.title, chip: chip.textContent, cut: chip.scrollWidth > chip.clientWidth, w: Math.round(p.getBoundingClientRect().width) }; });
+    const t1 = await tight();
+    check('weather, a label and 2 件等你 leave no room for the label beside the whole pill: it is the sparkle alone (named 理一下 for a screen reader and a rest), and the label is whole', t1.cls.includes('is-tight') && t1.text === '' && t1.label === '理一下' && t1.title === '理一下' && t1.chip === '期中周' && !t1.cut && t1.w < 30, JSON.stringify(t1));
+    await c.shot('tidy-02-tight', { x: 40, y: 20, width: 560, height: 120 });
+    const release4 = hold(c);
+    await pill(c).click(); await c.page.waitForTimeout(300);
+    const t2 = await tight();
+    release4(); await says(c, '没有要改的');
+    await c.page.waitForTimeout(300);
+    const t3 = await tight();
+    check('while it runs it has its words (the label may give way for them); when it is done and the words are gone it is the sparkle alone again', t2.text === '在理…' && !t2.cls.includes('is-tight') && t3.cls.includes('is-tight') && t3.text === '' && t3.chip === '期中周' && !t3.cut, JSON.stringify([t2, t3]));
+    await c.ctx.close();
+
+    // the pane is closed while it runs: nothing breaks, and the new run is there when it opens again
+    const b = await boot({ served: segDay(), init: record });
+    await openDay(b);
+    b.s.tidied = later();
+    const release3 = hold(b), errs = errors.length;
+    await pill(b).click(); await b.page.waitForTimeout(300);
+    await b.page.keyboard.press('Escape');
+    await seen(b, r => r.tl === '', 3000);
+    await b.move(b.far.x, b.far.y);
+    release3(); await b.page.waitForTimeout(1200);
+    await openDay(b);
+    check('the pane closed while it runs: no error, and when it opens again the new run is drawn and the pill is itself',
+      errors.length === errs && await b.page.locator('[data-key="doing-45"]').count() === 1 && await b.page.locator('[data-key="doing-4"]').count() === 0 && await pill(b).innerText() === '理一下', JSON.stringify(errors.slice(errs)));
+    await b.ctx.close();
   }
 
   console.log(`\n${checks.length} checks passed; screenshots in ${dir}`);
