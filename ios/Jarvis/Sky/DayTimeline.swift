@@ -303,13 +303,12 @@ struct DayTimelineView: View {
             let built: TLBuilt? = { if case .model(let b) = shown { return b } else { return nil } }()
             let model = built?.model, bar = built?.bar(places: byPlace)          // the day as the list has it, and as the bar draws it
             ZStack(alignment: .topLeading) {
-                scrim(away: away)
+                scrim()
                 ZStack(alignment: .topLeading) {
                     TLTopView(ui: ui, model: model, bar: bar, scene: built?.scene(places: byPlace) ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
                     TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
                 }
-                .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)
-                .animation(.easeOut(duration: ui.panelOpen ? 0.2 : 0.35), value: ui.panelOpen)
+                .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
                 TLHandle(engine: engine, ui: ui, pull: $pull)
@@ -359,11 +358,11 @@ struct DayTimelineView: View {
 
     /// From the bar down the sky is covered by black, none at the bar and 0.8 by 24 pt into the list, so the record sits on near-black as it does on the Mac (the stars nearly gone
     /// under the list) while the header, her, the date, her sentence and the bar keep the sky; it goes as it came at the foot of the list.
-    private func scrim(away: Bool) -> some View {
+    private func scrim() -> some View {
         let top = TLLayout.barY, h = TLLayout.listBottom + TLLayout.fade - top
         return LinearGradient(stops: TLLayout.scrim().map { .init(color: .black.opacity($0.alpha), location: ($0.y - top) / h) }, startPoint: .top, endPoint: .bottom)
             .frame(width: W, height: h).offset(y: top)
-            .opacity(away ? 0 : 1).animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
+            .modifier(HistoryOver(ui: ui, pull: $pull, tuning: true))
             .allowsHitTesting(false)
     }
 
@@ -399,10 +398,9 @@ struct DayTimelineView: View {
         }
         .frame(width: W, height: TLLayout.viewport + TLLayout.fade, alignment: .top)
         .modifier(FootFade(ui: ui))
-        // the history takes the place of the list when it opens: it goes up and out, and comes back when the history has gone
-        .opacity(away ? 0 : 1).offset(y: away && !reduce ? -6 : 0)
+        // the history takes the place of the list as it comes up: the list goes up and out with it, and comes back when the history has gone
+        .modifier(HistoryOver(ui: ui, pull: $pull, tuning: true, lift: 6))
         .allowsHitTesting(!away)
-        .animation(.easeOut(duration: away ? 0.2 : 0.35), value: away)
         .offset(y: TLLayout.listTop)
     }
 
@@ -451,6 +449,22 @@ struct DayTimelineView: View {
             .overlay(alignment: .bottom) { Rectangle().fill(hair).frame(height: 0.5) }
             .padding(.bottom, 4)
         }
+    }
+}
+
+/// What the history's rising does to what is under it: it fades (and the list goes up `lift` pt) as the history comes up. While a finger holds the history's top edge it follows it, a frame at
+/// a time with no animation of its own; let go, it goes on as the history does (`panelSpring`, at the finger's speed). `tuning`: the near view's panel is as open as the history.
+private struct HistoryOver: ViewModifier {
+    let ui: StarUI
+    @Binding var pull: Double?
+    var tuning = false
+    var lift = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    func body(content: Content) -> some View {
+        let open = max(pull != nil ? panelOpenness(panelTop(ui, pull)) : ui.panelOpen ? 1 : 0, tuning && ui.tuning ? 1 : 0)
+        content.opacity(1 - open).offset(y: reduce ? 0 : -lift * open)
+            .animation(pull != nil ? nil : panelSpring(reduce, velocity: ui.panelRelease), value: open)
     }
 }
 

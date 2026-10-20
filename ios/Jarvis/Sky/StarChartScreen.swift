@@ -59,7 +59,7 @@ struct StarChrome: View {
         ZStack(alignment: .topLeading) {
             // behind the open panel the dial dims
             Color.black.opacity(0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
-                .animation(pull == nil ? panelSpring(reduce) : nil, value: ui.panelOpen).allowsHitTesting(false)
+                .animation(pull == nil ? panelSpring(reduce, velocity: ui.panelRelease) : nil, value: ui.panelOpen).allowsHitTesting(false)
             topRow
             detail
                 grabber

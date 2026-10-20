@@ -95,6 +95,7 @@ final class StarUI {
     var rowsKey = 0                     // bumps when the list is rebuilt
     // the talk panel's second height: the whole conversation, with what waits on him and what she is doing pinned over it
     var panelOpen = false
+    var panelRelease = 0.0              // a finger has just let go of the history's top edge at this speed (parts of the way left per second): the panel's spring goes on from it
     var pinned: [PinGroup] = []
     var chipOpen = false                // the pinned groups are open under the panel's chip
     var unfolded: Set<String> = []      // pinned groups of more than two that he opened

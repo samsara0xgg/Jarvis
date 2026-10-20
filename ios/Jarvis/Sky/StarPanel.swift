@@ -8,8 +8,11 @@ private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let amber = Color(red: 1, green: 217 / 255, blue: 176 / 255)
 private let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)
-/// the panel's top edge moves with this; with Reduce Motion nothing moves, things fade in 0.2 s instead
-func panelSpring(_ reduce: Bool) -> Animation { reduce ? .easeOut(duration: 0.2) : .spring(response: 0.42, dampingFraction: 0.9) }
+/// the panel's top edge moves with this; with Reduce Motion nothing moves, things fade in 0.2 s instead. Let go of by a finger it goes on at the finger's own speed (`velocity`: parts of the
+/// way left per second, as `TLMotion.release`), a spring that does not bounce; else it starts from rest.
+func panelSpring(_ reduce: Bool, velocity: Double = 0) -> Animation {
+    reduce ? .easeOut(duration: 0.2) : velocity != 0 ? .interpolatingSpring(duration: 0.38, bounce: 0, initialVelocity: velocity) : .spring(response: 0.42, dampingFraction: 0.9)
+}
 
 // MARK: rows
 
@@ -284,9 +287,15 @@ func panelDrag(_ engine: StarEngine, _ pull: Binding<Double?>, opens: Bool, tap:
             if abs(dy) > 7 { pull.wrappedValue = clamp((opens ? home : top) + dy, top, home) }
         }
         .onEnded { v in
-            let dy = v.location.y - v.startLocation.y, vel = v.velocity.height, moved = pull.wrappedValue != nil
+            let dy = v.location.y - v.startLocation.y, vel = v.velocity.height, held = pull.wrappedValue, moved = held != nil
+            let goes = opens ? (dy < -60 || vel < -500) : (dy > 80 || vel > 500)
+            if let held {          // it goes on from where it is held at the speed of the finger: how much of the way left it covers in a second
+                let to = goes == opens ? top : home, way = to - held
+                engine.ui.panelRelease = abs(way) > 1 ? vel / way : 0
+                Task { @MainActor in try? await Task.sleep(nanoseconds: 600_000_000); engine.ui.panelRelease = 0 }
+            }
             pull.wrappedValue = nil
-            if moved { if opens ? (dy < -60 || vel < -500) : (dy > 80 || vel > 500) { opens ? engine.openPanel() : engine.closePanel() } }
+            if moved { if goes { opens ? engine.openPanel() : engine.closePanel() } }
             else if tap { opens ? engine.openPanel() : engine.closePanel() }
         }
 }
@@ -339,15 +348,15 @@ struct TalkPanel: View {
         let streamTo = topTo + (Self.grabH + chipH + pinH) * panelOpenness(topTo)
         let shown = (ui.talking && !HomeModule.shared.isTimeline) || ui.panelOpen || held          // on the timeline a talk is in her place over the day (Sky/DayTimelineTalk.swift): the panel is the history, there when it is opened
         ZStack(alignment: .topLeading) {
-            background.opacity(p).animation(held ? nil : panelSpring(reduce), value: top).frame(width: W, height: H - top + 60).offset(y: top)
+            background.opacity(p).animation(held ? nil : panelSpring(reduce, velocity: ui.panelRelease), value: top).frame(width: W, height: H - top + 60).offset(y: top)
             topPart(p: p, held: held, chip: chip, pinH: pinH).frame(width: W, height: Self.grabH + chipH + pinH, alignment: .top).offset(y: top)
             stream(top: streamTo, bottom: bottom, fade: ui.typing ? 8 : 24, open: held ? p : ui.panelOpen ? 1 : 0).animation(nil, value: streamTo)
             measure
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .animation(held || reduce ? nil : panelSpring(false), value: top)
+        .animation(held || reduce ? nil : panelSpring(false, velocity: ui.panelRelease), value: top)
         .opacity(shown ? 1 : 0).allowsHitTesting(shown)
-        .animation(.easeOut(duration: ui.talking || ui.panelOpen ? 0.25 : 0.35), value: shown)
+        .animation(held ? nil : .easeOut(duration: ui.talking || ui.panelOpen ? 0.25 : 0.35), value: shown)          // under a finger it is there at once: it does not fade in as the finger pulls
         .onChange(of: ui.panelOpen) { _, on in if !on { ui.chipOpen = false } else { follow = true } }
     }
 
