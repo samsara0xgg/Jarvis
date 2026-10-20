@@ -80,7 +80,8 @@ trap cleanup EXIT
 list="$(pi list)"
 [ -n "$list" ] || { echo "no databases found on $HOST" >&2; exit 1; }
 count=0
-while IFS= read -r rel; do
+# The list comes in on fd 3: ssh in the loop reads stdin and would swallow the rest of it.
+while IFS= read -r rel <&3; do
     staged="$(pi stage "$day" "$rel")"
     scp -q -o BatchMode=yes "$HOST:$staged" "$dest/"
     ssh -o BatchMode=yes "$HOST" "rm -f '$staged'"
@@ -88,7 +89,9 @@ while IFS= read -r rel; do
     [ "$(sqlite3 -readonly "$f" 'pragma quick_check;')" = ok ] || { echo "quick_check failed: $f" >&2; exit 1; }
     echo "$(date '+%F %T') $rel ok ($(du -h "$f" | cut -f1))"
     count=$((count + 1))
-done <<<"$list"
+done 3<<<"$list"
+want="$(wc -l <<<"$list" | tr -d ' ')"
+[ "$count" = "$want" ] || { echo "backed up $count of $want databases" >&2; exit 1; }
 # Keep the newest $KEEP days.
 ls -1d "$DEST_ROOT"/????-??-?? | sort -r | tail -n +"$((KEEP + 1))" | while read -r old; do rm -rf "$old"; done
 echo "$(date '+%F %T') backup done: $count file(s), $(du -sh "$dest" | cut -f1)"
