@@ -3128,6 +3128,51 @@ try {
   }
 
   // ---- 这段在干嘛 (ADR 0302): one quiet entry, in an opened stretch and in the bar's range card; nothing else invites it ----
+  // ---- the bar by place (ONLY=place): on a day with stretches, 在干嘛 | 在哪 at the numbers' right end draws the bar from the places and ways instead; the list does not change ----
+  if (all || only === 'place') {
+    const pm = buildDay(segDay(), NOW, zh), doingBar = buildBar(pm, zh), placeBar = buildBar(pm, zh, 'place'), t0 = doingBar.t0, t1 = T(24);
+    check('by place the bar is the night, the places and the ways (no stretch is a piece), by default it is the stretches as before',
+      doingBar.segs.some(x => x.kind === 'doing') && placeBar.segs.length > 0 && placeBar.segs.every(x => ['stay', 'trip', 'sleep'].includes(x.kind)) && placeBar.segs.some(x => x.kind === 'stay') && placeBar.segs.some(x => x.kind === 'trip'),
+      JSON.stringify([doingBar.segs.map(x => x.kind), placeBar.segs.map(x => x.kind)]));
+    const minutes = [[9, 10], [13, 20], [14, 30], [16, 0], [18, 0], [20, 0], [21, 0]];
+    check('and what a click or the pointer finds at a minute is the list\'s row (the stretch) in both, never the place', minutes.every(([h, m]) => pieceAt(placeBar, T(h, m)) === pieceAt(doingBar, T(h, m)) && rowAt(pm, placeBar, T(h, m)) === rowAt(pm, doingBar, T(h, m))), JSON.stringify(minutes.map(([h, m]) => [pieceAt(placeBar, T(h, m)), pieceAt(doingBar, T(h, m))])));
+    check('a day with no stretches draws the places whichever way it is asked, and the same pieces', buildBar(buildDay(richDay(), NOW, zh), zh, 'doing').segs.length === buildBar(buildDay(richDay(), NOW, zh), zh, 'place').segs.length && buildBar(buildDay(richDay(), NOW, zh), zh).segs.some(x => x.kind === 'stay'));
+    const a = await boot({ served: segDay() });
+    await openDay(a);
+    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
+    const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + g.height / 2;
+    const keys = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key).join());
+    const kinds = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-seg')].map(e => e.className.match(/is-(stay|trip|sleep|doing)/)?.[1]));
+    const by = a.page.locator('.dt-by');
+    const listed = await keys(), k0 = await kinds();
+    check('the toggle is a small pair at the right end of the numbers: 在干嘛 pressed, 在哪 not; by default the bar is the stretches (13 pieces, no place)', await by.locator('button').allInnerTexts().then(x => x.join()) === '在干嘛,在哪' && await by.locator('button').first().getAttribute('aria-pressed') === 'true'
+      && await by.locator('button').last().getAttribute('aria-pressed') === 'false' && k0.length === 13 && !k0.includes('stay'), JSON.stringify(k0));
+    const box = await by.boundingBox(), nums = await a.page.locator('.dt-numbers').boundingBox();
+    check('it is at the right end of that row (its right edge on the numbers\' right edge) and as tall as a number chip or less', Math.abs(box.x + box.width - (nums.x + nums.width)) < 1.5 && box.height <= 24, JSON.stringify({ box, nums }));
+    await by.getByRole('button', { name: '在哪' }).click(); await a.page.waitForTimeout(300);
+    const k1 = await kinds(), home = await a.page.evaluate(() => [...document.querySelectorAll('.dt-seg.is-stay')].map(e => e.style.getPropertyValue('--c')));
+    check('在哪 draws the bar from the places and ways: stays in their hue (home warm, UVic blue), ways in the haze, no stretch', k1.includes('stay') && k1.includes('trip') && !k1.includes('doing') && home.includes('255 168 150') && home.includes('100 200 255'), JSON.stringify({ k1, home }));
+    check('the list is the same, row for row', await keys() === listed, await keys());
+    check('and the choice is kept in the companion\'s settings', await a.page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1')).barBy) === 'place' && await by.locator('button').last().getAttribute('aria-pressed') === 'true');
+    await a.shot('place-01-by-place', { x: 40, y: 60, width: 560, height: 260 });
+    await a.move(xAt(14, 30), y); await a.page.waitForTimeout(380);
+    const hov = await a.page.evaluate(() => ({ lift: [...document.querySelectorAll('.dt-seg.is-lift')].map(e => e.style.getPropertyValue('--c')), bracket: !!document.querySelector('.dt-bracket'), head: document.querySelector('.dt-card.is-on .dt-slot.is-cur .dt-ch b')?.textContent }));
+    check('the pointer lifts the place under it (home, 14:30), marks the stretch a click would open, and the card says the place', hov.lift.join() === '255 168 150' && hov.bracket && hov.head === '家', JSON.stringify(hov));
+    await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(500);
+    await tap(a, pieceAt(doingBar, T(16, 0))); await rest(a);
+    await a.page.mouse.click(xAt(18, 0), y); await rest(a, 450);
+    check('with a page up, a click on a place goes to the stretch at that minute, not to the place', await expanded(a, pieceAt(doingBar, T(18, 0))) === 'true' && await folds(a) === 1, `${await pgOf(a).getAttribute('data-page').catch(() => null)} ${pieceAt(doingBar, T(18, 0))}`);
+    await a.page.keyboard.press('Escape'); await rest(a, 400);
+    await by.getByRole('button', { name: '在干嘛' }).click(); await a.page.waitForTimeout(300);
+    const k2 = await kinds();
+    check('在干嘛 brings the stretches back', k2.length === 13 && !k2.includes('stay') && await keys() === listed && await a.page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1')).barBy) === 'doing');
+    await a.ctx.close();
+    const b = await boot({ served: richDay() });
+    await openDay(b);
+    check('a day with no stretches has no toggle', await b.page.locator('.dt-by').count() === 0);
+    await b.ctx.close();
+  }
+
   const SAY = '这段在干嘛';
   const sayDock = a => a.page.evaluate(() => {
     const d = document.querySelector('.dt-dock'), c = d?.querySelector('.dt-about'), f = d?.querySelector('.dt-ask-in'), go = d?.querySelector('.dt-send');

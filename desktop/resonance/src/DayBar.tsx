@@ -97,8 +97,8 @@ function Stars({ stars }: { stars: BarStar[] }) {
 
 // `open`: the row whose detail page is up; its span stays marked, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
 export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; hot: string | null; open: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
-  const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
-  const bar = useMemo(() => buildBar(model, t), [model, lang]), nums = useMemo(() => numbers(model, t), [model, lang]);
+  const [{ lang, barBy }, setSettings] = useCompanionSettings(), t = (l: L) => tr(lang, l);
+  const bar = useMemo(() => buildBar(model, t, barBy), [model, lang, barBy]), nums = useMemo(() => numbers(model, t), [model, lang]);
   const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
   const [hover, setHover] = useState<{ x: number; left: number } | null>(null), [on, setOn] = useState(false), [band, setBand] = useState<Range | null>(null);
   // The pinned number's card hangs under the numbers; a range being chosen or chosen has the room (its card wins), and the number's comes back when the range goes.
@@ -224,7 +224,12 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
   const hours = bar.ticks.map(k => ({ k, px: k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width }));
   const suns = bar.sun.map(x => { const px = clamp(x.f * width, 6, Math.max(6, width - 6)); return { ...x, px, bare: hours.some(h => Math.abs(h.px - px) < 14) }; });
   const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
-  const lifted = live?.row ?? null, spanned = hot && hot !== lifted && hot !== open ? model.span.get(hot) : null, opened = open ? model.span.get(open) : null;
+  // By place on a day with stretches the pointer lifts the place under it, but a click or the span marked is the stretch's (the list's row there).
+  const lifted = live?.row ?? null, hit = barBy === 'place' && model.segs.size && live ? bar.segs.find(x => x.s <= live.ms && live.ms < x.e)?.row ?? null : lifted;
+  const spanned = hot && hot !== hit && hot !== open ? model.span.get(hot) : null, opened = open ? model.span.get(open) : null;
+  const by = model.segs.size > 0 && <div className="dt-by" role="group" aria-label={t(['What the bar shows', '总览条画的是'])}>
+    {(['doing', 'place'] as const).map(k => <button key={k} type="button" className={barBy === k ? 'is-on' : ''} aria-pressed={barBy === k} onClick={() => setSettings({ barBy: k })}>{k === 'doing' ? t(['Doing', '在干嘛']) : t(['Place', '在哪'])}</button>)}
+  </div>;
   return <>
     <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
       <div className="dt-scrub" aria-hidden="true">
@@ -238,7 +243,7 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
         <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
-          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${lifted === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
+          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${hit === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
             style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
@@ -270,11 +275,12 @@ export function DayBar({ model, port, ui, cut, hot, open, onHot, onJump, onPage,
         <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} say={sayRange(model, summary.a, summary.b)} onSay={onSay} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>
       </div>}
     </div>
-    {nums.length + model.vitals.length > 0 && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
+    {(nums.length + model.vitals.length > 0 || by) && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
       {nums.map(n => { const Glyph = KIND_ICON[n.kind]; return <button key={n.kind} type="button" className={`dt-num${ui.pinned === n.kind ? ' is-pinned' : ''}`} aria-pressed={ui.pinned === n.kind} style={{ '--k': rgb(KIND[n.kind]) } as CSSProperties}
         onPointerEnter={() => ui.setPreview(n.kind)} onPointerLeave={() => ui.setPreview(null)} onClick={() => ui.setPinned(ui.pinned === n.kind ? null : n.kind)}>
         <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
       {model.vitals.length > 0 && <div className="dt-vitals">{model.vitals.map(v => <span key={v.key} className="dt-vit" data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}</div>}
+      {by}
       {numCard && numKind && <div ref={ncard} className="dt-card is-num is-on" role="region" aria-label={numCard.label}>
         <div ref={nIn} className="dt-card-in"><Swap id={numCard.kind}><CardBody card={numCard} Glyph={KIND_ICON[numCard.kind]} color={`rgb(${rgb(KIND[numCard.kind])})`} port={port} onPicture={onPicture} t={t}/></Swap></div>
       </div>}

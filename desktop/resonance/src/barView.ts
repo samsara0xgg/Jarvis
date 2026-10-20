@@ -48,7 +48,10 @@ export type BarStar = { id: string; f: number; label: string; hers: boolean };
 export type BarModel = {
   t0: number; t1: number; segs: BarSeg[]; sched: Sched[]; stars: BarStar[]; ticks: { label: string; f: number }[]; nowF: number | null;
   lens: Partial<Record<LensKind, { f0: number; f1: number }[]>>; sun: { kind: 'rise' | 'set'; f: number }[]; dots: BarDot[];
+  // What a click or the pointer on a minute finds: the list's own rows. They are `segs` unless the bar is drawn by place on a day with stretches (`by`), where the list stays the stretches.
+  hit: BarSeg[];
 };
+export type BarBy = 'doing' | 'place';
 // A moment (a photo, a payment) or a call or talk shorter than 3 minutes is a dot on the bar's lower edge, at its minute, in its kind's colour; the kinds are the ones the
 // chips count. A longer call or talk is no dot (the chip's lens shows where it was).
 export type BarDot = { key: string; kind: LensKind; f: number };
@@ -76,18 +79,19 @@ export function fit(w: number, textW: number, text: string): Fit {
 
 const BAR = new Set(['stay', 'sleep', 'move', 'ride']), NEUTRAL: Rgb = [196, 204, 238];
 // Where things overlap the one that wins is painted (sleep, then a way he went, then a place or a stretch of what he was doing), so every piece is one
-// thing; the track stays empty where nothing was recorded. With stretches the places and the ways are not pieces: the night is, and the stretches.
-export function buildBar(model: DayModel, t: Say): BarModel | null {
+// thing; the track stays empty where nothing was recorded. With stretches the places and the ways are not pieces: the night is, and the stretches,
+// unless he asks for the bar by place (`by`): then it is the night, the places and the ways, as it is on a day with no stretches.
+export function buildBar(model: DayModel, t: Say, by: BarBy = 'doing'): BarModel | null {
   const { reply, items, now, today } = model;
   if (!items.length && !model.segs.size || !Number.isFinite(reply.start_ms) || !Number.isFinite(reply.end_ms) || reply.end_ms <= reply.start_ms) return null;
-  const { t0, t1 } = axisOf(model), f = (ms: number) => (ms - t0) / (t1 - t0), limit = today ? Math.min(now, t1) : t1;
+  const { t0, t1 } = axisOf(model), f = (ms: number) => (ms - t0) / (t1 - t0), limit = today ? Math.min(now, t1) : t1, byPlace = by === 'place' || !model.segs.size;
   const covers: { it?: DayItem; seg?: Segment; s: number; e: number; pr: number }[] = [];
   for (const it of items) {
-    if (!(model.segs.size ? it.kind === 'sleep' : BAR.has(it.kind))) continue;
+    if (!(byPlace ? BAR.has(it.kind) : it.kind === 'sleep')) continue;
     const s = Math.max(it.start_ms, t0), e = Math.min(it.end_ms ?? limit, limit);
     if (e > s) covers.push({ it, s, e, pr: it.kind === 'stay' ? 1 : it.kind === 'sleep' ? 3 : 2 });
   }
-  for (const seg of model.segs.values()) {
+  if (!byPlace) for (const seg of model.segs.values()) {
     const s = Math.max(seg.start, t0), e = Math.min(seg.end, limit);
     if (e > s) covers.push({ seg, s, e, pr: 1 });
   }
@@ -149,10 +153,10 @@ export function buildBar(model: DayModel, t: Say): BarModel | null {
   // Where the sun comes up and goes down, when the day has them on its bar.
   const sun: BarModel['sun'] = [];
   for (const [kind, ms] of [['rise', reply.weather?.sunrise_ms], ['set', reply.weather?.sunset_ms]] as const) if (ms != null && f(ms) >= 0 && f(ms) <= 1) sun.push({ kind, f: f(ms) });
-  const dots: BarDot[] = [], by = counted(model);
-  for (const kind of DOT_KINDS) for (const { it, s, e } of by[kind]) if (s >= t0 && s <= limit && (kind === 'payment' || kind === 'picture' || e - s < DOT_MAX)) dots.push({ key: it.id, kind, f: f(s) });
+  const dots: BarDot[] = [], got = counted(model);
+  for (const kind of DOT_KINDS) for (const { it, s, e } of got[kind]) if (s >= t0 && s <= limit && (kind === 'payment' || kind === 'picture' || e - s < DOT_MAX)) dots.push({ key: it.id, kind, f: f(s) });
   dots.sort((x, y) => x.f - y.f);
-  return { t0, t1, segs, sched, stars, ticks, nowF: today ? clamp(f(now), 0, 1) : null, lens, sun, dots };
+  return { t0, t1, segs, sched, stars, ticks, nowF: today ? clamp(f(now), 0, 1) : null, lens, sun, dots, hit: by === 'place' && model.segs.size ? buildBar(model, t)!.segs : segs };
 }
 
 // ---------- what the pointer finds ----------
@@ -204,7 +208,7 @@ function stageNote(it: DayItem, t: Say) {
 }
 // The row of the piece of the bar at a minute: the stretch there, or an event still to come. A gap has none, so the pointer in one lifts nothing.
 export const pieceAt = (bar: BarModel, ms: number): string | null =>
-  bar.segs.find(x => x.s <= ms && ms < x.e)?.row ?? bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e)?.key ?? null;
+  bar.hit.find(x => x.s <= ms && ms < x.e)?.row ?? bar.sched.find(x => x.kind === 'event' && x.s <= ms && ms <= x.e)?.key ?? null;
 // The list row a click at a minute takes the list to: the piece there, else the next row after it (or the last).
 export const rowAt = (model: DayModel, bar: BarModel, ms: number): string | null => pieceAt(bar, ms) ?? (model.index.find(x => x.t0 >= ms) ?? model.index.at(-1))?.key ?? null;
 export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {

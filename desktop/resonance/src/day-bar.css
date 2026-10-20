@@ -130,6 +130,11 @@
 .notch .dt-num em { font-size:11.5px; line-height:16px; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
 .notch .dt-num:hover,.notch .dt-num.is-pinned { background:rgb(255 255 255 / .1); }
 .notch .dt-num.is-pinned { box-shadow:inset 0 0 0 1px rgb(var(--ink) / .6); }
+/* what the bar is drawn from (a day with stretches): his stretches or the places, at the numbers' right end */
+.notch .dt-by { display:inline-flex; align-items:center; gap:2px; height:24px; margin-left:auto; padding:2px; box-sizing:border-box; border-radius:12px; background:rgb(255 255 255 / .06); }
+.notch .dt-by button { height:20px; padding:0 9px; border-radius:10px; font-size:11px; white-space:nowrap; color:var(--p-faint); transition:background 120ms,color 120ms; }
+.notch .dt-by button:hover { color:var(--p-ink); }
+.notch .dt-by button.is-on { background:rgb(255 255 255 / .14); color:var(--p-ink); }
 .notch .dt-vitals { display:flex; align-items:center; gap:10px; height:24px; padding-inline:4px; }
 .notch .dt-vit { display:inline-flex; align-items:baseline; gap:4px; font-size:11.5px; line-height:16px; white-space:nowrap; color:var(--p-faint); }
 .notch .dt-vit small { font-size:inherit; }
