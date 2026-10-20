@@ -104,9 +104,23 @@ struct StarChrome: View {
             guard let f = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect) else { return }
             let screenH = UIScreen.main.bounds.height
             let lift = StarUI.lift(keyboardHeight: max(0, screenH - f.minY) / k)
-            withAnimation(.easeOut(duration: 0.3)) { ui.kbLift = lift }
+            // the composer goes with the keyboard: as long as it takes, and on its curve (the system's own, a fast start that settles, is the one a keyboard asks for; any other is the plain curve it names)
+            let d = (n.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25, curve = (n.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int) ?? 7
+            withAnimation(Self.keyboardAnimation(duration: d, curve: curve)) { ui.kbLift = lift }
         }
         .sheet(isPresented: $ui.settingsOpen) { SettingsSheet(tuneNear: { ui.settingsOpen = false; engine.setLevel(-1); ui.tuning = true }) }
+    }
+
+    /// The keyboard's own motion as an animation: its curve 7 (a spring the system keeps to itself) as a bezier that starts fast and settles, the others as the plain curves they are.
+    static func keyboardAnimation(duration d: Double, curve: Int) -> Animation {
+        let d = d > 0 ? d : 0.25
+        switch curve {
+        case 0: return .easeInOut(duration: d)
+        case 1: return .easeIn(duration: d)
+        case 2: return .easeOut(duration: d)
+        case 3: return .linear(duration: d)
+        default: return .timingCurve(0.2, 0.9, 0.3, 1, duration: d)
+        }
     }
 
     /// a tap on a notification that waits on him: the card it names under the dial, else the panel with what waits pinned
