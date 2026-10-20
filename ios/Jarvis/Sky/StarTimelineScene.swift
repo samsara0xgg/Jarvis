@@ -428,9 +428,9 @@ extension StarEngine {
         let rest = [FrameProbe.Step(label: "a talk comes in", seconds: 0.9, start: { tl.fixture?.replies[0] = TimelineFixture.today(cal, late: true) }), pause(0.5),
                     FrameProbe.Step(label: "a row opens", seconds: 0.7, start: { withAnimation(.spring(duration: 0.26, bounce: 0.08)) { tl.openRow = "event-demo-1" } }),
                     FrameProbe.Step(label: "a row shuts", seconds: 0.7, start: { withAnimation(.spring(duration: 0.26, bounce: 0.08)) { tl.openRow = nil } })]
-        let shut: () -> Void = { var t = Transaction(); t.disablesAnimations = true; withTransaction(t) { tl.openRow = nil; tl.probeDrag?(0) } }
+        let shut: () -> Void = { var t = Transaction(); t.disablesAnimations = true; withTransaction(t) { tl.openRow = nil; tl.swipe.drag = 0 } }
         let back = [pause(0.5, start: { var t = Transaction(); t.disablesAnimations = true; withTransaction(t) { tl.openRow = "event-demo-1" } }),
-                    FrameProbe.Step(label: "swipe back: the page follows a finger across (0.5 s)", seconds: 0.5, frame: { p in tl.probeDrag?(W * p) }), pause(0.3, start: shut)]
+                    FrameProbe.Step(label: "swipe back: the page follows a finger across (0.5 s)", seconds: 0.5, frame: { p in tl.swipe.drag = W * p }), pause(0.3, start: shut)]
         let alone: [String: [FrameProbe.Step]] = ["拖": scrub, "甩": flings, "换日": days, "静": idle, "指": bare, "滑回": back]
         let steps = alone[only].map { launch + Array(repeating: $0, count: 6).flatMap { $0 } } ?? launch + idle + bare + scrub + flings + days + rest
         probe.run(steps) { _ in }

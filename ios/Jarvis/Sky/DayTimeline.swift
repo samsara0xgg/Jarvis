@@ -64,6 +64,7 @@ final class TimelineState {
     var focus: String?                  // a waiting card the engine asks to bring up
     var version = 0                     // bumps when the brain's days were adopted again: talk topics may have come
     var request = ScrollRequest()       // where the list is asked to go
+    let swipe = TLSwipe()               // how far a swipe back has the row's page to the right
     var waitH = 0.0                     // how tall the pinned cards over the list are
     // what a row does when it is opened (Sky/DayTimelineActions.swift)
     var acked: [String: Date] = [:]                 // the reminders he has just said he knows, until when the row says so before the brain's next answer does (`ackHolds`)
@@ -97,7 +98,6 @@ final class TimelineState {
     #if DEBUG
     struct Fixture { var replies: [Int: DayReply]; var now: Double; var loading = false }       // by days from today; `loading`: the day is still being asked for
     var fixture: Fixture?               // made-up days and a fixed now (Sky/StarTimelineScene.swift)
-    @ObservationIgnored var probeDrag: ((Double) -> Void)?      // a swipe back made by the frame probe (Sky/StarTimelineScene.swift): it gives how far it has the page to the right
     #endif
 
     /// the day number of today as of the last tick of the minute (`rollOver`): what shows today reads it through `today`, so that midnight draws it again
@@ -458,39 +458,35 @@ private struct TLPager: View {
     let room: Double
     let lens: TLLens?
     @Binding var nowInView: Bool
-    @State private var drag = 0.0               // how far a swipe back has the page to the right
     @State private var releasing = false        // a swipe let go and its page is on its way, out or back in
     @GestureState private var sideways: Bool?   // what a drag on the page is, decided once as it starts: the way back (true), or the page's own scroll (false); none between drags
     @State private var turn: Edge?              // the edge the page of a step comes in from: below for the next row, above for the one before (none: a turn from the bar, a cross-fade)
     @Environment(\.accessibilityReduceMotion) private var reduce
 
+    private var swipe: TLSwipe { tl.swipe }
+
+    /// This body does not read the swipe: a finger moving the page draws `Swiped` (below) and not the pager, with its list, its page and their closures, on every frame.
     var body: some View {
         let page = tl.openRow.flatMap { id in model.entries.first { $0.id == id } }
-        let back = page == nil ? 1 : clamp(drag / W, 0, 1)                    // 0 with the page all the way in, 1 with the list
         ZStack(alignment: .top) {
             TLList(model: model, engine: engine, tl: tl, room: room, lens: lens, nowInView: $nowInView)
-                .offset(x: reduce ? 0 : -TLMotion.detailShift * (1 - back))
-                .opacity(TLMotion.listShows(back))
+                .modifier(Swiped(swipe: swipe, list: true, open: page != nil, reduce: reduce))
                 .allowsHitTesting(page == nil).accessibilityHidden(page != nil)
             if let page {
                 // a step to the row before or after pushes only the page's body up or down under its fixed head; a turn from the bar is a cross-fade in the same place
                 TLDetailPage(e: page, tl: tl, engine: engine, back: goBack, step: { step($0, from: page) }, steps: steps(from: page), turn: turn)
-                    .offset(x: drag)
-                    .opacity(TLMotion.pageShows(back))
-                    .transition(reduce ? .opacity : .move(edge: .trailing))
+                    .modifier(Swiped(swipe: swipe, list: false, open: true, reduce: reduce))
+                    .transition(reduce ? .opacity : .modifier(active: Crossing(back: 1, list: false, reduce: false), identity: Crossing(back: 0, list: false, reduce: false)))
                     .simultaneousGesture(swipeBack)
             }
         }
         .animation(TLMotion.detail(reduce: reduce), value: tl.openRow)
-        #if DEBUG
-        .onAppear { tl.probeDrag = { drag = $0 } }
-        #endif
         .onChange(of: tl.openRow) { _, id in
             if let r = tl.renaming, r != id { tl.cancelRename() }          // the page with its field open went: the field goes with it
-            if !releasing { drag = 0 }
+            if !releasing { swipe.drag = 0 }
         }
         // a swipe the system took away (the page's scroll won it, a call came in) ends with no release: the page goes back to its place
-        .onChange(of: sideways) { _, s in if s == nil, !releasing, drag > 0 { withAnimation(TLMotion.detail(reduce: reduce)) { drag = 0 } } }
+        .onChange(of: sideways) { _, s in if s == nil, !releasing, swipe.drag > 0 { withAnimation(TLMotion.detail(reduce: reduce)) { swipe.drag = 0 } } }
     }
 
     private func goBack() { tl.openRow = nil }
@@ -518,25 +514,60 @@ private struct TLPager: View {
             .updating($sideways) { v, s, _ in if s == nil { s = TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height) } }
             .onChanged { v in
                 guard sideways ?? TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height), !reduce else { return }
-                releasing = false
-                drag = max(0, v.translation.width - Self.slop)          // the gesture fires 10 pt in: start from there, or the page jumps by that on its first frame
+                if releasing { releasing = false }
+                swipe.drag = max(0, v.translation.width - Self.slop)          // the gesture fires 10 pt in: start from there, or the page jumps by that on its first frame
             }
             .onEnded { v in
                 if reduce {          // under Reduce Motion the page does not follow: only where the swipe lets go counts
                     if TimelineState.backSwipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width) { withAnimation(TLMotion.detail(reduce: true)) { goBack() } }
                     return
                 }
+                let drag = swipe.drag
                 guard drag > 0 else { return }          // not a swipe back: the page's own scroll
                 let goes = TimelineState.backSwipe(dx: v.translation.width, dy: 0, predicted: v.predictedEndTranslation.width)
                 releasing = true
                 let to = goes ? W : 0
                 let speed = abs(to - drag) > 1 ? v.velocity.width / (to - drag) : 0          // the finger's own speed, in parts of the way left per second
-                withAnimation(TLMotion.release(speed: speed)) { drag = to } completion: {
+                withAnimation(TLMotion.release(speed: speed)) { swipe.drag = to } completion: {
                     var t = Transaction(); t.disablesAnimations = true
-                    withTransaction(t) { if goes { goBack() }; drag = 0 }
+                    withTransaction(t) { if goes { goBack() }; swipe.drag = 0 }
                     releasing = false
                 }
             }
+    }
+}
+
+/// How far a swipe back has the page to the right. It is an object of its own and not state of the pager, so that the pager's body, which has the list, the page and the closures of both,
+/// is not run again on every frame of a finger.
+@Observable final class TLSwipe { var drag = 0.0 }
+
+/// The list and the page as the crossing has them, `back` being 0 with the page all the way in and 1 with the list. It is an animated value, so that the crossing goes through the same curve
+/// (`TLMotion.listShows`, `pageShows`) under a finger, on its release and when the page comes or goes by a tap, as the bar's way back; the list at a third of the finger's pace.
+private struct Crossing: ViewModifier, Animatable {
+    var back: Double
+    let list: Bool
+    let reduce: Bool
+    var animatableData: Double {
+        get { back }
+        set { back = newValue }
+    }
+    func body(content: Content) -> some View {
+        if list {
+            content.offset(x: reduce ? 0 : -TLMotion.detailShift * (1 - back)).opacity(TLMotion.listShows(back))
+        } else {
+            content.offset(x: back * W).opacity(TLMotion.pageShows(back))
+        }
+    }
+}
+
+/// `Crossing` at the place of the swipe: the list with no page open is all the way in (1)
+private struct Swiped: ViewModifier {
+    let swipe: TLSwipe
+    let list: Bool
+    let open: Bool
+    let reduce: Bool
+    func body(content: Content) -> some View {
+        content.modifier(Crossing(back: open ? clamp(swipe.drag / W, 0, 1) : 1, list: list, reduce: reduce))
     }
 }
 
