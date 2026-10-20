@@ -136,12 +136,14 @@ extension StarEngine {
             if mode == .seek { if abs(fs.velocity) > 40 * z { ng.caught = true }; mode = .idle; fs.velocity = 0 }
             pressed = ng.her
             if ng.her {
-                let w = DispatchWorkItem { [weak self] in
-                    guard let s = self, s.g?.kind == .press else { return }
-                    s.g?.kind = .hold; s.pressed = false
-                    if s.talk == nil { if BrainLink.shared.hasToken { s.micTap() } else { s.holdTalk() } }      // paired, she listens for real; the scripted talks are the unpaired demo
+                if tm < 0.5 {          // on the timeline a long press on her is the menu the system opens (Sky/StarStage.swift): the mic is her tap
+                    let w = DispatchWorkItem { [weak self] in
+                        guard let s = self, s.g?.kind == .press else { return }
+                        s.g?.kind = .hold; s.pressed = false
+                        if s.talk == nil { if BrainLink.shared.hasToken { s.micTap() } else { s.holdTalk() } }      // paired, she listens for real; the scripted talks are the unpaired demo
+                    }
+                    ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: w)
                 }
-                ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: w)
             } else if talk == nil && mon < 0.5 && fl < 0.05 && tm < 0.5 {
                 let w = DispatchWorkItem { [weak self] in
                     guard let s = self, let g = s.g, g.kind == .press else { return }

@@ -42,6 +42,7 @@ final class StarStage: UIView, HerDrive {
         engine.herDrive = self
         engine.onWake = { [weak self] in self?.boost() }
         build()
+        addInteraction(UIContextMenuInteraction(delegate: self))          // held down on the timeline, she offers a menu
         NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged), name: UIApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged), name: UIApplication.willResignActiveNotification, object: nil)
     }
@@ -337,6 +338,40 @@ final class StarStage: UIView, HerDrive {
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { for t in touches { engine.pointerUp(id(t), t.timestamp * 1000, cancelled: false) } }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { for t in touches { engine.pointerUp(id(t), t.timestamp * 1000, cancelled: true) } }
+}
+
+// MARK: her, held down: a menu (on the timeline, where only she is touched; a tap is as it was)
+
+extension StarStage: UIContextMenuInteractionDelegate {
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+        guard engine.tm > 0.5, !engine.ui.panelOpen else { return nil }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in self?.herMenu() }
+    }
+
+    private func herMenu() -> UIMenu {
+        let tl = engine.ui.tl
+        return UIMenu(children: TLHerMenu.items(tidy: tl.tidy, tidyShown: tl.tidyShown).map { item in
+            UIAction(title: item.title, image: UIImage(systemName: item.symbol), attributes: item.enabled ? [] : .disabled) { [weak self] _ in
+                switch item.kind {
+                case .tidy: tl.tidyDay()
+                case .history: self?.engine.openPanel()
+                case .today: tl.goToday()
+                }
+            }
+        })
+    }
+
+    /// what the system lifts while the menu is open: she, with the sky round her, as a disc (the stage has no view of hers to give)
+    private func herPreview() -> UITargetedPreview? {
+        let d = 56 * k, c = CGPoint(x: ox + TLLayout.her.x * k, y: oy + TLLayout.her.y * k)
+        guard let snap = resizableSnapshotView(from: CGRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d), afterScreenUpdates: false, withCapInsets: .zero) else { return nil }
+        let p = UIPreviewParameters()
+        p.backgroundColor = .clear
+        p.visiblePath = UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: d, height: d))
+        return UITargetedPreview(view: snap, parameters: p, target: UIPreviewTarget(container: self, center: c))
+    }
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForHighlightingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? { herPreview() }
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, previewForDismissingMenuWithConfiguration configuration: UIContextMenuConfiguration) -> UITargetedPreview? { herPreview() }
 }
 
 private final class LinkProxy {

@@ -125,3 +125,15 @@ struct TLTidySweep: View {
             .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
+
+/// What she offers when she is held down on the timeline (Sky/StarStage.swift): 理一下 (only where the header has it, 在理… and not to be chosen while the brain works), the history, the way back to today.
+struct TLHerMenu {
+    enum Kind { case tidy, history, today }
+    struct Item: Equatable { let kind: Kind, title: String, symbol: String, enabled: Bool }
+
+    static func items(tidy: TLTidy, tidyShown: Bool) -> [Item] {
+        let running = tidy == .running
+        return (tidyShown ? [Item(kind: .tidy, title: running ? "在理…" : "理一下", symbol: "sparkles", enabled: !running)] : [])
+            + [Item(kind: .history, title: "聊天记录", symbol: "text.bubble", enabled: true), Item(kind: .today, title: "回到今天", symbol: "arrow.uturn.backward", enabled: true)]
+    }
+}
