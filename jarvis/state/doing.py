@@ -81,6 +81,10 @@ _UNATTENDED_KINDS: Final = frozenset({"code"})
 """Use spans that show a program ran, not that he was there: a Claude Code session goes on while
 he rests, so it is a clue of the doing lane, never one of its facts."""
 _PLANNED_SOURCES: Final = frozenset({"plan", *commitments.SOURCES})
+_DAY_NOTES: Final = frozenset({"label", "claude_day"})
+"""Items about the whole day (an all-day thing, the night's letter on it): no stretch holds them."""
+_MOMENTS: Final = frozenset({"reminder"})
+"""Items with no end because they are a moment (a due time), not because they go on."""
 _ROLE_CATEGORY: Final = {"home": "home", "school": "study"}
 
 
@@ -529,8 +533,27 @@ def serve(  # noqa: PLR0913 — what the lane is made of: cut, facts, run, answe
         spans.append(_program_span(segment, by_id, horizon))
     for answer in answers:  # a later answer is carved over an earlier one
         spans = _answered(sorted(spans, key=_order), answer, facts, horizon)
+    spans = [{**s, "item_ids": _held(s, items, horizon)} for s in spans]
     spans.extend(_planned(items, now_ms))
     return sorted(spans, key=_order)
+
+
+def _held(span: Span, items: Iterable[Mapping[str, Any]], horizon: int) -> list[str]:
+    """The ids of the items a stretch of the doing lane holds, by start.
+
+    One that lasts is held by every stretch it overlaps; a moment, by the stretch it falls in.
+    An item about the whole day is held by none.
+    """
+    start, end = int(span["start_ms"]), _reach(span, horizon)
+    held = [
+        item for item in items
+        if item["kind"] not in _DAY_NOTES
+        and _touches(
+            {**item, "end_ms": item["start_ms"]} if item["kind"] in _MOMENTS else {**item},
+            start, end, horizon,
+        )
+    ]
+    return [str(item["id"]) for item in sorted(held, key=lambda i: (i["start_ms"], str(i["id"])))]
 
 
 def coverage(served: Iterable[Span], waking: Waking) -> dict[str, int]:

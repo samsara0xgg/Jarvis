@@ -447,6 +447,28 @@ def _served_spans(
     return serve(cut(facts, TODAY), facts, run, answers or [], items, NOW * MIN)
 
 
+def test_each_stretch_holds_the_items_of_its_time_save_those_about_the_whole_day() -> None:
+    """A moment is held by the stretch it falls in, one that lasts by each it overlaps."""
+    items = [
+        *_world_items(),
+        _item("code", "code", 610, 700, title="a session"),  # held, though it never cuts the lane
+        _item("pay", "payment", 545, 545),
+        _item("rem", "reminder", 630, None, text="call mum"),  # a due time, not still going
+        _item("tunes", "media", 650, 680, app="Music"),  # over two stretches: held by both
+        _item("label", "label", 0, 1440, title="Thanksgiving"),
+        _item("letter", "claude_day", 300, 1300, text="the day's chats"),
+    ]
+    held = {s["start_ms"] // MIN: s["item_ids"] for s in _served_spans(items=items)
+            if s["basis"] != "planned"}
+    assert held == {
+        480: [],
+        540: ["s1", "pay"],
+        600: ["s1", "k1", "code", "rem", "tunes"],
+        660: ["s1", "code", "tunes", "pic"],
+        720: ["s2", "p1"],  # a plan item whose time has come is held too
+    }
+
+
 def test_without_a_run_the_program_cut_speaks_for_the_facts_alone() -> None:
     """A segment with facts is a doing span worded by its primary fact, low and observed."""
     spans = _served_spans()
