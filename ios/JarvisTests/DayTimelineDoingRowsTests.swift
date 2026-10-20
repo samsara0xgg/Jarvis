@@ -253,4 +253,24 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         let starred = try JSONDecoder().decode(DayReply.self, from: Data(json.utf8))
         XCTAssertEqual(DayTimelineModel.build(starred, now: 900).stars.map(\.t), [560])
     }
+    // MARK: the made-up day of the debug scene
+
+    func testTheMadeUpDayOfTheDebugSceneIsStretchesBackToBackThatListOnlyItemsTheDayHas() throws {
+        let r = TimelineFixture.today(cal, doing: true)
+        let m = DayTimelineModel.build(r, now: TimelineFixture.now)
+        let stretches = m.entries.filter { $0.kind == .segment }
+        XCTAssertEqual(stretches.count, 13)
+        XCTAssertEqual(stretches.first?.t0, 545, "from when he woke")
+        for (a, b) in zip(stretches, stretches.dropFirst()) { XCTAssertEqual(a.t1, b.t0, "\(a.id) then \(b.id)") }
+        XCTAssertEqual(stretches.last?.t1, TimelineFixture.now, "to now")
+        let ids = Set(r.items.map(\.id))
+        for s in r.spans { for id in s.item_ids ?? [] { XCTAssertTrue(ids.contains(id), "\(s.id) lists \(id)") } }
+        XCTAssertEqual(r.spans.filter { $0.item_ids?.contains("stay-9") == true }.count, 4, "one stay under four stretches")
+        XCTAssertEqual(r.spans.filter { $0.item_ids?.contains("code-s1") == true }.count, 2, "and a session that begins in one and ends in the next")
+        XCTAssertEqual(m.waiting, ["reminder-demo-2", "event-demo-1"], "what waits on him is a row of its own")
+        XCTAssertEqual(stretches.filter(\.unknown).map(\.id), ["doing-1130"])
+        XCTAssertEqual(stretches.map(\.title).filter { $0 == "歇一会儿" }.count, 1)
+        XCTAssertTrue(stretches.contains { $0.detail?.contains("不太确定") == true })
+        XCTAssertEqual(stretches.first { $0.id == "doing-835" }?.counts, TLCounts(pictures: 0, payments: 0, calls: 1, messages: 1))
+    }
 }
