@@ -156,35 +156,72 @@ struct TLTopView: View {
 struct TLBarMode: View {
     @Binding var byPlace: Bool
     var reduce = false
+    @State private var held: Double?            // where a finger has the glass, 0 (干嘛) to 1 (在哪), while it holds it
 
     static let width = 24.0, cell = 26.0, height = 2 * cell + 4
 
+    /// A switch the way iOS draws one now: a drop of glass over the side that is on. A finger can take the glass and slide it up and down (it swells a little while held); the bar
+    /// changes the moment it crosses the middle, with a tick, and on release it settles on the nearer side with a spring. A tap on a side sends the glass there.
     var body: some View {
-        VStack(spacing: 0) {
-            cell("干嘛", spoken: "在干嘛", on: !byPlace) { set(false) }
-            cell("在哪", spoken: "在哪", on: byPlace) { set(true) }
+        let at = held ?? (byPlace ? 1 : 0)
+        ZStack(alignment: .top) {
+            drop.scaleEffect(held == nil || reduce ? 1 : 1.12).offset(y: 2 + at * Self.cell)
+            VStack(spacing: 0) {
+                word("干嘛", on: at < 0.5)
+                word("在哪", on: at >= 0.5)
+            }
+            .padding(2)
+            .allowsHitTesting(false)
         }
-        .padding(2)
+        .frame(width: Self.width, height: Self.height, alignment: .top)
         .background(Capsule().fill(Color.white.opacity(0.06)))
-        .frame(width: Self.width, height: Self.height)
+        .contentShape(Capsule().inset(by: -6))
+        .gesture(slide)
+        .accessibilityElement()
+        .accessibilityLabel("总条按")
+        .accessibilityValue(byPlace ? "在哪" : "在干嘛")
+        .accessibilityAdjustableAction { d in set(d == .increment) }
+        .accessibilityAddTraits(.isButton)
     }
+
+    /// the glass: Liquid Glass where the system has it, a frosted pill before it
+    @ViewBuilder private var drop: some View {
+        let size = CGSize(width: Self.width - 4, height: Self.cell)
+        if #available(iOS 26.0, *) {
+            Color.clear.frame(width: size.width, height: size.height).glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            Capsule().fill(.ultraThinMaterial).overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)).frame(width: size.width, height: size.height)
+        }
+    }
+
+    private func word(_ w: String, on: Bool) -> some View {
+        Text(w).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(on ? ink : muted).lineLimit(1).fixedSize()
+            .frame(width: Self.width - 4, height: Self.cell)
+    }
+
+    /// a drag of no length is a tap: the side under it; a longer one carries the glass
+    private var slide: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                guard abs(v.translation.height) > 3 || held != nil else { return }
+                let f = Self.place(v.location.y)
+                if (f >= 0.5) != byPlace { set(f >= 0.5) }          // crossing the middle is the change
+                withAnimation(.interactiveSpring(response: 0.18, dampingFraction: 0.86)) { held = f }
+            }
+            .onEnded { v in
+                let side = held == nil ? Self.place(v.location.y) >= 0.5 : Self.place(v.location.y + (v.predictedEndLocation.y - v.location.y) * 0.3) >= 0.5
+                set(side)
+                withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(response: 0.34, dampingFraction: 0.72)) { held = nil }
+            }
+    }
+
+    /// where on the switch a finger at `y` (in its own points) holds the glass, 0 to 1
+    static func place(_ y: Double) -> Double { clamp((y - 2 - cell / 2) / cell, 0, 1) }
 
     private func set(_ place: Bool) {
         guard place != byPlace else { return }
         Haptic.selection()
         withAnimation(.easeOut(duration: reduce ? TLMotion.reducedFade : 0.2)) { byPlace = place }
-    }
-
-    private func cell(_ word: String, spoken: String, on: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(word).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(on ? ink : muted).lineLimit(1).fixedSize()
-                .frame(width: Self.width - 4, height: Self.cell)
-                .background(Capsule().fill(Color.white.opacity(on ? 0.16 : 0)))
-                .contentShape(Rectangle().inset(by: -2))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(spoken)
-        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
