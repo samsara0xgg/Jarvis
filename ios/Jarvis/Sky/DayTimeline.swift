@@ -97,6 +97,7 @@ final class TimelineState {
     #if DEBUG
     struct Fixture { var replies: [Int: DayReply]; var now: Double; var loading = false }       // by days from today; `loading`: the day is still being asked for
     var fixture: Fixture?               // made-up days and a fixed now (Sky/StarTimelineScene.swift)
+    @ObservationIgnored var probeDrag: ((Double) -> Void)?      // a swipe back made by the frame probe (Sky/StarTimelineScene.swift): it gives how far it has the page to the right
     #endif
 
     /// the day number of today as of the last tick of the minute (`rollOver`): what shows today reads it through `today`, so that midnight draws it again
@@ -481,6 +482,9 @@ private struct TLPager: View {
             }
         }
         .animation(TLMotion.detail(reduce: reduce), value: tl.openRow)
+        #if DEBUG
+        .onAppear { tl.probeDrag = { drag = $0 } }
+        #endif
         .onChange(of: tl.openRow) { _, id in
             if let r = tl.renaming, r != id { tl.cancelRename() }          // the page with its field open went: the field goes with it
             if !releasing { drag = 0 }
