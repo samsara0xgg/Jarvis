@@ -69,7 +69,7 @@ extension DayTimelineModel {
             e.detail = rangeText(t0, t1, running: running, f)
             let asleep = i.minutes ?? span
             e.right = asleep.map { tlDur(tlInt($0)) } ?? ""
-            e.barName = asleep.map { tlHM(tlInt($0)) }; e.barIcon = "moon.fill"
+            e.barIcon = "moon.fill"          // the moon alone on the bar; how long is in the readout
             e.sleep = sleepInfo(i, t0: t0, end: end, f)
             e.glance = e.sleep?.short
         case "stay":
@@ -334,7 +334,7 @@ extension DayTimelineModel {
         let parts = [s.deep > 0 ? "深睡 " + tlHM(s.deep) : nil, s.core > 0 ? "核心 " + tlHM(s.core) : nil, s.rem > 0 ? "REM " + tlHM(s.rem) : nil,
                      s.awake > 0 ? "醒 \(s.awake) 次" : nil].compactMap { $0 }
         s.summary = parts.isEmpty ? nil : parts.joined(separator: " · ")
-        let short = [s.deep > 0 ? "深睡 " + tlHM(s.deep) : nil, s.rem > 0 ? "REM " + tlHM(s.rem) : nil].compactMap { $0 }
+        let short = [s.deep > 0 ? "深睡 " + tlHM(s.deep) : nil, s.rem > 0 ? "REM " + tlHM(s.rem) : nil, s.awake > 0 ? "醒 \(s.awake) 次" : nil].compactMap { $0 }
         s.short = short.isEmpty ? nil : short.joined(separator: " · ")
         return s
     }

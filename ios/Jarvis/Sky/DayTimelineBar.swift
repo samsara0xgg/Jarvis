@@ -12,9 +12,8 @@ struct TLPiece: Equatable, Identifiable {
     let id: String                  // the item it is (a stay, a trip, the night), or what it is not; a stay that the night cuts in two is two pieces of one id
     var t0: Double, t1: Double
     var fill: Fill
-    var name: String?               // the word it may wear: the place, the route, the way he moved, how long he slept
+    var name: String?               // the word it may wear: the place, the route, the way he moved
     var icon: String?               // and its symbol
-    var stages: [TLStage] = []      // the night: its stages, which shade it
 }
 
 /// something planned, drawn on the part of the bar that has not happened: an event as a dashed box over its time, a reminder or a bus as a tick
@@ -74,7 +73,7 @@ extension DayTimelineModel {
                 case .sleep: fill = .sleep
                 case .doing(let c): fill = c.map { .doing($0) } ?? .blank          // a stretch nobody could say anything of is a hole, as where nothing was recorded
                 }
-                p = TLPiece(id: s.id, t0: a, t1: b, fill: fill, name: byId[s.id]?.barName, icon: byId[s.id]?.barIcon, stages: fill == .sleep ? byId[s.id]?.sleep?.stages ?? [] : [])
+                p = TLPiece(id: s.id, t0: a, t1: b, fill: fill, name: byId[s.id]?.barName, icon: byId[s.id]?.barIcon)
             } else {
                 p = TLPiece(id: "blank-\(Int(a))", t0: a, t1: b, fill: .blank)
             }
@@ -116,18 +115,7 @@ enum TLPaint {
         }
     }
 
-    static let rem = RGB(150, 160, 235)                 // the lighter blue of REM
-
-    /// how a stage of the night is drawn: deep is the sleep hue whole, core a little less, REM the lighter blue, and awake or in bed lets the ground show through
-    static func look(_ k: TLStage.Kind) -> (rgb: RGB, alpha: Double) {
-        switch k {
-        case .deep: (sleep, 1)
-        case .core: (sleep, 0.78)
-        case .rem: (rem, 0.8)
-        case .awake, .inBed: (sleep, 0.25)
-        case .unspecified: (sleep, 0.6)
-        }
-    }
+    static let rem = RGB(150, 160, 235)                 // the lighter blue of REM, in the opened night's hypnogram
 
     /// WCAG relative luminance of a colour laid at `alpha` over the ground
     static func luminance(_ c: RGB, alpha: Double) -> Double {
@@ -481,15 +469,8 @@ private struct BarCanvas: View {
         Canvas { ctx, size in
             ctx.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: TLLayout.barRadius))
             for (p, r) in zip(scene.pieces, rects) {
-                if p.fill == .sleep, !p.stages.isEmpty {
-                    // the night shaded by stage: each block over the bar's own ground, never over another block
-                    for b in TLStage.blocks(p.stages, in: p.t0, p.t1) {
-                        let x0 = max(r.minX, TLGeo.x(b.t0, scene.span, size.width)), x1 = min(r.maxX, TLGeo.x(b.t1, scene.span, size.width))
-                        guard x1 > x0 else { continue }
-                        let l = TLPaint.look(b.kind)
-                        ctx.fill(Path(CGRect(x: x0, y: r.minY, width: x1 - x0, height: r.height)), with: .color(l.rgb.color(l.alpha)))
-                    }
-                } else if let l = TLPaint.look(p.fill) {
+                // the night is one plain piece like every other (yilun 10-20, as on the Mac): its stages are in the readout and drawn when its row opens
+                if let l = TLPaint.look(p.fill) {
                     ctx.fill(Path(r), with: .color(l.rgb.color(l.alpha)))
                     if p.fill == .trip { hatch(ctx, r) }
                 } else {

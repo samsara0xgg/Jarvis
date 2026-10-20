@@ -441,7 +441,7 @@ final class DayTimelineTests: XCTestCase {
         let night = try piece("sleep-0")
         XCTAssertEqual([night.t0, night.t1], [480, 545], "the night's tail, from where the bar begins")
         XCTAssertEqual(night.fill, .sleep)
-        XCTAssertEqual([night.name, night.icon], ["8:05", "moon.fill"], "its whole length, not the part the bar shows")
+        XCTAssertEqual([night.name, night.icon], [nil, "moon.fill"], "the moon alone: its length is in the readout")
         let home = try piece("stay-1")
         XCTAssertEqual(home.fill, .place(RGB(255, 168, 150), kept: true))
         XCTAssertEqual([home.name, home.icon], ["家", "house.fill"])
@@ -613,7 +613,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertFalse(r.ahead)
         let night = build(TimelineFixture.today(cal)).readout(at: 500)
         XCTAssertEqual(night.head, "睡觉 · 00:55–09:05 · 8 时 5 分", "08:20: the night, with the hours it really had, though the bar shows only the end of it")
-        XCTAssertEqual(night.second, "深睡 1:55 · REM 2:00", "08:20: the stages of the night he was in")
+        XCTAssertEqual(night.second, "深睡 1:55 · REM 2:00 · 醒 2 次", "08:20: the stages of the night he was in")
     }
 
     func testTheHeadGivesWayAtItsNameAndNeverAtItsHours() {

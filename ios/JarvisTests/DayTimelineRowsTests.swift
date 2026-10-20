@@ -441,8 +441,8 @@ final class DayTimelineRowsTests: XCTestCase {
         let sleep = try XCTUnwrap(try entry(m, "sleep-0").sleep)
         XCTAssertEqual([sleep.deep, sleep.core, sleep.rem, sleep.awake], [115, 232, 120, 2])
         XCTAssertEqual(sleep.summary, "深睡 1:55 · 核心 3:52 · REM 2:00 · 醒 2 次")
-        XCTAssertEqual(sleep.short, "深睡 1:55 · REM 2:00")
-        XCTAssertEqual(try entry(m, "sleep-0").glance, "深睡 1:55 · REM 2:00")
+        XCTAssertEqual(sleep.short, "深睡 1:55 · REM 2:00 · 醒 2 次")
+        XCTAssertEqual(try entry(m, "sleep-0").glance, "深睡 1:55 · REM 2:00 · 醒 2 次")
         XCTAssertEqual(sleep.stages.count, 12)
         XCTAssertEqual(sleep.stages.first, TLStage(kind: .core, t0: 55, t1: 100), "the night's own stretch: the time in bed before it is cut")
         XCTAssertEqual(sleep.stages.last, TLStage(kind: .awake, t0: 530, t1: 545))
@@ -767,35 +767,16 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(sleep.summary, "深睡 20 分 · 核心 1:10 · REM 1:00 · 醒 1 次")
         XCTAssertEqual(sleep.stages, [TLStage(kind: .core, t0: 840, t1: 890), TLStage(kind: .deep, t0: 890, t1: 910), TLStage(kind: .core, t0: 910, t1: 930), TLStage(kind: .inBed, t0: 930, t1: 935),
                                       TLStage(kind: .awake, t0: 935, t1: 945), TLStage(kind: .inBed, t0: 945, t1: 960), TLStage(kind: .rem, t0: 960, t1: 1020), TLStage(kind: .inBed, t0: 1020, t1: 1040)])
-        // the bar shades the same blocks that the totals add up
-        let piece = try XCTUnwrap(m.scene.pieces.first { $0.id == "n" })
-        let shaded = TLStage.blocks(piece.stages, in: piece.t0, piece.t1)
-        XCTAssertEqual(shaded, sleep.stages)
-        func minutes(_ k: TLStage.Kind) -> Int { Int(shaded.filter { $0.kind == k }.reduce(0) { $0 + $1.t1 - $1.t0 }) }
-        XCTAssertEqual([minutes(.deep), minutes(.core), minutes(.rem)], [sleep.deep, sleep.core, sleep.rem])
     }
 
-    func testTheNightStagesAreDrawnAsTheSpecSays() {
-        let sleep = TLPaint.sleep
-        XCTAssertEqual([TLPaint.look(.deep).alpha, TLPaint.look(.core).alpha, TLPaint.look(.rem).alpha, TLPaint.look(.awake).alpha, TLPaint.look(.inBed).alpha, TLPaint.look(.unspecified).alpha],
-                       [1, 0.78, 0.8, 0.25, 0.25, 0.6])
-        XCTAssertEqual(TLPaint.look(.deep).rgb, sleep)
-        XCTAssertEqual(TLPaint.look(.rem).rgb, RGB(150, 160, 235), "the lighter blue")
-        XCTAssertEqual(TLPaint.look(.awake).rgb, sleep, "the ground shows through it")
-    }
-
-    func testOnlyTheNightsPieceOfTheBarCarriesStagesAndTheSunComesWithTheScene() throws {
+    func testTheNightIsOnePlainPieceWithItsMoonAndTheSunComesWithTheScene() throws {
         let m = build(TimelineFixture.today(cal))
-        let pieces = m.scene.pieces
-        let night = try XCTUnwrap(pieces.first { $0.fill == .sleep })
-        XCTAssertEqual(night.stages.count, 12)
-        XCTAssertEqual(night.stages, try XCTUnwrap(try entry(m, "sleep-0").sleep).stages)
-        XCTAssertTrue(pieces.filter { $0.fill != .sleep }.allSatisfy { $0.stages.isEmpty })
+        let night = try XCTUnwrap(m.scene.pieces.first { $0.fill == .sleep })
+        XCTAssertNil(night.name, "no length on the bar: it is in the readout")
+        XCTAssertEqual(night.icon, "moon.fill")
         XCTAssertEqual(m.scene.sun, TLSun(rise: 454, set: 1091))
-        // a night with no stages is one flat piece, and a day with no weather has no sun
-        let r = try reply(item("n", "sleep", 300, 480))
-        XCTAssertTrue(try XCTUnwrap(build(r, now: nil).scene.pieces.first { $0.fill == .sleep }).stages.isEmpty)
-        XCTAssertNil(build(r, now: nil).scene.sun)
+        // a day with no weather has no sun
+        XCTAssertNil(build(try reply(item("n", "sleep", 300, 480)), now: nil).scene.sun)
     }
 
     func testTheSunsGlyphIsDrawnOnlyWhereItOverlapsNoHoursLabelAndOtherwiseItIsATick() throws {
