@@ -391,13 +391,9 @@ struct DayTimelineView: View {
             .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
                 if tl.openRow == nil, let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width) { tl.swipe(d) }          // not over a row's page, whose edge swipe is the way back
             })
-            .mask(VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black
-            })
         }
         .frame(width: W, height: TLLayout.viewport + TLLayout.fade, alignment: .top)
-        .modifier(FootFade(ui: ui))
+        .modifier(FootFade(ui: ui, head: Waiting.shared.cards.isEmpty ? 0 : pinnedHeight + 4))
         // the history takes the place of the list as it comes up: the list goes up and out with it, and comes back when the history has gone
         .modifier(HistoryOver(ui: ui, pull: $pull, tuning: true, lift: 6))
         .allowsHitTesting(!away)
@@ -468,15 +464,18 @@ private struct HistoryOver: ViewModifier {
     }
 }
 
-/// The foot of the list fades out over the composer, and goes up with it when the keyboard (or what he is sending) raises it: no row shows through the field. A modifier of its own, so
-/// that the keyboard rising draws this and not the whole screen.
+/// The one mask of the list's area: its top fades in (12 pt, under the cards of what waits, `head` pt) and its foot fades out over the composer, and goes up with it when the keyboard (or what he is
+/// sending) raises it: no row shows through the field. A modifier of its own, so that the keyboard rising draws this and not the whole screen.
 private struct FootFade: ViewModifier {
     let ui: StarUI
+    let head: Double
 
     func body(content: Content) -> some View {
         content.mask(alignment: .top) {
             VStack(spacing: 0) {
-                Color.black.frame(height: max(0, TLLayout.viewport - ui.kbLift - ui.attach.rise))
+                if head > 0 { Color.black.frame(height: head) }
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
+                Color.black.frame(height: max(0, TLLayout.viewport - ui.kbLift - ui.attach.rise - head - TLLayout.fadeTop))          // (a keyboard so high that the two fades meet puts the foot's under the top's)
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
                 Color.clear
             }
