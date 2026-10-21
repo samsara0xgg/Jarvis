@@ -33,7 +33,7 @@ import secrets
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.shared.here import Here, HereReading, HereUnavailable
+from jarvis.shared.here import Coarse, Here, HereReading, HereUnavailable
 from jarvis.state import places
 from jarvis.state.event_log import MAC_NODE, open_runtime_event_log, turn_origin
 from jarvis.state.locate_wait import Located, LocateWaits, Refused
@@ -52,6 +52,8 @@ SOCKET_WAIT_S: Final = 4.0
 PUSH_WAIT_S: Final = 8.0
 MAX_AGE_S: Final = 900
 """How old a report may be and still be where he is (``locate.max_age_s``): 15 minutes."""
+COARSE_MAX_AGE_S: Final = 86400
+"""How old a report may be and still say roughly where he is (ADR 0356): a day."""
 NOT_ASKED: Final = "no phone could be asked"
 NO_PHONE_REPORT: Final = "no phone has reported a location yet"
 
@@ -113,9 +115,13 @@ class HerePolicy:
     def __init__(  # noqa: PLR0913 - the log and clock, the Locator and the Mac, the places and the limits.
         self, event_log: Path, clock: Clock, *, locator: Locator | None = None,
         mac: Callable[[], Mapping[str, Any]] | None = None, memory_db: Path | None = None,
-        phone: str = "", max_age_s: int = MAX_AGE_S,
+        phone: str = "", max_age_s: int = MAX_AGE_S, home: tuple[float, float] | None = None,
     ) -> None:
-        """``mac`` reads this Mac's own location; ``phone`` is ``locate.phone`` (empty: newest)."""
+        """``mac`` reads this Mac's own location; ``phone`` is ``locate.phone`` (empty: newest).
+
+        ``home`` is the point :meth:`~jarvis.shared.here.Here.coarse` gives when no phone has
+        reported within a day.
+        """
         self._event_log = event_log
         self._clock = clock
         self._locator = locator
@@ -123,13 +129,27 @@ class HerePolicy:
         self._memory_db = memory_db
         self._phone = phone
         self.max_age_s = max_age_s
+        self._home = home
 
     def bind(self, turn_id: str | None) -> Here:
         """The Here of ``turn_id``; it reads the log and asks the phone only when called."""
         return Here(
             lambda: self._reading(turn_id, ask_always=False),
             lambda: self._reading(turn_id, ask_always=True),
+            lambda: self._coarse(turn_id),
         )
+
+    def _coarse(self, turn_id: str | None) -> Coarse | None:
+        """The turn's device's last report within a day, else home; no device is asked."""
+        try:
+            with contextlib.closing(open_runtime_event_log(self._event_log)) as conn:
+                last = latest_phone_fix(conn, self._device(conn, turn_id, mac=False))
+        except Exception as exc:  # noqa: BLE001 - a log that cannot be read is no report: home stands.
+            LOGGER.warning("here: no coarse position from the log (%s)", type(exc).__name__)
+            last = None
+        if last is not None and self.age_s(last) <= COARSE_MAX_AGE_S:
+            return Coarse(last.lat, last.lng)
+        return None if self._home is None else Coarse(*self._home, home=True)
 
     def last_report(self, conn: sqlite3.Connection, turn_id: str | None) -> PhoneFix | None:
         """The report the state lines speak of: the turn's device, never the Mac, else the phone."""
