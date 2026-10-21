@@ -342,14 +342,3 @@ private struct StepRow: View {
             .frame(width: 2, height: height)
     }
 }
-
-// ponytail: delete at integration; `FootprintModel.route(_:)` (feat/footprint-ios) replaces it, and also joins the stays to the first and last fix and re-anchors the gaps
-private extension FootprintModel {
-    func route(_ o: FootprintOuting) -> FootprintMapRoute {
-        let pts = o.points.map { FootprintMapPoint(coord: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng), ms: $0.at_ms, speedMps: $0.speed_mps) }
-        return FootprintMapRoute(id: o.id, points: pts, gaps: o.gaps.compactMap { g in
-            guard let a = pts.last(where: { $0.ms <= g.start_ms }), let b = pts.first(where: { $0.ms >= g.end_ms }) else { return nil }
-            return FootprintMapGap(from: a.coord, to: b.coord, startMs: a.ms, endMs: b.ms)
-        })
-    }
-}
