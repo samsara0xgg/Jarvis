@@ -288,9 +288,11 @@ class JobMail:
             received = datetime.fromisoformat(row["received_at"])
         except (TypeError, ValueError):
             received = self.now()
-        sentence, at = triage.event_of(body, received, self._zone, dated=True)
-        if at or sentence:
-            ledger.set_event(self._db, row["message_id"], at, sentence or row["event_text"])
+        found = triage.event_of(body, received, self._zone, dated=True)
+        if found.at or found.text:
+            ledger.set_event(
+                self._db, row["message_id"], found.at, found.text or row["event_text"], found.later
+            )
 
     def poll_once(self) -> int:
         """One cycle, on the calling thread; returns how many letters it settled."""
@@ -785,7 +787,8 @@ def repair(
     a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
     touched by the routing rules. An interview or offer row's event time is read again from its
     kept body and replaced when the body names one; a bare time there is the owner's clock in
-    ``clock``'s zone.
+    ``clock``'s zone. An event still ahead whose stored sentence names a Pacific label that US and
+    BC Pacific read differently gets its later reading from that sentence, once (ADR 0368).
     """
     changed = 0
     now = clock.now().astimezone(UTC)
@@ -806,7 +809,7 @@ def repair(
                 if value != (row[field] or "")
             }
         )
-        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, clock.zone):
+        if _repair_event(db, row, body, clock):
             changed += 1
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
@@ -832,6 +835,13 @@ def repair(
     return changed
 
 
+def _repair_event(db: Path, row: Mapping[str, Any], body: str, clock: Clock) -> bool:
+    """Read a row's event again from its kept body, else give one ahead its later reading."""
+    if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, clock.zone):
+        return True
+    return _read_later(db, row, clock)
+
+
 def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> bool:
     """Set an interview or offer row's event to what its kept body names under today's rules.
 
@@ -842,10 +852,34 @@ def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> boo
         received = datetime.fromisoformat(row["received_at"])
     except (TypeError, ValueError):
         return False
-    sentence, at = triage.event_of(body, received, zone, dated=True)
-    if (at, sentence) == (row["event_at"], row["event_text"]):
+    found = triage.event_of(body, received, zone, dated=True)
+    if (found.text, found.at, found.later) == (
+        row["event_text"], row["event_at"], row["event_later_at"]
+    ):
         return False
-    ledger.set_event(db, row["message_id"], at, sentence)
+    ledger.set_event(db, row["message_id"], found.at, found.text, found.later)
+    return True
+
+
+def _read_later(db: Path, row: Mapping[str, Any], clock: Clock) -> bool:
+    """Give an event still ahead the later reading its stored sentence names (ADR 0368).
+
+    Offline, from the stored sentence alone: only a visible row with no later reading yet, whose
+    ``event_at`` is ahead and whose sentence reads to that very time and a second one, gets it.
+    """
+    if row["deleted"] or row["event_later_at"] or not (row["event_at"] and row["event_text"]):
+        return False
+    try:
+        at = datetime.fromisoformat(row["event_at"])
+        received = datetime.fromisoformat(row["received_at"])
+    except (TypeError, ValueError):
+        return False
+    if (at if at.tzinfo else at.replace(tzinfo=clock.zone)) <= clock.now():
+        return False
+    later = triage.later_reading(row["event_text"], row["event_at"], received, clock.zone)
+    if later is None:
+        return False
+    ledger.set_event(db, row["message_id"], row["event_at"], row["event_text"], later)
     return True
 
 

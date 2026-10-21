@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS job_mail (
     role          TEXT,
     event_at      TEXT,
     event_text    TEXT,
+    event_later_at TEXT,
     confidence    REAL,
     extracted_by  TEXT,
     created_at    TEXT,
@@ -204,6 +205,13 @@ def _add_snapshot_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE job_decision ADD COLUMN {column} TEXT")
 
 
+def _add_event_columns(conn: sqlite3.Connection) -> None:
+    """Add the ``event_later_at`` column of ADR 0368 to a ``job_mail`` made before it."""
+    have = {row[1] for row in conn.execute("PRAGMA table_info(job_mail)")}
+    if "event_later_at" not in have:
+        conn.execute("ALTER TABLE job_mail ADD COLUMN event_later_at TEXT")
+
+
 @contextmanager
 def _db(path: Path) -> Iterator[sqlite3.Connection]:
     """A connection with the tables made, committed on a clean exit and always closed."""
@@ -212,6 +220,7 @@ def _db(path: Path) -> Iterator[sqlite3.Connection]:
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
         _add_snapshot_columns(conn)
+        _add_event_columns(conn)
         with conn:
             yield conn
     finally:
@@ -393,6 +402,7 @@ def upsert_mail(path: Path, mail: dict[str, Any], now: datetime) -> None:
         "role",
         "event_at",
         "event_text",
+        "event_later_at",
         "confidence",
         "extracted_by",
     )
@@ -425,7 +435,8 @@ def mail_rows(path: Path) -> list[dict[str, Any]]:
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT message_id, received_at, sender_name, sender_domain, subject, kind, company,"
-            " role, deleted, event_at, event_text FROM job_mail ORDER BY received_at, message_id",
+            " role, deleted, event_at, event_text, event_later_at FROM job_mail"
+            " ORDER BY received_at, message_id",
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -469,12 +480,23 @@ def bodyless_mails(path: Path, kinds: Sequence[str], limit: int) -> list[dict[st
     return [dict(row) for row in rows]
 
 
-def set_event(path: Path, message_id: str, event_at: str | None, event_text: str | None) -> None:
-    """Write the event time and sentence read from a mail's body again (ADR 0184)."""
+def set_event(
+    path: Path,
+    message_id: str,
+    event_at: str | None,
+    event_text: str | None,
+    event_later_at: str | None,
+) -> None:
+    """Write the event time, its sentence and its later reading, read from a mail again (ADR 0184).
+
+    ``event_later_at`` is the second reading of ``event_at`` when the mail's zone label reads two
+    ways (ADR 0368), else None.
+    """
     with _db(path) as conn:
         conn.execute(
-            "UPDATE job_mail SET event_at = ?, event_text = ? WHERE message_id = ?",
-            (event_at, event_text, message_id),
+            "UPDATE job_mail SET event_at = ?, event_text = ?, event_later_at = ?"
+            " WHERE message_id = ?",
+            (event_at, event_text, event_later_at, message_id),
         )
 
 
