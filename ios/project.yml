@@ -146,6 +146,7 @@ targets:
       - Jarvis/App/Words.swift
       - Jarvis/App/Words+Watch.swift
       - JarvisWatchWidgets/ComplicationViews.swift   # the gallery of complications (debug) draws the complications' own views
+      - Jarvis/App/Words+WatchLink.swift
     dependencies:
       - target: JarvisWatchWidgets
     entitlements:
@@ -173,6 +174,7 @@ targets:
       - JarvisWatch/WatchRingView.swift
       - Jarvis/App/Words.swift
       - Jarvis/App/Words+Watch.swift
+      - Jarvis/App/Words+WatchLink.swift
     info:
       path: JarvisWatchWidgets/Info.plist
       properties:
