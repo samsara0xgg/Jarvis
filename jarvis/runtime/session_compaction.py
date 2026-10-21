@@ -251,8 +251,12 @@ class CompactionSweep:
         pricing_table: Mapping[str, Mapping[str, float]],
         context_length: Callable[[], int | None],
         live_open: Callable[[], bool],
+        client: LLMClient | None = None,
     ) -> None:
-        """Bind the store, the knobs and the two runtime probes; opens nothing."""
+        """Bind the store, the knobs and the two runtime probes; opens nothing.
+
+        ``client`` stands in for the one built from ``settings.compact_preset`` on first use.
+        """
         self._memory = memory
         self._settings = settings
         self._llm_config = llm_config
@@ -260,7 +264,7 @@ class CompactionSweep:
         self._pricing_table = pricing_table
         self._context_length = context_length
         self._live_open = live_open
-        self._client: LLMClient | None = None
+        self._client = client
         self._task: asyncio.Task[None] | None = None
         self._last_attempt: datetime | None = None
         self._last_tried_ts: str | None = None

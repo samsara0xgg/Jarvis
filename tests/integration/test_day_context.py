@@ -24,7 +24,7 @@ from jarvis.state.memory_db import (
     render_context,
 )
 from tests.support.rolling_summary import (
-    CompactSummariser,
+    compact_summariser,
     fill_records,
     rolling_summaries,
     tick_sweep,
@@ -32,6 +32,8 @@ from tests.support.rolling_summary import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from tests.support.model import ScriptedModel
 
 NOW = datetime(2026, 10, 3, 9, 0).astimezone()
 HEADER = (
@@ -204,12 +206,12 @@ def test_rolling_is_unchanged_by_the_new_keys(tmp_path: Path) -> None:
     assert SessionSettings().context_raw_max_chars == 40000
 
 
-def _sweep(tmp_path: Path, summariser: CompactSummariser, **settings: object) -> CompactionSweep:
+def _sweep(tmp_path: Path, summariser: ScriptedModel, **settings: object) -> CompactionSweep:
     from jarvis.state.event_log import open_event_log  # noqa: PLC0415
 
     log = tmp_path / "events.db"
     open_event_log(log).close()
-    sweep = CompactionSweep(
+    return CompactionSweep(
         memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
         settings=SessionSettings(compact_prompt="summarise", recent_records=20, **settings),  # type: ignore[arg-type]
         llm_config={},
@@ -217,22 +219,21 @@ def _sweep(tmp_path: Path, summariser: CompactSummariser, **settings: object) ->
         pricing_table={},
         context_length=lambda: 1_050_000,
         live_open=lambda: False,
+        client=summariser.as_llm_client(),
     )
-    sweep._client = summariser  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    return sweep
 
 
 def test_the_compaction_sweep_does_nothing_in_this_mode(tmp_path: Path) -> None:
     """The window fold runs in rolling mode (control) and never in day_summaries mode."""
     fill_records(tmp_path / "memory.db", 0, 149)
-    control = CompactSummariser()
+    control = compact_summariser()
     tick_sweep(_sweep(tmp_path, control))
     assert control.requests  # the window folds what it hides in rolling mode
 
     other = tmp_path / "other"
     other.mkdir()
     fill_records(other / "memory.db", 0, 149)
-    quiet = CompactSummariser()
+    quiet = compact_summariser()
     tick_sweep(_sweep(other, quiet, context=DAY_SUMMARIES_CONTEXT))
     assert quiet.requests == []
     assert rolling_summaries(other / "memory.db") == []

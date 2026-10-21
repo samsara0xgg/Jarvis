@@ -6,52 +6,35 @@ import asyncio
 import re
 from contextlib import closing
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from jarvis.decision.compaction import REQUIRED_HEADINGS
-from jarvis.decision.llm import ChatResult
 from jarvis.state.memory_db import local_now, open_memory_db
+from tests.support.model import ScriptedModel
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.runtime.session_compaction import CompactionSweep
+    from tests.support.model import Request, Step
 
 HEADINGS = "\n".join(f"{heading}\nnone" for heading in REQUIRED_HEADINGS)
 
 
-class CompactSummariser:
-    """Stands in for the compact preset's client: records each request it is sent."""
+def fold_summary(request: Request) -> str:
+    """One summary: the headings and the numbers of the first and last record this call folded."""
+    said = sentence_numbers(str(request.messages[0]["content"]).split("[Records")[1])
+    return f"## Conversation summary\n{HEADINGS}\nfolds records {said[0]} to {said[-1]}"
 
-    provider = "openai"
-    model = "fake-summariser"
 
-    def __init__(self) -> None:
-        self.requests: list[str] = []
-        self.fail_next = False
-        self.reply: str | None = None
+def compact_summariser(*steps: Step) -> ScriptedModel:
+    """The compact preset's model: a well-formed summary for each request past ``steps``."""
+    return ScriptedModel(*steps, otherwise=fold_summary, model="fake-summariser")
 
-    def chat(self, *, messages: list[dict[str, Any]], **_kwargs: object) -> ChatResult:
-        """One summary: the headings and the number of records this call folded."""
-        if self.fail_next:
-            self.fail_next = False
-            msg = "provider unreachable"
-            raise TimeoutError(msg)
-        text = str(messages[0]["content"])
-        self.requests.append(text)
-        said = sentence_numbers(text.split("[Records")[1])
-        text = self.reply or (
-            f"## Conversation summary\n{HEADINGS}\nfolds records {said[0]} to {said[-1]}"
-        )
-        return ChatResult(
-            text=text,
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=1,
-            output_tokens=1,
-            raw={},
-            model_used=self.model,
-        )
+
+def fold_prompts(model: ScriptedModel) -> list[str]:
+    """What each request carried: the previous summary, then the records to fold in."""
+    return [str(request.messages[0]["content"]) for request in model.requests]
 
 
 def fill_records(path: Path, first: int, last: int) -> None:
