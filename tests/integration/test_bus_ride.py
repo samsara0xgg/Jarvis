@@ -308,13 +308,19 @@ class World:
             ride_act=act, ride_read=read,
         )))
 
-    def tool(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch one `bus` call through the real registry, as the model would."""
+    def tool(
+        self, args: dict[str, Any], places: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch one `bus` call through the real registry, as the model would.
+
+        ``places`` are his kept places (``home``, ``school``) as ``lat,lng``.
+        """
         moment = datetime.fromtimestamp(self.clock_ms / 1000, UTC)
         clock = FakeClock(moment, zone=ZoneInfo("America/Vancouver"))
         registry = build_default_registry(
             ride_control=self.rides.control(), transit_offers=self.offers, clock=clock,
             here=HerePolicy(self.paths.event_log, clock),
+            transit_places=None if places is None else lambda: places,
         )
         request = ActionRequest(
             action_id=f"A-bus-{self.clock_ms}", tool_name="bus", target_entity_ref=None,
@@ -628,6 +634,28 @@ def test_bus_with_no_arguments_is_how_the_ride_is_going_and_without_one_the_time
     assert out["credit"] == "BC Transit"
     world.tool({"ride": "end"})
     assert world.tool({})["code"] == "unavailable"
+
+
+def test_a_times_question_for_where_the_ride_goes_is_answered_from_the_ride(
+    world: World,
+) -> None:
+    """ADR 0344: "to Harbour", said at boarding, and a place at his stop are the ride's own.
+
+    This world has no Google key, so a question that fell through to a new plan is `unavailable`.
+    He gets off at Fir Lane (48.52, -123.4); home is 33 m from it, school over a kilometre.
+    """
+    _board_said(world)
+    places = {"home": "48.5203,-123.4", "school": "48.53,-123.4"}
+    said = world.tool({"to": "Harbour"}, places)
+    assert said["summary"].startswith("On the 7 toward Harbour from Cedar Ave; next stop ")
+    assert "He gets off at Fir Lane:" in said["summary"]
+    assert {"destination", "alight_lat", "alight_lng"}.isdisjoint(said)
+    home = world.tool({"to": "home"}, places)
+    assert home["summary"].startswith("On the 7 toward Harbour from Cedar Ave; next stop ")
+    assert home["summary"].endswith(
+        " From there it is about 33 m on foot to home, in a straight line."
+    )
+    assert world.tool({"to": "school"}, places)["code"] == "unavailable"
 
 
 def test_a_ride_starts_from_the_option_the_last_list_numbered(world: World) -> None:
