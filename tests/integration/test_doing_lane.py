@@ -42,7 +42,6 @@ from jarvis.state.doing import (
     CATEGORIES,
     CLUE_KINDS,
     CONFIDENCES,
-    LANES,
     Waking,
     coverage,
     cut,
@@ -100,7 +99,6 @@ def _stay(item_id: str, start: int, end: int | None, **fields: Any) -> dict[str,
 
 def test_the_closed_vocabularies_are_the_ones_the_adr_names() -> None:
     """The lists the lane and the timeline agree on."""
-    assert LANES == ("doing", "place", "use", "body")
     assert CATEGORIES == (
         "home", "study", "work", "commute", "errand", "meal", "social", "rest", "sleep",
         "exercise", "unknown",

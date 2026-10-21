@@ -323,7 +323,6 @@ PendingConfirmationState = Literal[
     "accepted_unconsumed",
     "consumed",
     "rejected",
-    "superseded",
     "expired",
 ]
 """Single-slot lifecycle state (ADR-0012 §3 D4, plus ADR-0014 D14).
@@ -337,17 +336,11 @@ window between the deadline and the sweep tick that commits the row
 (:meth:`PendingConfirmationSlot.is_live`, whose `state == "pending"`
 test already returns False for this member without being edited).
 
-Day-1's single-slot fold (:func:`_fold_pending_confirmations`) never
-returns a slot whose CURRENT state is `"superseded"` — a new
-`confirmation.requested` discards the old slot outright rather than
-retaining it in a superseded state, since only one slot is ever held
-(supersession is observable indirectly: a later accepted/rejected event
-naming the discarded slot's `confirmation_id` no longer matches the
-current slot and is ignored). `"superseded"` stays in the Literal for
-D4 spec fidelity and so a future multi-slot fold (ADR-0012's defer
-list) can produce it without widening this module's public surface —
-mirrors `TaskStatus` carrying literal members the Day-1 fold does not
-yet produce.
+The single-slot fold (:func:`_fold_pending_confirmations`) holds one slot:
+a new `confirmation.requested` discards the old slot outright (supersession
+is observable indirectly: a later accepted/rejected event naming the
+discarded slot's `confirmation_id` no longer matches the current slot and
+is ignored).
 """
 
 

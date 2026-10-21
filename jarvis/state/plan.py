@@ -37,7 +37,6 @@ TYPES: Final[tuple[str, ...]] = (
     "plan.opened",
     "plan.draft_failed",
 )
-WATCH_TYPES: Final[tuple[str, ...]] = ("plan.noticed", "plan.decided")
 ACTS: Final[tuple[str, ...]] = ("silent", "tell", "adjust")
 ACTOR: Final[str] = "jarvis_runtime"
 FIRMNESS: Final[tuple[str, ...]] = ("fixed", "movable", "droppable")

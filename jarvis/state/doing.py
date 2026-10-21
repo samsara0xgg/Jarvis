@@ -41,7 +41,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-LANES: Final = ("doing", "place", "use", "body")
 CATEGORIES: Final = (
     "home", "study", "work", "commute", "errand", "meal", "social", "rest", "sleep", "exercise",
     "unknown",
@@ -633,7 +632,6 @@ __all__ = [
     "CONFIDENCES",
     "CUT_MIN_MS",
     "DOING_KINDS",
-    "LANES",
     "PLANNED_KIND",
     "Doing",
     "Segment",
