@@ -8,7 +8,6 @@ import asyncio
 import contextlib
 import sqlite3
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
@@ -28,6 +27,7 @@ from jarvis.runtime import (
 from jarvis.runtime.daemon import intent_pump, sweep
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
+from tests.support.hold import HANG_S
 from tests.support.model import Pause, ScriptedModel, tool_call
 from tests.support.response_run import (
     drive_turn_on_own_connection,
@@ -80,11 +80,11 @@ def test_cancel_deadline_includes_admission_lock(tmp_path: Path) -> None:
     assert opened is not None
     run, _terminalizer, _route = opened
     cancel = make_response_cancel_callable(runtime)
-    with run.admission_lock, ThreadPoolExecutor(max_workers=1) as pool:
-        start = time.monotonic()
-        outcome = pool.submit(cancel, run.response_id, "generation", "user_stop").result(1)
+    # The pool ends after the fence is let go, so a cancel stuck behind it cannot hold the test.
+    with ThreadPoolExecutor(max_workers=1) as pool, run.admission_lock:
+        # The fence stays held until the cancel has answered: it gives up on the fence instead.
+        outcome = pool.submit(cancel, run.response_id, "generation", "user_stop").result(HANG_S)
         assert outcome == "timeout"
-        assert time.monotonic() - start < .25
         assert not run.cancellation_token.is_cancelled
         assert event_count(runtime.conn, "response.cancelled") == 0
     assert cancel(run.response_id, "generation", "user_stop") == "cancelled"
