@@ -34,6 +34,7 @@ from websockets.sync.client import connect as ws_connect
 
 from jarvis.cli import main
 from jarvis.deployment.night_power import MacPower
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.night_run import NightRun, NightSettings
 from jarvis.runtime.settings import Settings
 from jarvis.runtime.terminal import _DeviceSettings, _run, _Speaking, _Ui, bind_ui
@@ -595,10 +596,9 @@ class _RealBrain:
         if hooks is not None:
             self.hub.listening = BrainListening(self.hub, self.hub.events)  # type: ignore[arg-type]
             self.hub.listening.hooks = hooks
-        from jarvis.runtime import inherent_loop  # noqa: PLC0415
 
         self.hub.voice = BrainVoice(
-            cast("Any", self.provider), inherent_loop._SpokenRows(conn),  # noqa: SLF001
+            cast("Any", self.provider), output_watchers.SpokenRows(conn),
             poll_interval_s=0.01,
         )
         app = create_app(InherentDeps(

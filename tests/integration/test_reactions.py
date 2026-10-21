@@ -31,6 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.shared.emoji import is_single_emoji
 from jarvis.state import reactions
 from jarvis.state.device_tokens import device_token_matches, pair_device
@@ -220,7 +221,7 @@ def test_reaction_lines_are_never_rows_and_messages_carry_what_is_on_them(
     assert [row["id"] for row in rows] == ["u1", "a1", "m1"]
     assert not more
 
-    inherent_loop._add_reactions(tmp_path / "events.db", rows)  # noqa: SLF001
+    output_watchers.add_reactions(tmp_path / "events.db", rows)
     assert [row.get("reactions") for row in rows] == [
         {"jarvis": "\U0001f440"}, {"allen": "\U0001f44d"}, None,
     ]

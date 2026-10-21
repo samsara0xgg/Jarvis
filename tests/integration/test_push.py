@@ -36,7 +36,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.push import KEY_ENV, Push
 from jarvis.runtime.reminders import SPEAK_UNTIL, Reminders, line
 from jarvis.shared import lang
@@ -488,7 +488,7 @@ class PhoneHost:
     async def _main(self) -> None:
         conn = sqlite3.connect(self.world.paths.event_log, check_same_thread=False)
         self.hub = PhoneHub(
-            events=BrainEvents(conn), rows=inherent_loop._PhoneRows(conn),  # noqa: SLF001
+            events=BrainEvents(conn), rows=output_watchers.PhoneRows(conn),
         )
         app = create_app(InherentDeps(
             submit_callable=lambda _text: "T1",

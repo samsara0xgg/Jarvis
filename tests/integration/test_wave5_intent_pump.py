@@ -29,13 +29,13 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, WaitingTurn, inherent_loop
+from jarvis.runtime.daemon.output_watchers import response_watcher
 from jarvis.runtime.inherent_loop import (
     _boot_intent_pump_in_thread,
     _claim_intent_in_thread,
     _intent_pump_watcher,
     _intent_worker,
     _IntentPumpBoot,
-    _response_watcher,
     _start_intent_pump,
     _system_trigger_watcher,
 )
@@ -660,7 +660,7 @@ def test_a_turn_that_raises_reaches_the_surface_as_failed(runtime: JarvisRuntime
                 runtime, poll_interval_s=0.001, queue_capacity=8, max_concurrent_turns=2,
             )
             tasks.append(asyncio.create_task(
-                _response_watcher(runtime, broadcaster, poll_interval_s=0.001),
+                response_watcher(runtime, broadcaster, poll_interval_s=0.001),
             ))
             try:
                 await asyncio.sleep(0.02)

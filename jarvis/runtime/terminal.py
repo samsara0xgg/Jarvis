@@ -98,6 +98,7 @@ from jarvis.runtime.daemon.observers import (
     usage_observer_task,
     usage_poll_interval_s,
 )
+from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
@@ -107,12 +108,10 @@ from jarvis.runtime.inherent_loop import (
     _data_sweep_task,
     _install_power_observer_or_degrade,
     _ListenPorts,
-    _log_watcher_death,
     _restart_soon,
     _shutdown_power_observer,
     _single_ingress_activation,
     _spawn_single_ingress_session,
-    _tts_watcher,
     _voice_knobs,
     _voice_models_preflight,
 )
@@ -634,7 +633,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
         speaking.controls.on_speech_muted = lambda muted: pipeline.set_output_gain(
             0.0 if muted else 1.0,
         )
-    watcher = _tts_watcher(conn=journal.conn, pipeline=pipeline, broadcaster=broadcaster)
+    watcher = tts_watcher(conn=journal.conn, pipeline=pipeline, broadcaster=broadcaster)
     return _Speech(
         link, pipeline,
         [asyncio.create_task(watcher), asyncio.create_task(forward_playback(journal.path, outbox))],
@@ -764,7 +763,7 @@ def _start_mac_watch(
     devices = start_audio_device_watch(
         speaking.config, page, coordinator, session.ingress, None,
     )
-    devices.add_done_callback(_log_watcher_death)
+    devices.add_done_callback(log_watcher_death)
     log = open_event_log(speaking.runtime_root / NIGHT_LOG)
     power = _install_power_observer_or_degrade(
         log, asyncio.get_running_loop(),
@@ -953,7 +952,7 @@ def _start_retention(retention: _Retention) -> asyncio.Task[None]:
         ),
         name="data_sweep",
     )
-    task.add_done_callback(_log_watcher_death)
+    task.add_done_callback(log_watcher_death)
     return task
 
 
@@ -976,7 +975,7 @@ def _start_board(page: Settings | None) -> asyncio.Task[None] | None:
     if page is None:
         return None
     task = asyncio.create_task(watch_board(page), name="board_watch")
-    task.add_done_callback(_log_watcher_death)
+    task.add_done_callback(log_watcher_death)
     return task
 
 

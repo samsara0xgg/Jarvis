@@ -33,6 +33,7 @@ from jarvis.runtime import (
     make_relation_supersede_callable,
     make_supersede_unspoken_callable,
 )
+from jarvis.runtime.daemon import output_watchers
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import MemorySettings, render_context
@@ -765,7 +766,7 @@ class _PhoneRig:
 
         hub = PhoneHub(
             events=BrainEvents(self.events),
-            rows=inherent_loop._PhoneRows(self.events),  # noqa: SLF001
+            rows=output_watchers.PhoneRows(self.events),
             open_voice=open_voice,
             supersede_turn=supersede_turn,
             pick_earlier=make_compose_callable(self.runtime),

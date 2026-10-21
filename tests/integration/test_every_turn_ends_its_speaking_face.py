@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from jarvis.decision.response_run import ResponseRunRegistry
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.state.event_log import PHONE_VOICE_CHANNEL, emit_event, open_event_log
 from jarvis.surface.terminal_ui import Device, _own_voice
 from tests.support.media import (
@@ -107,7 +107,7 @@ def test_an_answer_no_player_voices_is_announced_spoken_as_suppressed(tmp_path: 
 
     asyncio.run(
         _watch(
-            inherent_loop._tts_watcher(  # noqa: SLF001 - the production watcher
+            output_watchers.tts_watcher(
                 conn=conn, pipeline=pipeline, poll_interval_s=0.01, broadcaster=wire,  # type: ignore[arg-type]
             ),
             emit,
@@ -130,7 +130,7 @@ def test_a_boot_without_speech_ends_every_answer_with_no_voice(tmp_path: Path) -
     wire = _Wire()
     asyncio.run(
         _watch(
-            inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
+            output_watchers.response_watcher(
                 SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
                 wire,  # type: ignore[arg-type]
                 poll_interval_s=0.01,
@@ -174,7 +174,7 @@ def test_a_brain_ends_a_typed_turn_with_a_word_a_voice_terminal_passes_on(tmp_pa
 
     asyncio.run(
         _watch(
-            inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
+            output_watchers.response_watcher(
                 SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
                 wire,  # type: ignore[arg-type]
                 poll_interval_s=0.01,
@@ -218,7 +218,7 @@ def test_a_spoken_turn_left_to_answer_in_text_ends_suppressed_on_a_brain(tmp_pat
 
     asyncio.run(
         _watch(
-            inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
+            output_watchers.response_watcher(
                 SimpleNamespace(conn=conn, response_runs=registry),  # type: ignore[arg-type]
                 wire,  # type: ignore[arg-type]
                 poll_interval_s=0.01,

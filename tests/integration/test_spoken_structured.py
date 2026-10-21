@@ -205,7 +205,7 @@ def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
     tmp_path: Path,
 ) -> None:
     """ADR 0181: the talk field's turn gets the spoken request shape and card, no rewrite."""
-    from jarvis.runtime.inherent_loop import _TTS_SILENT_CHANNELS  # noqa: PLC0415
+    from jarvis.runtime.daemon.output_watchers import TTS_SILENT_CHANNELS  # noqa: PLC0415
     from jarvis.state.event_log import emit_event  # noqa: PLC0415
 
     with SpokenPeer([[("final_answer", structured_reply(_SPOKEN, _WRITTEN))]]) as peer:
@@ -226,7 +226,7 @@ def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
     (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert (emitted["voice_text"], emitted["document_text"]) == (_SPOKEN, _WRITTEN)
     # Nothing of it is played: the speaker's silent set holds its intent channel.
-    assert "cli_stdin" in _TTS_SILENT_CHANNELS
+    assert "cli_stdin" in TTS_SILENT_CHANNELS
 
 
 def test_the_surface_never_speaks_the_written_part(tmp_path: Path) -> None:

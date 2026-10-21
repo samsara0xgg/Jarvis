@@ -29,6 +29,7 @@ from jarvis.decision import DecideContext, decide
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -424,7 +425,7 @@ class JudgeRig:
 
         fields: dict[str, Any] = {
             "events": BrainEvents(conn),
-            "rows": inherent_loop._PhoneRows(conn),  # noqa: SLF001
+            "rows": output_watchers.PhoneRows(conn),
             "open_voice": open_voice,
             "barge_in": barge_in,
             "cancel_turn": cancel_turn,
@@ -691,7 +692,7 @@ class VoiceHost:
     async def _main(self) -> None:
         conn = sqlite3.connect(self.log, check_same_thread=False)
         events = BrainEvents(conn)
-        rows = inherent_loop._PhoneRows(conn)  # noqa: SLF001
+        rows = output_watchers.PhoneRows(conn)
         speech = PhoneSpeech(
             build=self._build_phone_pipeline,
             rows=rows,
@@ -726,13 +727,13 @@ class VoiceHost:
             boot_high_water_id=latest_id(conn),
             config=_mac_config(),
             start_player=False,
-            silent_intent_channels=inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+            silent_intent_channels=output_watchers.TTS_SILENT_CHANNELS,
         )
         watcher = asyncio.create_task(
-            inherent_loop._tts_watcher(conn=conn, pipeline=mac, poll_interval_s=0.01),  # noqa: SLF001
+            output_watchers.tts_watcher(conn=conn, pipeline=mac, poll_interval_s=0.01),
         )
         ends = asyncio.create_task(  # ADR 0222: the daemon runs this beside the other watchers
-            inherent_loop._phone_ends_watcher(  # noqa: SLF001
+            output_watchers.phone_ends_watcher(
                 conn,
                 speech.owner_boot,
                 poll_interval_s=0.01,
@@ -912,15 +913,15 @@ class StepsHost:
             before=before,
             limit=limit,
         )
-        inherent_loop._add_steps(self.log, rows)  # noqa: SLF001
-        inherent_loop._add_places(self.log, rows)  # noqa: SLF001
+        output_watchers.add_steps(self.log, rows)
+        output_watchers.add_places(self.log, rows)
         return {"since": "", "rows": rows, "has_more": more}
 
     async def _main(self) -> None:
         conn = sqlite3.connect(self.log, check_same_thread=False)
         hub = PhoneHub(
             events=BrainEvents(conn),
-            rows=inherent_loop._PhoneRows(conn),  # noqa: SLF001
+            rows=output_watchers.PhoneRows(conn),
             check_attachments=self.store.check_for_turn if self.files else None,
         )
         submit_files = functools.partial(inherent_loop._submit_with_attachments, self.log)  # noqa: SLF001

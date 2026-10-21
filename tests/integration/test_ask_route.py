@@ -20,8 +20,8 @@ import httpx
 import pytest
 
 from jarvis.deployment import bootstrap_runtime
-from jarvis.runtime import _new_turn_id, inherent_loop
-from jarvis.runtime.daemon import live_backend
+from jarvis.runtime import _new_turn_id
+from jarvis.runtime.daemon import live_backend, output_watchers
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.plugin_settings import local_key_matches
 from jarvis.surface import inherent_server
@@ -216,7 +216,7 @@ async def _serving(tmp_path: Path) -> AsyncIterator[tuple[_Daemon, httpx.AsyncCl
     daemon = _Daemon(tmp_path)
     conn = open_event_log(daemon.paths.event_log)
     watcher = asyncio.create_task(
-        inherent_loop._response_watcher(  # noqa: SLF001
+        output_watchers.response_watcher(
             SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
             daemon.broadcaster, poll_interval_s=0.01,
         ),

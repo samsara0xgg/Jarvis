@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.tool_status import SHOW_AFTER_S, Shown, ToolStatus, plan
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
@@ -124,7 +124,7 @@ class _Wire:
 
 async def _watch(conn: sqlite3.Connection, wire: _Wire, steps: list[Any]) -> None:
     task = asyncio.create_task(
-        inherent_loop._tool_status_watcher(  # noqa: SLF001 - the production watcher
+        output_watchers.tool_status_watcher(
             SimpleNamespace(conn=conn), wire, poll_interval_s=0.005,  # type: ignore[arg-type]
         ),
     )

@@ -32,7 +32,7 @@ import pytest
 import uvicorn
 
 from jarvis.execution.location_tool import build_where_tool
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.locate import Locator
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches
 from jarvis.state.event_log import emit_event
@@ -73,7 +73,7 @@ class Host:
     async def _main(self) -> None:
         conn = sqlite3.connect(self.world.paths.event_log, check_same_thread=False)
         events = BrainEvents(conn, self.waits)
-        self.hub = PhoneHub(events=events, rows=inherent_loop._PhoneRows(conn))  # noqa: SLF001
+        self.hub = PhoneHub(events=events, rows=output_watchers.PhoneRows(conn))
         app = create_app(InherentDeps(
             submit_callable=lambda _text: "T1",
             broadcaster=InherentBroadcaster(),

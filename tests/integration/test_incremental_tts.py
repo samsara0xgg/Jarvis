@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.shared import Event
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
@@ -371,7 +371,7 @@ def test_a_typed_turn_the_watcher_dropped_is_not_replayed_by_the_next_spoken_tur
         db_path,
         FakeProvider(candidate_count=1),
         speak_from_segments=False,
-        silent_intent_channels=inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+        silent_intent_channels=output_watchers.TTS_SILENT_CHANNELS,
     )
     try:
         emit_event(
@@ -489,7 +489,7 @@ def test_cancel_mid_stream_interrupts_playback_through_the_real_watcher(
 
     async def _watch(until: str) -> None:
         watcher = asyncio.create_task(
-            inherent_loop._tts_watcher(  # noqa: SLF001 - production watcher integration
+            output_watchers.tts_watcher(
                 conn=watcher_conn,
                 pipeline=pipeline,
                 poll_interval_s=0.005,
@@ -610,12 +610,12 @@ def test_silent_turn_is_forgotten_on_the_run_terminal() -> None:
     kwargs: dict[str, Any] = {
         "turn_id": "TQ",
         "silent_turns": silent,
-        "silent_channels": inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+        "silent_channels": output_watchers.TTS_SILENT_CHANNELS,
         "consumer": "test",
     }
-    assert inherent_loop._drop_for_silent_channel(opened, **kwargs)  # noqa: SLF001
+    assert output_watchers.drop_for_silent_channel(opened, **kwargs)
     assert silent == {"TQ"}
-    assert inherent_loop._drop_for_silent_channel(cancelled, **kwargs)  # noqa: SLF001
+    assert output_watchers.drop_for_silent_channel(cancelled, **kwargs)
     assert silent == set()
 
 
@@ -633,10 +633,10 @@ def test_a_typed_turn_is_never_played_but_a_spoken_one_is() -> None:
     kwargs: dict[str, Any] = {
         "turn_id": "TT",
         "silent_turns": set(),
-        "silent_channels": inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
+        "silent_channels": output_watchers.TTS_SILENT_CHANNELS,
         "consumer": "test",
     }
-    drop = inherent_loop._drop_for_silent_channel  # noqa: SLF001
+    drop = output_watchers.drop_for_silent_channel
     assert drop(opened, intent_channel="cli_stdin", **kwargs)
     assert not drop(opened, intent_channel="inherent_ptt", **kwargs)
 

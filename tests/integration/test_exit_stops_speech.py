@@ -25,6 +25,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.state.event_log import emit_event, latest_id, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -360,7 +361,7 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
 
     async def watch() -> None:
         task = asyncio.create_task(
-            inherent_loop._tts_watcher(  # noqa: SLF001 - the production watcher
+            output_watchers.tts_watcher(
                 conn=runtime.conn, poll_interval_s=0.01,
                 pipeline=pipeline,  # type: ignore[arg-type]
                 broadcaster=wire,  # type: ignore[arg-type]

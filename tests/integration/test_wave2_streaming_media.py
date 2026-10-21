@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
@@ -1264,7 +1265,7 @@ def test_watcher_retries_overloaded_final_row_without_a_later_wakeup(  # noqa: C
 
     async def _watch_until_terminal() -> None:
         watcher = asyncio.create_task(
-            inherent_loop._tts_watcher(  # noqa: SLF001 - production watcher integration
+            output_watchers.tts_watcher(
                 conn=watcher_conn,
                 pipeline=pipeline,
                 poll_interval_s=0.005,

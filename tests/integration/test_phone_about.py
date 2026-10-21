@@ -29,8 +29,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
-from jarvis.runtime import inherent_loop
 from jarvis.runtime.about_item import AboutItems
+from jarvis.runtime.daemon import output_watchers
 from jarvis.shared.about import MAX_START_MS, clean_about, prompt_title
 from jarvis.state.day_line import DaySources, day_window, parse_day
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -230,7 +230,7 @@ def _phone_client(root: Path) -> tuple[TestClient, Path, str]:
             submit_callable=lambda _text: "T1",
             broadcaster=InherentBroadcaster(),
             phone=PhoneHub(
-                events=BrainEvents(conn), rows=inherent_loop._PhoneRows(conn),  # noqa: SLF001
+                events=BrainEvents(conn), rows=output_watchers.PhoneRows(conn),
             ),
             device_name=lambda one: device_name_for_token(root, one),
         ),

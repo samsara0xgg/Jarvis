@@ -37,6 +37,7 @@ from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect as _ws_connect
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -407,7 +408,7 @@ def test_the_route_itself_refuses_the_local_key_from_a_peer_on_loopback(tmp_path
         InherentDeps(
             submit_callable=lambda _text: "T1",
             broadcaster=InherentBroadcaster(),
-            phone=PhoneHub(events=BrainEvents(conn), rows=inherent_loop._PhoneRows(conn)),  # noqa: SLF001
+            phone=PhoneHub(events=BrainEvents(conn), rows=output_watchers.PhoneRows(conn)),
             device_name=functools.partial(device_name_for_token, root),
         ),
     )
@@ -432,7 +433,7 @@ def test_the_phone_channel_is_spoken_for_l3_and_silent_for_the_macs_speaker(
     from jarvis.decision.pre_route import SPOKEN_CHANNELS  # noqa: PLC0415 - the runtime wires L3
 
     assert PHONE_VOICE_CHANNEL in SPOKEN_CHANNELS
-    assert PHONE_VOICE_CHANNEL in inherent_loop._TTS_SILENT_CHANNELS  # noqa: SLF001
+    assert PHONE_VOICE_CHANNEL in output_watchers.TTS_SILENT_CHANNELS
     conn = open_event_log(tmp_path / "events.db")
     try:
         _mac_utterance(tmp_path / "events.db", "T-mac", "hello")
@@ -466,7 +467,7 @@ def test_the_speech_builder_needs_a_key_and_realtime_on(
         runtime_paths=SimpleNamespace(event_log=tmp_path / "events.db"),
         voice_settings=None,
     )
-    rows = inherent_loop._PhoneRows(conn)  # noqa: SLF001
+    rows = output_watchers.PhoneRows(conn)
     knobs = inherent_loop._VoiceKnobs()  # noqa: SLF001
     runtime = cast("Any", host)
 
@@ -629,7 +630,7 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
 
             # the cursor that feeds the phone's media actor reads the answer rows and no card
             with closing(sqlite3.connect(host.log)) as raw:
-                rows_of = inherent_loop._PhoneRows(raw)  # noqa: SLF001
+                rows_of = output_watchers.PhoneRows(raw)
                 _, voice_rows = rows_of.cursor("iphone", 0, spoken_only=True).poll()
                 _, all_rows = rows_of.cursor("iphone", 0).poll()
             assert not any(e.type.startswith("clarification.") for _id, e in voice_rows)

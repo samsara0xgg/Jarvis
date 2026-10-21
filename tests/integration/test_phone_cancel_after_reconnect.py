@@ -22,7 +22,8 @@ import pytest
 import uvicorn
 from websockets.sync.client import connect as _connect
 
-from jarvis.runtime import inherent_loop, make_turn_cancel_callable
+from jarvis.runtime import make_turn_cancel_callable
+from jarvis.runtime.daemon import output_watchers
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -78,7 +79,7 @@ class _Host:
 
         self._log = sqlite3.connect(self.runtime.runtime_paths.event_log, check_same_thread=False)
         hub = PhoneHub(
-            events=BrainEvents(self._log), rows=inherent_loop._PhoneRows(self._log),  # noqa: SLF001
+            events=BrainEvents(self._log), rows=output_watchers.PhoneRows(self._log),
             cancel_turn=cancel_turn,
         )
         app = create_app(InherentDeps(

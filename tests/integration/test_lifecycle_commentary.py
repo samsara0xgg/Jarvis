@@ -45,6 +45,7 @@ from jarvis.runtime import (
     make_response_cancel_callable,
     tool_status,
 )
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.shared import Event, lang
 from jarvis.shared.lang import CONFIRMED_TOOLS, LONG_WAIT_TOOLS, SLOW_TOOLS
@@ -1828,7 +1829,7 @@ def test_the_wire_marks_a_wait_line_and_says_nothing_of_its_cancel(
         await broadcaster.register(socket)  # type: ignore[arg-type]
         conn = open_event_log(runtime.runtime_paths.event_log)
         task = asyncio.create_task(
-            inherent_loop._response_watcher(  # noqa: SLF001
+            output_watchers.response_watcher(
                 replace(runtime, conn=conn), broadcaster, poll_interval_s=0.01,
             ),
         )

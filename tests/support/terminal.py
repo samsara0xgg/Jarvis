@@ -27,7 +27,7 @@ from jarvis.execution.tools import (
     build_default_registry,
     make_screen_capture,
 )
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.terminal import _declared, _observe, _run, _Speaking, _Watched, make_executor
 from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches
@@ -198,7 +198,7 @@ def brain_client(
     if speaks:
         hub.voice = BrainVoice(
             cast("Any", provider or VoiceSpeechProvider()),
-            inherent_loop._SpokenRows(conn),  # noqa: SLF001
+            output_watchers.SpokenRows(conn),
             poll_interval_s=0.01,
         )
     app = create_app(
@@ -683,7 +683,7 @@ class VoiceBrain:
         self.hub = TerminalHub(events=BrainEvents(conn))
         self.hub.voice = BrainVoice(
             cast("Any", self.provider),
-            inherent_loop._SpokenRows(conn),  # noqa: SLF001
+            output_watchers.SpokenRows(conn),
             poll_interval_s=0.01,
         )
         app = create_app(

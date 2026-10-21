@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.phone_voice import (
     UNPLAYED_LEFT,
     UNPLAYED_NO_ACTOR,
@@ -379,7 +379,7 @@ def test_a_phone_turn_never_reaches_the_macs_companion_and_every_other_turn_does
     _asked(log, "T-host", "mac", "cli_stdin")
     _asked(log, "T-sweep", None, "")  # a turn with no opening row
     wire = InherentBroadcaster()
-    wire.turn_device = inherent_loop._turn_devices(conn)  # noqa: SLF001
+    wire.turn_device = output_watchers.turn_devices(conn)
     clients = {name: _Client() for name in ("mac", "macbook", "iphone", "none")}
 
     async def run() -> None:
@@ -393,7 +393,7 @@ def test_a_phone_turn_never_reaches_the_macs_companion_and_every_other_turn_does
 
     async def watch() -> None:
         task = asyncio.create_task(
-            inherent_loop._response_watcher(  # noqa: SLF001 - the production watcher
+            output_watchers.response_watcher(
                 SimpleNamespace(conn=conn, response_runs=None),  # type: ignore[arg-type]
                 wire, poll_interval_s=0.01, voiced=False,
             ),
@@ -437,7 +437,7 @@ def test_the_push_socket_is_the_device_its_token_names(tmp_path: Path) -> None:
     _asked(log, "T-terminal", "macbook", "inherent_wake")
     _asked(log, "T-phone", "iphone", PHONE_VOICE_CHANNEL)
     wire = InherentBroadcaster()
-    wire.turn_device = inherent_loop._turn_devices(conn)  # noqa: SLF001
+    wire.turn_device = output_watchers.turn_devices(conn)
     app = create_app(
         InherentDeps(
             submit_callable=lambda _text: "T1", broadcaster=wire,

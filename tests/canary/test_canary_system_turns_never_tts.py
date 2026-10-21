@@ -3,12 +3,12 @@
 D4's last bullet is the pin:
 
 > **System turns are silent, enforced**: the daemon streams every turn
-> (``streaming_enabled=True``) and ``_tts_watcher`` currently feeds
+> (``streaming_enabled=True``) and ``tts_watcher`` currently feeds
 > **every** response chunk to TTS regardless of channel — a 3am orphan
 > closure would speak.
 
 The regression this guards is a deletion, not an addition: drop the
-channel guard out of ``_tts_watcher`` (or forget to extend it when a
+channel guard out of ``tts_watcher`` (or forget to extend it when a
 fourth attention channel is implemented) and the supervisor sweep's
 ``queue_review`` limitation is spoken aloud at 3am — the exact
 violation of spec §3.2.5 安静优先 that the ADR-0002 Limitation-routing
@@ -45,12 +45,12 @@ import ast
 from jarvis.state.event_log import EventTypeRegistry
 from tests.canary._helpers import parse, repo_root
 
-_INHERENT_LOOP_REL = "jarvis/runtime/inherent_loop.py"
+_OUTPUT_WATCHERS_REL = "jarvis/runtime/daemon/output_watchers.py"
 _CLI_RENDER_REL = "jarvis/surface/cli_render.py"
 _NOTIFY_REL = "jarvis/surface/notify.py"
 _GATES_REL = "jarvis/decision/gates.py"
 
-_TTS_WATCHER_NAME = "_tts_watcher"
+_TTS_WATCHER_NAME = "tts_watcher"
 _ATTENTION_CHANNEL_ALIAS = "AttentionChannel"
 _CHANNEL_TO_SURFACES_NAME = "ATTENTION_CHANNEL_TO_SURFACES"
 _SURFACE_TO_PHYSICAL_NAME = "_L3_SURFACE_TO_PHYSICAL"
@@ -194,7 +194,7 @@ def _function_def(module: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncF
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
             return node
     msg = (
-        f"{name} not found in {_INHERENT_LOOP_REL} — the TTS watcher was "
+        f"{name} not found in {_OUTPUT_WATCHERS_REL} — the TTS watcher was "
         "renamed or removed; update this canary before shipping."
     )
     raise AssertionError(msg)
@@ -204,11 +204,11 @@ def _function_def(module: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncF
 
 
 def test_canary_system_turns_never_tts() -> None:
-    """``_tts_watcher`` suppresses every attention channel that has no voice surface."""
+    """``tts_watcher`` suppresses every attention channel that has no voice surface."""
     gates = _module(_GATES_REL)
     notify = _module(_NOTIFY_REL)
     cli_render = _module(_CLI_RENDER_REL)
-    loop = _module(_INHERENT_LOOP_REL)
+    loop = _module(_OUTPUT_WATCHERS_REL)
 
     channels = _literal_alias_members(gates, _ATTENTION_CHANNEL_ALIAS)
     assert channels, (
@@ -263,7 +263,7 @@ def test_canary_system_turns_never_tts() -> None:
             referenced |= constants[node.id]
             hits.append(node.id)
     assert hits, (
-        f"{_INHERENT_LOOP_REL}: {_TTS_WATCHER_NAME} references no module-level "
+        f"{_OUTPUT_WATCHERS_REL}: {_TTS_WATCHER_NAME} references no module-level "
         "frozenset-of-strings constant. The ADR-0009 D4 channel filter was "
         "removed or inlined beyond this canary's reach — every turn now "
         "reaches the TTS pipeline, including the 3am supervisor sweep's."
