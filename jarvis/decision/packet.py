@@ -3,11 +3,11 @@
 Per ADR 0001 § Stub strategy L3 row ("real, reads projection snapshots")
 and spec §3.4.x.
 
-The Situation Packet bundles the trigger event, the most recent trace
-window, and (ADR-0009 D6) the Status Board for the L3 decision pipeline
-(Intent Router / Gates). Every L3 invocation reads the log again, so the
-Status Board's freshness is automatic; the read folds only the events since
-the reader's last one (ADR 0164), never a stale view.
+The Situation Packet bundles the trigger event, (ADR-0009 D6) the Status
+Board, and the folded confirmation, clarification and conversation state for
+the L3 decision pipeline (Intent Router / Gates). Every L3 invocation reads the
+log again, so the Status Board's freshness is automatic; the read folds only
+the events since the reader's last one (ADR 0164), never a stale view.
 
 Layer rules: stdlib + ``jarvis.shared`` + ``jarvis.state``. No imports
 of sibling layers (``jarvis.execution`` / ``jarvis.surface`` /
@@ -29,11 +29,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.shared import Event
-    from jarvis.state.authorization_snapshot import AuthorizationSnapshot
     from jarvis.state.conversation import ConversationHistory
     from jarvis.state.decision_snapshot import DecisionStateSnapshot
     from jarvis.state.projections import (
-        ActionAdmissions,
         PendingClarification,
         PendingConfirmations,
         StatusBoard,
@@ -54,8 +52,6 @@ class SituationPacket:
     Attributes:
         trigger_event: The single event that re-entered L3 (e.g.
             ``surface.user_intent``, ``action.result_observed``).
-        recent_trace: Frozen tuple of the most recent events (oldest
-            first; same order as Recent Trace projection iteration).
         current_turn_id: Turn correlation for the trigger (when known
             from ``trigger_event.correlation`` or
             ``trigger_event.payload``).
@@ -69,22 +65,15 @@ class SituationPacket:
             evaluation has consumed. The answer-path grammar hook
             (Step 6) and `format_pending_confirmation_note` both read
             this field.
-        action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
-            admitting `gate.evaluated` uid and dispatched uid of every
-            non-terminal action.
         pending_clarification: The newest ask card (ADR 0066), read by
             `format_pending_clarification_note`.
     """
 
     trigger_event: Event
-    recent_trace: tuple[Event, ...]
     current_turn_id: str | None
     status_board: StatusBoard
     pending_confirmation: PendingConfirmations
-    action_admissions: ActionAdmissions
     conversation_history: ConversationHistory | None = None
-    authorization_snapshot: AuthorizationSnapshot | None = None
-    event_cursor: int | None = None
     pending_clarification: PendingClarification | None = None
 
 
@@ -121,9 +110,9 @@ def assemble_packet(
 ) -> SituationPacket:
     """Build a :class:`SituationPacket` from the live event log.
 
-    Reads the Event Log and confirmation/dispatch operational tables under one
-    SQLite read transaction, folds the materialized events into projections,
-    then bundles the exact cursor, trigger and correlations into a frozen packet.
+    Reads the Event Log under one SQLite read transaction, folds the
+    materialized events into projections, then bundles the trigger, its
+    correlations and those projections into a frozen packet.
 
     Args:
         trigger: The event that re-entered L3 (already appended to
@@ -143,14 +132,10 @@ def assemble_packet(
 
     return SituationPacket(
         trigger_event=trigger,
-        recent_trace=projections.recent_trace.events,
         current_turn_id=_extract_correlation(trigger, "turn_id"),
         status_board=projections.status_board,
         pending_confirmation=projections.pending_confirmations,
-        action_admissions=projections.action_admissions,
         conversation_history=projections.conversation_history,
-        authorization_snapshot=state.authorizations,
-        event_cursor=state.event_cursor,
         pending_clarification=projections.pending_clarification,
     )
 

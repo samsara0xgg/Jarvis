@@ -175,7 +175,8 @@ def test_a_packet_reads_through_the_turns_reader_and_matches_the_cold_packet(
             conn, type="utterance.received", payload={"turn_id": "now", "transcript": "hi"}
         )
         cache = DecisionStateCache(partial(open_event_log, path), verify_every_reads=0)
-        first = assemble_packet(trigger, conn, cache.read)
+        assemble_packet(trigger, conn, cache.read)
+        first_cursor = cache.cursor
         emit_event(
             conn,
             type="response.started",
@@ -186,11 +187,10 @@ def test_a_packet_reads_through_the_turns_reader_and_matches_the_cold_packet(
         )
         second = assemble_packet(trigger, conn, cache.read)
         cold = assemble_packet(trigger, conn)
-        assert first.event_cursor is not None
-        assert cold.event_cursor is not None
-        assert first.event_cursor == cold.event_cursor - 1
+        cold_cursor = read_decision_snapshot(conn).event_cursor
+        assert first_cursor == cold_cursor - 1
         assert second == cold
-        assert cache.cursor == cold.event_cursor
+        assert cache.cursor == cold_cursor
 
 
 def test_the_self_check_waits_until_the_daemon_is_idle(tmp_path: Path) -> None:

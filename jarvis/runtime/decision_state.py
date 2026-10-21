@@ -139,8 +139,4 @@ class DecisionStateCache:
                 cold = read_decision_snapshot(conn)
             finally:
                 conn.rollback()
-        return (
-            warm.event_cursor == cold.event_cursor
-            and warm.projections == cold.projections
-            and warm.authorizations == cold.authorizations
-        )
+        return warm.event_cursor == cold.event_cursor and warm.projections == cold.projections

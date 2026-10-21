@@ -1,4 +1,4 @@
-"""A seeded random mix of everything the projections and facts fold."""
+"""A seeded random mix of everything the projections fold."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def emit_row(
 
 
 class RandomLog:
-    """Appends a seeded random mix of everything the projections and facts fold."""
+    """Appends a seeded random mix of everything the projections fold."""
 
     def __init__(self, conn: sqlite3.Connection, seed: int) -> None:
         self.conn = conn

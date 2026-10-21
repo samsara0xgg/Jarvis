@@ -3,12 +3,12 @@
 The real log is ~49k events and grows; a whole-log read costs ~0.4-0.5 s. The
 decision path advances a shared incremental cache instead, and the lead-in
 commentary guard, open_path's ranking and the turn-claim lookups read only the
-rows they need. The regression is silent: a call to ``rebuild_projections``,
-``make_snapshot`` or a bare ``iter_events`` still returns the right answer, only
-a few hundred milliseconds late, on the voice path.
+rows they need. The regression is silent: a call to ``rebuild_projections``
+or a bare ``iter_events`` still returns the right answer, only a few hundred
+milliseconds late, on the voice path.
 
-So this pins, for the modules that run on a turn's hot path, that none of those
-three is called except where the allowlist names it. The one allowed call is the
+So this pins, for the modules that run on a turn's hot path, that neither of
+those is called except where the allowlist names it. The one allowed call is the
 fallback for a hand-built runtime that holds no cache.
 
 Canary house style: stdlib ``ast`` only, no import of the module under test.
@@ -23,7 +23,7 @@ from typing import Final
 from tests.canary._helpers import parse, repo_root
 
 _WHOLE_LOG_READS: Final[frozenset[str]] = frozenset(
-    {"rebuild_projections", "make_snapshot", "iter_events"},
+    {"rebuild_projections", "iter_events"},
 )
 
 _HOT_PATH_MODULES: Final[tuple[str, ...]] = (

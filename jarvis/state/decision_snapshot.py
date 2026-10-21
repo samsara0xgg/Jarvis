@@ -1,4 +1,4 @@
-"""One read transaction for the exact Event Log and operational debt packet.
+"""One read transaction for the Event Log's folded projections.
 
 The projections are folds of the append-only log, so a reader that already
 holds the fold up to event N reads only the rows after N (ADR 0164). The log
@@ -13,11 +13,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from jarvis.state.authorization_snapshot import (
-    AuthorizationFacts,
-    AuthorizationSnapshot,
-    read_authorization_snapshot,
-)
 from jarvis.state.event_log import iter_events_after
 from jarvis.state.projections import (
     ProjectionFold,
@@ -36,7 +31,7 @@ LOGGER = logging.getLogger("jarvis.state.decision_snapshot")
 
 @dataclass(frozen=True)
 class DecisionFoldState:
-    """Both folds up to one event: its id, and its uid to recognise the same log again.
+    """The projection fold up to one event: its id, and its uid to recognise the same log again.
 
     Immutable once built: advancing it returns a new value, so one state can be
     held by any number of threads.
@@ -45,7 +40,6 @@ class DecisionFoldState:
     cursor: int
     anchor_uid: str
     projections: ProjectionFold
-    authorization: AuthorizationFacts
 
 
 @dataclass(frozen=True)
@@ -60,7 +54,6 @@ class DecisionStateSnapshot:
 
     event_cursor: int
     projections: ProjectionSet
-    authorizations: AuthorizationSnapshot
     fold_state: DecisionFoldState | None = field(default=None, compare=False, repr=False)
 
 
@@ -80,11 +73,10 @@ def _advance(state: DecisionFoldState, rows: list[tuple[int, Event]]) -> Decisio
         cursor=rows[-1][0] if rows else state.cursor,
         anchor_uid=rows[-1][1].event_uid if rows else state.anchor_uid,
         projections=state.projections.advance(events),
-        authorization=state.authorization.advance(events),
     )
 
 
-_EMPTY = DecisionFoldState(0, "", ProjectionFold(), AuthorizationFacts())
+_EMPTY = DecisionFoldState(0, "", ProjectionFold())
 
 
 def fold_log_state(
@@ -131,16 +123,10 @@ def read_decision_snapshot(
         if state is None:
             # A log shaped so that only the whole-log fold orders it (ConversationFold).
             events = [event for _, event in iter_events_after(conn, 0, cursor)]
-            facts = AuthorizationFacts().advance(events)
-            return DecisionStateSnapshot(
-                event_cursor=cursor,
-                projections=fold_projections(events),
-                authorizations=read_authorization_snapshot(conn, facts),
-            )
+            return DecisionStateSnapshot(event_cursor=cursor, projections=fold_projections(events))
         return DecisionStateSnapshot(
             event_cursor=cursor,
             projections=state.projections.projections(),
-            authorizations=read_authorization_snapshot(conn, state.authorization),
             fold_state=state if owned else None,
         )
     finally:

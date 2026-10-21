@@ -1,4 +1,4 @@
-"""L2 Projections — Recent Trace, Status Board, admissions, confirmations (pure fold).
+"""L2 Projections — Status Board, confirmations, clarification, conversation (pure fold).
 
 This module is **read-only** with respect to the Event Log. It SELECTs events
 through `jarvis.state.event_log.iter_events` and folds them into in-memory
@@ -8,17 +8,12 @@ participates by carrying zero SQL writes.
 
 Projections produced:
 
-1. **Recent Trace** — ring buffer of the most recent N events (Day-1: 200).
-
-2. **Status Board** — ADR-0009 D6: latest observed state per watched
+1. **Status Board** — ADR-0009 D6: latest observed state per watched
    repo (`repo.state_observed` + `project.commit_seen`), the last Mac
    power transition (`mac.sleeping` / `mac.awake`), and every action
    the log shows dispatched with no terminal event yet.
 
-3. **ActionAdmissions** — ADR-0008 D10: the admitting gate uid of every
-   non-terminal action.
-
-4. **PendingConfirmations** — ADR-0012 D4: the live confirmation slot and
+2. **PendingConfirmations** — ADR-0012 D4: the live confirmation slot and
    the consumed lease ids.
 
 `rebuild_projections(conn)` is the single L3-facing entry point — it reads
@@ -32,7 +27,6 @@ Layer boundary (`.importlinter` + canary H13 Step 11): stdlib only plus
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -47,63 +41,9 @@ from jarvis.state.event_log import iter_events
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Iterable
 
     from jarvis.shared import Event
-
-
-# --- Public types ------------------------------------------------------------
-
-_RECENT_TRACE_DEFAULT_SIZE: Final[int] = 200
-
-
-# --- RecentTrace -------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class RecentTrace:
-    """Bounded ring buffer of the most recent N events (spec §6).
-
-    `iter()` yields oldest-first (== append-order). The internal store
-    is a frozen tuple so the contract surface forbids mutation; rebuild
-    is idempotent.
-
-    Attributes:
-        events: Frozen tuple of at most `max_size` events, oldest first.
-        max_size: Configured ring-buffer capacity (default 200, Day-1).
-    """
-
-    events: tuple[Event, ...]
-    max_size: int
-
-    @classmethod
-    def from_events(
-        cls,
-        events: Iterable[Event],
-        *,
-        max_size: int = _RECENT_TRACE_DEFAULT_SIZE,
-    ) -> RecentTrace:
-        """Fold `events` into a ring buffer of capacity `max_size`.
-
-        Implementation uses `collections.deque(maxlen=...)` so the fold
-        is O(n) regardless of the input length. The result is frozen to
-        a tuple — the deque itself does not escape.
-        """
-        if max_size < 0:
-            msg = f"max_size must be non-negative, got {max_size!r}"
-            raise ValueError(msg)
-        buf: deque[Event] = deque(maxlen=max_size) if max_size > 0 else deque(maxlen=0)
-        for evt in events:
-            buf.append(evt)
-        return cls(events=tuple(buf), max_size=max_size)
-
-    def iter(self) -> Iterator[Event]:
-        """Yield events oldest-first (append-order).
-
-        Pick documented in ADR § Acceptance: oldest-first lets a consumer
-        process the trace in causal order without an explicit reverse.
-        """
-        return iter(self.events)
 
 
 # --- StatusBoard --------------------------------------------------------------
@@ -375,111 +315,6 @@ def _fold_status_board(events: Iterable[Event]) -> StatusBoard:
         state.fold(evt)
     return state.freeze()
 
-
-# --- ActionAdmissions fold (ADR-0008 D10) --------------------------------------
-
-
-@dataclass
-class _ActionFoldState:
-    """Per-pass scratch for the admissions fold."""
-
-    admissions: dict[str, ActionAdmission] = field(default_factory=dict)
-    gate_uid_by_action: dict[str, str] = field(default_factory=dict)
-    lease_by_action: dict[str, str] = field(default_factory=dict)
-
-    def copy(self) -> _ActionFoldState:
-        """Independent containers; the admission records themselves are frozen."""
-        return _ActionFoldState(
-            dict(self.admissions), dict(self.gate_uid_by_action), dict(self.lease_by_action),
-        )
-
-    def fold(self, evt: Event) -> None:
-        """Fold one event's action-lifecycle contribution, if it has one."""
-        if evt.type == "gate.evaluated":
-            self._note_pre_action_pass(evt)
-        elif evt.type == "action.dispatched":
-            action_id = str(evt.payload["action_id"])
-            self.admissions[action_id] = ActionAdmission(
-                action_id=action_id,
-                dispatched_event_uid=evt.event_uid,
-                admission_gate_uid=self.gate_uid_by_action.get(action_id),
-                lease_id=self.lease_by_action.get(action_id),
-            )
-        elif evt.type in _STATUS_BOARD_TERMINAL_ACTION_TYPES:
-            self.admissions.pop(str(evt.payload["action_id"]), None)
-
-    def freeze(self) -> ActionAdmissions:
-        """The admissions as an independent value."""
-        return ActionAdmissions(by_action_id=dict(self.admissions))
-
-    def _note_pre_action_pass(self, evt: Event) -> None:
-        """Remember the latest passing pre-action verdict per `action_id`.
-
-        ADR-0008 D10: the admission uid is read from `gate.evaluated` and
-        not from `action.dispatched.source_event_id`, because the ordinary
-        dispatch path sets no source there — only the confirmation-backed
-        outbox path does.
-        """
-        if evt.payload.get("gate") != "pre_action" or evt.payload.get("outcome") != "pass":
-            return
-        action_id = evt.payload.get("action_id")
-        if not isinstance(action_id, str):
-            return
-        self.gate_uid_by_action[action_id] = evt.event_uid
-        lease_id = evt.payload.get("lease_id")
-        if isinstance(lease_id, str):
-            self.lease_by_action[action_id] = lease_id
-        else:
-            self.lease_by_action.pop(action_id, None)
-
-
-def _fold_action_admissions(events: Iterable[Event]) -> ActionAdmissions:
-    """Fold the admission record of every action still open on the log.
-
-    An action is registered at `action.dispatched` — the same opener
-    `StatusBoard.open_actions` uses — and evicted by any of
-    `_STATUS_BOARD_TERMINAL_ACTION_TYPES`, so the set is exactly the
-    non-terminal actions.
-    """
-    state = _ActionFoldState()
-    for evt in events:
-        state.fold(evt)
-    return state.freeze()
-
-
-# --- ActionAdmissions (ADR-0008 D10) -------------------------------------------
-
-
-@dataclass(frozen=True)
-class ActionAdmission:
-    """Durable provenance of one non-terminal action (ADR-0008 D10).
-
-    Attributes:
-        action_id: The action's stable id.
-        dispatched_event_uid: `event_uid` of the `action.dispatched` row
-            that opened the action.
-        admission_gate_uid: `event_uid` of the last passing
-            `gate.evaluated(gate="pre_action")` row for this action seen
-            before its dispatch, or `None` when no passing verdict
-            preceded it (a directly dispatched fixture action).
-        lease_id: The `lease_id` that verdict carried, if any.
-    """
-
-    action_id: str
-    dispatched_event_uid: str
-    admission_gate_uid: str | None
-    lease_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ActionAdmissions:
-    """Folded `action_id -> ActionAdmission` for every non-terminal action."""
-
-    by_action_id: Mapping[str, ActionAdmission] = field(default_factory=dict)
-
-    def get(self, action_id: str) -> ActionAdmission | None:
-        """Return the admission record for `action_id`, or None if absent."""
-        return self.by_action_id.get(action_id)
 
 # --- PendingConfirmations ------------------------------------------------------
 
@@ -847,19 +682,14 @@ class ProjectionSet:
     rebuild-idempotency test (acceptance D5 / E4).
 
     Attributes:
-        recent_trace: Folded Recent Trace ring buffer.
         status_board: Folded Status Board (ADR-0009 D6).
         pending_confirmations: Folded PendingConfirmations (ADR-0012 D4).
-        action_admissions: Folded ActionAdmissions (ADR-0008 D10) — the
-            admitting gate uid and dispatched uid of every non-terminal
-            action.
+        conversation_history: Folded conversation window.
         pending_clarification: The newest ask card (ADR 0066), or None.
     """
 
-    recent_trace: RecentTrace
     status_board: StatusBoard
     pending_confirmations: PendingConfirmations
-    action_admissions: ActionAdmissions
     conversation_history: ConversationHistory = field(default_factory=ConversationHistory)
     pending_clarification: PendingClarification | None = None
 
@@ -874,25 +704,11 @@ class ProjectionFold:
     rest, so any number of threads can hold and advance one value.
     """
 
-    __slots__ = (
-        "_actions",
-        "_board",
-        "_clarification",
-        "_confirmations",
-        "_conversation",
-        "_size",
-        "_trace",
-    )
+    __slots__ = ("_board", "_clarification", "_confirmations", "_conversation")
 
-    def __init__(self, recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE) -> None:
+    def __init__(self) -> None:
         """The projections of an empty log."""
-        if recent_trace_size < 0:
-            msg = f"max_size must be non-negative, got {recent_trace_size!r}"
-            raise ValueError(msg)
-        self._size = recent_trace_size
-        self._trace: tuple[Event, ...] = ()
         self._board = _BoardFoldState()
-        self._actions = _ActionFoldState()
         self._confirmations = PendingConfirmations()
         self._clarification: PendingClarification | None = None
         self._conversation = ConversationFold()
@@ -906,16 +722,13 @@ class ProjectionFold:
         fresh = tuple(events)
         if not fresh:
             return self
-        twin = ProjectionFold(self._size)
-        board, actions = self._board.copy(), self._actions.copy()
+        twin = ProjectionFold()
+        board = self._board.copy()
         conversation = self._conversation.copy()
         for evt in fresh:
             board.fold(evt)
-            actions.fold(evt)
             conversation.apply(evt)
-        twin._trace = tuple(deque((*self._trace, *fresh), maxlen=self._size))
         twin._board = board
-        twin._actions = actions
         twin._conversation = conversation
         twin._confirmations = _fold_pending_confirmations(fresh, self._confirmations)
         twin._clarification = _fold_pending_clarification(fresh, self._clarification)
@@ -924,20 +737,14 @@ class ProjectionFold:
     def projections(self) -> ProjectionSet:
         """The folded projections, as independent values."""
         return ProjectionSet(
-            recent_trace=RecentTrace(events=self._trace, max_size=self._size),
             status_board=self._board.freeze(),
             pending_confirmations=self._confirmations,
-            action_admissions=self._actions.freeze(),
             conversation_history=self._conversation.freeze(),
             pending_clarification=self._clarification,
         )
 
 
-def rebuild_projections(
-    conn: sqlite3.Connection,
-    *,
-    recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE,
-) -> ProjectionSet:
+def rebuild_projections(conn: sqlite3.Connection) -> ProjectionSet:
     """Read all events from `conn` and fold every projection.
 
     One SELECT-driven read of the live Event Log via `iter_events(conn)`
@@ -949,43 +756,23 @@ def rebuild_projections(
     Args:
         conn: Open Event Log connection from
             `jarvis.state.event_log.open_event_log`.
-        recent_trace_size: Ring-buffer capacity for the Recent Trace
-            projection. Default = 200 (Day-1 per ADR § Module map).
     """
-    return fold_projections(list(iter_events(conn)), recent_trace_size=recent_trace_size)
+    return fold_projections(list(iter_events(conn)))
 
 
-def fold_projections(
-    events: Iterable[Event],
-    *,
-    recent_trace_size: int = _RECENT_TRACE_DEFAULT_SIZE,
-) -> ProjectionSet:
+def fold_projections(events: Iterable[Event]) -> ProjectionSet:
     """Fold a caller's transaction-pinned Event Log without any further SQL."""
     materialized = list(events)
     return ProjectionSet(
-        recent_trace=RecentTrace.from_events(materialized, max_size=recent_trace_size),
         status_board=_fold_status_board(materialized),
         pending_confirmations=_fold_pending_confirmations(materialized),
-        action_admissions=_fold_action_admissions(materialized),
         conversation_history=fold_conversation_history(materialized),
         pending_clarification=_fold_pending_clarification(materialized),
     )
 
 
-def make_snapshot(conn: sqlite3.Connection) -> ProjectionSet:
-    """L3-facing alias for `rebuild_projections` (Day-1 identical).
-
-    The decision path no longer rebuilds per call: it advances a
-    :class:`ProjectionFold` from a high-water mark (ADR 0164). This alias is
-    the whole-log fold for callers that hold no fold.
-    """
-    return rebuild_projections(conn)
-
-
 __all__ = [
     "CLARIFICATION_EVENT_TYPES",
-    "ActionAdmission",
-    "ActionAdmissions",
     "CommitObservation",
     "OpenAction",
     "PendingClarification",
@@ -996,10 +783,8 @@ __all__ = [
     "PowerTransition",
     "ProjectionFold",
     "ProjectionSet",
-    "RecentTrace",
     "RefoldRequired",
     "RepoObservation",
     "StatusBoard",
-    "make_snapshot",
     "rebuild_projections",
 ]
