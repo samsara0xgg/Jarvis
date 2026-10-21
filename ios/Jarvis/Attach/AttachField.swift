@@ -43,7 +43,7 @@ struct AttachField: View {
     }
 }
 
-private struct AttachTextView: UIViewRepresentable {
+struct AttachTextView: UIViewRepresentable {
     @Binding var text: String
     @Binding var focused: Bool
     let model: AttachModel
@@ -106,7 +106,8 @@ private struct AttachTextView: UIViewRepresentable {
 
         /// the box follows the number of lines, one to five
         func measure(_ tv: UITextView) {
-            let h = ceil(tv.sizeThatFits(CGSize(width: AttachField.textWidth, height: .greatestFiniteMagnitude)).height)
+            let w = tv.bounds.width > 0 ? tv.bounds.width : AttachField.textWidth        // the phone's box is textWidth wide; the iPad's follows its band
+            let h = ceil(tv.sizeThatFits(CGSize(width: w, height: .greatestFiniteMagnitude)).height)
             tv.isScrollEnabled = h > AttachField.maxH
             let c = min(max(Double(h), AttachField.minH), AttachField.maxH), model = parent.model
             if c != model.fieldH { DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { model.fieldH = c } } }
@@ -125,6 +126,11 @@ private struct AttachTextView: UIViewRepresentable {
 
         private func route(_ providers: [NSItemProvider]) {
             onPaste?(providers) { [weak self] s in self?.insertText(s) }
+        }
+        /// a text view says it cannot paste when the pasteboard holds no words, so ⌘V and the menu's Paste would never reach `paste(_:)` with only a picture or a file on it
+        override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+            if action == #selector(paste(_:)), UIPasteboard.general.hasImages || UIPasteboard.general.contains(pasteboardTypes: [UTType.fileURL.identifier]) { return true }
+            return super.canPerformAction(action, withSender: sender)
         }
         override func paste(_ sender: Any?) {
             let providers = UIPasteboard.general.itemProviders

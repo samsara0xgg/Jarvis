@@ -64,7 +64,7 @@ struct PadHome: View {
     @State private var menu = PadMenu()
     @State private var flight = PadFlight()          // a tapped row's icon on its way to the stage's title
     @State private var typing = false                   // the field in her band is open
-    @FocusState private var fieldFocus: Bool
+    @State private var fieldFocus = false               // the field's text view holds the keyboard (a UIKit view: FocusState cannot reach it)
     @FocusState private var homeFocus: Bool             // the home takes a hardware keyboard's keys when nothing else does: typing anywhere opens the field
     @State private var herAt = CGPoint.zero             // where she stands, in the home's own space: her menu is laid round it
     @State private var nowInView = true
@@ -207,10 +207,11 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped
+    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped, `-padScene paste` a picture on the pasteboard pasted into the open field as ⌘V does, `-padScene history` the history's sheet
     private func padScene(_ s: String) {
         switch s {
         case "menu": menu.show(holding: false)
+        case "history": engine.openPanel()
         case "type": ui.text = Words.Pad.field; engine.beginEditing?()
         case "row":             // a tap on the row before the last stretch's: its icon flies to the stage's title
             if let e = builtDay()?.model.entries.filter({ $0.kind == .segment }).dropLast().last { withAnimation(padMotion) { tl.openRow = e.id } }
@@ -225,6 +226,14 @@ struct PadHome: View {
                 return AttachItem(kind: .photo, title: "sample-\(n).jpg", thumbnail: img)
             }
             ui.attach.attach(shots, from: [])
+        case "paste":
+            engine.beginEditing?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 160)).image { r in
+                    UIColor.systemTeal.setFill(); r.fill(r.format.bounds)
+                }
+                UIApplication.shared.sendAction(#selector(UIResponder.paste(_:)), to: nil, from: nil, for: nil)
+            }
         default: break
         }
     }
@@ -239,7 +248,7 @@ private struct PadBand: View {
     let width: Double
     let talk: Bool                      // a round of talk is in her place
     @Binding var typing: Bool
-    var focus: FocusState<Bool>.Binding
+    @Binding var focus: Bool
     let menu: PadMenu
     let items: [PadMenuItem]
     @Binding var herAt: CGPoint
@@ -299,7 +308,7 @@ private struct PadBand: View {
             }
             .padding(.horizontal, side)
             if typing {
-                PadField(engine: engine, focus: focus) { withAnimation(padMotion) { typing = false } }
+                PadField(engine: engine, focus: $focus) { withAnimation(padMotion) { typing = false } }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("design")) } action: { fieldAt = $0 }
                     .padding(.leading, side).padding(.trailing, side + padHerSize + 2 * (18 + 40) + 28).padding(.top, 12)
                     .transition(.asymmetric(insertion: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity), removal: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity)))
@@ -441,7 +450,7 @@ private struct PadTalk: View {
 /// What he types to her, unrolled from her: the words go as the phone's composer sends them, and what is attached (the phone's + and strip) goes with them.
 private struct PadField: View {
     let engine: StarEngine
-    var focus: FocusState<Bool>.Binding
+    @Binding var focus: Bool
     let done: () -> Void
 
     var body: some View {
@@ -450,11 +459,12 @@ private struct PadField: View {
             AttachStrip(model: at)
             HStack(alignment: .bottom, spacing: 8) {
                 AttachPlusButton(model: at).padding(.leading, 6).padding(.bottom, 5)
-                TextField(Words.Pad.field, text: Bindable(ui).text, axis: .vertical)
-                    .font(.system(size: 16)).foregroundStyle(ink).lineLimit(1...5)
-                    .focused(focus)
-                    .onSubmit(send)
-                    .padding(.vertical, 11)
+                // the phone's text view: a pasted picture or file joins the strip, words paste as words
+                AttachTextView(text: Bindable(ui).text, focused: $focus, model: at, send: send)
+                    .frame(height: at.fieldH)
+                    .overlay(alignment: .leading) {
+                        if ui.text.isEmpty { Text(Words.Pad.field).font(.system(size: 16)).foregroundStyle(ink.opacity(0.5)).allowsHitTesting(false) }
+                    }
                 Button(action: send) {
                     Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(red: 11 / 255, green: 13 / 255, blue: 26 / 255))
                         .frame(width: 34, height: 34).background(Circle().fill(Color(red: 238 / 255, green: 241 / 255, blue: 1)))
@@ -477,7 +487,7 @@ private struct PadField: View {
             engine.send(words.isEmpty ? AttachModel.caption(sent) : words, pics: SentPics.items(sent))
         }
         ui.text = ""
-        focus.wrappedValue = false
+        focus = false
         done()
     }
 }
