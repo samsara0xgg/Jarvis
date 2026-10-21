@@ -14,8 +14,13 @@ from typing import TYPE_CHECKING
 
 from jarvis.runtime import _warm_next_prefix
 from jarvis.state.memory_db import append_record
-from tests.support.prefix_warm import assert_prefix_of, wait_for_requests, warm_runtime
-from tests.support.routine import drive_streaming_turn, logged_payloads
+from tests.support.prefix_warm import (
+    assert_prefix_of,
+    wait_for_requests,
+    warm_costs,
+    warm_runtime,
+)
+from tests.support.routine import drive_streaming_turn, wait_for
 from tests.support.spoken import (
     SpokenPeer,
     fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
@@ -35,8 +40,13 @@ def test_the_next_turns_first_request_extends_the_warm_request(tmp_path: Path) -
         runtime, _memory = warm_runtime(tmp_path, peer.url, warm=True)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
         wait_for_requests(peer, 2)
+        wait_for(lambda: warm_costs(runtime) >= 1)
+        # One warm for the turn: its answer's request and the warm, and nothing else yet.
+        assert len(peer.requests) == 2
+        assert warm_costs(runtime) == 1
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "明天呢"))
-    first, warm, second = (body for _path, body in peer.requests)
+    # Turn 2 warms the prefix for turn 3 in its own time, so it may or may not be a fourth request.
+    first, warm, second = (body for _path, body in peer.requests[:3])
     assert_prefix_of(warm, second)
     assert warm["input"][-2:] == [
         {"role": "user", "content": "今天天气怎么样"},
@@ -45,8 +55,6 @@ def test_the_next_turns_first_request_extends_the_warm_request(tmp_path: Path) -
     # Without the warm request, the longest earlier request the second turn
     # starts with is none: turn 1 carried its state lines in its own message.
     assert second["input"][: len(first["input"])] != first["input"]
-    kinds = [payload["kind"] for payload in logged_payloads(runtime.conn, "cost.recorded")]
-    assert kinds.count("prefix_warm") == 1
 
 
 def test_words_left_unanswered_are_left_to_the_next_turn(tmp_path: Path) -> None:
@@ -65,7 +73,7 @@ def test_words_left_unanswered_are_left_to_the_next_turn(tmp_path: Path) -> None
         )
         wait_for_requests(peer, 1)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-after", "你还在吗"))
-    warm, turn = (body for _path, body in peer.requests)
+    warm, turn = (body for _path, body in peer.requests[:2])  # the turn warms the next one too
     assert warm["input"][-1] == {"role": "assistant", "content": "回答2"}
     assert_prefix_of(warm, turn)
     assert turn["input"][len(warm["input"])]["content"].startswith("停\n\n")

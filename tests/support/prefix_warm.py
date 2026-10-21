@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.decision import PREFIX_WARM_MAX_OUTPUT_TOKENS
 from jarvis.state.memory_db import MemorySettings, append_record
+from tests.support.routine import logged_payloads
 from tests.support.spoken import SpokenPeer, spoken_runtime
 
 if TYPE_CHECKING:
@@ -29,6 +30,12 @@ def warm_runtime(tmp_path: Path, url: str, *, warm: bool) -> tuple[JarvisRuntime
         response_flags=replace(runtime.response_flags, prefix_warm=warm),
     )
     return runtime, memory
+
+
+def warm_costs(runtime: JarvisRuntime) -> int:
+    """How many prefix-warm requests have had their cost recorded: one row each, once it is done."""
+    kinds = [payload["kind"] for payload in logged_payloads(runtime.conn, "cost.recorded")]
+    return kinds.count("prefix_warm")
 
 
 def wait_for_requests(peer: SpokenPeer, count: int) -> None:
