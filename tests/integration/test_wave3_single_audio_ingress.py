@@ -47,7 +47,7 @@ from tests.support.voice_input import (
 from tools.realtime_trace_report import TraceRow, summarize_trace
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 
@@ -93,12 +93,42 @@ class _ScriptedWakeBackend(FakeBackend):
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_audio_thread_outlives_its_test() -> Iterator[None]:
+    """The threads a test starts end with it, so none logs or counts as alive in the next test.
+
+    ``close()`` answers before the capability dispatcher has delivered the last snapshot, so a test
+    that returns at once leaves a thread that writes a stopped line into whichever test runs next in
+    that process. Waiting for it is a join with ``HANG_S`` for a real hang, not a time bound.
+    """
+    mine = ("jarvis-audio-", "jarvis-media-")
+
+    def ours() -> set[threading.Thread]:
+        return {t for t in threading.enumerate() if t.name.startswith(mine) and t.is_alive()}
+
+    before = ours()
+    yield
+    deadline = time.monotonic() + HANG_S
+    for thread in ours() - before:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    left = sorted(t.name for t in ours() - before)
+    assert not left, f"threads left running by the test: {left}"
+
+
+HELD_DEADLINE_S = 0.25
+"""A deadline for a call the test holds up on purpose, which gives up at it and answers.
+
+Long enough that a stalled test thread does not see it expire before the worker the call joins has
+ended; the test only waits it out.
+"""
+
+
 def _read_frames(
     subscription: voice_audio.AudioSubscription,
     count: int,
 ) -> list[voice_audio.CanonicalAudioFrame]:
     frames: list[voice_audio.CanonicalAudioFrame] = []
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + HANG_S
     while len(frames) < count and time.monotonic() < deadline:
         frame = subscription.read(timeout_s=0.02)
         if frame is not None:
@@ -277,7 +307,7 @@ def test_sounddevice_close_timeout_joins_one_helper_then_serializes_retry() -> N
         def close(self) -> None:
             self.close_calls += 1
             close_entered.set()
-            assert close_release.wait(timeout=1.0)
+            assert close_release.wait(timeout=HANG_S)
             if self.fail_next_close:
                 self.fail_next_close = False
                 message = "injected close failure"
@@ -303,7 +333,7 @@ def test_sounddevice_close_timeout_joins_one_helper_then_serializes_retry() -> N
         assert backend.start(stream_epoch=1, attempt_id="A", frame_sink=MagicMock()).started
         first = backend.stop(stream_epoch=1, attempt_id="A")
         assert not first.definitively_closed
-        assert close_entered.is_set()
+        assert close_entered.wait(timeout=HANG_S)
         joined: list[voice_backend.BackendStopResult] = []
         closers = [
             threading.Thread(
@@ -316,7 +346,7 @@ def test_sounddevice_close_timeout_joins_one_helper_then_serializes_retry() -> N
         for closer in closers:
             closer.start()
         for closer in closers:
-            closer.join(timeout=1.0)
+            closer.join(timeout=HANG_S)
         assert len(joined) == 2
         assert all(not result.definitively_closed for result in joined)
         assert stream.abort_calls == 1
@@ -473,7 +503,7 @@ def test_sounddevice_open_timeout_late_success_closes_before_owner_release() -> 
     def _open(**_kwargs: object) -> _Stream:
         if not streams:
             first_open_entered.set()
-            assert release_first_open.wait(timeout=0.5)
+            assert release_first_open.wait(timeout=HANG_S)
         stream = _Stream()
         streams.append(stream)
         return stream
@@ -504,7 +534,7 @@ def test_sounddevice_open_timeout_late_success_closes_before_owner_release() -> 
             attempt_id="timeout-1",
             frame_sink=MagicMock(),
         )
-        assert first_open_entered.is_set()
+        assert first_open_entered.wait(timeout=HANG_S)
         assert timed_out.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
         assert (
             successor.start(
@@ -547,7 +577,7 @@ def test_sounddevice_close_timeout_releases_owner_only_after_late_close() -> Non
         def close(self) -> None:
             if self._block_close:
                 close_entered.set()
-                assert release_close.wait(timeout=0.5)
+                assert release_close.wait(timeout=HANG_S)
             self.closed = True
 
     close_entered = threading.Event()
@@ -582,7 +612,7 @@ def test_sounddevice_close_timeout_releases_owner_only_after_late_close() -> Non
     ):
         assert first.start(stream_epoch=1, attempt_id="close-1", frame_sink=MagicMock()).started
         close = first.stop(stream_epoch=1, attempt_id="close-1")
-        assert close_entered.is_set()
+        assert close_entered.wait(timeout=HANG_S)
         assert close.status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN
         assert (
             successor.start(
@@ -1129,7 +1159,7 @@ def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
         ) -> voice_backend.BackendStopResult:
             del timeout_s
             self.stop_entered.set()
-            assert self.release_stop.wait(timeout=0.5)
+            assert self.release_stop.wait(timeout=HANG_S)
             return super().stop(stream_epoch=stream_epoch, attempt_id=attempt_id)
 
     backend = _CoordinatedBackend()
@@ -1143,13 +1173,13 @@ def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
         detail="integration",
         recoverable=True,
     )
-    assert backend.stop_entered.wait(timeout=1.0)
+    assert backend.stop_entered.wait(timeout=HANG_S)
     results: list[voice_audio.IngressCloseResult] = []
     closer = threading.Thread(target=lambda: results.append(ingress.close()))
     closer.start()
     wait_until_true(lambda: ingress._closing)
     backend.release_stop.set()
-    closer.join(timeout=1.0)
+    closer.join(timeout=HANG_S)
     assert not closer.is_alive()
     assert len(results) == 1
     assert results[0].definitively_closed
@@ -1227,7 +1257,7 @@ def test_sleep_generation_revokes_fault_paused_at_physical_reopen_gate() -> None
         expected_control_generation: int | None = None,
     ) -> voice_backend.BackendStartResult:
         before_open.set()
-        assert release_open.wait(timeout=1.0)
+        assert release_open.wait(timeout=HANG_S)
         return original_open(
             reason=reason,
             deadline=deadline,
@@ -1244,11 +1274,11 @@ def test_sleep_generation_revokes_fault_paused_at_physical_reopen_gate() -> None
     with patch.object(ingress, "_open_new_epoch", side_effect=_paused_open):
         recovery = threading.Thread(target=lambda: ingress._handle_fault(fault))
         recovery.start()
-        assert before_open.wait(timeout=1.0)
+        assert before_open.wait(timeout=HANG_S)
         slept = ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
         assert slept is not None
         release_open.set()
-        recovery.join(timeout=1.0)
+        recovery.join(timeout=HANG_S)
     assert not recovery.is_alive()
     assert backend.start_count == 1
     assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
@@ -1269,7 +1299,7 @@ def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None
             voice_audio.AudioIngressConfig(),
             reopen_initial_backoff_s=0.001,
             reopen_max_backoff_s=0.001,
-            shutdown_timeout_s=0.02,
+            shutdown_timeout_s=HANG_S,
             route_poll_s=60.0,
         ),
         capability_sink=_capture_capability,
@@ -1289,7 +1319,7 @@ def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None
     ) -> voice_audio.InputCapabilitySnapshot | None:
         if state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE:
             before_publish.set()
-            assert release_publish.wait(timeout=1.0)
+            assert release_publish.wait(timeout=HANG_S)
         return original_publish(generation, state, reason=reason)
 
     fault = voice_backend.BackendFault(
@@ -1306,11 +1336,11 @@ def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None
     ):
         recovery = threading.Thread(target=lambda: ingress._handle_fault(fault))
         recovery.start()
-        assert before_publish.wait(timeout=1.0)
+        assert before_publish.wait(timeout=HANG_S)
         ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
         suspended_version = ingress.capability.version
         release_publish.set()
-        recovery.join(timeout=1.0)
+        recovery.join(timeout=HANG_S)
     assert not recovery.is_alive()
     assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
     assert ingress.capability.version == suspended_version
@@ -1360,7 +1390,7 @@ def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
             voice_audio.AudioIngressConfig(),
             reopen_initial_backoff_s=0.001,
             reopen_max_backoff_s=0.001,
-            shutdown_timeout_s=0.03,
+            shutdown_timeout_s=HELD_DEADLINE_S,
             route_poll_s=60.0,
         ),
     )
@@ -1504,7 +1534,7 @@ def test_late_wake_report_cannot_overwrite_stopped_capability() -> None:
         backend=FakeBackend(),
         config=replace(
             voice_audio.AudioIngressConfig(),
-            shutdown_timeout_s=0.03,
+            shutdown_timeout_s=HELD_DEADLINE_S,
             route_poll_s=60.0,
         ),
         capability_sink=_observe,
@@ -1513,7 +1543,7 @@ def test_late_wake_report_cannot_overwrite_stopped_capability() -> None:
 
     def _pause_report() -> None:
         report_checked.set()
-        assert report_release.wait(timeout=1.0)
+        assert report_release.wait(timeout=HANG_S)
 
     ingress._wake_report_before_commit_hook = _pause_report
     report_results: list[voice_audio.InputCapabilitySnapshot] = []
@@ -1523,13 +1553,16 @@ def test_late_wake_report_cannot_overwrite_stopped_capability() -> None:
         ),
     )
     report.start()
-    assert report_checked.wait(timeout=1.0)
-    closed = ingress.close()
+    assert report_checked.wait(timeout=HANG_S)
+    # The wake report stays paused before its commit until close has answered: close gives up on it
+    # at its deadline and still proves the shutdown.
+    with never_waits_for(report_release):
+        closed = ingress.close()
     assert closed.definitively_closed
     stopped_version = ingress.capability.version
     assert ingress.capability.state is voice_audio.InputCapabilityState.STOPPED
     report_release.set()
-    report.join(timeout=1.0)
+    report.join(timeout=HANG_S)
     assert not report.is_alive()
     assert report_results[-1].state is voice_audio.InputCapabilityState.STOPPED
     assert ingress.capability.version == stopped_version
@@ -1553,7 +1586,7 @@ def test_uncertain_close_keeps_capability_lane_until_definitive_retry() -> None:
         backend=backend,
         config=replace(
             voice_audio.AudioIngressConfig(),
-            shutdown_timeout_s=0.03,
+            shutdown_timeout_s=HANG_S,
             route_poll_s=60.0,
         ),
         capability_sink=_observe,
@@ -1796,13 +1829,17 @@ def test_wake_prediction_failure_downgrades_only_wake_then_recovers() -> None:
         wait_until_true(
             lambda: ingress.capability.state is voice_audio.InputCapabilityState.AVAILABLE
         )
-        assert any(
-            snapshot.state is voice_audio.InputCapabilityState.WAKE_UNAVAILABLE
-            and not snapshot.wake_available
-            and snapshot.local_capture_available
-            and snapshot.ptt_upload_available
-            and snapshot.text_available
-            for snapshot in capabilities
+        # The sink is called on the dispatcher's own thread, so it hears of the downgrade after
+        # the capability has already moved on to AVAILABLE.
+        wait_until_true(
+            lambda: any(
+                snapshot.state is voice_audio.InputCapabilityState.WAKE_UNAVAILABLE
+                and not snapshot.wake_available
+                and snapshot.local_capture_available
+                and snapshot.ptt_upload_available
+                and snapshot.text_available
+                for snapshot in capabilities
+            ),
         )
         assert session.close().definitively_closed
 
@@ -1993,7 +2030,7 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
             commit: Callable[[Any, int], None] = original_commit,
         ) -> None:
             entered_event.set()
-            assert release_event.wait(timeout=1.0)
+            assert release_event.wait(timeout=HANG_S)
             commit(slot, write_index)
 
         old_timeline.native_ring._commit_slot = _pause_after_final_validation  # type: ignore[method-assign]
@@ -2005,7 +2042,7 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
             name="wave3-stale-callback-barrier",
         )
         stale_callback.start()
-        assert entered.wait(timeout=1.0)
+        assert entered.wait(timeout=HANG_S)
         stopped = ingress.stop_for_sleep()
         assert stopped is not None
         assert stopped.definitively_closed
@@ -2029,7 +2066,7 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
             retained.append(frame.pcm16_mono)
         successor.close()
         release.set()
-        stale_callback.join(timeout=1.0)
+        stale_callback.join(timeout=HANG_S)
         assert not stale_callback.is_alive()
     close = ingress.close()
     assert close.definitively_closed
@@ -2121,7 +2158,7 @@ def test_old_callback_paused_before_ring_commit_cannot_contaminate_new_epoch() -
         if not blocked_once:
             blocked_once = True
             entered.set()
-            assert release.wait(timeout=1.0)
+            assert release.wait(timeout=HANG_S)
         original_commit(slot, write_index)  # type: ignore[arg-type]
 
     first_timeline.native_ring._commit_slot = _pause_after_final_validation  # type: ignore[method-assign]
@@ -2130,14 +2167,14 @@ def test_old_callback_paused_before_ring_commit_cannot_contaminate_new_epoch() -
         name="paused-old-epoch-callback",
     )
     old_callback.start()
-    assert entered.wait(timeout=1.0)
+    assert entered.wait(timeout=HANG_S)
     assert ingress.stop_for_sleep() is not None
     reopened = ingress.resume_after_wake()
     assert reopened is not None
     assert reopened.started
     assert ingress.stream_epoch == 2
     release.set()
-    old_callback.join(timeout=1.0)
+    old_callback.join(timeout=HANG_S)
     assert not old_callback.is_alive()
     backend.emit(epoch=2, value=222)
     frame = _read_frames(capture, 1)[0]
@@ -2159,7 +2196,7 @@ def test_subscribe_insert_racing_reopen_receives_successor_epoch() -> None:
 
     def _pause_before_insert() -> None:
         entered.set()
-        assert release.wait(timeout=1.0)
+        assert release.wait(timeout=HANG_S)
 
     ingress._subscribe_before_insert_hook = _pause_before_insert
     subscriptions: list[voice_audio.AudioSubscription] = []
@@ -2172,7 +2209,7 @@ def test_subscribe_insert_racing_reopen_receives_successor_epoch() -> None:
         ),
     )
     subscriber_thread.start()
-    assert entered.wait(timeout=1.0)
+    assert entered.wait(timeout=HANG_S)
     power_results: list[object] = []
 
     def _cycle_power() -> None:
@@ -2182,8 +2219,8 @@ def test_subscribe_insert_racing_reopen_receives_successor_epoch() -> None:
     power_thread = threading.Thread(target=_cycle_power)
     power_thread.start()
     release.set()
-    subscriber_thread.join(timeout=1.0)
-    power_thread.join(timeout=1.0)
+    subscriber_thread.join(timeout=HANG_S)
+    power_thread.join(timeout=HANG_S)
     assert not subscriber_thread.is_alive()
     assert not power_thread.is_alive()
     assert len(power_results) == 2
@@ -2206,7 +2243,7 @@ def test_subscribe_insert_racing_close_returns_no_live_membership() -> None:
 
     def _pause_before_insert() -> None:
         entered.set()
-        assert release.wait(timeout=1.0)
+        assert release.wait(timeout=HANG_S)
 
     ingress._subscribe_before_insert_hook = _pause_before_insert
     subscriptions: list[voice_audio.AudioSubscription] = []
@@ -2219,13 +2256,13 @@ def test_subscribe_insert_racing_close_returns_no_live_membership() -> None:
         ),
     )
     subscriber_thread.start()
-    assert entered.wait(timeout=1.0)
+    assert entered.wait(timeout=HANG_S)
     close_results: list[voice_audio.IngressCloseResult] = []
     close_thread = threading.Thread(target=lambda: close_results.append(ingress.close()))
     close_thread.start()
     release.set()
-    subscriber_thread.join(timeout=1.0)
-    close_thread.join(timeout=1.0)
+    subscriber_thread.join(timeout=HANG_S)
+    close_thread.join(timeout=HANG_S)
     assert not subscriber_thread.is_alive()
     assert not close_thread.is_alive()
     assert len(subscriptions) == 1
@@ -2268,7 +2305,7 @@ def test_ring_overflow_vs_consumer_commit_1000_cycles_marks_first_post_gap() -> 
             release_event: threading.Event = release,
         ) -> None:
             entered_event.set()
-            assert release_event.wait(timeout=1.0)
+            assert release_event.wait(timeout=HANG_S)
 
         ring._consumer_before_commit_hook = _pause
         raced: list[voice_audio._OwnedPcmFrame | None] = []
@@ -2280,13 +2317,13 @@ def test_ring_overflow_vs_consumer_commit_1000_cycles_marks_first_post_gap() -> 
 
         consumer = threading.Thread(target=_consume)
         consumer.start()
-        assert entered.wait(timeout=1.0)
+        assert entered.wait(timeout=HANG_S)
         read_before_overflow = ring._read_index
         assert _write(sequence + 1, cycle + 1)
         assert ring._read_index == read_before_overflow
         ring._consumer_before_commit_hook = None
         release.set()
-        consumer.join(timeout=1.0)
+        consumer.join(timeout=HANG_S)
         assert not consumer.is_alive()
         assert raced == [None]
         post_gap = ring.read()
@@ -2314,7 +2351,7 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
         def close(self) -> None:
             self.close_calls += 1
             close_entered.set()
-            assert close_release.wait(timeout=1.0)
+            assert close_release.wait(timeout=HANG_S)
 
     open_entered = threading.Event()
     open_release = threading.Event()
@@ -2324,7 +2361,7 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
 
     def _open(**_kwargs: object) -> _BlockingStream:
         open_entered.set()
-        assert open_release.wait(timeout=1.0)
+        assert open_release.wait(timeout=HANG_S)
         stream = _BlockingStream()
         streams.append(stream)
         return stream
@@ -2338,8 +2375,8 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
     )
     backend = voice_backend.SoundDeviceDuplexBackend(
         input_format=input_format,
-        open_timeout_s=0.5,
-        close_timeout_s=0.01,
+        open_timeout_s=HANG_S,
+        close_timeout_s=HELD_DEADLINE_S,
     )
     starts: list[voice_backend.BackendStartResult] = []
     with (
@@ -2352,7 +2389,7 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
             ),
         )
         opener.start()
-        assert open_entered.wait(timeout=1.0)
+        assert open_entered.wait(timeout=HANG_S)
         concurrent = backend.start(
             stream_epoch=2,
             attempt_id="B",
@@ -2360,7 +2397,7 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
         )
         assert concurrent.status is voice_backend.BackendStartStatus.OWNER_BUSY
         open_release.set()
-        opener.join(timeout=1.0)
+        opener.join(timeout=HANG_S)
         assert starts
         assert starts[0].started
 
@@ -2372,12 +2409,12 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
             target=lambda: closes.append(backend.stop(stream_epoch=1, attempt_id="A")),
         )
         first_closer.start()
-        assert close_entered.wait(timeout=1.0)
+        assert close_entered.wait(timeout=HANG_S)
         second_closer.start()
         busy = backend.start(stream_epoch=3, attempt_id="C", frame_sink=MagicMock())
         assert busy.status is voice_backend.BackendStartStatus.OWNER_BUSY
-        first_closer.join(timeout=1.0)
-        second_closer.join(timeout=1.0)
+        first_closer.join(timeout=HANG_S)
+        second_closer.join(timeout=HANG_S)
         assert len(closes) == 2
         assert all(
             result.status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN for result in closes
@@ -2426,7 +2463,7 @@ def test_open_timeout_recovery_debt_survives_ingress_close(
     def _open(**_kwargs: object) -> _CountingStream:
         if streams:
             second_open_entered.set()
-            assert release_second_open.wait(timeout=1.0)
+            assert release_second_open.wait(timeout=HANG_S)
         stream = _CountingStream()
         streams.append(stream)
         return stream
@@ -2440,8 +2477,8 @@ def test_open_timeout_recovery_debt_survives_ingress_close(
     )
     backend = voice_backend.SoundDeviceDuplexBackend(
         input_format=input_format,
-        open_timeout_s=0.01,
-        close_timeout_s=0.01,
+        open_timeout_s=HELD_DEADLINE_S,
+        close_timeout_s=0.5,
     )
     ingress = voice_audio.AudioIngress(
         backend=backend,
@@ -2449,7 +2486,7 @@ def test_open_timeout_recovery_debt_survives_ingress_close(
             voice_audio.AudioIngressConfig(),
             reopen_initial_backoff_s=0.001,
             reopen_max_backoff_s=0.001,
-            shutdown_timeout_s=0.02,
+            shutdown_timeout_s=HELD_DEADLINE_S,
             route_poll_s=60.0,
         ),
     )
@@ -2467,9 +2504,12 @@ def test_open_timeout_recovery_debt_survives_ingress_close(
             wake = ingress.resume_after_wake()
             assert wake is not None
             assert wake.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
-        assert second_open_entered.is_set()
-        debt = backend.ownership_snapshot()
-        assert debt.state is voice_backend.BackendLifecycleState.UNCERTAIN
+        assert second_open_entered.wait(timeout=HANG_S)
+        wait_until_true(
+            lambda: (
+                backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.UNCERTAIN
+            ),
+        )
         first_close = ingress.close()
         second_close = ingress.close()
         assert not first_close.definitively_closed
@@ -2494,7 +2534,7 @@ def test_sleep_lock_timeout_wake_and_close_never_overwrite_physical_debt() -> No
         backend=backend,
         config=replace(
             voice_audio.AudioIngressConfig(),
-            shutdown_timeout_s=0.01,
+            shutdown_timeout_s=HELD_DEADLINE_S,
             route_poll_s=60.0,
         ),
     )
@@ -2845,10 +2885,10 @@ def test_pending_wake_input_failure_rolls_back_real_ingress_before_output_abort(
     initial = coordinator.on_wake()
     assert initial.output_result is not None
     assert initial.output_result.helper_thread_alive
-    assert rollback_before_abort.wait(timeout=1.0)
+    assert rollback_before_abort.wait(timeout=HANG_S)
     pending = coordinator._pending_wake_thread
     assert pending is not None
-    pending.join(timeout=1.0)
+    pending.join(timeout=HANG_S)
     assert not pending.is_alive()
     assert ingress._control_intent == "suspended"
     assert backend.active_owner_count == 0
@@ -2893,7 +2933,7 @@ def test_typed_input_start_debt_re_suspends_real_media_owner(tmp_path: Path) -> 
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -2961,10 +3001,7 @@ def test_power_coordinator_real_media_debt_keeps_real_ingress_suspended(
             player=player,
             conn_factory=lambda: open_event_log(db_path),
             boot_high_water_id=0,
-            config=replace(
-                StreamingMediaConfig(),
-                shutdown_timeout_s=0.5,
-            ),
+            config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         )
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         slept = coordinator.before_sleep()
@@ -3054,7 +3091,7 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
             player=voice_tts.AudioStreamPlayer(lazy_open=True, generation_safe=True),
             conn_factory=lambda: open_event_log(db_path),
             boot_high_water_id=0,
-            config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.5),
+            config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         )
         actions.clear()
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
@@ -3100,7 +3137,7 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
             del timeout_s
             self.stop_calls += 1
             if self.stop_calls == 1:
-                assert self.stop_release.wait(timeout=1.0)
+                assert self.stop_release.wait(timeout=HANG_S)
             self.active_owners = 0
             return voice_tts.PlayerStopResult("closed", self.stop_calls, "closed")
 
@@ -3114,7 +3151,7 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     input_resumed = threading.Event()
@@ -3129,7 +3166,7 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
     with patch.object(
         voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
-        0.05,
+        HELD_DEADLINE_S,
     ):
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         slept = coordinator.before_sleep()
@@ -3151,15 +3188,15 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
         )
         duplicate.start()
         player.stop_release.set()
-        assert input_resumed.wait(timeout=1.0)
-        duplicate.join(timeout=1.0)
+        assert input_resumed.wait(timeout=HANG_S)
+        duplicate.join(timeout=HANG_S)
         assert not duplicate.is_alive()
         assert len(duplicate_results) == 1
         assert player.start_calls == 1
         assert player.max_owners == 1
         session.ingress.resume_after_wake.assert_called_once()
-        assert coordinator.close(timeout_s=0.2)
-    assert media.close(wait_timeout_s=0.5)
+        assert coordinator.close(timeout_s=HANG_S)
+    assert media.close(wait_timeout_s=HANG_S)
 
 
 def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
@@ -3185,7 +3222,7 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
             del timeout_s
             self.stop_calls += 1
             if self.stop_calls == 1:
-                assert self.stop_release.wait(timeout=1.0)
+                assert self.stop_release.wait(timeout=HANG_S)
             self.active_owners = 0
             return voice_tts.PlayerStopResult("closed", self.stop_calls, "closed")
 
@@ -3199,7 +3236,7 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     input_resumed = threading.Event()
@@ -3211,10 +3248,13 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
         return object()
 
     session.ingress.resume_after_wake.side_effect = _resume_very_late_input
-    with patch.object(
-        voice_power.VoicePowerCoordinator,
-        "_TOTAL_TRANSITION_BOUND_S",
-        0.02,
+    with (
+        patch.object(
+            voice_power.VoicePowerCoordinator,
+            "_TOTAL_TRANSITION_BOUND_S",
+            HELD_DEADLINE_S,
+        ),
+        patch.object(media, "resume_after_wake", wraps=media.resume_after_wake) as resumed,
     ):
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         assert coordinator.before_sleep().output_result is not None
@@ -3222,19 +3262,21 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
         assert woke.output_result is not None
         assert woke.output_result.helper_thread_alive
         wait_until_true(lambda: coordinator._pending_wake_state == "in_flight")
-        time.sleep(0.08)
+        # The wake's own ask of the output timed out at one bound; the continuation asks again at
+        # the next two, so it has outlived more than two bounds on the same exact debt.
+        wait_until_true(lambda: resumed.call_count >= 3, timeout_s=HANG_S)
         assert coordinator._pending_wake_thread is not None
         assert coordinator._pending_wake_thread.is_alive()
         assert coordinator._pending_wake_state == "in_flight"
         assert player.start_calls == 0
         player.stop_release.set()
-        assert input_resumed.wait(timeout=1.0)
+        assert input_resumed.wait(timeout=HANG_S)
         wait_until_true(lambda: coordinator._pending_wake_state == "recovered")
         assert player.start_calls == 1
         assert player.max_owners == 1
         session.ingress.resume_after_wake.assert_called_once()
-        assert coordinator.close(timeout_s=0.2)
-    assert media.close(wait_timeout_s=0.5)
+        assert coordinator.close(timeout_s=HANG_S)
+    assert media.close(wait_timeout_s=HANG_S)
 
 
 def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
@@ -3274,7 +3316,7 @@ def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
     with patch.object(
         voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
-        0.025,
+        HELD_DEADLINE_S,
     ):
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         coordinator.before_sleep()
@@ -3286,16 +3328,16 @@ def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
         second_sleep = coordinator.before_sleep()
         assert second_sleep.output_result is not None
         assert second_sleep.output_result.status == "suspended"
-        assert second_sleep.elapsed_s < coordinator._TOTAL_TRANSITION_BOUND_S
+        assert second_sleep.input_skipped_reason is None  # it got the operation lock, not starved
         debt_release.set()
         assert coordinator._pending_wake_thread is not None
-        coordinator._pending_wake_thread.join(timeout=1.0)
+        coordinator._pending_wake_thread.join(timeout=HANG_S)
         assert not coordinator._pending_wake_thread.is_alive()
         session.ingress.resume_after_wake.assert_not_called()
         session.ingress.report_output_unavailable.assert_not_called()
         media.admit_wake_start.assert_not_called()
         media.abort_wake_start.assert_called()
-        assert coordinator.close(timeout_s=0.2)
+        assert coordinator.close(timeout_s=HANG_S)
 
 
 def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
@@ -3332,7 +3374,7 @@ def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     actor_resume_release = threading.Event()
@@ -3354,9 +3396,10 @@ def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
         patch.object(
             voice_power.VoicePowerCoordinator,
             "_TOTAL_TRANSITION_BOUND_S",
-            0.025,
+            HELD_DEADLINE_S,
         ),
         patch.object(media, "_resume_after_wake_owned", new=_late_actor_resume),
+        patch.object(media, "resume_after_wake", wraps=media.resume_after_wake) as resumed,
     ):
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         assert coordinator.before_sleep().output_result is not None
@@ -3365,17 +3408,19 @@ def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
         assert woke.output_result.reason == "actor_resume_timeout"
         assert woke.output_result.helper_thread_alive
         wait_until_true(lambda: coordinator._pending_wake_state == "in_flight")
-        time.sleep(0.06)
+        # The continuation has asked the output again, at a bound past the wake's own, and the
+        # held actor still has not let it resume the input.
+        wait_until_true(lambda: resumed.call_count >= 3, timeout_s=HANG_S)
         assert player.start_calls == 1
         assert not input_resumed.is_set()
         actor_resume_release.set()
-        assert input_resumed.wait(timeout=1.0)
+        assert input_resumed.wait(timeout=HANG_S)
         wait_until_true(lambda: coordinator._pending_wake_state == "recovered")
         assert player.start_calls == 1
         assert player.max_owners == 1
         session.ingress.resume_after_wake.assert_called_once()
-        assert coordinator.close(timeout_s=0.2)
-    assert media.close(wait_timeout_s=0.5)
+        assert coordinator.close(timeout_s=HANG_S)
+    assert media.close(wait_timeout_s=HANG_S)
 
 
 def test_stale_actor_resume_future_cannot_undo_newer_sleep(
@@ -3394,7 +3439,7 @@ def test_stale_actor_resume_future_cannot_undo_newer_sleep(
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3413,7 +3458,7 @@ def test_stale_actor_resume_future_cannot_undo_newer_sleep(
         )
 
     with patch.object(media, "_resume_after_wake_owned", new=_delayed_resume):
-        stale_wake = media.resume_after_wake(timeout_s=0.02)
+        stale_wake = media.resume_after_wake(timeout_s=HELD_DEADLINE_S)
         assert stale_wake.status == "uncertain"
         assert stale_wake.reason == "actor_resume_timeout"
         newer_sleep = media.suspend_for_sleep(timeout_s=0.2)
@@ -3423,11 +3468,11 @@ def test_stale_actor_resume_future_cannot_undo_newer_sleep(
         old_future_release.set()
         future = media._power_actor_resume_future
         assert future is not None
-        assert future.result(timeout=1.0) is False
+        assert future.result(timeout=HANG_S) is False
         assert media._power_state == "suspended"
         assert media._power_suspended
         assert not media._accepting.is_set()
-    assert media.close(wait_timeout_s=0.5)
+    assert media.close(wait_timeout_s=HANG_S)
 
 
 def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
@@ -3447,7 +3492,7 @@ def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
         def start(self) -> voice_tts.PlayerStartResult:
             self.start_calls += 1
             self.start_entered.set()
-            assert self.start_release.wait(timeout=1.0)
+            assert self.start_release.wait(timeout=HANG_S)
             self.physical_open = True
             self.max_owners = max(self.max_owners, int(self.physical_open))
             return voice_tts.PlayerStartResult("started", 76, "late_wake_open")
@@ -3468,7 +3513,7 @@ def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3477,12 +3522,12 @@ def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
         target=lambda: wake_results.append(media.resume_after_wake(timeout_s=0.5)),
     )
     waking.start()
-    assert player.start_entered.wait(timeout=1.0)
+    assert player.start_entered.wait(timeout=HANG_S)
     newer_sleep = media.suspend_for_sleep(timeout_s=0.02)
     assert newer_sleep.status == "uncertain"
     assert newer_sleep.helper_thread_alive
     player.start_release.set()
-    waking.join(timeout=1.0)
+    waking.join(timeout=HANG_S)
     assert not waking.is_alive()
     assert wake_results[-1].status == "uncertain"
     wait_until_true(lambda: media._power_state == "suspended")
@@ -3514,7 +3559,7 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
             del timeout_s
             self.stop_calls += 1
             if self.stop_calls == 1:
-                assert self.stop_release.wait(timeout=1.0)
+                assert self.stop_release.wait(timeout=HANG_S)
             return voice_tts.PlayerStopResult("closed", self.stop_calls, "closed")
 
     db_path = tmp_path / "pending-wake-shutdown.db"
@@ -3527,7 +3572,7 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
@@ -3535,7 +3580,7 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
     with patch.object(
         voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
-        0.04,
+        HELD_DEADLINE_S,
     ):
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         coordinator.before_sleep()
@@ -3551,8 +3596,8 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
         coordinator.close(timeout_s=0.01)
         media.request_close()
         player.stop_release.set()
-        assert media.close(wait_timeout_s=0.5)
-        assert coordinator.close(timeout_s=0.2)
+        assert media.close(wait_timeout_s=HANG_S)
+        assert coordinator.close(timeout_s=HANG_S)
     assert player.start_calls == 0
     session.ingress.resume_after_wake.assert_not_called()
 
@@ -3581,7 +3626,7 @@ def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     release_terminalization = threading.Event()
@@ -3606,7 +3651,7 @@ def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
         assert media._power_attempt_id == attempt_id
         assert player.stop.call_count == 1
         assert media._power_helper is not None
-        media._power_helper.join(timeout=1.0)
+        media._power_helper.join(timeout=HANG_S)
         assert not media._power_helper.is_alive()
         woke = media.resume_after_wake(timeout_s=0.5)
         assert woke.status == "resumed"
@@ -3632,7 +3677,7 @@ def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
         def start(self) -> voice_tts.PlayerStartResult:
             self.start_calls += 1
             self.start_entered.set()
-            assert self.start_release.wait(timeout=1.0)
+            assert self.start_release.wait(timeout=HANG_S)
             self.physical_open = True
             self.max_owners = max(self.max_owners, int(self.physical_open))
             return voice_tts.PlayerStartResult(
@@ -3661,14 +3706,14 @@ def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.04),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
     wake = media.resume_after_wake(timeout_s=0.03)
     assert wake.status == "uncertain"
     assert wake.helper_thread_alive
-    assert player.start_entered.wait(timeout=1.0)
+    assert player.start_entered.wait(timeout=HANG_S)
     assert not media.close(wait_timeout_s=0.04)
     wait_until_true(media._closed.is_set)
     assert not media.cleanup_complete
@@ -3679,7 +3724,7 @@ def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
     assert player.stop_calls == 2  # initial suspend + late-start compensation
     assert player.max_owners == 1
     assert media._power_state == "suspended"
-    assert media.close(wait_timeout_s=0.2)
+    assert media.close(wait_timeout_s=HANG_S)
 
 
 def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
@@ -3699,7 +3744,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         def start(self) -> voice_tts.PlayerStartResult:
             self.start_calls += 1
             self.start_entered.set()
-            assert self.start_release.wait(timeout=1.0)
+            assert self.start_release.wait(timeout=HANG_S)
             self.physical_open = True
             self.max_owners = max(self.max_owners, int(self.physical_open))
             return voice_tts.PlayerStartResult("started", self.start_calls, "late_open")
@@ -3720,7 +3765,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.05),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     input_close_entered = threading.Event()
@@ -3730,7 +3775,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
 
     def _close_input() -> voice_session.VoiceSessionCloseResult:
         input_close_entered.set()
-        assert input_close_release.wait(timeout=1.0)
+        assert input_close_release.wait(timeout=HANG_S)
         return voice_session.VoiceSessionCloseResult(
             ingress=voice_audio.IngressCloseResult(
                 definitively_closed=True,
@@ -3752,14 +3797,14 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
     with patch.object(
         voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
-        0.025,
+        HELD_DEADLINE_S,
     ):
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         coordinator.before_sleep()
         woke = coordinator.on_wake()
         assert woke.output_result is not None
         assert woke.output_result.helper_thread_alive
-        assert player.start_entered.wait(timeout=1.0)
+        assert player.start_entered.wait(timeout=HANG_S)
         coordinator.close(timeout_s=0.01)
         shutdown = threading.Thread(
             target=lambda: teardown.request_voice_input_branch_shutdown(
@@ -3768,7 +3813,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
             ),
         )
         shutdown.start()
-        assert input_close_entered.wait(timeout=1.0)
+        assert input_close_entered.wait(timeout=HANG_S)
         assert not media._shutdown_requested.is_set()
         player.start_release.set()
         wait_until_true(lambda: player.stop_calls >= 2 and not player.physical_open)
@@ -3776,9 +3821,9 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         assert player.start_calls == 1
         assert player.max_owners == 1
         input_close_release.set()
-        shutdown.join(timeout=1.0)
+        shutdown.join(timeout=HANG_S)
         assert not shutdown.is_alive()
-    assert media.close(wait_timeout_s=0.5)
+    assert media.close(wait_timeout_s=HANG_S)
 
 
 def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
@@ -3800,7 +3845,7 @@ def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
         def start(self) -> voice_tts.PlayerStartResult:
             self.start_calls += 1
             self.start_entered.set()
-            assert self.start_release.wait(timeout=1.0)
+            assert self.start_release.wait(timeout=HANG_S)
             self.physical_open = True
             self.max_owners = max(self.max_owners, int(self.physical_open))
             return voice_tts.PlayerStartResult("started", 41, "late_open")
@@ -3831,17 +3876,17 @@ def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.03),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
     wake = media.resume_after_wake(timeout_s=0.02)
     assert wake.status == "uncertain"
-    assert player.start_entered.wait(timeout=1.0)
+    assert player.start_entered.wait(timeout=HANG_S)
     assert not media.close(wait_timeout_s=0.03)
     wait_until_true(media._closed.is_set)
     player.start_release.set()
-    assert player.compensation_seen.wait(timeout=1.0)
+    assert player.compensation_seen.wait(timeout=HANG_S)
     assert not media.cleanup_complete
     wait_until_true(lambda: player.physical_open)
     player.debt_release.set()
@@ -3850,7 +3895,7 @@ def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
     assert player.start_calls == 1
     assert player.max_owners == 1
     assert media._player_stop_thread is not None
-    media._player_stop_thread.join(timeout=1.0)
+    media._player_stop_thread.join(timeout=HANG_S)
     assert not media._player_stop_thread.is_alive()
 
 
@@ -3900,7 +3945,7 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.03),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=HANG_S),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3912,7 +3957,7 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
     assert media._power_state == "open_unadmitted"
     assert player.physical_open
     media.revoke_wake_starts_for_shutdown()
-    assert player.compensation_seen.wait(timeout=1.0)
+    assert player.compensation_seen.wait(timeout=HANG_S)
     assert not media.close(wait_timeout_s=0.03)
     wait_until_true(media._closed.is_set)
     assert not media.cleanup_complete
@@ -3923,7 +3968,7 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
     wait_until_true(lambda: media.cleanup_complete)
     assert media._power_state == "suspended"
     assert media._power_helper is not None
-    media._power_helper.join(timeout=1.0)
+    media._power_helper.join(timeout=HANG_S)
     assert not media._power_helper.is_alive()
 
 
@@ -4319,7 +4364,7 @@ def test_broadcaster_registration_and_live_envelopes_share_one_sender_sequence()
         ws = MagicMock()
         ws.send_json = _send_json
         registering = asyncio.create_task(broadcaster.register(ws))
-        await asyncio.wait_for(first_send_entered.wait(), timeout=1.0)
+        await asyncio.wait_for(first_send_entered.wait(), timeout=HANG_S)
         newer = asyncio.create_task(
             broadcaster.broadcast_voice_capability(
                 version=3,
@@ -4540,7 +4585,12 @@ def test_a_second_wake_while_already_armed_broadcasts_no_second_listening(
         for value in [0, 0, 0, 0, 10_000, 11_000, 12_000]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        wait_until_true(lambda: recorder.voice_calls != [])
+        # Both the visible `listening` and the second detection are waited for: the
+        # drain thread, not the emits above, decides when each lands.
+        wait_until_true(
+            lambda: recorder.voice_calls != [] and session.metrics().wake_detections >= 2,
+            timeout_s=HANG_S,
+        )
         metrics = session.metrics()
         close = session.close()
     assert close.definitively_closed
