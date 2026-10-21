@@ -37,6 +37,7 @@ from jarvis.decision.doing_run import (
     narrow,
     read_run,
 )
+from jarvis.runtime.doing_day import lane_line, reach_past_start
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
@@ -119,15 +120,15 @@ def read_brief(
 ) -> Brief | None:
     """What the writer is shown of ``day`` as of ``now``, or None when it has no waking window.
 
-    The day line is folded as ``GET /inherent/day`` folds it and cut as it is there, so the
-    spans written are over the segments the page shows. The day is ``final`` once the waking part
-    of it is over.
+    The day line is folded as ``GET /inherent/day`` folds the doing lane, to where the waking part
+    can reach past midnight (ADR 0313), and cut as it is there, so the spans written are over the
+    segments the page shows. The day is ``final`` once the waking part of it is over.
     """
     zone = sources.zone
     start_ms, end_ms = day_window(day, zone)
     now_ms = int(now.timestamp() * 1000)
     with closing(open_runtime_event_log(event_log_path)) as conn:
-        line = fold_day(conn, start_ms, end_ms, now_ms, sources)
+        line = lane_line(conn, day, sources, now_ms)
         items = line.items
         facts = his_facts(fact_spans(items))
         waking = waking_window(facts, start_ms, end_ms, now_ms)
@@ -254,17 +255,31 @@ class DoingSchedule:
     def tidy(self, now: datetime | None = None) -> str:
         """He asked to have today tidied (ADR 0310): a run now, whenever the last one was.
 
-        Blocking for as long as the model writes; what was done, as :meth:`tick` says it.
+        Past midnight while the day before's waking part goes on (he has not gone to bed), that
+        day is the one tidied (ADR 0313). Blocking for as long as the model writes; what was done,
+        as :meth:`tick` says it.
         """
         moment = now or local_now()
-        return self._guarded(moment.astimezone(self._sources.zone).date(), moment, asked=True)
+        return self._guarded(None, moment, asked=True)
 
-    def _guarded(self, day: date, now: datetime, *, asked: bool) -> str:
+    def _tidied(self, moment: datetime) -> date:
+        """Today, or the day before while its waking part still runs past midnight."""
+        zone = self._sources.zone
+        today = moment.astimezone(zone).date()
+        now_ms = int(moment.timestamp() * 1000)
+        start_ms, end_ms = day_window(today, zone)
+        with closing(open_runtime_event_log(self._event_log_path)) as conn:
+            items = fold_day(conn, start_ms, end_ms, now_ms, self._sources).items
+        up = reach_past_start(items, today, zone, now_ms) >= now_ms > start_ms
+        return today - timedelta(days=1) if up else today
+
+    def _guarded(self, day: date | None, now: datetime, *, asked: bool) -> str:
+        """Write ``day`` (None: the day he asks to tidy); a failure is logged and said."""
         with self._writing:
             try:
-                return self._day(day, now, asked=asked)
+                return self._day(self._tidied(now) if day is None else day, now, asked=asked)
             except Exception:
-                LOGGER.exception("doing: %s failed; the previous run stands", day)
+                LOGGER.exception("doing: %s failed; the previous run stands", day or "tidying")
                 return "failed"
 
     def _day(self, day: date, now: datetime, *, asked: bool) -> str:

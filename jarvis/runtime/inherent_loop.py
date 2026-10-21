@@ -192,6 +192,7 @@ from jarvis.runtime.dictation import (
     whisper_ears,
 )
 from jarvis.runtime.doing_answers import DoingAnswers
+from jarvis.runtime.doing_day import read_day_doing
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
@@ -232,7 +233,7 @@ from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.departures import ID_PREFIX as PIN_PREFIX
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
-from jarvis.state.doing import read_doing
+from jarvis.state.doing import fact_spans
 from jarvis.state.event_log import (
     MAC_NODE,
     PHONE_VOICE_CHANNEL,
@@ -5783,7 +5784,8 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     in the log (ADR 0299). ``line`` and ``highlights`` (ADR 0235) are the day's line to him and
     its marked items, read from ``memory_db``. ``spans`` and ``coverage`` (ADR 0302) are the day's
     fact spans and what he was doing, cut from the items and worded by the day's latest stored
-    run and his answers.
+    run and his answers; before them come the day before's stretches that run past midnight
+    (ADR 0313).
     ``shipped`` is the imports directory (ADR 0294): what his Mac copied to it fills in his Mac's
     lane when TimeSink cannot be read live, and gives his Claude Code sessions.
     ``summary`` is the day's steps, resting heart rate and heart rate variability from the phone
@@ -5801,8 +5803,10 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         except Exception:
             LOGGER.exception("day: the day's body numbers could not be read")
             summary = None
+        doing = read_day_doing(conn, memory_db, on, line.items, sources, now_ms)
     told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
-    doing = read_doing(memory_db, on.isoformat(), line.items, start_ms, end_ms, now_ms)
+    served = doing.served({item["id"] for item in line.items})
+    spans = sorted([*fact_spans(line.items), *served], key=lambda s: (s["start_ms"], s["id"]))
     return {
         "date": on.isoformat(),
         "tz": zone_name,
@@ -5815,8 +5819,8 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
         "screen_synced_ms": line.synced,
         "line": told,
         "highlights": highlights,
-        "spans": doing.spans,
-        "coverage": doing.coverage,
+        "spans": spans,
+        "coverage": doing.own.doing.coverage,
         "summary": summary,
         "weather": None if weather is None else weather(on),
     }

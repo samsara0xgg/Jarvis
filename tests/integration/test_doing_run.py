@@ -56,6 +56,7 @@ from jarvis.decision.doing_run import (
 from jarvis.decision.llm import ChatResult
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.runtime import doing_run as runtime
+from jarvis.runtime.doing_answers import DoingAnswers
 from jarvis.runtime.doing_run import (
     CHECK_EVERY,
     SHORT_EVERY,
@@ -88,6 +89,7 @@ from jarvis.state.memory_db import (
     latest_doing_run,
     open_memory_db,
 )
+from jarvis.state.phone_day import HEALTH_EVENT
 from jarvis.state.shipments import Shipments
 from scripts import doing_replay
 from tests.integration.test_timeline_actions import _peers, _refused_without_credentials
@@ -588,7 +590,8 @@ def test_a_final_day_says_so_and_offers_the_edge_of_a_short_stay_as_a_time_insid
 ) -> None:
     """A final day says so and offers the edge of a short stay as a time inside a segment."""
     _visit(world.log, "v4", _at(16), _at(16, 5), "Corner Cafe", lat=1.01)  # five minutes
-    final = read_brief(DAY, world.sources, world.log, _at(0, 1, day=DAY + timedelta(days=1)))
+    # six hours past midnight with no night recorded: the day is over, at midnight (ADR 0313)
+    final = read_brief(DAY, world.sources, world.log, _at(6, 1, day=DAY + timedelta(days=1)))
     assert final is not None
     assert final.final
     lines = build_messages(final)[0]["content"].split("\n")
@@ -1516,6 +1519,75 @@ def test_his_asking_writes_today_at_once_and_twice_asking_writes_once(
     assert tool.handler({}, None) == {"done": False, "outcome": "unchanged"}  # type: ignore[arg-type]
     assert len(writer.prompts) == 2
     assert len(_rows(world.memory)) == 2
+
+
+def _night(log: Path, uid: str, start: datetime, end: datetime) -> None:
+    """A night's sleep as the phone reports it from Health."""
+    with closing(open_event_log(log)) as conn:
+        emit_event(
+            conn, type=HEALTH_EVENT, ts_epoch_ms=_ms(end), event_uid=uid, ingestion_node="phone",
+            payload={"metric": "sleep", "start_ms": _ms(start), "end_ms": _ms(end), "value": 3,
+                     "detail": "core"},
+        )
+
+
+def test_a_late_night_is_the_days_until_he_goes_to_bed(world: World, clock: Clock) -> None:
+    """Past midnight the day runs on while he may be up, and his bed after midnight ends it.
+
+    ADR 0313: asked after midnight, the day before is tidied; the next day's page shows that
+    day's stretch past midnight with the same id, holding that page's items, before its own lane;
+    an answer about it is kept for the day before.
+    """
+    after = DAY + timedelta(days=1)
+    midnight = _ms(_at(0, day=after))
+    _visit(world.log, "v4", _at(21), _at(1, 30, day=after), "Home", lat=1.02)
+    writer = _Writer(_tile)
+    schedule = _schedule(world, writer, SETTINGS)
+    late = _at(1, day=after)
+    clock.now = late
+    brief = read_brief(DAY, world.sources, world.log, late)
+    assert brief is not None
+    assert (brief.waking.end_ms, brief.final) == (_ms(late), False)  # he may still be up
+    assert schedule.tick(late) == {}  # so the night's final run waits
+    assert schedule.tidy(late) == "landed (draft, 8 spans, 0 questions)"  # the day still going
+    run = _latest(world.memory)
+    assert run.covers_until_ms == _ms(late)
+    assert (run.spans[-1]["start_ms"], run.spans[-1]["end_ms"]) == (_ms(_at(21)), _ms(late))
+
+    page = _read_day(world.log, VANCOUVER, world.memory, None, after, _ms(late))
+    doing = [s for s in page["spans"] if s["lane"] == "doing"]
+    assert [(s["id"], s["start_ms"], s["end_ms"], s["title"]) for s in doing] == [
+        (run.spans[-1]["id"], _ms(_at(21)), _ms(late), "Work on it"),
+    ]
+    assert doing[0]["item_ids"] == ["v4"]  # the stay crossing midnight is on this page too
+    assert page["coverage"]["waking_ms"] == 0  # this day's own waking part has not begun
+
+    answers = DoingAnswers(world.log, world.sources, clock=late.timestamp)
+    said = answers.answer(after, doing[0]["id"], None, "和朋友看电影")
+    assert (said["title"], said["basis"]) == ("和朋友看电影", "stated")
+    assert said["start_ms"] == _ms(_at(21))
+    with closing(open_memory_db(world.memory)) as conn:
+        kept = conn.execute("SELECT day, span_id FROM doing_answers").fetchall()
+    assert kept == [(KEY, doing[0]["id"])]  # kept for the day it belongs to
+
+    _night(world.log, "n1", _at(2, 30, day=after), _at(9, day=after))
+    morning = _at(10, day=after)
+    clock.now = morning
+    brief = read_brief(DAY, world.sources, world.log, morning)
+    assert brief is not None
+    assert (brief.waking.end_ms, brief.final) == (_ms(_at(2, 30, day=after)), True)
+    assert schedule.tick(morning) == {KEY: "landed (final, 9 spans, 0 questions)"}  # to 02:30
+    page = _read_day(world.log, VANCOUVER, world.memory, None, after, _ms(morning))
+    doing = [s for s in page["spans"] if s["lane"] == "doing"]
+    tail = [s for s in doing if s["start_ms"] < midnight]
+    assert tail[0]["title"] == "和朋友看电影"  # his answer still holds there
+    assert max(s["end_ms"] for s in doing if s["start_ms"] < _ms(_at(9, day=after))) == _ms(
+        _at(2, 30, day=after),
+    )
+    assert page["coverage"]["waking_start_ms"] == _ms(_at(9, day=after))
+    assert min(s["start_ms"] for s in doing if s["end_ms"] > _ms(_at(9, day=after))) == _ms(
+        _at(9, day=after),
+    )
 
 
 def test_the_timeline_asks_by_its_route_and_the_day_serves_what_was_written(

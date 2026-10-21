@@ -220,8 +220,10 @@ def waking_window(facts: Iterable[Span], day_start_ms: int, day_end_ms: int, now
     Only a sleep of at least :data:`NIGHT_MIN_MS` is a night (one still going is measured to
     ``now_ms``); a nap is part of the waking day. The window starts where the latest night ending
     within 14 hours of the day's start ends, else six hours into the day. It ends where the first
-    night after that, starting before six hours past the day's end, begins, else at the day's end.
-    For today it stops at ``now_ms``; a window that has not begun is empty.
+    night after that, starting before six hours past the day's end, begins, else at the day's end;
+    past the day's end with no night begun and those six hours not over, he may still be up, and
+    it runs on to ``now_ms`` (ADR 0313). For today it stops at ``now_ms``; a window that has not
+    begun is empty.
     """
     nights = [
         s for s in facts
@@ -239,6 +241,8 @@ def waking_window(facts: Iterable[Span], day_start_ms: int, day_end_ms: int, now
         if start < s["start_ms"] < day_end_ms + WAKING_BED_REACH_MS
     ]
     end = min(bed) if bed else day_end_ms
+    if not bed and day_end_ms < now_ms < day_end_ms + WAKING_BED_REACH_MS:
+        end = now_ms
     return Waking(start, max(start, min(end, now_ms)))
 
 
@@ -586,9 +590,11 @@ def read_doing(  # noqa: PLR0913 — the day, its items and window, and the cloc
 ) -> Doing:
     """The fact spans, served doing spans and coverage of ``day``, its ``items`` in hand.
 
-    The latest run and the answers of the day are read from ``memory_db``. A store that cannot be
-    read, or a run that cannot be served, leaves the doing lane program-cut alone, never a failed
-    day.
+    ``start_ms`` and ``end_ms`` are the day's midnights. ``items`` may reach past ``end_ms``, as
+    far as the waking part can (ADR 0313): what the lane holds then runs past midnight, while its
+    plan still stops at the day's end. The latest run and the answers of the day are read from
+    ``memory_db``. A store that cannot be read, or a run that cannot be served, leaves the doing
+    lane program-cut alone, never a failed day.
     """
     facts = fact_spans(items)
     his = his_facts(facts)
@@ -606,6 +612,7 @@ def read_doing(  # noqa: PLR0913 — the day, its items and window, and the cloc
     except Exception:
         LOGGER.exception("doing: the run of %s could not be served; program cut only", day)
         served = serve(segments, his, None, answers, items, now_ms)
+    served = [s for s in served if s["kind"] != PLANNED_KIND or s["start_ms"] < end_ms]
     return Doing(facts, served, coverage(served, waking))
 
 

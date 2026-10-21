@@ -228,6 +228,10 @@ WAKING_CASES = [
     ([(-120, 450), (840, 1020), (1380, 1800)], None, (450, 840)),  # three hours is a night
     ([(-120, 450), (1380, None)], 1600, (450, 1380)),  # a night still going ends it too
     ([(-120, 450)], 99999, (450, 1440)),  # a clock far past the day does not stretch it
+    ([(-120, 450)], 1500, (450, 1500)),  # 01:00 next day, no night begun: he may be up (0313)
+    ([(-120, 450)], 1799, (450, 1799)),  # still within six hours of midnight
+    ([(-120, 450)], 1800, (450, 1440)),  # six hours past midnight with no night: to midnight
+    ([(-120, 450), (1590, None)], 1780, (450, 1590)),  # to bed at 02:30, three hours asleep now
 ]
 
 
@@ -237,7 +241,8 @@ def test_the_waking_window(
 ) -> None:
     """Start at the latest morning waking, else 06:00; end at the first bedtime, else midnight.
 
-    Only a sleep of three hours or more is a night; a nap is part of the waking day.
+    Only a sleep of three hours or more is a night; a nap is part of the waking day. Past
+    midnight with no night begun, the day runs on to now for six hours (ADR 0313).
     """
     facts = fact_spans([_sleep(a, b) for a, b in sleeps])
     got = waking_window(facts, DAY_START, DAY_END, DAY_END * 10 if now is None else now * MIN)
