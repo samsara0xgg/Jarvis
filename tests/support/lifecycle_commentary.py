@@ -15,7 +15,8 @@ import pytest
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, inherent_loop
+from jarvis.runtime import JarvisRuntime
+from jarvis.runtime.daemon import commentary
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import fetch_events_after, open_event_log
 from jarvis.surface.cli import parse_response_channels
@@ -198,7 +199,7 @@ class CommentaryObserver:
             loop.set_default_executor(self._executor)
             self._loop = loop
             self._task = asyncio.create_task(
-                inherent_loop._commentary_watcher(runtime, poll_interval_s=0.005),  # noqa: SLF001
+                commentary.commentary_watcher(runtime, poll_interval_s=0.005),
             )
             self._ready.set()
             with contextlib.suppress(asyncio.CancelledError):
@@ -224,7 +225,7 @@ class CommentaryObserver:
 
     def __enter__(self) -> Self:
         """Start the watcher and wait for its first poll, which is after it took its anchor."""
-        self._patch.setattr(inherent_loop, "fetch_events_after", self._counting_fetch())
+        self._patch.setattr(commentary, "fetch_events_after", self._counting_fetch())
         self._thread.start()
         assert self._ready.wait(timeout=self._GUARD_S)
         self._wait_for_polls(1)

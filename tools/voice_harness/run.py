@@ -168,8 +168,8 @@ def tts_price(repo: Path) -> float:
 
 def config_constants(repo: Path) -> dict[str, float]:
     """The numbers the checks compare against, read from the repo under test."""
-    source = (repo / "jarvis/runtime/inherent_loop.py").read_text(encoding="utf-8")
-    match = re.search(r"^_COMMENTARY_MAX_LINES\b[^=]*=\s*(\d+)", source, re.MULTILINE)
+    source = (repo / "jarvis/runtime/daemon/commentary.py").read_text(encoding="utf-8")
+    match = re.search(r"^COMMENTARY_MAX_LINES\b[^=]*=\s*(\d+)", source, re.MULTILINE)
     base = yaml.safe_load((repo / "config/jarvis.yaml").read_text(encoding="utf-8"))
     ingress = base["realtime"]["single_audio_ingress"]
     return {

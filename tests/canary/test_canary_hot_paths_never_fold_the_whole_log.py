@@ -54,7 +54,7 @@ _HOT_PATH_MODULES: Final[tuple[str, ...]] = (
 # (module, name) -> calls allowed. Each entry needs a reason; remove it when the call goes.
 _ALLOWED: Final[dict[tuple[str, str], int]] = {
     # No shared cache (hand-built runtime, tests): the commentary guard folds the whole log.
-    ("jarvis/runtime/inherent_loop.py", "rebuild_projections"): 1,
+    ("jarvis/runtime/daemon/commentary.py", "rebuild_projections"): 1,
 }
 
 

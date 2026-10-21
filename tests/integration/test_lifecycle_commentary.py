@@ -36,7 +36,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.runtime import JarvisRuntime, inherent_loop, tool_status
-from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon import commentary, output_watchers
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.turn.cancel import (
     make_barge_in_interrupt_callable,
@@ -97,7 +97,7 @@ def _no_acknowledge_floor(monkeypatch: pytest.MonkeyPatch) -> None:
     The clock stands still unless a test moves it, so the 8 s and 25 s holds never fire by
     themselves: a turn only speaks for a dispatch until the test advances to them.
     """
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", 0.0)
+    monkeypatch.setattr(commentary, "COMMENTARY_EARLIEST_S", 0.0)
 
 
 def _first(phrases: tuple[str, ...]) -> str:
@@ -713,7 +713,7 @@ def test_every_phrase_of_the_pool_can_be_heard(
     monkeypatch.setattr(secrets, "choice", lambda phrases: phrases[next(walk)])
     # The clock keeps moving across the four turns; a follow-up picking from the walk is not
     # what this test counts.
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_STILL_AFTER_S", ())
+    monkeypatch.setattr(commentary, "COMMENTARY_STILL_AFTER_S", ())
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -823,7 +823,7 @@ def test_a_commentary_that_reached_the_speaker_finishes(
     handoff = threading.Event()
     if not slow_handoff:
         handoff.set()
-    opener = inherent_loop._open_commentary_in_worker_thread  # noqa: SLF001
+    opener = commentary.open_commentary_in_worker_thread
 
     def late(
         runtime: JarvisRuntime,
@@ -839,7 +839,7 @@ def test_a_commentary_that_reached_the_speaker_finishes(
         runtime.clock.wait(handoff, None)
         return opened
 
-    monkeypatch.setattr(inherent_loop, "_open_commentary_in_worker_thread", late)
+    monkeypatch.setattr(commentary, "open_commentary_in_worker_thread", late)
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime, "T-heard")
@@ -902,13 +902,13 @@ def test_the_acknowledge_outlives_its_tool_until_the_answer_is_out(tmp_path: Pat
         runtime.conn, "action.result_observed", action_id="ACT-l", turn_id="T-late",
         source_event_id=dispatched.event_uid,
     )
-    opened = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+    opened = commentary.open_commentary_in_worker_thread(
         runtime,
         trigger_event=dispatched,
     )
     assert opened is not None
     assert _count(reader, "response.started") == 1
-    inherent_loop._cancel_unheard_commentary(runtime, opened, reason="shutdown")  # noqa: SLF001
+    commentary.cancel_unheard_commentary(runtime, opened, reason="shutdown")
 
 
 def test_an_answer_out_within_the_floor_hears_no_acknowledge(
@@ -918,7 +918,7 @@ def test_an_answer_out_within_the_floor_hears_no_acknowledge(
 
     A turn still at work when the floor passes speaks, and not before it.
     """
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
+    monkeypatch.setattr(commentary, "COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -1030,7 +1030,7 @@ def test_a_slow_tools_line_is_not_said_once_the_answer_has_started(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The dispatch trigger holds the same rule as the clock."""
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
+    monkeypatch.setattr(commentary, "COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -1122,10 +1122,10 @@ def test_a_confirmation_pending_at_the_clock_keeps_it_silent(tmp_path: Path) -> 
 
 # --- observer: ADR 0121 -----------------------------------------------------
 
-_SHIPPED_FOLLOW_UPS_S: Final = inherent_loop._COMMENTARY_STILL_AFTER_S  # noqa: SLF001
-_SHIPPED_MAX_LINES: Final = inherent_loop._COMMENTARY_MAX_LINES  # noqa: SLF001
-_SHIPPED_FLOOR_S: Final = inherent_loop._COMMENTARY_EARLIEST_S  # noqa: SLF001
-_SHIPPED_CLOCK_S: Final = inherent_loop._COMMENTARY_AFTER_S  # noqa: SLF001
+_SHIPPED_FOLLOW_UPS_S: Final = commentary.COMMENTARY_STILL_AFTER_S
+_SHIPPED_MAX_LINES: Final = commentary.COMMENTARY_MAX_LINES
+_SHIPPED_FLOOR_S: Final = commentary.COMMENTARY_EARLIEST_S
+_SHIPPED_CLOCK_S: Final = commentary.COMMENTARY_AFTER_S
 """The owner's numbers as shipped, read before the autouse fixture takes the floor to zero.
 
 Every test moves the clock by these, and by halves of a second so that the sums are exact."""
@@ -1157,7 +1157,7 @@ class _Worker:
         self._got: list[Any] = []
         self._thread = threading.Thread(
             target=lambda: self._got.append(
-                inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+                commentary.open_commentary_in_worker_thread(
                     runtime, trigger_event=trigger_event,
                 ),
             ),
@@ -1185,7 +1185,7 @@ def test_the_shipped_clock_speaks_at_8_s_with_no_answer(tmp_path: Path) -> None:
     opened = worker.result()
     assert opened is not None
     assert _lines(reader, "T-clock")[0] in _WAIT_ZH
-    inherent_loop._cancel_unheard_commentary(runtime, opened, reason="shutdown")  # noqa: SLF001
+    commentary.cancel_unheard_commentary(runtime, opened, reason="shutdown")
 
 
 def test_the_shipped_clock_is_silent_when_the_answer_opened_before_it(tmp_path: Path) -> None:
@@ -1206,7 +1206,7 @@ def test_an_answer_within_the_clock_hears_no_line_with_or_without_a_quick_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick_tool: str | None,
 ) -> None:
     """An answer inside the clock needs no voice; a quick tool dispatched on the way adds none."""
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
+    monkeypatch.setattr(commentary, "COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -1274,7 +1274,7 @@ def test_a_turn_that_ends_gets_no_more_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Tier 0: the turn ends within a second of his words; no clock speaks for it."""
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
+    monkeypatch.setattr(commentary, "COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -1420,8 +1420,8 @@ def test_a_line_whose_answer_starts_during_the_decision_is_never_rendered(
         _answer_started(runtime.conn, "T-race")
         return real_rebuild(conn)
 
-    monkeypatch.setattr(inherent_loop, "rebuild_projections", _slow_rebuild)
-    assert inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+    monkeypatch.setattr(commentary, "rebuild_projections", _slow_rebuild)
+    assert commentary.open_commentary_in_worker_thread(
         runtime, trigger_event=spoke, after_s=0.0,
     ) is None
     assert _count(reader, "response.started") == 0
@@ -1441,7 +1441,7 @@ def _no_whole_log_fold(monkeypatch: pytest.MonkeyPatch) -> None:
         msg = "the commentary guard folded the whole log despite a shared cache"
         raise AssertionError(msg)
 
-    monkeypatch.setattr(inherent_loop, "rebuild_projections", _forbidden)
+    monkeypatch.setattr(commentary, "rebuild_projections", _forbidden)
 
 
 def test_a_cached_runtime_sees_a_confirmation_requested_after_the_cache_warmed(
@@ -1465,7 +1465,7 @@ def test_a_cached_runtime_sees_a_confirmation_requested_after_the_cache_warmed(
         correlation={"turn_id": "T-cached"},
     )
     _no_whole_log_fold(monkeypatch)
-    assert inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+    assert commentary.open_commentary_in_worker_thread(
         runtime, trigger_event=spoke, after_s=0.0,
     ) is None
     assert _count(reader, "response.started") == 0
@@ -1478,13 +1478,13 @@ def test_a_cached_runtime_still_speaks_with_no_confirmation_pending(
     runtime = _cached(commentary_runtime(tmp_path))
     spoke = _user_turn(runtime, "T-cached-ok")
     _no_whole_log_fold(monkeypatch)
-    opened = inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+    opened = commentary.open_commentary_in_worker_thread(
         runtime, trigger_event=spoke, after_s=0.0,
     )
     assert opened is not None
     assert runtime.decision_state is not None
     assert runtime.decision_state.cursor is not None
-    inherent_loop._cancel_unheard_commentary(runtime, opened, reason="shutdown")  # noqa: SLF001
+    commentary.cancel_unheard_commentary(runtime, opened, reason="shutdown")
 
 
 @pytest.mark.parametrize("kind", ["surface.response_chunk", "surface.playback_started"])
@@ -1504,7 +1504,7 @@ def test_the_answers_first_chunk_or_playback_counts_as_started(
             "speech_text_hash": "0" * 64,
         }
     emit_event(runtime.conn, type=kind, payload=payload, correlation={"turn_id": "T-chunk"})
-    assert inherent_loop._open_commentary_in_worker_thread(  # noqa: SLF001
+    assert commentary.open_commentary_in_worker_thread(
         runtime, trigger_event=spoke, after_s=0.0,
     ) is None
     assert _count(reader, "response.started") == 0
@@ -1610,7 +1610,7 @@ def _line_rows(tmp_path: Path) -> list[tuple[str, dict[str, Any]]]:
     spoke = _user_turn(scratch, "T-queue")
     intent = commentary_intent_for(spoke, user_text="现在几点", pick=_first)
     assert intent is not None
-    inherent_loop._render_commentary(  # noqa: SLF001
+    commentary.render_commentary(
         scratch, scratch.conn, intent=intent, trigger_event=spoke, turn_id="T-queue",
         speech=commentary_speech_text(intent),
     )
@@ -1729,11 +1729,11 @@ def test_the_wire_marks_a_wait_line_and_says_nothing_of_its_cancel(
         spoke = _user_turn(runtime, "T-wire")
         intent = commentary_intent_for(spoke, user_text="现在几点", pick=_first)
         assert intent is not None
-        entry = inherent_loop._render_commentary(  # noqa: SLF001
+        entry = commentary.render_commentary(
             runtime, runtime.conn, intent=intent, trigger_event=spoke, turn_id="T-wire",
             speech=commentary_speech_text(intent),
         )
-        inherent_loop._cancel_unheard_commentary(  # noqa: SLF001
+        commentary.cancel_unheard_commentary(
             runtime, entry, reason="answer_started",
         )
         await asyncio.to_thread(_drive_final, runtime, spoke)
@@ -1961,7 +1961,7 @@ def test_flag_off_event_log_is_what_the_observer_never_touched(
 
 
 def test_the_observer_task_is_created_only_under_the_flag() -> None:
-    """`serve_inherent` names `_commentary_watcher` exactly once, under the flag."""
+    """`serve_inherent` names `commentary_watcher` exactly once, under the flag."""
     tree = ast.parse((repo_root() / "jarvis" / "runtime" / "inherent_loop.py").read_text())
     serve = next(
         node
@@ -1971,7 +1971,7 @@ def test_the_observer_task_is_created_only_under_the_flag() -> None:
     references = [
         node
         for node in ast.walk(serve)
-        if isinstance(node, ast.Name) and node.id == "_commentary_watcher"
+        if isinstance(node, ast.Name) and node.id == "commentary_watcher"
     ]
     assert len(references) == 1
     guards = [
@@ -1981,7 +1981,7 @@ def test_the_observer_task_is_created_only_under_the_flag() -> None:
         and ast.unparse(node.test) == "runtime.response_flags.lifecycle_commentary"
     ]
     assert len(guards) == 1
-    assert "_commentary_watcher" in "\n".join(ast.unparse(stmt) for stmt in guards[0].body)
+    assert "commentary_watcher" in "\n".join(ast.unparse(stmt) for stmt in guards[0].body)
 
 
 # --- the per-turn assumption the card asked the lane to prove ---------------
@@ -2206,7 +2206,7 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
 
         # Close path 2: an unheard phrase is released at shutdown. Under the
         # per-turn cap the watcher never supersedes, so this is the reachable
-        # `_cancel_unheard_commentary` caller, and it needs its own turn.
+        # `cancel_unheard_commentary` caller, and it needs its own turn.
         _user_turn(runtime, "T-closed-2")
         _dispatch(runtime.conn, action_id="ACT-cl2", turn_id="T-closed-2",
         )
@@ -2308,7 +2308,7 @@ def test_a_predicted_line_speaks_at_once_and_the_dispatch_and_the_clock_add_none
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Before any tool, floor or clock: one line; the web dispatch and the clock stay quiet."""
-    monkeypatch.setattr(inherent_loop, "_COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
+    monkeypatch.setattr(commentary, "COMMENTARY_EARLIEST_S", _SHIPPED_FLOOR_S)
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
