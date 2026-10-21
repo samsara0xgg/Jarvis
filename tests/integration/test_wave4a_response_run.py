@@ -765,6 +765,8 @@ def test_provider_failure_records_cost_and_fails_the_response_once(tmp_path: Pat
     assert failed[0]["reason"] == "turn_raised"
     assert failed[0]["retryable"] is False
     assert event_count(runtime.conn, "response.completed") == 0
+    (cost,) = payloads_of(runtime.conn, "cost.recorded")
+    assert (cost["disposition"], cost["error_code"]) == ("error", "RuntimeError")
     runtime.conn.close()
 
 

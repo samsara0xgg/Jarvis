@@ -1961,13 +1961,14 @@ _VOLATILE_PAYLOAD_KEYS: Final[frozenset[str]] = frozenset(
         "evidence_snapshot_hash",
         "policy_hash",
         "admission_id",
+        "llm_request_id",
     },
 )
 """Values that differ between two runs of the same scenario for reasons this
 card does not own: a minted response id, the trigger's own uid (and the
 turn's record of having consumed it), the two hashes derived from the log's
-byte position when a run opened, and the id minted for each model request's
-admission.
+byte position when a run opened, and the ids minted for each model request's
+admission and its cost row.
 """
 
 
