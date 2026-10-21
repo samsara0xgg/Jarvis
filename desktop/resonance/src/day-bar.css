@@ -1,14 +1,18 @@
-/* The day's bar (DayBar.tsx, ADR 0308): 24 px of black with the day in it. A stay is its place's hue, a way he went a pale hatch, sleep a
-   deep blue; what is not recorded is the track's own white, and what is still to come is fainter and drawn dashed. Words sit inside
-   their stretch (dark ink on a light fill, ink on a dark one); nothing is written above it but the time of the pointer or of now.
+/* The day's ribbon (DayBar.tsx, ADR 0308; thin since ADR 0342): 6 px with the day in it, in a 16 px band the pointer reads. A stay is its
+   place's hue, a way he went a pale hatch, sleep a deep blue; what is not recorded is the track's own white, and what is still to come is
+   fainter. Nothing is written in it: the hour it starts at and its end sit at its two ends, and the pointer's minute under it.
    The day's numbers are the chips under it, and each is a lens. Amber is never used here: it is "waiting on you". */
 .notch .dt { --ink:238 240 251; }
-.notch .dt-bar { --bar:24px; --scrub:20px; position:relative; display:flex; flex-direction:column; user-select:none; -webkit-user-select:none; }
-.notch .dt-scrub { position:relative; flex:none; height:var(--scrub); }
-.notch .dt-time { position:absolute; bottom:6px; transform:translateX(-50%); font:10px/12px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; color:rgb(var(--ink) / .86); }
-.notch .dt-time.is-now { bottom:7px; color:rgb(var(--now)); }
-.notch .dt-trackbox { position:relative; flex:none; height:var(--bar); }
-.notch .dt-track { position:absolute; inset:0; overflow:hidden; border-radius:7px; cursor:pointer; touch-action:none; }
+.notch .dt-bar { --bar:6px; --band:16px; position:relative; display:flex; flex-direction:column; user-select:none; -webkit-user-select:none; }
+/* the band the pointer reads; the ribbon in its middle, the hour at each end outside it */
+.notch .dt-trackbox { position:relative; flex:none; height:var(--band); margin-inline:26px; cursor:pointer; touch-action:none; }
+.notch .dt-track { position:absolute; inset:calc((var(--band) - var(--bar)) / 2) 0; overflow:hidden; border-radius:3px; }
+.notch .dt-end { position:absolute; top:0; width:22px; font:10px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-faint); pointer-events:none; }
+.notch .dt-end.is-from { right:calc(100% + 4px); text-align:right; }
+.notch .dt-end.is-to { left:calc(100% + 4px); }
+/* the pointer's minute (or a range's ends): just under the ribbon, on black, over the numbers for as long as the pointer is there */
+.notch .dt-scrub { position:absolute; left:0; right:0; top:100%; height:14px; pointer-events:none; }
+.notch .dt-time { position:absolute; top:0; padding:0 3px; border-radius:3px; background:#000; transform:translateX(-50%); font:10px/13px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; color:rgb(var(--ink) / .86); }
 /* the bar as it was, laid over the new one while it fades out (DayBar.tsx); and, while the day is being tidied, a soft band of light that crosses the bar left to right, 1.6 s a pass, clipped by the track */
 .notch .dt-track.is-ghost { pointer-events:none; }
 .notch .dt-sweep { position:absolute; top:0; bottom:0; left:0; width:40%; pointer-events:none; background:linear-gradient(90deg, transparent, rgb(255 255 255 / .2) 50%, transparent); animation:dt-sweep 1.6s ease-in-out infinite; }
@@ -19,56 +23,37 @@
 .notch .dt-seg.is-trip { background:repeating-linear-gradient(45deg, rgb(var(--ink) / .16) 0 2px, transparent 2px 5px), rgb(var(--c) / var(--a)); }
 .notch .dt-seg.is-lift { filter:brightness(1.22); }
 .notch .dt-seg.is-hot,.notch .dt-sched.is-hot { filter:brightness(1.12); }
-/* the words in a stretch: icon and name, or one of them, 6 px in from each side */
-.notch .dt-sl { position:absolute; inset:0; display:flex; align-items:center; gap:4px; padding-inline:6px; overflow:hidden; font:600 11px/13px -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; white-space:nowrap; color:rgb(var(--ink) / .96); }
-.notch .dt-sl.is-icon { justify-content:center; padding-inline:0; }
-.notch .dt-sl svg { flex:none; }
-.notch .dt-sl b { font-weight:600; }
-.notch .dt-sl b.is-mono { font-family:"JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; }
-.notch .dt-seg.is-dark .dt-sl { color:rgb(11 13 26 / .9); }
-/* still to come: an event is a dashed box over its time, a reminder or a departure a tick with a dot */
+/* still to come: an event is a pale fill over its time, a reminder or a departure a pale tick */
 .notch .dt-sched { position:absolute; top:0; bottom:0; transition:filter 120ms,opacity 150ms; }
 .notch .dt-sched.is-leaving { opacity:0; transition:opacity 240ms linear; pointer-events:none; }
-.notch .dt-sched.is-event { box-sizing:border-box; border:1px dashed rgb(var(--ink) / .45); border-radius:4px; }
-.notch .dt-sched.is-event .dt-sl { padding-inline:5px; color:rgb(var(--ink) / .86); }
-.notch .dt-sched.is-tick { width:2px; margin-left:-1px; background:rgb(var(--ink) / .5); }
-.notch .dt-sched.is-tick u { position:absolute; left:50%; top:1px; width:4px; height:4px; margin-left:-2px; border-radius:50%; background:rgb(var(--ink) / .85); }
+.notch .dt-sched.is-event { border-radius:2px; background:rgb(var(--ink) / .2); }
+.notch .dt-sched.is-tick { width:2px; margin-left:-1px; background:rgb(var(--ink) / .6); }
 /* a lens: the bar dims and the kind's spans light in its colour (a moment, a 3 px tick) */
 .notch .dt-bar.is-lens .dt-seg,.notch .dt-bar.is-lens .dt-ground,.notch .dt-bar.is-lens .dt-sched { opacity:.25; }
 .notch .dt-lm { position:absolute; top:0; bottom:0; min-width:2px; border-radius:1px; background:rgb(var(--k)); }
 .notch .dt-lm.is-point { width:3px !important; margin-left:-1.5px; }
 /* over the track, free of its rounding: now, what mattered, the pointer, a row's span, a range */
-.notch .dt-over { position:absolute; inset:0; pointer-events:none; }
-/* a moment or a short call or talk: a dot on the bar's lower edge at its minute, in its kind's colour, ringed in the ground so it reads over any piece; under a lens the other kinds step back */
-.notch .dt-bdot { position:absolute; top:100%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:rgb(var(--k)); box-shadow:0 0 0 1px rgb(15 15 15); transition:opacity 150ms; }
+.notch .dt-over { position:absolute; inset:calc((var(--band) - var(--bar)) / 2) 0; pointer-events:none; }
+/* a moment or a short call or talk: a dot on the ribbon at its minute, in its kind's colour, ringed in black so it reads over any piece; under a lens the other kinds step back */
+.notch .dt-bdot { position:absolute; top:50%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:rgb(var(--k)); box-shadow:0 0 0 1.5px #000; transition:opacity 150ms; }
 .notch .dt-bar.is-lens .dt-bdot:not(.is-on) { opacity:.25; }
 .notch .dt-nowtick { position:absolute; top:-5px; bottom:-5px; width:2px; margin-left:-1px; border-radius:1px; background:rgb(var(--now)); }
 .notch .dt-nowtick::after { content:''; position:absolute; inset:0; border-radius:1px; box-shadow:0 0 6px rgb(var(--now) / .6); animation:dt-breathe 2.4s ease-in-out infinite; }
 @keyframes dt-breathe { 0%,100% { opacity:.5; } 50% { opacity:1; } }
-.notch .dt-lit { position:absolute; top:0; display:grid; place-items:center; width:9px; height:9px; margin:-4.5px 0 0 -4.5px; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .7)); animation:dt-lit-in 200ms linear; transition:opacity 200ms linear; }
+.notch .dt-lit { position:absolute; top:50%; display:grid; place-items:center; width:9px; height:9px; margin:-4.5px 0 0 -4.5px; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .7)); animation:dt-lit-in 200ms linear; transition:opacity 200ms linear; }
 .notch .dt-lit.is-hers { filter:drop-shadow(0 0 2px rgb(var(--now) / .45)); }
 .notch .dt-lit.is-gone { opacity:0; }
 @media (prefers-reduced-motion:reduce) { .notch .dt-lit { animation-duration:120ms; transition-duration:120ms; } }
 .notch .dt-hair { position:absolute; top:-4px; bottom:-4px; width:1px; margin-left:-.5px; background:rgb(var(--ink) / .7); }
-.notch .dt-bracket { position:absolute; top:0; bottom:0; box-sizing:border-box; border:1.5px solid rgb(var(--ink) / .92); border-radius:5px; }
+.notch .dt-bracket { position:absolute; top:-3px; bottom:-3px; box-sizing:border-box; border:1.5px solid rgb(var(--ink) / .92); border-radius:4px; }
 /* with a detail page up its row's span stays marked; the piece the pointer is on is only hinted */
 .notch .dt-bar.has-open .dt-bracket:not(.is-open) { border-width:1px; border-color:rgb(var(--ink) / .5); }
 .notch .dt-band { position:absolute; top:-3px; bottom:-3px; box-sizing:border-box; border-inline:1px solid rgb(var(--ink) / .5); background:rgb(255 255 255 / .12); }
 .notch .dt-band.is-applied { border-color:rgb(var(--ink) / .3); background:rgb(255 255 255 / .07); }
-.notch .dt-void { position:absolute; top:0; bottom:0; left:0; display:grid; place-items:center; font-size:11px; white-space:nowrap; color:var(--p-faint); pointer-events:none; }
-.notch .dt-hours { position:relative; flex:none; height:14px; margin-top:3px; font:10px/14px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
-.notch .dt-hours span { position:absolute; top:0; transform:translateX(-50%); }
-.notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
-/* the sun's marks: where it comes up and goes down, a hairline from the bar and a little sun on the horizon (no words) */
-.notch .dt-sun { display:grid; place-items:center; width:11px; height:14px; color:rgb(var(--ink) / .5); }
-/* where an hour's number is on it, the sun is only a warm tick hanging from the bar */
-.notch .dt-sun.is-tick { width:1px; height:4px; top:-3px; background:rgb(255 224 186 / .8); }
-.notch .dt-sun.is-tick::before { content:none; }
-.notch .dt-sun::before { content:''; position:absolute; left:5px; top:-3px; width:1px; height:5px; background:rgb(var(--ink) / .3); }
 
-/* the card: 280 pt at the pointer, under the bar and its hours (it never cuts through their words), over the list (it never pushes anything);
+/* the card: 280 pt at the pointer, under the ribbon and the pointer's minute, over the numbers and the list (it never pushes anything);
    the pointer's own is for reading, a range's has a button */
-.notch .dt-card { position:absolute; left:0; top:calc(var(--scrub) + var(--bar) + 23px); z-index:6; width:280px; opacity:0; visibility:hidden; pointer-events:none; transition:opacity 80ms linear, visibility 0s linear 80ms; }
+.notch .dt-card { position:absolute; left:0; top:calc(var(--band) + 16px); z-index:6; width:280px; opacity:0; visibility:hidden; pointer-events:none; transition:opacity 80ms linear, visibility 0s linear 80ms; }
 .notch .dt-card.is-on { opacity:1; visibility:visible; transition:opacity 120ms var(--ease-out); }
 .notch .dt-card.is-range { pointer-events:auto; }
 .notch .dt-card-in { position:relative; box-sizing:border-box; overflow:hidden; padding:10px 12px; border:1px solid rgb(255 255 255 / .08); border-radius:12px; background:rgb(16 18 30); box-shadow:0 10px 28px rgb(0 0 0 / .5);

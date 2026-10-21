@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
+import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
-import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarBy, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
+import { buildBar, endClock, fOf, msOf, numbers, peek, pieceAt, rowAt, snap, summarize, type BarBy, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { cardOf } from './numberCard';
 import { CardBody, Swap } from './CardView';
@@ -13,16 +13,14 @@ import { DoorMarks, extentOf, nearestMark, type Extent } from './DayDoors';
 import type { BarMark } from './doors';
 import './day-bar.css';
 
-// The day in one bar (ADR 0308), above the rows: what each stretch is, written in it; now; what is still to come; the stars of what
-// mattered. The pointer reads it: a hairline and a card with what the stretch was and what else was going on, a click jumps the list
-// there, a drag chooses a range. Under it the day's numbers, each a lens. The rows are DayTimeline's: they meet this at a row's key.
+// The day in one thin ribbon (ADR 0308, made thin by ADR 0342), above the rows: each stretch in its colour, now, what is still to come, the
+// stars of what mattered, the hour it starts at and 24 at its ends. It names nothing itself: the rows under it do that, and the pointer reads it
+// (a hairline and a card with what the stretch was and what else was going on), a click jumps the list there, a drag chooses a range. Under
+// it the day's numbers, each a lens. The rows are DayTimeline's: they meet this at a row's key.
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-const LABEL = '600 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif', MONO = '600 11px "JetBrains Mono", Menlo, monospace';
 const CARD_W = 280, EDGE = 4, TAP_PX = 3, FOLLOW_HZ = 11.7, ATTACHMENT = /^[0-9a-f]{32}$/;
 const rgb = (c: readonly number[]) => c.join(' ');
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-let measuring: CanvasRenderingContext2D | null = null;
-const textWidth = (text: string, mono: boolean) => { const ctx = measuring ??= document.createElement('canvas').getContext('2d')!; ctx.font = mono ? MONO : LABEL; return Math.ceil(ctx.measureText(text).width); };
 
 // Kind colours belong to a lens and to the numbers' icons only.
 const KIND: Record<LensKind, Rgb> = { sleep: [112, 120, 205], trip: [196, 208, 255], workout: [156, 224, 120], work: [108, 156, 255], call: [111, 224, 180], talk: [172, 124, 255], payment: [240, 132, 218], picture: [255, 240, 220] };
@@ -200,11 +198,10 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
     return () => window.removeEventListener('pointerdown', down, true);
   }, [!!ui.sel]);
 
-  const laid = useMemo(() => bar ? bar.segs.map(s => { const w = (s.f1 - s.f0) * width - 1; return { s, w, how: s.hole ? 'none' as const : fit(w, textWidth(s.short, s.mono), s.short) }; }) : [], [bar, width]);
-  const boxes = useMemo(() => bar ? bar.sched.filter(x => x.kind === 'event').map(x => { const w = (x.f1 - x.f0) * width; return { x, w, how: fit(w, textWidth(x.short, false), x.short) }; }) : [], [bar, width]);
   const ms = (x: number) => msOf(bar!, width ? x / width : 0);
-  const bounds = () => { const el = box.current!, h = el.closest('.dt')!.getBoundingClientRect(), b = el.getBoundingClientRect(); return { min: h.left - b.left + EDGE, max: h.right - b.left - EDGE - CARD_W }; };
-  const left = (center: number) => { const { min, max } = bounds(); return clamp(center - CARD_W / 2, min, Math.max(min, max)); };
+  // A card's place is the bar's, the pointer's is the ribbon's: the ribbon starts after the hour at its left end.
+  const bounds = () => { const el = box.current!, h = el.closest('.dt')!.getBoundingClientRect(), b = el.getBoundingClientRect(); return { min: h.left - b.left + EDGE, max: h.right - b.left - EDGE - CARD_W, off: track.current!.getBoundingClientRect().left - b.left }; };
+  const left = (center: number) => { const { min, max, off } = bounds(); return clamp(off + center - CARD_W / 2, min, Math.max(min, max)); };
 
   // The pointer: a press and a release within 3 px is a click, a press and a move of more is a range.
   const press = useRef<{ x0: number; drag: boolean } | null>(null);
@@ -280,11 +277,8 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
   if (!bar) return null;
   const sel = band ?? ui.sel, shown = sel ?? ui.filter, a = shown && Math.min(shown.a, shown.b), b = shown && Math.max(shown.a, shown.b);
   const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = !door && ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
-  // A day with no place in it (talks and no location) says so in the empty past, if the words fit there.
-  const voidText = t(['No location recorded', '没有位置记录']), voidW = (bar.nowF ?? 1) * width, showVoid = bar.segs.length === 0 && voidW >= textWidth(voidText, false) + 2 * PAD_PX;
-  // The sun's marks sit in the hours row. An hour's number always wins: a mark that would sit on one is only a tick under the bar.
-  const hours = bar.ticks.map(k => ({ k, px: k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width }));
-  const suns = bar.sun.map(x => { const px = clamp(x.f * width, 6, Math.max(6, width - 6)); return { ...x, px, bare: hours.some(h => Math.abs(h.px - px) < 14) }; });
+  // The ribbon's ends: the hour it starts at (its minutes only when it does not start on the hour) and where it ends.
+  const from = clock(bar.t0, model.tz).replace(/:00$/, ''), to = endClock(bar.t1, model.reply, model.tz).replace(/:00$/, '');
   const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
   // By place on a day with stretches the pointer lifts the place under it, but a click or the span marked is the stretch's (the list's row there).
   // On a door page the pointer lifts none of the day's pieces, and the span marked is the row's own marks (a point is a 10 px box).
@@ -292,36 +286,24 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
   type Bracket = { t0: number; t1: number; point?: boolean };
   const spanned: Bracket | null | undefined = door ? hot && hot !== open ? extentOf(door.marks, hot) : null : hot && hot !== hit && hot !== open ? model.span.get(hot) : null;
   const opened: Bracket | null | undefined = open ? door ? extentOf(door.marks, open) : model.span.get(open) : null;
-  // A door page's row that is lit (under the pointer, or chosen by the keys) says its mark's time in the scrub row, as a range does; the now label stays unless it would be under it.
+  // A door page's row that is lit (under the pointer, or chosen by the keys) says its mark's time under the ribbon, as a range does.
   const timesOf = (e: Extent) => {
     const f0 = clamp(fOf(bar, e.t0), 0, 1) * width, f1 = clamp(fOf(bar, e.t1), 0, 1) * width, one = e.point || f1 - f0 < 36;
     return one ? [{ x: (f0 + f1) / 2, text: e.point ? clock(e.t0, model.tz) : `${clock(e.t0, model.tz)}–${endClock(e.t1, model.reply, model.tz)}` }] : [{ x: f0, text: clock(e.t0, model.tz) }, { x: f1, text: endClock(e.t1, model.reply, model.tz) }];
   };
-  const lit = door && !hover && !sel && hot ? extentOf(door.marks, hot) : null, litTimes = lit && lit.t1 >= bar.t0 && lit.t0 <= bar.t1 ? timesOf(lit) : [], nowX = (bar.nowF ?? 0) * width;
+  const lit = door && !hover && !sel && hot ? extentOf(door.marks, hot) : null, litTimes = lit && lit.t1 >= bar.t0 && lit.t0 <= bar.t1 ? timesOf(lit) : [];
   const by = model.segs.size > 0 && <ByToggle value={barBy} onChange={k => setSettings({ barBy: k })} t={t}/>;
   return <>
     <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${door ? ' is-page' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
-      <div className="dt-scrub" aria-hidden="true">
-        {bar.nowF !== null && !hover && !sel && !litTimes.some(x => Math.abs(x.x - nowX) < 34) && <span className="dt-time is-now" style={{ left: `clamp(16px, ${bar.nowF * 100}%, calc(100% - 16px))` }}>{clock(model.now, model.tz)}</span>}
-        {hover && !band && <span className="dt-time" style={edge(hover.x)}>{live?.at}</span>}
-        {litTimes.map((x, i) => <span key={i} className="dt-time" style={edge(x.x)}>{x.text}</span>)}
-        {sel && a !== null && b !== null && (fOf(bar, b) - fOf(bar, a)) * width < 36
-          ? <span className="dt-time" style={edge((fOf(bar, a) + fOf(bar, b)) / 2 * width)}>{clock(a, model.tz)}–{endClock(b, model.reply, model.tz)}</span>
-          : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{endClock(b, model.reply, model.tz)}</span></>}
-      </div>
-      <div className="dt-trackbox">
-        <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
+      <div className="dt-trackbox" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
+        <span className="dt-end is-from" aria-hidden="true">{from}</span><span className="dt-end is-to" aria-hidden="true">{to}</span>
+        <div ref={track} className="dt-track">
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
-          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${hit === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
-            style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}>
-            {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
-          </i>)}
-          {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
-          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
-            {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon="event" size={12}/>}{how !== 'icon' && <b>{x.short}</b>}</span>}
-          </i>)}
-          {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
+          {bar.segs.map(s => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${hit === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
+            style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}/>)}
+          {bar.sched.filter(x => x.kind === 'event').map(x => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}/>)}
+          {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}/>)}
           <Sweep on={sweep}/>
           {lens && (bar.lens[lens] ?? []).map((m, i) => <i key={i} className={`dt-lm${m.f1 - m.f0 < .004 ? ' is-point' : ''}`} style={{ left: `${m.f0 * 100}%`, width: `${Math.max(0, m.f1 - m.f0) * 100}%` }}/>)}
           {door && <DoorMarks marks={door.marks} bar={bar} mute={door.mute}/>}
@@ -335,10 +317,14 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
           {bar.nowF !== null && <i className="dt-nowtick" style={{ left: bx(bar.nowF) }}/>}
           {hover && !band && <i className="dt-hair" style={{ left: hover.x }}/>}
         </div>
-      </div>
-      <div className="dt-hours" aria-hidden="true">
-        {hours.map(({ k }) => <span key={k.label} className={k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
-        {suns.map(x => <span key={x.kind} className={`dt-sun${x.bare ? ' is-tick' : ''}`} data-sun={x.kind} style={{ left: x.px }}>{!x.bare && <SunHorizon size={11}/>}</span>)}
+        {/* the pointer's minute, a range's ends, a lit row's time: under the ribbon, over what is under it, with the card */}
+        <div className="dt-scrub" aria-hidden="true">
+          {hover && !band && <span className="dt-time" style={edge(hover.x)}>{live?.at}</span>}
+          {litTimes.map((x, i) => <span key={i} className="dt-time" style={edge(x.x)}>{x.text}</span>)}
+          {sel && a !== null && b !== null && (fOf(bar, b) - fOf(bar, a)) * width < 36
+            ? <span className="dt-time" style={edge((fOf(bar, a) + fOf(bar, b)) / 2 * width)}>{clock(a, model.tz)}–{endClock(b, model.reply, model.tz)}</span>
+            : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{endClock(b, model.reply, model.tz)}</span></>}
+        </div>
       </div>
       <div ref={card} className={`dt-card${on && !ui.sel && !band ? ' is-on' : ''}`} aria-hidden="true">
         <div ref={cardIn} className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>

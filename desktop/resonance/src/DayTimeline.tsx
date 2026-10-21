@@ -5,9 +5,9 @@ import { postRoute, useRoute, type Route } from './homeData';
 import { askable, buildDay, changeId, clock, dateTitle, keptOf, marksOf, report, shiftDate, starrable, within, type Block, type DayItem, type DayModel, type DayReply, type Highlight, type Row, type WeatherLook } from './dayView';
 import { answerOf, askOf, hasBody, headOf, openOf, sayOf, type About, type Ask, type Rec, type Said } from './dayOpen';
 import { AskDock, type DockState } from './AskDock';
-import { DayBar, useBarState, type PageBar } from './DayBar';
-import { DoorDetail, DoorNumbers, DoorRowView, Doors, inRange } from './DayDoors';
-import { useDoors, type DoorCtx, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
+import { DayBar, useBarState } from './DayBar';
+import { DoorDetail, DoorNumbers, DoorRowView, Doors } from './DayDoors';
+import { DOORS, useDoors, type DoorCtx, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
 import { DetailPage, EASE, reduced, Unfold, Viewer, type Acts } from './RowOpen';
@@ -231,7 +231,7 @@ async function readRecords(port: string, day: string): Promise<Rec[]> {
 
 // A door page the door's hook has nothing for yet is a blank one.
 const BLANK: DoorPage = { count: null, line: null, chips: [], marks: [], rows: [], nowAt: null };
-const NO_ITEMS: DayItem[] = [];
+const NO_ITEMS: DayItem[] = [], NO_ROWS: DoorRow[] = [];
 // A door's page comes in as the number card does: 180 ms on the pane's ease, rising 4 px (reduced motion: a 120 ms fade); what it replaces is gone at once.
 const doorIn = (els: HTMLElement[]) => els.forEach(el => el.animate(reduced.matches ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: 'translateY(4px)' }, {}], { duration: reduced.matches ? 120 : 180, easing: reduced.matches ? 'linear' : EASE, fill: 'backwards' }));
 
@@ -331,7 +331,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   // says so change together), and the list comes in cut, or whole, as a day does. `wanted` is a row to go to when the whole day is back.
   const [cut, setCut] = useState(ui.filter), fading = useRef<Animation[]>([]), cutting = useRef(false), wanted = useRef<string | null>(null);
   // What a door page shows: its rows cut to the range on the bar (a row with no time is out while it is cut), and the rows the lit chip keeps (null: no chip is lit).
-  const pageRows = useMemo(() => page ? cut ? page.rows.filter(r => inRange(page.marks, r, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b))) : page.rows : [], [page, cut]);
+  const pageRows = page?.rows ?? NO_ROWS;
   const keep = page && ui.chip ? page.chips.find(c => c.id === ui.chip)?.only ?? null : null;
   const edges = () => { const l = list.current; if (!l) return; l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2); l.classList.toggle('more-above', l.scrollTop > 2); };
   // A day opens where it matters: today at its now line, another day from the top; so does the list cut to a range, and the whole day again.
@@ -846,42 +846,42 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   const title = here ? dateTitle(here, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
   const kept = note ?? lastNote.current, shownDock = dock ?? lastDock.current;
-  // A door page as the frame draws it: its numbers row (a chip with `only` is a lens), its rows (the now line among the timed ones, the untimed ones after their heading), or the words that say why
-  // there are none. A click on the bar goes to its row; on a door page that row is also the one chosen.
-  const barPage: PageBar | null = page && { marks: page.marks, mute: keep, numbers: <DoorNumbers page={page} pinned={ui.chipPinned} preview={ui.setChipPreview} pin={ui.setChipPinned} t={t}/> };
-  const barJump = (key: string) => { if (page) setPick(key); reveal(key); };
+  // A door page as the frame draws it: its name where the date is, its numbers row (a chip with `only` is a lens), its rows (the now line among the timed ones, the untimed ones after their
+  // heading), or the words that say why there are none. Only 今天 has the day's ribbon (ADR 0342): a door's page is not the day.
+  const doorName = page && t(DOORS.find(d => d.key === door)!.label);
   const hasList = page ? pageRows.length > 0 : rows.length > 0;
   // A page whose rows have no time at all (更多) has no time column to keep.
   const timeless = !!page && pageRows.length > 0 && pageRows.every(r => r.at === null && !r.time);
   const pageSay = page && (!page.rows.length ? page.loading ? t(['Reading…', '读着…']) : page.failed ? t(["Couldn't read this page. Trying again.", '没读到这一页，会再试一次']) : page.empty ?? t(['Nothing here yet', '这里还没有东西']) : t(['Nothing in this stretch', '这一段里没有']));
   const doorBlocks = (m: DayModel, p: DoorPage): ReactNode => {
-    const timed = pageRows.filter(r => r.at !== null), rest = pageRows.filter(r => r.at === null), lo = cut ? Math.min(cut.a, cut.b) : -Infinity, hi = cut ? Math.max(cut.a, cut.b) : Infinity;
-    const nowAt = p.nowAt !== null && p.nowAt >= lo && p.nowAt <= hi ? p.nowAt : null, next = nowAt === null ? -1 : timed.findIndex(r => r.at! > nowAt), split = next < 0 ? timed.length : next;
+    const timed = pageRows.filter(r => r.at !== null), rest = pageRows.filter(r => r.at === null);
+    const nowAt = p.nowAt, next = nowAt === null ? -1 : timed.findIndex(r => r.at! > nowAt), split = next < 0 ? timed.length : next;
     const one = (r: DoorRow) => <DoorRowView key={r.key} row={r} tz={m.tz} hot={hot === r.key} pick={pick === r.key} off={!!keep && !keep.has(r.key)} onHot={setHot} onClick={click}/>;
     return <>{timed.slice(0, split).map(one)}{nowAt !== null && <div className="dt-now"><span>{t([`Now ${clock(nowAt, m.tz)}`, `现在 ${clock(nowAt, m.tz)}`])}</span></div>}{timed.slice(split).map(one)}
       {rest.length > 0 && p.untimed && <p className="dt-uh">{p.untimed}</p>}{rest.map(one)}</>;
   };
   return <div ref={root} className={`dt${stale && !lost ? ' is-loading' : ''}${open ? '' : ' is-folded'}`} data-door={door} data-lens={!page && ui.lens && lensKinds.has(ui.lens) ? ui.lens : undefined} role="region" aria-label={t(['Day timeline', '一天的时间线'])}>
     <div ref={head} className="dt-head">
-      <b className="dt-date">{title}</b>{here === todayDate ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}
+      {doorName ? <b className="dt-date">{doorName}</b> : <><b className="dt-date">{title}</b>{here === todayDate ? <em className="dt-today">{t(['Today', '今天'])}</em> : <button type="button" className="dt-back" onClick={() => setDate(null)}>{t(['Back to today', '回到今天'])}</button>}</>}
       <TimelineGuard where="the header" reset={shown} fallback={null}>
-        {!lost && model?.weather && <Forecast w={model.weather}/>}
-        {!lost && model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips} onCut={() => setTight(true)}/>}
+        {!page && !lost && model?.weather && <Forecast w={model.weather}/>}
+        {!page && !lost && model && <Chips key={model.chips.map(c => c.text).join('|')} chips={model.chips} onCut={() => setTight(true)}/>}
+        {page && <span className="dt-chips"/>}
         <Waits n={lost ? 0 : model?.waiting.length ?? 0} first={() => { const k = model?.waiting[0]; if (k) waitFirst(k); }} t={t}/>
       </TimelineGuard>
-      {onToday && model && !lost && <button type="button" className={`dt-tidy${tidy === 'running' ? ' is-running' : ''}${tight && tidy === 'idle' ? ' is-tight' : ''}`} aria-busy={tidy === 'running'} title={tight && tidy === 'idle' ? t(['Tidy', '理一下']) : undefined} aria-label={tight && tidy === 'idle' ? t(['Tidy', '理一下']) : undefined} onClick={() => void tidyUp()}>
+      {!page && onToday && model && !lost && <button type="button" className={`dt-tidy${tidy === 'running' ? ' is-running' : ''}${tight && tidy === 'idle' ? ' is-tight' : ''}`} aria-busy={tidy === 'running'} title={tight && tidy === 'idle' ? t(['Tidy', '理一下']) : undefined} aria-label={tight && tidy === 'idle' ? t(['Tidy', '理一下']) : undefined} onClick={() => void tidyUp()}>
         <Sparkle size={12} weight="fill" aria-hidden="true"/>
         <span key={tidy}>{tidy === 'running' ? t(['Tidying…', '在理…']) : tidy === 'same' ? t(['No change', '没有要改的']) : tidy === 'failed' ? t(["Didn't work", '没理成，等会儿再试']) : t(['Tidy', '理一下'])}</span></button>}
-      <span className="dt-nav">
+      {!page && <span className="dt-nav">
         <button type="button" aria-label={t(['The day before', '前一天'])} disabled={!at} onClick={() => step(-1)}><CaretLeft size={13}/></button>
         <button type="button" aria-label={t(['The day after', '后一天'])} disabled={!at || date === null} onClick={() => step(1)}><CaretRight size={13}/></button>
-      </span>
+      </span>}
     </div>
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {page ? <p className="dt-line is-door">{page.line}</p> : model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty && !page ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? pick} open={opened} door={barPage} onHot={setHot} onJump={barJump} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
-        {barPage && !model.items.length && !model.segs.size && barPage.numbers}
+        {page ? <DoorNumbers page={page} pinned={ui.chipPinned} preview={ui.setChipPreview} pin={ui.setChipPinned} t={t}/>
+          : <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? pick} open={opened} door={null} onHot={setHot} onJump={reveal} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>}
         {hasList ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}${tooled ? ' is-tool' : ''}`}>
           <div ref={list} className={`dt-list${timeless ? ' is-timeless' : ''}`} onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/>}</div>
           {(opened ?? parting) && <div className="dt-page" data-page={opened ?? undefined} onFocus={e => { if (page && (e.target as Element).matches('input, textarea')) setTyping(true); }} onBlur={e => { if ((e.target as Element).matches('input, textarea')) setTyping(false); }}>
