@@ -25,7 +25,7 @@ extension WatchDay {
             ],
             ahead: [.init(t: 1320, waits: true), .init(t: 1350, waits: false), .init(t: 1380, waits: false), .init(t: 1390, waits: false)],
             headline: .init(title: "22:00 陶艺课", note: "还有 10 分钟", waits: true),
-            current: .init(id: "now", symbol: "laptopcomputer", rgb: mac, title: "做 Jarvis", sub: "19:35 起 · 2 小时 15 分", right: "2 小时 15 分"),
+            current: .init(id: "now", symbol: "laptopcomputer", rgb: mac, title: "做 Jarvis", sub: "家", right: "2 小时 15 分"),
             waiting: [
                 .init(id: "med", kind: .reminder, symbol: "bell", title: "吃药", sub: "21:30 响过了 · 饭后那次",
                       actions: [.init(id: "ack", title: "吃了"), .init(id: "later", title: "晚点再提醒")]),
@@ -33,8 +33,8 @@ extension WatchDay {
                       actions: [.init(id: "go", title: "去"), .init(id: "skip", title: "不去")]),
             ],
             next: [
-                .init(id: "mia", symbol: "phone", title: "给 Mia 回电话", sub: "提醒", right: "23:00", planned: true),
-                .init(id: "bus", symbol: "bus", title: "出门 · 12 路", sub: "还有 1 小时 20 分", right: "23:10", planned: true),
+                .init(id: "mia", symbol: "phone", title: "给 Mia 回电话", sub: "23:00 · 还有 1 小时 10 分 · 提醒", right: "", planned: true),
+                .init(id: "bus", symbol: "bus", title: "出门 · 12 路", sub: "23:10 · 还有 1 小时 20 分", right: "", planned: true),
             ],
             ride: .init(route: "12 路", title: "还有 3 站", sub: "去 UVic · 23:24 到", stops: ["Hillside", "Shelbourne", "Richmond", "Cedar Hill", "UVic"], at: 1, note: "下一站下车，提前轻敲你", alightNext: false),
             leaveAt: Date().addingTimeInterval(4800))

@@ -74,11 +74,12 @@ enum WatchDayMaker {
         return WatchDay.Row(id: e.id, symbol: symbol(e), rgb: e.kind == .segment ? e.color.map(hex) : nil, title: e.title, sub: e.detail ?? "", right: e.right)
     }
 
-    /// something planned, as the list says it (its dashed circle: the outline of its symbol); the time stands at the right unless the row has a value of its own
+    /// something planned, as the list says it (its dashed circle: the outline of its symbol). What is near says how long it is until it in its grey line (`23:00 · 还有 1 小时 10 分`)
+    /// and nothing at the right: the wrist is too narrow for a title beside such words. A value of its own stays at the right; any other time does too (it is short).
     private static func planRow(_ e: TLEntry) -> WatchDay.Row {
-        let own = e.soon || e.strongRight
-        let line = [own ? e.time : nil, e.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-        return WatchDay.Row(id: e.id, symbol: symbol(e), title: e.title, sub: line, right: own ? e.right : e.time, planned: true)
+        func join(_ parts: [String?]) -> String { parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
+        if e.soon { return WatchDay.Row(id: e.id, symbol: symbol(e), title: e.title, sub: join([e.time, e.right, e.detail]), right: "", planned: true) }
+        return WatchDay.Row(id: e.id, symbol: symbol(e), title: e.title, sub: join([e.strongRight ? e.time : nil, e.detail]), right: e.strongRight ? e.right : e.time, planned: true)
     }
 
     /// a row of the day that waits on him, with what he can say to it from the wrist; none when he can say nothing

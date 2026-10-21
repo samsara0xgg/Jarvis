@@ -84,11 +84,24 @@ final class WatchDayMakerTests: XCTestCase {
         let n = day().next
         XCTAssertEqual(n.map(\.id), ["event-demo-1", "reminder-demo-1", "departure-demo-1"])
         XCTAssertEqual(n.map(\.title), ["陶艺课", "给 Mia 回电话", "12 · Hillside Centre"])
-        XCTAssertEqual(n.map(\.right), ["还有 10 分钟", "还有 1 小时 10 分", "23:10 出门"])
+        XCTAssertEqual(n.map(\.right), ["", "", "23:10 出门"], "the time left is in the grey line, so a title is never squeezed by it")
         XCTAssertTrue(n.allSatisfy(\.planned))
         XCTAssertEqual(n.map(\.symbol), ["calendar.circle", "bell", "bus"], "not happened yet: the outline")
-        XCTAssertEqual(n[0].sub, "22:00 · 邮件 · 还没确认 · Studio 4")
+        XCTAssertEqual(n[0].sub, "22:00 · 还有 10 分钟 · 邮件 · 还没确认 · Studio 4")
+        XCTAssertEqual(n[1].sub, "23:00 · 还有 1 小时 10 分 · 还没到点")
         XCTAssertEqual(day(mail: true).next.map(\.id), ["reminder-demo-1", "departure-demo-1"], "an event he can confirm is under 等你, not twice")
+    }
+
+    func testLengthsAreInWordsAndEveryRowOfTheSampleToo() {
+        // 18 分钟 under an hour, 1 小时 40 分 past it: a bare 分 is only the tail of hours
+        let old = try! NSRegularExpression(pattern: #"(?<!小时 )\b\d+ 分(?!钟)"#)
+        func words(_ d: WatchDay) -> [String] {
+            let rows = d.next + (d.current.map { [$0] } ?? [])
+            return d.blocks.map(\.sub) + rows.flatMap { [$0.sub, $0.right] } + d.waiting.map(\.sub) + [d.headline?.note, d.ride?.sub].compactMap { $0 }
+        }
+        for d in [day(), day(mail: true), WatchDay.sample] {
+            for w in words(d) { XCTAssertNil(old.firstMatch(in: w, range: NSRange(w.startIndex..., in: w)), w) }
+        }
     }
 
     func testTheHeadlineIsTheFirstThingToComeAndAmberWhenItWaits() {

@@ -52,7 +52,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         session.activate()
         arm()
         watchRides()
-        Task { @MainActor in                                    // the minute turns: "还有 10 分" says 9
+        Task { @MainActor in                                    // the minute turns: "还有 10 分钟" says 9
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64((60 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 60)) * 1e9) + 500_000_000)
                 push()
