@@ -26,6 +26,7 @@ from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state import departures
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from tests.support import gtfs
+from tests.support.bus_world import realtime
 from tests.support.transit import (
     FAKE_KEY,
     PLACES,
@@ -558,3 +559,39 @@ def test_a_stop_name_that_fits_several_stops_asks_which_nearest_first(board: Wor
     receipt = board.receipt()
     assert receipt["status"] == "needs_choice"
     assert receipt["reads_only"] is True
+
+
+@pytest.fixture
+def board_of(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., World]]:
+    """A world at 17:00 over a chosen export and realtime feed (an empty one by default)."""
+    made: list[World] = []
+
+    def make(export: gtfs.Export, feed: bytes = b"") -> World:
+        cache = tmp_path / "cache"
+        cache.mkdir(exist_ok=True)
+        gtfs.write(cache / "bctransit-gtfs.zip", export)
+        live = BusLive(cache, feed=lambda: feed, download=lambda _p: None)
+        world = World(tmp_path, seen=serve_routes(monkeypatch, answer=ROUTES), bus_live=live)
+        made.append(world)
+        return world
+
+    yield make
+    for world in made:
+        world.conn.close()
+
+
+def test_a_board_for_tomorrow_does_not_take_todays_prediction_of_the_same_trip(
+    board_of: Callable[..., World],
+) -> None:
+    """ADR 0342: the 7's trip T7a runs every day under one id; today's run is 2 minutes late.
+
+    That prediction is today's 5:10 pm bus's, live; tomorrow's 5:10 pm stays on the timetable.
+    """
+    world = board_of(BOARD, realtime(("T7a", "S1", local_ms(17, 12))))
+
+    def first_downtown(args: dict[str, Any]) -> tuple[str, str]:
+        buses = world.call({"stop": "10001", **args})["stops"][0]["buses"]
+        return next((b["departs"], b["source"]) for b in buses if b["headsign"] == "Downtown")
+
+    assert first_downtown({}) == ("5:12 pm", "live")
+    assert first_downtown({"at": "2026-10-07 17:00"}) == ("tomorrow (Wed), 5:10 pm", "scheduled")

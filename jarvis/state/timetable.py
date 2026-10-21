@@ -142,8 +142,12 @@ class Timed:
 STOP_RADIUS_M: Final = 40.0
 """A Google stop and the export's are the same stop when they are no farther apart (ADR 0342)."""
 MATCH_WINDOW_MS: Final = 10 * 60_000
-_LIVE_SLACK_MS: Final = 90 * 60_000
-"""How far from Google's time the timetable is read: a late bus is still looked for."""
+LIVE_SLACK_MS: Final = 90 * 60_000
+"""How late a bus can run and still be that bus.
+
+The timetable is read this far from Google's time, and a prediction the feed does not date counts
+for a call only this far from the call's scheduled time.
+"""
 
 
 def _seconds(clock: str) -> int | None:
@@ -528,6 +532,23 @@ class Timetable:
             key=lambda t: t.first_depart_ms,
         )
 
+    def call_near(self, trip_id: str, stop_id: str, around_ms: int) -> Call | None:
+        """The call of ``trip_id`` at ``stop_id`` on the service day nearest ``around_ms`` in time.
+
+        A trip runs every day under one id, so which day is meant is told by the time. None when
+        the trip does not call at that stop.
+        """
+        first = datetime.fromtimestamp(around_ms / 1000, self.zone).date() - timedelta(days=1)
+        best: Call | None = None
+        for offset in range(3):
+            day = first + timedelta(days=offset)
+            call = next((c for c in self._trip_calls(trip_id, day) if c.stop_id == stop_id), None)
+            if call is not None and (
+                best is None or abs(call.depart_ms - around_ms) < abs(best.depart_ms - around_ms)
+            ):
+                best = call
+        return best
+
     def next_trip_after(self, trip_id: str, day: date, stop_id: str) -> Call | None:
         """The next call at ``stop_id`` by a trip of the same route and direction.
 
@@ -550,23 +571,24 @@ class Timetable:
         board: tuple[float, float],
         alight: tuple[float, float],
         around_ms: int,
-        live: Callable[[str, str], int | None] | None = None,
+        live: Callable[[Call], int | None] | None = None,
     ) -> Match | None:
         """The trip of ``route`` that is Google's bus leg, or None (ADR 0342).
 
         It stops within 40 m of ``board`` and, later on the same trip, within 40 m of ``alight``;
         of those trips the one whose departure at the board stop is closest to ``around_ms``, and
         no more than ten minutes from it. A trip is compared by its scheduled time and by its live
-        one (``live(trip_id, stop_id)``, epoch ms or None), whichever is closer.
+        one (``live(call)`` for the call on its service day, epoch ms or None), whichever is
+        closer.
         """
         boards = [s.stop_id for s, _ in self.stops_near(board, STOP_RADIUS_M)]
         alights = {s.stop_id for s, _ in self.stops_near(alight, STOP_RADIUS_M)}
         best: tuple[int, int, Match] | None = None
         for stop_id in boards:
             for call in self.calls_at(
-                stop_id, around_ms - _LIVE_SLACK_MS, around_ms + _LIVE_SLACK_MS, route,
+                stop_id, around_ms - LIVE_SLACK_MS, around_ms + LIVE_SLACK_MS, route,
             ):
-                now_live = live(call.trip_id, stop_id) if live else None
+                now_live = live(call) if live else None
                 off = min(
                     abs(t - around_ms) for t in (call.depart_ms, now_live) if t is not None
                 )

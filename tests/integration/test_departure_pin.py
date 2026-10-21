@@ -145,15 +145,21 @@ def _static(path: Path) -> None:
     ))
 
 
-def _feed(*trips: tuple[str, str, str, int]) -> bytes:
-    """A FeedMessage of ``(trip_id, stop_id, scheduled HH:MM, delay_s)``."""
+def _feed(*trips: tuple[str, str, str, int], start_date: str = "", days: int = 0) -> bytes:
+    """A FeedMessage of ``(trip_id, stop_id, scheduled HH:MM, delay_s)``.
+
+    ``start_date`` (``YYYYMMDD``) dates each trip's update; ``days`` moves the times that many
+    days on from today.
+    """
     message = gtfs_realtime_pb2.FeedMessage()
     message.header.gtfs_realtime_version = "2.0"
     for number, (trip, stop, scheduled, delay) in enumerate(trips):
         update = message.entity.add(id=str(number)).trip_update
         update.trip.trip_id = trip
+        if start_date:
+            update.trip.start_date = start_date
         one = update.stop_time_update.add(stop_id=stop)
-        one.departure.time = int(_local(scheduled).timestamp()) + delay
+        one.departure.time = int(_local(scheduled).timestamp()) + delay + days * 86_400
         one.departure.delay = delay
     return message.SerializeToString()
 
@@ -542,6 +548,30 @@ def test_the_static_export_is_downloaded_once_a_day(tmp_path: Path) -> None:
     assert live.departure("28", STOP, around + 15 * 60_000) is None  # beyond ten minutes
     assert live.departure("12", STOP, around) is None  # that trip is not in the feed
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("start_date", "days", "followed"),
+    [("20261007", 0, True), ("", 0, True), ("20261008", 0, False), ("", 1, False)],
+    ids=["dated today", "undated today", "dated tomorrow", "undated, tomorrow's time"],
+)
+def test_a_pinned_trip_is_followed_only_on_its_own_service_day(
+    tmp_path: Path, start_date: str, days: int, *, followed: bool,
+) -> None:
+    """ADR 0342: the refresh reads the feed's prediction of the pinned trip for the pinned day.
+
+    The trip runs every day under one id; a prediction dated tomorrow, or an undated one a day
+    away from the pinned time, is tomorrow's run and leaves the pin as it was.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _static(cache / "bctransit-gtfs.zip")
+    feed = _feed(("T28a", "S1", "17:05", 120), start_date=start_date, days=days)
+    live = BusLive(cache, feed=lambda: feed, download=lambda _p: None)
+    around = int(_local("17:05").timestamp() * 1000)
+    assert live.departure("28", STOP, around, "T28a") == (
+        ("T28a", around + 120_000) if followed else None
+    )
 
 
 def test_a_day_old_export_answers_at_once_while_the_new_one_downloads(tmp_path: Path) -> None:

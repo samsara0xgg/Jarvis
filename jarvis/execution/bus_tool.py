@@ -528,7 +528,7 @@ class _Bus:
         for call in calls:
             live = None
             if feed is not None and self._bus is not None:
-                live = self._bus.live_at(feed, call.trip_id, call.stop_id)
+                live = self._bus.live_at(feed, call)
             when = departure_ms(live if live is not None else call.depart_ms)
             if when >= departure_ms(int(start.timestamp() * 1000)):
                 timed.append({

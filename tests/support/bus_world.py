@@ -62,13 +62,19 @@ def serve_text_search(
     return asked
 
 
-def realtime(*departures: tuple[str, str, int]) -> bytes:
-    """A TripUpdates feed: each ``(trip_id, stop_id, epoch ms)`` is a predicted departure."""
+def realtime(*departures: tuple[str, str, int], start_date: str = "") -> bytes:
+    """A TripUpdates feed: each ``(trip_id, stop_id, epoch ms)`` is a predicted departure.
+
+    ``start_date`` (``YYYYMMDD``) is the service day every update names, as BC Transit's feed may;
+    none leaves the updates undated.
+    """
     message = gtfs_realtime_pb2.FeedMessage()
     message.header.gtfs_realtime_version = "2.0"
     for number, (trip, stop, ms) in enumerate(departures):
         update = message.entity.add(id=str(number)).trip_update
         update.trip.trip_id = trip
+        if start_date:
+            update.trip.start_date = start_date
         update.stop_time_update.add(stop_id=stop).departure.time = ms // 1000
     return message.SerializeToString()
 
