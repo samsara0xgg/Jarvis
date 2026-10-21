@@ -43,6 +43,7 @@ import pytest
 
 from jarvis.runtime import inherent_loop
 from jarvis.runtime import terminal as terminal_module
+from jarvis.runtime.daemon import voice_power
 from jarvis.runtime.dictation import load_vocab
 from jarvis.runtime.settings import Settings
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl, reset_realtime_trace
@@ -759,7 +760,7 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
         refreshed.append((input_device, output_device))
         return "refreshed"
 
-    monkeypatch.setattr(inherent_loop._VoicePowerCoordinator, "refresh_devices", refresh)  # noqa: SLF001
+    monkeypatch.setattr(voice_power.VoicePowerCoordinator, "refresh_devices", refresh)
     watches: list[asyncio.Task[None]] = []
     start_watch = inherent_loop._start_audio_device_watch  # noqa: SLF001
 
@@ -786,7 +787,7 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
         assert power.hooks is not None
         before_sleep, on_wake = power.hooks
         coordinator = before_sleep.__self__
-        assert isinstance(coordinator, inherent_loop._VoicePowerCoordinator)  # noqa: SLF001
+        assert isinstance(coordinator, voice_power.VoicePowerCoordinator)
         assert on_wake.__self__ is coordinator
         time.sleep(0.3)  # the watch has taken its first look
         default_mic[0] = 2  # the microphone the system defaults to has changed

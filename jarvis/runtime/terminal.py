@@ -97,6 +97,7 @@ from jarvis.runtime.daemon.observers import (
     usage_observer_task,
     usage_poll_interval_s,
 )
+from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
     _build_echo_canceller,
@@ -114,7 +115,6 @@ from jarvis.runtime.inherent_loop import (
     _tts_watcher,
     _voice_knobs,
     _voice_models_preflight,
-    _VoicePowerCoordinator,
     _watch_board,
 )
 from jarvis.runtime.mail_codes import copy_code
@@ -568,7 +568,7 @@ class _Speech:
 class _MacWatch:
     """What keeps a listening Mac's microphone right through replugs and sleep, as a daemon's."""
 
-    coordinator: _VoicePowerCoordinator
+    coordinator: VoicePowerCoordinator
     devices: asyncio.Task[None]  # ADR 0054: re-reads the devices when they change
     power: PowerObserver | None  # ADR-0009 D3: none if the system would not register it
     log: sqlite3.Connection  # the log the observer writes ``mac.sleeping`` / ``mac.awake`` to
@@ -761,7 +761,7 @@ def _start_mac_watch(
     when the Mac slept from there, and nothing else here reads them. Runs on the loop: the
     observer marshals its callbacks onto it, and the log belongs to its thread.
     """
-    coordinator = _VoicePowerCoordinator(session=session, media=pipeline)
+    coordinator = VoicePowerCoordinator(session=session, media=pipeline)
     devices = _start_audio_device_watch(
         speaking.config, page, coordinator, session.ingress, None,
     )

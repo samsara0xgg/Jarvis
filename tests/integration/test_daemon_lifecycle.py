@@ -27,6 +27,7 @@ import pytest
 
 import jarvis.runtime as runtime_pkg
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
+from jarvis.runtime.daemon import voice_power
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface import voice_media
@@ -93,7 +94,7 @@ def _fake_voice(monkeypatch: pytest.MonkeyPatch) -> _FakeVoiceSession:
     monkeypatch.setattr(
         inherent_loop,
         "_spawn_voice_input_owners",
-        lambda **_kw: inherent_loop._VoiceInputOwners(  # noqa: SLF001
+        lambda **_kw: voice_power.VoiceInputOwners(
             duplex_session=session,  # type: ignore[arg-type]
             single_ingress_attempted=True,
             reason="test",

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import voice_power
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -2575,7 +2576,7 @@ def test_power_coordinator_orders_input_then_output_and_fresh_output_before_inpu
 
     media.suspend_for_sleep.side_effect = _stop_output
     media.resume_after_wake.side_effect = _start_output
-    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
     coordinator.before_sleep()
     coordinator.on_wake()
     assert actions == ["input_stop", "output_stop", "output_start", "input_start"]
@@ -2620,7 +2621,7 @@ def test_power_coordinator_admits_output_only_after_typed_input_start(
         81,
         "input_failure_aborted_output",
     )
-    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
     result = coordinator.on_wake()
     if expected_admit:
         assert result.input_skipped_reason is None
@@ -2678,7 +2679,7 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
         )
 
     media.abort_wake_start.side_effect = _abort_after_input_close
-    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
     failed = coordinator.on_wake()
     assert isinstance(failed.input_result, voice_backend.BackendStartResult)
     assert failed.input_result.status is status
@@ -2727,7 +2728,7 @@ def test_started_input_is_exactly_closed_when_output_admit_cas_loses() -> None:
         )
 
     media.abort_wake_start.side_effect = _abort_after_input_close
-    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
     lost = coordinator.on_wake()
     assert isinstance(lost.input_result, voice_backend.BackendStartResult)
     assert lost.input_result.started
@@ -2783,7 +2784,7 @@ def test_pending_wake_input_failure_rolls_back_real_ingress_before_output_abort(
         )
 
     media.abort_wake_start.side_effect = _abort_after_input_close
-    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
     initial = coordinator.on_wake()
     assert initial.output_result is not None
     assert initial.output_result.helper_thread_alive
@@ -2847,7 +2848,7 @@ def test_typed_input_start_debt_re_suspends_real_media_owner(tmp_path: Path) -> 
         reason="input_open_debt",
         attempt_id="input-a4",
     )
-    coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
     transition = coordinator.on_wake()
     assert transition.output_result is not None
     assert transition.output_result.status == "resumed"
@@ -2908,7 +2909,7 @@ def test_power_coordinator_real_media_debt_keeps_real_ingress_suspended(
                 shutdown_timeout_s=0.5,
             ),
         )
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         slept = coordinator.before_sleep()
         assert slept.output_result is not None
         assert slept.output_result.status == "uncertain"
@@ -2999,7 +3000,7 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
             config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.5),
         )
         actions.clear()
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         slept = coordinator.before_sleep()
         woke = coordinator.on_wake()
         assert slept.output_result is not None
@@ -3069,11 +3070,11 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
 
     session.ingress.resume_after_wake.side_effect = _resume_input
     with patch.object(
-        inherent_loop._VoicePowerCoordinator,
+        voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
         0.05,
     ):
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         slept = coordinator.before_sleep()
         assert slept.output_result is not None
         assert slept.output_result.status == "uncertain"
@@ -3087,7 +3088,7 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
                 and coordinator._pending_wake_thread.is_alive()
             ),
         )
-        duplicate_results: list[inherent_loop._VoicePowerTransition] = []
+        duplicate_results: list[voice_power.VoicePowerTransition] = []
         duplicate = threading.Thread(
             target=lambda: duplicate_results.append(coordinator.on_wake()),
         )
@@ -3154,11 +3155,11 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
 
     session.ingress.resume_after_wake.side_effect = _resume_very_late_input
     with patch.object(
-        inherent_loop._VoicePowerCoordinator,
+        voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
         0.02,
     ):
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         assert coordinator.before_sleep().output_result is not None
         woke = coordinator.on_wake()
         assert woke.output_result is not None
@@ -3214,11 +3215,11 @@ def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress.stop_for_sleep.return_value = None
     with patch.object(
-        inherent_loop._VoicePowerCoordinator,
+        voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
         0.025,
     ):
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         coordinator.before_sleep()
         first_wake = coordinator.on_wake()
         assert first_wake.output_result is not None
@@ -3294,13 +3295,13 @@ def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
     session.ingress.resume_after_wake.side_effect = _resume_after_actor
     with (
         patch.object(
-            inherent_loop._VoicePowerCoordinator,
+            voice_power.VoicePowerCoordinator,
             "_TOTAL_TRANSITION_BOUND_S",
             0.025,
         ),
         patch.object(media, "_resume_after_wake_owned", new=_late_actor_resume),
     ):
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         assert coordinator.before_sleep().output_result is not None
         woke = coordinator.on_wake()
         assert woke.output_result is not None
@@ -3475,11 +3476,11 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress.stop_for_sleep.return_value = None
     with patch.object(
-        inherent_loop._VoicePowerCoordinator,
+        voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
         0.04,
     ):
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         coordinator.before_sleep()
         woke = coordinator.on_wake()
         assert woke.output_result is not None
@@ -3687,16 +3688,16 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         )
 
     session.close.side_effect = _close_input
-    owners = inherent_loop._VoiceInputOwners(
+    owners = voice_power.VoiceInputOwners(
         duplex_session=session,
         single_ingress_attempted=True,
     )
     with patch.object(
-        inherent_loop._VoicePowerCoordinator,
+        voice_power.VoicePowerCoordinator,
         "_TOTAL_TRANSITION_BOUND_S",
         0.025,
     ):
-        coordinator = inherent_loop._VoicePowerCoordinator(session=session, media=media)
+        coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
         coordinator.before_sleep()
         woke = coordinator.on_wake()
         assert woke.output_result is not None
@@ -4080,11 +4081,11 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
 
     actions: list[str] = []
     duplex = MagicMock(spec=voice_session.DuplexVoiceSession)
-    wave3_owners = inherent_loop._VoiceInputOwners(
+    wave3_owners = voice_power.VoiceInputOwners(
         duplex_session=duplex,
         single_ingress_attempted=True,
     )
-    no_owner = inherent_loop._VoiceInputOwners(
+    no_owner = voice_power.VoiceInputOwners(
         duplex_session=None,
         single_ingress_attempted=False,
     )

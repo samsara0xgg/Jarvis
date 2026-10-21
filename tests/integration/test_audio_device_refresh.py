@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import voice_power
 from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -72,7 +73,7 @@ def _coordinator(  # noqa: PLR0913 - each switch is one independent scenario of 
     allen_talking: bool = False,
     speaker_closes: bool = True,
     parked: bool = False,
-) -> inherent_loop._VoicePowerCoordinator:
+) -> voice_power.VoicePowerCoordinator:
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     ingress = session.ingress
     ingress.capability = _capability(_PARKED, 4) if parked else _capability(_LOST, 3)
@@ -113,7 +114,7 @@ def _coordinator(  # noqa: PLR0913 - each switch is one independent scenario of 
     monkeypatch.setattr(
         voice_backend, "reinitialize_portaudio", lambda: actions.append("devices re-read"),
     )
-    return inherent_loop._VoicePowerCoordinator(session=session, media=media)
+    return voice_power.VoicePowerCoordinator(session=session, media=media)
 
 
 def test_every_stream_closes_before_the_devices_are_read_again(
@@ -165,14 +166,14 @@ def test_a_wake_that_left_the_microphone_parked_re_reads_and_wakes_again(
     """Awake but parked: speaker closed, PortAudio anew, devices set, then the wake runs again."""
     actions: list[str] = []
     coordinator = _coordinator(actions, monkeypatch, parked=True)
-    woke = inherent_loop._VoicePowerTransition(
+    woke = voice_power.VoicePowerTransition(
         voice_backend.BackendStartResult(voice_backend.BackendStartStatus.STARTED, 5, None),
         voice_media.MediaPowerTransitionResult("resumed", 2, "fresh"),
         0.0,
         0.0,
     )
 
-    def _wake() -> inherent_loop._VoicePowerTransition:
+    def _wake() -> voice_power.VoicePowerTransition:
         actions.append("woke")
         return woke
 
@@ -305,7 +306,7 @@ def test_the_watch_re_reads_only_when_the_device_to_be_on_changes(
         )
         return "refreshed speaker=started microphone=started"
 
-    coordinator = MagicMock(spec=inherent_loop._VoicePowerCoordinator)
+    coordinator = MagicMock(spec=voice_power.VoicePowerCoordinator)
     coordinator.quiet.side_effect = lambda: quiet["now"]
     coordinator.refresh_devices.side_effect = _refresh
     choice = inherent_loop._AudioDeviceChoice(None, "Speakers")
@@ -361,7 +362,7 @@ def test_an_absent_pick_follows_the_default_and_the_pick_coming_back_switches_to
     assert inherent_loop._output_or_default("Multi-Output Device 2") == "Multi-Output Device 2"
     ingress = MagicMock()
     ingress.capability = _capability(voice_audio.InputCapabilityState.AVAILABLE, 1)
-    coordinator = MagicMock(spec=inherent_loop._VoicePowerCoordinator)
+    coordinator = MagicMock(spec=voice_power.VoicePowerCoordinator)
     coordinator.quiet.return_value = True
     coordinator.refresh_devices.return_value = "refreshed speaker=started microphone=started"
 
@@ -418,7 +419,7 @@ def test_the_watch_keeps_trying_a_microphone_that_is_there_but_shut(
         )
         return "refreshed speaker=started microphone=" + ("started" if opened else "failed_closed")
 
-    coordinator = MagicMock(spec=inherent_loop._VoicePowerCoordinator)
+    coordinator = MagicMock(spec=voice_power.VoicePowerCoordinator)
     coordinator.quiet.return_value = True
     coordinator.asleep = False
     coordinator.refresh_devices.side_effect = _refresh
@@ -464,7 +465,7 @@ def test_the_watch_waits_while_gpt_live_talks(monkeypatch: pytest.MonkeyPatch) -
     defaults = _system(monkeypatch, {"reSpeaker": 1}, {"Multi-Output Device 2": 1})
     ingress = MagicMock()
     ingress.capability = _capability(voice_audio.InputCapabilityState.AVAILABLE, 1)
-    coordinator = MagicMock(spec=inherent_loop._VoicePowerCoordinator)
+    coordinator = MagicMock(spec=voice_power.VoicePowerCoordinator)
     coordinator.quiet.return_value = True
     coordinator.refresh_devices.return_value = "refreshed"
     talking = {"now": True}
