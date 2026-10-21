@@ -49,4 +49,15 @@ final class WordsTests: XCTestCase {
         XCTAssertEqual(Words.Footprint.heartAverage(avg: "70", home: nil), "Average 70")
         XCTAssertEqual(Words.Footprint.heartAverage(avg: "70", home: "60"), "Average 70 · at home 60")
     }
+
+    func testTheSunAsVoiceOverSaysItIsWhatOfItThereIs() {
+        let saved = Words.shared.language
+        defer { Words.shared.set(saved) }
+        Words.shared.set(.zh)
+        XCTAssertEqual(Words.Home.sun(rise: "07:34", set: "18:11"), "日出 07:34，日落 18:11")
+        XCTAssertEqual(Words.Home.sun(rise: "06:40", set: nil), "日出 06:40")
+        Words.shared.set(.en)
+        XCTAssertEqual(Words.Home.sun(rise: "07:34", set: "18:11"), "Sunrise 07:34, Sunset 18:11")
+        XCTAssertEqual(Words.Home.sun(rise: nil, set: "18:20"), "Sunset 18:20")
+    }
 }

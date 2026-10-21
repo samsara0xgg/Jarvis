@@ -361,14 +361,13 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertFalse(tl.sunSaid)
     }
 
-    func testTheWeatherGivesUpItsWordThenItselfBeforeItCrowdsTheTopRow() {
+    func testTheWeatherGivesUpItsWordThenItselfBeforeItReachesHer() {
         let w = TLWeather(word: "多云", symbol: "cloud.fill", high: 14, low: 8)
-        XCTAssertEqual(TLDayHead.weatherFit(w, today: true, room: 175), 2, "all of it")
-        XCTAssertEqual(TLDayHead.weatherFit(w, today: true, room: 140), 1, "the temperatures")
-        XCTAssertEqual(TLDayHead.weatherFit(w, today: false, room: 180), 1, "the way back is wider than the tag, so the word goes first")
-        XCTAssertEqual(TLDayHead.weatherFit(w, today: false, room: 130), 0, "and then all of it")
-        XCTAssertEqual(TLDayHead.weatherFit(w, today: true, room: 0), 0)
+        XCTAssertEqual(TLDayHead.weatherFit(w, room: 130), 2, "all of it")
+        XCTAssertEqual(TLDayHead.weatherFit(w, room: 90), 1, "the temperatures")
+        XCTAssertEqual(TLDayHead.weatherFit(w, room: 50), 0, "and then none of it")
+        XCTAssertEqual(TLDayHead.weatherFit(w, room: 0), 0)
         // no symbol, no word: only what there is
-        XCTAssertEqual(TLDayHead.weatherFit(TLWeather(word: nil, symbol: nil, high: 21, low: nil), today: true, room: 120), 2)
+        XCTAssertEqual(TLDayHead.weatherFit(TLWeather(word: nil, symbol: nil, high: 21, low: nil), room: 40), 2)
     }
 }

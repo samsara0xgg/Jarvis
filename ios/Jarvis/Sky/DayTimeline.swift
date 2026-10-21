@@ -15,15 +15,13 @@ private let hair = Color(red: 157 / 255, green: 180 / 255, blue: 1).opacity(0.12
 private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
 
 enum TLLayout {
-    static let her = CGPoint(x: 47, y: 79)             // where she stands on the top row, and how big (34 → 15)
-    static let herScale = 15.0 / R_PS
-    static let dateShift = 39.0                        // the date starts this far further right, beside her: its first stroke 8 pt clear of her disc, which ends at 62 (47 + 15)
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for now's time (and, under a finger, the time in its chip), 12 pt under it for the hours
     static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch
     static let pillsY = 248.0                          // the row of the pills (the way back, what waits) between the chips and the list
-    static let handleH = 36.0                          // the history's handle over the composer: its hit area
-    static let listTop = 272.0, listBottom = 836.0, fade = 24.0, fadeTop = 12.0
+    static let handleH = 36.0                          // the history's handle at the foot of the screen (over the composer while it is out): its hit area
+    static let listTop = 272.0, listBottom = 856.0, fade = 24.0, fadeTop = 12.0
+    static let composerRoom = 20.0                     // what the list gives up at its foot while the composer is out at rest: its fade ends 8 pt over the field
     static var viewport: Double { listBottom - listTop }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
@@ -478,18 +476,19 @@ private struct HistoryOver: ViewModifier {
     }
 }
 
-/// The one mask of the list's area: its top fades in (12 pt, under the cards of what waits, `head` pt) and its foot fades out over the composer, and goes up with it when the keyboard (or what he is
-/// sending) raises it: no row shows through the field. A modifier of its own, so that the keyboard rising draws this and not the whole screen.
+/// The one mask of the list's area: its top fades in (12 pt, under the cards of what waits, `head` pt) and its foot fades out at the foot of the screen, or over the composer while it is out, and goes up
+/// with it when the keyboard (or what he is sending) raises it: no row shows through the field. A modifier of its own, so that the keyboard rising draws this and not the whole screen.
 private struct FootFade: ViewModifier {
     let ui: StarUI
     let head: Double
 
     func body(content: Content) -> some View {
+        let field = ui.composerOut ? TLLayout.composerRoom : 0
         content.mask(alignment: .top) {
             VStack(spacing: 0) {
                 if head > 0 { Color.black.frame(height: head) }
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black.frame(height: max(0, TLLayout.viewport - ui.kbLift - ui.attach.rise - head - TLLayout.fadeTop))          // (a keyboard so high that the two fades meet puts the foot's under the top's)
+                Color.black.frame(height: max(0, TLLayout.viewport - field - ui.kbLift - ui.attach.rise - head - TLLayout.fadeTop))          // (a keyboard so high that the two fades meet puts the foot's under the top's)
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
                 Color.clear
             }
@@ -497,29 +496,32 @@ private struct FootFade: ViewModifier {
     }
 }
 
-/// The way into the history, which opens from the bottom: a chevron over the composer, where there is room (not while he types, the panel is open, the voice's line is up or a place is being named).
-/// A tap opens the panel, and so does a pull up; it rises with the composer.
+/// The way into the history, which opens from the bottom: a chevron at the foot of the screen, or over the composer while it is out (not while he types, the panel is open or a place is being
+/// named). A tap opens the panel, and so does a pull up; it rises with the composer.
 private struct TLHandle: View {
     let engine: StarEngine
     let ui: StarUI
     @Binding var pull: Double?
 
     var body: some View {
-        let hide = ui.typing || ui.panelOpen || ui.voiceNote != nil || ui.tl.renaming != nil
+        let hide = ui.typing || ui.panelOpen || ui.tl.renaming != nil
+        let foot = H - StarUI.restGap - (ui.composerOut ? 48 : 0) - ui.attach.rise - ui.kbLift
         Image(systemName: "chevron.compact.up").font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.4))
+            .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.5))
             .frame(width: 120, height: TLLayout.handleH)
             .contentShape(Rectangle())
             .gesture(panelDrag(engine, $pull, opens: true, tap: true))
             .opacity(hide ? 0 : 1)
             .allowsHitTesting(!hide)
             .animation(.easeOut(duration: 0.3), value: hide)
-            .offset(x: (W - 120) / 2, y: H - StarUI.restGap - 48 - TLLayout.handleH - ui.attach.rise - ui.kbLift)
+            .offset(x: (W - 120) / 2, y: foot - TLLayout.handleH)
+            .animation(.easeOut(duration: 0.25), value: ui.composerOut)
             .accessibilityLabel("展开对话")
     }
 }
 
-/// 回到现在, in the look of the one under the dial, on the row of the pills at the right: on today, when the line for now is out of view (another day has its way back in the header)
+/// The way back, in the look of the one under the dial, on the row of the pills at the right: on today 回到现在 when the line for now is out of view, on another day 回到今天. Now arriving is
+/// a firm tap of the phone.
 private struct TLNowPill: View {
     let tl: TimelineState
     @Binding var nowInView: Bool
@@ -527,8 +529,12 @@ private struct TLNowPill: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
-        let show = tl.day == tl.today && !nowInView && !away
-        Button { tl.goToday() } label: { TLBackLabel(text: "回到现在") }
+        let today = tl.day == tl.today
+        let show = (!today || !nowInView) && !away
+        Button { Haptic.impact(.rigid); tl.goToday() } label: {
+            TLBackLabel(text: today ? Words.Home.backToNow : Words.Home.backToToday).id(today).transition(TLMotion.swapWords(reduce: reduce))
+                .contentShape(Rectangle().inset(by: -9))
+        }
         .buttonStyle(PressScale())
         .frame(width: W - 60, alignment: .trailing)
         .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)

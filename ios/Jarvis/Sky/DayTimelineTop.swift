@@ -3,7 +3,8 @@ import SwiftUI
 
 // Her sentence, the overview bar under it and the day's numbers under that: the part of the timeline that follows his finger. It is a view of its own because the minute under a finger
 // changes on every frame and whatever reads that minute is drawn again on every frame: kept here, that is this and nothing else of the screen, not the model of the day and not the list.
-// While a talk is on show (`ui.tlTalk`) the three give way to it, the way they give way to the readout of a finger: Sky/DayTimelineTalk.swift draws it in their place.
+// While a talk is on show (`ui.tlTalk`) the three give way to it, the way they give way to the readout of a finger: Sky/DayTimelineTalk.swift draws it in their place. While the brain tidies
+// today, and for a while after it answers with nothing new or fails, what it says of it is in her sentence's place.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -17,6 +18,8 @@ struct TLTopView: View {
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
     @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
+    @State private var lastTidy = ""                                                 // what was said of the tidying last: what fades out when it goes
+    @State private var nowSide: Bool?                                                // which side of now a finger on the bar is: crossing it is a firm tap
     @State private var ghost: TLBarScene?                                            // the bar as it was when the brain wrote a tidied day, which fades off the new one (`tl.tidied`)
     @State private var ghostGone = false
     @State private var ghostTask: Task<Void, Never>?
@@ -25,6 +28,7 @@ struct TLTopView: View {
 
     var body: some View {
         let holding = tl.scrub != nil, talk = ui.tlTalk
+        let tidying = tl.tidy != .idle && tl.day == tl.today ? tl.tidy.words : nil          // what is said of the brain tidying today, in her sentence's place
         let said = model.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
         return ZStack(alignment: .topLeading) {
             // her sentence, and in its place while a finger is on the bar the readout of the minute under it: they cross, blurred (`fadeThrough`), so the two are never readable together
@@ -32,13 +36,22 @@ struct TLTopView: View {
                 if let line = model?.line {
                     Text(line).font(.system(size: 15)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
                         .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-                        .fadeThrough(on: !holding && !talk, reduce: reduce)
-                        .accessibilityHidden(talk)
+                        .fadeThrough(on: !holding && !talk && tidying == nil, reduce: reduce)
+                        .accessibilityHidden(talk || tidying != nil)
+                        .allowsHitTesting(false)          // she may drift behind it (Sky/DayTimelineSeat.swift): a touch on her there is still on her
                         .id(line).transition(TLMotion.swapWords(reduce: reduce))
                         .offset(x: 30, y: TLLayout.lineY)
                 }
             }
             .animation(TLMotion.dayChange(reduce: reduce), value: model?.line)
+            Text(tidying ?? lastTidy).font(.system(size: 15)).foregroundStyle(ink.opacity(0.9)).lineLimit(1)
+                .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
+                .id(tidying ?? lastTidy).transition(TLMotion.swapWords(reduce: reduce)).animation(.easeOut(duration: 0.2), value: tidying)
+                .fadeThrough(on: tidying != nil && !holding && !talk, reduce: reduce)
+                .accessibilityHidden(tidying == nil || talk)
+                .allowsHitTesting(false)
+                .offset(x: 30, y: TLLayout.lineY)
+                .onChange(of: tidying, initial: true) { _, w in if let w { lastTidy = w } }
             if let said {
                 readout(said).fadeThrough(on: holding, reduce: reduce)
                     .offset(x: 30, y: TLLayout.lineY)
@@ -69,7 +82,9 @@ struct TLTopView: View {
                 if !m.chips.isEmpty || !m.body.isEmpty {
                     TLChips(chips: m.chips, health: m.body, active: lens) { l in
                         Haptic.selection()
-                        withAnimation(.easeOut(duration: 0.15)) { tl.lens = tl.lens == l ? nil : l }
+                        let on = tl.lens != l
+                        withAnimation(.easeOut(duration: 0.15)) { tl.lens = on ? l : nil }
+                        if on, let r = tl.reply { tl.revealLens(l, in: tl.model(r)) }          // the list goes to the first of that kind (the day as it is now: the chips do not redraw for a change that leaves them as they were)
                     }
                     .equatable()
                     .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
@@ -135,17 +150,20 @@ struct TLTopView: View {
         return e.t0...max(e.t0, e.t1 ?? e.t0)
     }
 
-    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar it crosses
+    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar it crosses, and a firm tap where it crosses now
     private func scrubbed(_ t: Double, _ x: Double, _ m: DayTimelineModel) {
         tl.follow(t, in: m)
         tl.finger = TLGaze.bar(x: x)
+        let side = m.now.map { m.onBar(t) >= $0 }
+        if let side, let was = nowSide, side != was { Haptic.impact(.rigid); lastStretch = m.stretch(at: t) }
+        nowSide = side
         let s = m.stretch(at: t)
         if lastStretch != s { lastStretch = s; Haptic.selection() }
     }
 
     /// the finger lifted, or was taken away
     private func lifted() {
-        lastStretch = nil
+        lastStretch = nil; nowSide = nil
         withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
     }
 

@@ -1,8 +1,7 @@
-// words: legacy
 import SwiftUI
 
-// What the day's header says besides her sentence and the bar: after the date, `今天` (or on another day the way back to it) and the day's weather; on the row of the grabber how many
-// of the day's rows wait on him; after the day's numbers what Health reported.
+// What the day's header says besides her sentence and the bar: after the date the day's weather; on the row of the pills how many of the day's rows wait on him; after the day's numbers
+// what Health reported.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -23,55 +22,42 @@ struct TLBackLabel: View {
     }
 }
 
-/// after the date in the top row: `今天` on today, on another day the way back to it, and the day's weather. A tap on the weather says for a moment when the sun rose and set, in the
-/// place of the tag and the weather (there is no room for it beside them). `room` is what the row leaves after the date: the weather gives up its word, and then itself, before it
-/// crowds the settings button.
+/// After the date in the top row: the day's weather. A tap on it says for a moment when the sun rose and set, in its place. `room` is what the row leaves between the date and her: the
+/// weather gives up its word, and then itself, before it reaches her.
 struct TLDayHead: View {
     let tl: TimelineState
     let room: Double
     @Environment(\.accessibilityReduceMotion) private var reduce
 
-    /// how much of the weather `room` holds, after the tag or the way back and its 10 pt: all of it (2), the temperatures (1), none (0)
-    static func weatherFit(_ w: TLWeather, today: Bool, room: Double) -> Int {
-        let tag = today ? tlWidth("今天", size: 12, weight: .semibold) + 18 : tlWidth("回到今天", size: 12.5, weight: .semibold) + 34
+    /// how much of the weather `room` holds: all of it (2), the temperatures (1), none (0)
+    static func weatherFit(_ w: TLWeather, room: Double) -> Int {
         let icon = w.symbol == nil ? 0 : 16.0, temps = w.temps.isEmpty ? 0 : tlWidth(w.temps, size: 11.5, weight: .medium, mono: true)
         let word = w.word.map { tlWidth($0, size: 12.5) + 5 } ?? 0
-        let left = room - tag - 10 - 6                          // and a little to spare
+        let left = room - 6                          // and a little to spare
         return icon + word + temps <= left ? 2 : icon + temps <= left ? 1 : 0
     }
 
     var body: some View {
-        let today = tl.day == tl.today
         let reply = tl.reply
         let weather = reply.flatMap { DayTimelineModel.weatherOf($0.weather) }
-        let sun = reply.flatMap { DayTimelineModel.sun(of: $0) }?.text
+        let sun = reply.flatMap { DayTimelineModel.sun(of: $0) }
         let saying = tl.sunSaid && sun != nil
-        let fit = weather.map { Self.weatherFit($0, today: today, room: room) } ?? 0
+        let fit = weather.map { Self.weatherFit($0, room: room) } ?? 0
         let swap = TLMotion.swapWords(reduce: reduce)
-        HStack(spacing: 10) {
-            if !saying {
-                ZStack(alignment: .leading) {
-                    if today {
-                        Text("今天").font(.system(size: 12, weight: .semibold)).foregroundStyle(ink.opacity(0.9)).padding(.horizontal, 9).frame(height: 22)
-                            .background(Color.white.opacity(0.1), in: Capsule()).transition(swap)
-                    } else {
-                        Button { tl.goToday() } label: { TLBackLabel(text: "回到今天").contentShape(Rectangle().inset(by: -9)) }
-                            .buttonStyle(PressScale()).transition(swap)
-                    }
-                }
-                .fixedSize().transition(.opacity)
-            }
+        ZStack(alignment: .leading) {
             if saying, let sun {
-                Text(sun).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).minimumScaleFactor(0.8).transition(.opacity)
+                TLSunLine(sun: sun).frame(maxWidth: room, alignment: .leading).transition(.opacity)
+                    .contentShape(Rectangle().inset(by: -10))
+                    .onTapGesture { tl.saySun() }
             } else if let weather, fit > 0 {
                 TLWeatherLine(w: weather, word: fit == 2).id(weather.text).transition(swap)
                     .contentShape(Rectangle().inset(by: -10))
                     .onTapGesture { if sun != nil { tl.saySun() } }
                     .accessibilityAddTraits(sun != nil ? .isButton : [])
-                    .accessibilityHint(sun != nil ? "显示日出和日落" : "")
+                    .accessibilityHint(sun != nil ? Words.Home.sunHint : "")
             }
         }
-        .animation(.easeOut(duration: 0.2), value: today)
+        .animation(.easeOut(duration: 0.2), value: saying)
         .animation(.easeOut(duration: 0.25), value: weather)
     }
 }
@@ -88,11 +74,27 @@ struct TLWeatherLine: View {
             if !w.temps.isEmpty { Text(w.temps).font(AT.mono(11.5)).foregroundStyle(muted) }
         }
         .lineLimit(1).fixedSize()
-        .accessibilityElement(children: .ignore).accessibilityLabel("天气 " + w.text)
+        .accessibilityElement(children: .ignore).accessibilityLabel(Words.Home.weather(w.text))
     }
 }
 
-/// 等你, on the grabber's row: how many of the day's rows wait on him. A tap goes to the first and the number rolls down as they are answered; with none it is gone.
+/// When the sun rose and set, by its two symbols and their times (`sunrise 07:34  sunset 18:11`), quiet, in what the date leaves of the row: smaller before it is cut
+struct TLSunLine: View {
+    let sun: TLSun
+
+    private var line: Text {
+        let rise = sun.rise.map { Text("\(Image(systemName: "sunrise")) \(clock($0))") }, set = sun.set.map { Text("\(Image(systemName: "sunset")) \(clock($0))") }
+        if let rise, let set { return Text("\(rise)   \(set)") }
+        return rise ?? set ?? Text(verbatim: "")
+    }
+
+    var body: some View {
+        line.font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).minimumScaleFactor(0.75)
+            .accessibilityLabel(Words.Home.sun(rise: sun.rise.map { clock($0) }, set: sun.set.map { clock($0) }))
+    }
+}
+
+/// 等你, on the row of the pills: how many of the day's rows wait on him. A tap goes to the first and the number rolls down as they are answered; with none it is gone.
 struct TLWaitPill: View {
     let count: Int
     let go: () -> Void
@@ -103,7 +105,7 @@ struct TLWaitPill: View {
         Button(action: go) {
             HStack(spacing: 4) {
                 MarkShape(kd: .wait).frame(width: 16, height: 16)
-                Text("\(on ? count : last) 件等你").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(amber).monospacedDigit()
+                Text(Words.Home.waiting(on ? count : last)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(amber).monospacedDigit()
                     .contentTransition(.numericText(countsDown: true))
             }
             .padding(.leading, 8).padding(.trailing, 12).frame(height: 26).background(amber.opacity(0.16), in: Capsule())
@@ -113,7 +115,7 @@ struct TLWaitPill: View {
         .opacity(on ? 1 : 0).scaleEffect(on ? 1 : 0.92).allowsHitTesting(on).accessibilityHidden(!on)
         .animation(.easeOut(duration: 0.25), value: count)
         .onChange(of: count, initial: true) { _, c in if c > 0 { last = c } }
-        .accessibilityLabel("\(on ? count : last) 件事等你")
+        .accessibilityLabel(Words.Home.waitingSpoken(on ? count : last))
     }
 }
 

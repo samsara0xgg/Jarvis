@@ -383,14 +383,9 @@ struct TLWeather: Equatable {
     var temps: String { [high, low].compactMap { $0.map { "\($0)°" } }.joined(separator: " / ") }
     var text: String { [word, temps.isEmpty ? nil : temps].compactMap { $0 }.joined(separator: " ") }
 }
-/// when the sun rose and set, in minutes from the day's midnight
+/// when the sun rose and set, in minutes from the day's midnight (a tap on the weather shows it: TLSunLine)
 struct TLSun: Equatable {
     var rise: Double?, set: Double?
-    /// what a tap on the weather says: `日出 07:12 · 日落 18:21`, or what of it there is
-    var text: String? {
-        let parts = [rise.map { "日出 " + clock($0) }, set.map { "日落 " + clock($0) }].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
 }
 
 /// something that was going on, for the readout to say of the minute under a finger

@@ -52,6 +52,9 @@ final class StarEngine {
     var qs = Spring(0)                // zoom: -1 close, 0 a day, 1 a week, 2 the month
     var tms = Spring(HomeModule.shared.isTimeline ? 1 : 0)      // the middle of the screen: 0 the dial, 1 the timeline (Sky/StarModule.swift)
     var moduleSeen = HomeModule.shared.kind
+    // where she is on the timeline and how big, on springs, and a drift she is on (Sky/DayTimelineSeat.swift)
+    var seatX = Spring(TLSeat.home.x), seatY = Spring(TLSeat.home.y), seatR = Spring(TLSeat.radius), seatMoving = false
+    var wander: (to: CGPoint, until: Double)?, seatCalmSince = nowMs(), seatWait = 30_000.0
     var gazing = false                  // her eyes were on a finger on the timeline's bar (Sky/DayTimelineGaze.swift)
     var mode: Mode = .seek
     var goal = NOW1, stiff = 2.6, qGoal = 0.0, qHeld = false
@@ -140,7 +143,7 @@ final class StarEngine {
     var isBusy: Bool {
         mode != .idle || abs(omegaS) > 0.01 || qHeld || abs(qs.value - qGoal) > 0.002 || abs(qs.velocity) > 0.002 || abs(ls.value - lensGoal) > 0.002
             || g != nil || talk != nil || flyer != nil || !sonar.isEmpty || speaking != nil || (ui.panelOpen && nowMs() - panelSince < 450)
-            || abs(tms.value - (HomeModule.shared.isTimeline ? 1 : 0)) > 0.002 || abs(tms.velocity) > 0.002
+            || abs(tms.value - (HomeModule.shared.isTimeline ? 1 : 0)) > 0.002 || abs(tms.velocity) > 0.002 || seatMoving
     }
 
     func sound(_ cue: SoundCue, _ gain: Float) { Sound.shared.play(cue, gain: gain) }
@@ -209,7 +212,7 @@ final class StarEngine {
 
     // MARK: the pole (her) and the month's cells
 
-    func poleXY() -> (Double, Double) { tm > 0.5 ? (TLLayout.her.x, TLLayout.her.y) : mon > 0.5 ? (CX, POLE_MY) : (herP.0, herP.1) }
+    func poleXY() -> (Double, Double) { tm > 0.5 ? (seatX.value, seatY.value) : mon > 0.5 ? (CX, POLE_MY) : (herP.0, herP.1) }
     func cellOf(_ d: Int) -> (x: Double, y: Double, row: Int, col: Int) {
         let c = Cal.cur, i = d - c.mFirst + c.firstCol, row = i / 7, col = i % 7
         return (GX0 + GW * (Double(col) + 0.5), GY0 + GH * Double(row) + MR + 2, row, col)

@@ -1,27 +1,25 @@
-// words: legacy
 import SwiftUI
 
-// 理一下: a capsule in the header's top row, on today, that has the brain tidy the day (`POST /inherent/day/tidy`, ADR 0310). The brain answers when a model has written the doing lane afresh,
-// which takes up to about a minute; meanwhile the list stays usable, the capsule says 在理…, and a band of light goes along the bar's pieces. When a new run is written the days are asked for
-// again by the same way every change of the day is (`TLBrain.refetch`): the list grows what is new and collapses what went, as it does for anything else, and the bar fades to its new drawing
-// (Sky/DayTimelineTop.swift keeps the old one over it until the next reading is in).
+// 理一下: one of her cards on today (Sky/DayTimelineArc.swift) that has the brain tidy the day (`POST /inherent/day/tidy`, ADR 0310). The brain answers when a model has written the doing lane
+// afresh, which takes up to about a minute; meanwhile the list stays usable, she thinks, her sentence's place says 在理…, and a band of light goes along the bar's pieces. When a new run is
+// written the days are asked for again by the same way every change of the day is (`TLBrain.refetch`): the list grows what is new and collapses what went, as it does for anything else, and
+// the bar fades to its new drawing (Sky/DayTimelineTop.swift keeps the old one over it until the next reading is in).
 
-private let ink = SetColor.ink
-
-/// what the button says
+/// where the tidying stands
 enum TLTidy: Equatable {
     case idle, running, nothing, failed
 
-    var words: String {
+    /// what is said of it: her card's word at rest, and in her sentence's place while the brain works and for a while after an answer that changed nothing or failed
+    @MainActor var words: String {
         switch self {
-        case .idle: "理一下"
-        case .running: "在理…"
-        case .nothing: "没有要改的"
-        case .failed: "没理成，等会儿再试"
+        case .idle: Words.Home.tidy
+        case .running: Words.Home.tidying
+        case .nothing: Words.Home.tidyNothing
+        case .failed: Words.Home.tidyFailed
         }
     }
 
-    /// what the button comes to once the brain has answered: a new run is written and the button is as it was; the others say so for a while (`TimelineState.tidyHolds`)
+    /// what it comes to once the brain has answered: a new run is written and it is as it was; the others say so for a while (`TimelineState.tidyHolds`)
     static func after(_ answer: TidyAnswer) -> TLTidy {
         switch answer {
         case .written: .idle
@@ -32,7 +30,7 @@ enum TLTidy: Equatable {
 }
 
 extension TimelineState {
-    /// the button is there on today, with a brain to ask (a debug build's made-up day stands in for one)
+    /// it can be asked for on today, with a brain to ask (a debug build's made-up day stands in for one)
     var tidyShown: Bool {
         guard day == today else { return false }
         #if DEBUG
@@ -41,7 +39,7 @@ extension TimelineState {
         return BrainLink.shared.hasToken
     }
 
-    /// A tap: the brain is asked once (a second tap while it works does nothing), and what it answers is the button's words for a while, or, when a run was written, the days asked for again.
+    /// Chosen: the brain is asked once (a second choice while it works does nothing), and what it answers is said for a while, or, when a run was written, the days asked for again.
     /// The answer is the state's and not the screen's: a day swiped to, or the timeline left, in the meantime changes nothing of it.
     func tidyDay() {
         guard tidy != .running else { return }
@@ -66,50 +64,6 @@ extension TimelineState {
                     if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { tidy = .idle } }
                 }
             }
-        }
-    }
-}
-
-/// At rest a small round button with the sparkles alone (the header keeps the room it has for the weather); while the brain works or says how it went it widens into a capsule with its words, and
-/// goes back to the circle after. The sparkles pulse while it works (not under Reduce Motion: the words alone). Liquid Glass where the system has it, the chips' fill before.
-struct TLTidyButton: View {
-    let tl: TimelineState
-    @Environment(\.accessibilityReduceMotion) private var reduce
-
-    static let height = 26.0
-    static func hasIcon(_ s: TLTidy) -> Bool { s == .idle || s == .running }
-    /// how wide it is for what it says, which the top row takes from the weather's room
-    static func width(_ s: TLTidy) -> Double { s == .idle ? height : 20 + (hasIcon(s) ? 15 : 0) + tlWidth(s.words, size: 12, weight: .semibold) }
-
-    var body: some View {
-        let s = tl.tidy, running = s == .running
-        Button { tl.tidyDay() } label: {
-            HStack(spacing: 4) {
-                if Self.hasIcon(s) {
-                    Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold))
-                        .symbolEffect(.pulse, options: .repeating, isActive: running && !reduce)
-                        .transition(.opacity)
-                }
-                if s != .idle { Text(s.words).font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize().id(s).transition(TLMotion.swapWords(reduce: reduce)) }
-            }
-            .foregroundStyle(ink.opacity(0.9))
-            .frame(width: Self.width(s), height: Self.height)
-            .clipShape(Capsule())
-            .background { backing }
-            .contentShape(Rectangle().inset(by: -9))
-        }
-        .buttonStyle(PressScale())
-        .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .smooth(duration: 0.3), value: s)
-        .accessibilityLabel(running ? "正在整理" : "理一下这一天")
-        .accessibilityValue(s == .nothing || s == .failed ? s.words : "")
-    }
-
-    /// the glass: Liquid Glass where the system has it, the fill of the header's chips before
-    @ViewBuilder private var backing: some View {
-        if #available(iOS 26.0, *) {
-            Color.clear.glassEffect(.regular, in: Capsule())
-        } else {
-            Capsule().fill(Color.white.opacity(0.1))
         }
     }
 }

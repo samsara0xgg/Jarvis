@@ -23,23 +23,30 @@ final class TLGazeTests: XCTestCase {
     // MARK: where it looks
 
     func testTheEyesTurnFromOneEndOfTheBarToTheOtherAsTheFingerGoesAlongIt() {
+        let under = TLGaze.toward(TLGaze.bar(x: TLSeat.home.x - 30))
         let left = TLGaze.toward(TLGaze.bar(x: 0)), mid = TLGaze.toward(TLGaze.bar(x: TLLayout.barW / 2)), right = TLGaze.toward(TLGaze.bar(x: TLLayout.barW))
         XCTAssertLessThan(left.0, mid.0, "the finger goes to the right and so do her eyes")
-        XCTAssertLessThan(mid.0, right.0)
-        XCTAssertGreaterThan(left.1, mid.1, "and she looks less far down as it goes away from the place under her")
-        XCTAssertGreaterThan(mid.1, right.1)
+        XCTAssertLessThan(mid.0, under.0)
+        XCTAssertLessThan(under.0, right.0)
         XCTAssertGreaterThan(right.0 - left.0, 0.6, "a turn that can be seen at her size, not a flutter")
-        XCTAssertLessThan(abs(left.0), 0.3, "a finger right under her is below her, not off to a side")
-        for g in [left, mid, right] {
+        XCTAssertLessThan(abs(under.0), 0.3, "a finger right under her is below her, not off to a side")
+        XCTAssertGreaterThanOrEqual(under.1, left.1, "she looks furthest down at the place under her")
+        XCTAssertGreaterThanOrEqual(under.1, right.1)
+        for g in [left, mid, under, right] {
             XCTAssertLessThanOrEqual(abs(g.0), 0.8, "and not so far that the eyes leave her face")
             XCTAssertTrue((-0.5...0.55).contains(g.1))
         }
     }
 
     func testThePlaceUnderHerHasNoWayToIt() {
-        let g = TLGaze.toward(TLLayout.her)
+        let g = TLGaze.toward(TLSeat.home)
         XCTAssertEqual(g.0, 0)
         XCTAssertEqual(g.1, 0)
+    }
+
+    func testFromWhereSheHasDriftedTheWayIsFromThere() {
+        let p = TLGaze.bar(x: 200), off = CGPoint(x: TLSeat.home.x - 40, y: TLSeat.home.y)
+        XCTAssertGreaterThan(TLGaze.toward(p, from: off).0, TLGaze.toward(p).0, "40 pt to the left, the same point is more to her right")
     }
 
     func testAFingerIsOnTheBarAtTheMiddleOfItsHeightAndNotPastItsEnds() {

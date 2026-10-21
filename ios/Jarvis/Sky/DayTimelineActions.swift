@@ -221,4 +221,11 @@ extension TimelineState {
             flash = nil
         }
     }
+
+    /// a chip of the day's numbers pressed: the list goes to the first row of its kind, under the fade at its top (a row he had open is closed first)
+    func revealLens(_ l: TLLens, in m: DayTimelineModel) {
+        guard let e = m.entries.first(where: { $0.lens == l || $0.lenses.contains(l) }), let y = m.top(of: e.id) else { return }
+        openRow = nil
+        scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: true)
+    }
 }

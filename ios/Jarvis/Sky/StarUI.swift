@@ -111,6 +111,7 @@ final class StarUI {
     var stepsOpen: Set<String> = []     // answers (row ids of the stream) whose steps he opened
     var about: About?                   // the item he has open, as the chip over the talk's first row says it; every turn carries it while it shows
     var typing = false
+    var composing = false               // on the timeline the field is out only to be typed in: he chose 打字 from her cards, or asked her about a row, and it goes when the keyboard does with nothing in it
     var kbLift = 0.0                    // how far the composer is raised over its rest place (restGap from the bottom): the keyboard's height less restGap - keyGap
     static let restGap = 34.0, keyGap = 8.0       // the composer's bottom from the screen's bottom at rest (the home indicator), and from the keyboard's top
     /// The keyboard's frame runs to the bottom of the screen, so its height already holds the home-indicator inset that restGap is: lifting the composer by the whole height
@@ -128,8 +129,14 @@ final class StarUI {
     // the whole-day timeline, which can take the dial's place in the middle of the screen (Sky/DayTimeline.swift)
     let tl = TimelineState()
     var tlShow = HomeModule.shared.isTimeline       // the timeline is drawn: it is the middle of the screen, or the dial is still giving way to it
-    var tlHome = HomeModule.shared.isTimeline       // she is in the timeline's corner (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
+    var tlHome = HomeModule.shared.isTimeline       // she has come up to her place over the timeline (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
     var footprintOpen = false           // the footprint's one-day screen is over the timeline, which and the top row give way to it (Sky/FootprintDayPage.swift)
     let footprint = FootprintDayState()
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
+
+    /// The composer is out: always under the dial. On the timeline she is tapped to talk and the field is one of her cards: it is out while he types (he chose 打字, or asked her about a
+    /// row), while it holds his words or what he attached, and with the history open; at rest the day runs to the foot of the screen.
+    var composerOut: Bool {
+        !HomeModule.shared.isTimeline || composing || typing || panelOpen || attach.hasItems || attach.isOpen || !text.isEmpty
+    }
 }

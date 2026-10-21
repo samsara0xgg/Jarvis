@@ -69,7 +69,7 @@ final class DayTimelineTidyTests: XCTestCase {
         XCTAssertEqual(TLTidy.after(.written), .idle, "a new run is in: the button is as it was")
         XCTAssertEqual(TLTidy.after(.unchanged), .nothing)
         XCTAssertEqual(TLTidy.after(.failed), .failed)
-        XCTAssertEqual([TLTidy.idle, .running, .nothing, .failed].map(\.words), ["理一下", "在理…", "没有要改的", "没理成，等会儿再试"])
+        XCTAssertEqual(Set([TLTidy.idle, .running, .nothing, .failed].map { $0.words }).count, 4, "each says its own")
     }
 
     // MARK: the button, and the days

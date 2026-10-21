@@ -215,7 +215,7 @@ final class StarStage: UIView, HerDrive {
         defer { CATransaction.commit() }
         // the compositor turns the field and moves the dial and her for the month
         if e.sky != skyKey { rot.transform = CATransform3DMakeRotation(e.sky, 0, 0, 1); skyKey = e.sky }
-        // the timeline instead of the dial (`tm` 1): the star disc dims to a third, the dial fades and shrinks a little, and she glides up to the corner, smaller
+        // the timeline instead of the dial (`tm` 1): the star disc dims to a third, the dial fades and shrinks a little, and she glides up to her place over the day, smaller (Sky/DayTimelineSeat.swift)
         let tm = e.tm, tlFull = e.timelineFull
         let em = Ease.inOut(e.mon), cell = e.cellOf(Int(clamp(Double(floorDay(e.F)), Double(M_FIRST), Double(M_LAST)))), intro = smooth(0, 900, now - e.born)
         let dk = String(format: "%.4f|%.0f|%.3f|%.4f", em, cell.x * 10 + cell.y, intro, tm)
@@ -226,15 +226,18 @@ final class StarStage: UIView, HerDrive {
             dial.opacity = Float((1 - smooth(0.5, 0.95, e.mon)) * intro * (1 - tm))
             starsBox.opacity = Float(lerp(0.35 + 0.65 * intro, 0.35, tm))
         }
-        let pk = String(format: "%.4f|%.2f|%.2f|%.4f|%.4f", em, e.herP.0, e.herP.1, e.herP.2, tm)
+        let seat = e.seat, seatS = e.seatScale
+        let pk = String(format: "%.4f|%.2f|%.2f|%.4f|%.4f|%.2f|%.2f|%.4f", em, e.herP.0, e.herP.1, e.herP.2, tm, seat.x, seat.y, seatS)
         if pk != poleKey {
             poleKey = pk
             var s = 1.0, dx = 0.0, dy = 0.0
             if em > 0 { s = 1 - 0.52 * em; dy = (POLE_MY - CY) * em }
             else if e.cam != nil { s = e.herP.2; dx = e.herP.0 - CX; dy = e.herP.1 - CY }
-            if tm > 0 { s = lerp(s, TLLayout.herScale, tm); dx = lerp(dx, TLLayout.her.x - CX, tm); dy = lerp(dy, TLLayout.her.y - CY, tm) }
+            if tm > 0 { s = lerp(s, seatS, tm); dx = lerp(dx, seat.x - CX, tm); dy = lerp(dy, seat.y - CY, tm) }
             pole.transform = s == 1 && dx == 0 && dy == 0 ? CATransform3DIdentity : CATransform3DConcat(CATransform3DMakeScale(s, s, 1), CATransform3DMakeTranslation(dx, dy, 0))
-            halo.opacity = Float(lerp(1, 0.6, tm))
+            // over the day nothing glows round her, as on the Mac: her halo and the cross of light go as she rises, and only her own rim and eyes are lit
+            halo.opacity = Float(1 - tm)
+            spikeH.opacity = Float(1 - tm); spikeV.opacity = spikeH.opacity
         }
         // the dial given way, nothing of it is drawn; when it comes back it is drawn again at once
         if dial.isHidden != tlFull { dial.isHidden = tlFull; if !tlFull { mapSig = nil } }
@@ -323,7 +326,7 @@ final class StarStage: UIView, HerDrive {
     /// the dial's hit area: the band between the top row and the panel's grabber, running past the screen's sides
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         let p = CGPoint(x: (Double(point.x) - ox) / k, y: (Double(point.y) - oy) / k)
-        if engine.tm > 0.5 { return hypot(Double(p.x) - TLLayout.her.x, Double(p.y) - TLLayout.her.y) < 26 }        // the timeline: only she is touched here
+        if engine.tm > 0.5 { return hypot(Double(p.x) - engine.seat.x, Double(p.y) - engine.seat.y) < engine.seatReach }        // the timeline: only she is touched here
         return p.y >= 58 && p.y <= 528
     }
     private func id(_ t: UITouch) -> Int { ObjectIdentifier(t).hashValue }

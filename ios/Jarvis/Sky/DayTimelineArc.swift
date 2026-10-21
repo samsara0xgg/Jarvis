@@ -1,35 +1,36 @@
-// words: legacy
 import SwiftUI
 
-// Her cards. Held down on the timeline (0.28 s), or touched and slid off at once (Sky/StarFlow.swift), she puts out a few small tiles in the quarter to her right and below, along an arc,
-// over everything else, like thoughts: two dots leave her first and each tile pops up where it sits, a little after the one before. 理一下, the history, the way back to today.
+// Her cards. Held down on the timeline (0.28 s), or touched and slid off at once (Sky/StarFlow.swift), she puts out a few small tiles on a fan under her, over everything else, like thoughts:
+// two dots leave her first and each tile pops up where it sits, a little after the one before. 打字, 理一下, the history, the way back to today.
 // A finger that is still down slides from tile to tile (a tick for each) and lifting it on one chooses it; lifting it anywhere else leaves the tiles out for a tap. A tap on a tile
 // chooses it, a tap anywhere else puts them away without a choice. The chosen tile pulses once and they all go.
 
 /// what she offers, and whether each can be chosen now
 struct TLHerMenu {
-    enum Kind { case tidy, history, today }
+    enum Kind { case type, tidy, history, today }
     struct Item: Equatable { let kind: Kind, title: String, symbol: String, enabled: Bool }
 
-    /// 理一下 only where the header has it (today, with a brain), as 在理… and not to be chosen while the brain works; the history; the way back to today
-    static func items(tidy: TLTidy, tidyShown: Bool) -> [Item] {
-        let running = tidy == .running
-        return (tidyShown ? [Item(kind: .tidy, title: running ? "在理…" : "理一下", symbol: "sparkles", enabled: !running)] : [])
-            + [Item(kind: .history, title: "聊天记录", symbol: "text.bubble", enabled: true), Item(kind: .today, title: "回到今天", symbol: "arrow.uturn.backward", enabled: true)]
+    /// The field to type to her in; 理一下 only where it can be asked for (today, with a brain), as 在理… and not to be chosen while the brain works; the history; the way back to today.
+    @MainActor static func items(tidy: TLTidy, tidyShown: Bool) -> [Item] {
+        let running = tidy == .running, w = Words.Home.self
+        return [Item(kind: .type, title: w.type, symbol: "keyboard", enabled: true)]
+            + (tidyShown ? [Item(kind: .tidy, title: running ? w.tidying : w.tidy, symbol: "wand.and.rays", enabled: !running)] : [])
+            + [Item(kind: .history, title: w.history, symbol: "text.bubble", enabled: true), Item(kind: .today, title: w.backToToday, symbol: "arrow.uturn.backward", enabled: true)]
     }
 }
 
-/// where the tiles lie: on an arc centred on her, from 5° below the horizontal to 85° (toward straight down), in the chrome's design points
+/// Where the tiles lie: on a fan under her, its middle 120° round from her right (down and to the left, toward the middle of the screen she sits right of), a tile every 40°, in the chrome's
+/// design points. With four that is from down and to the right (60°) round to her left at her own height (180°).
 enum TLArc {
-    static let tile = 52.0, corner = 14.0, radius = 105.0, first = 5.0, last = 85.0
-    static let dots: [(d: Double, r: Double)] = [(28, 2.5), (40, 4)]      // the thought dots off her toward the middle tile: distance from her, radius
+    static let tile = 52.0, corner = 14.0, radius = 110.0, middle = 120.0, step = 40.0
+    static let dots: [(d: Double, r: Double)] = [(13, 2.5), (25, 4)]      // the thought dots off her toward the middle of the fan: how far past her edge, radius
     static let slop = 4.0                              // a finger this far off a tile is still on it
 
-    static func centers(count n: Int, around c: CGPoint = TLLayout.her) -> [CGPoint] {
-        (0..<n).map { i in
-            let a = (n < 2 ? first : first + (last - first) * Double(i) / Double(n - 1)) * .pi / 180
-            return CGPoint(x: c.x + radius * cos(a), y: c.y + radius * sin(a))
-        }
+    /// the angle of each of `n` tiles, in degrees round from her right, y down
+    static func angles(count n: Int) -> [Double] { (0..<n).map { middle + step * (Double($0) - Double(n - 1) / 2) } }
+
+    static func centers(count n: Int, around c: CGPoint = TLSeat.home) -> [CGPoint] {
+        angles(count: n).map { a in CGPoint(x: c.x + radius * cos(a * .pi / 180), y: c.y + radius * sin(a * .pi / 180)) }
     }
 
     /// the tile under `p`, if any
@@ -40,10 +41,22 @@ enum TLArc {
 }
 
 extension TimelineState {
-    var herItems: [TLHerMenu.Item] { TLHerMenu.items(tidy: tidy, tidyShown: tidyShown) }
+    /// what she offers now (the words are the table's, which is the main thread's: everything here runs on it)
+    var herItems: [TLHerMenu.Item] {
+        let t = tidy, shown = tidyShown
+        return MainActor.assumeIsolated { TLHerMenu.items(tidy: t, tidyShown: shown) }
+    }
     static let arcPulse = 0.14, arcBack = 0.3          // how long the chosen tile pulses, and how long the tiles are on screen after they start back
 
-    /// She puts out her cards; `holding`: the finger that held her down is still down, and may slide onto one.
+    /// where the tile a finger that is still down is on stands (none: it is on none)
+    var arcHoverAt: CGPoint? {
+        guard let k = arcHover else { return nil }
+        let items = herItems
+        return items.firstIndex { $0.kind == k }.map { TLArc.centers(count: items.count)[$0] }
+    }
+
+    /// She puts out her cards, always round her home: off on a drift she hurries back to it for them (Sky/DayTimelineSeat.swift), so they are where his hand knows them. `holding`: the
+    /// finger that held her down is still down, and may slide onto one.
     func openArc(holding: Bool) {
         arcTask?.cancel()
         arcHover = nil; arcPicked = nil; arcHolding = holding
@@ -73,12 +86,18 @@ extension TimelineState {
         arcTask = Task { @MainActor [self] in
             try? await Task.sleep(nanoseconds: UInt64(Self.arcPulse * 1e9))
             guard !Task.isCancelled else { return }
-            switch k {
-            case .tidy: tidyDay()
-            case .history: engine.openPanel()
-            case .today: goToday()
-            }
+            perform(k, engine: engine)
             closeArc()
+        }
+    }
+
+    /// what a card says, done (a card chosen, or VoiceOver's action on her)
+    func perform(_ k: TLHerMenu.Kind, engine: StarEngine) {
+        switch k {
+        case .type: engine.beginEditing?()
+        case .tidy: tidyDay()
+        case .history: engine.openPanel()
+        case .today: goToday()
         }
     }
 
@@ -100,7 +119,7 @@ extension TimelineState {
     }
 }
 
-/// The cards over everything: a clear layer that takes a tap anywhere outside them as the way back, the thought dots, and the tiles on their arc.
+/// The cards over everything: the day dimmed behind them, a clear layer that takes a tap anywhere outside them as the way back, the thought dots, and the tiles on their fan.
 struct HerArc: View {
     let engine: StarEngine
     let ui: StarUI
@@ -114,6 +133,7 @@ struct HerArc: View {
         let centers = TLArc.centers(count: items.count)
         ZStack(alignment: .topLeading) {
             if tl.arcMounted {
+                shade
                 Color.clear.frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
                     .contentShape(Rectangle())
                     .onTapGesture { tl.closeArc() }
@@ -134,11 +154,23 @@ struct HerArc: View {
         reduce ? .easeOut(duration: TLMotion.reducedFade) : tl.arcOpen ? .spring(response: 0.3, dampingFraction: 0.58).delay(delay) : .easeIn(duration: 0.16)
     }
 
+    /// While they are out the day under them dims, all but a soft round of sky where she is, so the cards read as hers and the words between them step back.
+    private var shade: some View {
+        let home = TLSeat.home, clear = TLSeat.radius * TLSeat.listening + 8, soft = 30.0
+        return RadialGradient(stops: [.init(color: .black.opacity(0), location: clear / (clear + soft)), .init(color: .black.opacity(0.4), location: 1)],
+                              center: UnitPoint(x: (W + home.x) / (3 * W), y: (H + home.y) / (3 * H)), startRadius: 0, endRadius: clear + soft)
+            .frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
+            .opacity(tl.arcOpen ? 1 : 0)
+            .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .easeOut(duration: 0.2), value: tl.arcOpen)
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    /// a thought dot, `d` past her edge toward the middle of the fan
     private func dot(_ d: Double, _ r: Double, rank: Int) -> some View {
-        let a = 45.0 * .pi / 180, out = tl.arcOpen
+        let a = TLArc.middle * .pi / 180, out = tl.arcOpen, from = engine.seatR.value + d
         return Circle().fill(SetColor.ink.opacity(0.55)).frame(width: r * 2, height: r * 2)
             .scaleEffect(out || reduce ? 1 : 0.2).opacity(out ? 1 : 0)
-            .position(x: TLLayout.her.x + d * cos(a), y: TLLayout.her.y + d * sin(a))
+            .position(x: TLSeat.home.x + from * cos(a), y: TLSeat.home.y + from * sin(a))
             .animation(pop(Double(rank) * 0.04), value: out)
             .allowsHitTesting(false).accessibilityHidden(true)
     }

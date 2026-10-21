@@ -3,7 +3,7 @@ import MapKit
 
 // One outing of the footprint day (ADR 0323), the page A1 slides in over the sky from the outing's row: the map framed to it, its four numbers, the speed and heart-rate curves and the list of
 // its stops. A finger on either curve holds one time, and the map's dot, a line on both curves and the capsule by the dot follow it; with none held they stand at his fastest fix. Laid out in the app's 440 pt design space; her corner
-// (`TLLayout.her`) stays clear, so the way back stands beside her and the title after it. The page paints no ground of its own: the sky is under it.
+// (`TLSeat.corner`, where she sits while these pages are open) stays clear, so the way back stands beside her and the title after it. The page paints no ground of its own: the sky is under it.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -62,7 +62,7 @@ struct FootprintOutingPage: View {
             }
             .buttonStyle(PressScale())
             .accessibilityLabel(Words.Footprint.back)
-            .offset(x: TLLayout.her.x + 19, y: 57)        // 4 pt clear of her disc
+            .offset(x: TLSeat.corner.x + 19, y: 57)        // 4 pt clear of her disc
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 17, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
                 Text(dateLine).font(.system(size: 12.5).monospacedDigit()).foregroundStyle(muted).lineLimit(1)

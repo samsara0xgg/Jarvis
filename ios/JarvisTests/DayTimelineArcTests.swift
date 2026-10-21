@@ -21,23 +21,23 @@ final class DayTimelineArcTests: XCTestCase {
 
     // MARK: where the tiles lie
 
-    func testTheTilesLieOnAnArcFromFiveToEightyFiveDegreesBelowHerAndClearEachOtherAndHer() {
-        let her = TLLayout.her
-        for n in [2, 3] {
+    func testTheTilesLieOnAFanUnderHerTowardTheMiddleAndClearEachOtherHerAndTheTopOfTheScreen() {
+        let her = TLSeat.home
+        for n in [3, 4] {
             let cs = TLArc.centers(count: n)
             XCTAssertEqual(cs.count, n)
-            let angles = cs.map { atan2($0.y - her.y, $0.x - her.x) * 180 / .pi }
-            XCTAssertEqual(angles.first ?? 0, 5, accuracy: 0.01)
-            XCTAssertEqual(angles.last ?? 0, 85, accuracy: 0.01)
+            let angles = cs.map { c -> Double in let d = atan2(c.y - her.y, c.x - her.x) * 180 / .pi; return d < 0 ? d + 360 : d }
+            XCTAssertEqual(angles.first ?? 0, 120 - 20 * Double(n - 1), accuracy: 0.01)
+            XCTAssertEqual(angles.last ?? 0, 120 + 20 * Double(n - 1), accuracy: 0.01, "a tile every 40°, the fan's middle down and to the left, toward the middle of the screen")
             for c in cs {
                 XCTAssertEqual(hypot(c.x - her.x, c.y - her.y), TLArc.radius, accuracy: 0.01)
                 XCTAssertGreaterThan(c.x - TLArc.tile / 2, 0, "on the screen")
                 XCTAssertLessThan(c.x + TLArc.tile / 2, W)
-                XCTAssertGreaterThan(c.y - her.y, 0, "below her, to her right")
-                XCTAssertGreaterThan(c.x - her.x, 0)
-                // clear of her disc (15 pt) by a margin
+                XCTAssertGreaterThan(c.y - TLArc.tile / 2, 50, "under the island")
+                XCTAssertGreaterThanOrEqual(c.y - her.y, -0.01, "none above her")
+                // clear of her disc, even while she listens, by a margin
                 let r = tile(c), nearest = CGPoint(x: min(max(her.x, r.minX), r.maxX), y: min(max(her.y, r.minY), r.maxY))
-                XCTAssertGreaterThan(hypot(nearest.x - her.x, nearest.y - her.y), TLLayout.herScale * R_PS + 8)
+                XCTAssertGreaterThan(hypot(nearest.x - her.x, nearest.y - her.y), TLSeat.radius * TLSeat.listening + 8)
             }
             for (a, b) in zip(cs, cs.dropFirst()) {
                 XCTAssertFalse(tile(a).insetBy(dx: -4, dy: -4).intersects(tile(b)), "no two tiles touch: \(a) \(b)")
@@ -46,23 +46,25 @@ final class DayTimelineArcTests: XCTestCase {
     }
 
     func testAFingerIsOnTheTileUnderItWithALittleSlopAndOnNothingElse() {
-        let cs = TLArc.centers(count: 3)
+        let cs = TLArc.centers(count: 4)
         for (i, c) in cs.enumerated() {
             XCTAssertEqual(TLArc.hit(c, centers: cs), i)
             XCTAssertEqual(TLArc.hit(CGPoint(x: c.x + TLArc.tile / 2 + 3, y: c.y), centers: cs), i, "just off its edge")
-            XCTAssertNil(TLArc.hit(CGPoint(x: c.x + TLArc.tile / 2 + 12, y: c.y + TLArc.tile / 2 + 12), centers: cs), "past its corner")
+            XCTAssertNotEqual(TLArc.hit(CGPoint(x: c.x + TLArc.tile / 2 + 12, y: c.y + TLArc.tile / 2 + 12), centers: cs), i, "past its corner (where, round the fan, the next may be)")
         }
-        XCTAssertNil(TLArc.hit(TLLayout.her, centers: cs), "she is not a card")
+        XCTAssertNil(TLArc.hit(TLSeat.home, centers: cs), "she is not a card")
         XCTAssertNil(TLArc.hit(CGPoint(x: 400, y: 800), centers: cs))
     }
 
     func testWhatSheOffersWhenHeldDown() {
+        let w = Words.Home.self
         func list(_ tidy: TLTidy, shown: Bool = true) -> [String] { TLHerMenu.items(tidy: tidy, tidyShown: shown).map { "\($0.kind) \($0.title)\($0.enabled ? "" : " (off)")" } }
-        XCTAssertEqual(list(.idle), ["tidy 理一下", "history 聊天记录", "today 回到今天"])
-        XCTAssertEqual(list(.nothing), list(.idle), "the words of an answer are the capsule's, not the card's")
-        XCTAssertEqual(list(.running), ["tidy 在理… (off)", "history 聊天记录", "today 回到今天"])
-        XCTAssertEqual(list(.idle, shown: false), ["history 聊天记录", "today 回到今天"], "not on another day, and not with no brain: there is nothing to tidy")
-        XCTAssertEqual(TLHerMenu.items(tidy: .idle, tidyShown: true).map(\.symbol), ["sparkles", "text.bubble", "arrow.uturn.backward"])
+        XCTAssertEqual(list(.idle), ["type \(w.type)", "tidy \(w.tidy)", "history \(w.history)", "today \(w.backToToday)"])
+        XCTAssertEqual(list(.nothing), list(.idle), "what an answer came to is said in her sentence's place, not on the card")
+        XCTAssertEqual(list(.running), ["type \(w.type)", "tidy \(w.tidying) (off)", "history \(w.history)", "today \(w.backToToday)"])
+        XCTAssertEqual(list(.idle, shown: false), ["type \(w.type)", "history \(w.history)", "today \(w.backToToday)"], "not on another day, and not with no brain: there is nothing to tidy")
+        XCTAssertEqual(TLHerMenu.items(tidy: .idle, tidyShown: true).map(\.symbol), ["keyboard", "wand.and.rays", "text.bubble", "arrow.uturn.backward"],
+                       "the four-point star is only for what matters: tidying has a symbol of its own")
     }
 
     // MARK: sliding, lifting, tapping
@@ -73,12 +75,14 @@ final class DayTimelineArcTests: XCTestCase {
         await until("they are out") { tl.arcOpen }
         XCTAssertTrue(tl.arcMounted)
         let cs = TLArc.centers(count: tl.herItems.count)
-        tl.arcFollow(cs[1])
+        tl.arcFollow(cs[2])
         XCTAssertEqual(tl.arcHover, .history)
-        tl.arcFollow(CGPoint(x: cs[1].x + 100, y: cs[1].y + 300))
+        XCTAssertEqual(tl.arcHoverAt, cs[2], "her eyes go to it")
+        tl.arcFollow(CGPoint(x: cs[2].x + 100, y: cs[2].y + 300))
         XCTAssertNil(tl.arcHover)
+        XCTAssertNil(tl.arcHoverAt)
         tl.tidy = .running
-        tl.arcFollow(cs[0])
+        tl.arcFollow(cs[1])
         XCTAssertNil(tl.arcHover, "理一下 cannot be chosen while the brain works")
     }
 
@@ -87,7 +91,7 @@ final class DayTimelineArcTests: XCTestCase {
         XCTAssertFalse(e.ui.panelOpen)
         tl.openArc(holding: true)
         await until("out") { tl.arcOpen }
-        tl.arcFollow(TLArc.centers(count: 3)[1])
+        tl.arcFollow(TLArc.centers(count: tl.herItems.count)[2])
         tl.arcLetGo(engine: e, cancelled: false)
         XCTAssertEqual(tl.arcPicked, .history, "it pulses first")
         await until("the history opened") { e.ui.panelOpen }
@@ -96,12 +100,24 @@ final class DayTimelineArcTests: XCTestCase {
         XCTAssertNil(tl.arcPicked)
     }
 
+    func testTheTypingCardBringsTheFieldOutWithTheKeyboard() async {
+        let (tl, _, e) = state()
+        var asked = 0
+        e.beginEditing = { asked += 1 }
+        tl.openArc(holding: false)
+        await until("out") { tl.arcOpen }
+        tl.pickArc(.type, engine: e)
+        await until("the field was asked for") { asked == 1 }
+        await until("they are back") { !tl.arcMounted }
+    }
+
     func testLiftingAnywhereElseOrTakenAwayLeavesThemOutForATap() async {
         for cancelled in [false, true] {
             let (tl, stub, e) = state()
             tl.openArc(holding: true)
             await until("out") { tl.arcOpen }
-            tl.arcFollow(TLArc.centers(count: 3)[0])
+            let cs = TLArc.centers(count: tl.herItems.count)
+            tl.arcFollow(cs[1])
             if !cancelled { tl.arcFollow(CGPoint(x: 300, y: 600)) }
             tl.arcLetGo(engine: e, cancelled: cancelled)
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -109,7 +125,7 @@ final class DayTimelineArcTests: XCTestCase {
             XCTAssertNil(tl.arcPicked)
             XCTAssertEqual(stub.tidies, 0)
             XCTAssertFalse(tl.arcHolding)
-            tl.arcFollow(TLArc.centers(count: 3)[2])
+            tl.arcFollow(cs[3])
             XCTAssertNil(tl.arcHover, "the finger is up: moving is no sliding")
         }
     }

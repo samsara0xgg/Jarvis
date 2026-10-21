@@ -1034,8 +1034,8 @@ final class DayTimelineTests: XCTestCase {
         var waited = 0
         for _ in 0..<300 {
             e.syncModule(1.0 / 60)
-            let away = (1 - e.tm) * hypot(TLLayout.her.x - CX, TLLayout.her.y - CY)
-            XCTAssertEqual(e.ui.tlHome, away < 20, "drawn only once she is within 20 pt of her corner")
+            let away = (1 - e.tm) * hypot(TLSeat.home.x - CX, TLSeat.home.y - CY)
+            XCTAssertEqual(e.ui.tlHome, away < 20, "drawn only once she is within 20 pt of her place")
             if !e.ui.tlHome { waited += 1 }
         }
         XCTAssertGreaterThan(waited, 10, "she is on her way for a while")

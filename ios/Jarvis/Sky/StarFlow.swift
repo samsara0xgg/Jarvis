@@ -109,7 +109,7 @@ extension StarEngine {
 
     func onHer(_ p: CGPoint) -> Bool {
         let (x, y) = poleXY()
-        return hypot(Double(p.x) - x, Double(p.y) - y) < (tm > 0.5 ? 26 : max(30, mon > 0.5 ? 26 : 46 * herP.2))
+        return hypot(Double(p.x) - x, Double(p.y) - y) < (tm > 0.5 ? seatReach : max(30, mon > 0.5 ? 26 : 46 * herP.2))
     }
     func letGo(_ v: Double) {
         // where an iOS-style deceleration would come to rest, nudged onto the nearest thing worth stopping on
@@ -141,7 +141,7 @@ extension StarEngine {
                     guard let s = self, s.g?.kind == .press else { return }
                     s.g?.kind = .hold; s.pressed = false
                     if s.tm > 0.5 {          // on the timeline held down she puts out her cards (Sky/DayTimelineArc.swift); the mic is her tap
-                        if s.talk == nil && !s.ui.panelOpen { s.ui.tl.openArc(holding: true); s.herDrive?.herEffect("ripple", now: nowMs()) }
+                        if s.talk == nil && !s.ui.panelOpen && !s.ui.footprintOpen { s.ui.tl.openArc(holding: true); s.herDrive?.herEffect("ripple", now: nowMs()) }
                     } else if s.talk == nil { if BrainLink.shared.hasToken { s.micTap() } else { s.holdTalk() } }      // paired, she listens for real; the scripted talks are the unpaired demo
                 }
                 ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: w)
@@ -169,7 +169,7 @@ extension StarEngine {
         if cur.kind == .hold && tm > 0.5 { ui.tl.arcFollow(p); return }          // her cards are out and the finger is still down: it slides from card to card
         if cur.kind == .press && hypot(Double(p.x - cur.p0.x), Double(p.y - cur.p0.y)) > 7 {
             cur.timer?.cancel(); pressed = false
-            if cur.her && tm > 0.5 && talk == nil && !ui.panelOpen {          // touched and slid off her on the timeline: her cards come out at once, without the hold
+            if cur.her && tm > 0.5 && talk == nil && !ui.panelOpen && !ui.footprintOpen {          // touched and slid off her on the timeline: her cards come out at once, without the hold
                 cur.kind = .hold; g = cur
                 ui.tl.openArc(holding: true); herDrive?.herEffect("ripple", now: nowMs()); ui.tl.arcFollow(p)
                 return
@@ -496,6 +496,7 @@ extension StarEngine {
         px = scale
         syncBrain()
         syncModule(dt)
+        stepSeat(now, dt)
         // zoom
         if !qHeld { crit(&qs, qGoal, 7.5, dt) }
         q = qs.value; z = pow(7, clamp(q, 0, 1)); mon = clamp(q - 1, 0, 1); k = TAU / (DAY * z)
@@ -541,13 +542,14 @@ extension StarEngine {
         let voiceSay = syncVoice(now)
         let spin = abs(omegaS)
         let focusWait = talk == nil && q < 0.5 && focusSet().contains { $0.st == .wait }
+        let tidying = tm > 0.5 && ui.tl.tidy == .running && ui.tl.day == ui.tl.today          // the brain is tidying the day she sits over: she thinks
         let said: Double? = speaking.map { $0.speaking ? voiceLevel(now / 1000) : 0 } ?? voiceSay
         // under a sheet she is updated on every sixth frame
         herDt += dt; herN += 1
         herFresh = herN >= (covered ? 6 : 1)
         if herFresh {
             herN = 0
-            herDrive?.herUpdate(now: now, dt: herDt, expr: expr ?? (q > 0.5 ? "deep" : focusWait ? "ask" : "02"),
+            herDrive?.herUpdate(now: now, dt: herDt, expr: expr ?? (q > 0.5 ? "deep" : focusWait ? "ask" : tidying ? "30" : "02"),
                                 look: look ?? timelineGaze ?? (spin > 0.2 ? (clamp(-omegaS * 0.5, -0.8, 0.8), 0.4) : nil), hear: hear, pressed: pressed, say: said)
             herDt = 0
         }

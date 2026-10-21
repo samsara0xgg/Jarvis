@@ -802,12 +802,9 @@ final class DayTimelineRowsTests: XCTestCase {
 
     func testATapOnTheWeatherSaysWhenTheSunRoseAndSet() throws {
         let m = build(TimelineFixture.today(cal))
-        XCTAssertEqual(m.sun?.text, "日出 07:34 · 日落 18:11")
-        XCTAssertEqual(TLSun(rise: 400, set: nil).text, "日出 06:40", "what of it there is")
-        XCTAssertEqual(TLSun(rise: nil, set: 1100).text, "日落 18:20")
-        XCTAssertNil(TLSun(rise: nil, set: nil).text)
-        // the header asks for it by the day on show
-        XCTAssertEqual(DayTimelineModel.sun(of: TimelineFixture.today(cal))?.text, m.sun?.text)
+        XCTAssertEqual(m.sun, TLSun(rise: 454, set: 1091))
+        // the header asks for it by the day on show (its words are the table's: WordsTests)
+        XCTAssertEqual(DayTimelineModel.sun(of: TimelineFixture.today(cal)), m.sun)
         XCTAssertNil(DayTimelineModel.sun(of: try reply("")), "a brain that serves no weather")
     }
 }

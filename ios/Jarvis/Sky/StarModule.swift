@@ -1,7 +1,7 @@
 import UIKit
 
 // The middle of the home screen is the dial or the timeline (Sky/HomeModule.swift). This is the engine's part of the change from one to the other:
-// a spring from 0 (the dial) to 1 (the timeline) that the stage reads to glide her up to the corner and fade the dial out, and what the engine stops doing
+// a spring from 0 (the dial) to 1 (the timeline) that the stage reads to glide her up to her place over the day and fade the dial out, and what the engine stops doing
 // once the dial is out of sight.
 
 extension StarEngine {
@@ -31,7 +31,7 @@ extension StarEngine {
         crit(&tms, goal, UIAccessibility.isReduceMotionEnabled ? 30 : 7.5, dt)
         if abs(tms.value - goal) < 0.0005 && abs(tms.velocity) < 0.001 { tms.value = goal; tms.velocity = 0 }
         put(\.tlShow, kind == .timeline || tms.value > 0.001)
-        put(\.tlHome, kind == .timeline && (1 - tm) * hypot(TLLayout.her.x - CX, TLLayout.her.y - CY) < 20)
+        put(\.tlHome, kind == .timeline && (1 - tm) * hypot(TLSeat.home.x - CX, TLSeat.home.y - CY) < 20)
         if timelineFull {
             // nothing draws the trails any more, and they are only removed when drawn
             sonar.removeAll()

@@ -69,6 +69,7 @@ struct StarChrome: View {
                 .animation(.easeOut(duration: 0.35), value: ui.tlShow)
                 .opacity(ui.footprintOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen)
                 .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
+            herElement
             FootprintDayLayer(engine: engine, ui: ui)
             TalkPanel(engine: engine, ui: ui, pull: $pull)
             voiceNote
@@ -82,6 +83,7 @@ struct StarChrome: View {
         .frame(width: W, height: H, alignment: .topLeading)
         .onChange(of: focused) { _, f in
             StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f
+            if !f { ui.composing = false }          // on the timeline the field stays out after the keyboard only with something in it
             if !HomeModule.shared.isTimeline { if f { engine.openPanel() } else { engine.closePanel() } }       // under the dial the panel comes with the keyboard and goes with it; on the timeline the day stays, and the history is his to open
         }
         .onChange(of: phase) { _, p in
@@ -92,7 +94,7 @@ struct StarChrome: View {
         .onAppear {
             engine.endEditing = { focused = false }
             StallLog.context = { [engine] in engine.stallContext() }
-            engine.beginEditing = { focused = true }
+            engine.beginEditing = { ui.composing = true; DispatchQueue.main.async { focused = true } }          // on the timeline the field comes out first, then takes the keyboard
             engine.watchVoice()
             if CardsRequest.pending { openCards() }
             #if DEBUG
@@ -138,29 +140,38 @@ struct StarChrome: View {
 
     // MARK: the top row: the day you are looking at, the scale, settings
 
-    /// what the top row leaves between the date and the settings button on the timeline (its gaps, and the empty place of the scale, counted)
+    /// On the timeline the top row's date, its label and the weather keep to the left of her at home (8 pt clear of her disc): what is left of that after the date is the weather's.
+    private static let headWidth: Double = TLSeat.home.x - TLSeat.radius - 8 - 30
     private var headRoom: Double {
-        let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.talking ? 0 : ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
-        let tidy = ui.tl.tidyShown ? TLTidyButton.width(ui.tl.tidy) + 8 : 0          // and the capsule of 理一下 beside the settings button
-        return W - 30 - 36 - 3 * 8 - 36 - 8 - (30 + TLLayout.dateShift) - date - 8 - tidy          // and the map button beside the settings button
+        let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
+        return Self.headWidth - date - 8
     }
 
     private var topRow: some View {
-        let tlOn = HomeModule.shared.isTimeline          // the timeline in the dial's place: she stands in the corner, so the date starts further right, and there is no scale to pick
+        let tlOn = HomeModule.shared.isTimeline          // the timeline in the dial's place: she sits in this row right of the date (Sky/DayTimelineSeat.swift), and there is no scale to pick
+        let note = tlOn ? ui.voiceNote : nil              // and the voice's status line is hers, beside her, in the date's place
         return HStack(spacing: 8) {
-            HStack(spacing: 0) {
-                Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1).layoutPriority(1)
-                if let l = ui.dateLabel, !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize() }      // short enough to fit beside the date; the talk's time takes its place
-                Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
-                    .opacity(ui.talking && !tlOn ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
-                    .frame(width: tlOn ? 0 : nil, alignment: .leading)
+            ZStack(alignment: .leading) {
+                HStack(spacing: 8) {
+                    HStack(spacing: 0) {
+                        Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1).layoutPriority(1)
+                        if let l = ui.dateLabel, tlOn || !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize(horizontal: !tlOn, vertical: false) }      // beside the date; under the dial the talk's time takes its place
+                        Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
+                            .opacity(ui.talking && !tlOn ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
+                            .frame(width: tlOn ? 0 : nil, alignment: .leading)
+                    }
+                    if tlOn { TLDayHead(tl: ui.tl, room: headRoom) }        // after the date: the day's weather
+                }
+                .opacity(note == nil ? 1 : 0)
+                Text(note ?? "").font(.system(size: 13)).foregroundStyle(ink.opacity(0.8)).lineLimit(1).minimumScaleFactor(0.8)
+                    .opacity(note == nil ? 0 : 1).accessibilityHidden(note == nil)
             }
-            if tlOn { TLDayHead(tl: ui.tl, room: headRoom) }        // after the date: 今天 or the way back to it, and the day's weather
+            .frame(maxWidth: tlOn ? Self.headWidth : .infinity, alignment: .leading)
+            .animation(.easeOut(duration: 0.3), value: note == nil)
             Spacer(minLength: 0)
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
                 .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
-                .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is the date's
-            if tlOn && ui.tl.tidyShown { TLTidyButton(tl: ui.tl).transition(.opacity) }        // at the right, left of the settings button: the brain tidies today
+                .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is hers
             if tlOn {          // the footprint's one-day screen, left of the settings button
                 Button { ui.footprintOpen = true } label: {
                     Image(systemName: "map").font(.system(size: 17, weight: .regular)).foregroundStyle(TLPaint.icon.color(0.8))
@@ -177,12 +188,26 @@ struct StarChrome: View {
             }.buttonStyle(PressScale())
             .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
         }
-        .padding(.leading, tlOn ? 30 + TLLayout.dateShift : 30).padding(.trailing, 30)
+        .padding(.horizontal, 30)
         .animation(.easeOut(duration: 0.35), value: tlOn)
-        .animation(.easeOut(duration: 0.2), value: ui.tl.tidyShown)
-        .animation(.smooth(duration: 0.3), value: ui.tl.tidy)          // the weather gives way as the button widens, and comes back as it shrinks
         .frame(width: W, height: 38)
         .offset(y: 60)
+    }
+
+    /// She is drawn on the stage under the chrome, which VoiceOver does not see: on the timeline an element stands in for her at her place. Its action is her tap (she listens, or a talk
+    /// stops), and her cards are its other actions, done at once.
+    @ViewBuilder private var herElement: some View {
+        if HomeModule.shared.isTimeline && ui.tlHome && !ui.footprintOpen {
+            Color.clear.frame(width: 2 * TLSeat.radius, height: 2 * TLSeat.radius)
+                .accessibilityElement()
+                .accessibilityLabel(Words.Home.her).accessibilityHint(Words.Home.herHint).accessibilityAddTraits(.isButton)
+                .accessibilityAction { engine.tap(engine.seat, true) }
+                .accessibilityActions {
+                    ForEach(ui.tl.herItems.filter(\.enabled), id: \.kind) { item in Button(item.title) { ui.tl.perform(item.kind, engine: engine) } }
+                }
+                .allowsHitTesting(false)
+                .position(x: TLSeat.home.x, y: TLSeat.home.y)
+        }
     }
 
     // MARK: the panel under the dial
@@ -278,9 +303,9 @@ struct StarChrome: View {
 
     // MARK: talking to her
 
-    /// the voice's one line, just over the composer: the model download, or what went wrong
+    /// the voice's one line, just over the composer: the model download, or what went wrong (on the timeline it is in the top row, beside her)
     private var voiceNote: some View {
-        let on = ui.voiceNote != nil
+        let on = ui.voiceNote != nil && !HomeModule.shared.isTimeline
         return Text(ui.voiceNote ?? "").font(monoF(12)).tracking(1.2).foregroundStyle(muted).lineLimit(1)
             .frame(width: W - 60, alignment: .leading)
             .opacity(on ? 1 : 0)
@@ -306,18 +331,14 @@ struct StarChrome: View {
     }
 
     /// a chip of what he may say or ask, above the field
-    private func suggestion(_ words: String, symbol: String? = nil) -> some View {
-        HStack(spacing: 6) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 12.5, weight: .semibold)) }
-            Text(words)
-        }
-        .font(.system(size: 14)).foregroundStyle(Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.92)).lineLimit(1).fixedSize()
-        .padding(.horizontal, 14).frame(height: 34).background(Color(red: 18 / 255, green: 22 / 255, blue: 52 / 255).opacity(0.66), in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+    private func suggestion(_ words: String) -> some View {
+        Text(words).font(.system(size: 14)).foregroundStyle(Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.92)).lineLimit(1).fixedSize()
+            .padding(.horizontal, 14).frame(height: 34).background(Color(red: 18 / 255, green: 22 / 255, blue: 52 / 255).opacity(0.66), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
     }
 
     private var composer: some View {
-        let at = ui.attach
+        let at = ui.attach, out = ui.composerOut          // on the timeline only while he types to her (`StarUI.composerOut`)
         return VStack(spacing: 0) {
             AttachStrip(model: at)
             ZStack(alignment: .bottom) {
@@ -335,9 +356,6 @@ struct StarChrome: View {
         .glass(RoundedRectangle(cornerRadius: 24), focused: focused)
         .overlay(alignment: .topLeading) {
             WrapLayout(spacing: 8) {
-                if HomeModule.shared.isTimeline && ui.tl.tidyShown {          // on today's timeline the first of them has the brain tidy the day: it sends her nothing, and the keyboard goes down
-                    Button { ui.tl.tidyDay(); engine.endEditing?() } label: { suggestion(ui.tl.tidy == .running ? "在理…" : "理一下", symbol: "sparkles") }.buttonStyle(PressScale())
-                }
                 ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
                     Button { engine.send(t.q) } label: { suggestion(t.q) }.buttonStyle(PressScale())
                 }
@@ -351,6 +369,8 @@ struct StarChrome: View {
         }
         .opacity(ui.tl.renaming == nil ? 1 : 0).allowsHitTesting(ui.tl.renaming == nil)        // a place being renamed has the keyboard: the composer does not rise over its field
         .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
+        .opacity(out ? 1 : 0).offset(y: out || reduce ? 0 : 16).allowsHitTesting(out).accessibilityHidden(!out)
+        .animation(.easeOut(duration: out ? 0.25 : 0.2), value: out)
         .offset(x: 20, y: H - StarUI.restGap - 48 - at.rise - ui.kbLift)
     }
 }
