@@ -50,7 +50,8 @@ class _Jev:
     """A fake decisions endpoint: records every request, answers by what the text says.
 
     Its routes keep time on :attr:`clock`. ``hold`` keeps every answer back until ``release``
-    is set, so a test can let a deadline pass on the clock while Jev is still working.
+    is set, so a test can let a deadline pass on the clock while Jev is still working. A call a
+    test gave up on still has a worker; :meth:`stop` lets it end, so it logs inside its own test.
     """
 
     def __init__(self) -> None:
@@ -59,6 +60,7 @@ class _Jev:
         self.clock = FakeClock()
         self.hold = False
         self.release = threading.Event()
+        self._routes: list[SurrogateRoute] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -97,7 +99,20 @@ class _Jev:
             clock=self.clock,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
+        self._routes.append(route)
         return TurnEndAsks(route, at, min(at, 0.8))
+
+    def stop(self) -> None:
+        """Answer what is held, wait for every route's workers to end, then close the endpoint.
+
+        A call whose caller gave up (a deadline passed on the clock) is still on its worker, and
+        the worker logs its outcome when it ends: without this wait that line lands in whichever
+        test runs next on the process.
+        """
+        self.release.set()
+        for route in self._routes:
+            route._pool.shutdown(wait=True)  # noqa: SLF001 — the route has no close of its own.
+        stop_http_server(self.server)
 
 
 @pytest.fixture
@@ -106,8 +121,7 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
     monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
     fake = _Jev()
     yield fake
-    fake.release.set()
-    stop_http_server(fake.server)
+    fake.stop()
 
 
 def _client(asks: TurnEndAsks | None) -> TestClient:
@@ -211,7 +225,11 @@ def test_the_log_names_the_session_and_never_the_text(
     caplog.set_level("INFO", logger="jarvis.decision.turn_end_asks")
     client = _client(jev.asks())
     _post(client, SECRET + ASK, "sess-7")
-    lines = [one.getMessage() for one in caplog.records]
+    lines = [
+        one.getMessage()
+        for one in caplog.records
+        if one.name == "jarvis.decision.turn_end_asks" and "sess-7" in one.getMessage()
+    ]
     assert len(lines) == 1
     assert "session sess-7 p=0.960 asks=True, $0.000030" in lines[0]
     assert SECRET not in lines[0]
@@ -369,6 +387,7 @@ def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_mess
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     path = tmp_path / "jev" / "decisions.jsonl"
+    jev.hold = True  # Jev is still working when the board is first read
     asks = jev.asks(log=JevLog(path))
 
     def read_board() -> dict[str, Any]:
@@ -381,6 +400,7 @@ def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_mess
 
     transcript.write_text(_entry("assistant", ASK) + "\n")
     assert read_board()["s-bg"]["asks"] is None  # asked now, not waited for
+    jev.release.set()
     assert asks.asks("s-bg", ASK) is True  # the same call, once it is answered
     assert read_board()["s-bg"]["asks"] is True
     assert _outcomes(path) == []  # no message yet
