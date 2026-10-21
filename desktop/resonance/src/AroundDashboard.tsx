@@ -23,6 +23,7 @@ import { TripCard, type TripLink } from './TripCards';
 import { ActionCard, MailCard, QuestionCard, type Answer, type Card, type Decide, type Question } from './ActionCard';
 import { JobsPage, jobKey, jobKind, type JobApplication, type JobGroup, type JobRule, type Skipped } from './JobsPage';
 import { MAIL_FILTERS, MailLetter, MailList, type MailAct, type MailFilter } from './MailPage';
+import { useMailActs } from './useMailActs';
 import { MEM_HOME, MemoryPage, type MemNav, type MemoryOverview } from './MemoryPage';
 import { MOTION } from './motion';
 import { WriteField } from './WriteField';
@@ -594,40 +595,18 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
   useEffect(() => { if (models?.state === 'ready') setVoiceIn(true); }, [models?.state]);
   const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
-  // Letters archived from the home's junk line leave the list at once; the daemon stops serving them from the next poll.
-  const [archived, setArchived] = useState<string[]>([]);
-  const brief = port ? briefRoute.data : demoPops.brief, mail = (port ? mailRoute.data?.unread ?? [] : demoPops.mail).filter(m => !archived.includes(m.id));
+  // Letters archived from the home's junk line, or acted on from the Mail page, leave the list at once (useMailActs.ts); the daemon stops serving them from the next poll.
+  const mailActs = useMailActs(port, t, mailRoute.reload, notify);
+  const brief = port ? briefRoute.data : demoPops.brief, mail = (port ? mailRoute.data?.unread ?? [] : demoPops.mail).filter(m => !mailActs.gone.includes(m.id));
   const notices = port ? noticeRoute.data?.notices ?? [] : demoPops.notices;
   // Letters Jev rated come first, most important first (ADR 0141); then the unrated ones that need a reply, the unmarked, the FYI ones;
   // junk always last; newest first inside each (the sort is stable).
   const rank = (m: Mail) => m.junk ? 3 : m.reply === 'yes' ? 0 : m.reply === 'fyi' ? 2 : 1;
   const mailRanked = [...mail].sort((a, b) => Number(!!a.junk) - Number(!!b.junk) || (b.importance ?? -1) - (a.importance ?? -1) || rank(a) - rank(b));
   const mailYes = mail.filter(m => m.reply === 'yes'), mailJunk = mail.filter(m => m.junk), marked = mail.some(m => m.reply != null || m.junk);
-  const archiveJunk = async () => {
-    const ids = mailJunk.map(m => m.id);
-    if (!ids.length) return;
-    setArchived(a => [...a, ...ids]);
-    const back = () => setArchived(a => a.filter(id => !ids.includes(id)));
-    try { if (port) await postRoute(port, '/inherent/mail/archive', { ids }); }
-    catch { back(); notify(t(['Couldn’t archive. Try again.', '归档没成功，请再试一次。'])); return; }
-    notify(t([`Archived ${ids.length} · still in All Mail`, `已归档 ${ids.length} 封 · 仍在“所有邮件”里`]), async () => {
-      try { if (port) await postRoute(port, '/inherent/mail/unarchive', { ids }); back(); mailRoute.reload(); }
-      catch { notify(t(['Couldn’t put them back.', '放不回收件箱。'])); }
-    });
-  };
+  const archiveJunk = () => mailActs.archiveJunk(mailJunk.map(m => m.id));
   // A letter opened on the Mail page leaves the list at once, whichever way it goes; the strip undoes it. The daemon's list catches up on its next poll.
-  const DONE: Record<MailAct, [L, string]> = { trash: [['Moved to Trash', '已移到废纸篓'], 'untrash'], archive: [['Archived · still in All Mail', '已归档 · 仍在“所有邮件”里'], 'unarchive'], read: [['Marked as read', '已标为已读'], 'unread'] };
-  const actOnLetter = async (kind: MailAct, m: Mail) => {
-    const ids = [m.id], [done, undo] = DONE[kind];
-    setArchived(a => [...a, m.id]); setLetter(null);
-    const back = () => setArchived(a => a.filter(id => id !== m.id));
-    try { if (port) await postRoute(port, `/inherent/mail/${kind}`, { ids }); }
-    catch { back(); notify(t(['That didn’t go through. Try again.', '没成功，请再试一次。'])); return; }
-    notify(t(done), async () => {
-      try { if (port) await postRoute(port, `/inherent/mail/${undo}`, { ids }); back(); mailRoute.reload(); }
-      catch { notify(t(['Couldn’t put it back.', '放不回去。'])); }
-    });
-  };
+  const actOnLetter = (kind: MailAct, m: Mail) => { setLetter(null); return mailActs.act(kind, m); };
   // For you: what Jarvis itself wants from you. Agents keep their own row.
   type ForYou = { id: string; text: string; ask?: boolean; act?: [L, () => void] };
   const signIn = (id: string): [L, () => void] => [['Sign in', '登录'], () => { openPage('plugins', home.current?.querySelector<HTMLElement>('[data-block="foryou"]')); setPlugin(id); }];
