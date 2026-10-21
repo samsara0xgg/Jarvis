@@ -53,17 +53,18 @@ memory and session blocks, `realtime` (switches, flag graph, pump bounds, servic
 sounds), `confirmation`, `voice`, `llm` tool-iteration bounds, `observer`, `supervisor`,
 `work_state`, `daily_report`, `locate`, `home.weather`, `transit`, `maps`, `dashboard`,
 `diagnostics`, `voiceprint.gate`, `commitments.remind_before_min`, `day_plan.day_ends`, the built-in
-`tools` (web, screen, vault, workers) and Jev's routes (`jev_log`, `realtime.surrogate_route`,
-`realtime.jev_words`, `realtime.jev_oneshot`, `agents.turn_end_asks`). Each keeps the default, the
-error text and the exception type it had: `RuntimeBootstrapError` for a refused value, `TypeError`
-for the two bool switches that always raised it, `ValueError` for the timesink path and the zone
-name.
+`tools` (web, screen, vault, workers), Jev's routes (`jev_log`, `realtime.surrogate_route`,
+`realtime.jev_words`, `realtime.jev_oneshot`, `agents.turn_end_asks`) and the mail and record
+intakes (`home.mail_reply`, `job_mail`, `mail_codes`, `commitments`, `claude_daily`, `turn_things`).
+Each keeps the default, the error text and the exception type it had: `RuntimeBootstrapError` for a
+refused value, `TypeError` for the two bool switches that always raised it, `ValueError` for the
+timesink path and the zone name.
 
 Not moved: the feature blocks `bootstrap_runtime_app` hands whole to a builder that parses and
-builds in one function (`job_mail`, `mail_reply`, `turn_things`, `claude_daily`, `commitments`,
-`moment`, `push`, `weatherkit`, `night`, `projects`, `ledger`, `doing`, `highlight`, `about`). Each
-of those is its own owner's parse; moving one means splitting it into a parser on the tree and a
-builder, with its tests, which is the next step of this ADR and not a precondition of it.
+builds in one function (`moment`, `push`, `weatherkit`, `night`, `projects`, `ledger`, `doing`,
+`highlight`, `about`). Each of those is its own owner's parse; moving one means splitting it into a
+parser on the tree and a builder, with its tests, which is the next step of this ADR and not a
+precondition of it.
 
 Secrets are not in the tree: a key is resolved from the environment where the thing that needs it
 is built.

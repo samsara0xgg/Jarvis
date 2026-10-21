@@ -18,6 +18,7 @@ from tests.support.job_mail import (
     fixed_zh_words,  # noqa: F401 - autouse, found by name
     job_harness,
 )
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -60,7 +61,8 @@ def _group(n: int, **over: Any) -> dict[str, Any]:  # noqa: ANN401
 def test_the_tool_is_l0_read_only_for_the_model_and_absent_while_job_mail_is_off() -> None:
     """Off (``_job_mail`` is None): no tool. On: the declared shape, in the registry once."""
     none = cast("Any", None)
-    assert _job_mail({}, none, None, none, none, FakeClock(zone=ZoneInfo("UTC"))) is None
+    unset = runtime_config({}).job_mail
+    assert _job_mail(unset, None, none, none, FakeClock(zone=ZoneInfo("UTC"))) is None
     assert build_job_ledger_tool(None) == ()
     off = ToolRegistry()
     _register_job_ledger(off, None)

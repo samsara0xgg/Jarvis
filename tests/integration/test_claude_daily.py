@@ -22,7 +22,6 @@ from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.runtime.bootstrap.intakes import _claude_daily
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
-from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log
@@ -30,6 +29,7 @@ from jarvis.state.import_parsers import claude_daily, is_daily_subject
 from jarvis.state.memory_db import open_memory_db
 from tests.canary._helpers import repo_root
 from tests.support.clock import FakeClock
+from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
@@ -409,25 +409,23 @@ def test_the_archive_finds_the_letters_by_source_day_and_words(tmp_path: Path) -
 # --- config --------------------------------------------------------------------------------
 
 
-def test_off_by_default_and_bad_values_stop_boot(tmp_path: Path) -> None:
-    """Shipped off; a bad value in an enabled block stops boot, naming the key."""
+def test_off_by_default_and_the_block_reads_when_enabled(tmp_path: Path) -> None:
+    """Shipped off, Gmail letters off but the Mac's report still read; bad values: see the load."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     block = shipped["claude_daily"]
     assert block["enabled"] is False
     assert {"poll_s": 3600, "backfill_since": date(2026, 10, 18), "max_letters_per_cycle": 30}.items() <= block.items()
-    path, connections = tmp_path / "jarvis.yaml", _Connections(_Gmail([]))
-    args: Any = (path, connections, tmp_path / "memory.db", tmp_path)
+    connections = _Connections(_Gmail([]))
+    args: Any = (connections, tmp_path / "memory.db", tmp_path)
+
+    def build(raw: Mapping[str, Any]) -> ClaudeDailyIntake:
+        return _claude_daily(runtime_config(raw).claude_daily, *args)
 
     # off: no Gmail polling, but the Mac's code report is still read (ADR 0303)
     offs: list[Mapping[str, Any]] = [shipped, {}]
     for off in offs:
-        quiet = _claude_daily(off, *args)
+        quiet = build(off)
         assert isinstance(quiet, ClaudeDailyIntake) and quiet._settings.gmail is False  # noqa: SLF001
-    built = _claude_daily({"claude_daily": {**block, "enabled": True}}, *args)
+    built = build({"claude_daily": {**block, "enabled": True}})
     assert isinstance(built, ClaudeDailyIntake)
-    for key, value in (
-        ("poll_s", 5), ("poll_s", True), ("max_letters_per_cycle", 0), ("backfill_since", "2026-10-18"),
-        ("backfill_since", None),
-    ):
-        with pytest.raises(RuntimeBootstrapError, match=f"claude_daily.{key}"):
-            _claude_daily({"claude_daily": {**block, "enabled": True, key: value}}, *args)
+    assert built._settings.gmail is True  # noqa: SLF001

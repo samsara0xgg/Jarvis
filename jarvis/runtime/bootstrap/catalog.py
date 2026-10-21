@@ -335,14 +335,14 @@ def serve_tools(
     def make_late(connections: PluginConnections) -> tuple[JobMail | None, Home]:
         _wire_plan_reader(features.daily_report, connections)
         job_mail = _job_mail(
-            config.raw, config.config_path, features.jev_log, connections, memory.db_path, clock,
+            config.job_mail, features.jev_log, connections, memory.db_path, clock,
             features.moment, device, paths.event_log, config.observer.timesink_db_path,
         )
         home = Home(
             connections,
             (config.zone_name, config.zone),
             config.home_weather,
-            _mail_reply(config.raw, config.config_path, clock, features.jev_log),
+            _mail_reply(config.mail_reply, clock, features.jev_log),
             features.mail_view,
             None if features.mail_view is None else mail_summarizer(
                 # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.

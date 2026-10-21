@@ -9,15 +9,19 @@ connected anywhere.
 from __future__ import annotations
 
 import logging
-from datetime import time
+import re
+from datetime import date, time
 from pathlib import Path
 
 import pytest
 
 from jarvis.cli import main
+from jarvis.runtime.claude_daily import ClaudeDailySettings
+from jarvis.runtime.commitment_intake import CommitmentSettings
 from jarvis.runtime.config import (
     DiagnosticsSettings,
     JevOneShotSettings,
+    MailReplySettings,
     RuntimeBootstrapError,
     SurrogateRouteSettings,
     TurnEndAsksSettings,
@@ -25,6 +29,9 @@ from jarvis.runtime.config import (
     WorkersSettings,
     load_runtime_config,
 )
+from jarvis.runtime.interview_reminders import InterviewSettings
+from jarvis.runtime.mail_codes import MailCodesSettings
+from jarvis.runtime.turn_things import TurnThingsSettings
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from tests.support.runtime_config import boot_runtime, load_settings, runtime_config
 
@@ -576,7 +583,7 @@ def test_the_one_shot_reads_its_readers_and_the_words_it_shares(tmp_path: Path) 
     assert (quiet.words_at, quiet.words_timeout_ms, quiet.words_max_chars) == (None, 800, 24)
 
 
-def _jev_block(section: str, name: str, **block: object) -> dict[str, object]:
+def _enabled(section: str, name: str, **block: object) -> dict[str, object]:
     """``section.name`` switched on, with ``block`` over the shipped values."""
     return {section: {name: {"enabled": True, **block}}}
 
@@ -589,18 +596,18 @@ _WORDS = r"jarvis\.yaml realtime\.jev_words needs model \(text\), at in \(0, 1\]
 @pytest.mark.parametrize(
     ("settings", "message"),
     [
-        (_jev_block("realtime", "surrogate_route", model=""), _SURROGATE),
-        (_jev_block("realtime", "surrogate_route", min_confidence=1.5), _SURROGATE),
-        (_jev_block("realtime", "surrogate_route", min_confidence=True), _SURROGATE),
-        (_jev_block("realtime", "surrogate_route", timeout_ms=0), _SURROGATE),
-        (_jev_block("agents", "turn_end_asks", model=" "), _TURN_END),
-        (_jev_block("agents", "turn_end_asks", at=1.5), _TURN_END),
-        (_jev_block("agents", "turn_end_asks", question_at=0.99), _TURN_END),
-        (_jev_block("agents", "turn_end_asks", timeout_ms=1.5), _TURN_END),
-        (_jev_block("realtime", "jev_words", model=""), _WORDS),
-        (_jev_block("realtime", "jev_words", at=1.5), _WORDS),
-        (_jev_block("realtime", "jev_words", timeout_ms=0), _WORDS),
-        (_jev_block("realtime", "jev_words", max_chars="x"), _WORDS),
+        (_enabled("realtime", "surrogate_route", model=""), _SURROGATE),
+        (_enabled("realtime", "surrogate_route", min_confidence=1.5), _SURROGATE),
+        (_enabled("realtime", "surrogate_route", min_confidence=True), _SURROGATE),
+        (_enabled("realtime", "surrogate_route", timeout_ms=0), _SURROGATE),
+        (_enabled("agents", "turn_end_asks", model=" "), _TURN_END),
+        (_enabled("agents", "turn_end_asks", at=1.5), _TURN_END),
+        (_enabled("agents", "turn_end_asks", question_at=0.99), _TURN_END),
+        (_enabled("agents", "turn_end_asks", timeout_ms=1.5), _TURN_END),
+        (_enabled("realtime", "jev_words", model=""), _WORDS),
+        (_enabled("realtime", "jev_words", at=1.5), _WORDS),
+        (_enabled("realtime", "jev_words", timeout_ms=0), _WORDS),
+        (_enabled("realtime", "jev_words", max_chars="x"), _WORDS),
     ],
 )
 def test_an_enabled_jev_route_with_a_bad_value_stops_the_load(
@@ -664,3 +671,179 @@ def test_the_one_shot_needs_the_instant_route_on(tmp_path: Path) -> None:
     needs = r"jarvis\.yaml realtime\.jev_oneshot needs realtime\.surrogate_route enabled"
     with pytest.raises(RuntimeBootstrapError, match=needs):
         load_settings(tmp_path, settings)
+
+
+def test_the_mail_and_record_intakes_ship_off_but_the_code_reader(tmp_path: Path) -> None:
+    """Each intake needs its own switch; the shipped file has only ``mail_codes`` on."""
+    config = load_settings(tmp_path, {})
+    assert config.mail_codes == MailCodesSettings(poll_s=20.0, window_min=10)
+    assert (
+        config.mail_reply, config.job_mail, config.commitments, config.claude_daily,
+        config.turn_things,
+    ) == (None,) * 5
+    off = load_settings(tmp_path / "off", {"mail_codes": {"enabled": False}})
+    assert off.mail_codes is None
+
+
+def test_an_enabled_intake_reads_its_block_over_the_shipped_one(tmp_path: Path) -> None:
+    """ADR 0123, 0155, 0274, 0295, 0300: a model or preset is stripped, a bar is a float."""
+    config = load_settings(tmp_path, {
+        "home": {"mail_reply": {"enabled": True, "model": " m ", "importance": {"enabled": True}}},
+        "job_mail": {
+            "enabled": True, "exclude_domains": [" LinkedIn.com "], "backfill_since": None,
+            "model": " j ", "timeout_ms": 900,
+        },
+        "mail_codes": {"poll_s": 30, "window_min": 5},
+        "commitments": {"enabled": True, "preset": " p ", "remind_before_min": 15},
+        "turn_things": {"enabled": True},
+        "claude_daily": {"enabled": True, "poll_s": 120},
+    })
+    assert config.mail_reply == MailReplySettings(
+        model="m", timeout_ms=1500, yes_at=0.9, fyi_at=0.1, junk_at=0.9, importance=True,
+    )
+    assert config.job_mail is not None
+    assert (config.job_mail.model, config.job_mail.timeout_ms) == ("j", 900)
+    job = config.job_mail.settings
+    assert (job.poll_s, job.backfill_days, job.linkedin_alerts, job.speak) == (
+        300.0, 14, "ledger_only", True,
+    )
+    assert (job.exclude_domains, job.backfill_since) == (("linkedin.com",), None)
+    assert job.interview_reminders == InterviewSettings(evening_at=time(20, 0), before_min=30)
+    assert config.mail_codes == MailCodesSettings(poll_s=30.0, window_min=5)
+    assert config.commitments == CommitmentSettings(
+        poll_s=300.0, backfill_since=date(2026, 9, 10), max_mails_per_cycle=60, preset="p",
+        remind_before_min=15,
+    )
+    assert config.turn_things == TurnThingsSettings(backfill_days=7, preset="sonnet")
+    assert config.claude_daily == ClaudeDailySettings(
+        poll_s=120.0, backfill_since=date(2026, 10, 18), max_letters_per_cycle=30,
+    )
+    quiet = load_settings(tmp_path / "quiet", {"job_mail": {
+        "enabled": True, "interview_reminders": {"enabled": False},
+    }})
+    assert quiet.job_mail is not None
+    assert quiet.job_mail.settings.interview_reminders is None
+
+
+_MAIL_REPLY = (
+    r"jarvis\.yaml home\.mail_reply needs model \(text\), timeout_ms \(positive int\),"
+    r" fyi_at < yes_at, both in \[0, 1\], and junk_at in \(0, 1\]"
+)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"model": " "}, {"timeout_ms": 0}, {"timeout_ms": True}, {"fyi_at": 0.95},
+        {"yes_at": 1.5}, {"fyi_at": -0.1}, {"fyi_at": None}, {"junk_at": 0}, {"junk_at": 1.5},
+    ],
+)
+def test_an_enabled_mail_reply_with_a_bad_value_stops_the_load(
+    tmp_path: Path, block: dict[str, object],
+) -> None:
+    """ADR 0123: the marks need a model, a deadline and bars that leave room between them."""
+    with pytest.raises(RuntimeBootstrapError, match=_MAIL_REPLY):
+        load_settings(tmp_path, _enabled("home", "mail_reply", **block))
+
+
+def _top(name: str, **block: object) -> dict[str, object]:
+    """The top-level block ``name`` switched on, with ``block`` over the shipped values."""
+    return {name: {"enabled": True, **block}}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("poll_s", 0), ("backfill_days", "14"), ("backfill_days", 61), ("header_skip_at", 1.5),
+        ("body_min", 0), ("max_body_chars", True), ("model", " "), ("timeout_ms", 0),
+        ("speak", "yes"), ("linkedin_alerts", "sometimes"), ("exclude_domains", "linkedin.com"),
+        ("exclude_domains", [" "]), ("backfill_since", "2026-09-10"),
+        ("max_calls_per_day", None), ("max_messages_per_cycle", 101), ("speak_gap_s", -1),
+    ],
+)
+def test_an_enabled_job_mail_with_a_bad_value_stops_the_load(
+    tmp_path: Path, key: str, value: object,
+) -> None:
+    """ADR 0155: each key is refused by name, with the file."""
+    with pytest.raises(RuntimeBootstrapError, match=rf"jarvis\.yaml job_mail\.{key} "):
+        load_settings(tmp_path, _top("job_mail", **{key: value}))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {"enabled": "yes"},
+        {"enabled": True, "evening_at": "evening", "before_min": 30},
+        {"enabled": True, "evening_at": 20, "before_min": 30},
+        {"enabled": True, "evening_at": "20:00+01:00", "before_min": 30},
+        {"enabled": True, "evening_at": "20:00", "before_min": 0},
+        {"enabled": True, "evening_at": "20:00", "before_min": 1.5},
+        {"enabled": True, "evening_at": "20:00", "before_min": 1441},
+    ],
+)
+def test_job_mail_interview_reminders_are_validated_like_the_other_keys(
+    tmp_path: Path, value: object,
+) -> None:
+    """ADR 0186: the block is on or off, and on it needs a local time and a whole minute count."""
+    refusal = r"jarvis\.yaml job_mail\.interview_reminders\."
+    with pytest.raises(RuntimeBootstrapError, match=refusal):
+        load_settings(tmp_path, _top("job_mail", interview_reminders=value))
+
+
+_NUMBER = "a number of at least"
+_PRESET = "the name of an llm preset"
+_DATE = "a date (YYYY-MM-DD)"
+_DAYS = "a whole number of days from 1 to 60"
+
+
+@pytest.mark.parametrize(
+    ("name", "key", "value", "must_be"),
+    [
+        ("mail_codes", "poll_s", 0, f"{_NUMBER} 1"),
+        ("mail_codes", "poll_s", True, f"{_NUMBER} 1"),
+        ("mail_codes", "window_min", 0, f"{_NUMBER} 1 and at most 60"),
+        ("mail_codes", "window_min", 61, f"{_NUMBER} 1 and at most 60"),
+        ("commitments", "poll_s", 0, f"{_NUMBER} 1"),
+        ("commitments", "max_mails_per_cycle", 201, f"{_NUMBER} 1 and at most 200"),
+        ("commitments", "remind_before_min", 0, f"{_NUMBER} 1 and at most 1440"),
+        ("commitments", "remind_before_min", 1441, f"{_NUMBER} 1 and at most 1440"),
+        ("commitments", "backfill_since", "2026-09-10", _DATE),
+        ("commitments", "backfill_since", None, _DATE),
+        ("commitments", "preset", " ", _PRESET),
+        ("turn_things", "backfill_days", 0, _DAYS),
+        ("turn_things", "backfill_days", 61, _DAYS),
+        ("turn_things", "backfill_days", "7", _DAYS),
+        ("turn_things", "backfill_days", True, _DAYS),
+        ("turn_things", "preset", None, _PRESET),
+        ("claude_daily", "poll_s", 5, f"{_NUMBER} 60"),
+        ("claude_daily", "poll_s", True, f"{_NUMBER} 60"),
+        ("claude_daily", "max_letters_per_cycle", 0, f"{_NUMBER} 1 and at most 200"),
+        ("claude_daily", "max_letters_per_cycle", 201, f"{_NUMBER} 1 and at most 200"),
+        ("claude_daily", "backfill_since", "2026-10-18", _DATE),
+        ("claude_daily", "backfill_since", None, _DATE),
+    ],
+)
+def test_an_enabled_record_intake_with_a_bad_value_stops_the_load(
+    tmp_path: Path, name: str, key: str, value: object, must_be: str,
+) -> None:
+    """ADR 0266, 0274, 0295, 0300: each key is refused by name, with the file."""
+    refusal = rf"jarvis\.yaml {name}\.{key} must be {re.escape(must_be)}"
+    with pytest.raises(RuntimeBootstrapError, match=refusal):
+        load_settings(tmp_path, _top(name, **{key: value}))
+
+
+def test_an_intake_that_is_off_is_not_read(tmp_path: Path) -> None:
+    """Off unless exactly ``true``: the values of a block that is not on are not checked."""
+    config = load_settings(tmp_path, {
+        "job_mail": {"enabled": "yes", "poll_s": 0},
+        "commitments": {"poll_s": 0},
+        "turn_things": {"enabled": False, "backfill_days": 0},
+        "claude_daily": {"enabled": 1, "poll_s": 5},
+        "mail_codes": {"enabled": False, "poll_s": 0},
+        "home": {"mail_reply": {"enabled": False, "timeout_ms": 0}},
+    })
+    assert (
+        config.job_mail, config.commitments, config.turn_things, config.claude_daily,
+        config.mail_codes, config.mail_reply,
+    ) == (None,) * 6

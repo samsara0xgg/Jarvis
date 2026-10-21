@@ -36,7 +36,6 @@ from jarvis.runtime import audio_output
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.audio_output import TerminalOutput
 from jarvis.runtime.bootstrap.intakes import _job_mail
-from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.conversation_lines import say_job_line
 from jarvis.runtime.daemon.routes import job_mail_deps
 from jarvis.runtime.interview_reminders import InterviewSettings
@@ -71,6 +70,7 @@ from tests.support.job_mail import (
     only_rows,
 )
 from tests.support.lifecycle_commentary import commentary_runtime, only_phrase
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1286,8 +1286,8 @@ def test_the_loop_polls_and_survives_a_failed_cycle(tmp_path: Path, jev: JobJev)
     assert [tool for tool, _a in h.gmail.calls].count("gmail_search") >= 2
 
 
-def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: Path) -> None:
-    """Off by default: no poller, routes answer 404, and bad values stop boot."""
+def test_off_by_default_no_routes_and_no_poller(tmp_path: Path) -> None:
+    """Off by default: no poller and routes answer 404; bad values are refused at load."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     block = shipped["job_mail"]
     assert block["enabled"] is False
@@ -1307,43 +1307,28 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         "exclude_domains": ["linkedin.com"],
         "backfill_since": date(2026, 9, 10),
     }.items() <= block.items()
-    config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
+    db = tmp_path / "memory.db"
     connections: Any = Connections(None)
     clock = FakeClock(zone=OWNER_ZONE)
 
+    def build(raw: dict[str, Any]) -> JobMail | None:
+        return _job_mail(runtime_config(raw).job_mail, None, connections, db, clock)
+
     # no watcher is built:
-    assert _job_mail(shipped, config_path, None, connections, db, clock) is None
-    assert _job_mail({}, config_path, None, connections, db, clock) is None
+    assert build(shipped) is None
+    assert build({}) is None
     on = {"job_mail": {**block, "enabled": True}}
-    built = _job_mail(on, config_path, None, connections, db, clock)
+    built = build(on)
     assert isinstance(built, JobMail)
     spaced = {"job_mail": {**on["job_mail"], "exclude_domains": [" LinkedIn.com "]}}
-    built = _job_mail(spaced, config_path, None, connections, db, clock)
+    built = build(spaced)
     assert built is not None
     assert built._settings.exclude_domains == ("linkedin.com",)  # noqa: SLF001
     assert built._settings.backfill_since == date(2026, 9, 10)  # noqa: SLF001
     undated = {"job_mail": {**on["job_mail"], "backfill_since": None}}
-    built = _job_mail(undated, config_path, None, connections, db, clock)
+    built = build(undated)
     assert built is not None
     assert built._settings.backfill_since is None  # noqa: SLF001
-    for key, value in (
-        ("poll_s", 0),
-        ("backfill_days", "14"),
-        ("header_skip_at", 1.5),
-        ("body_min", 0),
-        ("max_body_chars", True),
-        ("model", " "),
-        ("timeout_ms", 0),
-        ("speak", "yes"),
-        ("linkedin_alerts", "sometimes"),
-        ("exclude_domains", "linkedin.com"),
-        ("exclude_domains", [" "]),
-        ("backfill_since", "2026-09-10"),
-        ("max_calls_per_day", None),
-    ):
-        bad = {"job_mail": {**block, "enabled": True, key: value}}
-        with pytest.raises(RuntimeBootstrapError, match=f"job_mail.{key}"):
-            _job_mail(bad, config_path, None, connections, db, clock)
 
     # The daemon wires no route for it, so every one answers 404.
     assert job_mail_deps(None) == {}
@@ -3252,10 +3237,10 @@ def test_the_loop_arms_at_start_and_after_each_cycle_without_gmail(
     assert len(_rung(h)) == 4
 
 
-def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys(
+def test_the_interview_reminders_block_is_on_as_shipped_and_off_builds_nothing(
     tmp_path: Path,
 ) -> None:
-    """The shipped block is on; each bad value stops boot naming its key; off builds nothing."""
+    """The shipped block is on; ``enabled: false`` builds no reminders."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
     block = shipped["job_mail"]
     assert block["interview_reminders"] == {
@@ -3263,31 +3248,19 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
         "evening_at": "20:00",
         "before_min": 30,
     }
-    config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
+    db = tmp_path / "memory.db"
     connections: Any = Connections(None)
     clock = FakeClock(zone=OWNER_ZONE)
     on = {"job_mail": {**block, "enabled": True}}
 
     log = tmp_path / "log.db"
-    built = _job_mail(on, config_path, None, connections, db, clock, event_log=log)
+    built = _job_mail(runtime_config(on).job_mail, None, connections, db, clock, event_log=log)
     assert built is not None
     assert built.interviews is not None
     off = {"job_mail": {**on["job_mail"], "interview_reminders": {"enabled": False}}}
-    built = _job_mail(off, config_path, None, connections, db, clock, event_log=log)
+    built = _job_mail(runtime_config(off).job_mail, None, connections, db, clock, event_log=log)
     assert built is not None
     assert built.interviews is None
-
-    for value in (
-        None,
-        {"enabled": "yes"},
-        {**block["interview_reminders"], "evening_at": "evening"},
-        {**block["interview_reminders"], "evening_at": 20},
-        {**block["interview_reminders"], "before_min": 0},
-        {**block["interview_reminders"], "before_min": 1.5},
-    ):
-        bad = {"job_mail": {**on["job_mail"], "interview_reminders": value}}
-        with pytest.raises(RuntimeBootstrapError, match=r"job_mail\.interview_reminders"):
-            _job_mail(bad, config_path, None, connections, db, clock)
 
 
 # --- a brain asks the terminal that plays (ADR 0156, 0170) ------------------------------------

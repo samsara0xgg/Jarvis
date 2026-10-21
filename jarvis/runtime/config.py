@@ -23,7 +23,7 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import time
+from datetime import date, datetime, time
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -46,9 +46,15 @@ from jarvis.execution.tools import (
     DEFAULT_WEB_SEARCH_MAX_RESULTS,
     DEFAULT_WEB_TIMEOUT_S,
 )
+from jarvis.runtime.claude_daily import ClaudeDailySettings
+from jarvis.runtime.commitment_intake import CommitmentSettings
 from jarvis.runtime.day_plan import day_ends_of
+from jarvis.runtime.interview_reminders import InterviewSettings
+from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMailSettings
 from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S
+from jarvis.runtime.mail_codes import MailCodesSettings
 from jarvis.runtime.settings import SETUP_VOICES, apply_settings
+from jarvis.runtime.turn_things import TurnThingsSettings
 from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -374,6 +380,27 @@ class JevSettings:
 
 
 @dataclass(frozen=True)
+class MailReplySettings:
+    """``home.mail_reply`` (ADR 0123, 0141): Jev's marks on the inbox, and whether it rates."""
+
+    model: str
+    timeout_ms: int
+    yes_at: float
+    fyi_at: float
+    junk_at: float
+    importance: bool
+
+
+@dataclass(frozen=True)
+class JobMailConfig:
+    """``job_mail`` (ADR 0155): the poller's settings, and its Jev route's model and deadline."""
+
+    settings: JobMailSettings
+    model: str
+    timeout_ms: int
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Everything the runtime reads from its config, parsed once.
 
@@ -416,6 +443,12 @@ class RuntimeConfig:
     remind_before_min: int
     plan_day_ends: time
     jev: JevSettings
+    mail_reply: MailReplySettings | None
+    job_mail: JobMailConfig | None
+    mail_codes: MailCodesSettings | None
+    commitments: CommitmentSettings | None
+    claude_daily: ClaudeDailySettings | None
+    turn_things: TurnThingsSettings | None
     raw: Mapping[str, Any]
 
 
@@ -1179,6 +1212,215 @@ def _jev(raw: Mapping[str, Any], config_path: Path) -> JevSettings:
     )
 
 
+def _mail_reply(raw: Mapping[str, Any], config_path: Path) -> MailReplySettings | None:
+    """``home.mail_reply`` (ADR 0123): off unless enabled; bad values stop the load."""
+    home = raw.get("home")
+    block = home.get("mail_reply") if isinstance(home, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, timeout = block.get("model"), block.get("timeout_ms")
+    bars = [  # fyi_at, yes_at, junk_at
+        v for v in (block.get("fyi_at"), block.get("yes_at"), block.get("junk_at"))
+        if isinstance(v, int | float) and not isinstance(v, bool)
+    ]
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+        or len(bars) != 3 or not 0 <= bars[0] < bars[1] <= 1  # noqa: PLR2004 — fyi_at, yes_at
+        or not 0 < bars[2] <= 1
+    ):
+        msg = (
+            f"runtime: {config_path} home.mail_reply needs model (text), timeout_ms (positive"
+            " int), fyi_at < yes_at, both in [0, 1], and junk_at in (0, 1]"
+        )
+        raise RuntimeBootstrapError(msg)
+    rating = block.get("importance")  # ADR 0141
+    return MailReplySettings(
+        model=model.strip(), timeout_ms=timeout, yes_at=float(bars[1]), fyi_at=float(bars[0]),
+        junk_at=float(bars[2]),
+        importance=isinstance(rating, Mapping) and rating.get("enabled") is True,
+    )
+
+
+def _bounded_numbers(
+    block: Mapping[str, Any], where: str, keys: tuple[tuple[str, int, int | None], ...],
+) -> dict[str, Any]:
+    """Each ``(key, low, high)`` of ``block`` as a number in that range, else a refusal."""
+    numbers = {}
+    for key, low, high in keys:
+        value = block.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value < low or (
+            high is not None and value > high
+        ):
+            msg = f"{where}.{key} must be a number of at least {low}" + (
+                "" if high is None else f" and at most {high}"
+            )
+            raise RuntimeBootstrapError(msg)
+        numbers[key] = value
+    return numbers
+
+
+def _job_mail(raw: Mapping[str, Any], config_path: Path) -> JobMailConfig | None:
+    """``job_mail`` (ADR 0155): off unless enabled; bad values stop the load."""
+    block = raw.get("job_mail")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+
+    def number(key: str, *, low: float, high: float | None = None, whole: bool = False) -> Any:  # noqa: ANN401 - int or float by key
+        value = block.get(key)
+        kind = int if whole else int | float
+        if isinstance(value, bool) or not isinstance(value, kind) or value < low or (
+            high is not None and value > high
+        ):
+            msg = (
+                f"runtime: {config_path} job_mail.{key} must be "
+                f"{'an integer' if whole else 'a number'} of at least {low}"
+                + ("" if high is None else f" and at most {high}")
+            )
+            raise RuntimeBootstrapError(msg)
+        return value
+
+    model = block.get("model")
+    if not isinstance(model, str) or not model.strip():
+        msg = f"runtime: {config_path} job_mail.model must be text"
+        raise RuntimeBootstrapError(msg)
+    if not isinstance(block.get("speak"), bool):
+        msg = f"runtime: {config_path} job_mail.speak must be true or false"
+        raise RuntimeBootstrapError(msg)
+    if block.get("linkedin_alerts") not in LINKEDIN_ALERTS:
+        msg = f"runtime: {config_path} job_mail.linkedin_alerts must be one of {LINKEDIN_ALERTS}"
+        raise RuntimeBootstrapError(msg)
+    excluded = block.get("exclude_domains")
+    if not isinstance(excluded, list) or not all(
+        isinstance(one, str) and one.strip() for one in excluded
+    ):
+        msg = f"runtime: {config_path} job_mail.exclude_domains must be a list of domain names"
+        raise RuntimeBootstrapError(msg)
+    since = block.get("backfill_since")
+    if since is not None and (not isinstance(since, date) or isinstance(since, datetime)):
+        msg = f"runtime: {config_path} job_mail.backfill_since must be a date (YYYY-MM-DD) or null"
+        raise RuntimeBootstrapError(msg)
+    settings = JobMailSettings(
+        interview_reminders=_interview_reminders(block.get("interview_reminders"), config_path),
+        poll_s=float(number("poll_s", low=1)),
+        backfill_days=number("backfill_days", low=1, high=60, whole=True),
+        max_messages_per_cycle=number("max_messages_per_cycle", low=1, high=100, whole=True),
+        header_skip_at=float(number("header_skip_at", low=0.0001, high=1)),
+        body_min=float(number("body_min", low=0.0001, high=1)),
+        max_body_chars=number("max_body_chars", low=100, whole=True),
+        max_calls_per_day=number("max_calls_per_day", low=1, whole=True),
+        speak=block["speak"],
+        speak_gap_s=float(number("speak_gap_s", low=0)),
+        linkedin_alerts=block["linkedin_alerts"],
+        exclude_domains=tuple(one.strip().lower() for one in excluded),
+        backfill_since=since,
+    )
+    return JobMailConfig(
+        settings, model=model.strip(), timeout_ms=number("timeout_ms", low=1, whole=True),
+    )
+
+
+def _interview_reminders(block: object, config_path: Path) -> InterviewSettings | None:
+    """``job_mail.interview_reminders`` (ADR 0186): None while off; bad values stop the load."""
+    where = f"runtime: {config_path} job_mail.interview_reminders"
+    if not isinstance(block, Mapping) or not isinstance(block.get("enabled"), bool):
+        msg = f"{where}.enabled must be true or false"
+        raise RuntimeBootstrapError(msg)
+    if not block["enabled"]:
+        return None
+    evening_at = block.get("evening_at")
+    try:
+        evening = time.fromisoformat(evening_at) if isinstance(evening_at, str) else None
+    except ValueError:
+        evening = None
+    if evening is None or evening.tzinfo:
+        msg = f'{where}.evening_at must be a local time such as "20:00"'
+        raise RuntimeBootstrapError(msg)
+    minutes = block.get("before_min")
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or not 1 <= minutes <= 1440:  # noqa: PLR2004 - a day
+        msg = f"{where}.before_min must be a whole number of minutes from 1 to 1440"
+        raise RuntimeBootstrapError(msg)
+    return InterviewSettings(evening, minutes)
+
+
+def _mail_codes(raw: Mapping[str, Any], config_path: Path) -> MailCodesSettings | None:
+    """``mail_codes`` (ADR 0266): off unless enabled; bad values stop the load."""
+    block = raw.get("mail_codes")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    values = _bounded_numbers(
+        block, f"runtime: {config_path} mail_codes", (("poll_s", 1, None), ("window_min", 1, 60)),
+    )
+    return MailCodesSettings(float(values["poll_s"]), int(values["window_min"]))
+
+
+def _commitments(raw: Mapping[str, Any], config_path: Path) -> CommitmentSettings | None:
+    """``commitments`` (ADR 0274): off unless enabled; bad values stop the load."""
+    block = raw.get("commitments")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    where = f"runtime: {config_path} commitments"
+    numbers = _bounded_numbers(block, where, (
+        ("poll_s", 1, None), ("max_mails_per_cycle", 1, 200), ("remind_before_min", 1, 1440),
+    ))
+    since = block.get("backfill_since")
+    if not isinstance(since, date) or isinstance(since, datetime):
+        msg = f"{where}.backfill_since must be a date (YYYY-MM-DD)"
+        raise RuntimeBootstrapError(msg)
+    preset = block.get("preset")
+    if not isinstance(preset, str) or not preset.strip():
+        msg = f"{where}.preset must be the name of an llm preset"
+        raise RuntimeBootstrapError(msg)
+    return CommitmentSettings(
+        float(numbers["poll_s"]), since, int(numbers["max_mails_per_cycle"]), preset.strip(),
+        int(numbers["remind_before_min"]),
+    )
+
+
+_TURN_THINGS_BACKFILL_MAX_DAYS: Final[int] = 60
+
+
+def _turn_things(raw: Mapping[str, Any], config_path: Path) -> TurnThingsSettings | None:
+    """``turn_things`` (ADR 0300): off unless enabled; bad values stop the load."""
+    block = raw.get("turn_things")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    where = f"runtime: {config_path} turn_things"
+    days = block.get("backfill_days")
+    if (
+        isinstance(days, bool) or not isinstance(days, int)
+        or not 1 <= days <= _TURN_THINGS_BACKFILL_MAX_DAYS
+    ):
+        msg = (
+            f"{where}.backfill_days must be a whole number of days from 1 to"
+            f" {_TURN_THINGS_BACKFILL_MAX_DAYS}"
+        )
+        raise RuntimeBootstrapError(msg)
+    preset = block.get("preset")
+    if not isinstance(preset, str) or not preset.strip():
+        msg = f"{where}.preset must be the name of an llm preset"
+        raise RuntimeBootstrapError(msg)
+    return TurnThingsSettings(days, preset.strip())
+
+
+def _claude_daily(raw: Mapping[str, Any], config_path: Path) -> ClaudeDailySettings | None:
+    """``claude_daily`` (ADR 0295): None while Gmail letters are off; bad values stop the load."""
+    block = raw.get("claude_daily")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    where = f"runtime: {config_path} claude_daily"
+    numbers = _bounded_numbers(
+        block, where, (("poll_s", 60, None), ("max_letters_per_cycle", 1, 200)),
+    )
+    since = block.get("backfill_since")
+    if not isinstance(since, date) or isinstance(since, datetime):
+        msg = f"{where}.backfill_since must be a date (YYYY-MM-DD)"
+        raise RuntimeBootstrapError(msg)
+    return ClaudeDailySettings(
+        float(numbers["poll_s"]), since, int(numbers["max_letters_per_cycle"]),
+    )
+
+
 def load_runtime_config(
     path: Path | None,
     runtime_root: Path,
@@ -1291,5 +1533,11 @@ def parse_runtime_config(
         remind_before_min=_remind_before_min(raw),
         plan_day_ends=day_ends_of(raw.get("day_plan")),
         jev=_jev(raw, config_path),
+        mail_reply=_mail_reply(raw, config_path),
+        job_mail=_job_mail(raw, config_path),
+        mail_codes=_mail_codes(raw, config_path),
+        commitments=_commitments(raw, config_path),
+        claude_daily=_claude_daily(raw, config_path),
+        turn_things=_turn_things(raw, config_path),
         raw=raw,
     )
