@@ -59,6 +59,11 @@ if TYPE_CHECKING:
     from jarvis.surface.voice_print import VoiceprintExtractor
 
 VOICE, ROOM = 8_000, 30  # constant frames at about -12 and -60 dBFS
+QUIET_S = 10.0
+"""The mode's quiet window in the tests that watch it end: far longer than a test takes.
+
+Under her answer's wait (30 s in the session), so a turn's hold can be shown to outlast it.
+"""
 # With the shipped profile (5-frame smoothing, 3 hits) speech starts on the
 # fifth voice frame and the last two voice frames' smoothing counts too, so a
 # burst of N frames holds N - 2 voiced frames: 6 is a short sound, 25 is not.
@@ -87,6 +92,33 @@ class _ScriptedAsr:
             emotion=emotion,
             event=event,
         )
+
+
+class _QuietClock:
+    """The session's ``time``: the real clock plus however far the test has moved it on.
+
+    The mode's quiet window is measured on this clock. A test that watches the mode end
+    moves the clock past the window instead of waiting for it, so a slow machine cannot
+    run the window out while a sound is still on its way in.
+    """
+
+    def __init__(self) -> None:
+        self.moved_s = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.moved_s
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+    def pass_quiet(self, seconds: float) -> None:
+        self.moved_s += seconds
+
+
+def _quiet_clock(monkeypatch: pytest.MonkeyPatch) -> _QuietClock:
+    clock = _QuietClock()
+    monkeypatch.setattr(voice_session, "time", clock)
+    return clock
 
 
 class _Rig:
@@ -219,6 +251,17 @@ class _Rig:
             self.backend.emit(epoch=epoch, value=ROOM)
             time.sleep(0.002)
 
+    def room_until(self, done: Callable[[], object]) -> None:
+        """Nobody talking, a frame at a time, until ``done`` holds."""
+        epoch = self.ingress.stream_epoch
+        assert epoch is not None
+
+        def next_frame() -> bool:
+            self.backend.emit(epoch=epoch, value=ROOM)
+            return bool(done())
+
+        _wait_until(next_frame)
+
     def turns(self) -> list[str]:
         with contextlib.closing(open_event_log(self.db)) as conn:
             return [
@@ -304,13 +347,16 @@ def test_leaving_from_the_surface_does_what_a_dismissal_does_without_the_words(
 
 @pytest.mark.parametrize(("heard", "reason"), [("The.", "unclear"), ("嗯。", "backchannel")])
 def test_a_lone_word_in_the_mode_is_dropped_and_keeps_nothing_open(
-    tmp_path: Path, heard: str, reason: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, heard: str, reason: str,
 ) -> None:
     """ADR 0102: with her silent, a hum or a lone word is no turn and the quiet clock runs on."""
-    rig = _Rig(tmp_path, heard, speaking=False, idle_exit_s=0.05)
+    clock = _quiet_clock(monkeypatch)
+    rig = _Rig(tmp_path, heard, speaking=False, idle_exit_s=QUIET_S)
     try:
         rig.say(SHORT)
-        rig.room(0.2)
+        assert rig.conversation_changes == []  # the word did not end the mode
+        clock.pass_quiet(QUIET_S)
+        rig.room_until(lambda: rig.conversation_changes)
     finally:
         rig.close()
     assert rig.turns() == []
@@ -319,14 +365,20 @@ def test_a_lone_word_in_the_mode_is_dropped_and_keeps_nothing_open(
     assert rig.conversation_changes == [(False, "idle")]
 
 
-def test_wait_for_me_holds_the_mode_then_quiet_ends_it(tmp_path: Path) -> None:
+def test_wait_for_me_holds_the_mode_then_quiet_ends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """ADR 0102: 「等我一下」 is no turn and keeps the mode open its wait, not forever."""
-    rig = _Rig(tmp_path, "等我一下。", speaking=False, idle_exit_s=0.05, wait_s=0.6)
+    clock = _quiet_clock(monkeypatch)
+    wait_s = 2 * QUIET_S
+    rig = _Rig(tmp_path, "等我一下。", speaking=False, idle_exit_s=QUIET_S, wait_s=wait_s)
     try:
         rig.say(SHORT)
+        clock.pass_quiet(1.5 * QUIET_S)  # the mode's quiet has run out, her wait has not
         rig.room(0.1)
         held = list(rig.conversation_changes)
-        rig.room(0.8)
+        clock.pass_quiet(wait_s)
+        rig.room_until(lambda: rig.conversation_changes)
     finally:
         rig.close()
     assert held == []
@@ -336,17 +388,22 @@ def test_wait_for_me_holds_the_mode_then_quiet_ends_it(tmp_path: Path) -> None:
     assert ("empty", "wait") in rig.phases
 
 
-def test_a_turn_holds_the_mode_until_her_answer_then_quiet_ends_it(tmp_path: Path) -> None:
+def test_a_turn_holds_the_mode_until_her_answer_then_quiet_ends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """ADR 0102: an accepted turn waits for her answer; the clock starts again after she speaks."""
-    rig = _Rig(tmp_path, "给我讲个故事。", speaking=False, idle_exit_s=0.1)
+    clock = _quiet_clock(monkeypatch)
+    rig = _Rig(tmp_path, "给我讲个故事。", speaking=False, idle_exit_s=QUIET_S)
     try:
         rig.say(SHORT)
-        rig.room(0.3)
+        clock.pass_quiet(QUIET_S)  # her answer has not come: the turn holds the mode
+        rig.room(0.1)
         waiting = list(rig.conversation_changes)
         rig.speaking = True
         rig.room(0.05)
         rig.speaking = False
-        rig.room(0.3)
+        clock.pass_quiet(QUIET_S)
+        rig.room_until(lambda: rig.conversation_changes)
     finally:
         rig.close()
     assert waiting == []
