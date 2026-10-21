@@ -29,9 +29,12 @@ from tests.support.voice_input import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 _FRAME_BYTES = voice_audio.SILERO_CHUNK_SAMPLES * 2
+_HANG_GUARD_S = 15.0
+"""How long a wait on the session's threads lasts before the test calls it hung; not a budget."""
 _SENSEVOICE_WORDS = "SenseVoice heard this."
 
 
@@ -550,6 +553,19 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
         broadcaster=None,
         artifacts_dir=None,
     )
+    # The session registers for each pass's words through the pipeline; this tells the test when
+    # a pass has handed them over, whatever the machine's load does to the worker thread.
+    told = threading.Event()
+    register = pipeline.on_prepared_text
+
+    def tapped(listener: Callable[[str, int, str], None]) -> bool:
+        def tell(utterance_id: str, audio_bytes: int, text: str) -> None:
+            listener(utterance_id, audio_bytes, text)
+            told.set()
+
+        return register(tell)
+
+    monkeypatch.setattr(pipeline, "on_prepared_text", tapped)
     backend = FakeBackend()
     ingress = make_ingress(backend)
     with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
@@ -593,8 +609,13 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
         frames(10_000, 40)  # 1.3 s of speech: long enough for Whisper
         frames(0, 8)  # a pause: the pass for the audio so far
         if hybrid:
+            # The captions move on the microphone's frames, which never stop in real life: one
+            # more silent frame, once the pass has handed over its words, shows them.
+            assert told.wait(_HANG_GUARD_S), "the prepared pass never handed over its words"
+            frames(0, 1)
             wait_until_true(
-                lambda: any(p["settled"] == "whisper words" for p in partials()), timeout_s=5,
+                lambda: any(p["settled"] == "whisper words" for p in partials()),
+                timeout_s=_HANG_GUARD_S,
             )
         else:
             time.sleep(0.3)  # nothing settles it; give a pass the time it would need
@@ -604,7 +625,7 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
             frames(10_000, 1)
             return "尾" in partials()[-1]["text"]
 
-        wait_until_true(more_words_shown, timeout_s=5)
+        wait_until_true(more_words_shown, timeout_s=_HANG_GUARD_S)
     finally:
         assert session.close().definitively_closed
 
