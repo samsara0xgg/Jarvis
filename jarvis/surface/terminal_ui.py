@@ -54,7 +54,7 @@ from jarvis.surface.terminal_link import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 
     from jarvis.surface.inherent_server.night import NightRoutes
     from jarvis.surface.voice_controls import VoiceControls
@@ -64,7 +64,6 @@ LOGGER = logging.getLogger("jarvis.surface.terminal_ui")
 UI_SOCKET: Final = "/inherent/ws"
 UNREACHABLE: Final = "the brain is not reachable"
 CONNECT_TIMEOUT_S: Final = 5.0
-DISCONNECT_POLL_S: Final = 0.5
 _CLIENT_CLOSED: Final = 499  # nginx's "client closed request": nobody is left to read it
 _METHODS: Final = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _SOCKET_UNREACHABLE: Final = 1013  # "try again later": the companion's reconnect ladder takes it
@@ -352,10 +351,45 @@ async def _drain(ws: WebSocket) -> None:
 
 
 async def _until_gone(request: Request, sent: asyncio.Event) -> None:
-    """Return once the caller has disconnected; only looks after its body is all read."""
+    """Return once the caller has disconnected; only looks after its body is all read.
+
+    The ASGI server answers ``receive`` with the disconnect when it happens, so this waits for
+    it. ``Request.is_disconnected`` is polled instead, but it does that inside an anyio cancel
+    scope that can swallow a ``cancel()`` landing in it, and a watcher that cannot be ended
+    cannot be awaited.
+    """
     await sent.wait()
-    while not await request.is_disconnected():  # noqa: ASYNC110 — no ASGI event for it.
-        await asyncio.sleep(DISCONNECT_POLL_S)
+    while (await request.receive())["type"] != "http.disconnect":
+        pass  # the empty body message of a request that sent none
+
+
+async def _opened_unless_gone(
+    opening: Coroutine[Any, Any, httpx.Response], gone: Coroutine[Any, Any, None],
+) -> httpx.Response | None:
+    """The brain's response, ``None`` if ``gone`` ends first; a transport error is raised.
+
+    Both run as tasks of this call and neither outlives it, whatever ends it: the caller's
+    hang-up, the handler being cancelled, the brain's answer or its refusal. A request to the
+    brain left running with nobody to await it would hold its connection open, and a connect
+    timeout it ended with is an exception nobody retrieved, which asyncio logs as such.
+    """
+    opening_task = asyncio.ensure_future(opening)
+    watching_task = asyncio.ensure_future(gone)
+    response: httpx.Response | None = None
+    try:
+        await asyncio.wait({opening_task, watching_task}, return_when=asyncio.FIRST_COMPLETED)
+        if opening_task.done():
+            response = opening_task.result()
+        return response
+    finally:
+        opening_task.cancel()
+        watching_task.cancel()
+        await asyncio.wait({opening_task, watching_task})
+        for task in (opening_task, watching_task):
+            if not task.cancelled():
+                task.exception()  # read, so asyncio does not log it as never retrieved
+        if response is None and not opening_task.cancelled() and opening_task.exception() is None:
+            await opening_task.result().aclose()  # an answer that came as the caller left
 
 
 async def _forward(request: Request, brain: Brain) -> Response:
@@ -379,24 +413,19 @@ async def _forward(request: Request, brain: Brain) -> Response:
 
     if not has_body:
         sent.set()
-    opening = asyncio.ensure_future(
-        brain.open(request.method, path, headers, content() if has_body else None),
-    )
-    watching = asyncio.ensure_future(_until_gone(request, sent))
     try:
-        await asyncio.wait({opening, watching}, return_when=asyncio.FIRST_COMPLETED)
-        if not opening.done():
-            # The caller hung up while the brain was still deciding (a held permission prompt):
-            # ending our request is how the brain learns, as it would from a direct socket.
-            opening.cancel()
-            return Response(status_code=_CLIENT_CLOSED)
-        upstream = opening.result()
+        upstream = await _opened_unless_gone(
+            brain.open(request.method, path, headers, content() if has_body else None),
+            _until_gone(request, sent),
+        )
     except httpx.TransportError as exc:
         LOGGER.warning("%s %s: the brain did not answer (%s)", request.method, request.url.path,
                        type(exc).__name__)
         return _unreachable()
-    finally:
-        watching.cancel()
+    if upstream is None:
+        # The caller hung up while the brain was still deciding (a held permission prompt):
+        # ending our request is how the brain learns, as it would from a direct socket.
+        return Response(status_code=_CLIENT_CLOSED)
 
     async def body() -> AsyncIterator[bytes]:
         try:

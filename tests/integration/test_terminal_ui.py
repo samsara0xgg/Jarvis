@@ -75,7 +75,15 @@ from tests.support.terminal import (
     wait_for,
 )
 from tests.support.terminal_listen import LISTEN_CONFIG, heard_session
-from tests.support.terminal_ui import DEVICE_TOKEN, LOCAL, UvicornServer, terminal_rig
+from tests.support.terminal_ui import (
+    DEVICE_TOKEN,
+    LOCAL,
+    UvicornServer,
+    get_then_hang_up,
+    stalled_brain_app,
+    terminal_rig,
+    unhandled_loop_errors,
+)
 from tests.support.voice_input import write_wav
 
 if TYPE_CHECKING:
@@ -451,6 +459,83 @@ def test_with_no_brain_forwarded_routes_say_so_and_local_ones_still_answer(
         assert rig.post("/inherent/restart").status_code == 202
         with pytest.raises(WebSocketException):
             rig.socket()
+
+
+def test_a_brain_that_times_out_on_connect_is_a_503_on_every_route_and_nothing_goes_unhandled(
+    tmp_path: Path,
+) -> None:
+    """Forwarded with or without a body, and merged with the device's own: the same answer."""
+    key = local_key(tmp_path)
+    controls = VoiceControls()
+
+    async def scenario() -> tuple[list[httpx.Response], list[str]]:
+        app, brain = stalled_brain_app(key, Device(controls=controls))
+        brain.release.set()  # the connect attempt ends at once, as a timeout
+        async with unhandled_loop_errors() as reported, httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=LOCAL,
+            headers={"Authorization": f"Bearer {key}"},
+        ) as client:
+            answers = [
+                await client.get("/inherent/notices"),
+                await client.post("/inherent/submit", json={"text": "hi"}),
+                await client.post("/inherent/controls", json={"mic_muted": True}),
+            ]
+        return answers, reported
+
+    answers, reported = asyncio.run(scenario())
+    assert [answer.status_code for answer in answers] == [503, 503, 503]
+    assert [answer.json() for answer in answers] == [{"detail": UNREACHABLE}] * 3
+    assert controls.mic_muted  # the switch is this device's, thrown whether or not the brain heard
+    assert reported == []
+
+
+def test_a_forwarded_request_that_is_cancelled_takes_its_attempt_on_the_brain_with_it(
+    tmp_path: Path,
+) -> None:
+    """The server drops a handler (a shutdown, a deadline): the connect it started is not left."""
+    key = local_key(tmp_path)
+
+    async def scenario() -> tuple[int, list[str]]:
+        app, brain = stalled_brain_app(key)
+        async with unhandled_loop_errors() as reported, httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=LOCAL,
+            headers={"Authorization": f"Bearer {key}"},
+        ) as client:
+            request = asyncio.create_task(client.get("/inherent/notices"))
+            await brain.started.wait()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            abandoned = brain.abandoned
+            brain.release.set()  # an attempt nobody owns would time out now, unretrieved
+        return abandoned, reported
+
+    abandoned, reported = asyncio.run(scenario())
+    assert abandoned == 1
+    assert reported == []
+
+
+def test_a_caller_that_hangs_up_while_the_brain_connects_is_answered_499_and_the_attempt_ends(
+    tmp_path: Path,
+) -> None:
+    """The companion's own timeout or a closed window: our ending the request tells the brain."""
+    key = local_key(tmp_path)
+
+    async def scenario() -> tuple[list[int], int, list[str]]:
+        app, brain = stalled_brain_app(key)
+        async with unhandled_loop_errors() as reported:
+            sent = await get_then_hang_up(
+                app, "/inherent/notices", {"Authorization": f"Bearer {key}"},
+            )
+            abandoned = brain.abandoned
+            brain.release.set()
+        started = [m["status"] for m in sent if m["type"] == "http.response.start"]
+        return started, abandoned, reported
+
+    statuses, abandoned, reported = asyncio.run(scenario())
+    assert statuses == [499]  # nginx's "client closed request": nobody is left to read it
+    assert abandoned == 1
+    assert reported == []
 
 
 def test_a_brain_that_goes_away_closes_the_push_socket_so_the_companion_reconnects(

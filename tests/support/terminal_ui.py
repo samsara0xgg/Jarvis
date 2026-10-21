@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import gc
 import hashlib
 import json
 import threading
@@ -25,6 +26,8 @@ from tests.support.terminal import wait_for
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
+
+    from starlette.types import Message
 
 DEVICE_TOKEN = "device-token-for-the-tests"  # noqa: S105 — a fixture, not a secret
 
@@ -266,3 +269,86 @@ def terminal_rig(
     finally:
         if brain_up:
             brain_server.__exit__()
+
+
+class StalledBrain(httpx.AsyncBaseTransport):
+    """A brain the connection attempt hangs on until ``release``, then times out.
+
+    That is Tailscale dropping under a VPN: the attempt is in flight (``started``) for as long
+    as the test holds it, and ends as httpx ends a connect that never completed. ``abandoned``
+    counts the attempts that were cancelled before they ended, which is what a caller that
+    left, or a handler that was cancelled, owes the brain.
+    """
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.abandoned = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.abandoned += 1
+            raise
+        reason = "timed out"
+        raise httpx.ConnectTimeout(reason, request=request)
+
+
+def stalled_brain_app(key: str, device: Device | None = None) -> tuple[FastAPI, StalledBrain]:
+    """The terminal's UI app over a brain that stalls, behind the daemon's gate for ``key``."""
+    brain = StalledBrain()
+    app = create_ui_app(
+        Brain("http://brain.test", DEVICE_TOKEN, transport=brain),
+        authorize=functools.partial(local_key_matches, key),
+        broadcaster=UiBroadcaster(),
+        device=device or Device(),
+    )
+    return app, brain
+
+
+@contextlib.asynccontextmanager
+async def unhandled_loop_errors() -> AsyncIterator[list[str]]:
+    """The messages the event loop reported as unhandled while the block ran.
+
+    asyncio reports a task whose exception nobody retrieved only when the finished task is
+    collected, so the block ends with a collection and a few turns of the loop.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    reported: list[str] = []
+    loop.set_exception_handler(lambda _loop, context: reported.append(str(context["message"])))
+    try:
+        yield reported
+    finally:
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+        loop.set_exception_handler(previous)
+
+
+async def get_then_hang_up(app: FastAPI, path: str, headers: dict[str, str]) -> list[Message]:
+    """A bodyless GET sent over ASGI and hung up on at once; what the app sent back."""
+    sent: list[Message] = []
+    asked = False
+
+    async def receive() -> Message:
+        nonlocal asked
+        if asked:
+            return {"type": "http.disconnect"}
+        asked = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+        "headers": [(b"host", b"127.0.0.1"), *((k.lower().encode(), v.encode())
+                                                for k, v in headers.items())],
+        "client": ("127.0.0.1", 50000), "server": ("127.0.0.1", 80),
+    }
+    await app(scope, receive, send)
+    return sent
