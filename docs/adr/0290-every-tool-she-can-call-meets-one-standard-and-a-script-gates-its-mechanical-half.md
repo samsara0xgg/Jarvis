@@ -1,6 +1,6 @@
 # ADR 0290 — Every tool she can call meets one standard, and a script gates its mechanical half
 
-**Status:** Accepted
+**Status:** Superseded-by-0317
 **Date:** 2026-10-17
 **Supersedes:** none
 
