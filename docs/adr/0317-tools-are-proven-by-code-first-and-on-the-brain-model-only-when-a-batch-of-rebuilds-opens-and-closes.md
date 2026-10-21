@@ -16,8 +16,8 @@
   for the last pass (「动手前面可以先用海苦，然后最后一遍再考虑用 Sonnet…开工和最后也行」).
   Every brain-model run already needs his OK. The `haiku` preset costs a twentieth of the
   brain's per token.
-- In his real use from 2026-10-12 to 2026-10-20, 21 of 43 tool asks went wrong and 4 went half
-  right. 15 of the 21 were facts a tool returned wrong or short: a reminder left out of a read,
+- In his real use from 2026-10-12 to 2026-10-20, 20 of 43 tool asks went wrong and 4 went half
+  right. 14 of the 20 were facts a tool returned wrong or short: a reminder left out of a read,
   a radius ignored, an eight-hour-old position, a bus dropped. The tool repeats each of these on
   the same inputs with no model. The rest were her saying done what was not, one card asked
   three times, the claim check misfiring, and asking what she could look up.
