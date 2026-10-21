@@ -1,0 +1,36 @@
+# Nightly check of the brain's event log (ADR 0323): `jarvis check-log --json` asks the real log
+# what the spec and the code promise about it, and this unit keeps the answer in
+# <runtime root>/logs/check-log-<date>.json. Run by jarvis-check-log.timer, which is the only
+# thing to enable. The repo only keeps these units, nothing installs them. On the brain host, as
+# the owner:
+#
+#   cp jarvis/deployment/systemd/jarvis-check-log.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now jarvis-check-log.timer
+#
+# Read-only: the log is opened with SQLite's read-only mode, no lock is taken, and the daemon
+# keeps running. The report holds invariant names, counts, event ids and times, never what Allen
+# said. Exit 0 clean, 1 an invariant is violated, 2 the log could not be opened; the unit fails
+# on 1 and 2, so `systemctl --user --failed` is the morning glance, and the report (written
+# either way) names what. Run it by hand: `systemctl --user start jarvis-check-log`, or
+# `jarvis check-log` for the text form. Reports older than 60 days are deleted before each run.
+#
+# The repo and its virtualenv are expected where jarvis-brain.service expects them.
+
+[Unit]
+Description=Jarvis event-log check
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/jarvis-brain
+Environment=JARVIS_RUNTIME_ROOT=%h/.jarvis
+# SQLite's spill files go to RAM-backed /tmp, not the SD card (see jarvis-brain.service).
+Environment=SQLITE_TMPDIR=/tmp
+UMask=0077
+# The check reads a log the daemon is writing: stay behind it for CPU and for the SD card.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=15min
+ExecStartPre=-/usr/bin/find ${JARVIS_RUNTIME_ROOT}/logs -maxdepth 1 -name 'check-log-*.json' -mtime +60 -delete
+# The report is written to a .tmp and renamed, so the daily backup never copies half of one. The
+# `$$` and `%%` are systemd's escapes for the shell's `$` and `%`; `%h` is expanded by systemd.
+ExecStart=/bin/sh -c 'out="$$JARVIS_RUNTIME_ROOT/logs/check-log-$$(date +%%F).json"; mkdir -p "$$JARVIS_RUNTIME_ROOT/logs"; %h/jarvis-brain/.venv/bin/python -m jarvis check-log --json > "$$out.tmp"; code=$$?; mv "$$out.tmp" "$$out"; exit $$code'

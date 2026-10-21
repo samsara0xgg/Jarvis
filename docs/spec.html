@@ -693,6 +693,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li>App 不在 Dock 里。第一次打开走首次设置：主人的名字、助手的名字、语言、OpenAI key、声音、系统权限和要连的服务。</li>
 <li>本地语音模型不在包里：后台发现缺了就在后台下载，核对 SHA-256，下好后自己重启一次；下好之前只能打字。</li>
 <li>大脑不走 DMG：在 Linux（x86_64 或 aarch64，<code>uv.lock</code> 三个平台都解了）上从仓库装，key 放在运行目录的 <code>env</code>（<a href="#key-storage">第 7 章</a>），启动前在 <code>settings.yaml</code> 里写 <code>runtime: {role: brain}</code>。设置页的重启和抹掉全部数据在那里还不可用，它们靠 launchd 的标记（<code>JARVIS_LAUNCHD_AGENT</code>）重启后台。</li>
+<li>大脑每晚 06:30 由 systemd 用户定时器 <code>jarvis-check-log.timer</code> 跑一次 <code>jarvis check-log --json</code>（单元在 <code>jarvis/deployment/systemd/</code>，和大脑的单元一样由主人自己装；ADR 0323），对真实的事件日志查一组本规格和代码自己许下的不变式：事件类型登记过、来源事件存在、大脑自己盖的时间不倒走也不在未来、响应、动作、播放和确认各只有一个终态、响应和动作和播放过了宽限就已收尾、每个模型请求在 <code>turn.timing</code> 里列出就有一行花费且只有一行、听到的话所指的录音文件在、到点的提醒响过或取消了、负载里没有 key 或令牌的形状。报告写进运行目录的 <code>logs/check-log-&lt;日期&gt;.json</code>，Mac 的每日备份（<code>scripts/pi_brain_backup.sh</code>）一并抄走；有违反或打不开日志时单元以非零退出。它只读：日志以只读方式打开，不拿后台锁，后台照常运行；输出只有不变式的名字、次数、事件 id 和时间，不含任何话的内容。同一个命令也查一份备份：<code>jarvis check-log --runtime-root &lt;目录&gt;</code>，窗口以那份日志自己的最后一条为终点；备份里没有录音，录音那一项记为跳过，不记为通过。</li>
 <li>当终端用的 Mac 想开机自启：<code>jarvis terminal-agent install --brain http://jarvis:8006</code>（先 <code>jarvis daemon uninstall</code>），拆除用 <code>jarvis terminal-agent uninstall</code>；见<a href="#process-map">进程</a>。</li>
 </ul>
 
@@ -723,7 +724,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <tr><td><code>push-tokens.json</code></td><td>每台已配对设备登记的 APNs 设备令牌、Live Activity 令牌和两个乘车令牌（ADR 0224），0600（ADR 0210）</td><td>设备 <code>unpair</code> 时删，APNs 回 410 时删</td></tr>
 <tr><td><code>plugin-access.json</code>、<code>inherent-v2.token</code></td><td>本机接口的令牌，0600；后者每次启动都换</td><td>—</td></tr>
 <tr><td><code>plugin-settings.json</code>、<code>plugin-credentials.json</code>、<code>mcp/</code></td><td>插件设置、插件凭据和 MCP 登录令牌，0600 的明文（改17）</td><td>—</td></tr>
-<tr><td><code>logs/</code></td><td>后台和伴侣的日志</td><td>见<a href="#retention">保留期</a></td></tr>
+<tr><td><code>logs/</code></td><td>后台和伴侣的日志；大脑上还有每晚一份的事件日志检查报告 <code>check-log-&lt;日期&gt;.json</code>（<a href="#install">安装</a>，ADR 0323）：只有不变式的名字、次数、事件 id 和时间，没有话的内容</td><td>日志见<a href="#retention">保留期</a>；报告留 60 天，由检查的单元在每次运行前删更老的</td></tr>
 <tr><td><code>models/</code></td><td>本地语音模型</td><td>下载一次，一直留着</td></tr>
 </tbody>
 </table>

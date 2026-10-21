@@ -1,0 +1,17 @@
+# Runs jarvis-check-log.service once a night (ADR 0323). Install both files; see the header of
+# jarvis-check-log.service. 06:30 local time is after the night run's default morning (06:00,
+# night.morning); a run missed because the Pi was off fires at the next boot (Persistent=true).
+# The Mac pulls logs/check-log-*.json in its 04:00 backup (scripts/pi_brain_backup.sh), so a
+# night's report reaches the Mac with the next day's backup.
+#
+# When it last ran and when it runs next: `systemctl --user list-timers jarvis-check-log`.
+
+[Unit]
+Description=Jarvis event-log check, nightly
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

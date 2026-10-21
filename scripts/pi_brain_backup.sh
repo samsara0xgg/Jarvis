@@ -8,8 +8,10 @@
 # API into the Pi's RAM (/dev/shm), pulled to ~/.jarvis/backups/pi-brain/<date>/, checked here with
 # quick_check, and removed on the Pi before the next one starts. A database bigger than half of
 # /dev/shm's free space is staged on the Pi's disk beside ~/.jarvis (~/.jarvis-backup-stage-<date>)
-# instead of in RAM, and removed right after the pull. Only *.db files travel: env, tokens and every
-# other file stay on the Pi. The newest 7 days are kept.
+# instead of in RAM, and removed right after the pull. Only *.db files and the nightly event-log
+# reports (~/.jarvis/logs/check-log-*.json, ADR 0323; ids, counts and times, no content) travel: env,
+# tokens and every other file stay on the Pi. The newest 7 days are kept. A day's folder is itself a
+# runtime root for `jarvis check-log --runtime-root <folder>`.
 set -euo pipefail
 
 HOST="${JARVIS_PI_HOST:-allen@jarvis}"
@@ -92,6 +94,13 @@ while IFS= read -r rel <&3; do
 done 3<<<"$list"
 want="$(wc -l <<<"$list" | tr -d ' ')"
 [ "$count" = "$want" ] || { echo "backed up $count of $want databases" >&2; exit 1; }
+# The reports of the Pi's nightly check (jarvis-check-log.timer). None yet, or a failed pull, is a
+# note and not a failed backup: the databases above are what this script is for.
+if scp -q -o BatchMode=yes "$HOST:.jarvis/logs/check-log-*.json" "$dest/"; then
+    echo "$(date '+%F %T') check-log reports ok ($(ls -1 "$dest"/check-log-*.json | wc -l | tr -d ' '))"
+else
+    echo "$(date '+%F %T') no check-log reports pulled from $HOST (none yet, or the pull failed)" >&2
+fi
 # Keep the newest $KEEP days.
 ls -1d "$DEST_ROOT"/????-??-?? | sort -r | tail -n +"$((KEEP + 1))" | while read -r old; do rm -rf "$old"; done
 echo "$(date '+%F %T') backup done: $count file(s), $(du -sh "$dest" | cut -f1)"
