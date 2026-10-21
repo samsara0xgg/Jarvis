@@ -216,7 +216,7 @@ CREATE INDEX IF NOT EXISTS voiceprints_mic ON voiceprints (device, mic, id);
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
 # ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``day_experience`` (ADR 0280),
 # ``core_memory``, ``day_highlight_marks``, ``doing_runs`` and ``doing_answers`` (ADR 0302),
-# ``attention_threads`` (ADR 0315), the
+# ``attention_threads`` (ADR 0331), the
 # places tables (ADR 0234), ``import_entries``
 # (ADR 0259), ``meaning_vectors`` (ADR 0260) and ``voiceprints`` (ADR 0286) are additive: an
 # older opener ignores them, so they need no new version. So are the
@@ -1713,7 +1713,7 @@ def append_attention_threads(
     path: Path, told: Mapping[str, tuple[str | None, str | None]], *, origin: str,
     model: str | None, day: str,
 ) -> None:
-    """Append what each key of ``told`` served, as (thread, category) (ADR 0315).
+    """Append what each key of ``told`` served, as (thread, category) (ADR 0331).
 
     A thread of None says the key serves what is around it. Rows are never rewritten: the newest
     of a key is the one read, his over a model's.

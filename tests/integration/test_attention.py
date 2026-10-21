@@ -15,19 +15,22 @@ Checks, input to expected output:
 - ``GET /inherent/day``: every doing stretch tells its own attention, the day before's tail too;
   a planned one tells nothing; with nothing shipped, a stretch tells no attention.
 
-ADR 0315, telling keys:
+ADR 0331, telling keys:
 
-- before a run, the day's untold keys are asked of the threads model first, its gated answer is
-  kept and the page names their threads; a key already told is not asked again;
-- without a threads prompt no key is told; a telling that fails leaves the run standing;
+- the writer's one call is shown the day's untold keys with the threads told so far, and its
+  answer tells them; the told keys are kept and the page names their threads; a key already told
+  is not asked again, and a day with no untold key shows no key at all;
+- a telling refused twice leaves the run standing and its keys untold; each part of the answer is
+  kept from the answer it passed in;
 - his word on a key wins over any model's, whenever it came;
 - the gates: every key told once, by a label asked, a thread is a short name with a category, or
-  null with none.
+  null with none; with no key asked nothing is read.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
@@ -35,7 +38,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis.decision.attention_threads import Asked, ThreadBrief, read_threads
+from jarvis.decision.attention_threads import Asked, read_told
 from jarvis.runtime.doing_day import DayDoing, Lane
 from jarvis.runtime.doing_run import DoingSchedule
 from jarvis.runtime.inherent_loop import _read_day
@@ -43,9 +46,14 @@ from jarvis.state import attention, imports
 from jarvis.state.day_line import DaySources
 from jarvis.state.doing import Doing
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.memory_db import append_attention_threads, attention_threads, open_memory_db
+from jarvis.state.memory_db import (
+    append_attention_threads,
+    attention_threads,
+    latest_doing_run,
+    open_memory_db,
+)
 from jarvis.state.shipments import Shipments
-from scripts import attention_replay
+from scripts import attention_replay, doing_replay
 from tests.support.doing import CLOCKED, World, Writer, tile, world
 
 __all__ = ["world"]  # the doing tests' day, used here as a fixture
@@ -335,25 +343,29 @@ def test_a_planned_stretch_tells_no_attention() -> None:
     assert DayDoing(lane, None, 0, [], {}).served(set())[0]["attention"] is None
 
 
-# --- telling keys (ADR 0315) ---------------------------------------------------------------------
+# --- telling keys (ADR 0331) ---------------------------------------------------------------------
 
-TELL = "say what each key served"
 TOLD = {"Ghostty jarvis": ("Jarvis", "work"), "Claude": (None, None), "WeChat": ("微信", "social")}
+_KEY_LINE = re.compile(r"^(k\d+) (.+?) \| ", re.MULTILINE)
+
+
+def _told_of(prompt: str, answer: dict[str, tuple[str | None, str | None]]) -> list[Any]:
+    """Each new key of ``prompt`` told as ``answer`` says for its name."""
+    section = prompt.partition("\n\nNEW KEYS")[2]
+    return [
+        {"key": label, "thread": answer[name][0], "category": answer[name][1]}
+        for label, name in _KEY_LINE.findall(section)
+    ]
 
 
 def _teller(answer: dict[str, tuple[str | None, str | None]]) -> Any:  # noqa: ANN401
-    """The threads model's answer to a brief: each key whose name is in ``answer`` told so."""
+    """The writer's answer: the day tiled, and each new key whose name is in ``answer`` told so."""
 
     def reply(prompt: str) -> str:
-        if "\nKNOWN THREADS:" not in prompt:
-            return tile(prompt)
-        told = []
-        for line in prompt.splitlines():
-            if line.startswith("k") and " | " in line:
-                label, rest = line.split(" ", 1)
-                thread, category = answer[rest.split(" | ")[0]]
-                told.append({"key": label, "thread": thread, "category": category})
-        return json.dumps({"threads": told}, ensure_ascii=False)
+        said = json.loads(tile(prompt))
+        if "\n\nNEW KEYS" in prompt:
+            said["threads"] = _told_of(prompt, answer)
+        return json.dumps(said, ensure_ascii=False)
 
     return reply
 
@@ -383,70 +395,114 @@ def _page_threads(world: World, now: datetime) -> dict[str, tuple[str | None, in
     return found
 
 
-def _schedule(world: World, client: Writer, *, prompt: str | None = TELL) -> DoingSchedule:
-    settings = CLOCKED.__class__(**{**CLOCKED.__dict__, "threads_prompt": prompt})
+def _schedule(world: World, client: Writer) -> DoingSchedule:
     return DoingSchedule(
-        settings=settings, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
+        settings=CLOCKED, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
         llm_config={}, pricing_table={}, client=client,  # type: ignore[arg-type]
-        threads_client=client,  # type: ignore[arg-type]
     )
 
 
-def test_a_run_first_has_the_new_keys_told_and_the_page_names_their_threads(
+def _stored(world: World) -> dict[str, tuple[str | None, str | None]]:
+    with closing(open_memory_db(world.memory)) as conn:
+        return attention_threads(conn)
+
+
+def test_the_writer_tells_the_new_keys_in_its_run_and_the_page_names_their_threads(
     world: World, tmp_path: Path,
 ) -> None:
-    """Told once before the run; the untitled window goes with Jarvis; asked again: nothing new."""
+    """One call writes the day and tells its keys; later only a new key is asked; none, no list."""
     world = _shipped_world(world, tmp_path)
     assert _page_threads(world, _at(15)) == {
         "Ghostty jarvis": (None, 60), "WeChat": (None, 25), "Claude": (None, 20),
     }
     client = Writer(_teller(TOLD))
     schedule = _schedule(world, client)
-    assert schedule.tidy(_at(15)).startswith("landed")
-    assert client.systems[0] == TELL
-    assert client.systems[1] == CLOCKED.prompt
-    assert "k1 Ghostty jarvis | Mac, 60m, typed 300s, 09:00-10:00" in client.prompts[0]
+    assert schedule.tidy(_at(15)).endswith(", 3 keys told)")
+    assert client.systems == [CLOCKED.prompt]
+    assert "\nk1 Ghostty jarvis | Mac, 60m, typed 300s, 09:00-10:00" in client.prompts[0]
+    assert "KNOWN THREADS (name (category): some of its keys):\n(none yet)" in client.prompts[0]
+    assert _stored(world) == {
+        "mac|Ghostty|jarvis": ("Jarvis", "work"), "mac|Claude|": (None, None),
+        "mac|WeChat|": ("微信", "social"),
+    }
     with closing(open_memory_db(world.memory)) as conn:
-        assert attention_threads(conn) == {
-            "mac|Ghostty|jarvis": ("Jarvis", "work"), "mac|Claude|": (None, None),
-            "mac|WeChat|": ("微信", "social"),
-        }
         models = [row[0] for row in conn.execute("SELECT model FROM attention_threads")]
     assert models == ["fake-haiku"] * 3
     assert _page_threads(world, _at(15)) == {"Jarvis": ("work", 80), "微信": ("social", 25)}
-    # a new key later: only it is asked about
+    # a new key later: only it is asked about, beside the threads told so far
     _ship(tmp_path / "imports", [
         (_at(11, 10), _at(11, 30), {"appName": "Chrome", "domain": "github.com", "id": 9}),
     ])
     client.reply = _teller({**TOLD, "Chrome github.com": ("Jarvis", "work")})
-    assert schedule.tidy(_at(15, 5)).startswith("landed")
-    assert client.systems[2:] == [TELL, CLOCKED.prompt]
-    keys = [line for line in client.prompts[2].splitlines() if line.startswith("k")]
-    assert keys == ["k1 Chrome github.com | Mac, 20m, 11:10-11:30"]
-    assert "- Jarvis (work): Ghostty jarvis" in client.prompts[2]
+    assert schedule.tidy(_at(15, 5)).endswith(", 1 keys told)")
+    assert _KEY_LINE.findall(client.prompts[1]) == [("k1", "Chrome github.com")]
+    assert "\n- Jarvis (work): Ghostty jarvis\n" in client.prompts[1]
     assert _page_threads(world, _at(15, 5))["Jarvis"] == ("work", 100)
+    # under a minute is not asked about: the day is written with no key to tell
+    _ship(tmp_path / "imports", [
+        (_at(11, 40), _at(11, 40) + timedelta(seconds=30), {"appName": "Finder", "id": 10}),
+    ])
+    assert schedule.tidy(_at(15, 10)).startswith("landed")
+    assert "NEW KEYS" not in client.prompts[2]
+    assert "KNOWN THREADS" not in client.prompts[2]
 
 
-def test_without_a_threads_prompt_no_key_is_told(world: World, tmp_path: Path) -> None:
-    """The run alone; the store stays empty and each key is its own thread."""
+def test_a_telling_refused_twice_leaves_the_run_standing_and_its_keys_untold(
+    world: World, tmp_path: Path,
+) -> None:
+    """The run is asked once more for the keys; the spans land, nothing is told."""
     world = _shipped_world(world, tmp_path)
-    client = Writer(_teller(TOLD))
-    assert _schedule(world, client, prompt=None).tidy(_at(15)).startswith("landed")
-    assert client.systems == [CLOCKED.prompt]
-    with closing(open_memory_db(world.memory)) as conn:
-        assert attention_threads(conn) == {}
+    client = Writer(lambda p: json.dumps({**json.loads(tile(p)), "threads": []}))
+    outcome = _schedule(world, client).tidy(_at(15))
+    assert outcome.startswith("landed")
+    assert "keys told" not in outcome
+    assert client.systems == [CLOCKED.prompt, CLOCKED.prompt]
+    assert "keys not told: k1, k2, k3" in client.asked[1][-1]["content"]
+    assert _stored(world) == {}
 
 
-def test_a_telling_that_fails_leaves_the_run_standing(world: World, tmp_path: Path) -> None:
-    """A refused answer twice, then the run: nothing told, the run lands."""
+def test_each_part_of_the_answer_is_kept_from_the_answer_it_passed_in(
+    world: World, tmp_path: Path,
+) -> None:
+    """Keys told in the first answer, the spans of the second: both land."""
     world = _shipped_world(world, tmp_path)
-    client = Writer(lambda p: '{"threads": []}' if "\nKNOWN THREADS:" in p else tile(p))
-    assert _schedule(world, client).tidy(_at(15)).startswith("landed")
-    assert client.systems == [TELL, TELL, CLOCKED.prompt]
-    assert "That answer" not in client.asked[1][-1]["content"]
-    assert "not told: k1" in client.asked[1][-1]["content"]
+    said: list[str] = []
+
+    def reply(prompt: str) -> str:
+        said.append(prompt)
+        if len(said) == 1:
+            return json.dumps({"spans": [], "threads": _told_of(prompt, TOLD)}, ensure_ascii=False)
+        return json.dumps({**json.loads(tile(prompt)), "threads": []})
+
+    client = Writer(reply)
+    assert _schedule(world, client).tidy(_at(15)).endswith(", 3 keys told)")
+    assert 'no "spans" list' in client.asked[1][-1]["content"]
+    assert _stored(world)["mac|Ghostty|jarvis"] == ("Jarvis", "work")
     with closing(open_memory_db(world.memory)) as conn:
-        assert attention_threads(conn) == {}
+        assert latest_doing_run(conn, DAY.isoformat()) is not None
+
+
+def test_the_writer_replay_prints_what_it_told_and_the_attention_by_it(
+    world: World, tmp_path: Path,
+) -> None:
+    """``scripts.doing_replay``: what the writer told and each span's threads; stored unless dry."""
+    world = _shipped_world(world, tmp_path)
+
+    def replay(*, dry_run: bool) -> dict[str, Any]:
+        (found,) = doing_replay.replay(
+            [DAY], world.sources, world.log, world.memory, CLOCKED, Writer(_teller(TOLD)),  # type: ignore[arg-type]
+            _at(15), dry_run=dry_run, pricing_table={},
+        )
+        return found
+
+    found = replay(dry_run=True)
+    assert found["new_keys"] == 3
+    assert "  Ghostty jarvis -> Jarvis [work]" in found["told"]
+    assert "  Claude -> (what is around it)" in found["told"]
+    assert any(" Jarvis [work] mac " in line for line in found["attention"])
+    assert _stored(world) == {}
+    replay(dry_run=False)
+    assert _stored(world)["mac|WeChat|"] == ("微信", "social")
 
 
 def test_his_word_on_a_key_wins_over_any_models(tmp_path: Path) -> None:
@@ -463,17 +519,15 @@ def test_his_word_on_a_key_wins_over_any_models(tmp_path: Path) -> None:
         append_attention_threads(memory, {key: ("x", "rest")}, origin="her", model=None, day="d")
 
 
-_ASKED = ThreadBrief(
-    day="2026-10-07", language="Chinese", zone=VANCOUVER, known=[], projects=[],
-    asked=[Asked("mac|A|", "A", "mac", 1e6, 0, 0, 1), Asked("mac|B|", "B", "mac", 1e6, 0, 0, 1)],
-)
+_ASKED = [Asked("mac|A|", "A", "mac", 1e6, 0, 0, 1), Asked("mac|B|", "B", "mac", 1e6, 0, 0, 1)]
 GATE_CASES = {
     "both told": (
         [{"key": "k1", "thread": " Jarvis ", "category": "work"},
          {"key": "k2", "thread": None, "category": None}],
         {"mac|A|": ("Jarvis", "work"), "mac|B|": (None, None)},
     ),
-    "one left out": ([{"key": "k1", "thread": None, "category": None}], "not told: k2"),
+    "one left out": ([{"key": "k1", "thread": None, "category": None}], "keys not told: k2"),
+    "no list": (None, 'no "threads" list'),
     "a label not asked": ([{"key": "k9", "thread": None, "category": None}], "names no key"),
     "told twice": (
         [{"key": "k1", "thread": None, "category": None},
@@ -493,10 +547,11 @@ GATE_CASES = {
 
 
 @pytest.mark.parametrize("name", GATE_CASES)
-def test_the_gates_on_what_the_model_told(name: str) -> None:
+def test_the_gates_on_what_the_writer_told(name: str) -> None:
     """Every key told once, by an asked label, with a short name and a category, or null."""
     entries, expected = GATE_CASES[name]
-    got = read_threads(json.dumps({"threads": entries}), "stop", _ASKED)
+    answer = json.dumps({"spans": [], **({} if entries is None else {"threads": entries})})
+    got = read_told(answer, "stop", _ASKED)
     if isinstance(expected, str):
         assert isinstance(got, str)
         assert expected in got
@@ -504,10 +559,16 @@ def test_the_gates_on_what_the_model_told(name: str) -> None:
         assert got == expected
 
 
+def test_with_no_key_asked_nothing_is_told_whatever_the_answer_holds() -> None:
+    """No new key: no list is needed, and one given is not read."""
+    assert read_told('{"spans": []}', "stop", []) == {}
+    assert read_told('{"threads": [{"key": "k1"}]}', "stop", []) == {}
+
+
 def test_the_replay_prints_each_stretch_with_where_his_attention_went(
     world: World, tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``scripts.attention_replay`` without ``--tell``: no model, the page's stretches as text."""
+    """``scripts.attention_replay``: no model, the page's stretches as text."""
     world = _shipped_world(world, tmp_path)
     assert attention_replay.main([
         "--date", DAY.isoformat(), "--event-log", str(world.log), "--memory-db",
