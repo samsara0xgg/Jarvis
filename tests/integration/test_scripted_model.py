@@ -101,6 +101,14 @@ def test_a_reply_without_usage_reports_none_and_a_failure_raises_what_it_holds()
     assert len(model.requests) == 2
 
 
+def test_a_reply_can_carry_the_providers_body_and_one_that_does_not_has_none() -> None:
+    """A caller that reads more than text and calls (deep search) is scripted with its body."""
+    body = {"content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn"}
+    model = ScriptedModel(Reply(raw=body), "plain")
+    assert model.chat(messages=_MESSAGES, system="s").raw == body
+    assert model.chat(messages=_MESSAGES, system="s").raw == {}
+
+
 def test_the_last_usage_is_what_the_client_reports_after_a_chat() -> None:
     """The cost guard reads it from the client."""
     model = ScriptedModel(Reply("ok", usage=Usage(input_tokens=100, output_tokens=7)))

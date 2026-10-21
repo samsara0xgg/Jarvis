@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from jarvis.decision.llm_session import LLMSessionFactory
+from jarvis.decision.llm import ChatResult
 from jarvis.execution import tools
 from jarvis.execution.tools import (
     DeepFindings,
@@ -25,6 +25,7 @@ from jarvis.runtime.deep_search import (
     build_deep_search,
     findings_from,
 )
+from tests.support.model import Reply, ScriptedModel, ScriptedSessions
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -162,8 +163,15 @@ def test_quick_stays_quick_even_with_a_deep_backend(
 # --- the deep backend's reading of Anthropic's response ----------------------------
 
 
-def _result(raw: dict[str, Any], finish_reason: str | None = "end_turn") -> Any:  # noqa: ANN401
-    return SimpleNamespace(raw=raw, finish_reason=finish_reason)
+def _result(raw: dict[str, Any], finish_reason: str | None = "end_turn") -> ChatResult:
+    return ChatResult(
+        text=None,
+        tool_calls=(),
+        finish_reason=finish_reason,
+        input_tokens=None,
+        output_tokens=None,
+        raw=raw,
+    )
 
 
 def _page(url: str, title: str) -> dict[str, Any]:
@@ -307,31 +315,22 @@ def test_the_builder_wants_an_anthropic_preset_on_anthropics_own_host() -> None:
     assert build_deep_search({}) is None
 
 
-class _FakeClient:
-    def __init__(self, raw: dict[str, Any]) -> None:
-        self.raw = raw
-        self.requests: list[dict[str, Any]] = []
-
-    def chat(self, **request: Any) -> Any:  # noqa: ANN401
-        self.requests.append(request)
-        return _result(self.raw)
-
-
-def test_research_sends_the_question_with_the_server_search_tool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_research_sends_the_question_with_the_server_search_tool() -> None:
     """One request: the question as the user turn, Anthropic's web search tool at max_uses."""
-    client = _FakeClient(_transcript())
+    model = ScriptedModel(Reply(raw=_transcript()))
+    sessions = ScriptedSessions(
+        model,
+        {"provider": "anthropic", "default_preset": "sonnet", "presets": {"sonnet": _ANTHROPIC}},
+    )
     config = _config(_ANTHROPIC)
     config["tools"]["web"]["deep_max_uses"] = 6
-    deep = build_deep_search(config)
+    deep = build_deep_search(config, sessions=sessions)
     assert deep is not None
-    monkeypatch.setattr(LLMSessionFactory, "create", lambda *_a, **_k: client)
     findings = deep.research("A or B?")
-    (request,) = client.requests
-    assert request["messages"] == [{"role": "user", "content": "A or B?"}]
-    assert request["tools"] == [
+    (request,) = model.requests
+    assert request.messages == [{"role": "user", "content": "A or B?"}]
+    assert request.tools == [
         {"type": "web_search_20260209", "name": "web_search", "max_uses": 6},
     ]
-    assert "language of the question" in request["system"]
+    assert "language of the question" in request.system
     assert findings.summary == "A costs 10 yuan. B costs 12."

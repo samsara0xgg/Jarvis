@@ -186,14 +186,14 @@ class _RequestScopedDeepSearch:
 
     def __init__(
         self,
-        llm_config: Mapping[str, Any],
+        sessions: LLMSessionFactory,
         *,
         max_uses: int,
         event_log_path: Path | None,
         pricing_path: Path | None,
     ) -> None:
-        self._factory = LLMSessionFactory(llm_config)
-        self._snapshot = self._factory.snapshot()
+        self._factory = sessions
+        self._snapshot = sessions.snapshot()
         self._max_uses = max_uses
         self._event_log_path = event_log_path
         self._pricing = {} if pricing_path is None else load_pricing_table(pricing_path)
@@ -243,12 +243,16 @@ def build_deep_search(
     event_log_path: Path | None = None,
     pricing_path: Path | None = None,
     account_cost: bool = False,
+    sessions: LLMSessionFactory | None = None,
 ) -> DeepSearch | None:
     """Build the `web_search` deep seam from `tools.web.deep_preset` / `deep_max_uses`.
 
     `None` when that preset is absent, malformed, or not Anthropic on Anthropic's
     host: `web_search` then answers a deep request with a wider quick search. A
     missing deep search is one optional capability off, so it never fails boot.
+
+    `sessions` mints each request's client: omitted, the real factory over the deep
+    preset; a test hands the scripted model's.
     """
     web = _web_block(config)
     raw_preset = web.get("deep_preset")
@@ -285,7 +289,7 @@ def build_deep_search(
         message = "deep search accounting requires an Event Log path"
         raise ValueError(message)
     return _RequestScopedDeepSearch(
-        llm_config,
+        LLMSessionFactory(llm_config) if sessions is None else sessions,
         max_uses=max_uses,
         event_log_path=event_log_path if account_cost else None,
         pricing_path=pricing_path,

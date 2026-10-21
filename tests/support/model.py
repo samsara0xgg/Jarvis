@@ -164,12 +164,18 @@ class Usage:
 
 @dataclass(frozen=True)
 class Reply:
-    """One response: text, tool calls, or both. ``usage=None`` is a response that reports none."""
+    """One response: text, tool calls, or both. ``usage=None`` is a response that reports none.
+
+    ``raw`` is the provider's own response body, which ``chat`` returns as ``ChatResult.raw``: a
+    caller that reads more than the text and the calls (deep search reads Anthropic's server-tool
+    transcript) is scripted with the body it reads.
+    """
 
     text: str | None = None
     calls: tuple[Call, ...] = ()
     usage: Usage | None = field(default_factory=Usage)
     chunk: int | None = None  # a stream delivers the text in pieces of this many characters
+    raw: Mapping[str, Any] = field(default_factory=dict)  # the provider's body, for a reader of it
 
     @property
     def finish_reason(self) -> str:
@@ -420,7 +426,7 @@ class ScriptedModel:
             finish_reason=step.finish_reason,
             input_tokens=usage.input_tokens if usage else None,
             output_tokens=usage.output_tokens if usage else None,
-            raw={},
+            raw=copy.deepcopy(step.raw),
             model_used=self.model,
             tokens_in=usage.input_tokens if usage else 0,
             tokens_out=usage.output_tokens if usage else 0,
