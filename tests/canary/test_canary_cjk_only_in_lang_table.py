@@ -112,6 +112,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_BOC_PAGE_WORDS", "_BOC_CURRENCY", "_boc_cells"}
     ),
     "jarvis/state/work_state.py": frozenset({"_STOP_WORDS", "_TERM", "_CJK_RUN"}),
+    # A mail is read for the words mail programs write into it in Chinese: a forward's header and
+    # subject prefix, and the line that says who wrote the lines quoted below it (ADR 0363).
+    "jarvis/state/mail_text.py": frozenset({"_FORWARD_WORDS", "_FORWARD_SUBJECT", "_ATTRIBUTION"}),
     # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).
     "jarvis/state/timesink_moment.py": frozenset({"call_app"}),
     "jarvis/surface/sentence_splitter.py": frozenset({"_DELIMITERS"}),
