@@ -16,8 +16,9 @@ Each source folds on its own and a source that raises leaves its items out (:fun
   its ``stages`` and a workout its ``activity``, ``energy_kcal``, ``distance_m`` and ``avg_hr``
   where Health knew them;
 - ``reminders``: the fold of ADR 0179;
-- ``rides``: the bus rides he was on (ADR 0224); one replaces the phone's generic automotive
-  ``move`` for the span it covers;
+- ``rides``: the bus rides he was on (ADR 0224); one replaces the phone's automotive or unnamed
+  ``move`` it covers for half its span or more, and takes its time from every other stay and
+  move (ADR 0330), so no two items of the place line share a minute;
 - ``mac``: work blocks and calls from TimeSink, read through the ledger's own loading
   (:func:`jarvis.state.ledger.window_activity`) so the numbers are the ones she is told; when
   TimeSink cannot be read live, or has nothing for the stretch, the rows the Mac terminal shipped
@@ -112,7 +113,16 @@ from jarvis.state import rides as ride_state
 from jarvis.state.attachments import Attachments
 from jarvis.state.import_parsers import money
 from jarvis.state.ledger import CALL_FLOOR_S, TOP_FLOOR_S, shipped_activity, window_activity
-from jarvis.state.phone_day import CUT_FROM_KEY, LOOKBACK_MS, read_rows, sleeps, stays, workouts
+from jarvis.state.phone_day import (
+    CUT_FROM_KEY,
+    LOOKBACK_MS,
+    Span,
+    read_rows,
+    sleeps,
+    stays,
+    uncovered,
+    workouts,
+)
 from jarvis.state.phone_day import moves as phone_moves
 
 if TYPE_CHECKING:
@@ -270,7 +280,7 @@ def fold_day(
         for row in items if row["kind"] == "label"
     ]
     items = _without_pin_rings([row for row in items if row["kind"] != "label"])
-    items = _without_ridden_moves(items, now_ms)
+    items = _around_rides(items, start_ms, end_ms, now_ms)
     items.sort(key=lambda item: (item["start_ms"], item["id"]))
     try:
         synced = _screen_synced(sources, min(end_ms, now_ms))
@@ -356,21 +366,49 @@ def _ride_items(
     ]
 
 
-def _without_ridden_moves(items: list[dict[str, Any]], now_ms: int) -> list[dict[str, Any]]:
-    """Drop each automotive or unnamed move a ride covers for half its span or more (ADR 0224)."""
-    spans = [(i["start_ms"], now_ms if i["end_ms"] is None else i["end_ms"])
-             for i in items if i["kind"] == "ride"]
-    if not spans:
+def _around_rides(
+    items: list[dict[str, Any]], window_start: int, window_end: int, now_ms: int,
+) -> list[dict[str, Any]]:
+    """The stays and moves less the time his rides cover (ADR 0224, ADR 0330).
+
+    An automotive or unnamed move a ride covers for half its span or more is that ride, and is
+    dropped. Every other stay and move gives the ride the time they share: each piece left that
+    overlaps the window keeps its fields and state for its own span, the first keeps the id and a
+    later one adds ``@`` and its start; one with nothing left is dropped.
+    """
+    rides = [
+        Span((0, str(i["id"])), "ride", i["start_ms"], i["end_ms"], {})
+        for i in items if i["kind"] == "ride"
+    ]
+    if not rides:
         return items
 
     def ridden(move: dict[str, Any]) -> bool:
         start, end = move["start_ms"], now_ms if move["end_ms"] is None else move["end_ms"]
-        shared = sum(max(0, min(end, b) - max(start, a)) for a, b in spans)
+        shared = sum(
+            max(0, min(end, now_ms if r.end is None else r.end) - max(start, r.start))
+            for r in rides
+        )
         return move["kind"] == "move" and move.get("activity") in {None, "automotive"} and (
             2 * shared >= end - start
         )
 
-    return [i for i in items if not ridden(i)]
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        if item["kind"] not in {"stay", "move"}:
+            kept.append(item)
+        elif not ridden(item):
+            kept.extend(
+                {
+                    **item, "id": item["id"] if number == 0 else f"{item['id']}@{first}",
+                    "start_ms": first, "end_ms": last, "state": _state(first, last, now_ms),
+                }
+                for number, (first, last) in enumerate(
+                    uncovered(item["start_ms"], item["end_ms"], rides),
+                )
+                if _overlaps(first, last, window_start, window_end)
+            )
+    return kept
 
 
 # --- the things and the pinned departures --------------------------------------------------

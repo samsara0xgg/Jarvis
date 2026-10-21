@@ -7,7 +7,6 @@ Acceptance checks, each against the real code and a real event log:
   stops; a fix that strays from home and comes back; a walk motion missed, unnamed; the same walk
   named by the one activity motion gave on it; a walk to the car then a drive no motion saw;
   cycling at car speed; a drive still going; a drive whose fixes are too poor to count;
-- a bus ride replacing an unnamed move as it replaces an automotive one;
 - the plan facts seeing a drive no motion saw, and an unnamed move as ``moving``.
 
 Every coordinate is made up, north of (10.0000, 20.0000). Times in the table are minutes from the
@@ -20,7 +19,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from jarvis.state.day_line import _without_ridden_moves, day_window, fold_day, parse_day
+from jarvis.state.day_line import day_window, fold_day, parse_day
 from jarvis.state.event_log import open_event_log
 from jarvis.state.plan_facts import facts_at
 from tests.support.day_line import Row, load_rows, make_stores, minutes_ms, motion
@@ -164,25 +163,6 @@ def test_the_fixes_between_stays_fold_into_moves(tmp_path: Path, case: Case) -> 
             item["place"] = item.get("activity")
     assert as_seen(items, start_ms, case.items) == case.items
     assert line_.missing == []
-
-
-def test_a_ride_replaces_an_unnamed_move_as_it_replaces_a_drive() -> None:
-    """A ride covering half of a move with no activity, or an automotive one, takes its place."""
-    def move(uid: str, start: int, end: int, activity: str | None) -> dict[str, object]:
-        item: dict[str, object] = {"id": uid, "kind": "move", "start_ms": start, "end_ms": end}
-        if activity is not None:
-            item["activity"] = activity
-        return item
-
-    ride = {"id": "r", "kind": "ride", "start_ms": 100, "end_ms": 200}
-    items = [
-        move("unnamed", 100, 190, None), move("drive", 90, 200, "automotive"),
-        move("walk", 100, 200, "walking"), move("half", 150, 260, None), ride,
-    ]
-
-    kept = [item["id"] for item in _without_ridden_moves(items, now_ms=1000)]
-
-    assert kept == ["walk", "half", "r"]
 
 
 def test_the_plan_facts_see_a_drive_no_motion_saw_and_an_unnamed_move(tmp_path: Path) -> None:

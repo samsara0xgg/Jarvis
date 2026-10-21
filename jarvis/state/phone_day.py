@@ -25,7 +25,7 @@ from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
     from jarvis.shared import Event
 
@@ -54,6 +54,12 @@ to decide he has not moved."""
 STAY_MIN_MS: Final = 5 * _MINUTE_MS
 """A stay cut from fixes, or what a visit leaves of one, shorter than this is dropped; one with no
 end yet is measured to now."""
+JOIN_GAP_MS: Final = _MINUTE_MS
+"""Stays within :data:`STAY_RADIUS_M` of each other, the next starting this soon after one ends,
+are one stretch at one place that no move cuts through: iOS splits a visit back to back, a second
+apart (ADR 0330)."""
+ON_FOOT: Final = frozenset({"walking", "running", "cycling"})
+"""A visit wholly inside a move of one of these is dropped; inside a drive, it is a stop."""
 PATH_GAP_MS: Final = 5 * _MINUTE_MS
 """Fixes outside the stays this close are one path, and a path reaches a stay this close to its
 nearest fix: the phone sends a fix every 30 to 60 s while he moves (ADR 0316)."""
@@ -227,7 +233,7 @@ def _runs(fixes: list[Event]) -> list[list[_Fix]]:
     return runs
 
 
-def _uncovered(start: int, end: int | None, held: list[Span]) -> list[tuple[int, int | None]]:
+def uncovered(start: int, end: int | None, held: Sequence[Span]) -> list[tuple[int, int | None]]:
     """``[start, end)`` without the time any of ``held`` covers, as the pieces left in order."""
     pieces: list[tuple[int, int | None]] = [(start, end)]
     for visit in held:
@@ -261,11 +267,11 @@ def _off_moves(first: int, last: int | None, going: list[Span]) -> tuple[int, in
     return first, last
 
 
-def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
+def _cut_stays(rows: PhoneRows, held: list[Span], going: list[Span], now_ms: int) -> list[Span]:
     """The stays the fixes show where no visit in ``held`` covers the time (ADR 0301).
 
     A run of fixes is a stay from its first fix to the moment he left. When a next run exists he
-    left at the start of the last move (as :func:`moves` counts them) that starts after this run's
+    left at the start of the last of motion's moves (``going``) that starts after this run's
     last fix and before the next run's first fix, the move that carried him away, else at that
     first fix: a short walk about the flat at night does not end the stay. A run with no next run
     is open, whatever moves follow its last fix. What a visit covers is cut out of it, a move that
@@ -275,7 +281,6 @@ def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
     as its id; a later one, which a visit in the middle makes, adds ``@`` and its start.
     """
     runs = _runs(rows.fixes)
-    going = _long_moves(rows.motions, now_ms)
     starts = [move.start for move in going]
     found: list[Span] = []
     for index, run in enumerate(runs):
@@ -297,7 +302,7 @@ def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
         place, uid = run[0].origin
         kept = [
             piece for piece in (
-                _off_moves(first, last, going) for first, last in _uncovered(run[0].at, left, held)
+                _off_moves(first, last, going) for first, last in uncovered(run[0].at, left, held)
             )
             if (now_ms if piece[1] is None else piece[1]) - piece[0] >= STAY_MIN_MS
             and not any(
@@ -312,15 +317,70 @@ def _cut_stays(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
     return found
 
 
+def _joined(held: Iterable[Span]) -> list[Span]:
+    """``held`` in start order, each run at one place that touches joined (:data:`JOIN_GAP_MS`).
+
+    A stay joins the one before it when it starts at most :data:`JOIN_GAP_MS` after that one
+    ends and its centre lies within :data:`STAY_RADIUS_M` of that one's; the joined span keeps the
+    first's id and fields.
+    """
+    joined: list[Span] = []
+    last: Span | None = None
+    for stay in sorted(held, key=lambda one: one.start):
+        if (
+            last is not None
+            and joined[-1].end is not None
+            and stay.start - joined[-1].end <= JOIN_GAP_MS
+            and metres(
+                (last.fields["lat"], last.fields["lng"]), (stay.fields["lat"], stay.fields["lng"]),
+            ) <= STAY_RADIUS_M
+        ):
+            end = None if stay.end is None else max(joined[-1].end, stay.end)
+            joined[-1] = replace(joined[-1], end=end)
+        else:
+            joined.append(stay)
+        last = stay
+    return joined
+
+
+def _within(move: Span, spans: Iterable[Span]) -> bool:
+    return any(span.start <= move.start and _reach(move.end) <= _reach(span.end) for span in spans)
+
+
+def _given_way(visits: list[Span], going: list[Span]) -> list[Span]:
+    """The visits less the minutes motion's moves (``going``) take from them (ADR 0330).
+
+    iOS dates an arrival and a departure after the fact, often a minute or more off, while motion
+    reports a move as it happens: a move that crosses a visit's start or end keeps the minutes
+    they share (:func:`_off_moves`), as it does a cut stay's, unless the move lies wholly inside
+    visits at one place that touch (:func:`_joined`). A visit wholly inside a move on foot
+    (:data:`ON_FOOT`) is dropped, as a cut stay is; one inside a drive is a stop, and is kept.
+    """
+    crossing = [move for move in going if not _within(move, _joined(visits))]
+    kept: list[Span] = []
+    for visit in visits:
+        first, last = _off_moves(visit.start, visit.end, crossing)
+        if not _within(
+            replace(visit, start=first, end=last),
+            (move for move in crossing if move.fields["activity"] in ON_FOOT),
+        ):
+            kept.append(replace(visit, start=first, end=last))
+    return kept
+
+
 def stays(rows: PhoneRows, now_ms: int) -> list[Span]:
     """Where he was, in start order: the visits and, where no visit covers the time, the fixes.
 
-    The visits are what iOS reported (:func:`_visit_stays`); the rest is cut from the fixes
-    (:func:`_cut_stays`) and carries :data:`CUT_FROM_KEY`. A stay with no end yet is measured to
-    ``now_ms``.
+    The visits are what iOS reported (:func:`_visit_stays`) less what motion's moves take from
+    them (:func:`_given_way`); the rest is cut from the fixes (:func:`_cut_stays`) and carries
+    :data:`CUT_FROM_KEY`. No stay shares a minute with a move of :func:`moves`. A stay with no
+    end yet is measured to ``now_ms``.
     """
-    seen = _visit_stays(rows.visits)
-    return sorted([*seen, *_cut_stays(rows, seen, now_ms)], key=lambda stay: stay.start)
+    going = _long_moves(rows.motions, now_ms)
+    seen = _given_way(_visit_stays(rows.visits), going)
+    return sorted(
+        [*seen, *_cut_stays(rows, seen, going, now_ms)], key=lambda stay: stay.start,
+    )
 
 
 def _reach(end: int | None) -> float:
@@ -345,12 +405,15 @@ def _segments(events: list[Event]) -> list[Span]:
     return found
 
 
-def _merged(found: Iterable[Span], now_ms: int, *, first_row: bool) -> list[Span]:
+def _merged(
+    found: Iterable[Span], now_ms: int, *, first_row: bool, held: Sequence[Span] = (),
+) -> list[Span]:
     """Moves of one activity (or of none) within :data:`MOVE_MERGE_GAP_MS` joined, short ones out.
 
-    ``found`` is in start order. A joined move keeps the id of the row reported first when
-    ``first_row``, else of the move that starts first; one shorter than :data:`MOVE_MIN_MS` is
-    dropped, and one with no end yet is measured to now.
+    ``found`` is in start order. Two moves with a stay of ``held`` between them stay apart. A
+    joined move keeps the id of the row reported first when ``first_row``, else of the move that
+    starts first; one shorter than :data:`MOVE_MIN_MS` is dropped, and one with no end yet is
+    measured to now.
     """
     merged: list[Span] = []
     for move in found:
@@ -360,6 +423,9 @@ def _merged(found: Iterable[Span], now_ms: int, *, first_row: bool) -> list[Span
             and last.fields.get("activity") == move.fields.get("activity")
             and last.end is not None
             and move.start - last.end <= MOVE_MERGE_GAP_MS
+            and not any(
+                stay.start < move.start and _reach(stay.end) > last.end for stay in held
+            )
         ):
             merged[-1] = replace(
                 last,
@@ -496,7 +562,7 @@ def _path_moves(rows: PhoneRows, held: list[Span], going: list[Span], now_ms: in
             if segment.start < stop and _reach(segment.end) > path.start
         ]
         said = {segment.fields["activity"] for segment in on_path}
-        for first, last in _uncovered(path.start, path.end, going):
+        for first, last in uncovered(path.start, path.end, going):
             if "cycling" not in said and _ridden(path.points, first, last):
                 activity: str | None = "automotive"
             else:
@@ -515,19 +581,25 @@ def moves(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
     """How he got about: motion's moves and the paths his fixes show, less those inside a stay.
 
     Motion's moves (:func:`_long_moves`) and the uncovered parts of the paths
-    (:func:`_path_moves`), merged as motion's segments are (:func:`_merged`); a move with no
-    activity merges only with another with none. ``held`` are his stays, visits and cut ones
-    alike; a move wholly inside one, a stay still going included, is dropped.
+    (:func:`_path_moves`), merged as motion's segments are (:func:`_merged`), but never across a
+    stay; a move with no activity merges only with another with none. ``held`` are his stays
+    (:func:`stays`), visits and cut ones alike, with those at one place that touch joined
+    (:func:`_joined`). A move gives them the time it shares with them (ADR 0330): one wholly
+    inside one, a stay still going included, is dropped, and a drive with a stop inside is cut
+    in two around it, the later piece's id adding ``@`` and its start.
     """
     going = _long_moves(rows.motions, now_ms)
     found = sorted([*going, *_path_moves(rows, held, going, now_ms)], key=lambda move: move.start)
-    return [
-        move
-        for move in _merged(found, now_ms, first_row=False)
-        if not any(
-            stay.start <= move.start and _reach(move.end) <= _reach(stay.end) for stay in held
+    places = _joined(held)
+    pieces: list[Span] = []
+    for move in _merged(found, now_ms, first_row=False, held=held):
+        place, uid = move.origin
+        pieces.extend(
+            replace(move, origin=(place, uid if number == 0 else f"{uid}@{first}"), start=first,
+                    end=last)
+            for number, (first, last) in enumerate(uncovered(move.start, move.end, places))
         )
-    ]
+    return pieces
 
 
 def sleeps(events: Iterable[Event]) -> list[Span]:

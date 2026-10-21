@@ -277,7 +277,8 @@ CASES: list[Case] = [
         [move("m1", "walking", 480, 495, "done"), move("m3", "running", 600, 615, "done")],
     ),
     Case(
-        "a move inside one stay is dropped and a move that reaches outside is kept",
+        "a move inside one stay is dropped, and one that reaches outside keeps the minutes it "
+        "shares with the stay (ADR 0330)",
         [
             visit("s1", 540, 660, "Library"),
             motion("in1", "walking", 545, 555),
@@ -289,7 +290,7 @@ CASES: list[Case] = [
         ],
         [
             move("before", "automotive", 530, 538, "done"),
-            stay("s1", 540, 660, "done", "Library"),
+            stay("s1", 540, 650, "done", "Library"),
             move("across", "walking", 650, 680, "done"),
             move("out", "cycling", 700, 720, "done"),
         ],
