@@ -1,0 +1,29 @@
+{
+  "id": "receipt-bus-get-off-two-stops",
+  "tool": "bus",
+  "said": "tell me when we get to Douglas",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "ride": {
+    "route": "14",
+    "trip_id": "trip-14-1",
+    "stops": [
+      {"seq": 1, "stop_id": "s1", "name": "Hillside Mall", "lat": 48.4410, "lng": -123.3470},
+      {"seq": 2, "stop_id": "s2", "name": "Douglas at Johnson", "lat": 48.4290, "lng": -123.3660},
+      {"seq": 3, "stop_id": "s3", "name": "Douglas at Hillside", "lat": 48.4400, "lng": -123.3630}
+    ]
+  },
+  "setup": [],
+  "args": {"get_off": "Douglas"},
+  "recording": null,
+  "expect": {
+    "summary_must": ["More than one stop matches"],
+    "result": [
+      {"path": "candidates", "op": "len", "value": 2},
+      {"path": "set", "op": "eq", "value": false}
+    ],
+    "receipt": {"status": "needs_choice", "reads_only": false},
+    "events_after": {"must": ["action.result_observed"], "must_not": ["ride.alight_set"]}
+  }
+}

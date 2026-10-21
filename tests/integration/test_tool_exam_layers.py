@@ -51,9 +51,16 @@ RESULTS = [
     ('{"summary": "ok", "sha": "' + "a" * 40 + '"}', ["sha holds a hash"]),
     ('{"summary": "' + "x" * 4100 + '"}', ["over about 4000"]),
     ('{"summary": "line one\\nline two"}', ["not one speakable line"]),
-    ('{"error": "No stop by that name. Try another name.", "code": "retry_other_args"}', []),
-    ('{"error": "bad", "code": "invalid_arguments"}', ["not one of the four kinds"]),
-    ('{"error": "", "code": "impossible"}', ["error text is empty"]),
+    (
+        '{"error": "No stop by that name. Try another name.", '
+        '"code": "not_found", "kind": "retry_other_args"}',
+        [],
+    ),
+    (
+        '{"error": "bad", "code": "invalid_arguments", "kind": "oops"}',
+        ["not one of the four kinds"],
+    ),
+    ('{"error": "", "code": "closed", "kind": "impossible"}', ["error text is empty"]),
 ]
 
 

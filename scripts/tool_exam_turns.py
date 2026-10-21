@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     import argparse
     from collections.abc import Callable, Collection, Mapping
 
-    from jarvis.execution.tools import FlatHandler, ToolContext
+    from jarvis.execution.tools import FlatHandler, Receipted, ToolContext
     from jarvis.runtime import JarvisRuntime
 
 BRAIN_SETTINGS = Path("~/.jarvis/backups/cutover-prep/settings.brain.yaml").expanduser()
@@ -184,8 +184,8 @@ def _stub_deep_search(runtime: JarvisRuntime) -> None:
 
             def guarded(
                 args: Mapping[str, Any], ctx: ToolContext, inner: FlatHandler = inner
-            ) -> dict[str, Any]:
-                return dict(_STUB_DEEP) if args.get("depth") == "deep" else dict(inner(args, ctx))
+            ) -> Mapping[str, Any] | Receipted:
+                return dict(_STUB_DEEP) if args.get("depth") == "deep" else inner(args, ctx)
 
             with registry._lock:  # noqa: SLF001
                 registry._tools["web_search"] = replace(tool, handler=guarded)  # noqa: SLF001

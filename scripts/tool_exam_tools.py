@@ -20,6 +20,9 @@ An item (JSON, one per file) holds his words and the moment, place and data they
   ``mac_events.db`` / ``memory.db`` (copied before the boot) and/or ``mac_events.sql`` /
   ``memory.sql`` (run after it). Rows made at or after ``at`` are deleted from the copied
   databases first (:func:`cut_at`); the run prints the tables that cut could not handle.
+- ``ride``: optional, a followed bus ride he is on at ``at``:
+  ``{route, trip_id, stops: [{seq, stop_id, name, lat, lng}]}``; the follower's timetable for the
+  trip is those stops.
 - ``setup``: earlier calls, ``[{tool, args}]``, made through the same dispatcher.
 - ``recording``: path (relative to the item's directory) of what each provider answered, or null.
   A provider call the recording lacks fails the item.
@@ -34,6 +37,8 @@ An item (JSON, one per file) holds his words and the moment, place and data they
     lists) or one value for a single-cell query.
   - ``events_after``: ``{must[], must_not[]}``; an entry is an event type, or
     ``{type, payload_matches}`` (a regex on the payload), among events the call wrote.
+  - ``receipt``: fields the call's receipt must hold (ADR 0319), e.g.
+    ``{"status": "needs_choice"}``.
   - ``error_kind``: the kind the call must fail with (``needs_him``, ``impossible``,
     ``retry_other_args`` or ``dont_retry``); without it an error fails the item.
   - ``checker``: name of a reference checker in ``scripts/tool_exam_checkers.py`` that derives the
@@ -89,6 +94,9 @@ from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.runtime import bootstrap_runtime_app
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event
+from jarvis.state.ride_progress import StopTime
+from jarvis.state.rides import Ride
+from jarvis.state.rides import write_start as write_ride_start
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -165,12 +173,12 @@ def result_problems(  # noqa: C901 - one pass over every rule of the spec
 
 def _error_problems(decoded: Mapping[str, Any]) -> list[str]:
     """An error says what happened and what to do next, and is one of the four kinds."""
-    text, code = decoded.get("error"), decoded.get("code")
+    text, kind = decoded.get("error"), decoded.get("kind")
     problems = []
     if not isinstance(text, str) or not text.strip():
         problems.append("error text is empty")
-    if code not in ERROR_KINDS:
-        problems.append(f"error code {code!r} is not one of the four kinds {ERROR_KINDS}")
+    if kind not in ERROR_KINDS:
+        problems.append(f"error kind {kind!r} is not one of the four kinds {ERROR_KINDS}")
     return problems
 
 
@@ -798,6 +806,7 @@ def sandbox(
                 raise SystemExit(msg)
             if runtime.rides is not None:
                 runtime.rides.defer = lambda _fn: None
+                _seat_ride(runtime, item.raw.get("ride"), moment)
             for script in sql:
                 runtime.conn.executescript(script.read_text(encoding="utf-8"))
             _place_him(runtime, item.raw.get("here"), moment)
@@ -806,6 +815,28 @@ def sandbox(
         if runtime is not None:
             runtime.conn.close()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _seat_ride(runtime: JarvisRuntime, ride: Mapping[str, Any] | None, moment: datetime) -> None:
+    """Put him on a followed bus ride as ``ride`` says, its timetable the stops given."""
+    if not ride or runtime.rides is None:
+        return
+    now_ms = int(moment.timestamp() * 1000)
+    stops = [
+        StopTime(
+            int(s["seq"]), str(s["stop_id"]), str(s["name"]), float(s["lat"]), float(s["lng"]),
+            now_ms + int(s["seq"]) * 60_000,
+        )
+        for s in ride["stops"]
+    ]
+    runtime.rides._timetable = lambda *_args: stops  # type: ignore[method-assign]  # noqa: SLF001
+    write_ride_start(
+        runtime.conn,
+        Ride(
+            ride_id="ride-exam", route=str(ride["route"]), source="said", started_at_ms=now_ms,
+            trip_id=str(ride["trip_id"]), scheduled_end_ms=stops[-1].sched_ms,
+        ),
+    )
 
 
 def _place_him(runtime: JarvisRuntime, here: Mapping[str, Any] | None, moment: datetime) -> None:
@@ -1016,6 +1047,23 @@ def _events_since(box: Box, after: int) -> list[tuple[str, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def _receipt_failures(
+    want: Mapping[str, Any] | None, events: Sequence[tuple[str, str]],
+) -> list[str]:
+    """Where the call's receipt (ADR 0319) differs from the fields ``expect.receipt`` holds."""
+    if want is None:
+        return []
+    rows = [json.loads(p) for t, p in events if t == "action.result_observed"]
+    if len(rows) != 1 or not isinstance(rows[0].get("receipt"), dict):
+        return [f"expected one result row with a receipt, got {len(rows)} row(s)"]
+    got = rows[0]["receipt"]
+    return [
+        f"receipt {key}: expected {value!r}, got {got.get(key)!r}"
+        for key, value in want.items()
+        if got.get(key) != value
+    ]
+
+
 def _check_events(spec: Mapping[str, Any], events: Sequence[tuple[str, str]]) -> list[str]:
     def seen(entry: str | Mapping[str, Any]) -> bool:
         kind, pattern = (
@@ -1089,8 +1137,8 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
         failures.append(f"the call failed: {out.get('code')}: {str(out['error'])[:120]}")
     elif kind and not errored:
         failures.append(f"expected an error of kind {kind}, got a result")
-    elif kind and out.get("code") != kind:
-        failures.append(f"expected error kind {kind}, got code {out.get('code')!r}")
+    elif kind and out.get("kind") != kind:
+        failures.append(f"expected error kind {kind}, got {out.get('kind')!r}")
     said = str(out.get("error") if errored else out.get("summary", ""))
     failures += [
         f"summary lacks /{p}/: {said[:120]!r}"
@@ -1109,6 +1157,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
         for text in expect.get("result_must_not_mention", ())
         if text.lower() in shown
     ]
+    failures += _receipt_failures(expect.get("receipt"), _events_since(box, after))
     failures += state_failures(box, expect.get("state_after", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
     if name := expect.get("checker"):

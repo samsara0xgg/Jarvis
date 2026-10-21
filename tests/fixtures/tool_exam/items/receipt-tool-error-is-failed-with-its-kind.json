@@ -1,0 +1,17 @@
+{
+  "id": "receipt-tool-error-is-failed-with-its-kind",
+  "tool": "schedule",
+  "said": "do the thing to my calendar",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [],
+  "args": {"action": "explode"},
+  "recording": null,
+  "expect": {
+    "error_kind": "retry_other_args",
+    "summary_must": ["action must be one of"],
+    "receipt": {"status": "failed", "reads_only": false, "failure": "retry_other_args", "derived": true},
+    "events_after": {"must": ["action.result_observed"], "must_not": ["thing.added"]}
+  }
+}
