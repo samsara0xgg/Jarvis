@@ -504,7 +504,7 @@ def test_the_audio_is_written_after_the_utterance_is_sent_under_the_name_it_carr
     started = time.monotonic()
     pipeline.run_turn(
         audio_bytes=np.full(16_000, 10_000, dtype="<i2").tobytes(), turn_id="T1",
-        channel="inherent_wake", language="zh-CN", lock_already_held=False, wake_lead=False,
+        channel="inherent_wake", language="zh-CN", wake_lead=False,
     )
     assert time.monotonic() - started < 0.25
     assert order == ["sent"]

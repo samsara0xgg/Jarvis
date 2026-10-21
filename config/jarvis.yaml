@@ -1195,14 +1195,8 @@ realtime:
   # hey_jarvis v2).  Its score is near-binary: a bare "Jarvis" <= 0.03, a
   # connected "Hey Jarvis" 0.80-0.996.  The gate below defaults to the model's
   # own 0.97 cutoff; lower it (0.95 trades the quiet/far takes for margin) in
-  # your settings.yaml.  Read by BOTH input owners -- the legacy wake listener
-  # and the single-ingress duplex session -- so it lives here and not under
-  # single_audio_ingress, which the legacy owner cannot read.
+  # your settings.yaml.
   wake_threshold: 0.97
-  # How long shutdown waits for the legacy wake thread before closing its
-  # PortAudio stream anyway.  Closing before the thread leaves its blocking
-  # read is the historical segfault; a slow machine can buy more room here.
-  wake_join_timeout_s: 2.0
   # MiniMax request shape.  These reach MiniMaxWSClient whatever wave is on:
   # the streaming and legacy TTS paths share one provider.
   # tts_voice: a MiniMax voice id; unset = the first of the language's setup
@@ -1519,11 +1513,12 @@ realtime:
     # that fails, the Python player is used.  Unless echo_cancellation is false, the
     # helper streams back the blocks it renders as the canceller's far end.
     native_player: false
-  # ADR-0006 Step 5. Disabled by default. When enabled it additionally
-  # requires the Wave-1 transactional/terminal switches above and a live
-  # Wave-2 StreamingTTSPipeline; failed validation happens before device open
-  # and uses legacy wake. A failed/uncertain device open keeps only text and
-  # whole-WAV PTT upload for that boot so no second input owner can appear.
+  # ADR-0006 Step 5. The one input owner: it listens for the wake word and
+  # for conversation. It additionally requires the Wave-1
+  # transactional/terminal switches above and a live Wave-2 StreamingTTSPipeline.
+  # Failed validation, or a failed or uncertain device open, keeps only text and
+  # whole-WAV PTT upload for that boot, so no second input owner can appear.
+  # Off, the boot listens to nothing.
   single_audio_ingress:
     enabled: true
     backend: sounddevice

@@ -467,23 +467,10 @@ _SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
 # The voice ASR / VAD artifact locations come from ``runtime.sensevoice_dir``
 # / ``runtime.silero_vad_path`` (ADR-0006 §5), resolved once at the composition
 # root against the config file's own directory. ADR-0005 §12 (pre-flight) —
-# ``serve_inherent`` checks them BEFORE spawning the WakeListener so a missing
+# ``serve_inherent`` checks them BEFORE starting the microphone owner so a missing
 # wheel surfaces as a single log line instead of a crashed daemon thread on
 # first wake. Tests pin their own paths via :func:`_voice_models_preflight`
 # kwargs.
-
-# Legacy wake capture bounds (ADR-0005 §5.1).  Deliberately NOT configurable:
-# the single-ingress owner already has ``max_utterance_s`` / ``min_voiced_s``
-# and is the path in production, so a key here would be honoured by one input
-# owner and ignored by the other.
-_DEFAULT_CAPTURE_MAX_DURATION_S: float = 5.0
-_DEFAULT_CAPTURE_MIN_VOICED_S: float = 1.0
-# Wake input stream params — ADR §5.1 (the wake engine reads 16 kHz mono PCM16
-# at 1280-sample / 80 ms blocks). A SEPARATE stream from the recorder's per
-# legacy ``core/inherent_wake_listener.py`` parity (the recorder's 32-ms VAD
-# chunks would force the engine to buffer across reads).
-_WAKE_SAMPLE_RATE_HZ: int = 16000
-_WAKE_FRAME_SAMPLES: int = 1280
 
 # The two ``SileroVad`` profiles the daemon can bind (``voice_audio``'s
 # ``_MODE_THRESHOLDS`` keys).  A closed set: ADR-0006 D8 names both and
@@ -514,14 +501,8 @@ class _VoiceKnobs:
     composition root reads ``realtime:`` for these values.
     """
 
-    # The engine's detection probability gate.  BOTH input owners construct a
-    # listener with it, which is why it is a flat key and is threaded to both
-    # rather than living under ``realtime.single_audio_ingress``.
+    # The engine's detection probability gate.
     wake_threshold: float = 0.5
-    # Shutdown join deadline for the legacy wake thread.  The stream close that
-    # follows it is the historical segfault site (see :func:`_shutdown_wake`),
-    # so a machine that needs longer has a way to ask for it.
-    wake_join_timeout_s: float = 2.0
     tts_voice: str = voice_tts.DEFAULT_TTS_VOICE
     tts_model: str = voice_tts.DEFAULT_TTS_MODEL
     tts_primary_endpoint: str = voice_tts.DEFAULT_TTS_PRIMARY_ENDPOINT
@@ -723,9 +704,6 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
     d = _VoiceKnobs()
     return _VoiceKnobs(
         wake_threshold=_knob_number(values, "wake_threshold", d.wake_threshold),
-        wake_join_timeout_s=_knob_number(
-            values, "wake_join_timeout_s", d.wake_join_timeout_s,
-        ),
         tts_voice=_knob_text(values, "tts_voice", d.tts_voice),
         tts_model=_knob_text(values, "tts_model", d.tts_model),
         tts_primary_endpoint=_knob_text(
@@ -765,14 +743,14 @@ def _voice_models_preflight(
     sensevoice_dir: Path,
     silero_path: Path,
 ) -> tuple[bool, list[str]]:
-    """Verify on-disk model artifacts before spawning wake listener.
+    """Verify on-disk model artifacts before starting the microphone owner.
 
     ADR-0005 §12 — pre-flight semantic: do NOT attempt to construct a
     SenseVoice recognizer or Silero VAD when the underlying ``.onnx``
     files are not present. Returning ``(False, [...])`` lets
     :func:`serve_inherent` log one ERROR and keep the text path
     running; the alternative (constructing the recognizer eagerly)
-    would let the wake thread crash on its first inference frame and
+    would let the input thread crash on its first inference frame and
     pollute the daemon log with an unhelpful traceback.
 
     Returns ``(all_ok, missing_paths_list)``.
@@ -1104,7 +1082,7 @@ def _drive_turn_in_worker_thread(
 # cursor. Per ADR-0005 §5.1 "Important wiring detail", both the
 # keyboard surface (``surface.user_intent`` from cli/__main__.py and
 # the daemon /inherent/submit handler) AND the voice surface
-# (``utterance.received`` from the ASR pipeline / wake listener) drive
+# (``utterance.received`` from the ASR pipeline / voice session) drive
 # a turn through the same composition-root code path. The downstream
 # ``drive_turn`` (and thus L3 / L4 / L5) is identical regardless of
 # which event type arrived — the pump passes the event verbatim as
@@ -2990,9 +2968,8 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
     :class:`TTSPipeline`, not a standalone path, so wiring it on its
     own would lie about what the daemon can actually do.
 
-    The optional ``ducker`` is the same :class:`SystemAudioDucker`
-    instance shared with the WakeListener. TTS registers an output lease;
-    wake capture refuses to mute while provider I/O or playback owns it.
+    The optional ``ducker`` is the :class:`SystemAudioDucker` the media actor takes
+    its output lease from.
     """
     knobs = _VoiceKnobs() if voice is None else voice
     api_key = "" if remote is not None else os.environ.get("MINIMAX_API_KEY")
@@ -3708,132 +3685,6 @@ def _build_voice_pipeline_callable(
     return _call
 
 
-def _open_wake_input_stream() -> Any:  # noqa: ANN401 — sounddevice stream is untyped third-party API
-    """Open the persistent 16 kHz / 1280-sample PortAudio input stream.
-
-    Module-level so tests can :func:`unittest.mock.patch.object` it
-    without needing PortAudio. ``sounddevice`` is lazy-imported so this
-    module remains importable in environments without the wheel.
-
-    The returned stream is the WakeListener's frame source — every
-    frame_factory call does ``stream.read(_WAKE_FRAME_SAMPLES)[0]`` to
-    pull exactly one 80 ms PCM16 frame. Legacy parity:
-    ``core/inherent_wake_listener.py`` opens the same shape.
-    """
-    import sounddevice as sd  # noqa: PLC0415
-
-    stream = sd.RawInputStream(
-        samplerate=_WAKE_SAMPLE_RATE_HZ,
-        channels=1,
-        dtype="int16",
-        blocksize=_WAKE_FRAME_SAMPLES,
-    )
-    stream.start()
-    return stream
-
-
-def _spawn_wake_listener(  # noqa: PLR0913 - composition boundary dependencies
-    *,
-    pipeline: voice_pipeline.VoicePipeline,
-    broadcaster: InherentBroadcaster,
-    silero_path: Path,
-    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
-    ducker: voice_ducking.SystemAudioDucker | None = None,
-    voice: _VoiceKnobs | None = None,
-    mic_muted: Callable[[], bool] | None = None,
-) -> tuple[voice_wake.WakeListener, Any | None] | None:
-    """Construct + start a :class:`WakeListener` daemon thread.
-
-    ADR-0005 §5.1 — the listener owns its own SileroVad (record mode)
-    and a partial-bound :func:`voice_audio.capture_utterance`; both
-    are constructed here so the L5 modules stay free of L6 wiring.
-
-    ``voice`` carries the resolved ``realtime:`` knobs. It is a defaulted
-    parameter rather than a ``JarvisRuntime``: this function must stay unable
-    to read ``realtime.single_audio_ingress``, since a key placed there would
-    then be honoured by one input owner and silently ignored by the other.
-
-    Also opens the 16 kHz / 80 ms PortAudio input stream that backs the
-    listener's ``frame_factory``. Without this stream the listener
-    reads silent zero frames and the wake probability never
-    crosses threshold — wake silently never fires in production.
-
-    Returns ``(listener, stream)`` on success so the daemon shutdown
-    path can both :meth:`WakeListener.request_stop` AND
-    :meth:`stream.close` (in that order). If the PortAudio stream
-    fails to open (no audio device in CI / headless test env), logs
-    ERROR and returns ``None`` — text path stays healthy. For
-    test-only callers that patch ``_open_wake_input_stream`` to return
-    a mock stream, this still works because the mock answers ``read``.
-    """
-    knobs = _VoiceKnobs() if voice is None else voice
-    try:
-        stream = _open_wake_input_stream()
-    except Exception:
-        LOGGER.exception(
-            "wake: failed to open PortAudio input stream; skipping wake listener.",
-        )
-        return None
-
-    def _read_wake_frame() -> bytes:
-        """Pull one 80 ms PCM16 frame from the persistent wake stream."""
-        data, _overflow = stream.read(_WAKE_FRAME_SAMPLES)
-        return bytes(data)
-
-    engine: voice_wake.MicroWakeWordEngine | None = None
-    listener: voice_wake.WakeListener | None = None
-    try:
-        engine = voice_wake.MicroWakeWordEngine()
-        # Without start(), predict() silently returns no detection.
-        engine.start()
-        silero_vad = voice_audio.SileroVad(
-            mode="record",
-            model_path=silero_path,
-            profiles=knobs.vad_profiles,
-        )
-        silero_vad.prepare_utterance()
-        capture_callable = functools.partial(
-            voice_audio.capture_utterance,
-            vad=silero_vad,
-            max_duration_s=_DEFAULT_CAPTURE_MAX_DURATION_S,
-            min_voiced_s=_DEFAULT_CAPTURE_MIN_VOICED_S,
-        )
-        listener = voice_wake.WakeListener(
-            engine=engine,
-            pipeline=pipeline,
-            broadcaster=broadcaster,
-            capture_callable=capture_callable,
-            threshold=knobs.wake_threshold,
-            is_speaking_callable=(tts.is_speaking if tts is not None else None),
-            frame_factory=_read_wake_frame,
-            ducker=ducker,
-            mic_muted=mic_muted,
-        )
-        listener.start()
-    except Exception:
-        LOGGER.exception(
-            "wake: legacy listener construction/start failed; preserving PTT.",
-        )
-        if listener is not None:
-            _shutdown_wake(listener, stream, join_timeout_s=knobs.wake_join_timeout_s)
-        else:
-            try:
-                stream.stop()
-            except Exception:  # noqa: BLE001 - continue exact close attempt
-                LOGGER.debug("wake: stream stop during startup cleanup failed", exc_info=True)
-            try:
-                stream.close()
-            except Exception:  # noqa: BLE001 - local startup failure stays isolated
-                LOGGER.debug("wake: stream close during startup cleanup failed", exc_info=True)
-        if engine is not None:
-            try:
-                engine.close()
-            except Exception:  # noqa: BLE001 - local startup failure stays isolated
-                LOGGER.debug("wake: engine startup cleanup failed", exc_info=True)
-        return None
-    return listener, stream
-
-
 @dataclasses.dataclass(frozen=True)
 class _SingleIngressActivation:
     """Validated Wave-3 activation decision before any input device open."""
@@ -3850,13 +3701,10 @@ class _VoiceInputOwners:
     """Composition-root input branch selected for this boot."""
 
     duplex_session: voice_session.DuplexVoiceSession | None
-    wake_listener: voice_wake.WakeListener | None
-    wake_stream: object | None
     single_ingress_attempted: bool
     # Why this branch was taken. The failing paths already record it as an
     # ``audio_input_activation_downgraded`` trace; carrying it out is what lets
-    # the startup record name the successful choice too, which the wake log
-    # line cannot: both owners construct an identical ``WakeEngine``.
+    # the startup record name the successful choice too.
     reason: str = "unknown"
 
 
@@ -4636,10 +4484,10 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
 ) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
     """Start Wave 3 or return whether a device-open attempt was made.
 
-    ``attempted=True`` forbids legacy wake fallback for this boot even when
-    startup failed: a timed-out foreign PortAudio open may still own the
-    default microphone.  ``attempted=False`` means no input owner was touched,
-    so a failed prerequisite/config validation may explicitly use legacy wake.
+    ``attempted=True`` means a device open was tried, even if startup failed: a
+    timed-out foreign PortAudio open may still own the default microphone.
+    ``attempted=False`` means no input owner was touched, so a failed
+    prerequisite/config validation leaves the boot with text and PTT upload only.
 
     ``ports`` is how the session reaches the turn: by default direct calls into ``runtime``,
     which must then be a daemon's :class:`JarvisRuntime`; a voice terminal (ADR 0172) passes
@@ -4652,13 +4500,13 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     if not activation.capable:
         LOGGER.warning(
             "realtime.single_audio_ingress validation failed (%s); "
-            "downgraded to legacy wake before opening an input owner.",
+            "text and PTT upload only, no input owner opened.",
             activation.reason,
         )
         record_realtime_trace(
             "audio_input_activation_downgraded",
             reason=activation.reason,
-            fallback="legacy_wake",
+            fallback="text_ptt_upload",
             input_owner_attempted=False,
         )
         return None, False
@@ -4674,7 +4522,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     except Exception:
         LOGGER.exception(
             "realtime.single_audio_ingress wake model failed before device open; "
-            "downgraded to legacy wake.",
+            "text and PTT upload only.",
         )
         with contextlib.suppress(Exception):
             engine.close()
@@ -4686,7 +4534,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     except Exception:
         LOGGER.exception(
             "realtime.single_audio_ingress SenseVoice prewarm failed before "
-            "device open; downgraded to legacy wake/PTT.",
+            "device open; text and PTT upload only.",
         )
         with contextlib.suppress(Exception):
             engine.close()
@@ -4825,7 +4673,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     except Exception:
         LOGGER.exception(
             "realtime.single_audio_ingress construction failed before device open; "
-            "downgraded to legacy wake.",
+            "text and PTT upload only.",
         )
         if ingress is not None:
             with contextlib.suppress(Exception):
@@ -4838,14 +4686,14 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     except voice_session.VoiceSessionPreDeviceError:
         LOGGER.exception(
             "realtime.single_audio_ingress Silero prepare failed before device "
-            "open; downgraded to legacy wake/PTT.",
+            "open; text and PTT upload only.",
         )
         with contextlib.suppress(Exception):
             session.close()
         record_realtime_trace(
             "audio_input_activation_downgraded",
             reason="session_prepare_failed_before_device",
-            fallback="legacy_wake",
+            fallback="text_ptt_upload",
             input_owner_attempted=False,
         )
         return None, False
@@ -4860,7 +4708,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     if not start_result.started:
         LOGGER.warning(
             "realtime.single_audio_ingress start failed state=%s reason=%s; "
-            "preserving text/PTT-upload only and refusing legacy mic fallback.",
+            "preserving text/PTT-upload only and refusing a second input owner.",
             start_result.ingress.capability.state.value,
             start_result.ingress.capability.reason,
         )
@@ -4882,7 +4730,6 @@ def _input_owner_reason(
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
     duplex_session: voice_session.DuplexVoiceSession | None,
     attempted: bool,
-    wake_listener: voice_wake.WakeListener | None,
 ) -> str:
     """Name why this boot ended up with the input owner it has.
 
@@ -4897,10 +4744,8 @@ def _input_owner_reason(
         # A device open was tried and did not survive; the specific failure is
         # already an ``audio_input_activation_downgraded`` trace.
         return "single_ingress_start_failed"
-    if wake_listener is not None:
-        # Legacy wake owns the mic because single ingress declined for `reason`.
-        return reason
-    return f"{reason}:legacy_wake_unavailable"
+    # Single ingress declined before it touched a device, for `reason`.
+    return reason
 
 
 def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependencies
@@ -4910,7 +4755,6 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     broadcaster: InherentBroadcaster,
     silero_path: Path,
     tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
-    ducker: voice_ducking.SystemAudioDucker,
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
@@ -4918,7 +4762,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     set_quiet: Callable[[str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
 ) -> _VoiceInputOwners:
-    """Select Wave 3 or legacy wake without ever opening both input owners."""
+    """Start the single audio ingress, or leave the boot with text and PTT upload only."""
     knobs = _VoiceKnobs() if voice is None else voice
     duplex_session, attempted = _spawn_single_ingress_session(
         runtime=runtime,
@@ -4933,31 +4777,14 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         set_quiet=set_quiet,
         echo_canceller=echo_canceller,
     )
-    wake_listener: voice_wake.WakeListener | None = None
-    wake_stream: object | None = None
-    if duplex_session is None and not attempted:
-        legacy = _spawn_wake_listener(
-            pipeline=pipeline,
-            broadcaster=broadcaster,
-            silero_path=silero_path,
-            tts=tts,
-            ducker=ducker,
-            voice=knobs,
-            mic_muted=mic_muted,
-        )
-        if legacy is not None:
-            wake_listener, wake_stream = legacy
     return _VoiceInputOwners(
         duplex_session=duplex_session,
-        wake_listener=wake_listener,
-        wake_stream=wake_stream,
         single_ingress_attempted=attempted,
         reason=_input_owner_reason(
             runtime,
             tts=tts,
             duplex_session=duplex_session,
             attempted=attempted,
-            wake_listener=wake_listener,
         ),
     )
 
@@ -6616,16 +6443,9 @@ def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
     decides them, which is only checkable if the daemon says what it resolved.
     JSON rather than ``key=value`` because there are twenty-nine fields.
 
-    Also the only place startup distinguishes the two input owners:
-    ``WakeEngine.start`` logs an identical line from either, which has already
-    cost one investigation a wrong conclusion.
+    Also the place startup says whether an input owner is running at all.
     """
-    if owners.duplex_session is not None:
-        input_owner = "single_ingress"
-    elif owners.wake_listener is not None:
-        input_owner = "legacy_wake"
-    else:
-        input_owner = "none"
+    input_owner = "single_ingress" if owners.duplex_session is not None else "none"
     payload: dict[str, Any] = {
         "sensevoice_dir": str(sensevoice_dir),
         "silero_vad_path": str(silero_vad_path),
@@ -6648,41 +6468,6 @@ def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
             },
         )
     LOGGER.info("voice startup config: %s", json.dumps(payload, sort_keys=True))
-
-
-def _shutdown_wake(
-    wake_listener: voice_wake.WakeListener | None,
-    wake_stream: Any | None,  # noqa: ANN401 — sounddevice stream is untyped third-party API
-    *,
-    join_timeout_s: float = _VoiceKnobs().wake_join_timeout_s,
-) -> None:
-    """Stop wake listener and close its input stream in the safe order.
-
-    Order MUST be: request_stop -> join -> stream.stop -> stream.close.
-    Closing the stream before the listener thread exits its blocking
-    stream.read() is undefined PortAudio behaviour and was the historical
-    segfault root cause (see jarvis-legacy/core/inherent_wake_listener.py:73-78).
-    """
-    if wake_listener is None:
-        return
-    wake_listener.request_stop()
-    wake_listener.join(timeout_s=join_timeout_s)
-    if wake_listener.is_alive():
-        LOGGER.warning(
-            "wake listener thread did not exit within %.1f s; "
-            "proceeding with stream close (segfault risk reduced "
-            "but not eliminated)",
-            join_timeout_s,
-        )
-    if wake_stream is not None:
-        try:
-            wake_stream.stop()
-        except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
-            LOGGER.debug("wake_stream stop failed", exc_info=True)
-        try:
-            wake_stream.close()
-        except Exception:  # noqa: BLE001 — close still runs after stop failure
-            LOGGER.debug("wake_stream close failed", exc_info=True)
 
 
 def _shutdown_duplex_voice_session(
@@ -6711,20 +6496,11 @@ def _shutdown_duplex_voice_session(
 def _request_voice_input_branch_shutdown(
     owners: _VoiceInputOwners,
     tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
-    *,
-    wake_join_timeout_s: float = _VoiceKnobs().wake_join_timeout_s,
 ) -> None:
-    """Select the exact Wave-3 or legacy shutdown order used by serve."""
+    """Revoke input before output, the order serve uses (ADR-0006 F14)."""
     if owners.duplex_session is not None:
         _shutdown_duplex_voice_session(owners.duplex_session)
-        _request_tts_close(tts_pipe)
-        return
     _request_tts_close(tts_pipe)
-    _shutdown_wake(
-        owners.wake_listener,
-        owners.wake_stream,
-        join_timeout_s=wake_join_timeout_s,
-    )
 
 
 def _leave_unfinished_at_shutdown(
@@ -7386,14 +7162,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        on the configured SenseVoice + Silero paths. When models are
        present, construct :class:`VoicePipeline`, optionally
        :class:`TTSPipeline` (if ``MINIMAX_API_KEY`` is set), and (when
-       ``JARVIS_VOICE_DISABLE_WAKE`` is unset) start a
-       :class:`WakeListener` thread. Missing models or any construction
+       ``JARVIS_VOICE_DISABLE_WAKE`` is unset) start the single audio
+       ingress. Missing models or any construction
        failure: log ERROR and continue text-only — the text path stays
        healthy.
     4. Build the FastAPI app via :func:`create_app` with
        :class:`InherentDeps` (carries ``submit_asr`` so
-       ``/inherent/asr-submit/v2`` can do PTT ASR even without a wake
-       listener; falls through to 501 when the pipeline is None).
+       ``/inherent/asr-submit/v2`` can do PTT ASR even without a
+       microphone owner; falls through to 501 when the pipeline is None).
     5. Configure :class:`uvicorn.Config` (``lifespan="off"`` because
        this module owns the lifecycle, ``log_level="warning"`` to
        avoid uvicorn's per-request stdout noise drowning the watcher
@@ -7428,7 +7204,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
     9. ``_shutdown``, registered once the voice owners exist and run when
        serving ends or any step above raises: tear the power observer down
        FIRST (its closed flag must be set before the loop starts winding
-       down), then request the wake listener stop (if running), cancel
+       down), then stop the voice input (if running), cancel
        every watcher task and wait for them, so a watcher that crashed
        during runtime does not mask the shutdown path. The whole teardown
        is bounded by ``shutdown_budget_s``: a turn still in a model call at
@@ -7437,8 +7213,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
     Env vars:
         ``MINIMAX_API_KEY``         — gates the TTS subsystem.
-        ``JARVIS_VOICE_DISABLE_WAKE`` — when ``"1"``, skip the wake
-            thread even if models are present (CI / smoke tests).
+        ``JARVIS_VOICE_DISABLE_WAKE`` — when ``"1"``, skip the
+            microphone owner even if models are present (CI / smoke tests).
 
     Args:
         runtime: Assembled :class:`JarvisRuntime`.
@@ -7502,7 +7278,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
         duplex_voice_session: voice_session.DuplexVoiceSession | None = None
         # ADR-0015: the two mute switches the desktop surface flips over
-        # POST /inherent/controls: mic on the wake threads, speech as the player's gain.
+        # POST /inherent/controls: mic on the input session, speech as the player's gain.
         # ADR 0153: the quiet level is the one switch kept across restarts.
         quiet_path = runtime.runtime_paths.root / "quiet-mode.json"
         controls = voice_controls.VoiceControls(quiet=quiet_mode.load(quiet_path))
@@ -7528,8 +7304,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         voice_input_owners = _VoiceInputOwners(
             duplex_session=None,
-            wake_listener=None,
-            wake_stream=None,
             single_ingress_attempted=False,
         )
         voice_pipeline_callable: Any | None = None
@@ -7579,13 +7353,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # Power observer FIRST: its closed flag must be set before the
             # loop starts winding down, so a notification racing this
             # teardown finds the flag instead of a dead loop. Everything
-            # below (wake / TTS / ducker / watcher cancel) is loop-thread
+            # below (input / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
             _shutdown_power_observer(power_observer)
             if power_coordinator is not None:
                 power_coordinator.close(timeout_s=0.1)
-            # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
-            # retains the legacy output-gate-before-wake order.
+            # ADR-0006 F14: input is revoked before output.
             # GPT-Live is billed per second: hang up before the microphone goes away.
             # The budget follows close_timeout_s and stays under launchd's default
             # 20 s ExitTimeOut, after which the agent is killed mid-hangup.
@@ -7595,11 +7368,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         live_voice.stop(reason="daemon_shutdown"),
                         timeout=min(live_voice.stop_budget_s, left()),
                     )
-            _request_voice_input_branch_shutdown(
-                voice_input_owners,
-                tts_pipe,
-                wake_join_timeout_s=voice_knobs.wake_join_timeout_s,
-            )
+            _request_voice_input_branch_shutdown(voice_input_owners, tts_pipe)
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.
@@ -7668,7 +7437,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if os.environ.get("JARVIS_VOICE_DISABLE_WAKE") == "1":
                     voice_startup_reason = "wake_disabled_env"
                     LOGGER.info(
-                        "JARVIS_VOICE_DISABLE_WAKE=1; skipping WakeListener spawn.",
+                        "JARVIS_VOICE_DISABLE_WAKE=1; skipping the microphone owner.",
                     )
                 else:
                     voice_input_owners = _spawn_voice_input_owners(
@@ -7677,7 +7446,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         broadcaster=broadcaster,
                         silero_path=silero_path,
                         tts=tts_pipe,
-                        ducker=shared_ducker,
                         voice=voice_knobs,
                         mic_muted=_old_chain_input_blocked,
                         conversation=controls.conversation_is_on,
@@ -7698,8 +7466,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 duplex_voice_session = None
                 voice_input_owners = _VoiceInputOwners(
                     duplex_session=None,
-                    wake_listener=None,
-                    wake_stream=None,
                     single_ingress_attempted=False,
                 )
 

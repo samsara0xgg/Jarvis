@@ -6,12 +6,12 @@ audio devices, and (ADR-0009) the kernel's power-notification port:
 1. **Env clamp** — unset ``MINIMAX_API_KEY`` and set
    ``JARVIS_VOICE_DISABLE_WAKE=1`` so the ADR-0005 §12 voice subsystem
    short-circuits inside ``serve_inherent`` (no TTS pipeline construction,
-   no wake-listener spawn).
+   no microphone owner).
 2. **Seam patch** — replace every module-level PortAudio / AppleScript
    factory with a hard failure stub. Any test path that bypasses the env
    clamp (e.g. directly constructs ``AudioStreamPlayer(lazy_open=False)``
-   or calls ``capture_utterance`` without patching ``_open_input_stream``)
-   immediately raises instead of silently opening the device.
+   without patching ``_open_output_stream``) immediately raises instead of
+   silently opening the device.
 
 Why this lives at session scope:
 
@@ -22,10 +22,10 @@ Why this lives at session scope:
   (e.g. ``test_serve_inherent_spawns_response_watcher_under_named_task``).
 - Real device opens cost two things tests cannot afford: (1) audible
   speaker clicks, mic activity, and macOS volume-change tick sounds on
-  every ``pytest`` run, and (2) a daemon-thread wake listener that
-  keeps polling ``sd.RawInputStream`` after the test exits — that thread
-  has been observed segfaulting later tests when the device is contested
-  by an external ``jarvis serve``.
+  every ``pytest`` run, and (2) a daemon thread that keeps polling
+  ``sd.RawInputStream`` after the test exits — such a thread has been
+  observed segfaulting later tests when the device is contested by an
+  external ``jarvis serve``.
 
 3. **Power-observer seam** — replace
    :func:`jarvis.deployment.sleep_wake._real_observer_factory` with an
@@ -33,7 +33,7 @@ Why this lives at session scope:
    :func:`~jarvis.deployment.sleep_wake.install_power_observer` into
    ``serve_inherent``; without this, every test that boots the daemon
    (``test_serve_inherent_spawns_response_watcher_under_named_task``,
-   integration ``test_wake_listener_wiring``) calls a real
+   integration ``test_daemon_lifecycle``) calls a real
    ``IORegisterForSystemPower`` and starts a real ``jarvis-power-observer``
    CFRunLoop thread. Those tests pass either way, but a Mac that sleeps
    mid-``pytest`` would then deliver a genuine kernel notification into
@@ -41,7 +41,7 @@ Why this lives at session scope:
    whichever temp event log happens to be live — an unreproducible cross-test flake.
 
 Tests that exercise voice paths (``test_voice_*``, integration
-``test_wake_listener_wiring`` etc.) already ``patch.object`` these seams
+``test_wave3_single_audio_ingress`` etc.) already ``patch.object`` these seams
 locally; the session fixture and the local patches stack cleanly because
 both target the same module attributes. The same is true of the
 power-observer seam: ADR-0009 Step 4's ``serve_inherent`` tests patch
@@ -60,11 +60,9 @@ import pytest
 
 import jarvis.runtime as runtime_pkg
 from jarvis.deployment import models, sleep_wake
-from jarvis.runtime import inherent_loop
 from jarvis.shared import lang
 from jarvis.surface import (
     notify,
-    voice_audio,
     voice_backend,
     voice_ducking,
     voice_tts,
@@ -151,15 +149,15 @@ def _block_audio_seam(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
     msg = (
         "Test attempted to open a real audio device (PortAudio or osascript). "
         "Patch the relevant seam in your test fixture: "
-        "voice_audio._open_input_stream, voice_tts._open_output_stream, "
-        "inherent_loop._open_wake_input_stream, voice_ducking._run_osascript."
+        "voice_backend._open_sounddevice_input_stream, voice_tts._open_output_stream, "
+        "voice_ducking._run_osascript."
     )
     raise _RealAudioDeviceBlockedError(msg)
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _voice_subsystem_disabled_in_tests() -> Iterator[None]:
-    """Clamp env so ``serve_inherent`` skips TTS construction and wake spawn."""
+    """Clamp env so ``serve_inherent`` skips TTS construction and the microphone owner."""
     saved_minimax = os.environ.pop("MINIMAX_API_KEY", None)
     saved_disable_wake = os.environ.get("JARVIS_VOICE_DISABLE_WAKE")
     os.environ["JARVIS_VOICE_DISABLE_WAKE"] = "1"
@@ -219,10 +217,8 @@ def _block_real_audio_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     # PortAudio seams (mic + speaker). Tests that touch the recorder /
     # player wrap their own ``patch.object`` for these; the session-wide
     # block here only fires when a test path forgot to mock.
-    monkeypatch.setattr(voice_audio, "_open_input_stream", _block_audio_seam)
     monkeypatch.setattr(voice_backend, "_open_sounddevice_input_stream", _block_audio_seam)
     monkeypatch.setattr(voice_tts, "_open_output_stream", _block_audio_seam)
-    monkeypatch.setattr(inherent_loop, "_open_wake_input_stream", _block_audio_seam)
     # Ducker's AppleScript seam — replace with a safe stub returning a
     # parseable snapshot so any accidental ``duck()`` call neither mutes
     # the real system (which plays a macOS volume-change tick sound) nor

@@ -314,7 +314,6 @@ class _PipelinePort(Protocol):
         channel: str,
         language: str,
         lock_acquire_timeout_s: float = ...,
-        lock_already_held: bool = ...,
         broadcast: bool = ...,
         session_id: str | None = ...,
         utterance_id: str | None = ...,
@@ -2139,7 +2138,6 @@ class DuplexVoiceSession:
                         turn_id=utterance.turn_id,
                         channel="inherent_wake",
                         language="zh-CN",
-                        lock_already_held=False,
                         session_id=utterance.session_id,
                         utterance_id=utterance.utterance_id,
                         endpoint_reason=utterance.endpoint_reason,
@@ -2170,7 +2168,7 @@ class DuplexVoiceSession:
                 # landed there, instead of answering an empty turn.
                 LOGGER.info("realtime wake: wake phrase only turn_id=%s", utterance.turn_id)
                 self._judge_no_words(utterance.turn_id, "", addressed=True)
-                # The surface still shows this turn as heard: end it, as voice_wake does.
+                # The surface still shows this turn as heard: end it.
                 self._broadcast("empty", turn_id=utterance.turn_id, reason="wake_only")
                 with contextlib.suppress(queue.Full):  # a newer wake is already queued
                     self._detections.put_nowait(

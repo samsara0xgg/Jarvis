@@ -74,7 +74,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         # This machine's microphone, speaker, wake word, recognizer and player.
         "realtime.ambient_sounds", "realtime.output_device", "realtime.input_device",
         "realtime.playback_volume", "realtime.final_asr", "realtime.final_asr_language",
-        "realtime.final_asr_terms", "realtime.wake_threshold", "realtime.wake_join_timeout_s",
+        "realtime.final_asr_terms", "realtime.wake_threshold",
         "realtime.tts_ring_seconds", "realtime.vad", "realtime.single_audio_ingress",
         "realtime.gpt_live", "realtime.sensevoice_dir", "realtime.silero_vad_path",
         "realtime.voiceprint_model_path",

@@ -226,7 +226,6 @@ class VoicePipeline:
         channel: str,
         language: str,
         lock_acquire_timeout_s: float = 2.0,
-        lock_already_held: bool = False,
         broadcast: bool = True,
         session_id: str | None = None,
         utterance_id: str | None = None,
@@ -246,14 +245,7 @@ class VoicePipeline:
             turn_id: Server-minted turn id (``T<hex>``).
             channel: ``"inherent_wake"`` or ``"inherent_ptt"``.
             language: Spoken language hint (e.g. ``"zh-CN"``).
-            lock_acquire_timeout_s: Timeout for the internal
-                ``VOICE_INPUT_LOCK`` acquire when ``lock_already_held``
-                is False. Ignored when the caller already owns the lock.
-            lock_already_held: When True, the caller already holds
-                :data:`VOICE_INPUT_LOCK` for the full capture+ASR turn
-                (wake listener path — ADR-0005 §8 fix #2). The pipeline
-                must NOT try to acquire / release it (``threading.Lock``
-                is non-reentrant — same-thread re-acquire would deadlock).
+            lock_acquire_timeout_s: Timeout for the ``VOICE_INPUT_LOCK`` acquire.
             broadcast: When False, suppress the ``voice("accepted", ...)``
                 and ``voice("empty", ...)`` phase envelopes. PTT path
                 passes False (ADR-0005 §6 — Swift drives the card from
@@ -297,7 +289,6 @@ class VoicePipeline:
 
         Raises:
             VoiceInputBusyError: VOICE_INPUT_LOCK contention (PTT path: 503).
-                Only raised when ``lock_already_held`` is False.
             VoicePipelineEmptyError: transcript empty / too short / silent.
             VoicePipelineAbsorbedError: ``before_emit`` absorbed the words
                 (a subclass, announced to the surface as ``empty``).
@@ -308,14 +299,13 @@ class VoicePipeline:
         """
         prepared = utterance_id is not None
         utterance_id = utterance_id or "U" + secrets.token_hex(8)
-        if not lock_already_held:
-            acquired = VOICE_INPUT_LOCK.acquire(timeout=lock_acquire_timeout_s)
-            if not acquired:
-                msg = (
-                    f"VOICE_INPUT_LOCK busy after {lock_acquire_timeout_s}s; "
-                    f"turn_id={turn_id}"
-                )
-                raise VoiceInputBusyError(msg)
+        acquired = VOICE_INPUT_LOCK.acquire(timeout=lock_acquire_timeout_s)
+        if not acquired:
+            msg = (
+                f"VOICE_INPUT_LOCK busy after {lock_acquire_timeout_s}s; "
+                f"turn_id={turn_id}"
+            )
+            raise VoiceInputBusyError(msg)
         try:
             # 1. Recognize (sync ASR call). The caller's endpoint/audio
             # assembly is a distinct software milestone; this point is the
@@ -471,8 +461,7 @@ class VoicePipeline:
                 )
             return ev
         finally:
-            if not lock_already_held:
-                VOICE_INPUT_LOCK.release()
+            VOICE_INPUT_LOCK.release()
 
     def _judged(
         self,

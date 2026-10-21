@@ -3696,8 +3696,6 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
     session.close.side_effect = _close_input
     owners = inherent_loop._VoiceInputOwners(
         duplex_session=session,
-        wake_listener=None,
-        wake_stream=None,
         single_ingress_attempted=True,
     )
     with patch.object(
@@ -3878,7 +3876,7 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
     assert not media._power_helper.is_alive()
 
 
-def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device() -> None:
+def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None:
     """SenseVoice prewarm never changes feature-off or claims a mic on failure."""
     runtime = MagicMock()
     runtime.wave1_features = Wave1FeatureFlags(
@@ -3929,7 +3927,7 @@ def test_wave3_prewarm_is_flag_gated_and_failure_preserves_legacy_before_device(
     engine.close.assert_called_once_with()
 
 
-def test_session_silero_prepare_failure_is_pre_device_and_enables_legacy() -> None:
+def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner() -> None:
     """Session preparation has a typed no-owner boundary before ingress.start."""
     runtime = MagicMock()
     runtime.wave1_features = Wave1FeatureFlags(
@@ -3949,18 +3947,11 @@ def test_session_silero_prepare_failure_is_pre_device_and_enables_legacy() -> No
     engine = MagicMock()
     vad = MagicMock(spec=voice_audio.SileroVad)
     vad.prepare_utterance.side_effect = RuntimeError("injected Silero prepare failure")
-    legacy_listener = MagicMock()
-    legacy_stream = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
     with (
         patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(voice_audio, "SileroVad", return_value=vad),
         patch.object(voice_backend, "SoundDeviceDuplexBackend", return_value=backend),
-        patch.object(
-            inherent_loop,
-            "_spawn_wake_listener",
-            return_value=(legacy_listener, legacy_stream),
-        ) as legacy_spawn,
     ):
         owners = inherent_loop._spawn_voice_input_owners(
             runtime=runtime,
@@ -3968,14 +3959,10 @@ def test_session_silero_prepare_failure_is_pre_device_and_enables_legacy() -> No
             broadcaster=broadcaster,
             silero_path=MagicMock(),
             tts=wave2,
-            ducker=MagicMock(),
         )
     assert backend.start_count == 0
     assert not owners.single_ingress_attempted
     assert owners.duplex_session is None
-    assert owners.wake_listener is legacy_listener
-    assert owners.wake_stream is legacy_stream
-    legacy_spawn.assert_called_once()
     engine.close.assert_called_once_with()
 
 
@@ -4049,52 +4036,8 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
     )
 
 
-def test_legacy_listener_start_failure_is_local_and_ptt_remains_wired() -> None:
-    """Legacy wake startup cleanup cannot clear an already-valid PTT pipeline."""
-    runtime = MagicMock()
-    runtime.wave1_features = Wave1FeatureFlags(
-        transactional_event_append=True,
-        lifecycle_terminal_cas=True,
-    )
-    runtime.config = {"realtime": {"enabled": True}}
-    pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
-    pipeline.run_turn.return_value = MagicMock()
-    broadcaster = MagicMock()
-    stream = MagicMock()
-    engine = MagicMock()
-    vad = MagicMock(spec=voice_audio.SileroVad)
-    listener = MagicMock(spec=voice_wake.WakeListener)
-    listener.start.side_effect = RuntimeError("injected listener thread start failure")
-    listener.is_alive.return_value = False
-    with (
-        patch.object(inherent_loop, "_open_wake_input_stream", return_value=stream),
-        patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
-        patch.object(voice_audio, "SileroVad", return_value=vad),
-        patch.object(voice_wake, "WakeListener", return_value=listener),
-    ):
-        owners = inherent_loop._spawn_voice_input_owners(
-            runtime=runtime,
-            pipeline=pipeline,
-            broadcaster=broadcaster,
-            silero_path=MagicMock(),
-            tts=None,
-            ducker=MagicMock(),
-        )
-    ptt = inherent_loop._build_voice_pipeline_callable(pipeline)
-    ptt(b"RIFF", "T-ptt-after-wake-failure", "U-ptt", "S-ptt")
-    pipeline.run_turn.assert_called_once()
-    assert owners.wake_listener is None
-    assert owners.wake_stream is None
-    assert not owners.single_ingress_attempted
-    listener.request_stop.assert_called_once_with()
-    listener.join.assert_called_once()
-    stream.stop.assert_called_once_with()
-    stream.close.assert_called_once_with()
-    engine.close.assert_called_once_with()
-
-
 def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_branch() -> None:
-    """Serve's extracted branch selects one mic owner while PTT stays callable."""
+    """Serve's extracted branch starts at most one mic owner while PTT stays callable."""
     runtime = MagicMock()
     runtime.wave1_features = Wave1FeatureFlags(
         transactional_event_append=True,
@@ -4107,28 +4050,18 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     ptt_callable(b"RIFF", "T-ptt", "U-ptt", "S-ptt")
     pipeline.run_turn.assert_called_once()
     broadcaster = MagicMock()
-    ducker = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
-    legacy_listener = MagicMock()
-    legacy_stream = MagicMock()
 
-    with patch.object(
-        inherent_loop,
-        "_spawn_wake_listener",
-        return_value=(legacy_listener, legacy_stream),
-    ) as spawn_legacy:
-        disabled = inherent_loop._spawn_voice_input_owners(
-            runtime=runtime,
-            pipeline=pipeline,
-            broadcaster=broadcaster,
-            silero_path=MagicMock(),
-            tts=wave2,
-            ducker=ducker,
-        )
+    disabled = inherent_loop._spawn_voice_input_owners(
+        runtime=runtime,
+        pipeline=pipeline,
+        broadcaster=broadcaster,
+        silero_path=MagicMock(),
+        tts=wave2,
+    )
     assert disabled.duplex_session is None
-    assert disabled.wake_listener is legacy_listener
     assert not disabled.single_ingress_attempted
-    spawn_legacy.assert_called_once()
+    assert disabled.reason == "feature_disabled"
 
     runtime.config = {
         "realtime": {
@@ -4146,11 +4079,6 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
             "SoundDeviceDuplexBackend",
             side_effect=AssertionError("device must not be constructed"),
         ),
-        patch.object(
-            inherent_loop,
-            "_spawn_wake_listener",
-            return_value=(legacy_listener, legacy_stream),
-        ) as prewarm_legacy,
     ):
         prewarm_failed = inherent_loop._spawn_voice_input_owners(
             runtime=runtime,
@@ -4158,23 +4086,14 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
             broadcaster=broadcaster,
             silero_path=MagicMock(),
             tts=wave2,
-            ducker=ducker,
         )
-    assert prewarm_failed.wake_listener is legacy_listener
+    assert prewarm_failed.duplex_session is None
     assert not prewarm_failed.single_ingress_attempted
-    prewarm_legacy.assert_called_once()
 
-    with (
-        patch.object(
-            inherent_loop,
-            "_spawn_single_ingress_session",
-            return_value=(None, True),
-        ),
-        patch.object(
-            inherent_loop,
-            "_spawn_wake_listener",
-            side_effect=AssertionError("attempted device must forbid a second mic"),
-        ),
+    with patch.object(
+        inherent_loop,
+        "_spawn_single_ingress_session",
+        return_value=(None, True),
     ):
         attempted_uncertain = inherent_loop._spawn_voice_input_owners(
             runtime=runtime,
@@ -4182,24 +4101,18 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
             broadcaster=broadcaster,
             silero_path=MagicMock(),
             tts=wave2,
-            ducker=ducker,
         )
     assert attempted_uncertain.duplex_session is None
-    assert attempted_uncertain.wake_listener is None
     assert attempted_uncertain.single_ingress_attempted
 
     actions: list[str] = []
     duplex = MagicMock(spec=voice_session.DuplexVoiceSession)
     wave3_owners = inherent_loop._VoiceInputOwners(
         duplex_session=duplex,
-        wake_listener=None,
-        wake_stream=None,
         single_ingress_attempted=True,
     )
-    legacy_owners = inherent_loop._VoiceInputOwners(
+    no_owner = inherent_loop._VoiceInputOwners(
         duplex_session=None,
-        wake_listener=legacy_listener,
-        wake_stream=legacy_stream,
         single_ingress_attempted=False,
     )
     with (
@@ -4213,19 +4126,12 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
             "_request_tts_close",
             side_effect=lambda _tts: actions.append("output_stop"),
         ),
-        patch.object(
-            inherent_loop,
-            "_shutdown_wake",
-            side_effect=lambda _listener, _stream, **_kwargs: actions.append(
-                "legacy_stop",
-            ),
-        ),
     ):
         inherent_loop._request_voice_input_branch_shutdown(wave3_owners, wave2)
         assert actions == ["input_stop", "output_stop"]
         actions.clear()
-        inherent_loop._request_voice_input_branch_shutdown(legacy_owners, wave2)
-        assert actions == ["output_stop", "legacy_stop"]
+        inherent_loop._request_voice_input_branch_shutdown(no_owner, wave2)
+        assert actions == ["output_stop"]
 
 
 def test_input_capability_snapshot_is_versioned_ephemeral_and_reconnectable() -> None:

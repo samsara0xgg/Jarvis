@@ -16,7 +16,7 @@ over a -60 dBFS room floor.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import numpy as np
@@ -130,41 +130,3 @@ def test_the_request_after_a_hesitation_keeps_all_of_its_audio() -> None:
     ((_, _, audio_ms),) = _conversation_commits(script)
     # 160 ms filler + 992 ms hesitation + 1280 ms request + the 0.77 s pause, pre-roll included.
     assert audio_ms >= 160 + 992 + 1_280
-
-
-class _ScriptedStream:
-    """Blocking PortAudio shape that plays one script, then the room forever."""
-
-    def __init__(self, script: list[tuple[str, int]]) -> None:
-        self._frames = _frames(script)
-        self.read_frames = 0
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def read(self, blocksize: int) -> tuple[bytes, bool]:
-        assert blocksize == FRAME
-        self.read_frames += 1
-        return next(self._frames, ROOM), False
-
-
-def test_legacy_capture_does_not_cut_the_words_after_a_short_sound() -> None:
-    """The legacy recorder (wake-listener fallback) ends at the request's own pause."""
-    stream = _ScriptedStream(
-        [("room", 160), ("voice", 160), ("room", 992), ("voice", 1_280), ("room", 1_280)],
-    )
-    with (
-        patch.object(voice_audio, "_load_silero_session", return_value=EnergySilero()),
-        patch.object(voice_audio, "_open_input_stream", return_value=stream),
-    ):
-        audio = voice_audio.capture_utterance(
-            vad=voice_audio.SileroVad(mode="record"),
-            max_duration_s=10.0,
-            min_voiced_s=0.3,
-        )
-    captured_ms = len(audio) // 2 * 1000 // 16_000
-    # Before the fix it stopped 0.2 s into the request, at about 1.5 s.
-    assert captured_ms >= 160 + 160 + 992 + 1_280

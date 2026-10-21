@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Self
 from unittest.mock import patch
 
 import numpy as np
@@ -14,21 +13,18 @@ from jarvis.surface import voice_audio, voice_session
 from tests.support.voice_input import EnergySession
 
 
-class _FrameStream:
-    """Blocking-stream shape backed by deterministic PCM frames."""
-
-    def __init__(self, frames: list[bytes]) -> None:
-        self._frames = iter(frames)
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def read(self, blocksize: int) -> tuple[bytes, bool]:
-        assert blocksize == voice_audio.SILERO_CHUNK_SAMPLES
-        return next(self._frames), False
+def _record(vad: voice_audio.SileroVad, frames: list[bytes], *, min_voiced_frames: int) -> bytes:
+    """One utterance the way the session drives the VAD: prepare, feed, stop at the endpoint."""
+    vad.prepare_utterance()
+    audio = bytearray()
+    voiced = 0
+    for frame in frames:
+        audio.extend(frame)
+        if vad.feed(frame) == voice_audio.VadEvent.SPEECH_ACTIVE:
+            voiced += 1
+        elif voiced >= min_voiced_frames and vad.empty():
+            break
+    return bytes(audio)
 
 
 @pytest.mark.parametrize(
@@ -43,7 +39,7 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     speech_frames: int,
     required_misses: int,
 ) -> None:
-    """Two captures on one VAD must have identical utterance-local endpoints."""
+    """Two utterances on one VAD must have identical utterance-local endpoints."""
     reset_realtime_trace()
     thresholds = voice_audio.VadThresholds(
         prob_threshold=0.4,
@@ -57,22 +53,11 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     speech = np.full(voice_audio.SILERO_CHUNK_SAMPLES, 10_000, dtype=np.int16).tobytes()
     silence = np.zeros(voice_audio.SILERO_CHUNK_SAMPLES, dtype=np.int16).tobytes()
     utterance_frames = [speech] * speech_frames + [silence] * required_misses
-    streams = [_FrameStream(utterance_frames.copy()), _FrameStream(utterance_frames.copy())]
     session = EnergySession()
 
-    with (
-        patch.object(voice_audio, "_load_silero_session", return_value=session),
-        patch.object(voice_audio, "_open_input_stream", side_effect=streams),
-    ):
+    with patch.object(voice_audio, "_load_silero_session", return_value=session):
         vad = voice_audio.SileroVad(mode="record")
-        captures = [
-            voice_audio.capture_utterance(
-                vad=vad,
-                max_duration_s=2.0,
-                min_voiced_s=voice_audio.SILERO_CHUNK_SAMPLES / 16_000,
-            )
-            for _ in range(2)
-        ]
+        captures = [_record(vad, utterance_frames, min_voiced_frames=1) for _ in range(2)]
 
     expected_frames = speech_frames + required_misses
     assert [len(audio) // len(speech) for audio in captures] == [

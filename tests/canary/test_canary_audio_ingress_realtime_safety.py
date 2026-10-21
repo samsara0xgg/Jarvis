@@ -74,7 +74,6 @@ def test_realtime_input_production_path_is_callback_only_and_has_no_stream_read(
     assert ".read(" not in inspect.getsource(voice_backend.SoundDeviceDuplexBackend)
     assert "RawInputStream" not in inspect.getsource(voice_session.DuplexVoiceSession)
     assert "_open_input_stream" not in sources
-    assert "_open_wake_input_stream" not in sources
     backend_module_source = inspect.getsource(voice_backend)
     assert "callback=callback" in backend_module_source
     assert "RawInputStream" in backend_module_source

@@ -21,6 +21,7 @@ import threading
 import types
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,6 +29,7 @@ import jarvis.runtime as runtime_pkg
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
+from jarvis.surface import voice_tts
 from jarvis.surface.cli import emit_surface_user_intent
 
 if TYPE_CHECKING:
@@ -93,8 +95,6 @@ def _fake_voice(monkeypatch: pytest.MonkeyPatch) -> _FakeVoiceSession:
         "_spawn_voice_input_owners",
         lambda **_kw: inherent_loop._VoiceInputOwners(  # noqa: SLF001
             duplex_session=session,  # type: ignore[arg-type]
-            wake_listener=None,
-            wake_stream=None,
             single_ingress_attempted=True,
             reason="test",
         ),
@@ -274,3 +274,21 @@ def test_a_stop_signal_runs_the_daemons_whole_teardown_and_ends_it_clean(
     text = log.read_text(encoding="utf-8")
     assert "serve_inherent: shutdown complete" in text, text[-2000:]
     assert returncode == 0, text[-2000:]
+
+
+def test_shutdown_tts_closes_player() -> None:
+    """``_shutdown_tts`` must call ``tts_pipe.close()`` to release the PortAudio device."""
+    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
+    player.bytes_pending.return_value = 0
+    tts_pipe = voice_tts.TTSPipeline(
+        provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
+        player=player,
+        fallback=None,
+    )
+    inherent_loop._shutdown_tts(tts_pipe)  # noqa: SLF001
+    player.stop.assert_called_once()
+
+
+def test_shutdown_tts_none_is_noop() -> None:
+    """``_shutdown_tts(None)`` must not raise (voice subsystem may be absent)."""
+    inherent_loop._shutdown_tts(None)  # noqa: SLF001 — must not raise
