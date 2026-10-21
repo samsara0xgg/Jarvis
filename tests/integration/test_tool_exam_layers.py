@@ -201,6 +201,55 @@ def test_a_live_recording_keeps_out_a_key_saved_only_for_its_root(
     assert not (tmp_path / "now.recording.json").exists()
 
 
+def _exchange(status: int, body: str, url: str = "http://x/forecast") -> dict[str, Any]:
+    return {"method": "GET", "url": url, "status": status, "body": body}
+
+
+def test_a_request_recorded_twice_is_answered_in_order_and_the_last_answer_repeats() -> None:
+    """A read that works and then fails: the first answer first, the last one every time after."""
+    recording = exam.Recording(
+        {"http": [_exchange(200, '{"n": 1}'), _exchange(200, '{"n": 2}'), _exchange(503, "{}"),
+                  _exchange(200, "other", "http://x/elsewhere")]},
+    )
+    with exam._Transport(recording, live=False):  # noqa: SLF001
+        with urllib.request.urlopen("http://x/forecast") as first:
+            assert json.load(first) == {"n": 1}
+        with urllib.request.urlopen("http://x/elsewhere") as other:
+            assert other.read() == b"other"  # another request has its own count
+        with urllib.request.urlopen("http://x/forecast") as second:
+            assert json.load(second) == {"n": 2}
+        for _ in range(2):
+            with pytest.raises(urllib.error.HTTPError) as down:
+                urllib.request.urlopen("http://x/forecast")
+            assert down.value.code == 503
+
+
+def test_a_setup_step_lets_time_pass_only_when_it_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``after_s`` shifts the frozen clock after its own call and before the next one."""
+    seen: list[str] = []
+
+    class _Clock:
+        def shift(self, seconds: float) -> None:
+            seen.append(f"shift {seconds:g}")
+
+    def dispatch(_box: Any, tool: str, args: dict[str, Any], _said: str) -> str:  # noqa: ANN401
+        seen.append(f"{tool} {args}")
+        return "{}"
+
+    monkeypatch.setattr(exam, "dispatch", dispatch)
+    item = exam.Item(
+        {"id": "x", "said": "hi", "setup": [
+            {"tool": "a", "args": {"n": 1}, "after_s": 7200}, {"tool": "b"},
+            {"tool": "c", "after_s": 60},
+        ]},
+        Path("x.json"),
+    )
+    exam._setup(type("Box", (), {"clock": _Clock()})(), item)  # noqa: SLF001
+    assert seen == ["a {'n': 1}", "shift 7200", "b {}", "c {}", "shift 60"]
+
+
 def test_an_mcp_call_is_answered_from_the_recording_or_fails_the_item() -> None:
     """The MCP client's tool-call boundary: a recorded call replays, an unrecorded one misses."""
     recording = exam.Recording(
