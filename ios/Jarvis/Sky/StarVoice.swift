@@ -9,7 +9,6 @@ import Observation
 struct VoiceShot {
     var state = VoiceSession.State.idle
     var partial = "", transcript = "", reply = "", full = ""      // `full`: all of her answer, of which `reply` is what she has said
-    var more = false                    // what is written of her answer says more than she says aloud (`AnswerText.saysMore`)
     var input = 0.0, output = 0.0
     var error: String?
     var progress: Double?
@@ -23,7 +22,7 @@ extension StarEngine {
         return MainActor.assumeIsolated {
             let v = VoiceSession.shared
             return VoiceShot(state: v.state, partial: v.partial, transcript: v.transcript, reply: AnswerText.visible(v.reply), full: AnswerText.visible(v.fullReply),
-                             more: AnswerText.saysMore(v.fullReply), input: v.inputLevel, output: v.outputLevel, error: v.errorText, progress: v.modelProgress)
+                             input: v.inputLevel, output: v.outputLevel, error: v.errorText, progress: v.modelProgress)
         }
     }
 

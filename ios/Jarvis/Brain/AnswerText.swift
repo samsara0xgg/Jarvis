@@ -89,13 +89,6 @@ enum AnswerText {
         return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
     }
 
-    /// What is written says more than she says aloud: there is a document, and it is not her voice part again (whitespace aside). An answer with no document, or a line before one, is said whole.
-    static func saysMore(_ reply: String) -> Bool {
-        guard reply.contains("<document>") else { return false }
-        func bare(_ s: String) -> String { s.filter { !$0.isWhitespace } }
-        return bare(visible(voicePart(reply))) != bare(visible(reply))
-    }
-
     /// A line before the answer: it has a voice part and no document, so more follows.
     static func isLeadIn(_ reply: String) -> Bool { reply.contains("<voice>") && !reply.contains("<document>") }
 }

@@ -29,14 +29,10 @@ struct TLTalk: Equatable {
     var unsent: LiveTurn?
 
     var isEmpty: Bool { heard == nil && hers.isEmpty && cards == 0 && unsent == nil }
-    /// he spoke the round
-    var spoken: Bool { heard != nil }
-    /// how many characters of her words the round has, as they show
-    var chars: Int { hers.filter { $0.status == nil && !$0.failed }.reduce(0) { $0 + String(AnswerText.linked($1.text).characters).count } }
 
-    /// How long the place stays after her last word, in ms. A round he spoke, and she said whole (what is written is her voice again), stays 4 s after her voice ends: he has heard it. Any other is
-    /// read: 8 s and 0.12 s a character, at most 45 s.
-    static func stay(chars: Int, said: Bool) -> Double { said ? 4000 : min(45_000, 8000 + 120 * Double(chars)) }
+    /// How long the place stays after her last word, in ms, spoken or written: until he does something else (scrolls the day, opens a row, goes to another day or a page, leaves the app:
+    /// `StarEngine.releaseTalk`), and if he does nothing, ten minutes. Her sentence of the day comes back in its place.
+    static let stay = 600_000.0
 
     /// the round of the live rows of a talk
     static func of(_ turns: [LiveTurn]) -> TLTalk {

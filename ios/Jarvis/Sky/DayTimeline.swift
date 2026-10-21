@@ -335,6 +335,7 @@ struct DayTimelineView: View {
             .onChange(of: tl.enter) { _, _ in release(hasDay(shown)) }
             .onChange(of: ui.tlHome) { _, _ in release(hasDay(shown)) }
             .onChange(of: tl.focus) { _, id in if let id { tl.openCard = id; tl.focus = nil } }
+            .onChange(of: tl.day) { _, _ in engine.releaseTalk() }          // another day: her answer about this one has been seen
         }
         .opacity(on ? 1 : 0)
         .allowsHitTesting(on)

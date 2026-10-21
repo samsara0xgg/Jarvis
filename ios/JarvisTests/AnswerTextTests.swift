@@ -21,14 +21,6 @@ final class AnswerTextTests: XCTestCase {
         XCTAssertEqual(AnswerText.spoken("好，**我**来 `整理`。"), "好，我来 整理。")
     }
 
-    func testWhatIsWrittenSaysMoreOnlyWhenTheDocumentIsNotHerVoiceAgain() {
-        XCTAssertFalse(AnswerText.saysMore("好，我来整理。"), "an untagged answer is said whole")
-        XCTAssertFalse(AnswerText.saysMore("<voice>我上网查查。</voice>"), "so is a line before an answer")
-        XCTAssertTrue(AnswerText.saysMore("<voice>我列在下面了。</voice><document>## 周五\n- 10:00 周会</document>"))
-        XCTAssertFalse(AnswerText.saysMore("<voice>九点二十\n出门。</voice><document>九点二十 出门。</document>"), "whitespace aside")
-        XCTAssertFalse(AnswerText.saysMore("<voice>九点二十。</voice><doc"), "a half-streamed tag is no document yet")
-    }
-
     func testAHalfStreamedTrailingTagIsDropped() {
         XCTAssertEqual(AnswerText.visible("<voice>我上网查查。</voice><doc"), "我上网查查。")
         XCTAssertEqual(AnswerText.visible("<voice>你好</vo"), "你好")

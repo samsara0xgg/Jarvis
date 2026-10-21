@@ -86,7 +86,7 @@ struct StarChrome: View {
         }
         .onChange(of: phase) { _, p in
             // away for five minutes, it comes back to the star chart as it was first opened
-            if p == .background { leftAt = Date() }
+            if p == .background { leftAt = Date(); engine.releaseTalk() }          // her answer on the timeline has been seen: the day's sentence is back when he comes back
             else if p == .active, let t = leftAt { leftAt = nil; if Date().timeIntervalSince(t) > 300 { engine.comeBack() } }
         }
         .onAppear {

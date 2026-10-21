@@ -490,7 +490,7 @@ extension StarEngine {
             let s = (now - t0) / 1000
             if s < 2.6 { v.state = .listening; v.partial = String(ask.prefix(Int(s * 12) + 1)); v.input = 0.3 + 0.7 * voiceLevel(now / 1000 * 1.3) }
             else if s < 3.8 { v.state = .thinking; v.transcript = ask }
-            else if s < speechEnd { v.state = .speaking; v.transcript = ask; v.reply = String(shown.prefix(Int(Double(shown.count) * min(1, (s - 3.8) / (Double(said.count) / 8))))); v.full = shown; v.more = document; v.output = voiceLevel(now / 1000) }
+            else if s < speechEnd { v.state = .speaking; v.transcript = ask; v.reply = String(shown.prefix(Int(Double(shown.count) * min(1, (s - 3.8) / (Double(said.count) / 8))))); v.full = shown; v.output = voiceLevel(now / 1000) }
             else if s < speechEnd + 10 { v.state = .listening; v.reply = shown }          // the window for what he says next is ten seconds; her answer is over, and the session has cleared it
             return v
         }

@@ -99,27 +99,20 @@ final class DayTimelineTalkTests: XCTestCase {
         e.addTurn(his: false, String(repeating: "安", count: chars))
     }
 
-    func testTheStayIsFourSecondsForARoundSaidWholeAndTimeToReadForTheRest() {
-        XCTAssertEqual(TLTalk.stay(chars: 500, said: true), 4000)
-        XCTAssertEqual(TLTalk.stay(chars: 0, said: false), 8000)
-        XCTAssertEqual(TLTalk.stay(chars: 100, said: false), 20_000)
-        XCTAssertEqual(TLTalk.stay(chars: 1000, said: false), 45_000, "at most 45 s")
-        XCTAssertEqual(TLTalk.of([his("a"), hers("**一二**三"), hers("", status: StatusLine()), try! card()]).chars, 3, "her words as they show: the marks are not counted, a status and a card are no words")
-    }
-
-    @MainActor func testATypedRoundStaysAsLongAsItTakesToReadAndThenHerSentenceComesBack() {
+    @MainActor func testATypedRoundStaysUntilHeDoesSomethingElseAndAtMostTenMinutes() {
         withTimeline { e in
             typedRound(e, chars: 100)
             e.stepTalk(nowMs())
             XCTAssertTrue(e.ui.tlTalk, "on while the round is on")
-            e.stepTalk(nowMs() + 600_000)
+            e.stepTalk(nowMs() + 3_600_000)
             XCTAssertTrue(e.ui.tlTalk, "and a round that is not over does not time out")
             e.endTalk()
             let t0 = nowMs()
-            XCTAssertEqual(e.tlUntil - t0, 20_000, accuracy: 500, "8 s and 0.12 s a character")
-            e.stepTalk(t0 + 19_000)
-            XCTAssertTrue(e.ui.tlTalk)
-            e.stepTalk(t0 + 21_000)
+            XCTAssertEqual(e.tlUntil - t0, TLTalk.stay, accuracy: 500)
+            XCTAssertEqual(TLTalk.stay, 600_000, "ten minutes when he does nothing")
+            e.stepTalk(t0 + 300_000)
+            XCTAssertTrue(e.ui.tlTalk, "a long read is still there")
+            e.stepTalk(t0 + TLTalk.stay + 1000)
             XCTAssertFalse(e.ui.tlTalk)
             XCTAssertFalse(e.ui.talking, "the talk goes with its place")
         }
@@ -135,7 +128,7 @@ final class DayTimelineTalkTests: XCTestCase {
         XCTAssertEqual(e.lingerUntil - nowMs(), StarEngine.linger, accuracy: 500)
     }
 
-    @MainActor func testASpokenRoundSaidWholeGoesFourSecondsAfterHerVoiceAndNotWithTheOpenMicrophone() {
+    @MainActor func testASpokenRoundStaysAfterHerVoiceWhileTheMicrophoneIsOpenUntilHeSpeaksAgain() {
         withTimeline { e in
             var v = VoiceShot()
             e.voiceFake = { _ in v }
@@ -146,34 +139,14 @@ final class DayTimelineTalkTests: XCTestCase {
             v.state = .speaking; v.reply = "九点二十。"; v.full = "九点二十。"; at(3000)
             XCTAssertTrue(e.ui.tlTalk)
             v.state = .listening; v.transcript = ""; v.reply = "九点二十。"; v.full = ""; at(5000)          // her voice is done, and the microphone stays open for him
-            at(8900)
-            XCTAssertTrue(e.ui.tlTalk, "under four seconds after her voice")
-            at(9100)
-            XCTAssertFalse(e.ui.tlTalk, "four seconds after")
+            XCTAssertEqual(e.tlUntil, 5000 + TLTalk.stay, accuracy: 1, "her voice done, the place stays as a typed answer does")
+            at(65_000)
+            XCTAssertTrue(e.ui.tlTalk, "a minute after her voice it is still there to read")
             XCTAssertTrue(e.ui.talking, "the talk goes on while the microphone is open")
-            v.partial = "还有呢"; at(9300)
+            v.partial = "还有呢"; at(65_300)
             XCTAssertTrue(e.ui.tlTalk, "what he says next is a round of its own, and the place is his again")
             XCTAssertEqual(TLTalk.of(e.ui.liveTurns).heard, "还有呢")
             XCTAssertTrue(TLTalk.of(e.ui.liveTurns).hers.isEmpty)
-        }
-    }
-
-    @MainActor func testASpokenRoundWithADocumentThatSaysMoreIsReadLikeATypedOne() {
-        withTimeline { e in
-            let doc = "## 明天\n- 15:00 二面，线上，约四十五分钟\n- 20:30 给 Mia 回电话，我到时候提醒你\n\n二面之前我会把上次面试的笔记整理出来。"
-            var v = VoiceShot()
-            e.voiceFake = { _ in v }
-            func at(_ ms: Double) { _ = e.syncVoice(ms); e.stepTalk(ms) }
-            v.state = .listening; v.partial = "明天有什么安排"; at(1000); at(1500)
-            v.state = .speaking; v.partial = ""; v.transcript = "明天有什么安排"; v.reply = "明天下午三点有一个二面。"; v.full = doc; v.more = true; at(3000)
-            v.reply = doc; at(4500)             // her voice ends with the last of it, as the session paces it
-            v.state = .listening; v.transcript = ""; v.more = false; v.full = ""; v.reply = doc; at(5000)
-            let stay = TLTalk.stay(chars: TLTalk.of(e.ui.liveTurns).chars, said: false)
-            XCTAssertGreaterThan(stay, 8000)
-            at(5000 + stay - 100)
-            XCTAssertTrue(e.ui.tlTalk)
-            at(5000 + stay + 100)
-            XCTAssertFalse(e.ui.tlTalk)
         }
     }
 
@@ -182,11 +155,11 @@ final class DayTimelineTalkTests: XCTestCase {
             typedRound(e, chars: 10)
             e.endTalk()
             e.holdLinger(true)
-            e.stepTalk(nowMs() + 600_000)
+            e.stepTalk(nowMs() + 3_600_000)
             XCTAssertTrue(e.ui.tlTalk, "held")
             XCTAssertTrue(e.ui.talking)
             e.holdLinger(false)
-            XCTAssertEqual(e.tlUntil - nowMs(), TLTalk.stay(chars: 10, said: false), accuracy: 500)
+            XCTAssertEqual(e.tlUntil - nowMs(), TLTalk.stay, accuracy: 500)
         }
     }
 
@@ -202,6 +175,7 @@ final class DayTimelineTalkTests: XCTestCase {
             e.releaseTalk()
             e.stepTalk(nowMs() + 10)
             XCTAssertFalse(e.ui.tlTalk, "he has gone to the day")
+            XCTAssertEqual(e.lingerUntil - nowMs(), StarEngine.linger, accuracy: 500, "and the talk's rows go after it as they do under the dial, not ten minutes on")
         }
     }
 
