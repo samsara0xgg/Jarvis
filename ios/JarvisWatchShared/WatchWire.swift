@@ -18,7 +18,7 @@ struct WatchDay: Codable, Equatable {
     var blocks: [Block] = []
     /// what is planned after now: short ticks on the ring's faint future
     var ahead: [Tick] = []
-    /// the next thing, under her on the home ring (`22:00 陶艺课` and `还有 10 分`)
+    /// the next thing, under her on the home ring (`22:00 陶艺课` and `还有 10 分钟`)
     var headline: Headline?
     /// 现在: the stretch he is in
     var current: Row?
@@ -28,6 +28,8 @@ struct WatchDay: Codable, Equatable {
     var next: [Row] = []
     /// the bus he is on
     var ride: Ride?
+    /// when he should leave for the bus he means to take (the watch taps 该出门了 then)
+    var leaveAt: Date?
 
     struct Block: Codable, Equatable {
         var t0: Double, t1: Double          // minutes from the day's midnight
@@ -41,7 +43,7 @@ struct WatchDay: Codable, Equatable {
     }
     struct Headline: Codable, Equatable {
         var title: String                   // `22:00 陶艺课`
-        var note: String                    // `还有 10 分`
+        var note: String                    // `还有 10 分钟`
         var waits: Bool                     // amber
     }
     /// one row in the phone timeline's anatomy: an icon in its circle, a title, a grey line, something at the right
@@ -93,6 +95,14 @@ enum WatchTell: Codable, Equatable {
     case thinking(talk: UUID)                                // the words went to the brain
     case reply(talk: UUID, spoken: String, written: String, card: WatchDay.Waiting?)   // her answer; a card she put up comes with it, its buttons under her words
     case failed(talk: UUID, reason: String)                  // in the words table's language
+}
+
+/// The last day the phone sent, kept in the App Group so the complications draw it too.
+enum WatchDayStore {
+    private static let key = "watch.day"
+    private static var store: UserDefaults? { UserDefaults(suiteName: "group.com.yilunshi.jarvis") }
+    static func load() -> WatchDay? { store?.data(forKey: key).flatMap { try? JSONDecoder().decode(WatchDay.self, from: $0) } }
+    static func save(_ d: WatchDay) { if let data = try? JSONEncoder().encode(d) { store?.set(data, forKey: key) } }
 }
 
 enum WatchWire {

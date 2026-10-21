@@ -26,7 +26,7 @@ from tests.canary._helpers import repo_root
 
 _CJK: Final = re.compile(r"[　-〿一-鿿＀-￯]")
 
-_ROOTS: Final = ("ios/Jarvis", "ios/JarvisWidgets", "ios/JarvisShare")
+_ROOTS: Final = ("ios/Jarvis", "ios/JarvisWidgets", "ios/JarvisShare", "ios/JarvisWatch", "ios/JarvisWatchWidgets", "ios/JarvisWatchShared")
 
 _TABLE_DIR: Final = "ios/Jarvis/App"
 
