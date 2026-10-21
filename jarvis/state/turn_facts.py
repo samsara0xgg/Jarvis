@@ -80,6 +80,26 @@ def answer_stopped_by_him(conn: sqlite3.Connection, turn_id: str) -> bool:
     ).fetchone() is not None
 
 
+def answer_superseded(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Whether a run of the turn was cancelled because his next sentence took its place."""
+    return conn.execute(
+        "SELECT 1 FROM events WHERE type = 'response.cancelled' "
+        "AND json_extract(payload_json, '$.turn_id') = ? "
+        "AND json_extract(payload_json, '$.reason') = 'superseded' LIMIT 1",
+        (turn_id,),
+    ).fetchone() is not None
+
+
+def turn_cancelled_or_failed(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Whether a run of the turn was cancelled or failed, or the turn failed (read by payload)."""
+    return conn.execute(
+        "SELECT 1 FROM events "
+        "WHERE type IN ('response.cancelled', 'response.failed', 'turn.failed') "
+        "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1",
+        (turn_id,),
+    ).fetchone() is not None
+
+
 def answer_started(conn: sqlite3.Connection, turn_id: str) -> bool:
     """Whether the turn's answer (any run but a wait line) has opened on a surface or been heard.
 
