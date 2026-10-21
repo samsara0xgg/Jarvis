@@ -32,9 +32,8 @@ struct StarChartScreen: View {
                     .frame(width: W, height: H)
                     .coordinateSpace(name: "design")
                     .scaleEffect(k, anchor: .topLeading)
-                    .offset(x: ox, y: oy)
                     .frame(width: W * k, height: H * k, alignment: .topLeading)
-                    .offset(x: ox, y: oy)
+                    .offset(x: ox, y: oy)                   // once, as the stage under it (StarStage.layout): a window taller than the canvas (an iPad in Split View) centres both
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
