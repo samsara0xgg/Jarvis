@@ -2393,6 +2393,27 @@ def turn_origin(conn: sqlite3.Connection, turn_id: str) -> tuple[str | None, str
     )
 
 
+_SELECT_DEVICE_TURNS_SQL = (
+    "SELECT json_extract(payload_json, '$.turn_id') FROM events "
+    "WHERE type IN ('surface.user_intent', 'utterance.received') AND ingestion_node = ? "
+    "AND json_extract(payload_json, '$.turn_id') IS NOT NULL ORDER BY id DESC LIMIT ?"
+)
+
+
+def recent_turns_of_device(conn: sqlite3.Connection, device: str, limit: int) -> list[str]:
+    """The last ``limit`` turns whose opening row was written under ``device``, oldest first.
+
+    The owner of a turn is the device named on its opening row (:func:`turn_origin`), however
+    that device was connected when it spoke: a phone that reconnected still owns what it said
+    on the socket before.
+    """
+    turns: dict[str, None] = {}
+    for (turn_id,) in conn.execute(_SELECT_DEVICE_TURNS_SQL, (device, limit)):
+        if isinstance(turn_id, str):
+            turns.setdefault(turn_id)
+    return list(reversed(turns))
+
+
 _SELECT_CONFIRMATION_TURN_SQL: Final = (
     "SELECT correlation_id FROM events WHERE type = 'confirmation.requested' "
     "AND json_extract(payload_json, '$.confirmation_id') = ? ORDER BY id DESC LIMIT 1"

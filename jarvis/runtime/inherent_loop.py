@@ -245,6 +245,7 @@ from jarvis.state.event_log import (
     open_event_log,
     open_runtime_event_log,
     read_log_epoch,
+    recent_turns_of_device,
     turn_intent_channel,
     turn_origin,
 )
@@ -3470,6 +3471,9 @@ class _PhoneRows:
 
     def reactions(self, after: int) -> _PhoneReactionCursor:
         return _PhoneReactionCursor(self._conn, after)
+
+    def recent_turns(self, device: str, limit: int) -> list[str]:
+        return recent_turns_of_device(self._conn, device, limit)
 
 
 def _add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:

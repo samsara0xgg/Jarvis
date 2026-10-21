@@ -228,6 +228,9 @@ class PhoneRows(Protocol):
     def reactions(self, after: int) -> ReactionCursor:
         """The ``reaction`` frames of every reaction past ``after``, whichever device's turn."""
 
+    def recent_turns(self, device: str, limit: int) -> list[str]:
+        """The last ``limit`` turns ``device`` opened, oldest first, whatever socket it used."""
+
 
 class StepCursor(Protocol):
     """A place in the action rows of one device's turns (ADR 0231)."""
@@ -331,7 +334,7 @@ class _Connection:
         self.done = asyncio.Event()
         self.voice: PhoneVoice | None = None
         self.began = False
-        self.recent_turns: deque[str] = deque(maxlen=_RECENT_TURNS)
+        self.recorded_turns: deque[str] = deque(maxlen=_RECENT_TURNS)
         self.tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
 
@@ -715,7 +718,7 @@ def _elsewhere_check(hub: PhoneHub, conn: _Connection) -> Callable[[str, str], b
         return None
 
     def check(turn_id: str, text: str) -> bool:
-        return turn_id not in conn.recent_turns and ask(conn.device, turn_id, text)
+        return turn_id not in conn.recorded_turns and ask(conn.device, turn_id, text)
 
     return check
 
@@ -811,8 +814,8 @@ def _record_say(
         LOGGER.exception("phone %s: appending its utterance failed", conn.device)
         conn.error("retry", "the host could not record this; send it again")
         return
-    if turn_id not in conn.recent_turns:
-        conn.recent_turns.append(turn_id)
+    if turn_id not in conn.recorded_turns:
+        conn.recorded_turns.append(turn_id)
     conn.send_json(
         {
             "type": "said", "utterance_id": say.utterance_id, "turn_id": turn_id,
@@ -919,13 +922,15 @@ async def _interrupt(
 
     ``barge`` is Allen talking over her: the actor's playback stops (a DISCARD to the phone,
     settled on its DISCARD_ACK) and the open answer's generation is cancelled under its policy.
-    ``cancel`` is the stop button: the same, for every recent turn of this device.
+    ``cancel`` is the stop button: the same, for every recent turn of this device, found in the
+    log by the device named on the turn's opening row, not by the socket that carried it: a turn
+    the phone opened before it reconnected, or over HTTP, is stopped too.
     """
     try:
         if conn.voice is not None:
             await conn.voice.stop_playback(reason)
         if cancel_turns and hub.cancel_turn is not None:
-            for turn_id in list(conn.recent_turns):
+            for turn_id in hub.rows.recent_turns(conn.device, _RECENT_TURNS):
                 await asyncio.to_thread(hub.cancel_turn, turn_id, reason)
         elif hub.barge_in is not None:
             outcome = await asyncio.to_thread(hub.barge_in, conn.device)
