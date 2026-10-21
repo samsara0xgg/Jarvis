@@ -31,7 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon import intent_pump, output_watchers
 from jarvis.shared.emoji import is_single_emoji
 from jarvis.state import reactions
 from jarvis.state.device_tokens import device_token_matches, pair_device
@@ -363,8 +363,8 @@ def test_a_typed_message_that_arrives_mid_turn_gets_the_eyes_and_nothing_else_do
     conn = open_event_log(log)
     first, second, spoken = typed(conn, 1), typed(conn, 2), typed(conn, 3, "inherent_ptt")
     for event in (first, second, spoken):
-        assert inherent_loop._claim_intent_in_thread(log, event)  # noqa: SLF001
-        inherent_loop._mark_seen(log, event)  # noqa: SLF001
+        assert intent_pump.claim_intent_in_thread(log, event)
+        intent_pump.mark_seen(log, event)
     assert reaction_events(conn) == [{"target": second.event_uid, "by": "jarvis", "emoji": EYES}]
 
     for turn_id in ("T1", "T2", "T3"):  # all answered
@@ -378,8 +378,8 @@ def test_a_typed_message_that_arrives_mid_turn_gets_the_eyes_and_nothing_else_do
             },
         )
     late = typed(conn, 4)
-    inherent_loop._claim_intent_in_thread(log, late)  # noqa: SLF001
-    inherent_loop._mark_seen(log, late)  # noqa: SLF001
+    intent_pump.claim_intent_in_thread(log, late)
+    intent_pump.mark_seen(log, late)
     assert len(reaction_events(conn)) == 1, "no turn of his was in flight"
     assert reactions.current(conn, [second.event_uid]) == {second.event_uid: {"jarvis": EYES}}
     conn.close()

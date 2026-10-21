@@ -26,6 +26,7 @@ from jarvis.runtime import (
     inherent_loop,
     make_response_cancel_callable,
 )
+from jarvis.runtime.daemon import intent_pump
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
 from tests.support.model import Pause, ScriptedModel, tool_call
@@ -162,7 +163,7 @@ async def _held_terminal_scenario(  # noqa: PLR0915 - live-turn and orphan watch
 
     monkeypatch.setattr(inherent_loop, "live_action_ids", live)
     driven: list[str] = []
-    original_drive = inherent_loop._drive_turn_in_worker_thread
+    original_drive = intent_pump.drive_turn_in_worker_thread
 
     def watch_drive(*args: Any, **kwargs: Any) -> Any:
         driven.append(kwargs["user_intent_event"].event_uid)

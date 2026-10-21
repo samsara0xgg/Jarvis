@@ -27,7 +27,7 @@ import pytest
 
 import jarvis.runtime as runtime_pkg
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
-from jarvis.runtime.daemon import voice_power
+from jarvis.runtime.daemon import intent_pump, voice_power
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface import voice_media
@@ -180,7 +180,7 @@ def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
             await asyncio.to_thread(ask)
             assert await asyncio.to_thread(entered.wait, 30), "the turn never started"
 
-    monkeypatch.setattr(inherent_loop, "drive_turn", stuck_turn)
+    monkeypatch.setattr(intent_pump, "drive_turn", stuck_turn)
     monkeypatch.setattr(inherent_loop, "_Server", _EndsWhenTheTurnIsRunning)
 
     async def run() -> None:

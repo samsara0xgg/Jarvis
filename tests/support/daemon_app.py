@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
+from jarvis.runtime.daemon import intent_pump
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.plugin_settings import local_key
 
@@ -98,7 +99,7 @@ def run_in_daemon[T](
             answers.append(await scenario(Daemon(runtime, self.app, turns)))
 
     monkeypatch.setattr(inherent_loop, "_Server", _Server)
-    monkeypatch.setattr(inherent_loop, "drive_turn", record_turn)
+    monkeypatch.setattr(intent_pump, "drive_turn", record_turn)
     try:
         asyncio.run(inherent_loop.serve_inherent(runtime, port=0))
     finally:

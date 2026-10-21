@@ -29,16 +29,17 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, WaitingTurn, inherent_loop
-from jarvis.runtime.daemon.output_watchers import response_watcher
-from jarvis.runtime.inherent_loop import (
-    _boot_intent_pump_in_thread,
-    _claim_intent_in_thread,
-    _intent_pump_watcher,
-    _intent_worker,
-    _IntentPumpBoot,
-    _start_intent_pump,
-    _system_trigger_watcher,
+from jarvis.runtime.daemon import intent_pump
+from jarvis.runtime.daemon.intent_pump import (
+    IntentPumpBoot,
+    boot_intent_pump_in_thread,
+    claim_intent_in_thread,
+    intent_pump_watcher,
+    intent_worker,
+    start_intent_pump,
 )
+from jarvis.runtime.daemon.output_watchers import response_watcher
+from jarvis.runtime.inherent_loop import _system_trigger_watcher
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.input_claim import (
@@ -134,11 +135,11 @@ class _Recorder:
 async def _drain(runtime: JarvisRuntime, recorder: _Recorder, *, expect: int) -> None:
     """Run the pump until it has driven ``expect`` turns, or the spin budget ends."""
     with patch.object(
-        inherent_loop,
-        "_drive_turn_in_worker_thread",
+        intent_pump,
+        "drive_turn_in_worker_thread",
         side_effect=recorder,
     ):
-        tasks = await _start_intent_pump(
+        tasks = await start_intent_pump(
             runtime,
             poll_interval_s=0.001,
             queue_capacity=8,
@@ -182,9 +183,9 @@ def test_adoption_watermark_excludes_history(runtime: JarvisRuntime) -> None:
 
 def test_adoption_is_recorded_exactly_once_across_boots(runtime: JarvisRuntime) -> None:
     """A second boot reuses the first watermark instead of moving it forward."""
-    first = _boot_intent_pump_in_thread(runtime.runtime_paths.event_log)
+    first = boot_intent_pump_in_thread(runtime.runtime_paths.event_log)
     _emit_intent(runtime, "T-after")
-    second = _boot_intent_pump_in_thread(runtime.runtime_paths.event_log)
+    second = boot_intent_pump_in_thread(runtime.runtime_paths.event_log)
 
     assert first.adopted_now is True
     assert second.adopted_now is False
@@ -203,11 +204,11 @@ def test_post_adoption_intents_are_claimed_and_driven_once(runtime: JarvisRuntim
 
     async def _body() -> None:
         with patch.object(
-            inherent_loop,
-            "_drive_turn_in_worker_thread",
+            intent_pump,
+            "drive_turn_in_worker_thread",
             side_effect=recorder,
         ):
-            tasks = await _start_intent_pump(
+            tasks = await start_intent_pump(
                 runtime,
                 poll_interval_s=0.001,
                 queue_capacity=8,
@@ -242,11 +243,11 @@ def test_a_spoken_utterance_is_claimed_and_driven_like_a_typed_intent(
 
     async def _body() -> None:
         with patch.object(
-            inherent_loop,
-            "_drive_turn_in_worker_thread",
+            intent_pump,
+            "drive_turn_in_worker_thread",
             side_effect=recorder,
         ):
-            tasks = await _start_intent_pump(
+            tasks = await start_intent_pump(
                 runtime,
                 poll_interval_s=0.001,
                 queue_capacity=8,
@@ -390,7 +391,7 @@ def test_a_row_landing_during_the_boot_scan_is_not_lost(runtime: JarvisRuntime) 
     recorder = _Recorder()
 
     async def _body() -> None:
-        with patch.object(inherent_loop, "recoverable_inputs", _scan_then_commit):
+        with patch.object(intent_pump, "recoverable_inputs", _scan_then_commit):
             await _drain(runtime, recorder, expect=1)
 
     asyncio.run(_body())
@@ -421,7 +422,7 @@ def test_the_boot_scan_and_the_poll_loop_do_not_both_dispatch(
     adoption = adopt_consumer(runtime.conn, name=REALTIME_INTENT_CONSUMER)
     assert adoption.adopted_now is True
     overlap = _emit_intent(runtime, "T-overlap", "同一句")
-    boot = _IntentPumpBoot(
+    boot = IntentPumpBoot(
         adoption_row_id=adoption.adoption_row_id,
         live_cursor_id=adoption.adoption_row_id,
         recovered=(overlap,),
@@ -432,15 +433,15 @@ def test_the_boot_scan_and_the_poll_loop_do_not_both_dispatch(
 
     async def _body() -> None:
         with patch.object(
-            inherent_loop,
-            "_drive_turn_in_worker_thread",
+            intent_pump,
+            "drive_turn_in_worker_thread",
             side_effect=recorder,
         ):
             queue: asyncio.Queue[Event | WaitingTurn] = asyncio.Queue(maxsize=8)
             dispatched: set[str] = set()
             tasks = [
                 asyncio.create_task(
-                    _intent_pump_watcher(
+                    intent_pump_watcher(
                         runtime,
                         queue,
                         boot,
@@ -448,7 +449,7 @@ def test_the_boot_scan_and_the_poll_loop_do_not_both_dispatch(
                         poll_interval_s=0.001,
                     ),
                 ),
-                asyncio.create_task(_intent_worker(runtime, queue)),
+                asyncio.create_task(intent_worker(runtime, queue)),
             ]
             try:
                 for _ in range(400):
@@ -532,11 +533,11 @@ def test_a_full_queue_holds_the_cursor_instead_of_dropping(runtime: JarvisRuntim
 
     async def _body() -> None:
         with patch.object(
-            inherent_loop,
-            "_drive_turn_in_worker_thread",
+            intent_pump,
+            "drive_turn_in_worker_thread",
             side_effect=_blocking,
         ):
-            tasks = await _start_intent_pump(
+            tasks = await start_intent_pump(
                 runtime,
                 poll_interval_s=0.001,
                 # One slot in the queue and one worker: the pump must block
@@ -577,7 +578,7 @@ def test_a_claim_that_hits_a_locked_log_is_retried(runtime: JarvisRuntime) -> No
     trigger and a later one both still get one ``turn.started`` and one dispatch.
     """
     recorder = _Recorder()
-    real_claim = _claim_intent_in_thread
+    real_claim = claim_intent_in_thread
     attempts: list[str] = []
 
     def _locked_once(path: Path, event: Event) -> bool:
@@ -589,11 +590,11 @@ def test_a_claim_that_hits_a_locked_log_is_retried(runtime: JarvisRuntime) -> No
 
     async def _body() -> None:
         with (
-            patch.object(inherent_loop, "_drive_turn_in_worker_thread", side_effect=recorder),
-            patch.object(inherent_loop, "_claim_intent_in_thread", side_effect=_locked_once),
-            patch.object(inherent_loop, "_WATCHER_RETRY_S", 0.01),
+            patch.object(intent_pump, "drive_turn_in_worker_thread", side_effect=recorder),
+            patch.object(intent_pump, "claim_intent_in_thread", side_effect=_locked_once),
+            patch.object(intent_pump, "WATCHER_RETRY_S", 0.01),
         ):
-            tasks = await _start_intent_pump(
+            tasks = await start_intent_pump(
                 runtime, poll_interval_s=0.001, queue_capacity=8, max_concurrent_turns=2,
             )
             try:
@@ -655,8 +656,8 @@ def test_a_turn_that_raises_reaches_the_surface_as_failed(runtime: JarvisRuntime
     async def _body() -> None:
         broadcaster = InherentBroadcaster()
         await broadcaster.register(socket)  # type: ignore[arg-type]
-        with patch.object(inherent_loop, "_drive_turn_in_worker_thread", side_effect=_raises):
-            tasks = await _start_intent_pump(
+        with patch.object(intent_pump, "drive_turn_in_worker_thread", side_effect=_raises):
+            tasks = await start_intent_pump(
                 runtime, poll_interval_s=0.001, queue_capacity=8, max_concurrent_turns=2,
             )
             tasks.append(asyncio.create_task(
