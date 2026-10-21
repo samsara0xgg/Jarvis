@@ -205,5 +205,6 @@ def test_schedule_is_the_only_reminder_tool_on_the_menu() -> None:
         "my_schedule",
         "remember",
     }
-    assert {"schedule", "keep", "kept"} <= menu & router
+    assert {"schedule", "kept"} <= menu & router
+    assert "keep" in menu - router
     assert not (menu | router | {t.name for t in registry.get_definitions()}) & old

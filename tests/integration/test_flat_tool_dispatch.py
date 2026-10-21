@@ -80,7 +80,7 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
             tool_request("get_current_time", "A1", caller=CallerPrincipal.REGEX_ROUTER)
         )
         observed = tool_chain(fx, "A1")
-        assert set(observed) == {"action_id", "semantics", "tool_output"}
+        assert set(observed) == {"action_id", "semantics", "tool_output", "receipt"}
         assert observed["semantics"] == "observation"
         assert set(json.loads(observed["tool_output"])) == _TIME_KEYS
         slot = bundle
@@ -93,8 +93,15 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
         assert observed == {
             "action_id": "A2",
             "semantics": "error",
-            "tool_output": '{"error": "bad 7", "code": "invalid_arguments"}',
+            "tool_output": (
+                '{"error": "bad 7", "code": "invalid_arguments", "kind": "retry_other_args"}'
+            ),
             "error": "invalid_arguments",
+            "receipt": {
+                "status": "failed", "reads_only": True, "derived": True,
+                "line": "failing_tool(x=7) gave error invalid_arguments",
+                "failure": "retry_other_args",
+            },
         }
         slot = bundle
         assert slot.error == "invalid_arguments"

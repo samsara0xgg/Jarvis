@@ -16,8 +16,9 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution import maps_spend, places_api, transit_tool
-from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
+from jarvis.execution.tools import Receipted, Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.receipts import Receipt
 from jarvis.state import departures
 
 if TYPE_CHECKING:
@@ -70,6 +71,8 @@ _HOME: Final = "home"
 _RIDE_ONLY: Final = {
     "option": "ride=start", "vehicle_id": "ride=start",
 }
+_WRITES: Final = ("pin", "ride", "get_off")
+"""The arguments that change something; a call with none of them only reads (ADR 0319)."""
 _DROPPED: Final = frozenset({"ride_id", "eta_ms", "started_at_ms", "warned", "note"})
 """Fields of the ride follower's answers that are the program's, or that the sentence says."""
 _EASY_SPARE_MIN: Final = 2
@@ -294,9 +297,19 @@ def _ride_line(ride: Mapping[str, Any]) -> str:
     )
 
 
+def _reads(args: Mapping[str, Any]) -> bool:
+    """Whether a ``bus`` call only reads: times, or the ride as it stands."""
+    return not any(args.get(name) not in (None, "") for name in _WRITES)
+
+
 def _ride_view(summary: str, raw: Mapping[str, Any]) -> dict[str, Any]:
     """A ride tool's answer: the sentence first, then what the program told, minus its own ids."""
     return {"summary": summary, **{k: v for k, v in raw.items() if k not in _DROPPED}}
+
+
+def _needs_choice(view: dict[str, Any], line: str) -> Receipted:
+    """A ride write that stopped to ask which of several candidates he means (ADR 0319)."""
+    return Receipted(view, Receipt("needs_choice", reads_only=False, line=line))
 
 
 class _Bus:
@@ -312,7 +325,7 @@ class _Bus:
         self._offers = offers
         self._control = control
 
-    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any] | Receipted:
         """Which of the five things was asked, then do it; mixing them is an error."""
         given = {k: v for k, v in args.items() if v is not None and v != ""}
         if unknown := sorted(set(given) - _KEYS):
@@ -429,7 +442,7 @@ class _Bus:
             raise ToolError(msg, code="unavailable")
         return self._control
 
-    def _ride(self, given: Mapping[str, Any]) -> dict[str, Any]:
+    def _ride(self, given: Mapping[str, Any]) -> dict[str, Any] | Receipted:
         what = given["ride"]
         if what not in _STARTS:
             msg = f"ride must be start, watch or end, not {what!r}"
@@ -457,7 +470,7 @@ class _Bus:
         )
         return _ride_view(summary, raw)
 
-    def _start(self, given: Mapping[str, Any]) -> dict[str, Any]:
+    def _start(self, given: Mapping[str, Any]) -> dict[str, Any] | Receipted:
         if {"from", "at", "pin", "get_off"} & set(given):
             msg = "ride=start takes option= or route=, and to= and vehicle_id= if needed"
             raise _bad(msg)
@@ -478,18 +491,22 @@ class _Bus:
                 f"Two buses are about equally near him: {names}. Ask him which, then call"
                 " bus(ride='start', route=..., vehicle_id=...) with that candidate's vehicle_id."
             )
-            return _ride_view(summary, raw)
+            return _needs_choice(
+                _ride_view(summary, raw), "Two buses are about equally near; not following one yet",
+            )
         lead = "Already following this ride; nothing changed. " if raw.get("already_riding") else ""
         return _ride_view(lead + _ride_line(raw), raw)
 
-    def _get_off(self, stop: str) -> dict[str, Any]:
+    def _get_off(self, stop: str) -> dict[str, Any] | Receipted:
         raw = self._rides().set_stop(stop.strip()[:80])
         if raw.get("ambiguous"):
             summary = (
                 f"More than one stop matches: {', '.join(raw['candidates'])}. Ask him which, then"
-                " call bus(get_off=<that stop>)."
+                " call bus(get_off=...) with that stop's name."
             )
-            return _ride_view(summary, raw)
+            return _needs_choice(
+                _ride_view(summary, raw), "More than one stop matches; the get-off stop is not set",
+            )
         lead = "Already set to this stop, nothing changed." if raw.get("already") else "Set."
         return _ride_view(f"{lead} {_ride_line(raw)} He is warned one stop before it.", raw)
 
@@ -540,6 +557,7 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
+            reads=_reads,
             # The six old names are gone; a search that names one ("use transit") is told the
             # call that took its place.
             supersedes={

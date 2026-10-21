@@ -284,6 +284,7 @@ def test_a_tool_that_crashes_is_reported_as_failed_not_as_a_repeatable_error(
         "error": "crash failed unexpectedly (RuntimeError: no signal); tell him it failed, "
         "and do not repeat the same call",
         "code": "unexpected_error",
+        "kind": "dont_retry",
     }
 
 

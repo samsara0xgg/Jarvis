@@ -235,6 +235,7 @@ def test_a_terminals_own_failure_reaches_the_model_with_its_code(tmp_path: Path)
     assert result.error == "file_not_found"
     assert json.loads(result.tool_output) == {
         "error": "read_file: nope is not a file", "code": "file_not_found",
+        "kind": "retry_other_args",
     }
 
 

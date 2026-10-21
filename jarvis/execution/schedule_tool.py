@@ -201,6 +201,11 @@ def _text(args: Mapping[str, Any], name: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _reads(args: Mapping[str, Any]) -> bool:
+    """Whether a ``schedule`` call only reads: every action but ``read`` writes (ADR 0319)."""
+    return (_text(args, "action") or "read") == "read"
+
+
 def _given(args: Mapping[str, Any], name: str) -> bool:
     """Whether the model passed ``name`` with something in it (an empty string is nothing)."""
     value = args.get(name)
@@ -1048,6 +1053,7 @@ def build_schedule_tool(
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM, CallerPrincipal.REGEX_ROUTER}),
             risk_level="L1",
             read_only=False,
+            reads=_reads,
             max_result_chars=_BUDGET,
             # The names it took over, and the Microsoft reads behind tool search (the mirror
             # brings Outlook and To Do into the ledger): a search that names one is told which

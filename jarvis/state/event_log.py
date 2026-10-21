@@ -448,7 +448,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         actor="jarvis_runtime",
         required_payload=("action_id", "semantics"),
         # `error_payload` carries an L4 error-context dict.
-        optional_payload=("tool_output", "error", "run_id", "error_payload"),
+        # `receipt` is the call's receipt (ADR 0319): `jarvis.shared.receipts.Receipt.to_json`.
+        optional_payload=("tool_output", "error", "run_id", "error_payload", "receipt"),
         schema_version=1,
     ),
     EventTypeSchema(

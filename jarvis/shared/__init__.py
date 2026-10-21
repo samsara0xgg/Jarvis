@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from jarvis.shared.receipts import Receipt
+
 
 # --- ResultSemantics (relocated from jarvis.execution.tools in Step 0b) -----
 
@@ -342,6 +344,8 @@ class RawResult:
     tool_output: str | None
     error: str | None
     metadata: Mapping[str, Any] | None = None
+    receipt: Receipt | None = None
+    """ADR 0319: what the call did, in the tool's words or derived by the dispatcher."""
 
 
 __all__ = [

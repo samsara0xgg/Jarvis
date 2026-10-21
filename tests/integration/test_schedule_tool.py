@@ -1165,7 +1165,9 @@ def test_the_default_registry_has_the_three_and_none_of_the_names_they_replaced(
     seen = {t.name for t in registry.get_definitions()}
     assert {"schedule", "keep", "kept"} <= seen
     assert not seen & OLD
-    assert {"schedule", "keep", "kept"} <= {t.name for t in registry.for_caller(ROUTER)}
+    routed = {t.name for t in registry.for_caller(ROUTER)}
+    assert {"schedule", "kept"} <= routed
+    assert "keep" not in routed
 
 
 def _recorded(tmp_path: Path) -> Path:

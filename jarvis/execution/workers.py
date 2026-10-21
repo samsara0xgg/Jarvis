@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.codex_app_server import CodexAppServer, CodexAppServerError, CodexClient
-from jarvis.execution.tools import FlatHandler, Tool, ToolContext, ToolError, tool
+from jarvis.execution.tools import FlatHandler, Receipted, Tool, ToolContext, ToolError, tool
 from jarvis.shared import CallerPrincipal
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.worker_edges import close_edges, open_edge
@@ -268,7 +268,7 @@ class Workers:
 def _codex_errors(fn: FlatHandler) -> FlatHandler:
     """A dead or refusing app-server is a tool error, not a crash."""
 
-    def wrapped(args: Mapping[str, Any], ctx: ToolContext) -> Mapping[str, Any]:
+    def wrapped(args: Mapping[str, Any], ctx: ToolContext) -> Mapping[str, Any] | Receipted:
         try:
             return fn(args, ctx)
         except CodexAppServerError as exc:

@@ -67,6 +67,7 @@ from jarvis.shared import (
 )
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.device_link import DeviceCallError
+from jarvis.shared.receipts import FailureKind, Receipt, derive, failure_kind, only_reads
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -287,8 +288,18 @@ class ToolContext:
     """The ref the Pre-action Gate trusted for a ``requires_entity`` tool; ``None`` otherwise."""
 
 
+class Receipted(dict[str, Any]):
+    """A handler's payload with its own receipt (ADR 0319): what it did, in its own words."""
+
+    def __init__(self, payload: Mapping[str, Any], receipt: Receipt) -> None:
+        """Hold the payload as the dict it is; the receipt rides beside it."""
+        super().__init__(payload)
+        self.receipt = receipt
+
+
 type FlatHandler = Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]]
-"""A tool is a function of its arguments; everything else is the dispatcher's."""
+"""A tool is a function of its arguments; everything else is the dispatcher's. It may return
+:class:`Receipted` to give its own receipt; otherwise the dispatcher derives one."""
 
 type WorkStateRefresh = Callable[[Mapping[str, Any], ToolContext], dict[str, Any]]
 """ADR 0023: the runtime's one refresh workflow, injected into ``refresh_work_state``."""
@@ -304,12 +315,19 @@ _MIN_WINDOW_CHARS: Final[int] = 80
 
 
 class ToolError(Exception):
-    """A tool-level failure the model should read as ``{"error": ..., "code": ...}``."""
+    """A tool-level failure the model reads as ``{"error": ..., "code": ..., "kind": ...}``.
 
-    def __init__(self, message: str, *, code: str = "tool_error") -> None:
+    ``kind`` is one of the spec's four failures (ADR 0319); a site that names none gets the
+    kind its ``code`` stands for from :func:`jarvis.shared.receipts.failure_kind`.
+    """
+
+    def __init__(
+        self, message: str, *, code: str = "tool_error", kind: FailureKind | None = None,
+    ) -> None:
         """Keep ``code`` as the short tag ``action.result_observed.error`` carries."""
         super().__init__(message)
         self.code = code
+        self.kind: FailureKind = kind or failure_kind(code)
 
 
 @dataclass(frozen=True)
@@ -339,6 +357,9 @@ class Tool:
     requires_confirmation: bool = False
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
     deferred: bool = False
+    reads: Callable[[Mapping[str, Any]], bool] | None = None
+    """Whether a call with these arguments only reads (ADR 0319), for a tool that reads or
+    writes by argument; ``None`` keeps ``read_only`` for every call."""
     supersedes: Mapping[str, str] = field(default_factory=dict)
     """Deferred tools whose job this one now does, each with how to call this one instead
     (``{"mcp__gmail__gmail_search": "mail(query=...)"}``). While this tool is on the menu,
@@ -398,12 +419,46 @@ def _string_slots(node: Any, slots: list[tuple[Any, Any]]) -> None:  # noqa: ANN
             _string_slots(value, slots)
 
 
+def _list_slots(node: Any, path: str, found: list[tuple[str, list[Any]]]) -> None:  # noqa: ANN401 — walks any JSON-shaped value.
+    """Collect every non-empty list in a JSON-shaped payload with its key path (``a[2].rows``)."""
+    items: Any = node.items() if isinstance(node, dict) else enumerate(node)
+    for key, value in items:
+        here = f"{path}[{key}]" if isinstance(node, list) else f"{path}.{key}" if path else str(key)
+        if isinstance(value, list) and value:
+            found.append((here, value))
+        if isinstance(value, (dict, list)):
+            _list_slots(value, here, found)
+
+
+def _size(value: Any) -> int:  # noqa: ANN401 — any JSON-shaped value.
+    return len(json.dumps(value, ensure_ascii=False))
+
+
 def _fit_result(payload: dict[str, Any], cap: int) -> dict[str, Any]:
-    """Window the longest strings head+tail until ``tool_result(payload)`` fits ``cap``."""
+    """Shrink the payload until ``tool_result(payload)`` fits ``cap``.
+
+    A list loses whole items from its end and the payload says so in ``cut``
+    (``{"<key path>": {"shown": n, "more": m}}``): an item's text is never cut. One long
+    string, such as a page, is still windowed head+tail and the payload marked ``truncated``.
+    The biggest of the two goes first.
+    """
     while (over := len(tool_result(payload)) - cap) > 0:
+        lists: list[tuple[str, list[Any]]] = []
+        _list_slots(payload, "", lists)
         slots: list[tuple[Any, Any]] = []
         _string_slots(payload, slots)
         candidates = [(c, k) for c, k in slots if len(c[k]) > _MIN_WINDOW_CHARS]
+        path, items = max(lists, key=lambda found: _size(found[1]), default=("", []))
+        if items and (
+            not candidates or _size(items) >= max(len(c[k]) for c, k in candidates)
+        ):
+            gone = freed = 0
+            while items and freed < over:
+                freed += _size(items.pop()) + 2
+                gone += 1
+            cut = payload.setdefault("cut", {})
+            cut[path] = {"shown": len(items), "more": cut.get(path, {}).get("more", 0) + gone}
+            continue
         if not candidates:
             break
         container, key = max(candidates, key=lambda ck: len(ck[0][ck[1]]))
@@ -411,6 +466,14 @@ def _fit_result(payload: dict[str, Any], cap: int) -> dict[str, Any]:
         keep = max(_MIN_WINDOW_CHARS, len(container[key]) - over)
         container[key] = _head_tail(container[key], keep)
     return payload
+
+
+def _call_reads(tool_def: Tool, arguments: Mapping[str, Any]) -> bool:
+    """Whether this call only reads; a ``reads`` that cannot take these arguments means a write."""
+    try:
+        return only_reads(tool_def, arguments)
+    except Exception:  # noqa: BLE001 — arguments the model made up must not strand the lifecycle.
+        return False
 
 
 def _observe(  # noqa: PLR0913 — the four handler arguments plus the definition and the uid the dispatcher holds.
@@ -427,21 +490,28 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
     The terminal row is the dispatcher's whatever the handler did, so the
     lifecycle never strands at ``running`` (ADR-0011 §5 "never a crash"): a
     non-``ToolError`` exception becomes an ``unexpected_error`` observation
-    and is logged with its traceback.
+    and is logged with its traceback. The row carries the call's receipt (ADR 0319): the
+    tool's own when its handler returned :class:`Receipted`, else one derived from the call.
     """
     action_id = action_request.action_id
+    arguments = action_request.arguments
     cap = tool_def.max_result_chars
+    reads = _call_reads(tool_def, arguments)
     error: str | None = None
+    kind: FailureKind = "dont_retry"
     message = ""
     payload: dict[str, Any] = {}
     tool_output = ""
+    receipt: Receipt | None = None
     try:
         ctx = ToolContext(conn, runtime_paths, action_id, action_request.target_entity_ref)
-        raw = tool_def.handler(action_request.arguments, ctx)
-        payload = _fit_result(dict(raw), cap)
+        returned = tool_def.handler(arguments, ctx)
+        if isinstance(returned, Receipted):
+            receipt = returned.receipt
+        payload = _fit_result(dict(returned), cap)
         tool_output = tool_result(payload)
     except ToolError as exc:
-        error, message = exc.code, str(exc)
+        error, message, kind = exc.code, str(exc), exc.kind
     except Exception as exc:
         # The terminal row is the dispatcher's whatever the handler did.
         LOGGER.exception("tool %s raised", tool_def.name)
@@ -451,13 +521,19 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
             "tell him it failed, and do not repeat the same call"
         )
     if error is not None:
-        tool_output = tool_result(_fit_result({"error": message, "code": error}, cap))
+        tool_output = tool_result(
+            _fit_result({"error": message, "code": error, "kind": kind}, cap),
+        )
         payload = {"error": error}
+        receipt = derive(tool_def.name, arguments, reads=reads, code=error, failure=kind)
+    elif receipt is None:
+        receipt = derive(tool_def.name, arguments, reads=reads)
     semantics: ResultSemantics = "observation" if error is None else "error"
     event_payload: dict[str, Any] = {
         "action_id": action_id,
         "semantics": semantics,
         "tool_output": tool_output,
+        "receipt": receipt.to_json(),
     }
     if error is not None:
         event_payload["error"] = error
@@ -475,6 +551,7 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
         payload=payload,
         tool_output=tool_output,
         error=error,
+        receipt=receipt,
     )
 
 
