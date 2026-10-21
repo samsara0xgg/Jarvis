@@ -79,7 +79,7 @@ _WRITES: Final = ("pin", "ride")
 """The arguments that change something; a call with none of them only reads (ADR 0319)."""
 _DROPPED: Final = frozenset({
     "ride_id", "eta_ms", "started_at_ms", "warned", "note", "event_uid", "watch_id",
-    "alight_lat", "alight_lng",
+    "alight_lat", "alight_lng", "destination",
 })
 """Fields of the ride follower's answers that are the program's, or that the sentence says."""
 _BOARD_WINDOW: Final = timedelta(hours=3)

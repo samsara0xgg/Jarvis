@@ -909,11 +909,27 @@ class Rides:
         }
 
     def status(self) -> dict[str, Any] | None:
-        """The ride in force now, read from the log (``bus`` with no arguments); None if none."""
+        """The ride in force now, read from the log (``bus`` with no arguments); None if none.
+
+        It is :meth:`_describe` plus what tells the tool that a times question is about this
+        ride (ADR 0344): the ``destination`` he said when he boarded, and where he gets off as
+        ``alight_lat`` and ``alight_lng`` (None when his stop is not one of the trip's).
+        """
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
             ride = folded.active(conn, now)
-        return None if ride is None else self._describe(ride)
+            if ride is None:
+                return None
+            stop = next(
+                (s for s in self._timetable(ride.trip_id, ride.service_date, now)
+                 if ride.alight_stop_id is not None and s.stop_id == ride.alight_stop_id),
+                None,
+            )
+            return {
+                **self._describe(ride), "destination": ride.destination,
+                "alight_lat": None if stop is None else stop.lat,
+                "alight_lng": None if stop is None else stop.lng,
+            }
 
     def view(self) -> dict[str, Any] | None:
         """The ride now, as ``GET /inherent/ride`` serves it; None when he is not on one."""
