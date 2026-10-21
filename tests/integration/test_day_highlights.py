@@ -53,6 +53,7 @@ from jarvis.state.memory_db import (
     open_memory_db,
     prose_days,
 )
+from tests.support.clock import FakeClock
 from tests.support.day_highlights import (
     DAY_KEY,
     TODAY,
@@ -416,6 +417,7 @@ def _schedule(
         llm_config={},
         event_log_path=src.event_log,
         pricing_table={},
+        clock=FakeClock(),
         ledger=LedgerContext(src, LedgerSettings(prose=prose)),
         prose_client=writer.as_llm_client(),
     )
@@ -497,6 +499,7 @@ def test_a_draft_needs_a_prompt_a_ledger_and_items(tmp_path: Path) -> None:
         llm_config={},
         event_log_path=src.event_log,
         pricing_table={},
+        clock=FakeClock(),
     )
     assert bare.draft(ledger_at(8, 10, 5)) == "off"
     assert prompts(writer) == []

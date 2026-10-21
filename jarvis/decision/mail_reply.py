@@ -19,11 +19,13 @@ Layer rules: stdlib + L3 siblings; no wiring.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import Future, wait
 from typing import TYPE_CHECKING, Any, Final
+
+from jarvis.decision.surrogate_route import await_replies
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from concurrent.futures import Future
 
     from jarvis.decision.surrogate_route import Reply, SurrogateRoute
 
@@ -133,7 +135,9 @@ class MailReply:
             if future is None:  # no key
                 break
             sent[message_id] = future
-        done, _late = wait(sent.values(), timeout=self._route.timeout_ms / 1000)
+        done = await_replies(
+            self._route.clock, list(sent.values()), self._route.timeout_ms / 1000,
+        )
         for message_id, future in sent.items():
             if future in done:
                 self._settle(message_id, future)

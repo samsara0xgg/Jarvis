@@ -49,6 +49,7 @@ from tests.canary._helpers import repo_root
 from tests.support import job_mail as job_mail_support
 from tests.support.attention import attention_rows
 from tests.support.audio_output import BT, BUILTIN, audio_profile, default_output
+from tests.support.clock import FakeClock
 from tests.support.job_mail import (
     AIRPODS,
     EVENT_SENTENCE,
@@ -1289,20 +1290,21 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     }.items() <= block.items()
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = Connections(None)
+    clock = FakeClock(zone=OWNER_ZONE)
 
     # no watcher is built:
-    assert _job_mail(shipped, config_path, None, connections, db, OWNER_ZONE) is None
-    assert _job_mail({}, config_path, None, connections, db, OWNER_ZONE) is None
+    assert _job_mail(shipped, config_path, None, connections, db, clock) is None
+    assert _job_mail({}, config_path, None, connections, db, clock) is None
     on = {"job_mail": {**block, "enabled": True}}
-    built = _job_mail(on, config_path, None, connections, db, OWNER_ZONE)
+    built = _job_mail(on, config_path, None, connections, db, clock)
     assert isinstance(built, JobMail)
     spaced = {"job_mail": {**on["job_mail"], "exclude_domains": [" LinkedIn.com "]}}
-    built = _job_mail(spaced, config_path, None, connections, db, OWNER_ZONE)
+    built = _job_mail(spaced, config_path, None, connections, db, clock)
     assert built is not None
     assert built._settings.exclude_domains == ("linkedin.com",)  # noqa: SLF001
     assert built._settings.backfill_since == date(2026, 9, 10)  # noqa: SLF001
     undated = {"job_mail": {**on["job_mail"], "backfill_since": None}}
-    built = _job_mail(undated, config_path, None, connections, db, OWNER_ZONE)
+    built = _job_mail(undated, config_path, None, connections, db, clock)
     assert built is not None
     assert built._settings.backfill_since is None  # noqa: SLF001
     for key, value in (
@@ -1322,7 +1324,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     ):
         bad = {"job_mail": {**block, "enabled": True, key: value}}
         with pytest.raises(RuntimeBootstrapError, match=f"job_mail.{key}"):
-            _job_mail(bad, config_path, None, connections, db, OWNER_ZONE)
+            _job_mail(bad, config_path, None, connections, db, clock)
 
     # The daemon wires no route for it, so every one answers 404.
     assert _job_mail_deps(None) == {}
@@ -3245,14 +3247,15 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
     }
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = Connections(None)
+    clock = FakeClock(zone=OWNER_ZONE)
     on = {"job_mail": {**block, "enabled": True}}
 
     log = tmp_path / "log.db"
-    built = _job_mail(on, config_path, None, connections, db, OWNER_ZONE, event_log=log)
+    built = _job_mail(on, config_path, None, connections, db, clock, event_log=log)
     assert built is not None
     assert built.interviews is not None
     off = {"job_mail": {**on["job_mail"], "interview_reminders": {"enabled": False}}}
-    built = _job_mail(off, config_path, None, connections, db, OWNER_ZONE, event_log=log)
+    built = _job_mail(off, config_path, None, connections, db, clock, event_log=log)
     assert built is not None
     assert built.interviews is None
 
@@ -3266,7 +3269,7 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
     ):
         bad = {"job_mail": {**on["job_mail"], "interview_reminders": value}}
         with pytest.raises(RuntimeBootstrapError, match=r"job_mail\.interview_reminders"):
-            _job_mail(bad, config_path, None, connections, db, OWNER_ZONE)
+            _job_mail(bad, config_path, None, connections, db, clock)
 
 
 # --- a brain asks the terminal that plays (ADR 0156, 0170) ------------------------------------

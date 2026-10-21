@@ -15,7 +15,7 @@ import contextlib
 import functools
 import json
 import sqlite3
-import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -49,7 +49,7 @@ from tests.support.home_routes import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from jarvis.decision.mail_reply import MailReply
@@ -463,6 +463,15 @@ def _junk(client: TestClient) -> list[str]:
     return sorted(one["id"] for one in client.get("/inherent/mail").json()["unread"] if one["junk"])
 
 
+def _held_past[T](jev: HomeJev, seconds: float, call: Callable[[], T]) -> T:
+    """Run ``call`` while Jev holds every answer; ``seconds`` pass on the clock it waits on."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(call)
+        jev.clock.wait_until_parked()
+        jev.clock.advance(seconds)
+        return running.result()
+
+
 def _with_jev(mail_reply: MailReply) -> TestClient:
     home = Home(
         Connections(Microsoft(), Gmail()),  # type: ignore[arg-type]
@@ -547,9 +556,10 @@ def test_importance_missing_for_unrated_letters_and_bad_answers(jev: HomeJev) ->
     letters = _with_jev(jev.reply(importance=True)).get("/inherent/mail").json()["unread"]
     assert all("importance" not in one and "category" not in one for one in letters)
     assert {one["id"]: one["reply"] for one in letters}["199a1c0d4101"] == "yes"
-    jev.delay_s = 0.6
+    jev.hold = True
     slow = _with_jev(jev.reply(timeout_ms=150, importance=True))
-    assert all("importance" not in one for one in slow.get("/inherent/mail").json()["unread"])
+    letters = _held_past(jev, 0.15, lambda: slow.get("/inherent/mail").json()["unread"])
+    assert all("importance" not in one for one in letters)
 
 
 def test_importance_is_kept_in_the_jev_log(jev: HomeJev, tmp_path: Path) -> None:
@@ -588,15 +598,14 @@ def test_mail_reply_errors_leave_letters_unmarked_and_are_retried(jev: HomeJev) 
 
 def test_mail_reply_slow_answers_wait_only_the_deadline(jev: HomeJev) -> None:
     """Past timeout_ms the route answers unmarked at once; a later poll asks again."""
-    jev.delay_s = 0.6
+    jev.hold = True
     client = _with_jev(jev.reply(timeout_ms=150))
-    began = time.monotonic()
-    assert set(_marks(client).values()) == {None}
-    assert time.monotonic() - began < 0.5
-    jev.delay_s = 0.0
-    time.sleep(0.8)  # the abandoned calls end on their own
+    assert set(_held_past(jev, 0.15, lambda: _marks(client)).values()) == {None}
+    assert len(jev.arrived(6)) == 6
+    jev.hold = False
+    jev.release.set()  # the abandoned calls are answered now, and dropped
     assert _marks(client)["199a1c0d4101"] == "yes"
-    assert len(jev.requests) == 12
+    assert len(jev.arrived(12)) == 12
 
 
 def test_junk_is_archived_only_when_offered_and_undone_only_when_archived(jev: HomeJev) -> None:

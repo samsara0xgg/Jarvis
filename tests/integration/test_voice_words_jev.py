@@ -17,12 +17,16 @@ import pytest
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute
 from jarvis.decision.voice_words import VoiceWords, words_state
 from jarvis.runtime import RuntimeBootstrapError, _voice_words
+from jarvis.shared.clock import SystemClock
 from jarvis.surface import voice_session
 from tests.support.barge_in import LONG, SHORT, BargeInRig
+from tests.support.clock import FakeClock
 from tests.support.voice_words import LISTENING, LONG_LINE
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from jarvis.shared.clock import Clock
 
 SHORT_ORDER = "我让你退一下。"  # a dismissal only inside a sentence
 
@@ -50,11 +54,15 @@ class _FakeRoute(SurrogateRoute):
 class _Words:
     """A VoiceWords over the fake route, with the dataset in ``log_path``."""
 
-    def __init__(self, tmp_path: Path, *, timeout_ms: int = 800) -> None:
+    def __init__(
+        self, tmp_path: Path, *, timeout_ms: int = 800, clock: Clock | None = None,
+    ) -> None:
+        """``clock`` is a stopped fake unless the test needs its deadline to pass for real."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.log_path = tmp_path / "decisions.jsonl"
         self.route = _FakeRoute(
-            model="m", min_confidence=1.0, timeout_ms=timeout_ms, log=JevLog(self.log_path),
+            model="m", min_confidence=1.0, timeout_ms=timeout_ms, clock=clock or FakeClock(),
+            log=JevLog(self.log_path),
         )
         self.words = VoiceWords(self.route, 0.95, 24)
 
@@ -189,7 +197,7 @@ def test_without_jev_the_verdicts_are_todays(tmp_path: Path) -> None:
 
 def test_no_answer_in_time_is_a_turn(tmp_path: Path) -> None:
     """No answer within timeout_ms: the line is a turn."""
-    words = _Words(tmp_path, timeout_ms=50)
+    words = _Words(tmp_path, timeout_ms=50, clock=SystemClock())  # 50 ms really pass
     words.route.hang = True
     rig = words.rig(tmp_path, LISTENING)
     _run(rig)
@@ -229,10 +237,13 @@ def test_bad_config_stops_boot_and_off_is_none(tmp_path: Path) -> None:
     """Off or absent is None; a bad value stops boot."""
     path = tmp_path / "jarvis.yaml"
     good = {"model": "m", "at": 0.95, "timeout_ms": 800, "max_chars": 24}
-    assert _voice_words({"realtime": {"jev_words": {**good, "enabled": False}}}, path) is None
-    assert _voice_words({}, path) is None
-    assert _voice_words({"realtime": {"jev_words": {**good, "enabled": True}}}, path) is not None
+    clock = FakeClock()
+    off = {"realtime": {"jev_words": {**good, "enabled": False}}}
+    assert _voice_words(off, path, clock) is None
+    assert _voice_words({}, path, clock) is None
+    on = {"realtime": {"jev_words": {**good, "enabled": True}}}
+    assert _voice_words(on, path, clock) is not None
     for bad in ({"at": 1.5}, {"timeout_ms": 0}, {"max_chars": "x"}, {"model": ""}):
         block = {**good, **bad, "enabled": True}
         with pytest.raises(RuntimeBootstrapError):
-            _voice_words({"realtime": {"jev_words": block}}, path)
+            _voice_words({"realtime": {"jev_words": block}}, path, clock)

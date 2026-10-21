@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
+    from jarvis.shared.clock import Clock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ class DaySummarySchedule:
         llm_config: Mapping[str, Any],
         event_log_path: Path,
         pricing_table: Mapping[str, Mapping[str, float]],
+        clock: Clock,
         core_memory: CoreMemorySettings | None = None,
         jev_log: JevLog | None = None,
         ledger: LedgerContext | None = None,
@@ -214,6 +216,7 @@ class DaySummarySchedule:
         self._llm_config = llm_config
         self._event_log_path = event_log_path
         self._pricing_table = pricing_table
+        self._clock = clock
         self._core_memory = core_memory
         self._jev_log = jev_log
         self._review: SurrogateRoute | None = None
@@ -323,6 +326,7 @@ class DaySummarySchedule:
                     model=settings.review_model,
                     min_confidence=1.0,  # the choice bar of the route's own question: unused
                     timeout_ms=settings.review_timeout_ms,
+                    clock=self._clock,
                     log=self._jev_log,
                 )
             core_outcomes = run_core_memory(

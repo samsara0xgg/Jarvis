@@ -25,10 +25,12 @@ from fastapi.testclient import TestClient
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.runtime import RuntimeBootstrapError, _turn_end_asks
+from jarvis.shared.clock import SystemClock
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.support.claude_board import NOW_MS, board_home, noop
+from tests.support.clock import FakeClock
 from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
@@ -79,6 +81,7 @@ class _Jev:
     ) -> TurnEndAsks:
         route = SurrogateRoute(
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
+            clock=SystemClock(),  # this endpoint really sleeps through its delay
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
         return TurnEndAsks(route, at, min(at, 0.8))
@@ -399,14 +402,15 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     """The repo ships it off; an enabled block builds the object, a bad one stops boot."""
     path = repo_root() / "config" / "jarvis.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert _turn_end_asks(config, path) is None
+    clock = FakeClock()
+    assert _turn_end_asks(config, path, clock) is None
     block = config["agents"]["turn_end_asks"]
     assert (block["model"], block["at"], block["question_at"], block["timeout_ms"]) == (
         "typesafe/jev-1.13", 0.95, 0.8, 1500,
     )
     block["enabled"] = True
-    asks = _turn_end_asks(config, path)
+    asks = _turn_end_asks(config, path, clock)
     assert asks is not None
     block["at"] = 1.5
     with pytest.raises(RuntimeBootstrapError):
-        _turn_end_asks(config, path)
+        _turn_end_asks(config, path, clock)

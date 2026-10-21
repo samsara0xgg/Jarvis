@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-import time
+import threading
 from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -15,6 +15,7 @@ from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import Home
+from tests.support.clock import FakeClock
 from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
     from jarvis.runtime.weatherkit import WeatherKit
 
 ZONE = "America/Vancouver"
+
+_GUARD_S = 5.0
+"""How long the endpoint holds an answer for the test before it gives up; not a time it keeps."""
 
 
 LIST = {"displayName": "Tasks", "wellknownListName": "defaultList", "id": "AQMkADAw-list="}
@@ -184,10 +188,17 @@ def make_home(
 
 
 class HomeJev:
-    """A fake decisions endpoint (ADR 0123): answers P(needs a reply) by the subject line."""
+    """A fake decisions endpoint (ADR 0123): answers P(needs a reply) by the subject line.
+
+    It keeps its time on :attr:`clock`, which the routes it builds take. ``hold`` keeps every
+    answer back until ``release`` is set, so a test can let a deadline pass on the clock while
+    Jev is still working.
+    """
 
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
+        self._arrived = threading.Condition()
+        self.clock = FakeClock()
         # subject -> (P(needs a reply), P(junk))
         self.odds = {
             "Office hours move to Thursday": (0.97, 0.02),
@@ -214,14 +225,18 @@ class HomeJev:
         }
         self.category = "school"
         self.status = 200
-        self.delay_s = 0.0
+        self.hold = False
+        self.release = threading.Event()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                outer.requests.append(request)
-                time.sleep(outer.delay_s)
+                with outer._arrived:
+                    outer.requests.append(request)
+                    outer._arrived.notify_all()
+                if outer.hold:
+                    outer.release.wait(_GUARD_S)
                 subject = request["state"].split("Subject: ", 1)[1]
                 reply, junk = outer.odds[subject]
                 answers: dict[str, Any] = {"reply": {"noul": reply}, "junk": {"noul": junk}}
@@ -264,10 +279,17 @@ class HomeJev:
             model="typesafe/jev-1.13",
             min_confidence=1.0,
             timeout_ms=timeout_ms,
+            clock=self.clock,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
             log=log,
         )
         return MailReply(route, 0.9, 0.1, 0.9, importance=importance)
+
+    def arrived(self, count: int, timeout_s: float = 5.0) -> list[dict[str, Any]]:
+        """The requests once ``count`` have arrived: a caller that gave up can be back first."""
+        with self._arrived:
+            self._arrived.wait_for(lambda: len(self.requests) >= count, timeout_s)
+            return list(self.requests)
 
 
 @pytest.fixture
@@ -276,4 +298,5 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[HomeJev]:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-a-secret")
     fake = HomeJev()
     yield fake
+    fake.release.set()
     stop_http_server(fake.server)

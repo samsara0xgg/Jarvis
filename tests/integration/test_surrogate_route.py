@@ -23,6 +23,7 @@ from jarvis.decision.surrogate_route import OPTIONS, JevLog, SurrogateRoute, tie
 from jarvis.state.event_log import emit_event
 from tests.canary._helpers import repo_root
 from tests.support import surrogate as surrogate_support
+from tests.support.clock import FakeClock
 from tests.support.surrogate import (
     KEY,
     LLM_ANSWER,
@@ -48,6 +49,7 @@ def _route(
         model="typesafe/jev-1.13",
         min_confidence=0.9,
         timeout_ms=timeout_ms,
+        clock=jev.clock,
         url=jev.url,
         log=log,
     )
@@ -102,7 +104,7 @@ def test_a_confident_choice_runs_the_tier0_function(tmp_path: Path, jev: Surroga
         "aborted_cost_usd": None,
         "aborted_input_tokens": None,
     }
-    assert 0 <= event["latency_ms"] < 400
+    assert event["latency_ms"] == 0  # the endpoint took none of the clock's time
     assert jev.headers[0]["Authorization"] == f"Bearer {KEY}"
 
 
@@ -114,6 +116,7 @@ def test_the_batch_path_stays_sequential_even_with_parallel_on(
         model="typesafe/jev-1.13",
         min_confidence=0.9,
         timeout_ms=400,
+        clock=jev.clock,
         url=jev.url,
         parallel=True,
     )
@@ -146,6 +149,7 @@ def test_with_zdr_off_the_request_names_no_provider_preference(
         model="typesafe/jev-1.13",
         min_confidence=0.9,
         timeout_ms=400,
+        clock=jev.clock,
         url=jev.url,
         zdr=False,
     )
@@ -221,16 +225,14 @@ def test_anything_else_falls_through_to_the_model(  # noqa: PLR0913 — one para
 def test_the_deadline_is_for_the_whole_call_not_each_phase(
     tmp_path: Path, jev: SurrogateJev
 ) -> None:
-    """A reply that trickles in, each read within the phase timeout, is cut at 0.4 s."""
+    """A reply that trickles in, each read within the phase timeout, is cut at the deadline."""
     jev.mode = "trickle"
-    started = time.monotonic()
     result, conn, llm = _say(tmp_path, "do you have the time", _route(jev))
     assert result.response_plan is not None
     assert len(llm.requests) == 1
     (event,) = logged_events(conn, "route.surrogate_decided")
     assert (event["error"], event["accepted"]) == ("timeout", False)
-    assert 400 <= event["latency_ms"] <= 450
-    assert time.monotonic() - started < 2.0
+    assert event["latency_ms"] == 400  # the deadline, not the 3 s the reply would have taken
 
 
 def test_a_missing_key_never_calls_and_warns_once(
@@ -270,7 +272,7 @@ def test_each_route_call_is_a_line_in_the_local_dataset(
     (line,) = _logged(path)
     stamp = datetime.fromisoformat(line.pop("ts"))
     assert stamp.utcoffset() == timedelta(0)
-    assert 0 <= line.pop("latency_ms") < 400
+    assert line.pop("latency_ms") == 0
     assert line == {
         "kind": "call",
         "use": "route",
@@ -459,7 +461,8 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
 
     path = repo_root() / "config" / "jarvis.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert _surrogate_route(config, path) is None
+    clock = FakeClock()
+    assert _surrogate_route(config, path, clock) is None
     block = config["realtime"]["surrogate_route"]
     assert (block["model"], block["min_confidence"], block["timeout_ms"]) == (
         "typesafe/jev-1.13",
@@ -467,14 +470,14 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
         400,
     )
     block["enabled"] = True
-    route = _surrogate_route(config, path)
+    route = _surrogate_route(config, path, clock)
     assert route is not None
     assert (route.model, route.min_confidence, route.timeout_ms) == ("typesafe/jev-1.13", 0.95, 400)
     assert (route.parallel, route.zdr) == (True, True)
     block["zdr"] = False
-    off = _surrogate_route(config, path)
+    off = _surrogate_route(config, path, clock)
     assert off is not None
     assert off.zdr is False
     block["timeout_ms"] = 0
     with pytest.raises(RuntimeBootstrapError):
-        _surrogate_route(config, path)
+        _surrogate_route(config, path, clock)

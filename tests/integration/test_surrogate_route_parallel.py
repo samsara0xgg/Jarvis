@@ -6,11 +6,15 @@ of ``test_surrogate_route``. With ``parallel`` on, the model's request is sent
 at once and its first output waits for Jev: if Jev chose a function the request
 is stopped with nothing of it shown and Tier 0's answer is given; otherwise the
 model's turn goes on. With it off, Jev is asked first.
+
+Time here is the fake endpoint's clock, which the route and the runtime share: the endpoint
+takes ``delay_s`` of it by moving it, so Jev's deadline passes exactly when a test says and
+nothing is timed against the wall. What the model's peer does in real time is only ordered
+with the endpoint's answer through events.
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -53,16 +57,18 @@ def _runtime(  # noqa: PLR0913 - the fixture's knobs, one per test setting
         model="typesafe/jev-1.13",
         min_confidence=0.9,
         timeout_ms=timeout_ms,
+        clock=fake.clock,
         url=fake.url,
         parallel=parallel,
     )
-    # These tests time Jev's deadline against the model's first event: ADR 0272's hold on a
-    # spoken answer would add its own 1.5 s to every turn measured, so it is off here.
+    # ADR 0272's hold on a spoken answer waits out its own 1.5 s of real time, which none of
+    # these turns is about, so it is off here.
     realtime = runtime.config["realtime"]
     response = {**realtime["response"], "answer_hold": {"seconds": 0}}
     config = {**runtime.config, "realtime": {**realtime, "response": response}}
     return replace(
         runtime,
+        clock=fake.clock,
         config=config,
         response_flags=flags,
         tier0_table=TABLE,
@@ -86,18 +92,18 @@ def test_an_accepted_choice_stops_the_held_request_and_shows_nothing_of_it(
     *,
     structured: bool,
 ) -> None:
-    """Tier 0's answer comes long before the model's first event; none of the model's shows."""
-    jev.delay_s = 0.8  # the client needs a moment to reach the peer; the deadline is longer here
+    """Tier 0's answer comes without the model's first event; none of the model's shows."""
     text = structured_reply(_ANSWER, "details") if structured else _ANSWER
     outputs = [[("call", "kept")], [("final_answer", text)]]
-    with SpokenPeer(outputs, first_event_delay_s=4.0) as peer:
+    # The peer holds its first event for good (30 s is only its own guard), so the turn can only
+    # end by Jev's answer, which waits until the model's request has reached the peer.
+    with SpokenPeer(outputs, first_event_delay_s=30.0) as peer:
+        jev.gate = peer.requested
         runtime = _runtime(tmp_path, peer.url, jev, structured=structured, timeout_ms=2000)
-        started = time.monotonic()
         result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-a", _WORDS))
-        elapsed = time.monotonic() - started
         assert len(peer.requests) == 1  # it was sent, in parallel
+        assert peer.completed == 0  # and the model never got to say anything
     conn = runtime.conn
-    assert elapsed < 2.0  # not 4 s: the model's first event is never waited for
     assert result.response_plan.text != _ANSWER
     shown = "".join(p["text"] for p in logged_payloads(conn, "surface.response_chunk"))
     assert shown == result.response_plan.text  # Tier 0's answer, and only that
@@ -148,7 +154,8 @@ def test_a_declined_choice_lets_the_model_go_on_unchanged(
 def test_a_tool_call_waits_for_jevs_decision(tmp_path: Path, jev: SurrogateJev) -> None:  # noqa: F811
     """The model asks for a tool at once; nothing is dispatched until Jev has answered."""
     jev.choice = "none"
-    jev.delay_s = 0.3
+    jev.caller_waits = True  # Jev answers only once the turn is held for it
+    jev.delay_s = 0.25
     outputs = [[("call", "kept")], [("final_answer", _ANSWER)]]
     with SpokenPeer(outputs) as peer:
         runtime = _runtime(tmp_path, peer.url, jev)
@@ -156,7 +163,7 @@ def test_a_tool_call_waits_for_jevs_decision(tmp_path: Path, jev: SurrogateJev) 
     conn = runtime.conn
     assert [p["tool_name"] for p in logged_payloads(conn, "action.proposed")] == ["kept"]
     assert _row_id(runtime, "route.surrogate_decided") < _row_id(runtime, "action.proposed")
-    assert _decided(runtime)["latency_ms"] >= 300
+    assert _decided(runtime)["latency_ms"] == 250
 
 
 def test_a_slow_jev_holds_the_first_event_only_to_the_deadline(
@@ -165,28 +172,31 @@ def test_a_slow_jev_holds_the_first_event_only_to_the_deadline(
 ) -> None:
     """Jev at 1 s against a 0.4 s deadline: the model's output is held 0.4 s, then goes on."""
     jev.delay_s = 1.0
+    jev.caller_gives_up = True  # its answer comes after the turn has stopped waiting for it
     with SpokenPeer([[("final_answer", _ANSWER)]]) as peer:
         runtime = _runtime(tmp_path, peer.url, jev)
-        started = time.monotonic()
         result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-s", _WORDS))
-        elapsed = time.monotonic() - started
     assert result.response_plan.text == _ANSWER
     event = _decided(runtime)
     assert (event["error"], event["accepted"], event["aborted"]) == ("timeout", False, False)
-    assert 400 <= event["latency_ms"] <= 500
-    assert elapsed < 0.9  # held to the deadline, not to Jev's 1 s
+    assert event["latency_ms"] == 400  # held to the deadline, not to Jev's 1 s
 
 
 def test_a_model_slower_than_jev_is_never_delayed(tmp_path: Path, jev: SurrogateJev) -> None:  # noqa: F811
-    """Jev at 0.4 s, the model's first event at 1 s: the answer arrives at the model's pace."""
+    """Jev answers before the model's first event: the turn takes Jev's time and adds none."""
     jev.choice = "none"
-    jev.delay_s = 0.3
-    with SpokenPeer([[("final_answer", _ANSWER)]], first_event_delay_s=1.0) as peer:
+    jev.delay_s = 0.25
+    with SpokenPeer([[("final_answer", _ANSWER)]], first_event_delay_s=30.0) as peer:
+        jev.gate = peer.requested  # the model's request is in...
+        jev.on_answered = peer.release_delayed  # ...and its first event follows Jev's answer
         runtime = _runtime(tmp_path, peer.url, jev)
-        started = time.monotonic()
-        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-m", _WORDS))
-        elapsed = time.monotonic() - started
-    assert 1.0 <= elapsed < 1.6
+        began = jev.clock.monotonic()
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-m", _WORDS))
+    assert result.response_plan.text == _ANSWER
+    event = _decided(runtime)
+    assert (event["error"], event["latency_ms"]) == (None, 250)
+    assert jev.clock.monotonic() - began == 0.25  # no wait for Jev's deadline on top of it
+    assert _row_id(runtime, "route.surrogate_decided") < _row_id(runtime, "surface.response_chunk")
 
 
 def test_with_parallel_off_jev_is_asked_first_and_the_model_never_sent(

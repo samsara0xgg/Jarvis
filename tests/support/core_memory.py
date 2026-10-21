@@ -10,6 +10,7 @@ from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import MemorySettings
+from tests.support.clock import FakeClock
 from tests.support.day_summaries import (
     day_of,
     day_summariser,
@@ -70,6 +71,7 @@ def core_schedule(
         llm_config={},
         event_log_path=log,
         pricing_table={},
+        clock=FakeClock(),
         core_memory=CoreMemorySettings(preset="c", prompt="consolidate", **core),
         client=(day_summariser() if summariser is None else summariser).as_llm_client(),
         core_client=model.as_llm_client(),

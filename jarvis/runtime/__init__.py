@@ -1073,7 +1073,7 @@ def _jev_log(config: Mapping[str, Any], root: Path) -> JevLog | None:
 
 
 def _surrogate_route(
-    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+    config: Mapping[str, Any], config_path: Path, clock: Clock, log: JevLog | None = None,
 ) -> SurrogateRoute | None:
     """``realtime.surrogate_route`` (ADR 0122): off unless enabled; bad values stop boot."""
     realtime = config.get("realtime")
@@ -1092,7 +1092,7 @@ def _surrogate_route(
         )
         raise RuntimeBootstrapError(msg)
     return SurrogateRoute(
-        model=model.strip(), min_confidence=float(bar), timeout_ms=timeout,
+        model=model.strip(), min_confidence=float(bar), timeout_ms=timeout, clock=clock,
         parallel=block.get("parallel") is True, zdr=block.get("zdr") is not False,
         log=log,
     )
@@ -1694,7 +1694,7 @@ def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, .
 
 
 def _mail_reply(
-    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+    config: Mapping[str, Any], config_path: Path, clock: Clock, log: JevLog | None = None,
 ) -> MailReply | None:
     """``home.mail_reply`` (ADR 0123): off unless enabled; bad values stop boot."""
     home = config.get("home")
@@ -1719,7 +1719,7 @@ def _mail_reply(
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
     route = SurrogateRoute(
-        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, clock=clock, log=log,
     )
     rating = block.get("importance")  # ADR 0141
     return MailReply(
@@ -1758,15 +1758,16 @@ def _moment(
     return Moment(MomentSettings(dict(fields)), _timesink_db_path(config), db_path, device)
 
 
-def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the zone and the moment
+def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the clock and the moment
     config: Mapping[str, Any], config_path: Path, log: JevLog | None,
-    connections: PluginConnections, db_path: Path, zone: tzinfo,
+    connections: PluginConnections, db_path: Path, clock: Clock,
     moment: Moment | None = None, device: DeviceLink | None = None,
     event_log: Path | None = None,
 ) -> JobMail | None:
     """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot.
 
-    ``zone`` is the owner's: a time a letter gives with no zone of its own is his clock there.
+    ``clock`` is the runtime's; its zone is the owner's: a time a letter gives with no zone of
+    its own is his clock there.
     """
     block = config.get("job_mail")
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
@@ -1823,9 +1824,11 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the zone and th
     )
     timeout = number("timeout_ms", low=1, whole=True)
     # min_confidence is the choice question's bar; these questions read probabilities instead.
-    route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log)
+    route = SurrogateRoute(
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, clock=clock, log=log,
+    )
     return JobMail(
-        settings, route, connections, db_path, rule_judge_v1, zone=zone,
+        settings, route, connections, db_path, rule_judge_v1, zone=clock.zone,
         moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
     )
 
@@ -2130,7 +2133,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
 
 
 def _turn_end_asks(
-    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+    config: Mapping[str, Any], config_path: Path, clock: Clock, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
     """``agents.turn_end_asks`` (ADR 0125): off unless enabled; bad values stop boot."""
     agents = config.get("agents")
@@ -2153,13 +2156,13 @@ def _turn_end_asks(
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
     route = SurrogateRoute(
-        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, clock=clock, log=log,
     )
     return TurnEndAsks(route, float(bar), float(question_bar))
 
 
 def _voice_words(
-    config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
+    config: Mapping[str, Any], config_path: Path, clock: Clock, log: JevLog | None = None,
 ) -> VoiceWords | None:
     """``realtime.jev_words`` (ADR 0130): off unless enabled; bad values stop boot."""
     realtime = config.get("realtime")
@@ -2181,7 +2184,7 @@ def _voice_words(
         raise RuntimeBootstrapError(msg)
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
     route = SurrogateRoute(
-        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log,
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, clock=clock, log=log,
     )
     return VoiceWords(route, float(bar), chars)
 
@@ -2207,9 +2210,10 @@ def _bar(value: object) -> float | None:
     return float(value)
 
 
-def _jev_oneshot(
+def _jev_oneshot(  # noqa: PLR0913 - the config, the clock, the dataset, the table, the emitter
     config: Mapping[str, Any],
     config_path: Path,
+    clock: Clock,
     log: JevLog | None,
     tier0_table: Tier0Table,
     emit: Callable[[str, dict[str, Any], str], None] | None = None,
@@ -2267,7 +2271,7 @@ def _jev_oneshot(
             msg = f"{prefix} reads realtime.jev_words at, timeout_ms and max_chars: not valid"
             raise RuntimeBootstrapError(msg)
     route = SurrogateRoute(
-        model=model.strip(), min_confidence=1.0, timeout_ms=timeout,
+        model=model.strip(), min_confidence=1.0, timeout_ms=timeout, clock=clock,
         zdr=block.get("zdr") is not False, log=log,
     )
     return JevOneShot(
@@ -3272,14 +3276,14 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     def make_late(connections: PluginConnections) -> tuple[JobMail | None, Home]:
         _wire_plan_reader(daily_report, connections)
         job_mail = _job_mail(
-            full_config, config_path, jev_log, connections, memory.db_path, local_zone,
+            full_config, config_path, jev_log, connections, memory.db_path, system_clock,
             moment, device, paths.event_log,
         )
         home = Home(
             connections,
             resolve_zone(None, _work_state_timezone(full_config)),
             _home_weather(full_config),
-            _mail_reply(full_config, config_path, jev_log),
+            _mail_reply(full_config, config_path, system_clock, jev_log),
             mail_view,
             None if mail_view is None else mail_summarizer(
                 # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
@@ -3525,7 +3529,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             partial(open_runtime_event_log, paths.event_log),
             is_idle=partial(_daemon_idle, paths.event_log),
         ),
-        surrogate_route=_surrogate_route(full_config, config_path, jev_log),
+        surrogate_route=_surrogate_route(full_config, config_path, system_clock, jev_log),
         memory=memory,
         session=session,
         workers=workers,
@@ -3577,7 +3581,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             ),
         ),
         voice_cues=voice_cues,
-        turn_end_asks=_turn_end_asks(full_config, config_path, jev_log),
+        turn_end_asks=_turn_end_asks(full_config, config_path, system_clock, jev_log),
         job_mail=job_mail,
         mail_codes=mail_codes,
         commitments=commitments,
@@ -3599,9 +3603,10 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             kept=partial(place_state.read_kept, memory.db_path),
             cap_usd=_maps_monthly_usd(full_config),
         ),
-        voice_words=_voice_words(full_config, config_path, jev_log),
+        voice_words=_voice_words(full_config, config_path, system_clock, jev_log),
         oneshot=_jev_oneshot(
-            full_config, config_path, jev_log, tier0_table, _event_emitter(paths.event_log),
+            full_config, config_path, system_clock, jev_log, tier0_table,
+            _event_emitter(paths.event_log),
         ),
         settings=Settings(
             paths.root,

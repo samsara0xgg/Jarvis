@@ -8162,6 +8162,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         llm_config=llm_config if isinstance(llm_config, Mapping) else {},
                         event_log_path=runtime.runtime_paths.event_log,
                         pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                        clock=runtime.clock,
                         core_memory=CoreMemorySettings.from_config(
                             runtime.config.get("core_memory"),
                         ),

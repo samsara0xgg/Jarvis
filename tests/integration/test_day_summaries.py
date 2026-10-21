@@ -25,6 +25,7 @@ from jarvis.state.memory_db import (
     open_memory_db,
     pending_days,
 )
+from tests.support.clock import FakeClock
 from tests.support.daily_tools import DailyHarness
 from tests.support.day_summaries import (
     GOOD,
@@ -63,6 +64,7 @@ def _schedule(
         llm_config={},
         event_log_path=log,
         pricing_table={},
+        clock=FakeClock(),
         client=summariser.as_llm_client(),
     )
 

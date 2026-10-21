@@ -20,9 +20,7 @@ import json
 import logging
 import os
 import threading
-import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -35,11 +33,12 @@ from jarvis.state.event_log import get_event
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
     from pathlib import Path
 
     from jarvis.decision.packet import SituationPacket
     from jarvis.decision.tier0 import Tier0Table
+    from jarvis.shared.clock import Clock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -181,6 +180,9 @@ class SurrogateRoute:
     model: str
     min_confidence: float
     timeout_ms: int
+    # The runtime's clock (ADR 0333): the deadline below runs on it, and so does every
+    # reply's ``finished`` second.
+    clock: Clock
     url: str = SURROGATE_URL
     # Spoken stream path only: the model's request is sent without waiting for Jev, and its
     # first output is held until Jev has answered (ADR 0122). Off, Jev is asked first.
@@ -220,7 +222,7 @@ class SurrogateRoute:
         self, state: str, options: Sequence[SurrogateOption], ref: str | None = None,
     ) -> SurrogateCall:
         """Send the question now (``ref``: the turn id, for the dataset); read it later."""
-        started = time.monotonic()
+        started = self.clock.monotonic()
         question = {
             "type": "choice",
             "instructions": _INSTRUCTIONS,
@@ -252,7 +254,7 @@ class SurrogateRoute:
 
     def _fetch(self, key: str, body: dict[str, Any], use: str, ref: str | None) -> Reply:
         """On a worker: one POST, then its line in the dataset; never an exception."""
-        started = time.monotonic()
+        started = self.clock.monotonic()
         reply = self._post(key, body)
         if self.log is not None:
             parsed = reply.parsed if isinstance(reply.parsed, dict) else {}
@@ -274,18 +276,18 @@ class SurrogateRoute:
                 self.url, json=body, headers={"Authorization": f"Bearer {key}"},
             )
             reply.raise_for_status()
-            return Reply(reply.json(), None, time.monotonic())
+            return Reply(reply.json(), None, self.clock.monotonic())
         except httpx.TimeoutException:
-            return Reply(None, "timeout", time.monotonic())
+            return Reply(None, "timeout", self.clock.monotonic())
         except httpx.HTTPStatusError as exc:
             # OpenRouter answers 404 when no endpoint satisfies the provider preferences.
             # The call is never repeated without ``zdr``: no route means no call.
             no_route = self.zdr and exc.response.status_code == _NO_ROUTE_STATUS
-            return Reply(None, "no_zdr_route" if no_route else "http", time.monotonic())
+            return Reply(None, "no_zdr_route" if no_route else "http", self.clock.monotonic())
         except httpx.HTTPError:
-            return Reply(None, "http", time.monotonic())
+            return Reply(None, "http", self.clock.monotonic())
         except ValueError:
-            return Reply(None, "bad_json", time.monotonic())
+            return Reply(None, "bad_json", self.clock.monotonic())
 
     def warn_once(
         self,
@@ -300,6 +302,38 @@ class SurrogateRoute:
                 "%s: %s; %s (logged once per kind)",
                 what, "no zero-retention route" if error == "no_zdr_route" else error, then,
             )
+
+
+def await_replies(
+    clock: Clock, futures: Collection[Future[Reply]], seconds: float,
+) -> set[Future[Reply]]:
+    """The calls that are in once all are, or ``seconds`` of ``clock`` have passed.
+
+    A call runs on a worker and httpx bounds only each phase of it, so the whole call's
+    deadline is this wait, on the clock the rest of the runtime keeps.
+    """
+    left = len(futures)
+    lock = threading.Lock()
+    all_in = threading.Event()
+    if not left:
+        return set()
+
+    def arrived(_future: Future[Reply]) -> None:
+        nonlocal left
+        with lock:
+            left -= 1
+            if not left:
+                all_in.set()
+
+    for future in futures:
+        future.add_done_callback(arrived)
+    clock.wait(all_in, seconds)
+    return {future for future in futures if future.done()}
+
+
+def await_reply(clock: Clock, future: Future[Reply], seconds: float) -> Reply | None:
+    """The reply once it is in, or ``None`` if ``seconds`` of ``clock`` pass first."""
+    return future.result() if future in await_replies(clock, [future], seconds) else None
 
 
 @dataclass(frozen=True)
@@ -352,10 +386,11 @@ class SurrogateCall:
 
         if self._future is None:
             return failed("no_key", 0)
-        left_s = max(0.0, limit_ms / 1000 - (time.monotonic() - self._started))
-        try:
-            reply = self._future.result(left_s)
-        except FutureTimeout:
+        clock = self.route.clock
+        reply = await_reply(
+            clock, self._future, max(0.0, limit_ms / 1000 - (clock.monotonic() - self._started)),
+        )
+        if reply is None:
             return failed("timeout", limit_ms)
         latency_ms = int((reply.finished - self._started) * 1000)
         if reply.error is not None:

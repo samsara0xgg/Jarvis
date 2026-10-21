@@ -22,6 +22,7 @@ from jarvis.decision import decide
 from jarvis.decision.jev_oneshot import JevOneShot, oneshot_state
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute, offered
 from jarvis.runtime import RuntimeBootstrapError, _event_emitter, _jev_oneshot
+from jarvis.shared.clock import SystemClock
 from jarvis.state.event_log import (
     EventTypeRegistry,
     emit_event,
@@ -30,6 +31,7 @@ from jarvis.state.event_log import (
 )
 from tests.canary._helpers import repo_root
 from tests.support.barge_in import LONG, SHORT, BargeInRig
+from tests.support.clock import FakeClock
 from tests.support.routine import drive_streaming_turn
 from tests.support.spoken import (
     SpokenPeer,
@@ -51,6 +53,8 @@ from tests.support.voice_words import LISTENING, LONG_LINE
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
+
+    from jarvis.shared.clock import Clock
 
 _WORDS = "do you happen to know the time"  # no Tier 0 row matches it
 GROUPS = frozenset({"calendar_todo_read", "mail_read", "web_search", "comms_write"})
@@ -88,11 +92,16 @@ class _FakeRoute(SurrogateRoute):
 class _Lines:
     """A one-shot over the fake route, with the dataset in ``log_path``."""
 
-    def __init__(self, tmp_path: Path, **kwargs: Any) -> None:  # noqa: ANN401 - the keywords of JevOneShot
+    def __init__(
+        self, tmp_path: Path, *, clock: Clock | None = None,
+        **kwargs: Any,  # noqa: ANN401 - the keywords of JevOneShot
+    ) -> None:
+        """``clock`` is a stopped fake unless the test needs a deadline to pass for real."""
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.log_path = tmp_path / "decisions.jsonl"
         self.route = _FakeRoute(
-            model="m", min_confidence=1.0, timeout_ms=800, log=JevLog(self.log_path),
+            model="m", min_confidence=1.0, timeout_ms=800, clock=clock or FakeClock(),
+            log=JevLog(self.log_path),
         )
         self.emitted: list[tuple[str, dict[str, Any], str]] = []  # route.tool_predicted
         self.read: list[tuple[str, dict[str, Any], str]] = []  # route.oneshot_read (ADR 0280)
@@ -173,7 +182,7 @@ def test_a_line_the_regexes_absorbed_sends_nothing(tmp_path: Path) -> None:
 
 def test_no_answer_in_time_is_a_turn(tmp_path: Path) -> None:
     """The check waits for what is left of words_timeout_ms; none leaves the line a turn."""
-    lines = _Lines(tmp_path, words_timeout_ms=50)
+    lines = _Lines(tmp_path, words_timeout_ms=50, clock=SystemClock())  # 50 ms really pass
     lines.route.hang = True
     rig = BargeInRig(
         tmp_path, LISTENING, ask_words=lines.oneshot.ask, begin_line=lines.oneshot.begin,
@@ -223,11 +232,19 @@ def test_a_line_older_than_the_window_is_not_compared_and_relation_off_acts_on_n
     tmp_path: Path,
 ) -> None:
     """Past window_s there is no relation question; with the bar unset the answer is ignored."""
-    late = _Lines(tmp_path / "late", window_s=0.0)
+    clock = FakeClock()
+    late = _Lines(tmp_path / "late", clock=clock, window_s=30.0)
     late.say(relation=("supplement", 0.99))
     late.oneshot.begin("T1", "a", "", False, False)  # noqa: FBT003
+    clock.advance(30.5)
     late.oneshot.begin("T2", "b", "", False, False)  # noqa: FBT003
     assert all("relation" not in sent[1] for sent in late.route.sent)
+    near = _Lines(tmp_path / "near", clock=clock, window_s=30.0)  # a positive control
+    near.say(relation=("supplement", 0.99))
+    near.oneshot.begin("T1", "a", "", False, False)  # noqa: FBT003
+    clock.advance(29.5)
+    near.oneshot.begin("T2", "b", "", False, False)  # noqa: FBT003
+    assert "relation" in near.route.sent[1][1]
     off = _Lines(tmp_path / "off", relation_at=None)
     acted: list[str] = []
 
@@ -434,7 +451,8 @@ def _say(
     """One utterance through decide() whose request was begun, as the surface does."""
     ctx, conn, llm = build_decide_context(tmp_path, draft_text=LLM_ANSWER)
     route = SurrogateRoute(
-        model="typesafe/jev-1.13", min_confidence=0.95, timeout_ms=400, url=jev_endpoint.url,
+        model="typesafe/jev-1.13", min_confidence=0.95, timeout_ms=400,
+        clock=jev_endpoint.clock, url=jev_endpoint.url,
     )
     ctx = replace(ctx, tier0_table=TABLE, surrogate_route=route, oneshot=lines.oneshot)
     lines.oneshot.begin("T9", words, "", False, False)  # noqa: FBT003
@@ -492,6 +510,7 @@ def test_a_turn_without_a_begun_request_asks_on_its_own(tmp_path: Path, jev: Sur
         model="typesafe/jev-1.13",
         min_confidence=0.9,
         timeout_ms=400,
+        clock=jev.clock,
         url=jev.url,
     )
     ctx = replace(ctx, tier0_table=TABLE, surrogate_route=route, oneshot=lines.oneshot)
@@ -521,6 +540,7 @@ def test_a_tool_the_spoken_model_proposes_is_noted_with_the_group_jev_predicted(
             model="typesafe/jev-1.13",
             min_confidence=0.9,
             timeout_ms=400,
+            clock=jev.clock,
             url=jev.url,
             parallel=True,
         )
@@ -568,13 +588,13 @@ def _config(**changes: Any) -> dict[str, Any]:  # noqa: ANN401 - config values
 def test_the_block_is_off_unless_enabled_and_bad_values_stop_boot(tmp_path: Path) -> None:
     """Off or absent is None; every wrong key stops boot with the file named."""
     path = tmp_path / "jarvis.yaml"
-    assert _jev_oneshot({}, path, None, TABLE) is None
-    assert _jev_oneshot(_config(enabled=False), path, None, TABLE) is None
-    built = _jev_oneshot(_config(), path, None, TABLE)
+    assert _jev_oneshot({}, path, FakeClock(), None, TABLE) is None
+    assert _jev_oneshot(_config(enabled=False), path, FakeClock(), None, TABLE) is None
+    built = _jev_oneshot(_config(), path, FakeClock(), None, TABLE)
     assert built is not None
     assert built.words_enabled
     quiet = _config(relation={"enabled": False, "at": 0.98, "window_s": 30})
-    assert _jev_oneshot(quiet, path, None, TABLE) is not None
+    assert _jev_oneshot(quiet, path, FakeClock(), None, TABLE) is not None
     bad_blocks = (
         {"model": ""},
         {"timeout_ms": 0},
@@ -586,18 +606,18 @@ def test_the_block_is_off_unless_enabled_and_bad_values_stop_boot(tmp_path: Path
     )
     for bad in bad_blocks:
         with pytest.raises(RuntimeBootstrapError):
-            _jev_oneshot(_config(**bad), path, None, TABLE)
+            _jev_oneshot(_config(**bad), path, FakeClock(), None, TABLE)
     no_route = _config()
     no_route["realtime"]["surrogate_route"] = {"enabled": False}
     with pytest.raises(RuntimeBootstrapError, match="surrogate_route"):
-        _jev_oneshot(no_route, path, None, TABLE)
+        _jev_oneshot(no_route, path, FakeClock(), None, TABLE)
 
 
 def test_without_jev_words_the_surface_asks_nothing(tmp_path: Path) -> None:
     """The control words stay off unless realtime.jev_words is on."""
     config = _config()
     config["realtime"]["jev_words"] = {"enabled": False}
-    built = _jev_oneshot(config, tmp_path / "jarvis.yaml", None, TABLE)
+    built = _jev_oneshot(config, tmp_path / "jarvis.yaml", FakeClock(), None, TABLE)
     assert built is not None
     assert not built.words_enabled
     assert built.ask("T1", "x", "", False, True) is None  # noqa: FBT003
@@ -617,8 +637,8 @@ def test_the_shipped_config_has_the_block_off_and_it_boots_when_switched_on(
     assert (block["relation"]["at"], block["relation"]["window_s"]) == (0.98, 30)
     assert block["tool_line"]["at"] == 0.95
     path = tmp_path / "jarvis.yaml"
-    assert _jev_oneshot(config, path, None, TABLE) is None
+    assert _jev_oneshot(config, path, FakeClock(), None, TABLE) is None
     block["enabled"] = block["relation"]["enabled"] = block["tool_line"]["enabled"] = True
     config["realtime"]["surrogate_route"]["enabled"] = True
     config["realtime"]["jev_words"]["enabled"] = True
-    assert _jev_oneshot(config, path, None, TABLE) is not None
+    assert _jev_oneshot(config, path, FakeClock(), None, TABLE) is not None

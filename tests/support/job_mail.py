@@ -25,6 +25,7 @@ from jarvis.shared import lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.clock import FakeClock
 from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
@@ -239,6 +240,7 @@ class JobJev:
             model="typesafe/jev-1.13",
             min_confidence=1.0,
             timeout_ms=5000,
+            clock=FakeClock(),
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
         )
 

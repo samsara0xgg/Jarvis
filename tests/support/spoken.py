@@ -124,6 +124,7 @@ class SpokenPeer:
         self.holding = threading.Event()
         self.release = threading.Event()
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        self.requested = threading.Event()  # set once the first request is in
         self.completed = 0
         self.url = ""
         self._ready = threading.Event()
@@ -177,6 +178,7 @@ class SpokenPeer:
             fields = dict(line.split(": ", 1) for line in lines[1:] if ": " in line)
             body = json.loads(await reader.readexactly(int(fields["Content-Length"])))
             self.requests.append((lines[0].split()[1], body))
+            self.requested.set()
             writer.write(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
             )

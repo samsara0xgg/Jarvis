@@ -30,6 +30,7 @@ from jarvis.state.memory_db import (
     set_user_name,
     user_name,
 )
+from tests.support.clock import FakeClock
 from tests.support.core_memory import (
     consolidation_input,
     consolidator,
@@ -532,6 +533,7 @@ class _Jev:
             model="m",
             min_confidence=1.0,
             timeout_ms=2000,
+            clock=FakeClock(),
             url=f"http://127.0.0.1:{self.server.server_port}/",
             log=log,
         )

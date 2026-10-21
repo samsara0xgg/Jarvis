@@ -28,14 +28,12 @@ import json
 import logging
 import re
 import threading
-import time
 from collections import OrderedDict
-from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.decision.surrogate_route import NONE
+from jarvis.decision.surrogate_route import NONE, await_reply
 from jarvis.decision.voice_words import CONTROL_CRITERIA
 
 if TYPE_CHECKING:
@@ -296,7 +294,7 @@ class JevOneShot:
         self, turn_id: str, text: str, recent: str, over_her: bool, conversation: bool,  # noqa: FBT001
     ) -> None:
         """Send the line's request now (a worker); the readers find it by ``turn_id``."""
-        now = time.monotonic()
+        now = self._route.clock.monotonic()
         with self._lock:
             before = self._prev
             self._prev = (turn_id, text, now)
@@ -340,10 +338,12 @@ class JevOneShot:
             line = self._lines.get(turn_id)
         if line is None:
             return None
-        left = max(0.0, self._words_timeout_ms / 1000 - (time.monotonic() - line.started))
-        try:
-            reply = line.future.result(left)
-        except FutureTimeout:
+        clock = self._route.clock
+        reply = await_reply(
+            clock, line.future,
+            max(0.0, self._words_timeout_ms / 1000 - (clock.monotonic() - line.started)),
+        )
+        if reply is None:
             self._route.warn_once("timeout", "voice words", "the line stays a turn")
             return None
         if reply.error is not None:
