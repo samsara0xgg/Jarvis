@@ -1,0 +1,93 @@
+{
+  "frame": "hello",
+  "socket": "/phone/ws",
+  "direction": "client -> brain",
+  "description": "The first frame of a connection to /phone/ws (ADR 0209), sent after the socket opens under the device token. `voice` says whether the phone will play her voice over this socket. The brain answers `ready` (see ready.json); a first frame that is not a hello closes the socket with code 1008.",
+  "valid": [
+    {
+      "name": "a hello that wants her voice",
+      "value": {
+        "type": "hello",
+        "voice": true
+      }
+    },
+    {
+      "name": "a hello with no voice",
+      "value": {
+        "type": "hello",
+        "voice": false
+      }
+    },
+    {
+      "name": "a hello that says nothing of voice",
+      "value": {
+        "type": "hello"
+      }
+    },
+    {
+      "name": "a hello with more in it (ignored)",
+      "value": {
+        "type": "hello",
+        "voice": true,
+        "app": "1.4.2"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a voice that is text",
+      "value": {
+        "type": "hello",
+        "voice": "yes"
+      },
+      "refusal": "close 1008"
+    },
+    {
+      "name": "a voice that is a number",
+      "value": {
+        "type": "hello",
+        "voice": 1
+      },
+      "refusal": "close 1008"
+    },
+    {
+      "name": "a voice of null",
+      "value": {
+        "type": "hello",
+        "voice": null
+      },
+      "refusal": "close 1008"
+    },
+    {
+      "name": "a first frame that is a say",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "hi",
+        "spoken": false
+      },
+      "refusal": "close 1008"
+    },
+    {
+      "name": "a first frame with no type",
+      "value": {
+        "voice": true
+      },
+      "refusal": "close 1008"
+    },
+    {
+      "name": "a first frame that is a list",
+      "value": [
+        {
+          "type": "hello"
+        }
+      ],
+      "refusal": "close 1008"
+    },
+    {
+      "name": "a first frame that is not JSON",
+      "value": "hello",
+      "refusal": "close 1008"
+    }
+  ]
+}

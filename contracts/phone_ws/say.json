@@ -1,0 +1,328 @@
+{
+  "frame": "say",
+  "socket": "/phone/ws",
+  "direction": "client -> brain",
+  "description": "Words the phone sends (ADR 0209, 0216): typed (`spoken` false) or heard (`spoken` true). The brain answers `said` with a verdict (see said.json), or `error` with `bad_say` when the frame is not one of these; a refused say writes nothing. `over_her` and `conversation` ask the brain to judge words said over her voice or in the phone's conversation mode; `continues` is the utterance a pause cut off; `about` is the item the phone has open (contracts/about.json). The value is the whole frame.",
+  "now_ms": 1791993600000,
+  "valid": [
+    {
+      "name": "typed words",
+      "value": {
+        "type": "say",
+        "utterance_id": "t1",
+        "text": "把它推到明天",
+        "spoken": false
+      }
+    },
+    {
+      "name": "heard words",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "language": "zh",
+        "confidence": 0.93
+      }
+    },
+    {
+      "name": "heard words over her voice",
+      "value": {
+        "type": "say",
+        "utterance_id": "u2",
+        "text": "把它推到明天",
+        "spoken": true,
+        "over_her": true
+      }
+    },
+    {
+      "name": "heard words in the conversation mode",
+      "value": {
+        "type": "say",
+        "utterance_id": "u3",
+        "text": "把它推到明天",
+        "spoken": true,
+        "conversation": true
+      }
+    },
+    {
+      "name": "heard words with both flags",
+      "value": {
+        "type": "say",
+        "utterance_id": "u4",
+        "text": "把它推到明天",
+        "spoken": true,
+        "over_her": true,
+        "conversation": true
+      }
+    },
+    {
+      "name": "typed words with the item open",
+      "value": {
+        "type": "say",
+        "utterance_id": "t2",
+        "text": "把它推到明天",
+        "spoken": false,
+        "about": {
+          "kind": "reminder",
+          "id": "reminder-3fa9c1d2",
+          "title": "给妈妈打电话",
+          "start_ms": 1791993600000
+        }
+      }
+    },
+    {
+      "name": "heard words that go on from an earlier say",
+      "value": {
+        "type": "say",
+        "utterance_id": "u5",
+        "text": "把它推到明天",
+        "spoken": true,
+        "continues": "u1"
+      }
+    },
+    {
+      "name": "heard words with a voiceprint that is junk (ignored)",
+      "value": {
+        "type": "say",
+        "utterance_id": "u6",
+        "text": "把它推到明天",
+        "spoken": true,
+        "voiceprint": {
+          "embedding": "no"
+        }
+      }
+    },
+    {
+      "name": "flags that are false",
+      "value": {
+        "type": "say",
+        "utterance_id": "u7",
+        "text": "把它推到明天",
+        "spoken": true,
+        "over_her": false,
+        "conversation": false
+      }
+    },
+    {
+      "name": "an utterance id of 64 characters",
+      "value": {
+        "type": "say",
+        "utterance_id": "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "text": "把它推到明天",
+        "spoken": true
+      }
+    },
+    {
+      "name": "an utterance id with an underscore and a digit",
+      "value": {
+        "type": "say",
+        "utterance_id": "utt_0042",
+        "text": "把它推到明天",
+        "spoken": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no utterance id",
+      "value": {
+        "type": "say",
+        "text": "把它推到明天",
+        "spoken": true
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "an utterance id with a space",
+      "value": {
+        "type": "say",
+        "utterance_id": "u 1",
+        "text": "把它推到明天",
+        "spoken": true
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "an utterance id of 65 characters",
+      "value": {
+        "type": "say",
+        "utterance_id": "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+        "text": "把它推到明天",
+        "spoken": true
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "an utterance id that is a number",
+      "value": {
+        "type": "say",
+        "utterance_id": 7,
+        "text": "把它推到明天",
+        "spoken": true
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "no text",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "spoken": true
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "text that is a number",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": 7,
+        "spoken": true
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "no spoken",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "spoken as text",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": "true"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "spoken as a number",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": 1
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "a language that is a number",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "language": 7
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "over_her as text",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "over_her": "yes"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "conversation as a number",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "conversation": 1
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "a continues with a space",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "continues": "u 0"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "a continues that is a number",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "continues": 3
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "attachments that are not a list",
+      "value": {
+        "type": "say",
+        "utterance_id": "t1",
+        "text": "把它推到明天",
+        "spoken": false,
+        "attachments": "0123"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "an attachment that is not an id",
+      "value": {
+        "type": "say",
+        "utterance_id": "t1",
+        "text": "把它推到明天",
+        "spoken": false,
+        "attachments": ["not-an-id"]
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "attachments on heard words",
+      "value": {
+        "type": "say",
+        "utterance_id": "u1",
+        "text": "把它推到明天",
+        "spoken": true,
+        "attachments": ["0123456789abcdef0123456789abcdef"]
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "an item with a kind outside the list",
+      "value": {
+        "type": "say",
+        "utterance_id": "t1",
+        "text": "把它推到明天",
+        "spoken": false,
+        "about": {
+          "kind": "meeting",
+          "id": "x"
+        }
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "an item that is text",
+      "value": {
+        "type": "say",
+        "utterance_id": "t1",
+        "text": "把它推到明天",
+        "spoken": false,
+        "about": "reminder-1"
+      },
+      "refusal": "bad_say"
+    }
+  ]
+}

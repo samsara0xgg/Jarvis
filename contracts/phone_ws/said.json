@@ -1,0 +1,89 @@
+{
+  "frame": "said",
+  "socket": "/phone/ws",
+  "direction": "brain -> client",
+  "description": "The answer to a say, one per verdict. `turn`: the words are a turn, `turn_id` names it and `record_id` is the id its message will have. Every other verdict records nothing and has `turn_id` null: the phone resumes her audio on `backchannel`, `unclear` and `echo`; the brain has stopped her on `stop` and `wait`, and ended the conversation on `dismissed` and `quiet:<level>` (levels quiet, no-pop, dnd, off); on `elsewhere` and `not_owner` another device or another voice has it and the phone does not resend. A client handles a verdict it does not know like `backchannel`.",
+  "now_ms": 1791993600000,
+  "exact": ["type", "verdict"],
+  "examples": {
+    "turn": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": "T026109fe93755b26",
+      "verdict": "turn",
+      "record_id": "bf457a619da853efa1fec78f598daffa"
+    },
+    "backchannel": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "backchannel"
+    },
+    "unclear": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "unclear"
+    },
+    "echo": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "echo"
+    },
+    "stop": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "stop"
+    },
+    "wait": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "wait"
+    },
+    "dismissed": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "dismissed"
+    },
+    "quiet:dnd": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "quiet:dnd"
+    },
+    "quiet:quiet": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "quiet:quiet"
+    },
+    "quiet:no-pop": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "quiet:no-pop"
+    },
+    "quiet:off": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "quiet:off"
+    },
+    "elsewhere": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "elsewhere"
+    },
+    "not_owner": {
+      "type": "said",
+      "utterance_id": "u1",
+      "turn_id": null,
+      "verdict": "not_owner"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "frame": "step",
+  "socket": "/phone/ws",
+  "direction": "brain -> client",
+  "description": "One tool call of a turn this device opened (ADR 0231). It is sent `running` when the tool starts and again with the same `step` number as `done` or `failed`, with `ended_ms` set; `step` counts from 1 per turn. `label` is the line to show, in the brain's language; `started_ms` and `ended_ms` are the brain's clock in epoch ms.",
+  "now_ms": 1791993600000,
+  "exact": ["state", "type"],
+  "examples": {
+    "running": {
+      "type": "step",
+      "turn_id": "T4774e84bb1c25dca",
+      "step": 1,
+      "tool": "web_search",
+      "label": "上网搜 · victoria weather",
+      "state": "running",
+      "started_ms": 1791993600100,
+      "ended_ms": null
+    },
+    "done": {
+      "type": "step",
+      "turn_id": "T4774e84bb1c25dca",
+      "step": 1,
+      "tool": "web_search",
+      "label": "上网搜 · victoria weather",
+      "state": "done",
+      "started_ms": 1791993600100,
+      "ended_ms": 1791993602600
+    },
+    "failed": {
+      "type": "step",
+      "turn_id": "T4774e84bb1c25dca",
+      "step": 2,
+      "tool": "web_search",
+      "label": "上网搜 · victoria weather",
+      "state": "failed",
+      "started_ms": 1791993605100,
+      "ended_ms": 1791993607600
+    }
+  }
+}

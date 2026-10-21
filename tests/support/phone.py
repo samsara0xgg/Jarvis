@@ -366,7 +366,7 @@ class JudgeRig:
     token: str = field(init=False)
     client: TestClient = field(init=False)
 
-    def build(
+    def build(  # noqa: PLR0913 - each is a seam of the route a test turns
         self,
         *,
         quiet: bool = True,
@@ -374,7 +374,9 @@ class JudgeRig:
         recent: str | None = RECENT,
         elsewhere: Callable[[str, str, str], bool] | None = None,
         voiceprints: VoiceprintBook | None = None,
+        hub: dict[str, Any] | None = None,
     ) -> None:
+        """Build the route; ``hub`` names fields of the :class:`PhoneHub` to replace."""
         self.root.mkdir(exist_ok=True)
         self.log = self.root / "events.db"
         open_event_log(self.log).close()
@@ -419,25 +421,25 @@ class JudgeRig:
             self.elsewhere_asked.append((device, turn_id, text))
             return False if elsewhere is None else elsewhere(device, turn_id, text)
 
-        hub = PhoneHub(
-            events=BrainEvents(conn),
-            rows=inherent_loop._PhoneRows(conn),  # noqa: SLF001
-            open_voice=open_voice,
-            barge_in=barge_in,
-            cancel_turn=cancel_turn,
-            ask_words=ask_words,
-            note_words=lambda *args: self.calls.append(("note_words", args[1])),
-            begin_line=lambda *args: self.calls.append(("begin_line", args[0])),
-            recent_speech=None if recent is None else (lambda: recent),
-            set_quiet=set_quiet if quiet else None,
-            heard_elsewhere=None if elsewhere is None else heard_elsewhere,
-            voiceprints=voiceprints,
-        )
+        fields: dict[str, Any] = {
+            "events": BrainEvents(conn),
+            "rows": inherent_loop._PhoneRows(conn),  # noqa: SLF001
+            "open_voice": open_voice,
+            "barge_in": barge_in,
+            "cancel_turn": cancel_turn,
+            "ask_words": ask_words,
+            "note_words": lambda *args: self.calls.append(("note_words", args[1])),
+            "begin_line": lambda *args: self.calls.append(("begin_line", args[0])),
+            "recent_speech": None if recent is None else (lambda: recent),
+            "set_quiet": set_quiet if quiet else None,
+            "heard_elsewhere": None if elsewhere is None else heard_elsewhere,
+            "voiceprints": voiceprints,
+        }
         app = create_app(
             InherentDeps(
                 submit_callable=lambda _text: "T1",
                 broadcaster=InherentBroadcaster(),
-                phone=hub,
+                phone=PhoneHub(**{**fields, **(hub or {})}),
                 device_name=lambda one: device_name_for_token(self.root, one),
             ),
         )

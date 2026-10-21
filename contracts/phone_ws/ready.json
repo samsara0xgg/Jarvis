@@ -1,0 +1,23 @@
+{
+  "frame": "ready",
+  "socket": "/phone/ws",
+  "direction": "brain -> client",
+  "description": "The brain's answer to a hello. `device` is the name the token was paired under; `voice` is false when the phone said it wants none or the brain cannot speak; `sample_rate` is the rate of her voice in Hz (the binary frames carry 16-bit PCM at it); `judges` says the brain judges words said over her (ADR 0216).",
+  "exact": ["judges", "sample_rate", "type", "voice"],
+  "examples": {
+    "voice": {
+      "type": "ready",
+      "device": "iphone",
+      "voice": true,
+      "sample_rate": 32000,
+      "judges": true
+    },
+    "no_voice": {
+      "type": "ready",
+      "device": "iphone",
+      "voice": false,
+      "sample_rate": 32000,
+      "judges": true
+    }
+  }
+}

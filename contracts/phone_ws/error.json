@@ -1,0 +1,54 @@
+{
+  "frame": "error",
+  "socket": "/phone/ws",
+  "direction": "brain -> client",
+  "description": "A refusal or a failure, one example per code. `bad_say`, `bad_ping` and `bad_located` mean the frame was malformed and is not resent; `no_voice`, `no_attachments` and `attachment_refused` mean the host cannot take what was sent (the last carries the store's own sentence in `message`); `retry` means the host could not write the say and the phone sends it again; `quiet_failed` and `interrupt_failed` come beside a `said` that still follows. `message` is for the log, not for the screen.",
+  "exact": ["code", "type"],
+  "examples": {
+    "bad_say": {
+      "type": "error",
+      "code": "bad_say",
+      "message": "say needs utterance_id, text and spoken"
+    },
+    "bad_ping": {
+      "type": "error",
+      "code": "bad_ping",
+      "message": "ping needs an integer t_ns"
+    },
+    "bad_located": {
+      "type": "error",
+      "code": "bad_located",
+      "message": "located needs a request_id"
+    },
+    "no_voice": {
+      "type": "error",
+      "code": "no_voice",
+      "message": "this connection has no voice"
+    },
+    "no_attachments": {
+      "type": "error",
+      "code": "no_attachments",
+      "message": "this host takes no attachments"
+    },
+    "attachment_refused": {
+      "type": "error",
+      "code": "attachment_refused",
+      "message": "that file is too big"
+    },
+    "retry": {
+      "type": "error",
+      "code": "retry",
+      "message": "the host could not record this; send it again"
+    },
+    "quiet_failed": {
+      "type": "error",
+      "code": "quiet_failed",
+      "message": "the quiet level was not set"
+    },
+    "interrupt_failed": {
+      "type": "error",
+      "code": "interrupt_failed",
+      "message": "barge_in did not complete"
+    }
+  }
+}
