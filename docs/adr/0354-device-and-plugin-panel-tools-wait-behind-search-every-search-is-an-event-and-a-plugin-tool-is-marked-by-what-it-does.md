@@ -30,7 +30,7 @@
 - ADR 0320 sends back an offer to look something up when a read-only tool on the menu could do it.
   It counts as on the menu only the tools loaded into the request, so a deferred read is never
   caught.
-- The system prompt carries four lines on how to connect, turn off and remove an app, naming the
+- The system prompt carries six lines on how to connect, turn off and remove an app, naming the
   panel's tools. On 2026-10-21 Allen said a prompt should hold only the task and the format, and
   that removing existing rules is in that spirit, tested on its own.
 - A native search shows only in the LLM io log (ADR 0287), so a search that misses is invisible,
@@ -51,7 +51,7 @@ tool by what it does.
   returns at most about 4,000 characters: each plugin's id, name, state and one line of what it
   does. Where a plugin's server leaves its reads unmarked, its manifest marks them read-only, Hue's
   six first.
-- **No prompt lines for plugins.** The four lines go from the system prompt. What each panel tool
+- **No prompt lines for plugins.** Those six lines go from the system prompt. What each panel tool
   does and returns moves into its own description.
 - **Every search is an event.** Each native search is written to the event log: what was searched
   for, and the tools that came back, or none.
