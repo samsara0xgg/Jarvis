@@ -208,7 +208,7 @@ extension TLBrain {
 }
 
 extension StarEngine {
-    /// `-scene 足迹` opens the footprint's one-day screen on the made-up day (Sky/FootprintFixture.swift); the words after a colon go further: `:拖:1329` the bar held at that time, `:开:<outing id>`
+    /// `-scene 足迹` opens the footprint's one-day screen on the made-up day (Sky/FootprintFixture.swift); the words after a colon go further: `:拖:1329` the bar held at that time (a fourth word after it lifts the finger again, and the map flies back to the day's whole), `:开:<outing id>`
     /// (or its number in the day, from 0) that outing's page opened.
     func runFootprintScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
@@ -228,6 +228,7 @@ extension StarEngine {
                 ui.footprint.minute = t
                 ui.footprint.list.hot = FootprintDayContent.hot(at: t, in: content.entries)
             }
+            if parts.count > 3 { DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [self] in ui.footprint.minute = nil; ui.footprint.list.hot = nil } }
         case "开":
             let want = parts.count > 2 ? parts[2] : "0"
             let pick = reply.outings.first { $0.id == want } ?? Int(want).flatMap { reply.outings.indices.contains($0) ? reply.outings[$0] : nil }

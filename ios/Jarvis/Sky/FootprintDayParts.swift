@@ -63,7 +63,7 @@ struct FootprintDayLine: View {
     }
 }
 
-/// The map under the line, fading into the sky at its top and its foot. The shape of the day is the content's; the dot of the held minute is the one thing that moves.
+/// The map under the line, fading into the sky at its top and its foot. The shape of the day is the content's; the dot of the held minute is the one thing that moves, and while it is held the camera follows it.
 struct FootprintDayMap: View {
     let ui: StarUI
     let content: FootprintDayContent
@@ -72,7 +72,7 @@ struct FootprintDayMap: View {
 
     var body: some View {
         let dot = ui.footprint.minute.flatMap { t in model.flatMap { FootprintDayContent.dot($0, minute: t) } }
-        FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot,
+        FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot, follow: dot.flatMap { model?.follow(atMs: $0.ms) },
                          fitPadding: UIEdgeInsets(top: 60, left: 24, bottom: 36, right: 110), fitKey: fitKey, legalInset: 44)          // MapKit's legal label stands above the fade
             .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 70 / FootprintDayPage.Y.mapH),
                                          .init(color: .black, location: 1 - 36 / FootprintDayPage.Y.mapH), .init(color: .clear, location: 1)],

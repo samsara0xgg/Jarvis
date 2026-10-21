@@ -90,7 +90,7 @@ struct FootprintOutingPage: View {
     // MARK: map
 
     private var mapView: some View {
-        FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, lineWidth: 4.6,
+        FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, follow: scrub.flatMap { model.follow(atMs: $0) }, lineWidth: 4.6,
                          fitPadding: UIEdgeInsets(top: 44, left: 30, bottom: 44, right: 115), fitKey: outing.id)
             .frame(width: W, height: 371)
             .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 62 / 371), .init(color: .black, location: 340 / 371), .init(color: .clear, location: 1)],

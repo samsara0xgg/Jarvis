@@ -48,6 +48,25 @@ struct FootprintMapDot: Equatable {
     static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.ms == b.ms && a.rgb == b.rgb && a.label == b.label }
 }
 
+/// The first-person camera while a finger holds a time: where he was (the scrub dot, kept at the map's centre), the way he was going in degrees clockwise from north (nil while still: the
+/// map keeps the heading it has) and how fast, which sets how far out the camera stands.
+struct FootprintMapFollow: Equatable {
+    var coord: CLLocationCoordinate2D, heading: Double?, speedMps: Double
+    static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.heading == b.heading && a.speedMps == b.speedMps }
+
+    /// tilted forward as turn-by-turn navigation is
+    static let pitch = 60.0
+    /// How far the camera stands from him: 600 m while he stands or walks, out to 2 km from 80 km/h, so that the road ahead can be read at any pace.
+    static func distance(speedMps v: Double) -> Double { 600 + 1400 * min(1, max(0, (v - 2) / 20)) }
+}
+
+extension TLMotion {
+    /// following him: the way he goes, the camera's distance and its tilt are taken up with this time constant in seconds (about the follow spring's response)
+    static let mapTurn = 0.2
+    /// letting go: the camera flies back to the day's whole in this many seconds, easing at both ends; under Reduce Motion it is there at once
+    static let mapReturn = 0.5
+}
+
 private extension CLLocationCoordinate2D {
     func same(_ o: CLLocationCoordinate2D) -> Bool { latitude == o.latitude && longitude == o.longitude }
 }
@@ -73,6 +92,8 @@ struct FootprintMapView: UIViewRepresentable {
     var tokens: [FootprintMapToken] = []
     var now: FootprintMapNow?
     var dot: FootprintMapDot?
+    /// while set, the camera is his: centred on him, turned to his way, tilted and close, and when it goes the map eases back to the fit
+    var follow: FootprintMapFollow?
     var lineWidth: CGFloat = 4.2
     /// room kept free at the edges when the map frames its content (the fade and the controls over it)
     var fitPadding: UIEdgeInsets = .zero
@@ -101,8 +122,11 @@ struct FootprintMapView: UIViewRepresentable {
 
     func updateUIView(_ m: FootprintMKMapView, context: Context) {
         m.layoutMargins.bottom = legalInset
+        m.layoutMargins.top = follow == nil ? 0 : fitPadding.top          // the camera's centre is the middle of what the margins leave: he stands in the clear of the fade
         context.coordinator.apply(self, to: m)
     }
+
+    static func dismantleUIView(_ m: FootprintMKMapView, coordinator: FootprintMapCoordinator) { coordinator.stop() }
 }
 
 final class FootprintMKMapView: MKMapView {
@@ -133,10 +157,13 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
     private var nowNote: FootprintMark.Note?
     private var dotNote: FootprintMark.Note?
     private var renderers: [FootprintRouteRenderer] = []
+    private weak var map: FootprintMKMapView?
+    private var eye = Eye()
 
     func apply(_ v: FootprintMapView, to m: FootprintMKMapView) {
         let old = view
         view = v
+        map = m
         if old?.routes != v.routes {
             m.removeOverlays(m.overlays)
             m.addOverlays(v.routes.map(FootprintRoute.init))
@@ -173,12 +200,83 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
         if fitKey != v.fitKey {
             let first = fitKey == nil
             fitKey = v.fitKey
-            m.pendingFit = { [weak m, weak self] in
-                guard let m, let v = self?.view, !v.fitCoordinates.isEmpty else { return }
-                m.setVisibleMapRect(Self.rect(PlaceFit.region(v.fitCoordinates)), edgePadding: v.fitPadding, animated: !first)
-            }
+            m.pendingFit = { [weak m, weak self] in if let m { self?.fit(m, animated: !first) } }
             if !m.bounds.isEmpty { m.setNeedsLayout() }
         }
+        if let f = v.follow { track(f, on: m) } else if eye.on { release(m) }
+    }
+
+    private func fit(_ m: MKMapView, animated: Bool) {
+        guard let v = view, !v.fitCoordinates.isEmpty else { return }
+        m.setVisibleMapRect(Self.rect(PlaceFit.region(v.fitCoordinates)), edgePadding: v.fitPadding, animated: animated)
+    }
+
+    // MARK: first person
+
+    /// Where the camera is while it follows him: the centre is always his, at once; the heading, the tilt and the distance (its log, so that the way in from the whole day is even) go to
+    /// their aims at `TLMotion.mapTurn`. A still him leaves the heading alone.
+    private struct Eye {
+        var on = false, heading = 0.0, pitch = 0.0, logDistance = 0.0
+        var centre = CLLocationCoordinate2D()
+    }
+    private var aim = Eye()
+    private var link: CADisplayLink?
+
+    private func track(_ f: FootprintMapFollow, on m: FootprintMKMapView) {
+        guard !m.bounds.isEmpty else {          // no size yet: the camera is taken once the map has one, and the first fit with it
+            m.pendingFit = { [weak self, weak m] in
+                guard let self, let m else { return }
+                if let f = self.view?.follow { self.track(f, on: m) } else { self.fit(m, animated: false) }
+            }
+            return
+        }
+        if !eye.on {
+            let c = m.camera
+            eye = Eye(on: true, heading: c.heading, pitch: c.pitch, logDistance: log(c.centerCoordinateDistance))
+            aim = eye
+        }
+        eye.centre = f.coord
+        aim.heading = f.heading ?? aim.heading
+        aim.pitch = FootprintMapFollow.pitch
+        aim.logDistance = log(FootprintMapFollow.distance(speedMps: f.speedMps))
+        if TLMotion.reduced { eye.heading = aim.heading; eye.pitch = aim.pitch; eye.logDistance = aim.logDistance }
+        else if link == nil {
+            link = CADisplayLink(target: self, selector: #selector(step))
+            link?.add(to: .main, forMode: .common)
+        }
+        place(m)
+    }
+
+    @objc private func step(_ l: CADisplayLink) {
+        guard let m = map else { return stop() }
+        let k = 1 - exp(-(l.targetTimestamp - l.timestamp) / TLMotion.mapTurn)
+        var turn = (aim.heading - eye.heading).truncatingRemainder(dividingBy: 360)          // the short way round
+        if turn > 180 { turn -= 360 } else if turn < -180 { turn += 360 }
+        eye.heading = (eye.heading + turn * k + 360).truncatingRemainder(dividingBy: 360)
+        eye.pitch += (aim.pitch - eye.pitch) * k
+        eye.logDistance += (aim.logDistance - eye.logDistance) * k
+        if abs(turn) < 0.05, abs(aim.pitch - eye.pitch) < 0.05, abs(aim.logDistance - eye.logDistance) < 0.001 {
+            eye.heading = aim.heading; eye.pitch = aim.pitch; eye.logDistance = aim.logDistance; link?.invalidate(); link = nil
+        }
+        place(m)
+    }
+
+    private func place(_ m: MKMapView) {
+        m.camera = MKMapCamera(lookingAtCenter: eye.centre, fromDistance: exp(eye.logDistance), pitch: eye.pitch, heading: eye.heading)
+    }
+
+    func stop() { link?.invalidate(); link = nil }
+
+    /// the finger lifted: the camera goes back to the day's whole, north up and flat, from where it stands (the fit is found first on the flat map, then the camera is put back to fly there)
+    private func release(_ m: MKMapView) {
+        stop(); eye.on = false
+        let from = m.camera
+        m.camera = MKMapCamera(lookingAtCenter: from.centerCoordinate, fromDistance: from.centerCoordinateDistance, pitch: 0, heading: 0)
+        fit(m, animated: false)
+        guard !TLMotion.reduced else { return }
+        let to = m.camera
+        m.camera = from
+        UIView.animate(withDuration: TLMotion.mapReturn, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) { m.camera = to }
     }
 
     /// a stop after the held minute is faint

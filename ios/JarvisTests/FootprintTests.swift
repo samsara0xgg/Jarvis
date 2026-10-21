@@ -260,6 +260,51 @@ final class FootprintTests: XCTestCase {
         XCTAssertNil(m.heartBpm(atMs: b + 3_100_000), "an outing the watch said nothing of")
     }
 
+    /// a drive north 1.1 km, then east, then a crawl of half a metre, with a stop of a minute on the way north
+    private func headingModel() throws -> FootprintModel {
+        try model(#"""
+        {"date": "d", "tz": "UTC", "start_ms": \#(b), "end_ms": \#(b + 86_400_000), "now_ms": \#(b + 400_000), "stays": [],
+         "outings": [{"id": "o", "start_ms": \#(b), "end_ms": \#(b + 400_000), "distance_m": 1, "moving_ms": 1,
+           "stops": [{"id": "s", "start_ms": \#(b + 20_000), "end_ms": \#(b + 80_000), "lat": 0.002, "lng": 0.0, "place": null, "kept_place": null}],
+           "points": [[\#(b), 0.0, 0.0, 5], [\#(b + 100_000), 0.01, 0.0, 5], [\#(b + 200_000), 0.01, 0.01, 5], [\#(b + 300_000), 0.01, 0.010004, 0], [\#(b + 400_000), 0.01, 0.010004, 0]]}]}
+        """#)
+    }
+
+    func testTheWayHeWasGoingIsTheBearingAFewSecondsEitherSideAndNilWhenStillOrBarelyMoving() throws {
+        let m = try headingModel()
+        XCTAssertEqual(try XCTUnwrap(m.heading(atMs: b + 90_000)), 0, accuracy: 0.01, "north")
+        XCTAssertEqual(try XCTUnwrap(m.heading(atMs: b + 150_000)), 90, accuracy: 0.01, "east")
+        let corner = try XCTUnwrap(m.heading(atMs: b + 100_000))
+        XCTAssertTrue(corner > 0 && corner < 90, "at the corner, between north and east")
+        XCTAssertNil(m.heading(atMs: b + 50_000), "in the stop")
+        XCTAssertNil(m.heading(atMs: b + 250_000), "a few centimetres in ten seconds")
+        XCTAssertNil(m.heading(atMs: b - 1), "not on an outing")
+        let west = try model(#"{"date": "d", "tz": "UTC", "start_ms": 0, "end_ms": 9, "now_ms": 1, "stays": [], "outings": [{"id": "o", "start_ms": 0, "end_ms": 100000, "distance_m": 1, "moving_ms": 1, "points": [[0, 0.0, 0.01, 5], [100000, -0.01, 0.0, 5]]}]}"#)
+        XCTAssertEqual(try XCTUnwrap(west.heading(atMs: 50_000)), 225, accuracy: 0.01, "south west is 225, not minus 135")
+    }
+
+    func testTheCameraTakesWhereHeWasWhichWayHeWentAndHowFast() throws {
+        let m = try headingModel()
+        let f = try XCTUnwrap(m.follow(atMs: b + 150_000))
+        XCTAssertEqual(f.coord.latitude, 0.01, accuracy: 1e-9)
+        XCTAssertEqual(f.coord.longitude, 0.005, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(f.heading), 90, accuracy: 0.01)
+        XCTAssertEqual(f.speedMps, 5)
+        let still = try XCTUnwrap(m.follow(atMs: b + 50_000))
+        XCTAssertNil(still.heading, "in the stop the map keeps the way it was turned")
+        XCTAssertEqual(still.speedMps, 0)
+        XCTAssertNil(m.follow(atMs: b - 1), "nowhere: no camera")
+    }
+
+    func testTheCameraStandsAtSixHundredMetresWalkingAndOutToTwoKilometresAt80KmhAndNoFurther() {
+        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 0), 600)
+        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 1.4), 600, "walking")
+        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 80 / 3.6), 2000, accuracy: 30)
+        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 60), 2000, "a train does not take it further out")
+        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 12), 1300, accuracy: 1)
+        XCTAssertLessThan(FootprintMapFollow.distance(speedMps: 8), FootprintMapFollow.distance(speedMps: 9), "the faster, the further")
+    }
+
     func testTheStayHeIsInNowIsTodaysOpenOneAndTheDayTotalsAreTheOutingsSummed() throws {
         let m = try model()
         XCTAssertEqual(m.nowStay?.id, "stay-b")

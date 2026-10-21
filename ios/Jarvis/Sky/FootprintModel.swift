@@ -99,6 +99,21 @@ struct FootprintModel {
         }
     }
 
+    /// The way he was going, in degrees clockwise from north: from where he was a few seconds before to where he was a few seconds after. Nil in a stay or a stop, and when he moved
+    /// less than 4 m in that time, as a bearing from so little is noise.
+    func heading(atMs t: Int64) -> Double? {
+        guard stay(atMs: t) == nil, let a = position(atMs: t - Self.headingSpanMs), let b = position(atMs: t + Self.headingSpanMs) else { return nil }
+        let east = (b.longitude - a.longitude) * 111_320 * cos((a.latitude + b.latitude) / 2 * .pi / 180), north = (b.latitude - a.latitude) * 111_320
+        guard hypot(east, north) >= 4 else { return nil }
+        return (atan2(east, north) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+    }
+    private static let headingSpanMs: Int64 = 5_000
+
+    /// What the map's first-person camera takes at a time: where he was, the way he was going and how fast (still when it is not known); nil when he was nowhere.
+    func follow(atMs t: Int64) -> FootprintMapFollow? {
+        position(atMs: t).map { FootprintMapFollow(coord: $0, heading: heading(atMs: t), speedMps: speedMps(atMs: t) ?? 0) }
+    }
+
     /// His heart rate on an outing at a time, between the watch's readings; nil outside them or when the outing has none.
     func heartBpm(atMs t: Int64) -> Double? {
         guard let s = outing(atMs: t)?.heart_rate?.samples, let lo = s.first?.at_ms, let hi = s.last?.at_ms, lo <= t, t <= hi, case let (a, b, k)? = Self.between(s, t, \.at_ms) else { return nil }
