@@ -18,14 +18,14 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from email import policy
 from email.utils import getaddresses, parsedate_to_datetime
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pypdf import PdfReader
 
 from jarvis.state.mail_text import Body, is_forward, read_html, read_plain, tidy_lines
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterator
+    from collections.abc import Collection, Iterator, Sequence
     from datetime import datetime
     from email.message import Message, MIMEPart
 
@@ -59,8 +59,8 @@ class Attachment:
 
 
 @dataclass(frozen=True)
-class Mail:
-    """One message, read."""
+class Envelope:
+    """One message's headers: who, to whom, what about, when, and whether they say bulk."""
 
     sender: Person
     to: tuple[Person, ...]
@@ -73,6 +73,16 @@ class Mail:
     """Its headers say bulk: ``List-Unsubscribe``, ``List-Id`` or ``Precedence: bulk|list|junk``."""
     automated: bool
     """Its ``Auto-Submitted`` header is anything but ``no``."""
+
+    def addressed_to(self, own: Collection[str]) -> bool:
+        """Whether one of ``own`` (lower-case addresses) is in its To."""
+        return any(one.address.lower() in own for one in self.to)
+
+
+@dataclass(frozen=True)
+class Mail(Envelope):
+    """One message, read: its headers, its text and its files."""
+
     body: Body
     html: str = field(repr=False)
     plain: str = field(repr=False)
@@ -83,10 +93,6 @@ class Mail:
         """The body as text."""
         return self.body.text
 
-    def addressed_to(self, own: Collection[str]) -> bool:
-        """Whether one of ``own`` (lower-case addresses) is in its To."""
-        return any(one.address.lower() in own for one in self.to)
-
 
 def _header(msg: Message[str, str], name: str) -> str:
     try:
@@ -95,18 +101,24 @@ def _header(msg: Message[str, str], name: str) -> str:
         return ""
 
 
+def read_people(values: Sequence[str]) -> tuple[Person, ...]:
+    """The people in address headers' values (``Name <a@b>, c@d``), those with an address."""
+    return tuple(
+        Person(shown.strip(), address.strip())
+        for shown, address in getaddresses(list(values)) if address.strip()
+    )
+
+
 def _people(msg: Message[str, str], name: str) -> tuple[Person, ...]:
     try:
         values = [str(one) for one in msg.get_all(name, [])]
     except Exception:  # noqa: BLE001 — as above.
         return ()
-    return tuple(
-        Person(shown.strip(), address.strip())
-        for shown, address in getaddresses(values) if address.strip()
-    )
+    return read_people(values)
 
 
-def _when(value: str) -> datetime | None:
+def read_date(value: str) -> datetime | None:
+    """A ``Date`` header as an aware time (UTC when it names no zone); None when it is not one."""
     try:
         at = parsedate_to_datetime(value)
     except (TypeError, ValueError, IndexError):
@@ -172,39 +184,47 @@ def _attachments(
     return tuple(found)
 
 
+def _headers(msg: Message[str, str]) -> dict[str, Any]:
+    """The :class:`Envelope` fields of one parsed message."""
+    senders = _people(msg, "From")
+    precedence = _header(msg, "Precedence").strip().lower()
+    auto = _header(msg, "Auto-Submitted").strip().lower()
+    return {
+        "sender": senders[0] if senders else Person("", ""),
+        "to": _people(msg, "To"),
+        "cc": _people(msg, "Cc"),
+        "reply_to": _people(msg, "Reply-To"),
+        "subject": _header(msg, "Subject").strip(),
+        "at": read_date(_header(msg, "Date")),
+        "message_id": _header(msg, "Message-ID").strip(),
+        "bulk": bool(_header(msg, "List-Unsubscribe") or _header(msg, "List-Id"))
+        or precedence in {"bulk", "list", "junk"},
+        "automated": auto not in {"", "no"},
+    }
+
+
+def parse_envelope(raw: bytes) -> Envelope:
+    """One raw RFC 822 message's headers; its text and files are not read."""
+    return Envelope(**_headers(email.message_from_bytes(raw, policy=policy.default)))
+
+
 def parse(raw: bytes) -> Mail:
     """One raw RFC 822 message, read."""
     msg = email.message_from_bytes(raw, policy=policy.default)
-    subject = _header(msg, "Subject")
-    forwarded = is_forward(subject)
+    headers = _headers(msg)
     html_part = msg.get_body(("html",))
     plain_part = msg.get_body(("plain",))
     html = _content(html_part) if html_part is not None else ""
     plain = _content(plain_part) if plain_part is not None else ""
-    body = read_html(html, forwarded=forwarded) if html.strip() else Body("")
+    body = read_html(html, forwarded=is_forward(headers["subject"])) if html.strip() else Body("")
     if not body.text and plain.strip():
         body = read_plain(
             plain,
             flowed=plain_part is not None and plain_part.get_param("format") == "flowed",
             delsp=plain_part is not None and plain_part.get_param("delsp") == "yes",
         )
-    senders = _people(msg, "From")
-    precedence = _header(msg, "Precedence").strip().lower()
-    auto = _header(msg, "Auto-Submitted").strip().lower()
     return Mail(
-        sender=senders[0] if senders else Person("", ""),
-        to=_people(msg, "To"),
-        cc=_people(msg, "Cc"),
-        reply_to=_people(msg, "Reply-To"),
-        subject=subject.strip(),
-        at=_when(_header(msg, "Date")),
-        message_id=_header(msg, "Message-ID").strip(),
-        bulk=bool(_header(msg, "List-Unsubscribe") or _header(msg, "List-Id"))
-        or precedence in {"bulk", "list", "junk"},
-        automated=auto not in {"", "no"},
-        body=body,
-        html=html,
-        plain=plain,
+        **headers, body=body, html=html, plain=plain,
         attachments=_attachments(msg, (html_part, plain_part)),
     )
 
@@ -267,8 +287,12 @@ def attachment_text(attachment: Attachment) -> AttachmentText:
 __all__ = [
     "Attachment",
     "AttachmentText",
+    "Envelope",
     "Mail",
     "Person",
     "attachment_text",
     "parse",
+    "parse_envelope",
+    "read_date",
+    "read_people",
 ]
