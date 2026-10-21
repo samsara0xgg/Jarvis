@@ -237,6 +237,13 @@ struct FootprintDayContent: Equatable {
         return out
     }
 
+    /// the dot of a held moment: where it is on the drawn line, in the colour of how fast; none while the replay flies from one place to the next
+    @MainActor static func dot(_ m: FootprintModel, moment: FootprintMoment) -> FootprintMapDot? {
+        guard !moment.flying else { return nil }
+        let v = m.speedMps(atMs: moment.ms) ?? 0
+        return FootprintMapDot(coord: moment.coord, ms: moment.ms, rgb: FootprintPaint.speed(mps: v), label: speedText(v))
+    }
+
     /// the scrub dot at a minute: where he was, in the colour of how fast; still is the start of the ramp
     @MainActor static func dot(_ m: FootprintModel, minute: Double) -> FootprintMapDot? {
         let ms = m.clock.ms(minute: minute)

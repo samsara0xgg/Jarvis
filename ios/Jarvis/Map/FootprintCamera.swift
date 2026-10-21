@@ -21,6 +21,8 @@ struct FootprintCamera {
     static let epsPoints = 0.5, epsDegrees = 0.05, epsLog = 0.001
 
     var x: Spring, y: Spring, heading: Spring, pitch: Spring, logHeight: Spring
+    /// the map's top margin in points, which puts the camera's centre (the middle of what the margins leave) below the fade: it eases with the rest, so that starting or ending a follow moves nothing at once
+    var top = Spring(0)
     var response = TLMotion.mapResponse
     var omega: Double { 2 * .pi / response }
 
@@ -35,25 +37,26 @@ struct FootprintCamera {
     }
 
     /// new aims; a nil heading keeps the one it has, and the heading goes the short way round from where it stands
-    mutating func aim(x tx: Double, y ty: Double, heading th: Double?, pitch tp: Double, height: Double, response r: Double) {
+    mutating func aim(x tx: Double, y ty: Double, heading th: Double?, pitch tp: Double, height: Double, response r: Double, top margin: Double? = nil) {
         x.target = tx; y.target = ty; pitch.target = tp; logHeight.target = log(height); response = r
+        if let margin { top.target = margin }
         if let th { heading.target = heading.value + Self.turn(from: heading.value, to: th) }
     }
 
     mutating func step(dt: Double) {
         let w = omega
-        x.step(dt: dt, omega: w); y.step(dt: dt, omega: w); heading.step(dt: dt, omega: w); pitch.step(dt: dt, omega: w); logHeight.step(dt: dt, omega: w)
+        x.step(dt: dt, omega: w); y.step(dt: dt, omega: w); heading.step(dt: dt, omega: w); pitch.step(dt: dt, omega: w); logHeight.step(dt: dt, omega: w); top.step(dt: dt, omega: w)
     }
 
     /// the aims taken at once
     mutating func cut() {
-        for p in [\Self.x, \.y, \.heading, \.pitch, \.logHeight] { self[keyPath: p].value = self[keyPath: p].target; self[keyPath: p].velocity = 0 }
+        for p in [\Self.x, \.y, \.heading, \.pitch, \.logHeight, \.top] { self[keyPath: p].value = self[keyPath: p].target; self[keyPath: p].velocity = 0 }
     }
 
     var settled: Bool {
         let w = omega
         return x.settled(within: Self.epsPoints, omega: w) && y.settled(within: Self.epsPoints, omega: w) && heading.settled(within: Self.epsDegrees, omega: w)
-            && pitch.settled(within: Self.epsDegrees, omega: w) && logHeight.settled(within: Self.epsLog, omega: w)
+            && pitch.settled(within: Self.epsDegrees, omega: w) && logHeight.settled(within: Self.epsLog, omega: w) && top.settled(within: Self.epsPoints, omega: w)
     }
 
     /// 0..<360

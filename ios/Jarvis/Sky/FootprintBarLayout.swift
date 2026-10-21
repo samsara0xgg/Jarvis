@@ -22,7 +22,7 @@ struct FootprintBarLayout {
         let ms0: Int64, ms1: Int64
         /// a segment's runs and notches in order; empty for a bead
         let pieces: [Piece]
-        fileprivate let track: FootprintTrack?
+        let track: FootprintTrack?
 
         var notches: [Piece] { pieces.filter { if case .notch = $0.kind { true } else { false } } }
     }

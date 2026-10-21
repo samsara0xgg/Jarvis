@@ -12,8 +12,11 @@ struct FootprintOutingPage: View {
     let model: FootprintModel
     let outing: FootprintOuting
     let back: () -> Void
-    @State private var scrub: Int64?
+    @State private var moment: FootprintMoment?          // under a finger on a curve or played by the replay
+    @State private var player = FootprintPlayer()
 
+    private var scrub: Int64? { moment?.ms }
+    private let track: FootprintTrack?
     private let end: Int64
     private let curves: FootprintCurves
     private let route: FootprintMapRoute
@@ -24,6 +27,7 @@ struct FootprintOutingPage: View {
         self.model = model; self.outing = outing; self.back = back
         let end = outing.end_ms ?? max(model.reply.now_ms, outing.points.last?.at_ms ?? outing.start_ms)
         self.end = end
+        track = model.tracks[outing.id]
         curves = FootprintCurves(outing, endMs: end)
         route = model.route(outing)
         firstFixMs = route.points.first?.ms; lastFixMs = route.points.last?.ms
@@ -33,13 +37,17 @@ struct FootprintOutingPage: View {
     /// the scene's: the page with a time already held, to see the curves and the map under a finger
     init(model: FootprintModel, outing: FootprintOuting, held: Int64) {
         self.init(model: model, outing: outing, back: {})
-        _scrub = State(initialValue: held)
+        _moment = State(initialValue: track.flatMap { FootprintMoment.on(outing, track: $0, atMs: held) })
     }
     #endif
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             mapView.padding(.top, 76)
+            if model.replay(.outing(outing.id)) != nil {
+                FootprintReplayButton(player: player, play: play).offset(x: W - 30 - 36, y: 372)          // clear of the map's fade
+            }
+            FootprintBeatCaption(beat: moment?.beat, model: model).frame(width: W).offset(y: 298)
             head
             VStack(alignment: .leading, spacing: 0) {
                 figures
@@ -50,6 +58,31 @@ struct FootprintOutingPage: View {
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .task { FootprintStreets.shared.ask(outing.stops.filter { FootprintDayContent.name($0) == nil }.map(\.coord)) }          // the streets of the stops nobody named
+        .onDisappear { player.stop() }
+        #if DEBUG
+        .onAppear {
+            FootprintHooks.curve = { x in held(x.map { curves.ms(x: $0) }) }
+            FootprintHooks.outingPlay = play
+        }
+        #endif
+    }
+
+    // MARK: held and played
+
+    /// a finger on a curve holds a time of the outing, or lifts: the cursor, the dot and the camera follow it on the line, a replay stands paused where the finger leaves it
+    private func held(_ ms: Int64?) {
+        guard let ms else { if player.phase == .rest { moment = nil }; return }
+        player.touch()          // a finger on a curve pauses the replay
+        guard let track, let m = FootprintMoment.on(outing, track: track, atMs: ms) else { return }
+        moment = m
+        if player.phase == .paused, let r = player.replay { player.seek(r.seconds(atMs: ms)) }          // ▶ goes on from here
+    }
+
+    private func play() {
+        guard let replay = model.replay(.outing(outing.id)) else { return }
+        player.emit = { f, r in moment = FootprintMoment(f, height: r.height) }
+        player.ended = { moment = nil }
+        player.play(replay)
     }
 
     // MARK: head
@@ -91,8 +124,8 @@ struct FootprintOutingPage: View {
     // MARK: map
 
     private var mapView: some View {
-        FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, follow: scrub.flatMap { model.follow(atMs: $0) }, lineWidth: 4.6,
-                         fitPadding: UIEdgeInsets(top: 44, left: 30, bottom: 44, right: 115), fitKey: outing.id)
+        FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, follow: moment?.follow, lineWidth: 4.6,
+                         fitPadding: UIEdgeInsets(top: 44, left: 30, bottom: 44, right: 115), fitKey: outing.id, touched: { player.touch() })
             .frame(width: W, height: 371)
             .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 62 / 371), .init(color: .black, location: 340 / 371), .init(color: .clear, location: 1)],
                                  startPoint: .top, endPoint: .bottom))
@@ -129,7 +162,7 @@ struct FootprintOutingPage: View {
 
     /// the held time on the map: where he was, in the colour of his speed, with the time and the speed in its capsule; with no finger on a curve, the same at his fastest fix
     private var dot: FootprintMapDot? {
-        guard let t = scrub ?? fastestMs, let c = model.position(atMs: t) else { return nil }
+        guard let t = scrub ?? fastestMs, let c = moment?.coord ?? model.position(atMs: t) else { return nil }
         let v = model.speedMps(atMs: t)
         let label = time(t) + (v.map { "  " + Words.Footprint.held(speed: "\(Int(($0 * 3.6).rounded()))") } ?? "")
         return FootprintMapDot(coord: c, ms: t, rgb: FootprintPaint.speed(mps: v ?? 0), label: label, held: scrub != nil)
@@ -168,7 +201,7 @@ struct FootprintOutingPage: View {
                 Text(w.speedAxis); Spacer(minLength: 8); Text(w.colorsMatchMap)
             }
             .font(.system(size: 12.5)).foregroundStyle(muted).lineLimit(1).frame(width: FootprintCurves.width, height: 16).padding(.top, 10)
-            FootprintSpeedCurve(c: curves, scrub: scrub ?? fastestMs) { scrub = $0 }.padding(.top, 6)
+            FootprintSpeedCurve(c: curves, scrub: scrub ?? fastestMs) { held($0) }.padding(.top, 6)
             ticks.padding(.top, 4)
             if curves.hasHeart, let heart = outing.heart_rate {
                 HStack {
@@ -176,7 +209,7 @@ struct FootprintOutingPage: View {
                     Text(w.heartAverage(avg: "\(Int(heart.avg_bpm.rounded()))", home: heart.home_avg_bpm.map { "\(Int($0.rounded()))" }))
                 }
                 .font(.system(size: 12.5).monospacedDigit()).foregroundStyle(muted).lineLimit(1).frame(width: FootprintCurves.width, height: 16).padding(.top, 12)
-                FootprintHeartCurve(c: curves, scrub: scrub ?? fastestMs) { scrub = $0 }.padding(.top, 6)
+                FootprintHeartCurve(c: curves, scrub: scrub ?? fastestMs) { held($0) }.padding(.top, 6)
             }
         }
         .padding(.leading, 30)
