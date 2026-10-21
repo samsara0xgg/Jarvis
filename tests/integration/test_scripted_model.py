@@ -195,12 +195,18 @@ def test_decide_runs_a_tool_round_and_an_answer_on_a_script(tmp_path: Path) -> N
     assert len(second.messages) > len(first.messages)
 
 
-def _events(model: ScriptedModel) -> tuple[list[LLMStreamEvent], list[StreamDisposition]]:
+def _events(
+    model: ScriptedModel, *, responses: bool = False
+) -> tuple[list[LLMStreamEvent], list[StreamDisposition]]:
     settled: list[StreamDisposition] = []
 
     async def read() -> list[LLMStreamEvent]:
         handle = model.stream_events(
-            messages=_MESSAGES, system="s", tools=[{"name": "t"}], on_settled=settled.append
+            messages=_MESSAGES,
+            system="s",
+            tools=[{"name": "t"}],
+            on_settled=settled.append,
+            responses=responses,
         )
         return [event async for event in handle.events()]
 
@@ -231,6 +237,24 @@ def test_a_streamed_reply_reaches_the_consumer_as_the_typed_events_of_a_provider
     assert disposition.outcome == "completed"
     (request,) = model.requests
     assert (request.kind, request.tools) == ("stream", [{"name": "t"}])
+
+
+def test_a_responses_stream_carries_the_same_reply_in_pieces() -> None:
+    """The spoken route asks for /v1/responses; the text arrives ``chunk`` characters at a time."""
+    calls = (Call("lookup", {"q": "ice"}),)
+    model = ScriptedModel(Reply("八点二十分。", calls=calls, usage=Usage(12, 6, 4), chunk=4))
+    events, settled = _events(model, responses=True)
+    texts = [e for e in events if isinstance(e, LLMTextDelta)]
+    call = next(e for e in events if isinstance(e, LLMToolCallCompleted))
+    usage = next(e for e in events if isinstance(e, LLMUsageCompleted))
+    done = next(e for e in events if isinstance(e, LLMResponseCompleted))
+    assert [t.text for t in texts] == ["八点二十", "分。"]
+    assert {t.phase for t in texts} == {"final_answer"}
+    assert (call.name, json.loads(call.arguments_json)) == ("lookup", {"q": "ice"})
+    assert (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens) == (12, 6, 4)
+    assert done.finish_reason == "tool_calls"
+    (disposition,) = settled
+    assert disposition.outcome == "completed"
 
 
 def test_a_streamed_failure_is_a_failed_response_with_nothing_to_run() -> None:

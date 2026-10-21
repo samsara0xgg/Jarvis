@@ -20,7 +20,6 @@ from jarvis.decision import (
     decide,
 )
 from jarvis.decision.llm_session import LLMSessionFactory
-from jarvis.decision.llm_stream import LLMTextDelta, LLMToolCallCompleted
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.pre_route import RoutineStreamRoute, spoken_risk_context
 from jarvis.decision.response_run import start_response_run
@@ -36,19 +35,19 @@ from jarvis.decision.turn_guards import (
     unbacked_claim,
     unbacked_said,
 )
+from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import append_record
 from jarvis.surface.stream_emission import emit_permitted_segment
-from tests.support.model import ScriptedModel, tool_call
+from tests.support.model import Reply, ScriptedModel, tool_call
 from tests.support.phone import StepsHost, answer_with_record, history_of, logged_tool_call
 from tests.support.turn_guards import guard_batch, guard_context, logged_guards, tool_texts
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
 
-    from jarvis.decision.llm_stream import LLMStreamEvent
 
 WROTE = TurnCall("keep", read_only=False, ok=True)
 WRITE_FAILED = TurnCall("keep", read_only=False, ok=False)
@@ -522,81 +521,14 @@ def test_no_bounce_on_the_last_request_the_budget_allows(tmp_path: Path) -> None
 # --- the spoken route -----------------------------------------------------------------------
 
 
-class _Stream:
-    """One scripted request's typed events, the way the runtime's stream hands them over."""
-
-    def __init__(self, events: list[LLMStreamEvent]) -> None:
-        self._events = events
-
-    def __iter__(self) -> Iterator[LLMStreamEvent]:
-        return iter(self._events)
-
-    def cancel(self, reason: str) -> None:
-        """Never cancelled here."""
-
-    def interrupt_when(self, predicate: Callable[[], bool]) -> None:
-        """Nothing here waits on Jev."""
-
-    def close(self) -> None:
-        """Nothing to release."""
-
-    @property
-    def disposition(self) -> None:
-        return None
-
-
-class _SpokenModel:
-    """The client the spoken route opens streams with; ``script`` holds each request's events."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    provider = "openai"
-    model = "stub-model"
-
-    def __init__(self, *requests: list[LLMStreamEvent]) -> None:
-        self.script = list(requests)
-        self.sent: list[list[dict[str, Any]]] = []
-
-    def request_tier(self, tier: str) -> str:
-        return tier
-
-    def stream_events(self, **request: Any) -> object:  # noqa: ANN401 - the client's keyword surface
-        self.sent.append([dict(m) for m in request["messages"]])
-        return object()
-
-
-def _say(text: str, *, structured: bool) -> list[LLMStreamEvent]:
+def _say(text: str, *, structured: bool) -> Reply:
+    """The answer as a provider streams it, a few characters at a time; the spoken schema's JSON."""
     body = json.dumps({"spoken": text, "written": ""}, ensure_ascii=False) if structured else text
-    return [
-        LLMTextDelta(
-            llm_request_id="r", provider_response_id=None, text=body, content_block_index=0,
-            phase="final_answer",
-        )
-    ]
-
-
-def _propose(name: str, args: dict[str, Any]) -> list[LLMStreamEvent]:
-    return [
-        LLMToolCallCompleted(
-            llm_request_id="r", provider_response_id=None, call_index=0, call_id="c1",
-            name=name, arguments_json=json.dumps(args),
-        )
-    ]
-
-
-def _deltas(text: str, *, structured: bool, size: int = 4) -> list[LLMStreamEvent]:
-    """The same answer as ``_say`` but as several deltas, the way a provider streams it."""
-    body = json.dumps({"spoken": text, "written": ""}, ensure_ascii=False) if structured else text
-    return [
-        LLMTextDelta(
-            llm_request_id="r", provider_response_id=None, text=body[n : n + size],
-            content_block_index=0, phase="final_answer",
-        )
-        for n in range(0, len(body), size)
-    ]
+    return Reply(body, chunk=4)
 
 
 def _spoken_turn(
-    tmp_path: Path, model: _SpokenModel, *, structured: bool = False,
+    tmp_path: Path, model: ScriptedModel, *, structured: bool = False,
     live_context: tuple[str, ...] = (),
 ) -> tuple[Any, sqlite3.Connection]:
     """Run one spoken turn through ``decide()`` on the scripted model; the caller closes it."""
@@ -625,7 +557,9 @@ def _spoken_turn(
     route = RoutineStreamRoute(
         policy=policy,
         context=context,
-        open_stream=lambda _handle: _Stream(model.script.pop(0)),
+        open_stream=lambda handle: LoopBoundTokenStream(
+            handle, cancellation_token=run.cancellation_token
+        ),
         emit_segment=lambda permit, text: emit_permitted_segment(
             conn, permit, text, query=context.user_request,
             attention_channel=context.attention_channel,
@@ -650,10 +584,10 @@ def test_the_spoken_route_never_speaks_a_bounced_claim(
     tmp_path: Path, *, structured: bool,
 ) -> None:
     """ADR 0263: a claim no call backs is held, judged and dropped, never spoken."""
-    model = _SpokenModel(
-        _deltas("记下了。", structured=structured),
-        _propose(*MEMO),
-        _deltas("好了，明天开会记在备忘录里了。", structured=structured),
+    model = ScriptedModel(
+        _say("记下了。", structured=structured),
+        tool_call(*MEMO),
+        _say("好了，明天开会记在备忘录里了。", structured=structured),
     )
     result, conn = _spoken_turn(tmp_path, model, structured=structured)
     try:
@@ -661,8 +595,8 @@ def test_the_spoken_route_never_speaks_a_bounced_claim(
         spoken = result.response_plan.text
         assert spoken == "好了，明天开会记在备忘录里了。"
         assert _segments(conn) == spoken  # one answer went out, in the chunks and in the plan
-        assert len(model.sent) == 3
-        assert _notes(model.sent[1], DID)
+        assert len(model.requests) == 3
+        assert _notes(model.requests[1].messages, DID)
         assert _count(conn, "thing.added") == 1
         assert logged_guards(conn) == [{"turn_id": "T_say", "guard": "unbacked", "said": DID}]
     finally:
@@ -671,10 +605,10 @@ def test_the_spoken_route_never_speaks_a_bounced_claim(
 
 def test_a_sentence_before_the_claim_is_spoken_at_once_and_not_repeated(tmp_path: Path) -> None:
     """The text ahead of a claim goes out as it completes; the answer after the note adds to it."""
-    model = _SpokenModel(
-        _deltas("好的，我来办。记下了。", structured=False),
-        _propose(*MEMO),
-        _deltas("明天开会已经记在备忘录里。", structured=False),
+    model = ScriptedModel(
+        _say("好的，我来办。记下了。", structured=False),
+        tool_call(*MEMO),
+        _say("明天开会已经记在备忘录里。", structured=False),
     )
     result, conn = _spoken_turn(tmp_path, model)
     try:
@@ -695,12 +629,12 @@ STOP_SET = "好，下车站是 Gum St，大约 9:43 到。快到站前一站我�
 
 def test_the_ride_line_backs_the_stop_being_set_so_nothing_goes_back(tmp_path: Path) -> None:
     """The stop was set turns ago and the state says so: saying it is set needs no new write."""
-    model = _SpokenModel(_deltas(STOP_SET, structured=False))
+    model = ScriptedModel(_say(STOP_SET, structured=False))
     result, conn = _spoken_turn(tmp_path, model, live_context=RIDE_STATE)
     try:
         assert result.response_plan is not None
         assert result.response_plan.text == STOP_SET
-        assert len(model.sent) == 1
+        assert len(model.requests) == 1
         assert _count(conn, "turn.guard_fired") == 0
     finally:
         conn.close()
@@ -708,10 +642,10 @@ def test_the_ride_line_backs_the_stop_being_set_so_nothing_goes_back(tmp_path: P
 
 def test_the_same_claim_without_the_ride_line_still_goes_back(tmp_path: Path) -> None:
     """With no ride line to show it, the claim is unbacked: held, dropped, and the call follows."""
-    model = _SpokenModel(
-        _deltas(STOP_SET, structured=False),
-        _propose(*MEMO),
-        _deltas("好了，记下了下车站。", structured=False),
+    model = ScriptedModel(
+        _say(STOP_SET, structured=False),
+        tool_call(*MEMO),
+        _say("好了，记下了下车站。", structured=False),
     )
     result, conn = _spoken_turn(tmp_path, model)
     try:

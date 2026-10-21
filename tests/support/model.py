@@ -16,9 +16,10 @@ test drives ``drive_turn`` and the real ``decide()`` and still reads, in one pla
 model was sent across all runs.
 
 The streamed request is real from the provider's chunks onward: ``stream_events`` builds the
-production ``LLMStreamHandle`` and ``StreamNormalizer`` over OpenAI chat-completion chunks made
-from the script, so text deltas, tool proposals, usage and failure reach the consumer through
-the code that handles a provider's stream. Only the network is missing.
+production ``LLMStreamHandle`` and ``StreamNormalizer`` over OpenAI chat-completion chunks, or
+over /v1/responses events when the request asks for them (the spoken route does), made from the
+script, so text deltas, tool proposals, usage and failure reach the consumer through the code
+that handles a provider's stream. Only the network is missing.
 """
 
 from __future__ import annotations
@@ -135,6 +136,7 @@ class Reply:
     text: str | None = None
     calls: tuple[Call, ...] = ()
     usage: Usage | None = field(default_factory=Usage)
+    chunk: int | None = None  # a stream delivers the text in pieces of this many characters
 
     @property
     def finish_reason(self) -> str:
@@ -360,9 +362,9 @@ class ScriptedModel:
         text_format: Mapping[str, Any] | None = None,
         service_tier: str | None = None,
     ) -> LLMStreamHandle:
-        """Open a stream whose provider chunks come from the next step."""
-        if self.provider != "openai" or responses:
-            msg = "a scripted stream is OpenAI chat-completion chunks"
+        """Open a stream whose provider events come from the next step."""
+        if self.provider != "openai":
+            msg = "a scripted stream is OpenAI's, as chat-completion chunks or Responses events"
             raise NotImplementedError(msg)
         step = self._script.answer(
             Request(
@@ -379,8 +381,10 @@ class ScriptedModel:
             )
         )
         return LLMStreamHandle(
-            normalizer=StreamNormalizer("openai", f"scripted-{len(self.requests)}"),
-            source=_chunks(step),
+            normalizer=StreamNormalizer(
+                "openai", f"scripted-{len(self.requests)}", responses=responses
+            ),
+            source=(_response_events if responses else _chunks)(step),
             on_settled=on_settled,
         )
 
@@ -454,7 +458,9 @@ async def _chunks(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
         return {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
     if step.text:
-        yield chunk({"content": step.text})
+        size = step.chunk or len(step.text)
+        for start in range(0, len(step.text), size):
+            yield chunk({"content": step.text[start : start + size]})
     for index, call in enumerate(step.calls):
         function = {"name": call.name, "arguments": json.dumps(dict(call.arguments))}
         yield chunk(
@@ -480,6 +486,49 @@ async def _chunks(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
                 "prompt_tokens_details": {"cached_tokens": step.usage.cache_read_tokens},
             },
         }
+
+
+async def _response_events(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
+    """The OpenAI Responses stream events of one scripted response, or its failure."""
+    if isinstance(step, Failure):
+        raise step.error
+    yield {"type": "response.created", "response": {"id": "scripted-response"}}
+    index = 0
+    if step.text:
+        item = {"type": "message", "id": "msg-0", "phase": "final_answer"}
+        yield {"type": "response.output_item.added", "output_index": index, "item": item}
+        size = step.chunk or len(step.text)
+        for start in range(0, len(step.text), size):
+            yield {
+                "type": "response.output_text.delta",
+                "item_id": "msg-0",
+                "output_index": index,
+                "delta": step.text[start : start + size],
+            }
+        index += 1
+    for number, call in enumerate(step.calls):
+        call_item = {
+            "type": "function_call",
+            "id": f"fc-{number}",
+            "call_id": call.call_id or f"call-{number}",
+            "name": call.name,
+        }
+        yield {"type": "response.output_item.added", "output_index": index, "item": call_item}
+        yield {
+            "type": "response.function_call_arguments.delta",
+            "item_id": call_item["id"],
+            "delta": json.dumps(dict(call.arguments)),
+        }
+        yield {"type": "response.output_item.done", "output_index": index, "item": call_item}
+        index += 1
+    response: dict[str, Any] = {"id": "scripted-response"}
+    if step.usage:
+        response["usage"] = {
+            "input_tokens": step.usage.input_tokens,
+            "output_tokens": step.usage.output_tokens,
+            "input_tokens_details": {"cached_tokens": step.usage.cache_read_tokens},
+        }
+    yield {"type": "response.completed", "response": response}
 
 
 @runtime_checkable
