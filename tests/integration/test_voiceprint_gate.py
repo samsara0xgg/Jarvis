@@ -25,7 +25,6 @@ import pytest
 
 from jarvis.cli import main as cli_main
 from jarvis.deployment.models import default_voiceprint_model_path
-from jarvis.runtime import _voiceprint_gate
 from jarvis.shared import Event
 from jarvis.state import voiceprint as voiceprint_module
 from jarvis.state.voiceprint import DIMENSIONS, VoiceprintBook
@@ -36,6 +35,7 @@ from tests.support.barge_in import LONG
 from tests.support.barge_in import BargeInRig as _MacRig
 from tests.support.phone import TURN_WORDS, open_ws, say_words
 from tests.support.phone import JudgeRig as _PhoneRig
+from tests.support.runtime_config import load_settings, runtime_config
 from tests.support.terminal_listen import (
     ask_op,
     connect_listening,
@@ -349,13 +349,13 @@ def test_a_seed_file_that_does_not_match_its_names_writes_nothing(
     assert capsys.readouterr().out == ""
 
 
-def test_the_gate_is_a_brain_setting_that_is_on_unless_it_is_false() -> None:
+def test_the_gate_is_a_brain_setting_that_is_on_unless_it_is_false(tmp_path: Path) -> None:
     """``voiceprint.gate`` in the shipped config; a value that is not true or false is refused."""
-    assert _voiceprint_gate({}) is True
-    assert _voiceprint_gate({"voiceprint": {"gate": True}}) is True
-    assert _voiceprint_gate({"voiceprint": {"gate": False}}) is False
-    with pytest.raises(TypeError):
-        _voiceprint_gate({"voiceprint": {"gate": "off"}})
+    assert runtime_config({}).voiceprint_gate is True
+    assert runtime_config({"voiceprint": {"gate": True}}).voiceprint_gate is True
+    assert runtime_config({"voiceprint": {"gate": False}}).voiceprint_gate is False
+    with pytest.raises(TypeError, match=r"voiceprint\.gate must be true or false"):
+        load_settings(tmp_path, {"voiceprint": {"gate": "off"}})
 
 
 # --- the phone ---------------------------------------------------------------------------------

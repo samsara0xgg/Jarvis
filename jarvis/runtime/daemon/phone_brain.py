@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 from jarvis.runtime import (
     JarvisRuntime,
     device_voice,
-    diagnostics_flag,
     make_barge_in_interrupt_callable,
     make_foreground_decision_callable,
 )
@@ -45,7 +44,7 @@ def build_brain_voice(
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     recorder = (
         voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
-        if diagnostics_flag(runtime.config.raw, "record_tts_audio") and runtime.memory is not None
+        if runtime.config.diagnostics.record_tts_audio and runtime.memory is not None
         else None
     )
     client = minimax_client(

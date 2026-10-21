@@ -9,12 +9,13 @@ connected anywhere.
 from __future__ import annotations
 
 import logging
+from datetime import time
 from pathlib import Path
 
 import pytest
 
 from jarvis.cli import main
-from jarvis.runtime.config import RuntimeBootstrapError, load_runtime_config
+from jarvis.runtime.config import DiagnosticsSettings, RuntimeBootstrapError, load_runtime_config
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from tests.support.runtime_config import boot_runtime, load_settings, runtime_config
 
@@ -289,3 +290,145 @@ def test_the_supervisor_cadences_are_positive_numbers_else_the_shipped_ones(
         tmp_path / "c", {"supervisor": {"sweep_interval_s": -1, "default_budget_s": True}},
     ).supervisor
     assert (bad.sweep_interval_s, bad.default_budget_s) == (30.0, 700.0)
+
+
+@pytest.mark.parametrize("key", ["socket_wait_s", "push_wait_s"])
+@pytest.mark.parametrize("value", [0, -1, 31, True, "4", None])
+def test_a_locate_wait_outside_zero_to_thirty_seconds_stops_the_load(
+    tmp_path: Path, key: str, value: object,
+) -> None:
+    """ADR 0281: Here waits for the phone's fix at most thirty seconds, never none."""
+    with pytest.raises(RuntimeBootstrapError, match=rf"locate\.{key} is seconds, above 0 and up"):
+        load_settings(tmp_path, {"locate": {key: value}})
+
+
+@pytest.mark.parametrize(
+    ("block", "message"),
+    [
+        ({"phone": 5}, r"locate\.phone is the name of a paired device"),
+        ({"max_age_s": 0}, r"locate\.max_age_s is a whole number of seconds above 0"),
+        ({"max_age_s": True}, r"locate\.max_age_s is a whole number of seconds above 0"),
+        ({"max_age_s": 1.5}, r"locate\.max_age_s is a whole number of seconds above 0"),
+    ],
+)
+def test_a_locate_phone_or_age_that_is_not_usable_stops_the_load(
+    tmp_path: Path, block: dict[str, object], message: str,
+) -> None:
+    """The phone is a name or empty; a report's age limit is whole seconds above zero."""
+    with pytest.raises(RuntimeBootstrapError, match=message):
+        load_settings(tmp_path, {"locate": block})
+
+
+def test_the_locate_block_resolves_to_its_waits_phone_and_age(tmp_path: Path) -> None:
+    """Seconds may be whole or fractional; the phone's name is stripped."""
+    locate = load_settings(
+        tmp_path, {"locate": {"socket_wait_s": 2, "push_wait_s": 6.5, "phone": " iPad ",
+                              "max_age_s": 600}},
+    ).locate
+    assert (locate.socket_wait_s, locate.push_wait_s, locate.phone, locate.max_age_s) == (
+        2.0, 6.5, "iPad", 600,
+    )
+    shipped = runtime_config({}).locate
+    assert (shipped.socket_wait_s, shipped.push_wait_s, shipped.phone, shipped.max_age_s) == (
+        4.0, 8.0, "", 900,
+    )
+
+
+def test_work_state_auto_must_be_true_or_false_and_names_the_file(tmp_path: Path) -> None:
+    """ADR 0180: a background analysis does not run on a guess."""
+    with pytest.raises(RuntimeBootstrapError, match=r"jarvis\.yaml work_state\.auto must be true"):
+        load_settings(tmp_path, {"work_state": {"auto": "yes"}})
+    assert load_settings(tmp_path / "on", {"work_state": {"auto": True}}).work_state.auto is True
+    assert runtime_config({}).work_state.auto is False
+
+
+@pytest.mark.parametrize(
+    ("block", "preset"),
+    [({}, "gpt6-luna"), ({"preset": "  "}, "gpt6-luna"), ({"preset": 3}, "gpt6-luna"),
+     ({"preset": "fast"}, "fast")],
+)
+def test_the_work_state_preset_is_a_nonblank_name_else_the_fallback(
+    block: dict[str, object], preset: str,
+) -> None:
+    """The daily report runs on that preset too, unless it names its own."""
+    config = runtime_config({"work_state": block})
+    assert config.work_state.preset == preset
+    assert config.daily_report.preset == preset
+    named = runtime_config({"work_state": block, "daily_report": {"preset": "deep"}})
+    assert named.daily_report.preset == "deep"
+
+
+def test_the_daily_report_time_is_hh_mm_else_off_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0101: an unreadable ``daily_report.at`` writes no report and says so."""
+    assert runtime_config({}).daily_report.at is None
+    assert runtime_config({"daily_report": {"at": "06:30"}}).daily_report.at == time(6, 30)
+    with caplog.at_level(logging.WARNING, logger="jarvis.runtime"):
+        assert runtime_config({"daily_report": {"at": "soon"}}).daily_report.at is None
+    assert len(_warnings(caplog, "is not HH:MM")) == 1
+    codex = runtime_config({"daily_report": {"codex_sessions": "yes"}}).daily_report
+    assert codex.codex_sessions is False
+    assert runtime_config({"daily_report": {"codex_sessions": True}}).daily_report.codex_sessions
+
+
+def test_the_dashboard_mail_page_without_the_view_is_off_with_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0176: the mail page's open letter is the view's open item."""
+    with caplog.at_level(logging.WARNING, logger="jarvis.runtime"):
+        config = runtime_config({"dashboard": {"mail": {"enabled": True}}})
+    assert (config.dashboard.view, config.dashboard.mail) == (False, True)
+    assert len(_warnings(caplog, "needs dashboard.view.enabled")) == 1
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="jarvis.runtime"):
+        runtime_config({"dashboard": {"view": {"enabled": True}, "mail": {"enabled": True}}})
+    assert not _warnings(caplog, "needs dashboard.view.enabled")
+
+
+def test_ambient_sounds_are_on_unless_false_and_anything_else_stops_the_load(
+    tmp_path: Path,
+) -> None:
+    """ADR 0151: ``realtime.ambient_sounds`` is a bool; a brain forces it off."""
+    assert runtime_config({}).realtime.ambient_sounds is True
+    assert runtime_config({"realtime": {"ambient_sounds": False}}).realtime.ambient_sounds is False
+    with pytest.raises(TypeError, match=r"realtime\.ambient_sounds must be true or false"):
+        load_settings(tmp_path, {"realtime": {"ambient_sounds": "off"}})
+    brain = runtime_config({"runtime": {"role": "brain"}}).realtime
+    assert brain.ambient_sounds is False
+
+
+def test_the_diagnostics_switches_are_on_only_when_true() -> None:
+    """ADR 0120: ``yes`` and ``1`` are not true."""
+    assert runtime_config({}).diagnostics == DiagnosticsSettings(
+        log_llm_io=False, record_tts_audio=False,
+    )
+    on = runtime_config({"diagnostics": {"log_llm_io": True, "record_tts_audio": "yes"}})
+    assert on.diagnostics == DiagnosticsSettings(log_llm_io=True, record_tts_audio=False)
+
+
+@pytest.mark.parametrize(
+    ("value", "minutes"),
+    [(None, 60), (45, 45), (30.5, 30), (1, 1), (1440, 1440), (0, 60), (1441, 60), (True, 60),
+     ("45", 60)],
+)
+def test_a_commitment_rings_ahead_by_a_minute_count_within_a_day_else_an_hour(
+    value: object, minutes: int,
+) -> None:
+    """``commitments.remind_before_min``, 1 to 1440 minutes."""
+    config = runtime_config({"commitments": {"remind_before_min": value}})
+    assert config.remind_before_min == minutes
+
+
+def test_the_maps_cap_is_a_nonnegative_number_else_the_default() -> None:
+    """ADR 0283: 0 switches the cap off; a negative or textual cap is the default."""
+    assert runtime_config({}).maps_monthly_usd == 10.0
+    assert runtime_config({"maps": {"monthly_usd": 0}}).maps_monthly_usd == 0.0
+    assert runtime_config({"maps": {"monthly_usd": -1}}).maps_monthly_usd == 10.0
+    assert runtime_config({"maps": {"monthly_usd": True}}).maps_monthly_usd == 10.0
+
+
+def test_the_plan_day_ends_at_a_clock_time_else_the_default() -> None:
+    """ADR 0302: ``day_plan.day_ends`` is HH:MM."""
+    assert runtime_config({"day_plan": {"day_ends": "21:15"}}).plan_day_ends == time(21, 15)
+    assert runtime_config({"day_plan": {"day_ends": "late"}}).plan_day_ends == time(23, 30)

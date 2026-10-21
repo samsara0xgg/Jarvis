@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import ChatResult
 from jarvis.execution.tools import ToolContext, ToolError, build_default_registry
-from jarvis.runtime import _dashboard_mail, _live_lines
+from jarvis.runtime import _live_lines
 from jarvis.runtime.daemon.routes import mail_letter, mail_summary
 from jarvis.runtime.dashboard import DRAFT_CHARS, DRAFT_LINE_CHARS, MailDrafts, ViewState
 from jarvis.runtime.home import Home, mail_layout, mail_summarizer
@@ -21,6 +21,7 @@ from jarvis.shared import CallerPrincipal, lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -75,9 +76,9 @@ def test_live_lines_skip_none_and_a_raising_producer_and_cap_at_200(
 
 def test_the_switch_is_off_unless_dashboard_mail_enabled_is_true() -> None:
     """One key, default off."""
-    assert not _dashboard_mail({})
-    assert not _dashboard_mail({"dashboard": {"mail": {"enabled": "yes"}}})
-    assert _dashboard_mail({"dashboard": {"mail": {"enabled": True}}})
+    assert not runtime_config({}).dashboard.mail
+    assert not runtime_config({"dashboard": {"mail": {"enabled": "yes"}}}).dashboard.mail
+    assert runtime_config({"dashboard": {"mail": {"enabled": True}}}).dashboard.mail
 
 
 def _tool(drafts: MailDrafts | None) -> Any:  # noqa: ANN401

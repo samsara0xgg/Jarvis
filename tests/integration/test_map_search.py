@@ -41,6 +41,7 @@ from jarvis.surface.cli import emit_surface_user_intent
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere, reading
 from tests.support.routine import drive_streaming_turn, logged_payloads
+from tests.support.runtime_config import runtime_config
 from tests.support.spoken import SpokenPeer, spoken_runtime
 from tests.support.tool_context import tool_context
 from tests.support.transit import HANDBUILT
@@ -603,7 +604,9 @@ def test_the_months_total_survives_a_restart(tmp_path: Path) -> None:
 
 def test_the_runtime_reads_the_cap_from_the_maps_block() -> None:
     """The runtime reads the cap from the maps block."""
-    read = runtime_module._maps_monthly_usd  # noqa: SLF001
+    def read(raw: dict[str, Any]) -> float:
+        return runtime_config(raw).maps_monthly_usd
+
     assert read({}) == 10.0
     assert read({"maps": {"monthly_usd": 25}}) == 25.0
     assert read({"maps": {"monthly_usd": 0}}) == 0.0

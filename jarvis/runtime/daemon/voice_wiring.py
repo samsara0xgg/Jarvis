@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from jarvis.runtime import diagnostics_flag, make_foreground_decision_callable
+from jarvis.runtime import make_foreground_decision_callable
 from jarvis.runtime.daemon.devices import output_or_default
 from jarvis.runtime.daemon.output_watchers import TTS_SILENT_CHANNELS
 from jarvis.runtime.daemon.voice_power import SingleIngressActivation
@@ -597,7 +597,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
     recorder = (
         voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
         if remote is None
-        and diagnostics_flag(runtime.config.raw, "record_tts_audio")
+        and runtime.config.diagnostics.record_tts_audio
         and runtime.memory is not None
         else None
     )

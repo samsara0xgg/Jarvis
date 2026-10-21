@@ -22,7 +22,9 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import time
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -34,6 +36,9 @@ from jarvis.deployment.models import (
     default_silero_vad_path,
     default_voiceprint_model_path,
 )
+from jarvis.execution import maps_spend
+from jarvis.runtime.day_plan import day_ends_of
+from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S
 from jarvis.runtime.settings import SETUP_VOICES, apply_settings
 from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
@@ -179,6 +184,7 @@ class RealtimeSettings:
     ``enabled`` is the parent switch (exactly ``true``). ``cancel_timeout_ms`` is the cancel
     connection's SQLite ``busy_timeout``: how long a contended terminal CAS waits, never an
     in-flight provider call. ``input_*`` bound the intent pump (``realtime.input``).
+    ``ambient_sounds`` (ADR 0151) puts sound labels in the state block.
     """
 
     enabled: bool
@@ -188,6 +194,63 @@ class RealtimeSettings:
     input_queue_capacity: int
     input_max_concurrent_turns: int
     voice_service_tier: str | None
+    ambient_sounds: bool
+
+
+@dataclass(frozen=True)
+class WorkStateSettings:
+    """The ``work_state`` block (ADR 0023, 0180).
+
+    ``preset`` is the ``llm.presets`` entry the on-demand analysis runs on (the daily report and
+    the mail summaries fall back to it); ``auto`` re-analyses in the background on a change.
+    """
+
+    preset: str
+    auto: bool
+
+
+@dataclass(frozen=True)
+class DailyReportSettings:
+    """The ``daily_report`` block (ADR 0024, 0101).
+
+    ``preset`` is the report's ``llm.presets`` entry; ``at`` the time the daemon writes
+    yesterday's report, none when unset or unreadable; ``codex_sessions`` opts in to reading
+    Codex's own session directory.
+    """
+
+    preset: str
+    at: time | None
+    codex_sessions: bool
+
+
+@dataclass(frozen=True)
+class LocateSettings:
+    """The ``locate`` block (ADR 0281).
+
+    How long Here waits for his phone's fresh fix over the socket and over a push, the name of
+    the paired device he carries (empty: the newest), and the age past which a report is stale.
+    """
+
+    socket_wait_s: float
+    push_wait_s: float
+    phone: str
+    max_age_s: int
+
+
+@dataclass(frozen=True)
+class DashboardSettings:
+    """``dashboard.view.enabled`` (ADR 0176) and ``dashboard.mail.enabled`` (ADR 0147)."""
+
+    view: bool
+    mail: bool
+
+
+@dataclass(frozen=True)
+class DiagnosticsSettings:
+    """The ``diagnostics`` switches (ADR 0120); each is on only when exactly ``true``."""
+
+    log_llm_io: bool
+    record_tts_audio: bool
 
 
 @dataclass(frozen=True)
@@ -220,6 +283,17 @@ class RuntimeConfig:
     tool_iterations: ToolIterations
     observer: ObserverSettings
     supervisor: SupervisorSettings
+    work_state: WorkStateSettings
+    daily_report: DailyReportSettings
+    locate: LocateSettings
+    home_weather: Mapping[str, Any] | None
+    transit_places: Mapping[str, str]
+    maps_monthly_usd: float
+    dashboard: DashboardSettings
+    diagnostics: DiagnosticsSettings
+    voiceprint_gate: bool
+    remind_before_min: int
+    plan_day_ends: time
     raw: Mapping[str, Any]
 
 
@@ -504,6 +578,152 @@ def _voice_service_tier(realtime: dict[str, Any]) -> str | None:
     return tier.strip() if isinstance(tier, str) and tier.strip() else None
 
 
+_FALLBACK_WORK_STATE_PRESET: Final = "gpt6-luna"
+_MAX_LOCATE_WAIT_S: Final = 30
+_MINUTES_IN_A_DAY: Final = 24 * 60
+_FALLBACK_REMIND_BEFORE_MIN: Final = 60
+
+
+def _block(raw: Mapping[str, Any], name: str) -> dict[str, Any]:
+    """The ``name`` block of the config; empty when it is not a mapping."""
+    value = raw.get(name)
+    return value if isinstance(value, dict) else {}
+
+
+def _switch(block: Mapping[str, Any], key: str, *, where: str) -> bool:
+    """``<where>.<key>``, on unless false; anything but a bool is a ``TypeError``."""
+    value = block.get(key, True)
+    if not isinstance(value, bool):
+        msg = f"{where}.{key} must be true or false"
+        raise TypeError(msg)
+    return value
+
+
+def _work_state(raw: Mapping[str, Any], config_path: Path) -> WorkStateSettings:
+    """``work_state.preset`` (a blank one is the fallback) and ``work_state.auto``.
+
+    A non-bool ``auto`` stops the boot: a background analysis must not run on a guess.
+    """
+    block = _block(raw, "work_state")
+    preset = block.get("preset")
+    auto = block.get("auto", False)
+    if not isinstance(auto, bool):
+        msg = f"runtime: {config_path} work_state.auto must be true or false"
+        raise RuntimeBootstrapError(msg)
+    return WorkStateSettings(
+        preset=preset if isinstance(preset, str) and preset.strip()
+        else _FALLBACK_WORK_STATE_PRESET,
+        auto=auto,
+    )
+
+
+def _daily_report(raw: Mapping[str, Any], work_state: WorkStateSettings) -> DailyReportSettings:
+    """``daily_report``: the preset (else the work-state one), ``at`` (HH:MM) and the opt-in."""
+    block = _block(raw, "daily_report")
+    preset = block.get("preset")
+    at = None
+    if (named := block.get("at")) is not None:
+        try:
+            at = time.fromisoformat(str(named))
+        except ValueError:
+            LOGGER.warning("daily_report.at %r is not HH:MM; no daily report is written", named)
+    return DailyReportSettings(
+        preset=preset if isinstance(preset, str) and preset.strip() else work_state.preset,
+        at=at,
+        codex_sessions=block.get("codex_sessions") is True,
+    )
+
+
+def _locate(raw: Mapping[str, Any]) -> LocateSettings:
+    """``locate``: the two waits (seconds, above 0 and up to 30), ``phone`` and ``max_age_s``."""
+    block = _block(raw, "locate")
+    waits = []
+    for key, default in (("socket_wait_s", SOCKET_WAIT_S), ("push_wait_s", PUSH_WAIT_S)):
+        value = block.get(key, default)
+        if (
+            isinstance(value, bool) or not isinstance(value, int | float)
+            or not 0 < value <= _MAX_LOCATE_WAIT_S
+        ):
+            msg = f"locate: locate.{key} is seconds, above 0 and up to {_MAX_LOCATE_WAIT_S}"
+            raise RuntimeBootstrapError(msg)
+        waits.append(float(value))
+    phone, max_age = block.get("phone", ""), block.get("max_age_s", MAX_AGE_S)
+    if not isinstance(phone, str):
+        msg = "locate: locate.phone is the name of a paired device, or empty"
+        raise RuntimeBootstrapError(msg)
+    if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age <= 0:
+        msg = "locate: locate.max_age_s is a whole number of seconds above 0"
+        raise RuntimeBootstrapError(msg)
+    return LocateSettings(
+        socket_wait_s=waits[0], push_wait_s=waits[1], phone=phone.strip(), max_age_s=max_age,
+    )
+
+
+def _home_weather(raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """``home.weather``: where the home's forecast is for; its readers take the mapping."""
+    place = _block(raw, "home").get("weather")
+    return place if isinstance(place, dict) else None
+
+
+def _transit_places(
+    raw: Mapping[str, Any], weather: Mapping[str, Any] | None,
+) -> Mapping[str, str]:
+    """``transit.home`` and ``transit.school`` (an address or ``lat,lng``), read once at boot.
+
+    They are copied into the places table (ADR 0234); after that the table is where `bus` reads
+    them. An unset ``home`` falls back to the ``home.weather`` latitude and longitude (ADR 0189).
+    """
+    saved = _block(raw, "transit")
+    places = {k: v for k in ("home", "school") if (v := str(saved.get(k) or "").strip())}
+    if "home" not in places and weather is not None:
+        places["home"] = f"{weather['latitude']},{weather['longitude']}"
+    return MappingProxyType(places)
+
+
+def _maps_monthly_usd(raw: Mapping[str, Any]) -> float:
+    """``maps.monthly_usd`` (ADR 0283): the month's cap on Google map spend, USD.
+
+    A missing or unusable value is the default; 0 switches the cap off.
+    """
+    value = _block(raw, "maps").get("monthly_usd")
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return maps_spend.DEFAULT_MONTHLY_USD
+    return float(value)
+
+
+def _dashboard(raw: Mapping[str, Any]) -> DashboardSettings:
+    """``dashboard.<page>.enabled``: off unless true; the mail page needs the view (ADR 0176)."""
+    block = _block(raw, "dashboard")
+
+    def enabled(page: str) -> bool:
+        switch = block.get(page)
+        return isinstance(switch, dict) and switch.get("enabled") is True
+
+    view, mail = enabled("view"), enabled("mail")
+    if mail and not view:
+        LOGGER.warning("dashboard.mail.enabled needs dashboard.view.enabled: the mail page is off")
+    return DashboardSettings(view=view, mail=mail)
+
+
+def _diagnostics(raw: Mapping[str, Any]) -> DiagnosticsSettings:
+    """``diagnostics.log_llm_io`` and ``diagnostics.record_tts_audio`` (ADR 0120)."""
+    block = _block(raw, "diagnostics")
+    return DiagnosticsSettings(
+        log_llm_io=block.get("log_llm_io") is True,
+        record_tts_audio=block.get("record_tts_audio") is True,
+    )
+
+
+def _remind_before_min(raw: Mapping[str, Any]) -> int:
+    """``commitments.remind_before_min``, how long before it a thing he goes to rings; else 60."""
+    before = _block(raw, "commitments").get("remind_before_min")
+    if isinstance(before, int | float) and not isinstance(before, bool) and (
+        1 <= before <= _MINUTES_IN_A_DAY
+    ):
+        return int(before)
+    return _FALLBACK_REMIND_BEFORE_MIN
+
+
 def _response_activation(realtime: dict[str, Any]) -> ResponseActivation:
     """Resolve the ADR-0008 Step 2 flag graph in exactly one place.
 
@@ -566,6 +786,7 @@ def _realtime(realtime: dict[str, Any]) -> RealtimeSettings:
             fallback=_FALLBACK_INPUT_MAX_CONCURRENT_TURNS, where="realtime.input",
         ),
         voice_service_tier=_voice_service_tier(realtime),
+        ambient_sounds=_switch(realtime, "ambient_sounds", where="realtime"),
     )
 
 
@@ -671,6 +892,8 @@ def parse_runtime_config(
         realtime["tts_voice"] = SETUP_VOICES[language][0]
     zone_name, zone = resolve_zone(None, _owner_zone(raw))
     config_dir = config_path.resolve().parent
+    work_state = _work_state(raw, config_path)
+    home_weather = _home_weather(raw)
     return RuntimeConfig(
         config_path=config_path,
         config_dir=config_dir,
@@ -707,5 +930,16 @@ def parse_runtime_config(
         tool_iterations=_tool_iterations(raw),
         observer=_observer(raw),
         supervisor=_supervisor(raw),
+        work_state=work_state,
+        daily_report=_daily_report(raw, work_state),
+        locate=_locate(raw),
+        home_weather=home_weather,
+        transit_places=_transit_places(raw, home_weather),
+        maps_monthly_usd=_maps_monthly_usd(raw),
+        dashboard=_dashboard(raw),
+        diagnostics=_diagnostics(raw),
+        voiceprint_gate=_switch(_block(raw, "voiceprint"), "gate", where="voiceprint"),
+        remind_before_min=_remind_before_min(raw),
+        plan_day_ends=day_ends_of(raw.get("day_plan")),
         raw=raw,
     )

@@ -14,7 +14,7 @@ import pytest
 
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime import _here_location, _transit_places
+from jarvis.runtime import _here_location
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.here import HereUnavailable
 from jarvis.state.event_log import iter_events_of_types, open_event_log
@@ -22,6 +22,7 @@ from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarifica
 from jarvis.surface import mac_location
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere
+from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 from tests.support.transit import (
     FAKE_KEY,
@@ -209,10 +210,10 @@ def test_no_routes_is_a_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_places_come_from_the_transit_section_and_home_falls_back_to_the_weather_location() -> None:
     """transit.home wins; otherwise home.weather lat/lng; school has no fallback."""
     weather = {"home": {"weather": {"latitude": 48.48, "longitude": -123.38}}}
-    assert _transit_places(weather) == {"home": "48.48,-123.38"}
+    assert runtime_config(weather).transit_places == {"home": "48.48,-123.38"}
     both = {**weather, "transit": {"home": " 1 Example St ", "school": "UVic"}}
-    assert _transit_places(both) == {"home": "1 Example St", "school": "UVic"}
-    assert _transit_places({"transit": None}) == {}
+    assert runtime_config(both).transit_places == {"home": "1 Example St", "school": "UVic"}
+    assert runtime_config({"transit": None}).transit_places == {}
 
 
 def test_here_is_the_macs_location_as_a_lat_lng_waypoint_and_is_said_with_its_accuracy(

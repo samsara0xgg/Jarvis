@@ -124,7 +124,6 @@ from jarvis.deployment import RuntimePaths, load_env_file
 from jarvis.deployment.launchd import logs_dir
 from jarvis.deployment.models import default_meaning_dir
 from jarvis.deployment.night_power import MacPower
-from jarvis.execution import maps_spend
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.around import Surroundings
 from jarvis.execution.conversation_tool import build_conversation_tool
@@ -168,7 +167,14 @@ from jarvis.runtime.about_item import AboutItems
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
-from jarvis.runtime.config import Role, RuntimeBootstrapError, RuntimeConfig
+from jarvis.runtime.config import (
+    DailyReportSettings,
+    DashboardSettings,
+    LocateSettings,
+    Role,
+    RuntimeBootstrapError,
+    RuntimeConfig,
+)
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
     DailyReportService,
@@ -187,7 +193,6 @@ from jarvis.runtime.dashboard import (
     MailDrafts,
     ViewState,
 )
-from jarvis.runtime.day_plan import day_ends_of
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.departures import Departures
@@ -197,7 +202,7 @@ from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, wea
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
-from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S, HerePolicy, Locator
+from jarvis.runtime.locate import HerePolicy, Locator
 from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -951,30 +956,12 @@ def _about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
         return None
 
 
-_FALLBACK_WORK_STATE_PRESET: Final[str] = "gpt6-luna"
 _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
 """ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
 (2026-09-12), and a retry after a timeout would resend it all."""
 _OUTPUT_TIMEOUT_S: Final[float] = 5.0
 """How long a brain waits for its terminal to say where sound would come out: its probe takes
 at most 3 s, and a slow answer is a no (ADR 0156)."""
-
-
-def _work_state_preset(config: Mapping[str, Any]) -> str:
-    """``work_state.preset`` — the llm preset the on-demand analysis runs on (ADR 0023)."""
-    block = config.get("work_state")
-    raw = block.get("preset") if isinstance(block, Mapping) else None
-    return raw if isinstance(raw, str) and raw.strip() else _FALLBACK_WORK_STATE_PRESET
-
-
-def _work_state_auto(config: Mapping[str, Any], config_path: Path) -> bool:
-    """``work_state.auto`` (ADR 0180) — background re-analysis on change; a non-bool stops boot."""
-    block = config.get("work_state")
-    raw = block.get("auto", False) if isinstance(block, Mapping) else False
-    if not isinstance(raw, bool):
-        msg = f"runtime: {config_path} work_state.auto must be true or false"
-        raise RuntimeBootstrapError(msg)
-    return raw
 
 
 def _audio_devices(kind: str) -> list[str]:
@@ -999,45 +986,11 @@ def _default_audio_device(kind: str) -> str | None:
         return None
 
 
-def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """``home.weather`` — where the home's forecast is for (``latitude``, ``longitude``)."""
-    block = config.get("home")
-    place = block.get("weather") if isinstance(block, Mapping) else None
-    return place if isinstance(place, Mapping) else None
-
-
-_MAX_LOCATE_WAIT_S = 30
-
-
-def _locator(config: Mapping[str, Any], waits: LocateWaits, clock: Clock) -> Locator:
+def _locator(settings: LocateSettings, waits: LocateWaits, clock: Clock) -> Locator:
     """``locate`` — how long Here waits for his phone's fresh fix (ADR 0281)."""
-    block = config.get("locate")
-    block = block if isinstance(block, Mapping) else {}
-    waits_s = []
-    for key, default in (("socket_wait_s", SOCKET_WAIT_S), ("push_wait_s", PUSH_WAIT_S)):
-        value = block.get(key, default)
-        if (
-            isinstance(value, bool) or not isinstance(value, int | float)
-            or not 0 < value <= _MAX_LOCATE_WAIT_S
-        ):
-            msg = f"locate: locate.{key} is seconds, above 0 and up to {_MAX_LOCATE_WAIT_S}"
-            raise RuntimeBootstrapError(msg)
-        waits_s.append(float(value))
-    return Locator(waits, clock, socket_wait_s=waits_s[0], push_wait_s=waits_s[1])
-
-
-def _here_settings(config: Mapping[str, Any]) -> dict[str, Any]:
-    """``locate.phone`` (the phone he carries) and ``locate.max_age_s`` (a report's age limit)."""
-    block = config.get("locate")
-    block = block if isinstance(block, Mapping) else {}
-    phone, max_age = block.get("phone", ""), block.get("max_age_s", MAX_AGE_S)
-    if not isinstance(phone, str):
-        msg = "locate: locate.phone is the name of a paired device, or empty"
-        raise RuntimeBootstrapError(msg)
-    if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age <= 0:
-        msg = "locate: locate.max_age_s is a whole number of seconds above 0"
-        raise RuntimeBootstrapError(msg)
-    return {"phone": phone.strip(), "max_age_s": max_age}
+    return Locator(
+        waits, clock, socket_wait_s=settings.socket_wait_s, push_wait_s=settings.push_wait_s,
+    )
 
 
 def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], int | None]:
@@ -1059,34 +1012,6 @@ def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:
     if role == "brain" or sys.platform != "darwin":
         return None
     return lambda: asdict(read_mac_location())
-
-
-def _transit_places(config: Mapping[str, Any]) -> dict[str, str]:
-    """``transit.home`` and ``transit.school`` (an address or ``lat,lng``), read once at boot.
-
-    They are copied into the places table by :func:`jarvis.state.places.migrate_settings`
-    (ADR 0234); after that the table is where `bus` reads them. An unset
-    ``home`` falls back to the ``home.weather`` latitude and longitude (ADR 0189).
-    """
-    block = config.get("transit")
-    saved = block if isinstance(block, Mapping) else {}
-    places = {k: v for k in ("home", "school") if (v := str(saved.get(k) or "").strip())}
-    weather = _home_weather(config)
-    if "home" not in places and weather is not None:
-        places["home"] = f"{weather['latitude']},{weather['longitude']}"
-    return places
-
-
-def _maps_monthly_usd(config: Mapping[str, Any]) -> float:
-    """``maps.monthly_usd`` (ADR 0283): the month's cap on Google map spend, USD.
-
-    A missing or unusable value is the default; 0 switches the cap off.
-    """
-    block = config.get("maps")
-    value = block.get("monthly_usd") if isinstance(block, Mapping) else None
-    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
-        return maps_spend.DEFAULT_MONTHLY_USD
-    return float(value)
 
 
 def _locate_places(db_path: Path, api_key: str) -> None:
@@ -1116,55 +1041,16 @@ def _start_locating_places(db_path: Path, api_key: str) -> None:
         ).start()
 
 
-def _dashboard_switch(config: Mapping[str, Any], name: str) -> bool:
-    """``dashboard.<name>.enabled``: off unless true."""
-    block = config.get("dashboard")
-    switch = block.get(name) if isinstance(block, Mapping) else None
-    return isinstance(switch, Mapping) and switch.get("enabled") is True
-
-
-def _dashboard_mail(config: Mapping[str, Any]) -> bool:
-    """``dashboard.mail.enabled`` (ADR 0147): the Dashboard's mail page; off unless true."""
-    return _dashboard_switch(config, "mail")
-
-
-def _dashboard_view(config: Mapping[str, Any]) -> bool:
-    """``dashboard.view.enabled`` (ADR 0176): the shell reports its view."""
-    return _dashboard_switch(config, "view")
-
-
-def _ambient_sounds(config: Mapping[str, Any]) -> bool:
-    """``realtime.ambient_sounds`` (ADR 0151): sound labels in the state block; on unless false."""
-    realtime = config.get("realtime")
-    value = realtime.get("ambient_sounds", True) if isinstance(realtime, Mapping) else True
-    if not isinstance(value, bool):
-        msg = "realtime.ambient_sounds must be true or false"
-        raise TypeError(msg)
-    return value
-
-
-def _voiceprint_gate(config: Mapping[str, Any]) -> bool:
-    """``voiceprint.gate`` (ADR 0286): turn away a long utterance not his; on unless false."""
-    section = config.get("voiceprint")
-    value = section.get("gate", True) if isinstance(section, Mapping) else True
-    if not isinstance(value, bool):
-        msg = "voiceprint.gate must be true or false"
-        raise TypeError(msg)
-    return value
-
-
 def _dashboard_state(
-    config: Mapping[str, Any],
+    settings: DashboardSettings,
 ) -> tuple[ViewState | None, ViewState | None, MailDrafts | None]:
     """The Dashboard's view, the view the mail page reads, and the mail drafts (None = off).
 
     The mail page needs the view (ADR 0176: its open letter is the view's open item); with
     ``dashboard.mail.enabled`` alone it stays off.
     """
-    view = ViewState() if _dashboard_view(config) else None
-    if view is None and _dashboard_mail(config):
-        LOGGER.warning("dashboard.mail.enabled needs dashboard.view.enabled: the mail page is off")
-    mail_view = view if _dashboard_mail(config) else None
+    view = ViewState() if settings.view else None
+    mail_view = view if settings.mail else None
     return view, mail_view, None if mail_view is None else MailDrafts(mail_view)
 
 
@@ -1473,29 +1359,15 @@ def _turn_things(  # noqa: PLR0913 - the config and the pass's collaborators
     )
 
 
-_DAY_MINUTES: Final[int] = 24 * 60
-
-
-def _remind_before_min(config: Mapping[str, Any]) -> int:
-    """``commitments.remind_before_min``, how long before it a thing he goes to rings; else 60."""
-    block = config.get("commitments")
-    before = block.get("remind_before_min") if isinstance(block, Mapping) else None
-    if isinstance(before, int | float) and not isinstance(before, bool) and (
-        1 <= before <= _DAY_MINUTES
-    ):
-        return int(before)
-    return 60
-
-
 def _things_ledger(
-    config: Mapping[str, Any], event_log: Path, db_path: Path, zone: tzinfo,
+    event_log: Path, db_path: Path, zone: tzinfo, remind_before_min: int,
 ) -> ThingsLedger:
     """The ledger of his things (ADR 0299), carried in once now; it runs with the poller off too.
 
     A carried-in commitment rings ``commitments.remind_before_min`` ahead, else 60 minutes. A
     carry-in that fails is logged and tried again by the daemon's rings pass.
     """
-    ledger = ThingsLedger(event_log, db_path, zone, _remind_before_min(config))
+    ledger = ThingsLedger(event_log, db_path, zone, remind_before_min)
     try:
         ledger.carry_in()
     except Exception:
@@ -1826,19 +1698,9 @@ def _jev_oneshot(  # noqa: PLR0913 - the config, the clock, the dataset, the tab
     )
 
 
-def _daily_report_preset(config: Mapping[str, Any]) -> str:
-    """``daily_report.preset`` — the llm preset the report runs on (ADR 0024)."""
-    block = config.get("daily_report")
-    raw = block.get("preset") if isinstance(block, Mapping) else None
-    if isinstance(raw, str) and raw.strip():
-        return raw
-    return _work_state_preset(config)
-
-
-def _codex_sessions_path(config: Mapping[str, Any]) -> Path | None:
+def _codex_sessions_path(settings: DailyReportSettings) -> Path | None:
     """Codex's own session directory, only when ``daily_report.codex_sessions`` opts in."""
-    block = config.get("daily_report")
-    if not isinstance(block, Mapping) or block.get("codex_sessions") is not True:
+    if not settings.codex_sessions:
         return None
     root = Path.home() / ".codex" / "sessions"
     return root if root.is_dir() else None
@@ -1854,17 +1716,10 @@ def _daily_schedule(
     hub: TerminalHub | None = None,
 ) -> DailySchedule | None:
     """``daily_report.at`` — when the daemon writes yesterday's report (ADR 0101); unset: off."""
-    block = config.raw.get("daily_report")
-    raw = block.get("at") if isinstance(block, Mapping) else None
-    if raw is None:
-        return None
-    try:
-        at = clock.fromisoformat(str(raw))
-    except ValueError:
-        LOGGER.warning("daily_report.at %r is not HH:MM; no daily report is written", raw)
+    if config.daily_report.at is None:
         return None
     return DailySchedule(
-        service, event_log_path=event_log, at=at, zone=config.zone,
+        service, event_log_path=event_log, at=config.daily_report.at, zone=config.zone,
         device_ready=None if hub is None else partial(_reads_connected, hub),
     )
 
@@ -2305,12 +2160,6 @@ def _configure_realtime_trace_export(paths: RuntimePaths) -> None:
         raise RuntimeBootstrapError(msg) from exc
 
 
-def diagnostics_flag(config: Mapping[str, Any], key: str) -> bool:
-    """A ``diagnostics:`` switch (ADR 0120); absent or anything but ``true`` is off."""
-    block = config.get("diagnostics")
-    return isinstance(block, Mapping) and block.get(key) is True
-
-
 def load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     """Load fill-only runtime env, then apply its optional trace destination."""
     load_env_file(paths.root)
@@ -2544,7 +2393,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     role = config.role
     listen_addresses = config.listen_addresses
     lang.set_language(config.language)
-    log_llm_io = diagnostics_flag(config.raw, "log_llm_io")
+    log_llm_io = config.diagnostics.log_llm_io
     llm_io_log.configure(logs_dir(paths.root) / "llm-io.jsonl" if log_llm_io else None)
     wave1_features = config.realtime.wave1
     (
@@ -2557,7 +2406,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     _install_open_path(config.raw)
     vision_preset_name, screen_max_width_px = _screen_tools_config(config.raw)
     memory = config.memory
-    voiceprint_gate = _voiceprint_gate(config.raw)  # ADR 0286, read once at boot
+    voiceprint_gate = config.voiceprint_gate  # ADR 0286, read once at boot
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
     locate_waits = LocateWaits()
     phone_events = (
@@ -2573,7 +2422,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     open_memory_db(memory.db_path).close()
     local_zone = config.zone
     # ADR 0234: home and school move out of the settings into the places table, once.
-    place_state.migrate_settings(memory.db_path, _transit_places(config.raw))
+    place_state.migrate_settings(memory.db_path, config.transit_places)
     maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
     _start_locating_places(memory.db_path, maps_key)
     kept_places = partial(place_state.home_school, memory.db_path)
@@ -2584,11 +2433,11 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         repos=config.observer.repos,
         analyst=build_analyst(
             config.raw,
-            _work_state_preset(config.raw),
+            config.work_state.preset,
             pricing_path=config.pricing_path,
             account_cost=True,
         ),
-        model=_work_state_preset(config.raw),
+        model=config.work_state.preset,
         tz=config.zone,
         device=device,
     )
@@ -2602,12 +2451,12 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
             projects=catalog,
             sorter=build_analyst(
                 config.raw,
-                _work_state_preset(config.raw),
+                config.work_state.preset,
                 pricing_path=config.pricing_path,
                 account_cost=True,
                 kind="projects",
             ),
-            model=_work_state_preset(config.raw),
+            model=config.work_state.preset,
             tz=config.zone,
             device=device,
         )
@@ -2618,15 +2467,15 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         repos=config.observer.repos,
         reporter=build_analyst(
             config.raw,
-            _daily_report_preset(config.raw),
+            config.daily_report.preset,
             pricing_path=config.pricing_path,
             account_cost=True,
             kind="daily_report",
             timeout_s=_DAILY_REPORT_TIMEOUT_S,
         ),
-        model=_daily_report_preset(config.raw),
+        model=config.daily_report.preset,
         tz=config.zone,
-        codex_sessions_path=_codex_sessions_path(config.raw),
+        codex_sessions_path=_codex_sessions_path(config.daily_report),
         device=device,
     )
     night = (
@@ -2640,11 +2489,11 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         )
     )
     voice_settings = VoiceSettings(paths.root / "voice-settings.json")
-    view, mail_view, mail_drafts = _dashboard_state(config.raw)
+    view, mail_view, mail_drafts = _dashboard_state(config.dashboard)
     voice_cues = VoiceCues()
     ambient = (
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
-        if _ambient_sounds(config.raw) else None
+        if config.realtime.ambient_sounds else None
     )
     bus_live = BusLive(paths.root / "cache")
     transit_offers = TransitOffers()  # the list `bus` keeps, and its chat card rows (ADR 0205)
@@ -2662,15 +2511,15 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     )
     rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
-        None if phone_events is None else _locator(config.raw, locate_waits, system_clock)
+        None if phone_events is None else _locator(config.locate, locate_waits, system_clock)
     )
     here = HerePolicy(  # ADR 0322: the one Here every tool call reads where he is from
         paths.event_log, system_clock, locator=locator, mac=_here_location(role),
-        memory_db=memory.db_path, **_here_settings(config.raw),
+        memory_db=memory.db_path, phone=config.locate.phone, max_age_s=config.locate.max_age_s,
     )
     weatherkit = WeatherKit.from_config(config.raw)  # ADR 0285: logs which source is used
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
-        maps_key, _maps_monthly_usd(config.raw), memory.db_path, local_zone,
+        maps_key, config.maps_monthly_usd, memory.db_path, local_zone,
     )
     doing = _doing_schedule(config, memory, paths, device)
     jev_log = _jev_log(config.raw, paths.root)
@@ -2684,14 +2533,14 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         home = Home(
             connections,
             (config.zone_name, config.zone),
-            _home_weather(config.raw),
+            config.home_weather,
             _mail_reply(config.raw, config_path, system_clock, jev_log),
             mail_view,
             None if mail_view is None else mail_summarizer(
                 # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
                 build_analyst(
                     config.raw,
-                    _work_state_preset(config.raw),
+                    config.work_state.preset,
                     pricing_path=config.pricing_path,
                     account_cost=True,
                     kind="mail_summary",
@@ -2712,11 +2561,11 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         night=night,
         voice_settings=voice_settings,
         weather_lookup=weather_lookup(
-            _home_weather(config.raw), weatherkit,
+            config.home_weather, weatherkit,
             config.zone_name,
         ),
         transit_api_key=maps_key,
-        maps_monthly_usd=_maps_monthly_usd(config.raw),
+        maps_monthly_usd=config.maps_monthly_usd,
         surroundings=surroundings,
         transit_places=kept_places,
         transit_offers=transit_offers,
@@ -2725,8 +2574,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         bus_live=_live_departure(bus_live),
         ride_control=rides.control(),
         highlight_marker=_highlight_marks(config, memory, paths, device).mark,
-        plan_day_ends=day_ends_of(config.raw.get("day_plan")),
-        ring_before_min=_remind_before_min(config.raw),
+        plan_day_ends=config.plan_day_ends,
+        ring_before_min=config.remind_before_min,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
         obsidian_vault_root=_obsidian_vault_root(config.raw),
         web_search_max_results=web_search_max_results,
@@ -2863,7 +2712,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     claude_daily = _claude_daily(
         config.raw, config_path, plugin_connections, memory.db_path, paths.root,
     )
-    things_ledger = _things_ledger(config.raw, paths.event_log, memory.db_path, local_zone)
+    things_ledger = _things_ledger(
+        paths.event_log, memory.db_path, local_zone, config.remind_before_min,
+    )
     things_mirror = ThingsMirror(plugin_connections, paths.event_log, local_zone)
     turn_things = _turn_things(
         config.raw, config_path, memory.db_path, paths.event_log, local_zone,
@@ -2928,7 +2779,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         tool_cues=tool_cues,
         think_mode=think_mode,
         work_state=work_state,
-        work_state_auto=_work_state_auto(config.raw, config_path),
+        work_state_auto=config.work_state.auto,
         projects=projects,
         home=home,
         view=view,
@@ -2949,7 +2800,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
             # ADR 0291: today's plan, settled or not, with its next item.
             partial(
                 plan_line, paths.event_log, local_zone, system_clock.now,
-                day_ends_of(config.raw.get("day_plan")),
+                config.plan_day_ends,
             ),
         ),
         voice_cues=voice_cues,
@@ -2973,7 +2824,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         leg_planner=None if not maps_key else partial(
             build_leg_planner, maps_key, kept_places,
             kept=partial(place_state.read_kept, memory.db_path),
-            cap_usd=_maps_monthly_usd(config.raw),
+            cap_usd=config.maps_monthly_usd,
         ),
         voice_words=_voice_words(config.raw, config_path, system_clock, jev_log),
         oneshot=_jev_oneshot(

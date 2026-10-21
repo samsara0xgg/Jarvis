@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.tools import ToolContext, ToolError
-from jarvis.runtime import _dashboard_view, _live_lines
+from jarvis.runtime import _live_lines
 from jarvis.runtime.dashboard import (
     CLOSE,
     PAGES,
@@ -26,6 +26,7 @@ from jarvis.runtime.dashboard import (
 from jarvis.shared import CallerPrincipal
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -134,10 +135,10 @@ def test_the_live_context_lets_the_view_line_run_to_1200_and_the_rest_to_200() -
 
 def test_the_switch_is_off_unless_dashboard_view_enabled_is_true() -> None:
     """One key, default off; the mail switch is its own key."""
-    assert not _dashboard_view({})
-    assert not _dashboard_view({"dashboard": {"view": {"enabled": "yes"}}})
-    assert not _dashboard_view({"dashboard": {"mail": {"enabled": True}}})
-    assert _dashboard_view({"dashboard": {"view": {"enabled": True}}})
+    assert not runtime_config({}).dashboard.view
+    assert not runtime_config({"dashboard": {"view": {"enabled": "yes"}}}).dashboard.view
+    assert not runtime_config({"dashboard": {"mail": {"enabled": True}}}).dashboard.view
+    assert runtime_config({"dashboard": {"view": {"enabled": True}}}).dashboard.view
 
 
 def _client(view: ViewState | None) -> TestClient:

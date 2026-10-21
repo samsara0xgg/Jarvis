@@ -31,7 +31,7 @@ from fastapi.testclient import TestClient
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime import _locate_places, _places_block, _transit_places
+from jarvis.runtime import _locate_places, _places_block
 from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.locate import HerePolicy
@@ -53,6 +53,7 @@ from tests.support.ledger import NOW as LEDGER_NOW
 from tests.support.ledger import ZONE as LEDGER_ZONE
 from tests.support.ledger import ledger_world
 from tests.support.places import NOW, NOW_MS, TODAY, ZONE, ms_days_ago, stay
+from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 from tests.support.tool_world import ToolWorld, tool_request
 from tests.support.transit import FAKE_KEY, sent_request, serve_routes
@@ -952,7 +953,7 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
         "home": {"weather": {"latitude": 48.0, "longitude": -123.0}},
         "transit": {"school": "Example Campus, Example City"},
     }
-    copied = places.migrate_settings(world.db, _transit_places(config))
+    copied = places.migrate_settings(world.db, runtime_config(config).transit_places)
     assert [(p.name, p.role, p.lat, p.lng, p.address, p.origin) for p in copied] == [
         ("home", "home", 48.0, -123.0, None, "settings"),
         ("school", "school", None, None, "Example Campus, Example City", "settings"),
