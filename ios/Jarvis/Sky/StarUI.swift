@@ -118,7 +118,7 @@ final class StarUI {
     /// would count that inset twice (a 34 pt gap over the keys). It is lifted by the height less the difference of the two gaps.
     static func lift(keyboardHeight h: Double) -> Double { h > 0 ? max(0, h - (restGap - keyGap)) : 0 }
     /// how far the composer is raised over its rest place: by the keyboard, and on the timeline's conversation at least over the bar at the foot (Sky/HomeBar.swift)
-    var footLift: Double { max(kbLift, panelOpen && HomeModule.shared.isTimeline ? HomeBar.fieldLift : 0) }
+    var footLift: Double { max(kbLift, talkPage ? HomeBar.fieldLift : 0) }
     var mic: MicState = .mic
     var chipsOn = false
     var settingsOpen = false            // settings is open: on the timeline the third page of the bar at the foot, under the dial and on the iPad a sheet
@@ -136,6 +136,8 @@ final class StarUI {
     let footprint = FootprintDayState()
     /// the page of the home the glass bar at its foot is on (Sky/HomeBar.swift): the day, or over it the history, the footprint's page or settings (`StarEngine.showPage` changes it)
     var page: HomePage { settingsOpen ? .settings : panelOpen ? .talk : footprintOpen ? .map : .day }
+    /// the history is up on the timeline: the conversation's page, the whole screen under her (Sky/StarPanel.swift's `TalkPage`); under the dial it is a panel over it
+    var talkPage: Bool { panelOpen && HomeModule.shared.isTimeline }
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 
     /// The composer is out: always under the dial. On the timeline she is tapped to talk and the field is one of her cards: it is out while he types (he chose 打字, or asked her about a

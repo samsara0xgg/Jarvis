@@ -43,18 +43,28 @@ extension StarEngine {
 struct StatusRow: View {
     let line: StatusLine
     var size = 15.0             // the step's text; the row is as high as a line of her words 3 pt larger (under the dial 18, in the timeline's place for the talk 16)
+    var hug = false             // as wide as what it says, for the card it is on (the conversation's page, Sky/StarPanel.swift); else the row's whole width
 
     var body: some View {
-        Text("　").font(.system(size: size + 3)).hidden()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .leading) {
-                ZStack(alignment: .leading) {
-                    if let label = line.label { step(label).id(label).transition(.opacity) } else { TypingDots().transition(.opacity) }
-                }
+        Group {
+            if hug {
+                ZStack(alignment: .leading) { Text("　").font(.system(size: size + 3)).hidden(); now }
+            } else {
+                Text("　").font(.system(size: size + 3)).hidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .leading) { now }
             }
-            .animation(.easeOut(duration: 0.2), value: line.label)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(line.label ?? "她在想")
+        }
+        .animation(.easeOut(duration: 0.2), value: line.label)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(line.label ?? "她在想")
+    }
+
+    /// the quiet dots, or the step she is on
+    private var now: some View {
+        ZStack(alignment: .leading) {
+            if let label = line.label { step(label).id(label).transition(.opacity) } else { TypingDots().transition(.opacity) }
+        }
     }
 
     /// the step's own text and the seconds since its frame came, counted here

@@ -3,8 +3,8 @@ import UIKit
 // Where she is on the timeline. The sky above the bar is hers (yilun, 2026-10-21): she sits in it beside the date, under the right end of the island and bigger than she was in the corner,
 // and she moves inside it, sometimes behind its words. She leans in while he speaks to her; when nothing happens for a while she drifts down to where her sentence is, behind it, and back;
 // for a talk, her answer and her cards (which always come out round her home) she is home; while one of the footprint's pages is open she goes to the corner those pages are laid out
-// around. The engine moves her there on springs every frame (`stepSeat`), and what she is touched at and where her eyes look from read the same place. Everything is in the chrome's
-// 440 x 956 design points.
+// around, and on the conversation's page she heads it from the middle of the top. The engine moves her there on springs every frame (`stepSeat`), and what she is touched at and where
+// her eyes look from read the same place. Everything is in the chrome's 440 x 956 design points.
 
 /// her places on the timeline, and how big she is in each
 enum TLSeat {
@@ -13,6 +13,9 @@ enum TLSeat {
     static let radius = 22.0
     /// the corner of the top row that the footprint's pages leave her (Sky/FootprintDayPage.swift), at the size she had there
     static let corner = CGPoint(x: 47, y: 79), cornerRadius = 15.0
+    /// The head of the conversation's page (a page of the bar at the foot, Sky/StarPanel.swift's `TalkPage`), as a chat puts the one it is with: in the middle of the top, 18 pt under
+    /// the island, a little bigger than at home. The talk runs under her.
+    static let talk = CGPoint(x: 220, y: 92), talkRadius = 26.0
     /// how much bigger she is while she listens
     static let listening = 1.12
     /// a finger this far outside her disc is still on her
@@ -31,6 +34,10 @@ extension StarEngine {
     var seatScale: Double { seatR.value / R_PS }
     /// a finger within this of her middle is on her
     var seatReach: Double { seatR.value + TLSeat.slop }
+    /// where she rests on the page on show, and how big she is there: the footprint's corner, the head of the conversation, or home
+    var restSeat: (at: CGPoint, r: Double) {
+        ui.footprintOpen ? (TLSeat.corner, TLSeat.cornerRadius) : ui.talkPage ? (TLSeat.talk, TLSeat.talkRadius) : (TLSeat.home, TLSeat.radius)
+    }
 
     /// nothing is happening on the timeline: no talk going on, no word of hers still coming and none on show in her sentence's place (she does not go behind her own answer), no finger
     /// on her or the bar, her cards in, no keyboard, no row, page or sheet open, the brain not tidying
@@ -44,7 +51,7 @@ extension StarEngine {
     /// her for a talk, his voice or hers, or her answer on show. She drifts only on the timeline, and never under Reduce Motion or VoiceOver.
     func stepSeat(_ now: Double, _ dt: Double) {
         let still = UIAccessibility.isReduceMotionEnabled || UIAccessibility.isVoiceOverRunning
-        if !HomeModule.shared.isTimeline || still || ui.footprintOpen {
+        if !HomeModule.shared.isTimeline || still || ui.footprintOpen || ui.talkPage {
             wander = nil; seatCalmSince = now
         } else if !calm {
             seatCalmSince = now
@@ -65,9 +72,9 @@ extension StarEngine {
             herDrive?.herLookAt(TLGaze.toward(to, from: seat), now: now, ms: 1100)          // she looks where she is going
         }
         let listening = voiceState == .listening || talk == "listen"
-        let goal = ui.footprintOpen ? TLSeat.corner : wander?.to ?? TLSeat.home
-        let r = ui.footprintOpen ? TLSeat.cornerRadius : TLSeat.radius * (listening ? TLSeat.listening : 1)
-        let w = still ? 30.0 : wander != nil ? 2.4 : 6.5          // a drift, and the way back from it, is slow; hurrying home, or going to the corner, is quick
+        let rest = restSeat, goal = wander?.to ?? rest.at
+        let r = rest.r * (listening && !ui.footprintOpen ? TLSeat.listening : 1)
+        let w = still ? 30.0 : wander != nil ? 2.4 : 6.5          // a drift, and the way back from it, is slow; hurrying home, or going to the corner or the conversation's head, is quick
         crit(&seatX, goal.x, w, dt); crit(&seatY, goal.y, w, dt); crit(&seatR, r, 9, dt)
         seatMoving = abs(seatX.value - goal.x) > 0.05 || abs(seatY.value - goal.y) > 0.05 || abs(seatR.value - r) > 0.02
             || abs(seatX.velocity) > 0.05 || abs(seatY.velocity) > 0.05 || abs(seatR.velocity) > 0.02

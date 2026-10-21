@@ -68,6 +68,7 @@ private struct TapbackCard: View {
     var body: some View {
         let side: HorizontalAlignment = row.his ? .trailing : .leading
         let copy = TalkStream.copyText(row), reactable = TalkStream.reactable(row), picking = ui.tapbackPicker
+        let page = ui.talkPage          // the row as the conversation's page lays it out (Sky/StarPanel.swift's `TalkPage`)
         ZStack(alignment: .topLeading) {
             Color.black.opacity(0.62).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
                 .contentShape(Rectangle()).onTapGesture { engine.closeTapback() }
@@ -75,12 +76,12 @@ private struct TapbackCard: View {
             VStack(alignment: side, spacing: 10) {
                 if reactable { bar }
                 // room inside the clip for the badges, which stand over the row's corner; taken back outside it so the row is as wide as it is in the stream
-                CapHeight(cap: picking ? 160 : 320) { TalkRowView(row: row).equatable().padding(.horizontal, 14).padding(.top, 14) }
+                CapHeight(cap: picking ? 160 : 320) { TalkRowView(row: row, cards: page).equatable().padding(.horizontal, 14).padding(.top, 14) }
                     .clipped().padding(.horizontal, -14).allowsHitTesting(false)
                     .accessibilityHidden(true)
                 if let t = copy, !picking { menu(t) }
             }
-            .padding(.horizontal, 32).frame(width: W, alignment: row.his ? .trailing : .leading)
+            .padding(.horizontal, page ? TalkPage.side : 32).frame(width: W, alignment: row.his ? .trailing : .leading)
             .offset(y: 110)
             .scaleEffect(shown || reduce ? 1 : 0.94, anchor: row.his ? .topTrailing : .topLeading)
             .opacity(shown ? 1 : 0)

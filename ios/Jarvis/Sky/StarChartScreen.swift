@@ -86,8 +86,8 @@ struct StarChrome: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // behind the open panel the dial dims
-            Color.black.opacity(0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
+            // behind the open panel the dial dims (on the timeline the conversation is a page of its own, with her at its head: nothing of the day is behind it to dim)
+            Color.black.opacity(HomeModule.shared.isTimeline ? 0 : 0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
                 .animation(pull == nil ? panelSpring(reduce, velocity: ui.panelRelease) : nil, value: ui.panelOpen).allowsHitTesting(false)
             topRow.opacity(ui.footprintOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen)
                 .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
@@ -99,7 +99,7 @@ struct StarChrome: View {
                 .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
             herElement
             FootprintDayLayer(engine: engine, ui: ui)
-            TalkPanel(engine: engine, ui: ui, pull: $pull)
+            TalkPanel(engine: engine, ui: ui, pull: $pull, page: HomeModule.shared.isTimeline)
             voiceNote
             AttachDim(model: ui.attach)
             if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
@@ -175,6 +175,8 @@ struct StarChrome: View {
 
     /// On the timeline the top row's date, its label and the weather keep to the left of her at home (8 pt clear of her disc): what is left of that after the date is the weather's.
     private static let headWidth: Double = TLSeat.home.x - TLSeat.radius - 8 - 30
+    /// on the conversation's page the date and the weather give way (she heads the page from the middle of the top), and the voice's line keeps left of her there
+    private static let noteWidthOnTalk: Double = TLSeat.talk.x - TLSeat.talkRadius * TLSeat.listening - 8 - 30
     private var headRoom: Double {
         let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
         return Self.headWidth - date - 8
@@ -195,12 +197,14 @@ struct StarChrome: View {
                     }
                     if tlOn { TLDayHead(tl: ui.tl, room: headRoom) }        // after the date: the day's weather
                 }
-                .opacity(note == nil ? 1 : 0)
+                .opacity(note == nil && !ui.talkPage ? 1 : 0).allowsHitTesting(!ui.talkPage).accessibilityHidden(ui.talkPage)
                 Text(note ?? "").font(.system(size: 13)).foregroundStyle(ink.opacity(0.8)).lineLimit(1).minimumScaleFactor(0.8)
+                    .frame(maxWidth: ui.talkPage ? Self.noteWidthOnTalk : .infinity, alignment: .leading)
                     .opacity(note == nil ? 0 : 1).accessibilityHidden(note == nil)
             }
             .frame(maxWidth: tlOn ? Self.headWidth : .infinity, alignment: .leading)
             .animation(.easeOut(duration: 0.3), value: note == nil)
+            .animation(.easeOut(duration: 0.25), value: ui.talkPage)
             Spacer(minLength: 0)
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
                 .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
@@ -226,7 +230,8 @@ struct StarChrome: View {
     /// stops), and her cards are its other actions, done at once.
     @ViewBuilder private var herElement: some View {
         if HomeModule.shared.isTimeline && ui.tlHome && !ui.footprintOpen && !ui.settingsOpen {
-            Color.clear.frame(width: 2 * TLSeat.radius, height: 2 * TLSeat.radius)
+            let rest = engine.restSeat          // at home, or at the head of the conversation's page
+            Color.clear.frame(width: 2 * rest.r, height: 2 * rest.r)
                 .accessibilityElement()
                 .accessibilityLabel(Words.Home.her).accessibilityHint(Words.Home.herHint).accessibilityAddTraits(.isButton)
                 .accessibilityAction { engine.tap(engine.seat, true) }
@@ -234,7 +239,7 @@ struct StarChrome: View {
                     ForEach(ui.tl.herItems.filter(\.enabled), id: \.kind) { item in Button(item.title) { ui.tl.perform(item.kind, engine: engine) } }
                 }
                 .allowsHitTesting(false)
-                .position(x: TLSeat.home.x, y: TLSeat.home.y)
+                .position(x: rest.at.x, y: rest.at.y)
         }
     }
 

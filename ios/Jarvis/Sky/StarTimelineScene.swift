@@ -283,7 +283,9 @@ extension StarEngine {
             ui.tl.tidyDay()
         }
         case "她菜单": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.openArc(holding: false) }          // her cards out (`-scene 时间线:她菜单`)
-        case "聊天": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }          // the conversation's page of the bar at the foot
+        case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
+            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
         case "飘":          // her drift, without the wait for it
             if let k = Int(parts.count > 2 ? parts[2] : ""), TLSeat.perches.indices.contains(k) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in wander = (TLSeat.perches[k], nowMs() + 60_000) }
@@ -521,6 +523,29 @@ extension StarEngine {
         MainActor.assumeIsolated {
             Conversation.shared.debugSet(before + [ConversationRow(seq: 31, source: "allen", ts: stamp, text: "明天下午有什么安排？"),
                                                   ConversationRow(seq: 32, source: "jarvis", ts: stamp, text: "<voice>下午三点有一个二面，在线上。</voice>")])
+        }
+    }
+
+    /// A day and a half of talk as the conversation's page shows it: yesterday evening, this morning, lunch with a written answer, and a moment ago.
+    private func talkPageRounds(_ cal: Cal) {
+        let now = Date()
+        func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {
+            let at = now.addingTimeInterval(-ago * 60)
+            return ConversationRow(seq: seq, source: his ? "allen" : "jarvis", ts: TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00", text: text)
+        }
+        // an answer as the brain writes one: said, and written out (a voice part alone is a line before the answer, with more to come)
+        func said(_ s: String) -> String { "<voice>\(s)</voice><document>\(s)</document>" }
+        MainActor.assumeIsolated {
+            Conversation.shared.debugSet([
+                row(1, true, 26 * 60, "明天早上提醒我九点出门"),
+                row(2, false, 26 * 60, said("好，明早八点五十提醒你，路上大概二十分钟。")),
+                row(3, true, 4 * 60, "今天要带什么"),
+                row(4, false, 4 * 60, said("带上计算器和学生卡。线性代数小测在 ECS 123，十点开始。")),
+                row(5, true, 2 * 60, "附近有什么吃的"),
+                row(6, false, 2 * 60, "<voice>走路五分钟内有三家，我列给你。</voice><document>走路五分钟内有三家：\n\n- A&W，汉堡套餐 12 块左右\n- Subway，人少\n- 学校食堂，今天有咖喱饭</document>"),
+                row(7, true, 10, "明天下午有什么安排？"),
+                row(8, false, 10, said("下午三点有一个二面，在线上。两点半我提醒你准备。")),
+            ])
         }
     }
 
