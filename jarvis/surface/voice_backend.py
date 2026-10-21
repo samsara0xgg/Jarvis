@@ -19,6 +19,7 @@ import ctypes.util
 import enum
 import functools
 import logging
+import os
 import struct
 import threading
 import time
@@ -591,6 +592,37 @@ def reinitialize_portaudio() -> None:
         if sd._initialized:  # noqa: SLF001 - sounddevice's own re-scan path
             sd._terminate()  # noqa: SLF001
         sd._initialize()  # noqa: SLF001
+
+
+def keep_log_off_portaudio_stderr() -> None:
+    """Make the log's stderr handlers write to a copy of fd 2 that PortAudio cannot blank.
+
+    sounddevice points fd 2 at /dev/null for as long as ``Pa_Initialize`` takes, in its first
+    import and in every :func:`reinitialize_portaudio`, to silence PortAudio's chatter. CoreAudio
+    can hold that call for minutes, and every line any thread logs meanwhile goes nowhere:
+    2026-10-21 04:03 a terminal's microphone did not open and the log kept the capability line
+    but not the reason. The copy shares fd 2's file, so the log lands where it always did; it
+    stays open for the life of the process. Call it once, after the log is configured.
+    """
+    for handler in logging.getLogger().handlers:
+        if type(handler) is not logging.StreamHandler:
+            continue  # a file handler has its own descriptor already
+        stream = handler.stream
+        try:
+            on_fd2 = stream.fileno() == _STDERR_FD
+        except (AttributeError, OSError, ValueError):
+            continue
+        if on_fd2:
+            handler.setStream(
+                os.fdopen(
+                    os.dup(_STDERR_FD), "w", buffering=1,
+                    encoding=getattr(stream, "encoding", None) or "utf-8",
+                    errors="backslashreplace",
+                ),
+            )
+
+
+_STDERR_FD = 2
 
 
 def device_names(kind: str) -> list[str]:

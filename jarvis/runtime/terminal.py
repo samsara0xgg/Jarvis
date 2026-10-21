@@ -133,6 +133,7 @@ from jarvis.state.event_log import EventLogError, emit_event, open_event_log
 from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projects import Project, gather, parse_catalog, window_to_wire
+from jarvis.surface import voice_backend
 from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.lifelog_recorder import LANE_CAPACITY, OUTBOX_DIRNAME, LifelogRecorder
@@ -1113,6 +1114,8 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     ``serve_ui`` (a port) it also serves this device's UI on 127.0.0.1 (ADR 0183); a port that
     is held ends the command before anything else starts.
     """
+    if voice:
+        voice_backend.keep_log_off_portaudio_stderr()  # before the first thing PortAudio can hang
     if config_path is None:
         config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
     settings_yaml = runtime_root / "settings.yaml"

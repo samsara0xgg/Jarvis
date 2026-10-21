@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import sys
 import threading
@@ -30,6 +31,7 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
+from tests.support.stderr_log import stderr_in, stderr_sent_nowhere
 from tests.support.voice_input import (
     FakeBackend,
     FakeWakeEngine,
@@ -3996,6 +3998,64 @@ def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner(
     assert not owners.single_ingress_attempted
     assert owners.duplex_session is None
     engine.close.assert_called_once_with()
+
+
+def test_a_microphone_that_does_not_open_while_portaudio_starts_up_stuck_logs_why(
+    tmp_path: Path,
+) -> None:
+    """The terminal's 2026-10-21 04:03 log, line for line, with the reason kept.
+
+    The first PortAudio use of the process hangs in ``Pa_Initialize``, which sends fd 2 to
+    /dev/null until it returns. The open times out; the session is closed, and the late open
+    returns while it is being closed, so the capability goes stopped, epoch None,
+    shutdown_complete. Every line logged before that was lost, the failed start's among them.
+    """
+
+    class _StuckInit(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.silenced = contextlib.ExitStack()
+            self.fail_starts(voice_backend.BackendStartStatus.OPEN_UNCERTAIN)
+
+        def start(self, **kwargs: Any) -> voice_backend.BackendStartResult:  # noqa: ANN401
+            self.silenced.enter_context(stderr_sent_nowhere())
+            return super().start(**kwargs)
+
+        def stop(self, **kwargs: Any) -> voice_backend.BackendStopResult:  # noqa: ANN401
+            stopped = super().stop(**kwargs)
+            self.silenced.close()  # the late Pa_Initialize returns and gives fd 2 back
+            return stopped
+
+    runtime = MagicMock()
+    runtime.config = {"realtime": {"enabled": True, "single_audio_ingress": {"enabled": True}}}
+    backend = _StuckInit()
+    err = tmp_path / "terminal.err.log"
+    with (
+        patch.object(voice_wake, "MicroWakeWordEngine", return_value=MagicMock()),
+        patch.object(voice_audio, "SileroVad", return_value=MagicMock(spec=voice_audio.SileroVad)),
+        patch.object(voice_backend, "SoundDeviceDuplexBackend", return_value=backend),
+        stderr_in(err),
+    ):
+        voice_backend.keep_log_off_portaudio_stderr()  # what a voice terminal does at start
+        attempt = inherent_loop._spawn_single_ingress_session(
+            runtime=runtime,
+            pipeline=MagicMock(spec=voice_pipeline.VoicePipeline),
+            broadcaster=MagicMock(),
+            silero_path=MagicMock(),
+            tts=object.__new__(voice_media.StreamingTTSPipeline),
+        )
+        wait_until_true(
+            lambda: "reason=shutdown_complete" in err.read_text(encoding="utf-8"),
+        )
+    assert attempt == (None, True)
+    lines = err.read_text(encoding="utf-8").splitlines()
+    failed = "state=close_uncertain reason=injected_open_uncertain"
+    stopped = "state=stopped epoch=None reason=shutdown_complete"
+    failed_at = [at for at, line in enumerate(lines) if failed in line]
+    stopped_at = [at for at, line in enumerate(lines) if stopped in line]
+    assert failed_at
+    assert len(stopped_at) == 1
+    assert failed_at[0] < stopped_at[0]
 
 
 @pytest.mark.parametrize("failure_site", ["silero", "session"])

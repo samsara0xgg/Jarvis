@@ -65,6 +65,7 @@ from jarvis.surface.terminal_listen import (
     with_voice_commands,
 )
 from jarvis.surface.terminal_speaker import BrainCallError
+from tests.support.stderr_log import stderr_in, stderr_sent_nowhere
 from tests.support.terminal import (
     TERMINAL_WS,
     VoiceBrain,
@@ -729,6 +730,33 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
     assert refusal[0].levelno == logging.ERROR
     assert "stop that one and restart" in refusal[0].getMessage()
     assert "utterance.received" not in logged_types(brain.log)
+
+
+def test_a_voice_terminals_log_survives_portaudio_initialising_stuck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-21 04:03: the first ``import sounddevice`` of a terminal hung in CoreAudio.
+
+    sounddevice points fd 2 at /dev/null around ``Pa_Initialize``, so every line any thread
+    logged meanwhile went nowhere, among them the reason the microphone did not open. A voice
+    terminal's log writes to its own copy of stderr instead.
+    """
+
+    async def stuck(*_args: object, **_kwargs: object) -> None:
+        with stderr_sent_nowhere():
+            logging.getLogger("jarvis.runtime.inherent_loop").warning("said while stuck")
+        logging.getLogger("jarvis.runtime.inherent_loop").warning("said after")
+
+    monkeypatch.setattr(terminal_module, "_run", stuck)
+    err = tmp_path / "terminal.err.log"
+    with stderr_in(err):
+        code = terminal_module.run_terminal(
+            "http://127.0.0.1:1", "t", runtime_root=tmp_path / "root", voice=True,
+        )
+    assert code == 0
+    lines = err.read_text(encoding="utf-8").splitlines()
+    assert "jarvis.runtime.inherent_loop: said while stuck" in lines
+    assert "jarvis.runtime.inherent_loop: said after" in lines
 
 
 def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_ends_them(
