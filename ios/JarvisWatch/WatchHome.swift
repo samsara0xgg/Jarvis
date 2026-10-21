@@ -5,6 +5,7 @@ import SwiftUI
 struct WatchHomePage: View {
     var day: WatchDay?
     var aod: Bool
+    var quiet = false                   // a talk is over the home: what comes next leaves the middle at once, and comes back only once the talk has gone, so the two never share it
     @Binding var told: Int?
     var openRide: () -> Void
     var herPlace: (CGRect) -> Void
@@ -25,7 +26,8 @@ struct WatchHomePage: View {
                 Color.clear.frame(width: 80, height: 80)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { herPlace($0) }
                     .padding(.bottom, side * 0.21)
-                centre(side: side).opacity(aod ? 0.55 : 1)          // Always On: the next thing stays, dimmed
+                centre(side: side).opacity(quiet ? 0 : aod ? 0.55 : 1)          // Always On: the next thing stays, dimmed
+                    .animation(quiet ? nil : .easeOut(duration: 0.25).delay(0.3), value: quiet)
             }
             .frame(width: g.size.width, height: g.size.height)
         }

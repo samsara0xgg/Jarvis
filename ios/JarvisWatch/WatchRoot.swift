@@ -49,8 +49,10 @@ struct WatchRoot: View {
                         }
                     }
             }
+            // one layer for the whole talk: it grows in once and goes once, and only its content changes from step to step (a transition on the switch itself would take the
+            // layer out and back at every step, showing the home between)
             if phase != .idle {
-                talk.background(Color.black.ignoresSafeArea()).transition(.scale(scale: 0.4).combined(with: .opacity))
+                ZStack { Color.black.ignoresSafeArea(); talk }.transition(.scale(scale: 0.4).combined(with: .opacity))
             }
         }
         .animation(Self.grow, value: phase)
@@ -78,7 +80,7 @@ struct WatchRoot: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
-                    WatchHomePage(day: model.day, aod: aod, told: $told, openRide: { path.append(.ride) }, herPlace: { herHome = $0 })
+                    WatchHomePage(day: model.day, aod: aod, quiet: phase != .idle, told: $told, openRide: { path.append(.ride) }, herPlace: { herHome = $0 })
                         .frame(height: WKInterfaceDevice.current().screenBounds.height)
                     if let day = model.day {
                         WatchList(day: day, answered: answered, open: { path.append($0) }, answer: send)
@@ -146,8 +148,11 @@ struct WatchRoot: View {
     @ViewBuilder private var talk: some View {
         switch model.talk {
         case .idle: EmptyView()
-        case .listening(let h): WatchTalkView(face: .listen, heard: h, placeholder: Words.Watch.listening) { model.endTalk() }
-        case .thinking(let h): WatchTalkView(face: .think, heard: h, placeholder: Words.Watch.thinking) { model.cancelTalk() }
+        case .listening(let h), .thinking(let h):           // one view for both: his words stay where they are while she goes from listening to thinking
+            let listening = phase == .listening
+            WatchTalkView(face: listening ? .listen : .think, heard: h, placeholder: listening ? Words.Watch.listening : Words.Watch.thinking) {
+                if listening { model.endTalk() } else { model.cancelTalk() }
+            }
         case .answer(let spoken, let written, let card):
             WatchAnswerView(spoken: spoken, written: written, card: card, answer: { id, action in
                 model.answer(id, action)
