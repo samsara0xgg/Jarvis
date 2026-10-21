@@ -233,6 +233,57 @@ def test_the_baseline_verdict_names_a_regression_a_fixed_item_and_a_stale_id(
     assert "gone-item: no such item; remove it from the baseline" in lines
 
 
+OUT = {
+    "summary": "Two things.",
+    "items": [
+        {"id": "a1", "what": "Dentist", "when": "tomorrow 3:30 pm", "rings": ["-60m"]},
+        {"id": "b2", "what": "Call mum", "when": "Tue 9:00 am"},
+    ],
+}
+# columns: the path, the op, its value, whether the check holds
+RESULT_CHECKS = [
+    ("$", "mentions", "dentist", True),
+    ("$", "mentions", ["dentist", "9:00"], True),
+    ("$", "mentions", "plumber", False),
+    ("$", "not_mentions", "plumber", True),
+    ("summary", "eq", "Two things.", True),
+    ("items", "len", 2, True),
+    ("items.0.what", "eq", "Dentist", True),
+    ("items[1].what", "eq", "Call mum", True),
+    ("items[?what~dent].when", "mentions", "3:30", True),
+    ("items[?what=Dentist].rings", "contains", "-60m", True),
+    ("items[?what~call].rings", "exists", None, False),
+    ("items[?what~call].rings", "absent", None, True),
+    ("items[?what~plumber]", "exists", None, False),
+    ("items[*].id", "in", ["a1"], True),
+    ("items[?what~dent]", "ne", [], True),
+    ("items[?what~dent].when", "matches", r"\d:\d\d pm", True),
+]
+
+
+@pytest.mark.parametrize(("path", "op", "value", "holds"), RESULT_CHECKS)
+def test_a_result_check_selects_by_path_filter_and_op(
+    path: str, op: str, value: object, *, holds: bool
+) -> None:
+    """The path grammar (``$``, keys, indexes, ``[?field~text]``) and each op, on one result."""
+    why = exam.check_result(OUT, {"path": path, "op": op, "value": value})
+    assert (why is None) == holds, why
+
+
+def test_an_unknown_op_is_a_failure_of_the_item_not_a_crash() -> None:
+    """The runner reports it and goes on."""
+    assert "unknown result op" in str(exam.check_result(OUT, {"path": "$", "op": "bogus"}))
+
+
+def test_a_held_set_is_reported_by_id_alone(tmp_path: Path) -> None:
+    """The failure's reason would quote the item, so the held set's verdict does not carry it."""
+    shutil.copy(ITEMS / "bus-after-midnight.json", tmp_path)
+    shutil.copy(ITEMS / "bus-after-midnight.recording.json", tmp_path)
+    result = exam.score(tmp_path)
+    assert exam.verdict(result, detail=False) == ["FAIL bus-after-midnight"]
+    assert exam.verdict(result)[0].startswith("FAIL bus-after-midnight: ")
+
+
 def test_a_provider_call_the_recording_lacks_fails_the_item(tmp_path: Path) -> None:
     """The weather item with an empty recording: the call is missing, so the item fails."""
     shutil.copy(ITEMS / "weather-rest-of-today.json", tmp_path)

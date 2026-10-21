@@ -502,8 +502,8 @@ def _state_dir(item: Item) -> Path | None:
     for base in (BACKUPS, item.path.parent, REPO):
         if (base / name).is_dir():
             return Path(base / name)
-    msg = f"{item.id}: no state directory {name!r}"
-    raise SystemExit(msg)
+    msg = f"no state directory {name!r} (looked in the backups, beside the item, in the repo)"
+    raise LookupError(msg)
 
 
 def _ephemeral_weather_key(root: Path) -> dict[str, Any]:
@@ -696,29 +696,61 @@ def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
 # --- checking one item ---------------------------------------------------------------------------
 
 
-def _at(value: Any, path: str) -> tuple[bool, Any]:  # noqa: ANN401 - decoded JSON
-    """``(found, value)`` at a dotted path with list indexes."""
-    for part in path.split("."):
-        if (
-            isinstance(value, list)
-            and part.lstrip("-").isdigit()
-            and -len(value) <= int(part) < len(value)
-        ):
-            value = value[int(part)]
-        elif isinstance(value, dict) and part in value:
-            value = value[part]
-        else:
-            return False, None
-    return True, value
+_SEGMENT = re.compile(r"([^.\[\]]*)((?:\[[^\]]*\])*)")
+_BRACKET = re.compile(r"\[([^\]]*)\]")
 
 
-def _op(found: bool, got: Any, op: str, want: Any) -> bool:  # noqa: ANN401, PLR0911, C901, FBT001, PLR0912
-    if op == "exists":
-        return found
-    if op == "absent":
-        return not found
-    if not found:
-        return False
+def _key(c: Any, name: str) -> list[Any]:  # noqa: ANN401 - decoded JSON
+    """What a key (or, on a list, an index) reaches in one value."""
+    if isinstance(c, dict) and name in c:
+        return [c[name]]
+    if isinstance(c, list) and name.lstrip("-").isdigit() and -len(c) <= int(name) < len(c):
+        return [c[int(name)]]
+    return []
+
+
+def _bracket(rows: list[Any], inner: str) -> list[Any]:
+    """One ``[...]`` selector over a list: an index, ``*``, or a ``?field~text`` filter."""
+    if inner == "*":
+        return list(rows)
+    if inner.lstrip("-").isdigit():
+        return [rows[int(inner)]] if -len(rows) <= int(inner) < len(rows) else []
+    if inner.startswith("?") and ("~" in inner or "=" in inner):
+        field, sign, text = re.split(r"([~=])", inner[1:], maxsplit=1)
+        got = [str(r.get(field, "")) if isinstance(r, dict) else "" for r in rows]
+        same = (lambda g: text.casefold() in g.casefold()) if sign == "~" else (lambda g: g == text)
+        return [r for r, g in zip(rows, got, strict=True) if same(g)]
+    return []
+
+
+def _step(cands: list[Any], name: str, brackets: str) -> list[Any]:
+    """One path segment over every candidate: a key or index, then each ``[...]``."""
+    if name:
+        cands = [x for c in cands for x in _key(c, name)]
+    for inner in _BRACKET.findall(brackets):
+        cands = [x for c in cands if isinstance(c, list) for x in _bracket(c, inner)]
+    return cands
+
+
+def select(value: Any, path: str) -> list[Any]:  # noqa: ANN401 - decoded JSON
+    """Every value ``path`` reaches in a decoded result (none when it reaches nothing).
+
+    ``$`` is the whole result; segments are dotted keys; after a key come list selectors:
+    ``[2]`` an index, ``[*]`` every element, ``[?what~text]`` the elements whose ``what``
+    contains ``text`` (any case), ``[?what=text]`` those whose ``what`` is exactly ``text``.
+    """
+    cands = [value]
+    rest = path[1:].lstrip(".") if path.startswith("$") else path
+    for segment in rest.split(".") if rest else ():
+        match = _SEGMENT.fullmatch(segment)
+        if match is None:
+            return []
+        cands = _step(cands, match[1], match[2])
+    return cands
+
+
+def _holds(got: Any, op: str, want: Any) -> bool:  # noqa: ANN401, PLR0911, C901 - one op, one value
+    text = json.dumps(got, ensure_ascii=False)
     match op:
         case "eq":
             return bool(got == want)
@@ -726,8 +758,10 @@ def _op(found: bool, got: Any, op: str, want: Any) -> bool:  # noqa: ANN401, PLR
             return bool(got != want)
         case "contains":
             return want in got if isinstance(got, str | list | dict) else False
-        case "not_contains":
-            return want not in got if isinstance(got, str | list | dict) else False
+        case "mentions":  # the value's JSON text holds each of these words, in any case
+            return all(
+                w.casefold() in text.casefold() for w in ([want] if isinstance(want, str) else want)
+            )
         case "matches":
             return isinstance(got, str) and re.search(want, got) is not None
         case "in":
@@ -744,6 +778,40 @@ def _op(found: bool, got: Any, op: str, want: Any) -> bool:  # noqa: ANN401, PLR
             return bool(len(got) == want)
     msg = f"unknown result op {op!r}"
     raise ValueError(msg)
+
+
+_NEGATIVE = {
+    "ne": "eq",
+    "not_contains": "contains",
+    "not_mentions": "mentions",
+    "not_matches": "matches",
+}
+
+
+def check_result(out: Any, check: Mapping[str, Any]) -> str | None:  # noqa: ANN401 - decoded JSON
+    """Why a result fails one ``expect.result`` check, or None.
+
+    Ops: eq, contains, mentions, matches, in, gt, gte, lt, lte, len hold when any value the path
+    reaches holds; ne, not_contains, not_mentions, not_matches hold when none does; exists and
+    absent say whether the path reaches anything.
+    """
+    path, op, want = check["path"], check["op"], check.get("value")
+    got = select(out, path)
+    if op == "exists":
+        ok = bool(got)
+    elif op == "absent":
+        ok = not got
+    elif op in _NEGATIVE:
+        ok = not any(_holds(g, _NEGATIVE[op], want) for g in got)
+    else:
+        try:
+            ok = any(_holds(g, op, want) for g in got)
+        except ValueError as exc:
+            return str(exc)
+    if ok:
+        return None
+    shown = json.dumps(got[:2], ensure_ascii=False)[:160] if got else "nothing"
+    return f"result {path} {op} {want!r}: reached {shown}"
 
 
 def _rows(box: Box, db: str, sql: str) -> list[list[Any]]:
@@ -862,12 +930,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
         for p in expect.get("summary_must_not", ())
         if re.search(p, said)
     ]
-    for check in expect.get("result", ()):
-        found, got = _at(out, check["path"])
-        if not _op(found, got, check["op"], check.get("value")):
-            failures.append(
-                f"result {check['path']} {check['op']} {check.get('value')!r}: got {got!r}"
-            )
+    failures += [why for check in expect.get("result", ()) if (why := check_result(out, check))]
     failures += state_failures(box, expect.get("state_after", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
     if name := expect.get("checker"):
@@ -889,6 +952,14 @@ def run_one(item: Item) -> list[str]:
     return run_item(item)
 
 
+def _safely(run: Callable[[Item], list[str]], item: Item) -> list[str]:
+    """``run(item)``, or the item's failure when the run itself broke (a bad field, a boot)."""
+    try:
+        return run(item)
+    except Exception as exc:  # noqa: BLE001 - one broken item must not stop the exam
+        return [f"the run crashed: {type(exc).__name__}: {exc}"[:300]]
+
+
 def score(
     directory: Path,
     only: Sequence[str] = (),
@@ -905,7 +976,7 @@ def score(
     baseline: list[str] = (
         json.loads(base_file.read_text(encoding="utf-8")) if base_file.is_file() else []
     )
-    failed = {i.id: run(i) for i in items}
+    failed = {i.id: _safely(run, i) for i in items}
     failed = {k: v for k, v in failed.items() if v}
     ids = {i.id for i in items}
     return {
@@ -917,10 +988,16 @@ def score(
     }
 
 
-def verdict(result: Mapping[str, Any]) -> list[str]:
-    """What fails the gate: a failure outside the baseline, a baselined item that passes."""
+def verdict(result: Mapping[str, Any], *, detail: bool = True) -> list[str]:
+    """What fails the gate: a failure outside the baseline, a baselined item that passes.
+
+    Without ``detail`` (the held set) a failure is its id alone: why it failed would show the item.
+    """
     return (
-        [f"FAIL {i}: {'; '.join(result['failed'][i])[:300]}" for i in result["regressed"]]
+        [
+            f"FAIL {i}" + (f": {'; '.join(result['failed'][i])[:300]}" if detail else "")
+            for i in result["regressed"]
+        ]
         + [f"{i}: passes now; remove it from the baseline" for i in result["fixed"]]
         + [f"{i}: no such item; remove it from the baseline" for i in result["stale"]]
     )
@@ -983,14 +1060,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_record(args)
     only = [s for s in args.only.split(",") if s]
     result = score(args.items.expanduser(), only)
-    if args.cmd == "run":
+    held = args.items.name == "held"  # read only by its counts and ids
+    if args.cmd == "run" and not held:
         for ident, why in result["failed"].items():
             sys.stdout.write(f"FAIL {ident}\n" + "".join(f"  - {m}\n" for m in why))
     sys.stdout.write(
         f"items: {result['items']}   failing: {len(result['failed'])}"
         f"   regressed: {len(result['regressed'])}   fixed: {len(result['fixed'])}\n",
     )
-    problems = verdict(result)
+    problems = verdict(result, detail=not held)
     for line in problems:
         sys.stdout.write(line + "\n")
     return 1 if problems else 0
