@@ -828,7 +828,7 @@ def _horizons(conn: sqlite3.Connection) -> dict[str, int]:
     return newest
 
 
-def _app_names(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+def app_names(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     """The newest ``app_name`` row's fields of each bundle id (ADR 0304)."""
     return {
         str(row.fields["bundle_id"]): row.fields
@@ -852,7 +852,7 @@ def _screen_items(
             conn, imports.DEVICE_SOURCE, start_ms=window_start - BLOCK_REACH_MS, end_ms=window_end,
             kinds=(imports.DEVICE_APP,), by_prefix=True,
         )
-        names = _app_names(conn)
+        names = app_names(conn)
     by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_device[str(row.fields["device_id"])].append(row.fields)
@@ -937,7 +937,7 @@ def _record_items(
                 )
             ]
 
-        apps = {bundle: str(row.get("app") or bundle) for bundle, row in _app_names(conn).items()}
+        apps = {bundle: str(row.get("app") or bundle) for bundle, row in app_names(conn).items()}
         pods = fields(imports.RECORD_BLUETOOTH, whole=True)
         found = [
             *device_day.media_items(

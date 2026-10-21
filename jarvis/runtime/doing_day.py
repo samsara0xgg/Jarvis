@@ -7,6 +7,9 @@ lane, the stretches of the day before that run past its midnight: the same spans
 ids, as a sleep across midnight shows on both days. An answer about one of them is kept for the
 day it belongs to.
 
+Each stretch the page shows also tells where his attention went in it (ADR 0314,
+:func:`jarvis.state.attention.within`); a planned one, which has not happened, tells nothing.
+
 Layer rules: runtime may wire across layers.
 """
 
@@ -15,9 +18,11 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from jarvis.state import attention
 from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.doing import (
     DOING_KINDS,
+    PLANNED_KIND,
     WAKING_BED_REACH_MS,
     Doing,
     fact_spans,
@@ -32,6 +37,7 @@ if TYPE_CHECKING:
     from datetime import date, tzinfo
     from pathlib import Path
 
+    from jarvis.state.attention import Piece
     from jarvis.state.day_line import DayLine, DaySources
 
 
@@ -72,6 +78,8 @@ class DayDoing(NamedTuple):
     prior: Lane | None
     """The day before, when its waking part runs past this day's start; else None."""
     start_ms: int
+    pieces: list[Piece]
+    """Where his attention was through the stretches the page shows."""
 
     def before(self) -> list[dict[str, Any]]:
         """The day before's doing spans that run past this day's start, by start."""
@@ -87,7 +95,11 @@ class DayDoing(NamedTuple):
     def served(self, ids: Collection[str]) -> list[dict[str, Any]]:
         """The doing spans the page shows, holding only the items whose ids are in ``ids``."""
         return [
-            {**s, "item_ids": [i for i in s["item_ids"] if i in ids]}
+            {
+                **s, "item_ids": [i for i in s["item_ids"] if i in ids],
+                "attention": None if s["kind"] == PLANNED_KIND
+                else attention.within(self.pieces, s["start_ms"], s["end_ms"], {}),
+            }
             for s in (*self.before(), *self.own.doing.served)
         ]
 
@@ -108,7 +120,7 @@ def read_day_doing(  # noqa: PLR0913 — the stores, the day, its line and the c
 
     A day not over yet is read from ``items`` (nothing lies past now); one that is over, from its
     line folded six hours on. The day before is folded only when its waking part reaches past
-    ``day``'s start.
+    ``day``'s start. Where his attention was is read once, over the stretches both show.
     """
     zone = sources.zone
     start_ms, end_ms = day_window(day, zone)
@@ -123,7 +135,13 @@ def read_day_doing(  # noqa: PLR0913 — the stores, the day, its line and the c
         prior = Lane(before, before_items, read_doing(
             memory_db, before.isoformat(), before_items, before_start, before_end, now_ms,
         ))
-    return DayDoing(own, prior, start_ms)
+    told = DayDoing(own, prior, start_ms, [])
+    shown = [s for s in (*told.before(), *own.doing.served) if s["kind"] != PLANNED_KIND]
+    if not shown:
+        return told
+    return told._replace(pieces=attention.read(
+        sources, min(s["start_ms"] for s in shown), max(s["end_ms"] for s in shown),
+    ))
 
 
 __all__ = ["DayDoing", "Lane", "lane_line", "reach_past_start", "read_day_doing"]

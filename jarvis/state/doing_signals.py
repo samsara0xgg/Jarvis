@@ -45,6 +45,7 @@ from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import imports, timesink
+from jarvis.state.attention import mac_spans
 from jarvis.state.day_line import DaySources, shipped_conn
 from jarvis.state.event_log import iter_events_of_types
 from jarvis.state.phone_day import (
@@ -82,7 +83,6 @@ FOREGROUND_SLICE_MS: Final = 15 * 60_000
 MAX_FOREGROUND_ITEMS: Final = 5
 """The most apps, sites or documents a quarter hour names, those in front longest; the rest is
 summed as ``other``."""
-_FOREGROUND_TITLE_MAX_CHARS: Final = 30
 
 _MINUTE_MS: Final = 60_000
 _HALF_MINUTE_MS: Final = 30_000
@@ -285,49 +285,6 @@ def _touches(item: Mapping[str, Any], segment: Segment) -> bool:
 # --- the Mac's foreground ------------------------------------------------------------------
 
 
-def _cut(text: object) -> str:
-    line = " ".join(str(text or "").split())
-    cut = len(line) > _FOREGROUND_TITLE_MAX_CHARS
-    return line[: _FOREGROUND_TITLE_MAX_CHARS - 1].rstrip() + "…" if cut else line
-
-
-def _held(fields: Mapping[str, Any]) -> tuple[tuple[str, str], str]:
-    """What a span had in front, as (the key it is summed by, how it is named).
-
-    A site is summed by its domain, named with the first title seen; anything else by its
-    document, else its window title.
-    """
-    app = str(fields.get("appName") or "unknown app")
-    domain = str(fields.get("domain") or "")
-    if domain:
-        title = _cut(fields.get("title"))
-        return (app, domain), f"{app} {domain}" + (f" ({title})" if title else "")
-    what = _cut(fields.get("document") or fields.get("title"))
-    return (app, what), f"{app} {what}" if what and what != app else app
-
-
-def _foreground_spans(
-    shipped: sqlite3.Connection, start_ms: int, end_ms: int,
-) -> list[tuple[int, int, tuple[str, str], str, int]]:
-    """The Mac's spans touching ``[start_ms, end_ms)``: start, end, key, name, seconds typed."""
-    found: list[tuple[int, int, tuple[str, str], str, int]] = []
-    for row in imports.newest(
-        shipped, "timesink", start_ms=start_ms - FOREGROUND_SLICE_MS, end_ms=end_ms,
-        kinds=("span",), by_prefix=True,
-    ):
-        fields = row.fields
-        if fields.get("deviceID") is not None or not fields.get("start") or not fields.get("end"):
-            continue
-        lo, hi = (
-            round(datetime.fromisoformat(timesink.moment(str(fields[edge]))).timestamp() * 1000)
-            for edge in ("start", "end")
-        )
-        if hi > max(lo, start_ms):
-            key, name = _held(fields)
-            found.append((lo, hi, key, name, int(fields.get("keySeconds") or 0)))
-    return found
-
-
 def _quarter(held: Mapping[tuple[str, str], list[Any]]) -> str:
     """``Claude 一起看 8m typed 40s, WeChat Weixin 6m typed 110s, other 1m``."""
     ranked = sorted(held.values(), key=lambda one: -one[1])
@@ -357,7 +314,7 @@ def foreground(sources: DaySources, window: tuple[int, int]) -> list[tuple[int, 
         if conn is None:
             return []
         with closing(conn):
-            return _foreground_spans(conn, start, end)
+            return mac_spans(conn, start, end, FOREGROUND_SLICE_MS)
 
     none: list[tuple[int, int, tuple[str, str], str, int]] = []
     quarters: dict[int, dict[tuple[str, str], list[Any]]] = {}
