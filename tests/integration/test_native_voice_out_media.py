@@ -44,24 +44,26 @@ needs_swiftc = pytest.mark.skipif(
 
 
 def test_a_slow_settle_does_not_let_the_response_task_fail_the_turn_first(tmp_path: Path) -> None:
-    """The interrupt's settle is slow (ack not back); a response task reaching its end meanwhile."""
+    """The interrupt's ack stays out until the response task has reached its end meanwhile."""
     db_path = tmp_path / "slow.db"
     conn = open_event_log(db_path)
     provider = FakeProvider(candidate_count=1)
     provider.behaviors[("RSLOW", 0)] = Behavior(samples=24_000, final_delay_s=0.0)
     player = make_player()
     real_settle = player.settle_interrupted_generation
-    callers: list[object] = []
-    first_poll: list[float] = []
+    interrupt: list[object] = []
 
     def slow_settle(**kwargs: int) -> object:
-        """The first caller (the interrupt) waits for the ack; a second one is not slowed."""
+        """The first caller (the interrupt) gets no ack until the response task is done.
+
+        The response task closes its provider session as its last act, after the tombstone
+        sent it down its failure path: a closed session is the ack's cue, not a clock. A
+        second caller is not slowed.
+        """
         task = asyncio.current_task()
-        if not callers:
-            first_poll.append(time.monotonic())
-        if task not in callers:
-            callers.append(task)
-        if task is callers[0] and time.monotonic() - first_poll[0] < 0.3:
+        if not interrupt:
+            interrupt.append(task)
+        if task is interrupt[0] and not provider.closed:
             return None
         return real_settle(**kwargs)
 

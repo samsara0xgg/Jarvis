@@ -150,6 +150,7 @@ class FakeSession:
         self._closed = True
 
     async def close(self) -> None:
+        self._provider.closed.append(self._response_id)
         self._closed = True
 
 
@@ -167,6 +168,7 @@ class FakeProvider:
         self.reader_claims: dict[str, int] = {}
         self.provider_finals: list[tuple[str, int]] = []
         self.aborted: list[tuple[str, str]] = []
+        self.closed: list[str] = []  # response ids, in the order their sessions were closed
         self.actions: list[str] = []
         self.segment_gates: dict[tuple[str, int], threading.Event] = {}
         self.final_gates: dict[tuple[str, int], threading.Event] = {}
