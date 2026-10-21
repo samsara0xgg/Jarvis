@@ -11,6 +11,7 @@ Layer rules: stdlib and ``jarvis.shared`` only.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from dataclasses import dataclass, replace
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit
 
 from jarvis.shared import lang
+from jarvis.shared.receipts import Receipt, derive
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -199,6 +201,17 @@ def phrase(tool: str, arguments: object = None) -> str:
     return lang.t(f"step.{kind(tool, arguments)}.done")
 
 
+def _waiting(tool: str, arguments: object, status: str) -> str:
+    """A call that did not finish its job, in its own words: sent unconfirmed, or awaiting a pick.
+
+    The kind's name, then what is the case (ADR 0319, ADR 0231): never the past-tense phrase,
+    which would say it was done.
+    """
+    which = kind(tool, arguments)
+    name = lang.t("tool_status.generic") if which == "generic" else lang.t(f"step.{which}")
+    return f"{name}{_SEP}{lang.t(f'step.{status}')}"
+
+
 @dataclass(frozen=True)
 class Step:
     """One tool call of a turn, as it stands after the last row folded in."""
@@ -212,6 +225,8 @@ class Step:
     state: Literal["running", "done", "failed"]
     started_ms: int
     ended_ms: int | None
+    receipt: Receipt | None = None
+    """ADR 0319: the call's receipt, once it ended; ``None`` while it runs."""
 
     def frame(self) -> dict[str, Any]:
         """The ``step`` frame of ``/phone/ws``."""
@@ -280,24 +295,59 @@ class StepFold:
             self._open[action_id] = step
             return [step]
         if event.type in ENDS_ACTION:
-            self._proposed.pop(action_id, None)
+            proposal = self._proposed.pop(action_id, None)
             if (was := self._open.pop(action_id, None)) is None:
                 return []
-            failed = (
-                event.type != "action.result_observed"
-                or payload.get("semantics") == "error"
-                or bool(payload.get("error"))
-            )
-            return [replace(was, state="failed" if failed else "done", ended_ms=event.ts_epoch_ms)]
+            arguments = proposal[2] if proposal is not None else None
+            return [self._end(was, arguments, _receipt(was.tool, arguments, event), event)]
         turn = _turn(event)
         ended = [
-            replace(s, state="failed", ended_ms=event.ts_epoch_ms)
-            for s in self._open.values()
+            self._end(s, args := self._proposed.get(a, ("", "", None))[2], _receipt(
+                s.tool, args, None,
+            ), event)
+            for a, s in self._open.items()
             if s.turn_id == turn
         ]
         self._open = {a: s for a, s in self._open.items() if s.turn_id != turn}
         self._proposed = {a: p for a, p in self._proposed.items() if p[0] != turn}
         return ended
+
+    @staticmethod
+    def _end(was: Step, arguments: object, receipt: Receipt, event: Event) -> Step:
+        """``was`` as it stands once its call ended; a call still waiting says so in its label."""
+        said = (
+            _waiting(was.tool, arguments, receipt.status)
+            if receipt.status in ("pending", "needs_choice")
+            else None
+        )
+        return replace(
+            was,
+            label=said or was.label,
+            phrase=said or was.phrase,
+            state="failed" if receipt.status == "failed" else "done",
+            ended_ms=event.ts_epoch_ms,
+            receipt=receipt,
+        )
+
+
+def _receipt(tool: str, arguments: object, row: Event | None) -> Receipt:
+    """The receipt of a call that ended with ``row`` (``None``: its turn ended first; ADR 0319).
+
+    A result row carries the call's receipt. An old row has none, and a call that ended without
+    a result (refused, failed, timed out, cancelled, or cut off by its turn) never had one:
+    those are derived, failed with ``dont_retry`` where the call did not finish, and a result
+    row's own error code decides its kind.
+    """
+    payload = row.payload if row is not None else {}
+    if (raw := payload.get("receipt")) is not None:
+        with contextlib.suppress(ValueError):
+            return Receipt.from_json(raw)
+    given = _arguments(arguments)
+    if row is None or row.type != "action.result_observed":
+        return derive(tool, given, reads=False, code="no_result", failure="dont_retry")
+    if payload.get("semantics") == "error" or payload.get("error"):
+        return derive(tool, given, reads=False, code=str(payload.get("error") or "tool_error"))
+    return derive(tool, given, reads=False)
 
 
 def summarize(steps: Sequence[Step]) -> dict[str, Any]:

@@ -1022,6 +1022,9 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "step.lights": {"zh": "控制灯", "en": "Controlling the lights"},
     "step.lights.done": {"zh": "控制了灯", "en": "controlled the lights"},
     "step.generic.done": {"zh": "做了点事", "en": "did something"},
+    # ADR 0319: a call that is not done says where it stands, in place of its past tense.
+    "step.pending": {"zh": "已发出，还没确认", "en": "sent, not confirmed yet"},
+    "step.needs_choice": {"zh": "等你选", "en": "waiting for your pick"},
     "step.join": {"zh": "、", "en": ", "},
     "step.detail.to": {"zh": "去 {place}", "en": "to {place}"},
     "step.place.here": {"zh": "这里", "en": "here"},

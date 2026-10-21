@@ -390,13 +390,13 @@ def test_a_claim_with_no_call_goes_back_once_and_the_call_follows(tmp_path: Path
 
 
 def test_a_did_line_in_the_history_is_no_backing_for_a_claim_in_this_turn(tmp_path: Path) -> None:
-    """ADR 0267: an earlier turn's [You did: ...] is not a call; 「记下了」 now still goes back."""
+    """ADR 0319: an earlier turn's [Receipts: ...] is not a call; 「记下了」 now still goes back."""
     host = StepsHost(tmp_path)
     logged_tool_call(host, "T_old", "keep", {"text": "上周的事"}, take=0)
     append_record(host.memory, record_id="u0", source="allen", text="把上周的事记一下")
     answer_with_record(host, "T_old", "好。")
     history = history_of(host)
-    assert history[-1]["content"].endswith("好。\n[You did: saved a note]")
+    assert history[-1]["content"].endswith("好。\n[Receipts: ran keep(text=上周的事) (done)]")
     model = ScriptedModel("记下了。", tool_call(*MEMO), "好了，明天开会记在备忘录里了。")
     text, conn = guard_batch(tmp_path, model, history=history)
     try:

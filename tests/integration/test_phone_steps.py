@@ -12,9 +12,9 @@ and a resend behave as the HTTP route's do; (b) a turn's tool calls reach its ow
 ``step`` frames, running then done or failed, labelled from the table with a safe detail, in log
 order with the rows, for typed and spoken turns alike and never for another device's turn; (c) the
 conversation row of her answer carries the steps, read from the log; (d) the label table, as data,
-in both languages; (e) ADR 0267: the history rendered for the model puts a ``[You did: ...]`` line
-after an answer whose turn ran tools that worked, in English, and none after one that ran none or
-whose tools failed; an answer that copies the line has it cut from the history and the page.
+in both languages; (e) ADR 0319: the history rendered for the model puts a ``[Receipts: ...]`` line
+after an answer whose turn ran a tool, in English, a failed call as failed, and none after one
+that ran none; an answer that copies the line has it cut from the history and the page.
 """
 
 from __future__ import annotations
@@ -496,20 +496,15 @@ def test_every_kind_has_both_wordings() -> None:
             assert lang.t(f"step.{kind}.done", lang=language)
 
 
-def test_the_history_follows_an_answer_whose_turn_ran_tools_with_what_it_did(
+def test_the_history_follows_an_answer_whose_turn_ran_tools_with_its_receipts(
     tmp_path: Path,
 ) -> None:
-    """(e) ADR 0267: the line is English, on its own, only after a turn with a tool that worked."""
+    """(e) ADR 0319: the line is English, on its own, only after a turn that ran a tool."""
     lang.set_language("zh")  # the reader is the model: the line does not follow the setting
     host = StepsHost(tmp_path)
     logged_tool_call(host, "T1", "keep", {"text": "buy milk"}, take=0)
     logged_tool_call(host, "T1", "where_am_i", {}, take=0)
-    logged_tool_call(
-        host, "T1", "keep", {"text": "again"}, take=0
-    )  # a repeat of a kind is named once
-    logged_tool_call(
-        host, "T3", "web_search", {"query": "x"}, take=0, error="boom"
-    )  # failed: not listed
+    logged_tool_call(host, "T3", "web_search", {"query": "x"}, take=0, error="boom")
     append_record(host.memory, record_id="u1", source="allen", text="save a note")
     answer_with_record(host, "T1", "Noted.")
     append_record(host.memory, record_id="u2", source="allen", text="thanks")
@@ -517,10 +512,14 @@ def test_the_history_follows_an_answer_whose_turn_ran_tools_with_what_it_did(
     append_record(host.memory, record_id="u3", source="allen", text="search")
     answer_with_record(host, "T3", "The search failed.")
     contents = [turn["content"] for turn in history_of(host)]
-    assert contents[1].endswith("Noted.\n[You did: saved a note, checked where you are]")
+    assert contents[1].endswith(
+        "Noted.\n[Receipts: ran keep(text=buy milk) (done); ran where_am_i() (done)]",
+    )
     assert contents[3].endswith("You are welcome.")
-    assert contents[5].endswith("The search failed.")
-    assert sum("[You did:" in c for c in contents) == 1
+    assert contents[5].endswith(
+        "The search failed.\n[Receipts: web_search(query=x) gave error boom (failed)]",
+    )
+    assert sum("[Receipts:" in c for c in contents) == 2
 
 
 def test_a_line_she_copies_into_her_answer_is_cut_from_the_history_and_the_page(

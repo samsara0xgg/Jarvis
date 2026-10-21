@@ -240,6 +240,7 @@ def to_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             result = {
                 "type": "tool_result", "tool_use_id": safe_id(message.get("tool_call_id")),
                 "content": str(message.get("content") or ""),
+                **({"is_error": True} if message.get("is_error") else {}),
             }
             _push(out, "user", [result])
         elif role == "assistant":

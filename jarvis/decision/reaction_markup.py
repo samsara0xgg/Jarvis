@@ -5,7 +5,7 @@ the reply's text in pieces, as it streams, returns it without the tag, and keeps
 emoji. A tag that is cut by a piece boundary is held until it can be told from text; one that
 never closes, or holds more than an emoji can, is text after all and is given back as written.
 
-The same filter cuts a ``[You did: ...]`` line she copies from the history (ADR 0267): the
+The same filter cuts a ``[Receipts: ...]`` line she copies from the history (ADR 0319): the
 program writes that line, so it is no part of what she says, spoken, streamed or kept.
 """
 
@@ -22,13 +22,13 @@ _OPEN_RE: Final = re.compile(re.escape(_OPEN), re.IGNORECASE)
 _CLOSE_RE: Final = re.compile(re.escape(_CLOSE), re.IGNORECASE)
 _MAX_BODY: Final = 40
 """The longest tag body held back: a family or a flag-with-tags is under 30 characters."""
-_DID_OPEN: Final = "[You did: "
-_DID_MAX: Final = 600
-"""The longest ``[You did: ...]`` body held back; a longer one is text after all."""
+_RECEIPTS_OPEN: Final = "[Receipts: "
+_RECEIPTS_MAX: Final = 4000
+"""The longest ``[Receipts: ...]`` body held back; a longer one is text after all."""
 
 
-class _DidFilter:
-    """Cut ``[You did: ...]`` from text fed in pieces, holding a start the piece ends in."""
+class _ReceiptsFilter:
+    """Cut ``[Receipts: ...]`` from text fed in pieces, holding a start the piece ends in."""
 
     def __init__(self) -> None:
         self._held = ""
@@ -38,22 +38,22 @@ class _DidFilter:
         self._held = ""
         out: list[str] = []
         while text:
-            start = text.find(_DID_OPEN)
+            start = text.find(_RECEIPTS_OPEN)
             if start < 0:
-                cut = _partial(text, _DID_OPEN)
+                cut = _partial(text, _RECEIPTS_OPEN)
                 out.append(text[:cut])
                 self._held = text[cut:]
                 break
             out.append(text[:start])
-            body = text[start + len(_DID_OPEN) :]
+            body = text[start + len(_RECEIPTS_OPEN) :]
             end, newline = body.find("]"), body.find("\n")
-            if 0 <= end <= _DID_MAX and (newline < 0 or end < newline):
+            if 0 <= end <= _RECEIPTS_MAX and (newline < 0 or end < newline):
                 text = body[end + 1 :]  # the line is cut out
             elif newline >= 0:
-                out.append(_DID_OPEN + body[: newline + 1])  # a line break: it was text
+                out.append(_RECEIPTS_OPEN + body[: newline + 1])  # a line break: it was text
                 text = body[newline + 1 :]
-            elif len(body) > _DID_MAX:
-                out.append(_DID_OPEN)
+            elif len(body) > _RECEIPTS_MAX:
+                out.append(_RECEIPTS_OPEN)
                 text = body
             else:
                 self._held = text[start:]
@@ -74,15 +74,15 @@ class ReactionFilter:
         self.emoji: str | None = None
         self._held = ""
         self._body: str | None = None  # the text since an open tag, while inside one
-        self._did = _DidFilter()
+        self._receipts = _ReceiptsFilter()
 
     def feed(self, delta: str) -> str:
         """Append a delta; return the text now safe to use."""
-        return self._did.feed(self._cut_tag(delta))
+        return self._receipts.feed(self._cut_tag(delta))
 
     def finish(self) -> str:
         """End of the reply: whatever is still held is text, except a tag left open on an emoji."""
-        return self._did.feed(self._finish_tag()) + self._did.finish()
+        return self._receipts.feed(self._finish_tag()) + self._receipts.finish()
 
     def _cut_tag(self, delta: str) -> str:
         text = self._held + delta

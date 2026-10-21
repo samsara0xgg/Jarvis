@@ -1,6 +1,6 @@
 """ADR 0257: `<react>EMOJI</react>` in her reply is cut out and becomes her reaction.
 
-ADR 0267: a `[You did: ...]` line she copies from the history is cut out the same way.
+ADR 0319: a `[Receipts: ...]` line she copies from the history is cut out the same way.
 
 The filter is checked on its own, whole and split at every position; then through the real
 turn driver and a localhost peer shaped like /v1/responses, on a typed turn and a spoken one,
@@ -163,21 +163,21 @@ def test_a_reply_without_a_tag_has_no_reaction(tmp_path: Path) -> None:
     assert (result.response_plan.text, result.reaction) == ("到家就好。", None)
 
 
-DID_CASES = (
+RECEIPT_CASES = (
     # (reply, text left)
-    ("记下了。\n[You did: saved a note]", "记下了。\n"),
-    ("[You did: saved a note, checked where you are]好的。", "好的。"),
-    ("a [You did: x] b [You did: y] c", "a  b  c"),
-    (f"好<react>{THUMB}</react>[You did: x]的", "好的"),
-    ("[You did: no end", "[You did: no end"),
-    ("[You did: two\nlines] x", "[You did: two\nlines] x"),
-    ("[You did] and [You] and [You did: ", "[You did] and [You] and [You did: "),
-    ("[You did: " + "x" * 700 + "]", "[You did: " + "x" * 700 + "]"),
+    ("记下了。\n[Receipts: saved a note]", "记下了。\n"),
+    ("[Receipts: saved a note, checked where you are]好的。", "好的。"),
+    ("a [Receipts: x] b [Receipts: y] c", "a  b  c"),
+    (f"好<react>{THUMB}</react>[Receipts: x]的", "好的"),
+    ("[Receipts: no end", "[Receipts: no end"),
+    ("[Receipts: two\nlines] x", "[Receipts: two\nlines] x"),
+    ("[Receipts] and [You] and [Receipts: ", "[Receipts] and [You] and [Receipts: "),
+    ("[Receipts: " + "x" * 4100 + "]", "[Receipts: " + "x" * 4100 + "]"),
 )
 
 
-@pytest.mark.parametrize(("reply", "left"), DID_CASES)
-def test_a_copied_did_line_is_cut_whole_and_at_every_split(reply: str, left: str) -> None:
+@pytest.mark.parametrize(("reply", "left"), RECEIPT_CASES)
+def test_a_copied_receipts_line_is_cut_whole_and_at_every_split(reply: str, left: str) -> None:
     """The same text comes out however the reply is cut into pieces; an unfinished one is text."""
     whole = ReactionFilter()
     assert whole.feed(reply) + whole.finish() == left
@@ -188,17 +188,19 @@ def test_a_copied_did_line_is_cut_whole_and_at_every_split(reply: str, left: str
     assert split_reaction(reply)[0] == left
 
 
-def test_a_partial_did_line_is_held_back_and_never_leaks_into_a_piece() -> None:
+def test_a_partial_receipts_line_is_held_back_and_never_leaks_into_a_piece() -> None:
     """Mid-stream, no piece returned holds any part of a line that turned out to be one."""
     stream = ReactionFilter()
-    pieces = [stream.feed(part) for part in ("好的\n[You d", "id: saved a n", "ote]嗯")]
+    pieces = [stream.feed(part) for part in ("好的\n[Rece", "ipts: saved a n", "ote]嗯")]
     assert pieces == ["好的\n", "", "嗯"]
 
 
 @pytest.mark.parametrize("spoken", [True, False])
-def test_a_copied_did_line_is_not_spoken_streamed_or_emitted(tmp_path: Path, spoken: bool) -> None:  # noqa: FBT001
+def test_a_copied_receipts_line_is_not_spoken_streamed_or_emitted(
+    tmp_path: Path, spoken: bool,  # noqa: FBT001
+) -> None:
     """The peer cuts the line in pieces; chunks, the plan and the emitted answer hold none of it."""
-    reply = "好的，晚安。[You did: saved a note, checked where you are]再见。"
+    reply = "好的，晚安。[Receipts: saved a note, checked where you are]再见。"
     with SpokenPeer([[("final_answer", reply)]]) as peer:
         runtime = spoken_runtime(tmp_path, peer.url)
         intent = (
@@ -213,4 +215,4 @@ def test_a_copied_did_line_is_not_spoken_streamed_or_emitted(tmp_path: Path, spo
     assert emitted["text"] == "好的，晚安。再见。"
     if spoken:
         assert emitted["voice_text"] == "好的，晚安。再见。"
-    assert "You did" not in chunks + str(emitted)
+    assert "Receipts" not in chunks + str(emitted)

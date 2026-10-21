@@ -686,7 +686,10 @@ class LLMClient:
         elif self._provider == "openai":
             body.update({
                 _openai_token_key(self._base_url): max_tokens,
-                "messages": [{"role": "system", "content": system}, *copy.deepcopy(messages)],
+                "messages": [
+                    {"role": "system", "content": system},
+                    *_without_error_flags(copy.deepcopy(messages)),
+                ],
                 "stream_options": {"include_usage": True},
             })
             if tools:
@@ -814,7 +817,7 @@ class LLMClient:
         client = self._get_openai_client()
 
         oai_messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        oai_messages.extend(messages)
+        oai_messages.extend(_without_error_flags(messages))
 
         openai_tools = _tools_to_openai(tools) if tools else None
 
@@ -1166,6 +1169,11 @@ def _logged_settle(
         return owner(disposition)
 
     return settled
+
+
+def _without_error_flags(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The history without ``is_error`` (ADR 0319): only Anthropic's ``tool_result`` takes it."""
+    return [{k: v for k, v in m.items() if k != "is_error"} for m in messages]
 
 
 def _tool_names(tools: list[dict[str, Any]] | None) -> list[str]:

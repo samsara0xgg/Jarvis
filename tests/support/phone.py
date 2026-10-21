@@ -43,7 +43,7 @@ from jarvis.state.event_log import (
 )
 from jarvis.state.memory_db import append_record, conversation_rows, render_context
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.state.turn_steps import answer_did
+from jarvis.state.turn_steps import answer_receipts
 from jarvis.surface import voice_media, voice_tts
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -1104,13 +1104,13 @@ def frames_of(phone: FakePhone, kind: str) -> list[dict[str, Any]]:
 
 
 def history_of(host: StepsHost) -> list[dict[str, Any]]:
-    """The history the model gets, with the line of what each answer did read from the log."""
+    """The history the model gets, with the receipts line of each answer read from the log."""
 
-    def did(ids: Sequence[str]) -> dict[str, str]:
+    def receipts(ids: Sequence[str]) -> dict[str, str]:
         conn = open_event_log(host.log)
         try:
-            return answer_did(conn, ids)
+            return answer_receipts(conn, ids)
         finally:
             conn.close()
 
-    return list(render_context(host.memory, exclude_id="", did=did).history)
+    return list(render_context(host.memory, exclude_id="", receipts=receipts).history)

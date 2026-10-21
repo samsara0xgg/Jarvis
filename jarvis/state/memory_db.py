@@ -241,10 +241,11 @@ _ENVELOPE_TAG_RE: Final[re.Pattern[str]] = re.compile(
 # Six answers of 2026-09-22..25 open with the "[ts] source:" history label
 # the model copied from its prompt (ADR 0044); the prompt shows the words.
 _COPIED_LABEL_RE: Final[re.Pattern[str]] = re.compile(r"^\[\d{4}-\d\d-\d\dT[^\]\n]*\] \w+: ")
-# The line the program puts after an answer whose turn ran tools (ADR 0267); an answer that
-# copies it is not what she did, so it is cut from what is shown and replayed.
-_DID_MARK: Final = "[You did: "
-_DID_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*\[You did: [^\]\n]*\]")
+# The line the program puts after an answer whose turn has receipts (ADR 0319, which replaced
+# the "[You did: ...]" line of ADR 0267); an answer that copies either is not what she did, so
+# it is cut from what is shown and replayed.
+_RECEIPTS_MARK: Final = "[Receipts: "
+_RECEIPTS_RE: Final[re.Pattern[str]] = re.compile(r"[ \t]*\[(?:Receipts|You did): [^\]\n]*\]")
 
 # One transcript row: (id, ts, source, text).
 Record = tuple[str, str, str, str]
@@ -836,8 +837,8 @@ def _records_after(conn: sqlite3.Connection, anchor: int) -> list[Record]:
 def _plain(text: str) -> str:
     """A record's text without the retired envelope tags, stray HTML, a copied label or marker."""
     text = _COPIED_LABEL_RE.sub("", text)
-    if _DID_MARK in text:
-        text = _DID_RE.sub("", text).strip()
+    if _RECEIPTS_MARK in text or "[You did: " in text:
+        text = _RECEIPTS_RE.sub("", text).strip()
     return strip_html(_ENVELOPE_TAG_RE.sub("", text)).strip() if "<" in text else text
 
 
@@ -926,8 +927,8 @@ PictureFileId = Callable[[str], str | None]
 """ADR 0255: an attachment id -> the id its picture has at the provider, or ``None`` when it
 cannot ride (the file is gone, or could not be sent). It may upload."""
 
-DidOf = Callable[[Sequence[str]], Mapping[str, str]]
-"""ADR 0267: answer record ids -> what each answer's turn did, for those whose turn ran a tool."""
+ReceiptsOf = Callable[[Sequence[str]], Mapping[str, str]]
+"""ADR 0319: answer record ids -> one line of the receipts of each answer's turn, if it has any."""
 
 
 def _image_links(conn: sqlite3.Connection, anchor: int) -> dict[str, list[str]]:
@@ -960,11 +961,11 @@ def _riding(
 def _append_records(
     turns: list[dict[str, Any]], shown: Sequence[Record], sent: Mapping[str, str],
     riding: Mapping[str, Sequence[tuple[str, str]]] | None = None,
-    did: Mapping[str, str] | None = None,
+    receipts: Mapping[str, str] | None = None,
 ) -> None:
     """Each record as its message: as sent when kept, else its words, a day marker on a new day.
 
-    An answer in ``did`` is followed by ``[You did: ...]`` on a line of its own (ADR 0267).
+    An answer in ``receipts`` is followed by ``[Receipts: ...]`` on a line of its own (ADR 0319).
 
     A record of his with pictures in ``riding`` carries them after his words as ``image_file``
     parts; the note of a picture that rides is left out, since the picture says more (ADR 0255).
@@ -993,15 +994,15 @@ def _append_records(
                 *({"type": "image_file", "file_id": found} for _, found in pictures),
             ],
         )
-        if did and record_id in did:
-            _append_turn(turns, role, f"{_DID_MARK}{did[record_id]}]")
+        if receipts and record_id in receipts:
+            _append_turn(turns, role, f"{_RECEIPTS_MARK}{receipts[record_id]}]")
 
 
 def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     path: Path, *, exclude_id: str, since: str = "", now: datetime | None = None,
     recent: int = 0, context: str = "rolling", raw_max_chars: int = 40000,
     ledger: Ledger | None = None, places: PlacesBlock | None = None,
-    pictures: PictureFileId | None = None, did: DidOf | None = None,
+    pictures: PictureFileId | None = None, receipts: ReceiptsOf | None = None,
     also_exclude: Collection[str] = (),
 ) -> MemoryContext:
     """Render the decision-path prompt blocks in one consistent read.
@@ -1039,8 +1040,9 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
     :data:`HISTORY_PICTURES` in the window for which it returns a file id. Without it history
     is words only, as before.
 
-    ``did`` (ADR 0267) is asked, once, for the answers shown; each answer whose turn ran tools
-    is followed by a ``[You did: ...]`` line of its own, in the same ``assistant`` message.
+    ``receipts`` (ADR 0319) is asked, once, for the answers shown; each answer whose turn has
+    receipts is followed by a ``[Receipts: ...]`` line of its own, in the same ``assistant``
+    message.
     """
     moment = now or local_now()
     with closing(open_memory_db(path)) as conn:
@@ -1105,7 +1107,7 @@ def render_context(  # noqa: PLR0913 — one read, two layouts, one render.
         )
         shown = shown[hidden:]
     riding = _riding(shown, links, pictures) if pictures is not None else None
-    done = did([r[0] for r in shown if r[2] == "jarvis"]) if did is not None else None
+    done = receipts([r[0] for r in shown if r[2] == "jarvis"]) if receipts is not None else None
     _append_records(turns, shown, sent, riding, done)
     last_ts = shown[-1][1] if shown else None
     if not shown:

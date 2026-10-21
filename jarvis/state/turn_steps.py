@@ -10,9 +10,10 @@ Layer rules: stdlib, ``jarvis.shared`` and ``jarvis.state`` only.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from jarvis.shared import lang
+from jarvis.shared.receipts import Receipt, said
 from jarvis.shared.steps import Step, StepFold, summarize
 from jarvis.state.event_log import turn_action_events, turns_of_events
 
@@ -46,23 +47,83 @@ def answer_steps(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[s
     return {uid: summaries[turn] for uid, turn in turns.items() if summaries.get(turn)}
 
 
-def answer_did(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[str, str]:
-    """``{answer event uid: what the turn did}`` for the answers whose turn ran a tool that worked.
+def turn_receipts(
+    conn: sqlite3.Connection, turn_ids: Iterable[str],
+) -> dict[str, tuple[Receipt, ...]]:
+    """``{turn id: its receipts in call order}`` (ADR 0319), read from the Event Log.
 
-    The distinct past-tense phrases of the steps that succeeded, in order, always in English: the
-    reader is the model (ADR 0267), whatever language he is spoken to in. A step that failed or
-    never ended is left out, so is a turn with none left.
+    The projection by turn, folded by the same :class:`~jarvis.shared.steps.StepFold` as the
+    steps: a call has its receipt once it ended (a call still running has none yet), and an old
+    row without one folds to a derived receipt. A turn with none is left out.
     """
-    turns, last = _folded(conn, answer_uids)
-    did = {
-        turn: ", ".join(
-            dict.fromkeys(
-                lang.t(f"step.{s.kind}.done", lang="en") for s in by_n.values() if s.state == "done"
-            ),
-        )
+    turns = list(dict.fromkeys(turn_ids))
+    last: dict[str, dict[int, Step]] = {}
+    fold = StepFold()
+    for event in turn_action_events(conn, turns):
+        for step in fold.feed(event):
+            last.setdefault(step.turn_id, {})[step.n] = step
+    return {
+        turn: tuple(s.receipt for _, s in sorted(by_n.items()) if s.receipt is not None)
         for turn, by_n in last.items()
+        if any(s.receipt is not None for s in by_n.values())
     }
-    return {uid: did[turn] for uid, turn in turns.items() if did.get(turn)}
+
+
+def answer_receipts(
+    conn: sqlite3.Connection, answer_uids: Iterable[str],
+) -> dict[str, str]:
+    """``{answer event uid: its turn's receipts as one line}`` for the answers whose turn has any.
+
+    The line is each receipt's sentence, object and status (:func:`jarvis.shared.receipts.said`),
+    in call order, always in English: the reader is the model (ADR 0319, which replaced the
+    ``[You did: ...]`` of ADR 0267), whatever language he is spoken to in.
+    """
+    turns = turns_of_events(conn, answer_uids)
+    by_turn = turn_receipts(conn, set(turns.values()))
+    return {
+        uid: "; ".join(said(r) for r in by_turn[turn])
+        for uid, turn in turns.items()
+        if turn in by_turn
+    }
+
+
+@dataclass(frozen=True)
+class ObjectReceipt:
+    """The latest receipt that touched an object: which turn, which call, and when."""
+
+    object: str
+    receipt: Receipt
+    turn_id: str
+    tool: str
+    ts_ms: int
+
+
+def object_receipts(conn: sqlite3.Connection) -> dict[str, ObjectReceipt]:
+    """``{object: its latest receipt}`` (ADR 0319), the projection by object.
+
+    Every result row whose receipt names an object, the later one winning, with the turn and the
+    tool of the call it came from. A receipt that cannot be read is skipped.
+    """
+    rows = conn.execute(
+        "SELECT o.payload_json, o.ts_epoch_ms, p.payload_json, p.correlation_id FROM events o "
+        "JOIN events p ON p.type = 'action.proposed' "
+        "AND json_extract(p.payload_json, '$.action_id') "
+        "= json_extract(o.payload_json, '$.action_id') "
+        "WHERE o.type = 'action.result_observed' "
+        "AND json_extract(o.payload_json, '$.receipt.object') IS NOT NULL ORDER BY o.id",
+    )
+    latest: dict[str, ObjectReceipt] = {}
+    for result, ts_ms, proposed, turn in rows:
+        try:
+            receipt = Receipt.from_json(json.loads(result)["receipt"])
+        except (ValueError, KeyError):
+            continue
+        if receipt.object is not None:
+            latest[receipt.object] = ObjectReceipt(
+                receipt.object, receipt, str(turn or ""),
+                str(json.loads(proposed).get("tool_name") or ""), int(ts_ms),
+            )
+    return latest
 
 
 def answer_places(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[str, list[Any]]:

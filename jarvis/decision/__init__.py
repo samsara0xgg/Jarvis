@@ -128,6 +128,7 @@ from jarvis.shared.lang import action, is_filler, letter_to, reply_language, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
+from jarvis.shared.receipts import only_reads, said
 from jarvis.shared.text import is_english, truncate_utf8
 from jarvis.shared.tool_discovery import native_catalog
 from jarvis.state import reactions
@@ -141,6 +142,7 @@ from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, get_event, iter_events_for_turn
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.turn_overlap import TurnInFlight, folded_tool_calls, turns_in_flight, words_since
+from jarvis.state.turn_steps import turn_receipts
 
 if TYPE_CHECKING:
     import sqlite3
@@ -251,16 +253,18 @@ def _check_response_cancelled(ctx: DecideContext, where: str) -> None:
         ctx.cancellation_checkpoint(where)
 
 
-def _hold_for_next_words(ctx: DecideContext, where: str, *, tool_name: str | None = None) -> None:
+def _hold_for_next_words(
+    ctx: DecideContext, where: str, *, call: ActionRequest | None = None,
+) -> None:
     """Hold what leaves her (ADR 0272) until his held turn is past; reads may go ahead.
 
-    The answer's sentences, and any tool that is not ``read_only``, wait for the turn's
+    The answer's sentences, and any call that does not only read, wait for the turn's
     release time: if his next words arrive meanwhile, the run is cancelled and none of it
-    ever left. A read-only tool runs at once, so the answer is ready when the hold ends.
+    ever left. A call that only reads runs at once, so the answer is ready when the hold ends.
     """
-    if tool_name is not None:
-        tool_def = _find_tool_def(ctx.tool_registry, tool_name)
-        if tool_def is not None and tool_def.read_only:
+    if call is not None:
+        tool_def = _find_tool_def(ctx.tool_registry, call.tool_name)
+        if tool_def is not None and only_reads(tool_def, call.arguments):
             _check_response_cancelled(ctx, where)
             return
     waiting_since = time.monotonic_ns()
@@ -445,6 +449,11 @@ class ToolLike(Protocol):
     @property
     def read_only(self) -> bool:
         """The tool changes nothing durable (ADR 0240 reads it to tell a repeat from a retry)."""
+        ...
+
+    @property
+    def reads(self) -> Callable[[Mapping[str, Any]], bool] | None:
+        """ADR 0319: whether a call with these arguments only reads; ``None``: ``read_only``."""
         ...
 
 
@@ -1100,8 +1109,13 @@ def _earlier_turns_in_flight(
     )
 
 
-def _turns_in_flight_line(earlier: tuple[TurnInFlight, ...]) -> str | None:
-    """Name the user's earlier questions another turn is still answering."""
+def _turns_in_flight_line(
+    earlier: tuple[TurnInFlight, ...], conn: sqlite3.Connection,
+) -> str | None:
+    """Name the user's earlier questions another turn is still answering.
+
+    Under them, what each of those turns has already done: its receipts so far (ADR 0319).
+    """
     if not earlier:
         return None
     now_ms = _now_epoch_ms()
@@ -1109,10 +1123,22 @@ def _turns_in_flight_line(earlier: tuple[TurnInFlight, ...]) -> str | None:
         f'"{turn.words}" (asked {max(0, now_ms - turn.asked_ms) // 1000} s ago)'
         for turn in earlier
     )
-    return (
+    line = (
         f"Still being answered in another turn: {asked}. That answer will be spoken "
         "when it is ready. Answer only what the user just said; do not answer or look "
         "up the earlier question again."
+    )
+    done = turn_receipts(conn, [turn.turn_id for turn in earlier])
+    return "\n".join(
+        [
+            line,
+            *(
+                f'Done so far for "{turn.words}": '
+                + "; ".join(said(receipt) for receipt in done[turn.turn_id])
+                for turn in earlier
+                if turn.turn_id in done
+            ),
+        ],
     )
 
 
@@ -1191,7 +1217,7 @@ def _current_status_block(packet: SituationPacket, ctx: DecideContext) -> str | 
                 frozenset(turn.turn_id for turn in earlier),
                 functools.partial(_answered_by_reaction, ctx.conn),
             ),
-            _turns_in_flight_line(earlier),
+            _turns_in_flight_line(earlier, ctx.conn),
             _done_for_thought_line(packet, ctx),
             format_pending_confirmation_note(packet),
             format_pending_clarification_note(packet),
@@ -2159,7 +2185,7 @@ def _run_tier0_path(
         action_id=action_id,
         tool_name=hit.tool_name,
     )
-    _hold_for_next_words(ctx, "before tool dispatch", tool_name=hit.tool_name)
+    _hold_for_next_words(ctx, "before tool dispatch", call=action_request)
     result = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
@@ -2269,7 +2295,9 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         # dispatched, and the model is told why, as for an unknown tool, so it can call again.
         LOGGER.warning("decide(): a call to %s was not run: %s", name, arguments)
         messages.append(
-            _tool_result_message(call_id=call_id, content=json.dumps({"error": arguments}))
+            _tool_result_message(
+                call_id=call_id, content=json.dumps({"error": arguments}), is_error=True,
+            )
         )
         return "continue"
 
@@ -2284,6 +2312,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
             _tool_result_message(
                 call_id=call_id,
                 content=_repeat_refused(ctx, scratch, name, repeated),
+                is_error=tool_def is None,
             )
         )
         return "continue"
@@ -2395,7 +2424,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     if gate_outcome != "pass":
         # Refuse / confirm — inject a tool result explaining the refusal
         # and let the LLM adapt. Day-1 scenario should not hit this.
-        scratch.calls.append(TurnCall(name, tool_def.read_only, ok=False, key=key))
+        scratch.calls.append(TurnCall(name, only_reads(tool_def, arguments), ok=False, key=key))
         messages.append(
             _tool_result_message(
                 call_id=call_id,
@@ -2406,6 +2435,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
                         "reasons": gate_reasons,
                     }
                 ),
+                is_error=True,
             )
         )
         return "continue"
@@ -2430,7 +2460,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         action_id=action_id,
         tool_name=name,
     )
-    _hold_for_next_words(ctx, "before tool dispatch", tool_name=name)
+    _hold_for_next_words(ctx, "before tool dispatch", call=action_request)
     result = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
@@ -2465,14 +2495,24 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     loaded = result.payload.get("loaded_tools") if result.error is None else None
     if isinstance(loaded, list):
         scratch.loaded_tools.update(str(n) for n in loaded)
+    receipt = result.receipt
     scratch.calls.append(
-        TurnCall(name, tool_def.read_only, ok=result.error is None, key=key),
+        TurnCall(
+            name,
+            receipt.reads_only if receipt is not None else only_reads(tool_def, arguments),
+            ok=receipt.ok if receipt is not None else result.error is None,
+            key=key,
+        ),
     )
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
     messages.append(
-        _tool_result_message(call_id=call_id, content=_render_result_for_llm(result)),
+        _tool_result_message(
+            call_id=call_id,
+            content=_render_result_for_llm(result),
+            is_error=receipt is not None and receipt.status == "failed",
+        ),
     )
     return "continue"
 
@@ -4301,7 +4341,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         action_id=action_id,
         tool_name=tool_name,
     )
-    _hold_for_next_words(ctx, "before tool dispatch", tool_name=tool_name)
+    _hold_for_next_words(ctx, "before tool dispatch", call=action_request)
     try:
         result = ctx.tool_registry.dispatch(
             action_request,
@@ -4468,13 +4508,18 @@ def _assistant_text_message(text: str) -> dict[str, Any]:
     return {"role": "assistant", "content": text}
 
 
-def _tool_result_message(*, call_id: str, content: str) -> dict[str, Any]:
-    """Build a tool-result message (OpenAI ``role=tool``)."""
-    return {
+def _tool_result_message(*, call_id: str, content: str, is_error: bool = False) -> dict[str, Any]:
+    """Build a tool-result message (OpenAI ``role=tool``).
+
+    ``is_error`` marks the result of a failed call (ADR 0319); Anthropic's ``tool_result``
+    carries it, the other providers' adapters leave it out.
+    """
+    message = {
         "role": "tool",
         "tool_call_id": call_id,
         "content": content,
     }
+    return {**message, "is_error": True} if is_error else message
 
 
 def _latest_event_uid_of_type(

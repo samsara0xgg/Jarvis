@@ -267,10 +267,10 @@ from jarvis.state.event_log import (
 from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
 from jarvis.state.locate_wait import LocateWaits
 from jarvis.state.memory_db import (
-    DidOf,
     MemorySettings,
     PictureFileId,
     PlacesBlock,
+    ReceiptsOf,
     SessionSettings,
     append_record,
     open_memory_db,
@@ -283,7 +283,7 @@ from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX, shares_li
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
-from jarvis.state.turn_steps import answer_did
+from jarvis.state.turn_steps import answer_receipts
 from jarvis.state.voice_settings import VoiceSettings
 from jarvis.state.voiceprint import VoiceprintBook
 from jarvis.surface.ambient_sounds import AmbientSounds
@@ -3633,7 +3633,7 @@ def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, pro
                 ledger=runtime.ledger,
                 places=runtime.places_block,
                 pictures=_history_pictures(runtime, llm_client),
-                did=_history_did(runtime),
+                receipts=_history_receipts(runtime),
             ).history
             with contextlib.closing(
                 open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -4650,19 +4650,19 @@ def _history_pictures(runtime: JarvisRuntime, client: LLMClient) -> PictureFileI
     return runtime.picture_files.resolver(client)
 
 
-def _history_did(runtime: JarvisRuntime) -> DidOf:
-    """ADR 0267: how history learns what the turn behind an answer did, from the Event Log."""
+def _history_receipts(runtime: JarvisRuntime) -> ReceiptsOf:
+    """ADR 0319: how history learns the receipts of the turn behind an answer, from the log."""
 
-    def did(answer_ids: Sequence[str]) -> Mapping[str, str]:
+    def receipts(answer_ids: Sequence[str]) -> Mapping[str, str]:
         path = runtime.runtime_paths.event_log
         try:
             with contextlib.closing(open_runtime_event_log(path)) as conn:
-                return answer_did(conn, answer_ids)
+                return answer_receipts(conn, answer_ids)
         except sqlite3.Error:
-            LOGGER.warning("history: what its answers did could not be read", exc_info=True)
+            LOGGER.warning("history: the receipts of its answers could not be read", exc_info=True)
             return {}
 
-    return did
+    return receipts
 
 
 def _record_attachments(
@@ -5052,7 +5052,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 pictures=timer.timed("pictures", _history_pictures(
                     runtime, run.request_client if run is not None else runtime.llm_client,
                 )),
-                did=timer.timed("did", _history_did(runtime)),
+                receipts=timer.timed("receipts", _history_receipts(runtime)),
                 also_exclude=folded,
             )
             if memory is not None
