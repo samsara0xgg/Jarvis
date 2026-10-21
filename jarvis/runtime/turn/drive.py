@@ -56,7 +56,7 @@ from jarvis.runtime.turn.finish import (
     turn_places,
     turn_times,
 )
-from jarvis.runtime.turn.start import new_turn_id, start_drive_turn_response
+from jarvis.runtime.turn.start import start_drive_turn_response
 from jarvis.runtime.turn.wait import (
     TriggerWaitTimeout,
     TurnSuspended,
@@ -74,7 +74,7 @@ from jarvis.state.event_log import latest_id
 from jarvis.state.memory_db import append_record, record_sent, render_context
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
-from jarvis.surface.cli import emit_surface_user_intent, record_pre_emit_token
+from jarvis.surface.cli import record_pre_emit_token
 from jarvis.surface.cli_render import render_response
 
 if TYPE_CHECKING:
@@ -93,66 +93,9 @@ LOGGER = logging.getLogger(__name__)
 _ALLEN_TALKING_CEILING_S: Final[float] = 60.0
 
 
-# Default per-turn iteration ceiling. Protects ``run_turn`` from a stuck
+# Default per-turn iteration ceiling. Protects ``drive_turn`` from a stuck
 # trigger chain. 50 is ample headroom.
 _DEFAULT_MAX_ITERATIONS: int = 50
-
-
-def run_turn(
-    runtime: JarvisRuntime,
-    *,
-    utterance: str,
-    turn_id: str | None = None,
-    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-    trigger_timeout_s: float | None = None,
-) -> RunTurnResult:
-    """Drive one conversation turn end-to-end (CLI / scenario entrypoint).
-
-    Steps (spec §3.4.1 multi-trigger loop):
-
-    1. Mint or accept a ``turn_id`` (composition root owns this; L3
-       sees the same id on the trace correlation).
-    2. Emit ``surface.user_intent`` via L5 surface adapter (spec
-       §3.6.1) — this is the first trigger event.
-    3. Delegate the post-emit body to :func:`drive_turn`, which drives
-       the L3 decide loop, runs the stash-pop finalizer, and renders
-       the final :class:`ResponsePlan` across the surfaces dictated by
-       the L3 Attention Policy.
-
-    The split into :func:`run_turn` (emit + delegate) and
-    :func:`drive_turn` (post-emit body) exists so non-CLI surfaces can
-    drive a turn without re-emitting ``surface.user_intent``. The
-    daemon HTTP handler (ADR-0003 Step 7) writes the intent event from
-    the request body, and the daemon watcher (Step 8) picks it up and
-    calls :func:`drive_turn` directly — both bypass :func:`run_turn`.
-
-    Args:
-        runtime: Assembled :class:`JarvisRuntime`.
-        utterance: User text to drive the turn.
-        turn_id: Optional explicit turn id (tests). Default: minted.
-        max_iterations: Hard ceiling on decide() invocations.
-        trigger_timeout_s: Explicit per-trigger wait timeout. ``None``
-            (production) resolves per iteration via
-            :func:`trigger_wait_budget`.
-
-    Returns:
-        Frozen :class:`RunTurnResult` describing what was written and
-        the events emitted.
-    """
-    effective_turn_id = turn_id if turn_id is not None else new_turn_id()
-
-    utterance_event = emit_surface_user_intent(
-        runtime.conn,
-        transcript=utterance,
-        turn_id=effective_turn_id,
-    )
-
-    return drive_turn(
-        runtime,
-        user_intent_event=utterance_event,
-        max_iterations=max_iterations,
-        trigger_timeout_s=trigger_timeout_s,
-    )
 
 
 def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract, and every ResponseRun branch is flag-guarded.
@@ -168,16 +111,15 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
 ) -> RunTurnResult:
     """Drive the post-emit body of one turn from an already-emitted intent event.
 
-    Same body as the pre-extract ``run_turn`` (decide loop + finalize +
-    render). The ``surface.user_intent`` event is supplied externally;
+    The decide loop, the finalize and the render of one turn. The
+    ``surface.user_intent`` event is supplied externally;
     :func:`drive_turn` does NOT re-emit it. The effective ``turn_id``
     is read from ``user_intent_event.payload["turn_id"]``.
 
     The caller is responsible for emitting ``surface.user_intent``
-    first. This function exists so non-CLI surfaces — specifically the
-    ADR-0003 daemon HTTP handler (writes the intent) and the daemon
-    watcher (picks it up and drives) — can drive a turn from a
-    pre-emitted event without double-emitting and looping the watcher.
+    first: the daemon's submit handler writes it and its intent pump
+    picks it up and drives, so a turn is never emitted twice and the
+    watcher never loops on it.
 
     Steps (spec §3.4.1 multi-trigger loop):
 

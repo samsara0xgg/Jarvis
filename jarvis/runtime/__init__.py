@@ -122,7 +122,7 @@ if TYPE_CHECKING:
 class JarvisRuntime:
     """Assembled runtime — every cross-layer wire lives here.
 
-    Frozen so the composition root can hand it across to ``run_turn``
+    Frozen so the composition root can hand it across to ``drive_turn``
     and tests / canary scans without worrying about mutation. The
     ``conn`` field is the only mutable resource by nature
     (``sqlite3.Connection``); everything else is immutable values —
@@ -138,7 +138,7 @@ class JarvisRuntime:
     L5 :class:`SurfaceState` is deliberately not a field here.
     Per spec §3.6.7 (Inherent boundaries), local surface state has no
     truth, doesn't survive across turns, and doesn't affect decisions —
-    so ``run_turn`` allocates a fresh empty :class:`SurfaceState`
+    so ``drive_turn`` allocates a fresh empty :class:`SurfaceState`
     locally each invocation and discards it after
     :func:`jarvis.surface.cli_render.render_response`.
 
@@ -307,7 +307,7 @@ class JarvisRuntime:
 
 @dataclass(frozen=True)
 class RunTurnResult:
-    """Outcome of :func:`~jarvis.runtime.turn.drive.run_turn` for one conversation turn.
+    """Outcome of :func:`~jarvis.runtime.turn.drive.drive_turn` for one conversation turn.
 
     Attributes:
         response_text: The exact text the surface adapter wrote to

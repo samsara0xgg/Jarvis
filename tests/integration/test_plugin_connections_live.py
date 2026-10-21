@@ -8,8 +8,10 @@ from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import load_env_file
 from jarvis.runtime import JarvisRuntime
-from jarvis.runtime.turn.drive import drive_turn, run_turn
+from jarvis.runtime.turn.drive import drive_turn
+from jarvis.runtime.turn.start import new_turn_id
 from jarvis.state.event_log import get_event
+from jarvis.surface.cli import emit_surface_user_intent
 from tests.support.mcp import ECHO
 from tests.support.plugin_connections import make_service, wait_for_request, write_package
 from tests.support.runtime_config import runtime_config
@@ -39,11 +41,12 @@ def test_conversation_opens_plugin_and_resumes_with_live_tool(
         plugin_connections=service,
     )
     try:
-        first = run_turn(
-            runtime,
-            utterance="请用 echo 插件原样回显这段文字: resonance-plugin-live-accepted",
-            max_iterations=8,
+        asked = emit_surface_user_intent(
+            runtime.conn,
+            transcript="请用 echo 插件原样回显这段文字: resonance-plugin-live-accepted",
+            turn_id=new_turn_id(),
         )
+        first = drive_turn(runtime, user_intent_event=asked, max_iterations=8)
         request = service.read()["request"]
         assert request, first.response_text
         assert request["plugin_id"] == "echo", first.response_text

@@ -46,8 +46,10 @@ Limits:
   unchanged. `--no-detach`, `--no-forward`, `--prompt` and `--config` of the one-shot are gone;
   `serve` keeps its own `--config` and `--prompt`.
 - The command opens and writes nothing under any root.
-- `bootstrap_runtime_app`, `run_turn` and `install_power_observer` stay: `serve`, the voice
-  surface and the tests run on them.
+- `bootstrap_runtime_app` and `install_power_observer` stay: `serve`, the voice surface and the
+  tests run on them. `run_turn` did not: neither `serve` nor the voice surface ever called it (they
+  run on `drive_turn`, which the daemon's intent pump drives), its one caller was a live test, and
+  that test now emits its intent and calls `drive_turn`; `run_turn` is deleted.
 
 ## Alternatives rejected
 

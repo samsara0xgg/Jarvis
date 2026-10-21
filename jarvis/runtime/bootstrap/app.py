@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 
 
 def bootstrap_runtime_app(config: RuntimeConfig, paths: RuntimePaths) -> JarvisRuntime:
-    """Assemble a frozen :class:`JarvisRuntime` ready for :func:`run_turn`.
+    """Assemble a frozen :class:`JarvisRuntime` ready for :func:`~.turn.drive.drive_turn`.
 
     The caller has laid out the runtime root (:func:`jarvis.deployment.bootstrap_runtime`),
     loaded its environment (:func:`load_runtime_env_and_trace`) and parsed the config
@@ -93,9 +93,9 @@ def bootstrap_runtime_app(config: RuntimeConfig, paths: RuntimePaths) -> JarvisR
     it was. When the runtime is built the stack is released: the runtime owns them (ADR 0372).
     What cannot be undone is done after the last stage that can fail.
 
-    L5 :class:`SurfaceState` is allocated per turn inside :func:`run_turn`
-    (spec §3.6.7 — local surface state owns no truth and doesn't survive
-    across turns), so the composition root does not wire it here.
+    L5 :class:`SurfaceState` is allocated per turn inside
+    :func:`~jarvis.runtime.turn.drive.drive_turn` (spec §3.6.7 — local surface state owns no
+    truth and doesn't survive across turns), so the composition root does not wire it here.
 
     Args:
         config: The parsed config, with the role's overrides applied.
