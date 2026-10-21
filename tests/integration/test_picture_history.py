@@ -57,6 +57,7 @@ from jarvis.state.memory_db import (
     render_context,
 )
 from tests.integration.test_anthropic_adaptation import _reply, _run
+from tests.support.net import start_http_server, stop_http_server
 from tests.support.phone import NOTES, PNG, attachment_turn, attachments_daemon
 from tests.support.picture_notes import ANSWER, FILLER_EN, WORDS, World
 
@@ -558,8 +559,7 @@ def test_upload_and_delete_use_the_sdks_files_api_with_the_beta_header(
 ) -> None:
     """The real SDK against a local peer: a multipart upload, a delete, a missing file is fine."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FilesPeer)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server = start_http_server(_FilesPeer)
     _FilesPeer.seen.clear()
     try:
         from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
@@ -570,7 +570,7 @@ def test_upload_and_delete_use_the_sdks_files_api_with_the_beta_header(
         client.delete_file("file_011abc")
         client.delete_file("file_gone")  # already deleted: not an error
     finally:
-        server.shutdown()
+        stop_http_server(server)
     (up, down, gone) = _FilesPeer.seen
     assert up[:3] == ("POST", "/v1/files?beta=true", FILES_BETA)
     assert b'filename="IMG_1.png"' in up[3]
@@ -741,14 +741,13 @@ def api(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
     from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Answers)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server = start_http_server(_Answers)
     _Answers.bodies = []
     _Answers.rule = []
     client = _preset("")
     client._base_url = f"http://127.0.0.1:{server.server_port}"  # noqa: SLF001
     yield client
-    server.shutdown()
+    stop_http_server(server)
     set_stale_files_handler(None)
 
 

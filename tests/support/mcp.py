@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.support.net import free_port
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -19,12 +21,6 @@ SERVERS = Path(__file__).resolve().parents[1] / "integration"
 
 
 ECHO = {"echo": {"command": sys.executable, "args": [str(SERVERS / "mcp_echo_server.py")]}}
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 def _wait_listening(port: int, timeout_s: float = 20.0) -> None:

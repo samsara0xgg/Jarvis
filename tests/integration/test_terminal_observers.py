@@ -44,12 +44,12 @@ from jarvis.surface.terminal_events import (
 from jarvis.surface.terminal_link import TerminalHub, run_terminal_client
 from jarvis.surface.timesink_observer import TimesinkObserver
 from jarvis.surface.usage_observer import DEVICE_SERVICES, UsageObserver
+from tests.support.net import free_port
 from tests.support.terminal import (
     REMOTE,
     AsRemote,
     brain_log,
     commit_file,
-    free_port,
     log_rows,
     make_repo,
     observer_brain_client,

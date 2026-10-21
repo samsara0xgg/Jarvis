@@ -15,11 +15,10 @@ import asyncio
 import contextlib
 import json
 import logging
-import threading
 import time
 from datetime import datetime
 from datetime import time as clock
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
@@ -42,6 +41,7 @@ from jarvis.surface.agent_host import host_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
+from tests.support.net import start_http_server, stop_http_server
 from tests.support.night import ZONE, FakeMacPower, NightFixture, night_ms
 
 if TYPE_CHECKING:
@@ -763,8 +763,7 @@ def test_the_watch_reads_the_host_claude_code_and_codex_lists() -> None:
         _sess("C", "err", updated=night_ms(1, 7, day=30)),
     ]
     _Host.hello = b"data: " + json.dumps({"t": "hello", "sessions": sessions}).encode()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Host)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server = start_http_server(_Host)
     port = server.server_address[1]
     try:
         assert host_sessions(port, "k-1") == sessions
@@ -779,8 +778,7 @@ def test_the_watch_reads_the_host_claude_code_and_codex_lists() -> None:
         }
         found = NightWatch(port=port, key=lambda: "k-1", claude=None, codex=codex)()
     finally:
-        server.shutdown()
-        server.server_close()
+        stop_http_server(server)
     assert [(row["id"], row["st"], row["busy"]) for row in found["startrail"] or []] == [
         ("A", "pack", True),
         ("B", "done", True),

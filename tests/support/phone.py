@@ -53,8 +53,9 @@ from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.voice_tts import TTSAudioChunk, TTSResponseSegment, TTSSegmentFinished
 from tests.support.media import CallbackPump
 from tests.support.media import media_config as _mac_config
+from tests.support.net import free_port
 from tests.support.runtime_paths import StubRuntimePaths
-from tests.support.terminal import AsRemote, VoiceSpeechProvider, free_port, wait_for
+from tests.support.terminal import AsRemote, VoiceSpeechProvider, wait_for
 from tools.phone_fake_client import FakePhone
 
 if TYPE_CHECKING:

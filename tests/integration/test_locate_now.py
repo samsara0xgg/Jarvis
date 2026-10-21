@@ -45,8 +45,9 @@ from jarvis.surface.inherent_server import InherentDeps, create_app, require_loc
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH, payload_valid
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
+from tests.support.net import free_port
 from tests.support.push import BUNDLE, DEVICE_A, FakeApns, World
-from tests.support.terminal import AsRemote, free_port, wait_for
+from tests.support.terminal import AsRemote, wait_for
 from tools.phone_fake_client import FakePhone
 
 if TYPE_CHECKING:

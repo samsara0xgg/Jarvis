@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +15,7 @@ from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import Home
+from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -251,8 +251,7 @@ class HomeJev:
             def log_message(self, *_args: object) -> None:
                 return
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server = start_http_server(Handler)
 
     def reply(
         self,
@@ -277,5 +276,4 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[HomeJev]:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-a-secret")
     fake = HomeJev()
     yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
+    stop_http_server(fake.server)

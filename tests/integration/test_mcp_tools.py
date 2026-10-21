@@ -26,7 +26,8 @@ from jarvis.execution.tools import Tool
 from jarvis.runtime import mcp_login
 from jarvis.shared import CallerPrincipal
 from tests.support import mcp as mcp_support
-from tests.support.mcp import ECHO, SERVERS, free_port
+from tests.support.mcp import ECHO, SERVERS
+from tests.support.net import free_port
 from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:

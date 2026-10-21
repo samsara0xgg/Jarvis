@@ -30,7 +30,8 @@ from jarvis.state.device_tokens import pair_device
 from jarvis.state.plugin_settings import local_key
 from jarvis.surface.claude_sessions import ClaudeSessions
 from tests.support.claude_hooks import HOOK, SUGGESTION
-from tests.support.terminal import Brain, free_port, wait_for
+from tests.support.net import free_port
+from tests.support.terminal import Brain, wait_for
 from tests.support.terminal_claude import BUSY, WAITING, device_home
 
 if TYPE_CHECKING:

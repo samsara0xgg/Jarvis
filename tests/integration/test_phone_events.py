@@ -52,6 +52,7 @@ from jarvis.surface.terminal_events import (
     PLAYBACK_EVENT_TYPES,
     BrainEvents,
 )
+from tests.support.net import free_port
 from tests.support.phone import (
     GOOD,
     HEALTH,
@@ -75,7 +76,6 @@ from tests.support.terminal import (
     ack_frame,
     bearer,
     brain_client,
-    free_port,
     hello_frame,
     playback_frame,
     wait_for,

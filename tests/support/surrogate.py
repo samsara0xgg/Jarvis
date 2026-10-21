@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis.decision.tier0 import load_tier0_table
 from tests.canary._helpers import repo_root
+from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     import sqlite3
@@ -82,8 +82,7 @@ class SurrogateJev:
             def log_message(self, *_args: object) -> None:
                 return
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server = start_http_server(Handler)
 
     @property
     def url(self) -> str:
@@ -96,8 +95,7 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[SurrogateJev]:
     monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
     fake = SurrogateJev()
     yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
+    stop_http_server(fake.server)
 
 
 def logged_events(conn: sqlite3.Connection, kind: str) -> list[dict[str, Any]]:

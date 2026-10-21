@@ -23,10 +23,10 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from jarvis.execution.mcp_oauth import FileTokenStorage, build_oauth
 from jarvis.execution.mcp_tools import McpServers
-from tests.support.mcp import free_port
 from tests.support.mcp import (
     oauth_url as oauth_url,  # noqa: PLC0414 — re-export fixture.
 )
+from tests.support.net import free_port
 
 if TYPE_CHECKING:
     from pathlib import Path

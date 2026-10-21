@@ -47,6 +47,7 @@ import yaml
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import iter_events, open_event_log
 from tests.canary._helpers import repo_root
+from tests.support.net import free_port
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -112,13 +113,6 @@ _WATCHER_LINE = "tts_watcher started (after_id="
 def _echo(message: str) -> None:
     """Write one evidence line to stdout (``-s`` shows it in the transcript)."""
     print(message, flush=True)  # noqa: T201 - the transcript is the acceptance evidence
-
-
-def _pick_free_port() -> int:
-    """Pick an OS-assigned ephemeral port and immediately release it."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 def _wait_for_port(port: int, *, deadline_s: float) -> None:
@@ -836,7 +830,7 @@ def test_live_sigkill_mid_speech_recovers_without_respeaking(
     trace_path = root / "trace.jsonl"
     _install_runtime_env(root)
     config_path = _build_overlay(root)
-    port = _pick_free_port()
+    port = free_port()
     assert port != _FORBIDDEN_PORT
     _echo(f"root={root} port={port} system_output_route={silent_output_device!r}")
 

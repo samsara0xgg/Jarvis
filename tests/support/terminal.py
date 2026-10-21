@@ -39,6 +39,7 @@ from jarvis.surface.terminal_link import TerminalHub, run_terminal_client
 from jarvis.surface.terminal_speaker import REMOTE_ENDPOINTS
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_tts import TTSAudioChunk, TTSResponseSegment, TTSSegmentFinished
+from tests.support.net import free_port
 from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
@@ -317,12 +318,6 @@ SPEECH_CONFIG: dict[str, Any] = {
         },
     },
 }
-
-
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
 
 
 class AsRemote:

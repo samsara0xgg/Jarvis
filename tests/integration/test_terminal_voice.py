@@ -65,6 +65,7 @@ from jarvis.surface.voice_tts import (
     TTSSegmentFinished,
     TTSSessionClosedError,
 )
+from tests.support.net import free_port
 from tests.support.terminal import (
     AsRemote,
     NoRows,
@@ -74,7 +75,6 @@ from tests.support.terminal import (
     bearer,
     brain_client,
     brain_log,
-    free_port,
     hello_frame,
     open_stream,
     playback_frame,

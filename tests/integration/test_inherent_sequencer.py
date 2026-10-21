@@ -11,7 +11,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import socket as socket_module
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -51,6 +50,7 @@ from jarvis.surface.inherent_protocol import (
     ViewDeltaPayload,
 )
 from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
+from tests.support.net import free_port
 from tests.support.sequencer import (
     BOOT_ID,
     SequencerRig,
@@ -568,12 +568,6 @@ def test_the_flag_needs_realtime_enabled_and_downgrades_once_with_one_warning(
     assert inherent_v2_sequencer_enabled({"realtime": {"enabled": True, **on}}) is True
 
 
-def _free_port() -> int:
-    with socket_module.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 async def _serve_v2(
     rig: SequencerRig, tmp_path: Path,
 ) -> tuple[str, int, uvicorn.Server, asyncio.Task[None]]:
@@ -592,7 +586,7 @@ async def _serve_v2(
             attach_client=rig.hub.attach,
         ),
     )
-    port = _free_port()
+    port = free_port()
     config = uvicorn.Config(
         create_app(deps), host="127.0.0.1", port=port, log_level="warning", lifespan="off",
     )

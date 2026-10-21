@@ -62,12 +62,12 @@ from jarvis.surface.terminal_ui import (
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_controls import VoiceControls
 from tests.integration.test_terminal_listen import LISTEN_CONFIG, _heard
+from tests.support.net import free_port
 from tests.support.terminal import (
     SPEECH_CONFIG,
     AsRemote,
     VoiceSpeechProvider,
     brain_log,
-    free_port,
     open_stream,
     wait_for,
 )

@@ -11,7 +11,7 @@ import pytest
 from jarvis.execution.tools import ToolContext
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.state.event_log import emit_event
-from tests.support.mcp import free_port
+from tests.support.net import free_port
 from tests.support.tool_world import ToolWorld
 
 if TYPE_CHECKING:

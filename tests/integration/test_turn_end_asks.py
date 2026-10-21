@@ -13,10 +13,9 @@ import contextlib
 import functools
 import json
 import os
-import threading
 import time
 from datetime import UTC, datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -30,6 +29,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.support.claude_board import NOW_MS, board_home, noop
+from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -72,8 +72,7 @@ class _Jev:
             def log_message(self, *_args: object) -> None:
                 return
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server = start_http_server(Handler)
 
     def asks(
         self, *, at: float = 0.95, timeout_ms: int = 1500, log: JevLog | None = None,
@@ -91,8 +90,7 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
     monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
     fake = _Jev()
     yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
+    stop_http_server(fake.server)
 
 
 def _client(asks: TurnEndAsks | None) -> TestClient:

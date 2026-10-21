@@ -61,8 +61,9 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
+from tests.support.net import free_port
 from tests.support.push import BUNDLE, DEVICE_A, KEY_ID, TEAM_ID, FakeApns, World
-from tests.support.terminal import AsRemote, free_port, wait_for
+from tests.support.terminal import AsRemote, wait_for
 from tools.phone_fake_client import FakePhone
 
 if TYPE_CHECKING:

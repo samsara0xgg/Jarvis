@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import contextlib
 import json
-import threading
 from contextlib import closing
 from datetime import datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -40,6 +39,7 @@ from tests.support.day_summaries import (
     record_id,
     stamp_ago,
 )
+from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -502,8 +502,7 @@ class _Jev:
             def log_message(self, *_args: object) -> None:
                 return
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server = start_http_server(Handler)
 
     def route(self, log: JevLog | None = None) -> SurrogateRoute:
         return SurrogateRoute(
@@ -523,7 +522,7 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
     try:
         yield fake
     finally:
-        fake.server.shutdown()
+        stop_http_server(fake.server)
 
 
 def _reviewed(

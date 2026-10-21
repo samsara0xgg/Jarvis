@@ -11,7 +11,6 @@ from __future__ import annotations
 import functools
 import hashlib
 import http.server
-import threading
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,6 +23,7 @@ from jarvis.deployment.models import (
     missing_models,
 )
 from jarvis.deployment.models import download as real_download
+from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,13 +39,11 @@ def served(tmp_path: Path) -> Iterator[tuple[str, bytes]]:
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler, directory=str(tmp_path / "srv")
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    server = start_http_server(handler)
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}/model.onnx", body
     finally:
-        server.shutdown()
+        stop_http_server(server)
 
 
 def test_a_fresh_root_lists_every_model_as_missing(tmp_path: Path) -> None:

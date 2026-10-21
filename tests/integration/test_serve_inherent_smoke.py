@@ -24,17 +24,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from tests.support.net import free_port
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.live_llm
-
-
-def _pick_free_port() -> int:
-    """Pick an OS-assigned ephemeral port and immediately release it."""
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
 
 
 def _wait_for_port(port: int, *, deadline_s: float = 10.0) -> None:
@@ -55,7 +50,7 @@ def _wait_for_port(port: int, *, deadline_s: float = 10.0) -> None:
 
 def test_daemon_submit_to_ws_round_trip(tmp_path: Path) -> None:
     """Spawn the daemon, POST a submit, receive open + append* + done on WS."""
-    port = _pick_free_port()
+    port = free_port()
 
     proc = subprocess.Popen(  # noqa: S603 — sys.executable is trusted; argv is fully controlled.
         [

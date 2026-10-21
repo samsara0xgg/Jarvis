@@ -29,8 +29,9 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents, phone_turn_id
+from tests.support.net import free_port
 from tests.support.response_run import make_runtime, open_run
-from tests.support.terminal import AsRemote, free_port
+from tests.support.terminal import AsRemote
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

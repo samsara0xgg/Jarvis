@@ -19,7 +19,8 @@ from websockets.sync.client import connect as ws_connect
 
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.terminal_ui import Brain, Device, UiBroadcaster, create_ui_app
-from tests.support.terminal import free_port, wait_for
+from tests.support.net import free_port
+from tests.support.terminal import wait_for
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
