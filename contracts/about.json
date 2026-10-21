@@ -1,0 +1,204 @@
+{
+  "route": "POST /inherent/submit",
+  "direction": "client -> brain",
+  "description": "`about` is the item the phone has open when its owner speaks (ADR 0214), on a `POST /inherent/submit` from a paired device (and on a `say`, whose own refusal is `error bad_say`). It is an object of `kind` (one of `kinds`) and `id` (1 to `limits.id_chars` characters of letters, digits and `_-=+/.|:@`; a longer one is refused, never cut), with an optional `title` (text; the brain flattens it to one line and clips it to `limits.title_chars`) and `start_ms` (an integer epoch ms between 0 and `limits.start_ms`). No other key is allowed. A valid case that the brain changes names what it becomes in `becomes`. An invalid `about` is a 422; an `about` from the local key rather than a paired device is a 400.",
+  "kinds": ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code", "screen", "media", "earbuds", "messages", "phone_call"],
+  "limits": {
+    "id_chars": 256,
+    "title_chars": 200,
+    "start_ms": 4102444800000
+  },
+  "valid": [
+    {
+      "name": "a reminder, whole",
+      "value": {
+        "kind": "reminder",
+        "id": "reminder-1",
+        "title": "stand up",
+        "start_ms": 1791997200000
+      }
+    },
+    {
+      "name": "a kind and an id alone",
+      "value": {
+        "kind": "stay",
+        "id": "stay-cafe"
+      }
+    },
+    {
+      "name": "an id of every kind of character it may hold",
+      "value": {
+        "kind": "event",
+        "id": "a-b_c=d+e/f.g|h:i@j"
+      }
+    },
+    {
+      "name": "a title with line breaks and runs of spaces",
+      "value": {
+        "kind": "event",
+        "id": "commitment-1@2026-10-14",
+        "title": "Standup\n  at   10\t"
+      },
+      "becomes": {
+        "kind": "event",
+        "id": "commitment-1@2026-10-14",
+        "title": "Standup at 10"
+      }
+    },
+    {
+      "name": "a title over the limit",
+      "value": {
+        "kind": "todo",
+        "id": "todo-1",
+        "title": "Quarterly planning review with the whole team Quarterly planning review with the whole team Quarterly planning review with the whole team Quarterly planning review with the whole team Quarterly planning review with the whole team "
+      },
+      "becomes": {
+        "kind": "todo",
+        "id": "todo-1",
+        "title": "Quarterly planning review with the whole team Quarterly planning review with the whole team Quarterly planning review with the whole team Quarterly planning review with the whole team Quarterly planni"
+      }
+    },
+    {
+      "name": "a start of zero",
+      "value": {
+        "kind": "sleep",
+        "id": "sl1",
+        "start_ms": 0
+      }
+    },
+    {
+      "name": "no item open",
+      "value": null,
+      "becomes": null
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no kind",
+      "value": {
+        "id": "reminder-1"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a kind that is not one",
+      "value": {
+        "kind": "meeting",
+        "id": "m1"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "no id",
+      "value": {
+        "kind": "reminder"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an id with a space",
+      "value": {
+        "kind": "reminder",
+        "id": "reminder 1"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an id that is empty",
+      "value": {
+        "kind": "reminder",
+        "id": ""
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an id that is a number",
+      "value": {
+        "kind": "reminder",
+        "id": 1
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an id over the limit",
+      "value": {
+        "kind": "reminder",
+        "id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a title that is not text",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "title": 3
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a start that is text",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "start_ms": "1791997200000"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a start that is a fraction",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "start_ms": 1.5
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a start that is true",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "start_ms": true
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a start before 1970",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "start_ms": -1
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a start after the limit",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "start_ms": 4102444800001
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a key that is not part of it",
+      "value": {
+        "kind": "reminder",
+        "id": "r1",
+        "color": "red"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an about that is a list",
+      "value": ["reminder", "r1"],
+      "refusal": "422"
+    },
+    {
+      "name": "an about that is text",
+      "value": "reminder-1",
+      "refusal": "422"
+    }
+  ]
+}
