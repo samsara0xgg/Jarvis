@@ -587,9 +587,9 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("provider_response_id", "retryable", "committed_prefix_hash"),
         schema_version=1,
     ),
-    # ADR-0006 Wave 1 registered the playback terminal truth. Wave 2 starts
-    # emitting these milestones only behind realtime.streaming_output; the
-    # same response/generation CAS remains their sole terminal arbiter.
+    # ADR-0006 Wave 1 registered the playback terminal truth. The media actor
+    # emits these milestones; the same response/generation CAS remains their
+    # sole terminal arbiter.
     EventTypeSchema(
         event_type="surface.playback_started",
         owner_layer="L5",
