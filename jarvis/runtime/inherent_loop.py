@@ -7434,13 +7434,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        daemon serves text + voice without sleep/wake rather than dying).
     8. ``await server.serve()`` — blocks until uvicorn returns (signal
        received).
-    9. ``finally``: tear the power observer down FIRST (its closed flag
-       must be set before the loop starts winding down), then request the
-       wake listener stop (if running), cancel every watcher task, and
-       ``await`` them with ``return_exceptions=True`` so a watcher that
-       crashed during runtime does not mask the shutdown path. Then the
-       ``acquire_exclusive`` context manager unwinds and releases the
-       lock file.
+    9. ``_shutdown``, registered once the voice owners exist and run when
+       serving ends or any step above raises: tear the power observer down
+       FIRST (its closed flag must be set before the loop starts winding
+       down), then request the wake listener stop (if running), cancel
+       every watcher task, and ``await`` them with ``return_exceptions=True``
+       so a watcher that crashed during runtime does not mask the shutdown
+       path. Then the ``acquire_exclusive`` context manager unwinds and
+       releases the lock file.
 
     Env vars:
         ``MINIMAX_API_KEY``         — gates the TTS subsystem.
@@ -7459,7 +7460,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         jarvis.deployment.process_lock.ProcessLockHeld: Another daemon
             already holds the lock for this runtime root.
     """
-    with acquire_exclusive(lock_path):
+    async with contextlib.AsyncExitStack() as unwind:
+        unwind.enter_context(acquire_exclusive(lock_path))  # entered first, so released last
         if runtime.decision_state is not None:
             runtime.decision_state.warm()  # ADR 0164: the first turn then reads only a delta
         if runtime.ledger is not None:
@@ -7573,6 +7575,65 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         controls.on_speech_muted = _apply_speech_mute
         voice_knobs = _voice_knobs(runtime.config)
+        # A failed setup is a stopped daemon, not a half-alive one: the voice owners started
+        # below hold non-daemon threads, and nothing else ends the process. The same teardown
+        # runs on a setup failure and on a normal stop; what is not built yet is None.
+        watchers: list[asyncio.Task[None]] = []
+        power_coordinator: _VoicePowerCoordinator | None = None
+        power_observer: PowerObserver | None = None
+
+        async def _shutdown() -> None:
+            LOGGER.info("serve_inherent: shutting down watchers")
+            # Power observer FIRST: its closed flag must be set before the
+            # loop starts winding down, so a notification racing this
+            # teardown finds the flag instead of a dead loop. Everything
+            # below (wake / TTS / ducker / watcher cancel) is loop-thread
+            # work that would otherwise be racing that notification.
+            _shutdown_power_observer(power_observer)
+            if power_coordinator is not None:
+                power_coordinator.close(timeout_s=0.1)
+            # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
+            # retains the legacy output-gate-before-wake order.
+            # GPT-Live is billed per second: hang up before the microphone goes away.
+            # The budget follows close_timeout_s and stays under launchd's default
+            # 20 s ExitTimeOut, after which the agent is killed mid-hangup.
+            if live_voice is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        live_voice.stop(reason="daemon_shutdown"),
+                        timeout=live_voice.stop_budget_s,
+                    )
+            _request_voice_input_branch_shutdown(
+                voice_input_owners,
+                tts_pipe,
+                wake_join_timeout_s=voice_knobs.wake_join_timeout_s,
+            )
+            # Cancel/await watcher ownership before PortAudio teardown. A
+            # provider thread may still exist, but the closed generation owns
+            # no right to write or invoke fallback.
+            for w in watchers:
+                w.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
+            # ADR 0019: the codex app-server child goes with the daemon; its
+            # open worker_edges rows become closed.
+            if runtime.workers is not None:
+                await asyncio.to_thread(runtime.workers.stop)
+            # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
+            if runtime.plugin_connections is not None:
+                await asyncio.to_thread(runtime.plugin_connections.stop)
+            if runtime.mcp_servers is not None:
+                await asyncio.to_thread(runtime.mcp_servers.stop)
+            _shutdown_tts(tts_pipe)
+            # Force-restore output volume in case a duck escaped a finally
+            # block on the way down (best-effort; idempotent if depth == 0).
+            try:
+                shared_ducker.restore_all()
+            except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+                LOGGER.debug("shared_ducker.restore_all failed", exc_info=True)
+            LOGGER.info("serve_inherent: shutdown complete")
+
+        unwind.push_async_callback(_shutdown)
+
         if runtime.terminal_hub is not None:
             runtime.terminal_hub.voice = _build_brain_voice(runtime, voice_knobs)
             runtime.terminal_hub.listening = _build_brain_listening(
@@ -7796,6 +7857,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             log_epoch=log_epoch,
             poll_interval_s=poll_interval_s,
         )
+        if inherent_view is not None:
+            watchers.extend(inherent_view.tasks)
         # ADR-0018 — usage observer: constructed here (baselines recovered on
         # the loop thread) so the dashboard routes can hold its read model
         # and on-demand poll; its periodic task joins `watchers` below.
@@ -8337,9 +8400,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
         server = uvicorn.Server(config)
 
-        watchers: list[asyncio.Task[None]] = (
-            [] if inherent_view is None else list(inherent_view.tasks)
-        )
         if runtime.input_flags.intent_pump:
             # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen
             # inside the startup barrier, before any task exists that could
@@ -8655,10 +8715,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             watcher.add_done_callback(_log_watcher_death)
 
         # ADR-0009 D3 — power observer, installed after the lock (which
-        # stays the outermost scope) and immediately before the try/finally
-        # that owns the serve lifetime, so its registered CFRunLoop thread
-        # is bracketed by the same `finally` that tears the watchers down;
-        # no path between install and try can leak a live registration.
+        # stays the outermost scope) and immediately before serving, so its
+        # registered CFRunLoop thread is torn down first by the same
+        # `_shutdown` that tears the watchers down; no path between install
+        # and serve can leak a live registration.
         power_coordinator = (
             _VoicePowerCoordinator(
                 session=duplex_voice_session,
@@ -8691,61 +8751,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
         )
 
-        try:
-            await server.serve(
-                sockets=_listen_sockets(host, port, runtime.listen_addresses)
-                if runtime.listen_addresses
-                else None,
-            )
-        finally:
-            LOGGER.info("serve_inherent: shutting down watchers")
-            # Power observer FIRST: its closed flag must be set before the
-            # loop starts winding down, so a notification racing this
-            # teardown finds the flag instead of a dead loop. Everything
-            # below (wake / TTS / ducker / watcher cancel) is loop-thread
-            # work that would otherwise be racing that notification.
-            _shutdown_power_observer(power_observer)
-            if power_coordinator is not None:
-                power_coordinator.close(timeout_s=0.1)
-            # ADR-0006 F14: Wave 3 revokes input before output. Feature-off
-            # retains the legacy output-gate-before-wake order.
-            # GPT-Live is billed per second: hang up before the microphone goes away.
-            # The budget follows close_timeout_s and stays under launchd's default
-            # 20 s ExitTimeOut, after which the agent is killed mid-hangup.
-            if live_voice is not None:
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(
-                        live_voice.stop(reason="daemon_shutdown"),
-                        timeout=live_voice.stop_budget_s,
-                    )
-            _request_voice_input_branch_shutdown(
-                voice_input_owners,
-                tts_pipe,
-                wake_join_timeout_s=voice_knobs.wake_join_timeout_s,
-            )
-            # Cancel/await watcher ownership before PortAudio teardown. A
-            # provider thread may still exist, but the closed generation owns
-            # no right to write or invoke fallback.
-            for w in watchers:
-                w.cancel()
-            await asyncio.gather(*watchers, return_exceptions=True)
-            # ADR 0019: the codex app-server child goes with the daemon; its
-            # open worker_edges rows become closed.
-            if runtime.workers is not None:
-                await asyncio.to_thread(runtime.workers.stop)
-            # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
-            if runtime.plugin_connections is not None:
-                await asyncio.to_thread(runtime.plugin_connections.stop)
-            if runtime.mcp_servers is not None:
-                await asyncio.to_thread(runtime.mcp_servers.stop)
-            _shutdown_tts(tts_pipe)
-            # Force-restore output volume in case a duck escaped a finally
-            # block on the way down (best-effort; idempotent if depth == 0).
-            try:
-                shared_ducker.restore_all()
-            except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
-                LOGGER.debug("shared_ducker.restore_all failed", exc_info=True)
-            LOGGER.info("serve_inherent: shutdown complete")
+        await server.serve(
+            sockets=_listen_sockets(host, port, runtime.listen_addresses)
+            if runtime.listen_addresses
+            else None,
+        )
 
 
 __all__ = ["serve_inherent"]
