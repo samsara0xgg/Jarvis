@@ -279,11 +279,11 @@ def plist_path(agents_dir: Path | None = None) -> Path:
 
 
 def is_agent_installed(agents_dir: Path | None = None) -> bool:
-    """True iff the plist exists — the D2 signal that fork-detach must stay off.
+    """True iff the plist exists — the signal that this machine has a daemon to forward to.
 
     Presence of the plist (not ``launchctl print`` liveness) is the right
     test: during a crash / respawn window the job is momentarily not
-    running, but the CLI must still forward rather than fork.
+    running, but the CLI must still forward to it (ADR 0341).
     """
     return plist_path(agents_dir).is_file()
 
@@ -813,8 +813,8 @@ def uninstall(*, agents_dir: Path | None = None, remove_plist: bool = True) -> U
     Args:
         agents_dir: Override ``~/Library/LaunchAgents`` (tests / proofs).
         remove_plist: Delete the plist files as well. False leaves the
-            definitions on disk (the daemon agent stays "installed" for
-            D2's fork-detach guard) while the jobs are stopped.
+            definitions on disk (the daemon agent stays "installed", so
+            the CLI still forwards to it) while the jobs are stopped.
 
     Returns:
         :class:`UninstallResult`.

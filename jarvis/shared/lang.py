@@ -947,8 +947,11 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "the Codex replies (except each session's last)",
     },
     "report.fallback.agent_prompts": {"zh": "Codex 提问", "en": "the Codex prompts"},
-    # ADR-0002 § Daemon / CLI contract: the ack printed before the fork.
-    "cli.quick_ack": {"zh": "好的，跑起来了。", "en": "OK, it's running."},
+    # ADR 0341: what `jarvis "<text>"` says when there is no brain to hand the turn to.
+    "cli.no_brain": {
+        "zh": "这台机器上没有大脑在运行。用 --brain URL 把这句话交给一个大脑。",
+        "en": "No brain is running on this machine. Pass --brain URL to hand this to one.",
+    },
     # Desktop panels.
     "codex.session_ended": {"zh": "会话已结束", "en": "Session ended"},
     "codex.turn_stopped": {"zh": "已停下", "en": "Stopped"},

@@ -27,7 +27,6 @@ _TABLE: Final = "jarvis/shared/lang.py"
 # Chinese forms stay next to the English ones. Keyed by file, then by the
 # enclosing module-level name or function.
 _MATCHERS: Final[dict[str, frozenset[str]]] = {
-    "jarvis/cli/__init__.py": frozenset({"_LONG_RUN_RE"}),
     "jarvis/decision/__init__.py": frozenset(
         {"_WRITTEN_MARKUP_RE", "_REPEAT_REQUEST_RE", "_repeat_of_last_answer", "_PIECE_END",
          "_FULL_WIDTH_END", "_CLOSERS", "_CLAUSE_END"}
