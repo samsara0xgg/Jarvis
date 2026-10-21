@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sys
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -37,7 +38,9 @@ from tests.integration.test_wave2_streaming_media import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-needs_swiftc = pytest.mark.skipif(shutil.which("swiftc") is None, reason="needs swiftc")
+needs_swiftc = pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("swiftc") is None, reason="needs macOS and swiftc",
+)
 
 
 def test_a_slow_settle_does_not_let_the_response_task_fail_the_turn_first(tmp_path: Path) -> None:

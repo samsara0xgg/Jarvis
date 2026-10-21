@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import time
 from types import SimpleNamespace
 
@@ -12,7 +13,9 @@ from jarvis.surface.voice_native_out import NativeAudioStreamPlayer
 
 RATE = 48_000
 COMMON = {"sample_rate_hz": RATE, "ring_seconds": 0.25, "volume": 1.0}
-pytestmark = pytest.mark.skipif(shutil.which("swiftc") is None, reason="needs swiftc")
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("swiftc") is None, reason="needs macOS and swiftc",
+)
 
 
 def test_the_switch_keeps_the_python_player_when_the_helper_cannot_start(

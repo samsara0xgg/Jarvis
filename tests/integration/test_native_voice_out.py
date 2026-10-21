@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import sys
 import threading
 import time
 from itertools import pairwise
@@ -29,7 +30,9 @@ if TYPE_CHECKING:
 
     from jarvis.surface.voice_tts import _CallbackReport
 
-pytestmark = pytest.mark.skipif(shutil.which("swiftc") is None, reason="needs swiftc")
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin" or shutil.which("swiftc") is None, reason="needs macOS and swiftc",
+)
 
 RATE = 48_000
 
