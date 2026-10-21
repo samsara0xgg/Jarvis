@@ -78,9 +78,6 @@ if TYPE_CHECKING:
 REPO = Path(__file__).resolve().parent.parent
 _DBS = ("mac_events.db", "memory.db")
 _RESULT_CHARS = 2000
-_LATE_TOOLS = (  # registered after the MCP group
-    "job_ledger", "record_application", "mail", "conversation", "archive", "tidy_day", "my_day",
-)
 
 # --- the tool classification (decided per handler; the run refuses an unclassified tool) -------
 
@@ -175,12 +172,6 @@ def _add_microsoft(runtime: JarvisRuntime, recorded: Path) -> None:
     )
     conns._status[key] = ("ready", None)  # noqa: SLF001
     conns._publish()  # noqa: SLF001
-    registry = runtime.tool_registry
-    with registry._lock:  # noqa: SLF001 - the readers registered after the group stay behind it
-        late = {n: registry._tools[n] for n in _LATE_TOOLS if n in registry._tools}  # noqa: SLF001
-        registry._tools = {  # noqa: SLF001
-            **{n: t for n, t in registry._tools.items() if n not in late}, **late,  # noqa: SLF001
-        }
 
 
 def _stub(tool: Tool | ToolDefinition) -> Tool | ToolDefinition:
