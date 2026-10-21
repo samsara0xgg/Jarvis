@@ -101,13 +101,14 @@ def test_semantic_candidate_arrives_before_stalled_provider_completion(
                                 candidate_ready.set()
 
                 consumer = asyncio.create_task(consume())
-                await asyncio.wait_for(candidate_ready.wait(), 2)
+                # Hang guards, not timing claims: a cold worker imports the SDK first.
+                await asyncio.wait_for(candidate_ready.wait(), 10)
                 assert candidates == ["Ice absorbs heat."]
                 assert not any(isinstance(event, LLMResponseCompleted) for event in seen)
                 assert handle.result is None
                 await handle.cancel("test_stop")
                 await consumer
-                await asyncio.wait_for(peer.peer_closed.wait(), 1)
+                await asyncio.wait_for(peer.peer_closed.wait(), 10)
                 assert candidates == ["Ice absorbs heat."]
                 assert len(_costs(conn)) == 1
                 assert _costs(conn)[0]["disposition"] == "cancelled"
