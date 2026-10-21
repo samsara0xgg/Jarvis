@@ -34,6 +34,9 @@ struct FootprintDayContent: Equatable {
         [s.kept_place?.name, s.place].lazy.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
     }
 
+    /// the name of a stop: what the phone called it, else the street its coordinate is in once the phone's geocoder has said (`FootprintStreets`)
+    @MainActor static func stopName(_ s: FootprintStay) -> String? { name(s) ?? FootprintStreets.shared.street(at: s.coord) }
+
     @MainActor static func speedText(_ mps: Double) -> String { Words.Footprint.held(speed: String(Int((mps * 3.6).rounded()))) }
 
     // MARK: making it
@@ -160,7 +163,7 @@ struct FootprintDayContent: Equatable {
         for (n, s) in o.stops.sorted(by: { $0.start_ms < $1.start_ms }).enumerated() {
             let s0 = minute(s.start_ms), s1 = s.end_ms.map(minute) ?? nowMinute ?? s0
             let stopped = Words.Footprint.stopFor(tlDur(tlInt(s1 - s0)))
-            let place = name(s)
+            let place = stopName(s)
             var row = TLEntry(id: s.id, kind: .pause, t0: s0, title: place ?? stopped)
             row.time = clock(s0); row.t1 = s1; row.token = n + 1; row.right = place == nil ? "" : stopped
             row.rail = .trip; row.railIn = true; row.railOut = true

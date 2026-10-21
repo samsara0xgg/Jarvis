@@ -24,6 +24,9 @@ struct FootprintModel {
     /// The disc of a long stay: its area is the time spent, 29 pt for 13 h 7 min.
     static func discRadius(minutes: Double) -> CGFloat { CGFloat(29 * (max(0, minutes) / 787).squareRoot()) }
 
+    /// the stops no name was given for: where the phone's geocoder is asked for a street
+    var unnamedStops: [FootprintStay] { reply.outings.flatMap(\.stops).filter { FootprintDayContent.name($0) == nil } }
+
     var totalDistanceM: Double { reply.outings.reduce(0) { $0 + $1.distance_m } }
     var topSpeedMps: Double? { reply.outings.compactMap(\.max_speed_mps).max() }
 

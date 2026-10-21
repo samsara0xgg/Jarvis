@@ -17,7 +17,8 @@ struct FootprintOutingPage: View {
     private let end: Int64
     private let curves: FootprintCurves
     private let route: FootprintMapRoute
-    private let steps: [Step]
+    private let firstFixMs: Int64?, lastFixMs: Int64?
+    private var steps: [Step] { Step.list(model, outing, end: end, firstFixMs: firstFixMs, lastFixMs: lastFixMs) }          // read when drawn: a stop's street may come after the page
 
     init(model: FootprintModel, outing: FootprintOuting, back: @escaping () -> Void) {
         self.model = model; self.outing = outing; self.back = back
@@ -25,8 +26,7 @@ struct FootprintOutingPage: View {
         self.end = end
         curves = FootprintCurves(outing, endMs: end)
         route = model.route(outing)
-        let fixes = route.points
-        steps = Step.list(model, outing, end: end, firstFixMs: fixes.first?.ms, lastFixMs: fixes.last?.ms)
+        firstFixMs = route.points.first?.ms; lastFixMs = route.points.last?.ms
     }
 
     #if DEBUG
@@ -49,6 +49,7 @@ struct FootprintOutingPage: View {
             .padding(.top, 459)
         }
         .frame(width: W, height: H, alignment: .topLeading)
+        .task { FootprintStreets.shared.ask(outing.stops.filter { FootprintDayContent.name($0) == nil }.map(\.coord)) }          // the streets of the stops nobody named
     }
 
     // MARK: head
@@ -247,15 +248,16 @@ private struct Step: Identifiable {
     static func tintOf(_ s: FootprintStay?) -> RGB { s?.kept_place.map { PlaceTint.line(role: $0.role, id: $0.id) } ?? PlaceTint.lineNeutral }
 
     /// departure, each stop and each stretch with no fixes by time, and the arrival unless he is still out
-    static func list(_ model: FootprintModel, _ o: FootprintOuting, end: Int64, firstFixMs: Int64?, lastFixMs: Int64?) -> [Step] {
+    @MainActor static func list(_ model: FootprintModel, _ o: FootprintOuting, end: Int64, firstFixMs: Int64?, lastFixMs: Int64?) -> [Step] {
         func stay(_ id: String?) -> FootprintStay? { id.flatMap { id in model.reply.stays.first { $0.id == id } } }
         func name(_ s: FootprintStay?) -> String? { s.flatMap { $0.kept_place?.name ?? $0.place } }
+        func stopName(_ s: FootprintStay) -> String? { name(s) ?? FootprintStreets.shared.street(at: s.coord) }
         let from = stay(o.from_stay), to = stay(o.to_stay)
         var mid: [(Int64, Int64, Kind, FootprintStay?)] = o.stops.sorted { $0.start_ms < $1.start_ms }.enumerated().map { ($1.start_ms, min($1.end_ms ?? end, end), .stop($0 + 1), $1) }
         mid += o.gaps.map { ($0.start_ms, $0.end_ms, .gap, nil) }
         mid.sort { $0.0 < $1.0 }
         var out = [Step(id: 0, kind: .depart(home: from?.kept_place?.role == "home"), t0: o.start_ms, t1: o.start_ms, place: name(from), tint: tintOf(from))]
-        for m in mid { out.append(Step(id: out.count, kind: m.2, t0: m.0, t1: m.1, place: name(m.3), tint: tintOf(m.3))) }
+        for m in mid { out.append(Step(id: out.count, kind: m.2, t0: m.0, t1: m.1, place: m.3.flatMap(stopName), tint: tintOf(m.3))) }
         if o.end_ms != nil { out.append(Step(id: out.count, kind: .arrive, t0: end, t1: end, place: name(to), tint: o.to_stay == nil ? TLPaint.warm : tintOf(to))) }
         for i in out.indices.dropLast() {
             out[i].rail = FootprintCurves.legColors(from: out[i].t1, to: out[i + 1].t0) { model.speedMps(atMs: $0) }

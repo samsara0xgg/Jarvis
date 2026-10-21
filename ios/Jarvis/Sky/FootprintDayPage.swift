@@ -117,6 +117,7 @@ struct FootprintDayPage: View {
         .frame(width: W, height: H, alignment: .topLeading)
         .animation(TLMotion.detail(reduce: reduce), value: state.openOuting)
         .task(id: "\(iso) \(BrainLink.shared.openTick)") { store.ensure(iso) }          // on appear, on another day, and when the app has been opened since
+        .task(id: model?.unnamedStops.map(\.id) ?? []) { FootprintStreets.shared.ask(model?.unnamedStops.map(\.coord) ?? []) }          // the streets of the stops nobody named
     }
 
     /// An outing's page opens from its row; a long stay's row has no page.

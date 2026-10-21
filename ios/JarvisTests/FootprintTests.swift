@@ -310,6 +310,22 @@ final class FootprintTests: XCTestCase {
         XCTAssertEqual(FootprintDayContent.heldReadout(m, minute: m.clock.minute(ms: b + 1_900_000), r).head, "bar", "in the stay he reached")
     }
 
+    @MainActor func testAStopWithNoNameTakesTheStreetOnceTheGeocoderHasAnsweredAndIsAskedAboutOnlyOnce() async throws {
+        final class Calls { var n = 0 }
+        let streets = FootprintStreets.shared, saved = streets.lookup, calls = Calls()
+        defer { streets.lookup = saved }
+        streets.lookup = { _ in calls.n += 1; return "Test St" }
+        let m = try model(), stop = try XCTUnwrap(m.unnamedStops.first)
+        XCTAssertEqual(m.unnamedStops.map(\.id), ["stay-s"], "the other stays have a place or an address")
+        XCTAssertNil(FootprintDayContent.stopName(stop), "nobody has asked yet")
+        streets.ask([stop.coord, stop.coord])
+        for _ in 0..<50 where FootprintStreets.shared.street(at: stop.coord) == nil { await Task.yield() }
+        XCTAssertEqual(FootprintDayContent.stopName(stop), "Test St")
+        streets.ask([stop.coord])
+        await Task.yield()
+        XCTAssertEqual(calls.n, 1, "once for a place, however often it is asked for")
+    }
+
     func testTheCameraStandsAtSixHundredMetresWalkingAndOutToTwoKilometresAt80KmhAndNoFurther() {
         XCTAssertEqual(FootprintMapFollow.distance(speedMps: 0), 600)
         XCTAssertEqual(FootprintMapFollow.distance(speedMps: 1.4), 600, "walking")
