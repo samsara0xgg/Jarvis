@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import io
 import json
-import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -33,6 +32,7 @@ from jarvis.execution.location_tool import build_where_tool
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.state import places
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:
     import sqlite3
@@ -127,10 +127,10 @@ class World:
     """A log, a memory.db and a clock he can move on."""
 
     def __init__(self, tmp_path: Path, cap: float = 10.0, key: str | None = KEY) -> None:
-        """An empty world at the current time."""
+        """An empty world on a weekday morning in his zone, far from midnight."""
         self.log: sqlite3.Connection = open_event_log(tmp_path / "events.db")
         self.db = tmp_path / "memory.db"
-        self.now = time.time()
+        self.clock = FakeClock()
         self.root = tmp_path
         self.surroundings = around.Surroundings(key, cap, self.db, ZONE, lambda: self.now)
         self.tool = build_where_tool(None, self._phone, self.surroundings)[0]
@@ -142,6 +142,11 @@ class World:
         }
 
     at: tuple[float, float] = HERE
+
+    @property
+    def now(self) -> float:
+        """Epoch seconds on the world's clock."""
+        return self.clock.time()
 
     def fix(self, ago_min: float, at: tuple[float, float] | None = None) -> None:
         """A location report ``ago_min`` minutes ago."""
@@ -299,7 +304,7 @@ def test_a_point_within_fifty_metres_pays_nothing_and_a_far_or_late_one_pays_aga
     assert len(google.seen) == 4
     assert len(world.costs()) == 4
 
-    world.now += around.TTL_S + 1
+    world.clock.advance(around.TTL_S + 1)
     world.at = HERE
     world.ask()
     assert len(google.seen) == 6
@@ -444,7 +449,7 @@ def test_the_line_goes_when_the_report_or_the_held_reading_is_old(world: World) 
     world.ask()
     assert world.lines()
 
-    world.now += around.TTL_S + 60
+    world.clock.advance(around.TTL_S + 60)
     assert world.lines() == []
 
 
