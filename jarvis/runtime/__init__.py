@@ -233,6 +233,7 @@ from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
 from jarvis.shared.about import clean_about
 from jarvis.shared.action_admission import bind_action_admission
+from jarvis.shared.clock import Clock, SystemClock, ZoneError
 from jarvis.shared.device_link import DeviceCallError, DeviceLink
 from jarvis.shared.lang import is_filler, language_name
 from jarvis.shared.pricing import load_pricing_table
@@ -808,6 +809,8 @@ class JarvisRuntime:
     picture_notes: PictureNotes | None = None
     # ADR 0255: the Files API copies of the pictures in history.
     picture_files: PictureFiles | None = None
+    # ADR 0322, 0333: the one clock the tools and the services take the time and their waits from.
+    clock: Clock = field(default_factory=SystemClock)
 
 
 @dataclass(frozen=True)
@@ -1403,6 +1406,17 @@ def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
     except ZoneInfoNotFoundError as exc:
         message = f"work_state.timezone must be an IANA zone name: {raw!r}"
         raise ValueError(message) from exc
+
+
+def _system_clock(config: Mapping[str, Any]) -> SystemClock:
+    """The one clock (ADR 0333), in ``work_state.timezone`` else the machine's zone (ADR 0322)."""
+    built = SystemClock(_work_state_timezone(config))
+    try:
+        built.check_rule()
+    except ZoneError as exc:
+        msg = f"runtime: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
+    return built
 
 
 def _work_state_auto(config: Mapping[str, Any], config_path: Path) -> bool:
@@ -3149,7 +3163,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     moment = _moment(full_config, config_path, memory.db_path, device)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
-    local_zone = resolve_zone(None, _work_state_timezone(full_config))[1]
+    system_clock = _system_clock(full_config)
+    local_zone = system_clock.zone
     # ADR 0234: home and school move out of the settings into the places table, once.
     place_state.migrate_settings(memory.db_path, _transit_places(full_config))
     maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
@@ -3481,6 +3496,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         llm_client=llm_client,
         system_prompt=system_prompt,
         role=role,
+        clock=system_clock,
         listen_addresses=listen_addresses,
         listen_hosts=listen_hosts,
         terminal_hub=terminal_hub,

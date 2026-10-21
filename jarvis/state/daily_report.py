@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from jarvis.shared.clock import system_zone, zone_key
 from jarvis.shared.lang import TEXT, t
 from jarvis.state import daily_store, device_reads, timesink
 from jarvis.state.daily_contract import DailyError, fingerprint
@@ -84,7 +85,6 @@ MILESTONES = (
 """Phrases a page shows when something happened in the world: every capture holding one is
 listed again at the top of the material, so a 0.4-minute confirmation page cannot go unread.
 ponytail: a fixed list; a page that says it differently is reached by search, not by the index."""
-_LOCALTIME = Path("/etc/localtime")
 _GIT_TIMEOUT_S = 5.0
 _FIELD_SEP = "\x1f"
 _MAIN = "main"
@@ -108,12 +108,8 @@ def resolve_zone(name: str | None, configured: tzinfo | None) -> tuple[str, tzin
             raise DailyError(msg) from exc
     if isinstance(configured, ZoneInfo) and configured.key:
         return configured.key, configured
-    try:
-        parts = _LOCALTIME.resolve().parts
-        key = "/".join(parts[parts.index("zoneinfo") + 1 :])
-        return key, ZoneInfo(key)
-    except (OSError, ValueError, ZoneInfoNotFoundError):
-        return "UTC", UTC
+    zone = system_zone()
+    return zone_key(zone) or "UTC", zone
 
 
 def resolve_day(local_date: str | None, zone: tzinfo, now: datetime) -> date:
