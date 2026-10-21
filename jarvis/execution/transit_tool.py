@@ -52,6 +52,8 @@ _SLOWER: Final = 1.5
 _LOOKBACK_MIN: Final = 10
 # A bus this many minutes short of a normal walk is gone for good: no run makes it up.
 _RUN_MIN: Final = 5
+# How many later trips of a missed bus's route are tried for the first he can catch.
+_NEXT_TRIES: Final = 6
 _LIVE_TIMEOUT_S: Final = 6.0
 # spare_min: at or above this he has room (easy); at or below its negative the bus is gone.
 _EASY_SPARE_MIN: Final = 2
@@ -374,6 +376,25 @@ class _Times:
         except Exception:  # noqa: BLE001 - without the timetable there is no next bus.
             return None
 
+    def catchable_after(
+        self, missed: list[dict[str, Any]], now: datetime,
+    ) -> list[dict[str, Any]]:
+        """For each missed option, the first later trip of its route and stop he can catch.
+
+        Earliest first, a trip once however many options lead to it. An option with no such trip
+        in the timetable gives nothing.
+        """
+        found: dict[tuple[str | None, datetime], dict[str, Any]] = {}
+        for option in missed:
+            nxt = self.following(option, now)
+            for _ in range(_NEXT_TRIES):
+                if nxt is None or nxt["verdict"] != "missed":
+                    break
+                nxt = self.following(nxt, now)
+            if nxt is not None and nxt["verdict"] != "missed":
+                found.setdefault((nxt["legs"][0]["bus_trip_id"], _first(nxt)), nxt)
+        return sorted(found.values(), key=_first)
+
     def following(self, option: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         """The option for the next trip of this one's route, stop and direction, or None."""
         leg = option["legs"][0]
@@ -454,7 +475,9 @@ def _three(
 
     The run-for bus is the latest he would miss at a normal walk by no more than five minutes
     (ADR 0265). The one after is the next from any route whose ride is at most 1.5x the shortest;
-    when Google has none, the timetable's next trip of the same route and stop.
+    when Google has none, the timetable's next trip of the same route and stop. When every bus
+    Google gave is missed, what he can catch is the timetable's next trip of each of those routes,
+    however far he missed them; with none there either, only the run-for bus is left.
     """
     ordered = sorted(options, key=_first)
     run_for = [
@@ -463,8 +486,8 @@ def _three(
     ][-1:]
     catchable = [o for o in ordered if o["verdict"] != "missed"]
     if not catchable:
-        after = times.following(run_for[0], now) if run_for else None
-        return [*run_for, *([after] if after else [])]
+        later = _sensible(times.catchable_after(ordered, now))
+        return [*run_for, *later][:_MAX_OPTIONS]
     shortest = min(int(o["total_min"]) for o in catchable)
     after = next((o for o in catchable[1:] if o["total_min"] <= _SLOWER * shortest), None)
     if after is None:

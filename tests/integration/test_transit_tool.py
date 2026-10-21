@@ -1032,6 +1032,80 @@ def test_with_no_later_bus_from_google_the_next_is_the_timetables_on_the_same_st
     )
 
 
+def _runs(*trips: tuple[str, str, str]) -> list[gtfs.TripSpec]:
+    """Trips ``(id, route, HH:MM at the board stop)``, each 20 min on to the alight stop."""
+    runs = []
+    for trip_id, route, at in trips:
+        end = int(at[:2]) * 60 + int(at[3:]) + 20
+        runs.append(_trip(trip_id, route, f"{at}:00", f"{end // 60:02d}:{end % 60:02d}:00"))
+    return runs
+
+
+_MISSED_BY_MORE_THAN_FIVE = [
+    pytest.param(
+        [("26", "17:03")],
+        [("T26", "26", "17:03"), ("T26n", "26", "17:33")],
+        [("26", "5:33 pm", "easy", False)],
+        id="the-only-bus-missed-by-nine-takes-its-routes-next-trip",
+    ),
+    pytest.param(
+        [("26", "17:03")],
+        [("T26", "26", "17:03"), ("T26b", "26", "17:08"), ("T26c", "26", "17:10"),
+         ("T26d", "26", "17:11")],
+        [("26", "5:11 pm", "tight", False)],
+        id="next-trips-still-missed-are-passed-over-for-the-first-he-can-catch",
+    ),
+    pytest.param(
+        [("26", "17:03"), ("39", "17:04")],
+        [("T26", "26", "17:03"), ("T26n", "26", "17:33"),
+         ("T39", "39", "17:04"), ("T39n", "39", "17:23")],
+        [("39", "5:23 pm", "easy", False), ("26", "5:33 pm", "easy", False)],
+        id="each-missed-route-gives-its-next-trip-in-departure-order",
+    ),
+    pytest.param(
+        [("26", "17:08"), ("39", "17:03")],
+        [("T26", "26", "17:08"), ("T26n", "26", "17:38"),
+         ("T39", "39", "17:03"), ("T39n", "39", "17:20")],
+        [("26", "5:08 pm", "missed", True), ("39", "5:20 pm", "easy", False),
+         ("26", "5:38 pm", "easy", False)],
+        id="the-run-for-bus-then-the-next-trips-of-every-missed-route",
+    ),
+]
+
+
+@pytest.mark.parametrize(("buses", "trips", "expected"), _MISSED_BY_MORE_THAN_FIVE)
+def test_when_every_bus_google_gave_is_missed_the_timetables_next_trips_are_the_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    buses: list[tuple[str, str]], trips: list[tuple[str, str, str]],
+    expected: list[tuple[str, str, str, bool]],
+) -> None:
+    """ADR 0343: a 12 min walk misses each bus at 17:00; the next trip comes from the store.
+
+    Whatever the miss, each missed route's next trip is looked up (the first one he can still
+    catch), so "no bus route" is only for a route the timetable has nothing later for.
+    """
+    _serve(monkeypatch, answer=routes_with(*(
+        _placed(bus_route(line, at, walk=12)) for line, at in buses
+    )))
+    live = _live(tmp_path, *_runs(*trips))
+    out = _call({"to": "home"}, here=fix_with(), bus_live=live)
+    assert [
+        (o["legs"][0]["route"], o["legs"][0]["departs"], o["verdict"], o.get("run_for", False))
+        for o in out["options"]
+    ] == expected
+
+
+def test_every_bus_missed_and_none_later_in_the_timetable_is_no_bus_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0343: the only bus is missed by nine and the store has no later trip: nothing to give."""
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "17:03", walk=12))))
+    live = _live(tmp_path, *_runs(("T26", "26", "17:03")))
+    with pytest.raises(ToolError, match="No bus route found") as caught:
+        _call({"to": "home"}, here=fix_with(), bus_live=live)
+    assert caught.value.code == "not_found"
+
+
 def test_a_time_today_is_said_as_a_clock_and_another_days_with_its_day(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
