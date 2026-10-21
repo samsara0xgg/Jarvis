@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowsClockwise } from '@phosphor-icons/react';
 import { tr, useT, type L, type Lang } from './companionSettings';
-import './work-state-module.css';
 
 // ADR 0023: the 当前状态 module. The daemon owns the record (`GET /inherent/work-state`,
 // `POST /inherent/work-state/refresh` runs the same analysis the conversation uses);
-// this file owns presentation only. Without a `port` (design lab) it shows demo data.
+// this file only fetches and reads it. Without a `port` (the --demo companion) it shows demo data.
 
 export type Basis = 'stated' | 'observed' | 'inferred';
 export type Claim = { text: string; basis: Basis; refs: string[]; progress?: string | null; as_of?: string | null };
@@ -80,7 +78,6 @@ export function useWorkState(port: string | null) {
 const pad = (n: number) => String(n).padStart(2, '0');
 const hm = (value: string | number | null | undefined) => { if (!value) return '—'; const d = new Date(value); return Number.isNaN(d.getTime()) ? '—' : `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const ageMinutes = (value: string | number | null | undefined, now = Date.now()) => { if (!value) return null; const t = new Date(value).getTime(); return Number.isNaN(t) ? null : Math.round((now - t) / 60_000); };
-const basisText: Record<Basis, string> = { stated: '你说的', observed: '观察到', inferred: '推断' };
 const STALE_MINUTES = 30;
 const RECENT_MINUTES = 120;
 
@@ -106,40 +103,4 @@ export function nowLine(now: Claim | null | undefined, analyzedAt: string | null
   const age = ageMinutes(asOf, at);
   const current = age !== null && age <= RECENT_MINUTES;
   return { text: tr(lang, current ? [`As of ${hm(asOf)}: ${now.text}`, `截至 ${hm(asOf)}：${now.text}`] : [`At ${hm(asOf)}: ${now.text}`, `${hm(asOf)}：${now.text}`]), current, at: hm(asOf), claim: now.text };
-}
-
-export function WorkStateSummary({ view }: { view: WorkState | null }) {
-  const fresh = freshnessLine(view);
-  const now = nowLine(view?.state?.now, view?.state?.analyzed_at);
-  const idle = view === null ? 'Syncing…' : view.state ? 'No recent activity observed' : 'No status yet';
-  return <>
-    <span className="module-primary">{now ? now.text : idle}</span>
-    <span className={`module-caption ${fresh.stale ? 'needs-attention' : ''}`}>{fresh.text}</span>
-  </>;
-}
-
-function ClaimRow({ claim }: { claim: Claim }) {
-  return <div className="work-claim">
-    <span className={`work-basis is-${claim.basis}`}>{basisText[claim.basis]}</span>
-    <div>{claim.text}{claim.progress ? <small>进展：{claim.progress}</small> : null}</div>
-  </div>;
-}
-
-export function WorkStateDetail({ view, onRefresh, refreshing, notice }: { view: WorkState | null; onRefresh: () => void; refreshing: boolean; notice: string | null }) {
-  const state = view?.state ?? null;
-  const fresh = freshnessLine(view);
-  const now = nowLine(state?.now, state?.analyzed_at);
-  const busy = refreshing || view?.refreshing === true;
-  return <div className="work-detail">
-    {view === null ? <p className="quota-note">正在同步…</p> : state === null ? <p className="quota-note">还没有整理过状态<small>点右下角刷新，Jarvis 会读取最新的活动数据并分析。</small></p> : <>
-      <section className="work-section"><h4>{now?.current ? '最近在做' : '最后一次观察到'}</h4>{state.now ? <ClaimRow claim={{ ...state.now, text: now?.text ?? state.now.text }}/> : <p className="work-empty">最近窗口内没有观察到活动，未知。</p>}</section>
-      <section className="work-section"><h4>今天的主要活动（{state.observed_until ? `到 ${hm(state.observed_until)}` : '当天'}）</h4>{state.activities.length ? state.activities.map((claim, i) => <ClaimRow key={i} claim={claim}/>) : <p className="work-empty">没有足够的数据。</p>}</section>
-      {state.links.length > 0 && <section className="work-section"><h4>相关的待办与讨论</h4>{state.links.map((link, i) => <div className="work-claim" key={i}><span className={`work-basis is-${link.basis}`}>{link.kind === 'todo' ? '待办' : '讨论'}</span><div>{link.title || link.note}{link.title ? <small>{link.note}</small> : null}</div></div>)}</section>}
-      {state.uncertainties.length > 0 && <section className="work-section"><h4>不确定 / 材料范围</h4><ul className="work-uncertain">{state.uncertainties.map((u, i) => <li key={i}>{u}</li>)}</ul></section>}
-    </>}
-    <div className="quota-foot">
-      <span className={`quota-status ${busy ? 'is-muted' : /^(未更新|Couldn’t update)/.test(notice ?? '') || fresh.stale ? 'is-warn' : 'is-ok'}`}><i/>{busy ? '更新中，保留上次结果' : notice ?? (view?.outcome === 'failed' ? `未更新：${view.error ?? '分析失败'}` : view?.outcome === 'no_evidence' ? '没有可分析的新数据，保留上次结果' : fresh.text)}</span>
-      <button className="quota-refresh" aria-label="刷新" title="刷新" disabled={busy} onClick={onRefresh}><ArrowsClockwise size={16} className={busy ? 'is-spinning' : ''}/></button>
-    </div>
-  </div>;
 }
