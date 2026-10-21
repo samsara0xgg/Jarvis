@@ -19,39 +19,11 @@ from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.surface import voice_tts
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.settings import DEVICES, YAML
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-# The keys the page reads, as config/jarvis.yaml held them on 2026-09-25.
-YAML: dict[str, Any] = {
-    "llm": {
-        "default_preset": "luna",
-        "presets": {
-            "luna": {"model": "gpt-5.6-luna"},
-            "gpt6-luna": {"model": "gpt-6-luna"},
-            "gpt6-sol": {"model": "gpt-6-sol"},
-        },
-    },
-    "work_state": {"preset": "gpt6-luna"},
-    "daily_report": {"preset": "gpt6-sol"},
-    "observer": {
-        "repos": ["~/Projects/jarvis", "~/Projects/typlus"], "timesink": {"enabled": True},
-    },
-    "memory": {"retain_audio": True, "audio_retention_days": 30},
-    "tools": {"screen": {"retention_days": 7}},
-    "realtime": {
-        "wake_threshold": 0.95,
-        "tts_voice": "Chinese (Mandarin)_Warm_Bestie",
-        "output_device": None,
-        "gpt_live": {"enabled": True},
-        "single_audio_ingress": {"echo_cancellation": "auto"},
-    },
-}
-DEVICES = {
-    "input": ["reSpeaker XVF3800 4-Mic Array", "MacBook Pro Microphone"],
-    "output": ["MacBook Pro Speakers", "Multi-Output Device 2"],
-}
 
 # What CoreAudio says "System default" is; a kind it cannot answer for is absent.
 DEFAULT_DEVICES = {"input": "MacBook Pro Microphone", "output": "MacBook Pro Speakers"}

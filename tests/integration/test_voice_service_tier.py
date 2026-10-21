@@ -23,8 +23,13 @@ from jarvis.decision.llm import LLMClient
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.canary._helpers import repo_root
-from tests.integration.test_spoken_streaming import _frames, _Peer, _spoken, _spoken_runtime
-from tests.integration.test_wire_routine_streaming import _drive, _intent, _payloads, _runtime
+from tests.support.routine import (
+    drive_streaming_turn,
+    logged_payloads,
+    routine_runtime,
+    user_intent,
+)
+from tests.support.spoken import SpokenPeer, response_frames, spoken_intent, spoken_runtime
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -130,7 +135,7 @@ def test_batch_chat_sends_the_tier_to_openai_only() -> None:
 
 
 def _completed_stream(tier: str | None) -> list[dict[str, Any]]:
-    frames = _frames([("final_answer", "Hi.")])
+    frames = response_frames([("final_answer", "Hi.")])
     if tier is not None:
         frames[-1]["response"]["service_tier"] = tier
     return frames
@@ -242,11 +247,11 @@ def test_every_request_of_a_spoken_stream_turn_carries_the_tier(
     monkeypatch.setattr(llm_module, "_is_openai_host", lambda _url: True)  # peer is localhost
     answer = "你还没有记过备忘录。"
     outputs = [[("commentary", "我看一下。"), ("call", "kept")], [("final_answer", answer)]]
-    with _Peer(outputs) as peer:
-        runtime = _tiered(_spoken_runtime(tmp_path, peer.url), "priority")
-        _drive(runtime, _spoken(runtime.conn, "turn-tier", "我记过什么"))
+    with SpokenPeer(outputs) as peer:
+        runtime = _tiered(spoken_runtime(tmp_path, peer.url), "priority")
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-tier", "我记过什么"))
     assert [body.get("service_tier") for _path, body in peer.requests] == ["priority", "priority"]
-    tiers = [p["service_tier"] for p in _payloads(runtime.conn, "cost.recorded")]
+    tiers = [p["service_tier"] for p in logged_payloads(runtime.conn, "cost.recorded")]
     assert tiers == ["priority", "priority"]
 
 
@@ -255,9 +260,9 @@ def test_a_spoken_turn_with_the_switch_off_sends_no_tier(
 ) -> None:
     """No key set: the request body has no ``service_tier``."""
     monkeypatch.setattr(llm_module, "_is_openai_host", lambda _url: True)
-    with _Peer([[("final_answer", "好的。")]]) as peer:
-        runtime = _tiered(_spoken_runtime(tmp_path, peer.url), None)
-        _drive(runtime, _spoken(runtime.conn, "turn-off", "你好"))
+    with SpokenPeer([[("final_answer", "好的。")]]) as peer:
+        runtime = _tiered(spoken_runtime(tmp_path, peer.url), None)
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-off", "你好"))
     ((_path, body),) = peer.requests
     assert "service_tier" not in body
 
@@ -288,9 +293,9 @@ def _batch_turn(
         LLMClient, "_get_openai_client",
         lambda _self: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
     )
-    runtime = _tiered(_runtime(tmp_path, "http://127.0.0.1:1/v1", routine=False), "priority")
+    runtime = _tiered(routine_runtime(tmp_path, "http://127.0.0.1:1/v1", routine=False), "priority")
     intent = (
-        _intent(runtime.conn, "turn-batch", "你好")
+        user_intent(runtime.conn, "turn-batch", "你好")
         if channel == "cli_stdin"
         else emit_event(
             runtime.conn, type="surface.user_intent",
@@ -298,7 +303,7 @@ def _batch_turn(
             correlation={"turn_id": "turn-batch"},
         )
     )
-    _drive(runtime, intent)
+    drive_streaming_turn(runtime, intent)
     return sent
 
 

@@ -15,20 +15,16 @@ import contextlib
 import functools
 import json
 import sqlite3
-import threading
 import time
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.decision.mail_reply import MailReply
-from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
-from jarvis.execution.tools import ToolError
+from jarvis.decision.surrogate_route import JevLog
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.runtime.home import Home
 from jarvis.runtime.inherent_loop import _mail_letter, _serve_today, _set_todo
@@ -39,118 +35,27 @@ from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.integration.weatherkit_world import NOW, Net, kit_for, make_key
+from tests.support import home_routes as home_routes_support
+from tests.support.home_routes import (
+    LETTERS,
+    LIST,
+    LOCAL,
+    ZONE,
+    Connections,
+    Gmail,
+    HomeJev,
+    Microsoft,
+    make_home,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator
     from pathlib import Path
 
-    from jarvis.runtime.weatherkit import WeatherKit
+    from jarvis.decision.mail_reply import MailReply
 
-ZONE = "America/Vancouver"
-LIST = {"displayName": "Tasks", "wellknownListName": "defaultList", "id": "AQMkADAw-list="}
-TASKS = [
-    {"status": "notStarted", "title": "repack jarvis", "id": "AQMkADAw-repack="},
-    {"status": "completed", "title": "old one", "id": "AQMkADAw-old="},
-    {
-        "status": "notStarted", "title": "CSC370 A3", "id": "AQMkADAw-a3=",
-        "dueDateTime": {"dateTime": "2026-09-26T00:00:00.0000000", "timeZone": "UTC"},
-    },
-]
-# gmail_get's metadata answers; gmail_search lists them in this order, which is not
-# newest first, so the route's own sort by Date shows.
-LETTERS: list[dict[str, Any]] = [
-    {
-        "id": "199a1c0d4101", "threadId": "199a1c0d4101", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "Office hours move to Thursday", "from": '"Prof. Lee" <lee@uvic.ca>',
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 14:40:00 -0700",
-        "body": "<div>Hi Allen,<br>Thursday 3pm.</div>",
-    },
-    {
-        "id": "199a1c0d4102", "threadId": "199a1c0d4102", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "Your weekly digest", "from": "GitHub <noreply@github.com>",
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 13:00:00 -0700",
-    },
-    {
-        "id": "199a1c0d4103", "threadId": "199a1c0d4103", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "今晚还来吗？", "from": "妈妈 <mom@example.com>",  # noqa: RUF001 — her words.
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 15:05:00 -0700",
-    },
-    {
-        "id": "199a1c0d4104", "threadId": "199a1c0d4104", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "Your receipt", "from": "billing@shop.example",  # no display name
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 12:00:00 -0700",
-    },
-    {
-        "id": "199a1c0d4105", "threadId": "199a1c0d4105", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "50% off everything this weekend", "from": "Shop Deals <deals@shop.example>",
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 11:00:00 -0700",
-    },
-    {
-        "id": "199a1c0d4106", "threadId": "199a1c0d4106", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "Our weekly newsletter", "from": "Weekly Brew <hello@brew.example>",
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 10:00:00 -0700",
-    },
-    {
-        "id": "199a1c0d4107", "threadId": "199a1c0d4107", "labelIds": ["UNREAD", "INBOX"],
-        "subject": "Quick question about your listing", "from": "Sam <sam@example.com>",
-        "to": "allen@example.com", "date": "Thu, 25 Sep 2026 09:00:00 -0700",
-    },
-]
-# The calendar is empty on the real account: the mirror reads no event, so Today's events are
-# the ones a test writes to the ledger.
-ANSWERS = {
-    "list-todo-task-lists": [LIST],
-    "list-todo-tasks": TASKS,
-}
+jev = home_routes_support.jev  # the fixture, found by name in this module
 
-
-class _Microsoft:
-    """The connected server: Graph's JSON as a text block, like ms-365-mcp-server answers."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        assert server == "microsoft"
-        self.calls.append((tool, dict(args)))
-        return {"text": json.dumps({"value": ANSWERS.get(tool, [])})}
-
-
-class _Gmail:
-    """The connected Workspace server: JSON in a text block, a failure as {"error": ...}."""
-
-    def __init__(self, error: str | None = None) -> None:
-        self.error = error
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        assert server == "gmail"
-        self.calls.append((tool, dict(args)))
-        if self.error:
-            return {"text": json.dumps({"error": self.error})}
-        if tool == "gmail_search":
-            hits = [{"id": one["id"], "threadId": one["threadId"]} for one in LETTERS]
-            return {"text": json.dumps({"messages": hits, "resultSizeEstimate": len(hits)})}
-        if tool == "gmail_batchModify":
-            body = {"modifiedCount": len(args["messageIds"]), "status": "success"}
-            return {"text": json.dumps(body)}
-        letter = next((one for one in LETTERS if one["id"] == args["messageId"]), None)
-        if letter is None:
-            return {"text": json.dumps({"error": "Requested entity was not found."})}
-        body = letter.get("body", "")
-        return {"text": json.dumps({**letter, "snippet": "", "body": body, "attachments": []})}
-
-
-class _Connections:
-    def __init__(self, server: _Microsoft | None, gmail: _Gmail | None = None) -> None:
-        self.servers = {"microsoft": server, "gmail": gmail}
-
-    def client_for(self, server: str) -> _Microsoft | _Gmail:
-        found = self.servers.get(server)
-        if found is None:
-            msg = f"mcp server {server!r} is not connected"
-            raise ToolError(msg, code="mcp_server")
-        return found
 
 
 def _flag(call: Any, name: str) -> Any:  # noqa: ANN401 — a route's (ids, flag) body.
@@ -162,7 +67,6 @@ def _flag(call: Any, name: str) -> Any:  # noqa: ANN401 — a route's (ids, flag
     return run
 
 
-LOCAL = ZoneInfo(ZONE)
 WROTE = datetime(2026, 10, 14, 9, 0, tzinfo=LOCAL)  # a test's things are written from here
 TODO = f"{LIST['id']}|AQMkADAw-repack="  # the mirrored to-do with no time
 TODO_DUE = f"{LIST['id']}|AQMkADAw-a3="  # the mirrored to-do due 2026-09-26
@@ -173,7 +77,7 @@ class Ledger(NamedTuple):
 
     path: Path
     conn: sqlite3.Connection
-    server: _Microsoft
+    server: Microsoft
     mirror: ThingsMirror
 
 
@@ -182,8 +86,8 @@ def ledger(tmp_path: Path) -> Iterator[Ledger]:
     """An empty event log for his things, with the mirror between it and a fake Microsoft."""
     path = tmp_path / "events.db"
     conn = open_event_log(path)
-    server = _Microsoft()
-    mirror = ThingsMirror(_Connections(server), path, LOCAL)  # type: ignore[arg-type]
+    server = Microsoft()
+    mirror = ThingsMirror(Connections(server), path, LOCAL)  # type: ignore[arg-type]
     mirror.now = lambda: (WROTE + timedelta(hours=1)).astimezone(UTC)  # after every _put
     yield Ledger(path, conn, server, mirror)
     conn.close()
@@ -226,17 +130,6 @@ def _weather_answers(
     monkeypatch: pytest.MonkeyPatch, *, reachable: bool = True,
 ) -> Net:
     return Net(monkeypatch, down=() if reachable else ("weatherkit.apple.com",))
-
-
-def _home(
-    server: _Microsoft | None, gmail: _Gmail | None = None, kit: WeatherKit | None = None,
-) -> Home:
-    return Home(
-        _Connections(server, gmail),  # type: ignore[arg-type]
-        (ZONE, LOCAL),
-        {"latitude": 49.28, "longitude": -123.12, "country_code": "CA"},
-        weatherkit=kit,
-    )
 
 
 def _day() -> date:
@@ -319,7 +212,7 @@ def test_today_serves_his_events_and_to_dos_from_the_ledger_and_the_weather(
 
     net = _weather_answers(monkeypatch)
     kit = kit_for(make_key(tmp_path)[0])
-    reply = _client(_home(ledger.server, kit=kit), ledger=ledger).get("/inherent/today")
+    reply = _client(make_home(ledger.server, kit=kit), ledger=ledger).get("/inherent/today")
     assert reply.status_code == 200
     body = reply.json()
     assert set(body) == {"events", "todos", "weather"}
@@ -385,7 +278,7 @@ def test_an_all_day_thing_over_several_days_is_on_each_day_from_that_days_midnig
         ledger, 1, "Conference", on_day=begin.isoformat(),
         last_day=end.isoformat() if last > first else "",
     )
-    body = _client(_home(None), ledger=ledger).get("/inherent/today").json()
+    body = _client(make_home(None), ledger=ledger).get("/inherent/today").json()
     assert body["events"] == (
         [{"id": conference, "title": "Conference", "start": _iso(_at(day, 0)), "all_day": True}]
         if shown else []
@@ -407,7 +300,7 @@ def test_a_thing_a_mail_made_is_on_the_card_only_once_he_confirms_it(ledger: Led
     ]
     for one in made:
         things.add(ledger.conn, one, by="mail", evidence="mail", zone=LOCAL, now=WROTE)
-    client = _client(_home(None), ledger=ledger)
+    client = _client(make_home(None), ledger=ledger)
     body = client.get("/inherent/today").json()
     assert (body["events"], body["todos"]) == ([], [])
 
@@ -425,7 +318,7 @@ def test_today_does_not_need_microsoft(ledger: Ledger) -> None:
     day = _day()
     visit = _put(ledger, 1, "Dentist", start_at=_iso(_at(day, 15)), end_at=_iso(_at(day, 16)))
     assert ledger.mirror.sync() == 2  # while it was connected
-    client = _client(_home(None), ledger=ledger)
+    client = _client(make_home(None), ledger=ledger)
     reply = client.get("/inherent/today")
     assert reply.status_code == 200
     assert reply.json() == {
@@ -453,7 +346,7 @@ def test_weather_failure_keeps_the_ledgers_rows(
     kit = kit_for(make_key(tmp_path)[0])
     _put(ledger, 1, "Dentist", start_at=_iso(_at(_day(), 15)))
     assert ledger.mirror.sync() == 2
-    body = _client(_home(ledger.server, kit=kit), ledger=ledger).get("/inherent/today").json()
+    body = _client(make_home(ledger.server, kit=kit), ledger=ledger).get("/inherent/today").json()
     assert body["weather"] is None
     assert [e["title"] for e in body["events"]] == ["Dentist"]
     assert [t["title"] for t in body["todos"]] == ["CSC370 A3", "repack jarvis"]
@@ -464,7 +357,7 @@ def test_with_no_weatherkit_key_the_home_shows_no_weather_and_asks_nobody(
 ) -> None:
     """No key: Today answers without weather and no request is made."""
     net = _weather_answers(monkeypatch)
-    body = _client(_home(ledger.server), ledger=ledger).get("/inherent/today").json()
+    body = _client(make_home(ledger.server), ledger=ledger).get("/inherent/today").json()
     assert body == {"events": [], "todos": [], "weather": None}
     assert net.asked == []
 
@@ -475,7 +368,7 @@ def test_the_checkbox_on_a_to_do_id_writes_the_task_to_todo_and_the_card_follows
     """One update-todo-task per click, To Do first; the mirrored thing and the card follow."""
     assert ledger.mirror.sync() == 2
     ledger.server.calls.clear()
-    client = _client(_home(ledger.server), ledger=ledger)
+    client = _client(make_home(ledger.server), ledger=ledger)
     assert TODO in _todo_ids(client)
     assert client.post("/inherent/today/todo", json={"id": TODO, "done": True}).status_code == 200
     assert TODO not in _todo_ids(client)
@@ -503,7 +396,7 @@ def test_the_checkbox_on_a_thing_closes_and_reopens_it_in_the_ledger_alone(
 ) -> None:
     """Done closes it and open reopens it, by him; a click that changes nothing writes nothing."""
     buy = _put(ledger, 1, "Buy milk", "do")
-    client = _client(_home(ledger.server), ledger=ledger)
+    client = _client(make_home(ledger.server), ledger=ledger)
     # (done, the state after it, the writes to the ledger so far)
     for done, state, writes in [
         (True, "done", 2), (True, "done", 2), (False, "open", 3), (False, "open", 3),
@@ -531,7 +424,7 @@ def test_a_tick_on_a_thing_that_is_not_there_is_a_404_and_on_a_bad_id_a_400_and_
     ledger: Ledger, todo_id: str, status: int,
 ) -> None:
     """The ledger and Microsoft are left as they were."""
-    client = _client(_home(ledger.server), ledger=ledger)
+    client = _client(make_home(ledger.server), ledger=ledger)
     reply = client.post("/inherent/today/todo", json={"id": todo_id, "done": True})
     assert reply.status_code == status
     assert _thing_events(ledger) == []
@@ -540,8 +433,8 @@ def test_a_tick_on_a_thing_that_is_not_there_is_a_404_and_on_a_bad_id_a_400_and_
 
 def test_mail_is_unread_primary_gmail_from_people() -> None:
     """GET /inherent/mail: unread Primary Gmail by read-only tools, no-reply out, newest first."""
-    gmail = _Gmail()
-    reply = _client(_home(_Microsoft(), gmail)).get("/inherent/mail")
+    gmail = Gmail()
+    reply = _client(make_home(Microsoft(), gmail)).get("/inherent/mail")
     letters = reply.json()["unread"]
     assert [(one["id"], one["from"], one["reply"], one["junk"]) for one in letters] == [
         ("199a1c0d4103", "妈妈", None, False),
@@ -562,86 +455,6 @@ def test_mail_is_unread_primary_gmail_from_people() -> None:
     ]
 
 
-class _Jev:
-    """A fake decisions endpoint (ADR 0123): answers P(needs a reply) by the subject line."""
-
-    def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-        # subject -> (P(needs a reply), P(junk))
-        self.odds = {
-            "Office hours move to Thursday": (0.97, 0.02),
-            "今晚还来吗？": (0.04, 0.01),  # noqa: RUF001 — her words.
-            "Your receipt": (0.5, 0.5),
-            "50% off everything this weekend": (0.03, 0.95),
-            "Our weekly newsletter": (0.05, 0.89),  # just under the junk bar
-            "Quick question about your listing": (0.95, 0.99),  # junk-looking, but may need a reply
-        }
-        # subject -> probabilities of the importance choice; unlisted subjects are "normal"
-        self.importance = {
-            "Office hours move to Thursday": {
-                "urgent": 0.5, "important": 0.3, "normal": 0.1, "low": 0.1,
-            },
-            "50% off everything this weekend": {
-                "urgent": 0.0, "important": 0.0, "normal": 0.1, "low": 0.9,
-            },
-        }
-        self.category = "school"
-        self.status = 200
-        self.delay_s = 0.0
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                outer.requests.append(request)
-                time.sleep(outer.delay_s)
-                subject = request["state"].split("Subject: ", 1)[1]
-                reply, junk = outer.odds[subject]
-                answers: dict[str, Any] = {"reply": {"noul": reply}, "junk": {"noul": junk}}
-                if "importance" in request["questions"]:
-                    answers["importance"] = {
-                        "type": "choice", "choice": "normal", "confidence": 0.5,
-                        "probabilities": outer.importance.get(
-                            subject, {"urgent": 0.0, "important": 0.0, "normal": 1.0, "low": 0.0},
-                        ),
-                    }
-                    answers["category"] = {
-                        "type": "choice", "choice": outer.category, "confidence": 0.9,
-                        "probabilities": {outer.category: 0.9},
-                    }
-                body = json.dumps({"answers": answers, "usage": {"cost": 0.00001}}).encode()
-                self.send_response(outer.status)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                with contextlib.suppress(BrokenPipeError):  # the client gave up on a slow call
-                    self.wfile.write(body)
-
-            def log_message(self, *_args: object) -> None:
-                return
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def reply(
-        self, *, timeout_ms: int = 1500, log: JevLog | None = None, importance: bool = False,
-    ) -> MailReply:
-        route = SurrogateRoute(
-            model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
-            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
-        )
-        return MailReply(route, 0.9, 0.1, 0.9, importance=importance)
-
-
-@pytest.fixture
-def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
-    """A fake endpoint, and a key for the daemon to find."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-a-secret")
-    fake = _Jev()
-    yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
-
-
 def _marks(client: TestClient) -> dict[str, str | None]:
     return {one["id"]: one["reply"] for one in client.get("/inherent/mail").json()["unread"]}
 
@@ -652,14 +465,14 @@ def _junk(client: TestClient) -> list[str]:
 
 def _with_jev(mail_reply: MailReply) -> TestClient:
     home = Home(
-        _Connections(_Microsoft(), _Gmail()),  # type: ignore[arg-type]
+        Connections(Microsoft(), Gmail()),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None, mail_reply,
     )
     return _client(home)
 
 
 def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(
-    jev: _Jev, caplog: pytest.LogCaptureFixture,
+    jev: HomeJev, caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Each person's letter is asked once, name and subject only, zdr on; the bars map to marks."""
     client = _with_jev(jev.reply())
@@ -698,7 +511,7 @@ def test_mail_reply_sends_only_name_and_subject_and_marks_by_threshold(
     assert len(jev.requests) == 6
 
 
-def test_importance_rides_the_same_request_and_scores_by_expected_value(jev: _Jev) -> None:
+def test_importance_rides_the_same_request_and_scores_by_expected_value(jev: HomeJev) -> None:
     """On: one request per letter also asks importance and category; the payload has the score."""
     client = _with_jev(jev.reply(importance=True))
     letters = {one["id"]: one for one in client.get("/inherent/mail").json()["unread"]}
@@ -721,14 +534,14 @@ def test_importance_rides_the_same_request_and_scores_by_expected_value(jev: _Je
     assert (letters["199a1c0d4101"]["reply"], letters["199a1c0d4105"]["junk"]) == ("yes", True)
 
 
-def test_importance_off_adds_no_question_and_no_field(jev: _Jev) -> None:
+def test_importance_off_adds_no_question_and_no_field(jev: HomeJev) -> None:
     """Off (the default): today's request and payload, no importance or category."""
     letters = _with_jev(jev.reply()).get("/inherent/mail").json()["unread"]
     assert all("importance" not in one and "category" not in one for one in letters)
     assert all(set(one["questions"]) == {"reply", "junk"} for one in jev.requests)
 
 
-def test_importance_missing_for_unrated_letters_and_bad_answers(jev: _Jev) -> None:
+def test_importance_missing_for_unrated_letters_and_bad_answers(jev: HomeJev) -> None:
     """A late or failed letter has no field; an unusable importance answer keeps the marks."""
     jev.category = "not-a-category"
     letters = _with_jev(jev.reply(importance=True)).get("/inherent/mail").json()["unread"]
@@ -739,7 +552,7 @@ def test_importance_missing_for_unrated_letters_and_bad_answers(jev: _Jev) -> No
     assert all("importance" not in one for one in slow.get("/inherent/mail").json()["unread"])
 
 
-def test_importance_is_kept_in_the_jev_log(jev: _Jev, tmp_path: Path) -> None:
+def test_importance_is_kept_in_the_jev_log(jev: HomeJev, tmp_path: Path) -> None:
     """The decision line holds the score, the probabilities and the category (ADR 0128)."""
     path = tmp_path / "decisions.jsonl"
     _with_jev(jev.reply(importance=True, log=JevLog(path))).get("/inherent/mail")
@@ -753,16 +566,16 @@ def test_importance_is_kept_in_the_jev_log(jev: _Jev, tmp_path: Path) -> None:
 
 
 def test_mail_reply_off_or_without_a_key_marks_nothing(
-    jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+    jev: HomeJev, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Off: no call. On without OPENROUTER_API_KEY: no call. Either way, reply is null."""
-    assert set(_marks(_client(_home(_Microsoft(), _Gmail()))).values()) == {None}
+    assert set(_marks(_client(make_home(Microsoft(), Gmail()))).values()) == {None}
     monkeypatch.delenv("OPENROUTER_API_KEY")
     assert set(_marks(_with_jev(jev.reply())).values()) == {None}
     assert jev.requests == []
 
 
-def test_mail_reply_errors_leave_letters_unmarked_and_are_retried(jev: _Jev) -> None:
+def test_mail_reply_errors_leave_letters_unmarked_and_are_retried(jev: HomeJev) -> None:
     """An HTTP error is not cached: the poll shows no mark, and a later poll asks again."""
     client = _with_jev(jev.reply())
     jev.status = 500
@@ -773,7 +586,7 @@ def test_mail_reply_errors_leave_letters_unmarked_and_are_retried(jev: _Jev) -> 
     assert len(jev.requests) == 12
 
 
-def test_mail_reply_slow_answers_wait_only_the_deadline(jev: _Jev) -> None:
+def test_mail_reply_slow_answers_wait_only_the_deadline(jev: HomeJev) -> None:
     """Past timeout_ms the route answers unmarked at once; a later poll asks again."""
     jev.delay_s = 0.6
     client = _with_jev(jev.reply(timeout_ms=150))
@@ -786,11 +599,11 @@ def test_mail_reply_slow_answers_wait_only_the_deadline(jev: _Jev) -> None:
     assert len(jev.requests) == 12
 
 
-def test_junk_is_archived_only_when_offered_and_undone_only_when_archived(jev: _Jev) -> None:
+def test_junk_is_archived_only_when_offered_and_undone_only_when_archived(jev: HomeJev) -> None:
     """Archive removes INBOX from exactly the offered ids, never deletes; unarchive adds it back."""
-    gmail = _Gmail()
+    gmail = Gmail()
     home = Home(
-        _Connections(_Microsoft(), gmail),  # type: ignore[arg-type]
+        Connections(Microsoft(), gmail),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None, jev.reply(),
     )
     client = _client(home)
@@ -824,8 +637,8 @@ def test_junk_is_archived_only_when_offered_and_undone_only_when_archived(jev: _
 
 def test_a_gmail_error_answer_is_the_homes_502() -> None:
     """Not logged in: the server answers {"error": ...} in its text, and the home gets a 502."""
-    gmail = _Gmail(error="No browser available for authentication.")
-    reply = _client(_home(_Microsoft(), gmail)).get("/inherent/mail")
+    gmail = Gmail(error="No browser available for authentication.")
+    reply = _client(make_home(Microsoft(), gmail)).get("/inherent/mail")
     assert reply.status_code == 502
     assert "No browser available" in reply.json()["detail"]
     assert [tool for tool, _args in gmail.calls] == ["gmail_search"]
@@ -833,7 +646,7 @@ def test_a_gmail_error_answer_is_the_homes_502() -> None:
 
 def test_without_microsoft_or_gmail_the_home_says_not_connected(ledger: Ledger) -> None:
     """No Microsoft or Gmail: mail and a To Do tick are 404 (not connected); Today answers."""
-    client = _client(_home(None), ledger=ledger)
+    client = _client(make_home(None), ledger=ledger)
     assert client.get("/inherent/today").json() == {"events": [], "todos": [], "weather": None}
     assert client.get("/inherent/mail").status_code == 404
     assert client.post("/inherent/today/todo", json={"id": "a|b", "done": True}).status_code == 404
@@ -844,7 +657,7 @@ def test_brief_is_yesterdays_saved_report_read_for_a_person(tmp_path: Path) -> N
     open_event_log(tmp_path / "events.db").close()
     # The daemon reads on its loop thread; TestClient serves from its own thread.
     conn = sqlite3.connect(tmp_path / "events.db", check_same_thread=False)
-    client = _client(_home(_Microsoft()), conn)
+    client = _client(make_home(Microsoft()), conn)
     assert client.get("/inherent/brief").status_code == 404
     today = datetime.now(ZoneInfo(ZONE)).date()
     yesterday = (today - timedelta(days=1)).isoformat()
@@ -882,7 +695,7 @@ def test_brief_is_yesterdays_saved_report_read_for_a_person(tmp_path: Path) -> N
 
 
 def test_mail_calls_marks_and_archives_are_lines_in_the_local_dataset(
-    jev: _Jev, tmp_path: Path,
+    jev: HomeJev, tmp_path: Path,
 ) -> None:
     """ADR 0128: a line per letter asked, its mark, and an archive or undo that joins by id."""
     path = tmp_path / "jev" / "decisions.jsonl"
@@ -918,7 +731,7 @@ def test_mail_calls_marks_and_archives_are_lines_in_the_local_dataset(
 
 
 def test_a_failed_mail_call_names_its_error_and_an_unwritable_dataset_changes_no_mark(
-    jev: _Jev, tmp_path: Path,
+    jev: HomeJev, tmp_path: Path,
 ) -> None:
     """HTTP 500: a call line with the error, no decision. A blocked path: the same marks as ever."""
     path = tmp_path / "jev" / "decisions.jsonl"
@@ -943,10 +756,10 @@ def test_a_failed_mail_call_names_its_error_and_an_unwritable_dataset_changes_no
 
 def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> None:
     """ADR 0148: GET letter caches by id; taps act only on listed or open ids, each with an undo."""
-    gmail = _Gmail()
+    gmail = Gmail()
     view = ViewState()
     home = Home(
-        _Connections(_Microsoft(), gmail),  # type: ignore[arg-type]
+        Connections(Microsoft(), gmail),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None, None, view,
     )
     client = _client(home, view=view)
@@ -994,7 +807,7 @@ def test_the_open_letter_is_read_whole_marked_read_archived_and_trashed() -> Non
 
 def test_with_the_mail_page_off_its_routes_are_404_and_archive_stays_junk_only() -> None:
     """No ViewState: the page's routes are not registered; a listed non-junk letter is a 400."""
-    client = _client(_home(_Microsoft(), _Gmail()))
+    client = _client(make_home(Microsoft(), Gmail()))
     client.get("/inherent/mail")
     assert client.get("/inherent/mail/199a1c0d4101").status_code == 404
     for route in ("read", "unread", "trash", "untrash", "../view"):
@@ -1013,14 +826,14 @@ def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> N
     assert len(mail_body("x" * 5000, links=True)) == 4001
 
 
-def _drafts_client(gmail: _Gmail | None = None) -> tuple[TestClient, ViewState, MailDrafts]:
+def _drafts_client(gmail: Gmail | None = None) -> tuple[TestClient, ViewState, MailDrafts]:
     """The mail page's draft routes wired over the real stores, as inherent_loop wires them."""
     from jarvis.runtime.inherent_loop import _draft_view, _save_draft  # noqa: PLC0415
 
     view = ViewState()
     drafts = MailDrafts(view)
     home = Home(
-        _Connections(_Microsoft(), gmail or _Gmail()),  # type: ignore[arg-type]
+        Connections(Microsoft(), gmail or Gmail()),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None, None, view,
     )
 

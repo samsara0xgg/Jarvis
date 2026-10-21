@@ -9,27 +9,25 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_ledger, voice_media, voice_tts
-from tests.integration.test_previous_answer_line import _asked
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _config,
-    _emit_response,
-    _player,
-    _submit_response,
-    _wait_until,
+from tests.support.media import (
+    RATE,
+    SAMPLES_PER_WORD,
+    TEXT,
+    WORDS,
+    AlignedProvider,
+    CallbackPump,
+    emit_response,
+    make_player,
+    media_config,
+    submit_response,
+    wait_until,
 )
-from tests.integration.test_word_playback_cursor import (
-    _RATE,
-    _SAMPLES_PER_WORD,
-    _TEXT,
-    _WORDS,
-    _AlignedProvider,
-)
+from tests.support.previous_answer import record_asked
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-_LETTERS = sum(ch.isalnum() for ch in _TEXT)  # the fifty numbers: 9 + 41 * 2 digits
+_LETTERS = sum(ch.isalnum() for ch in TEXT)  # the fifty numbers: 9 + 41 * 2 digits
 
 
 class _Wire:
@@ -53,27 +51,27 @@ class _Wire:
 
 
 def _start(tmp_path: Path) -> tuple[
-    voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer, _CallbackPump, _Wire,
+    voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer, CallbackPump, _Wire,
 ]:
     db = tmp_path / "position.db"
     conn = open_event_log(db)
-    player = _player(ring_seconds=1.0)
+    player = make_player(ring_seconds=1.0)
     wire = _Wire()
     pipeline = voice_media.StreamingTTSPipeline(
-        provider=_AlignedProvider(candidate_count=1), player=player,
+        provider=AlignedProvider(candidate_count=1), player=player,
         conn_factory=lambda: open_event_log(db), boot_high_water_id=0,
-        config=_config(), broadcaster=wire, start_player=False,
+        config=media_config(), broadcaster=wire, start_player=False,
     )
-    _asked(conn, "T")
-    rows = _emit_response(conn, response_id="R", group_id="G", turn_id="T", text=_TEXT)
-    asyncio.run(_submit_response(pipeline, rows))
-    _wait_until(lambda: player.bytes_pending() == len(_WORDS) * _SAMPLES_PER_WORD * 4)
+    record_asked(conn, "T")
+    rows = emit_response(conn, response_id="R", group_id="G", turn_id="T", text=TEXT)
+    asyncio.run(submit_response(pipeline, rows))
+    wait_until(lambda: player.bytes_pending() == len(WORDS) * SAMPLES_PER_WORD * 4)
     conn.close()
-    return pipeline, player, _CallbackPump(player), wire
+    return pipeline, player, CallbackPump(player), wire
 
 
 def _letters(words: int) -> int:
-    return sum(ch.isalnum() for ch in "".join(_WORDS[:words]))
+    return sum(ch.isalnum() for ch in "".join(WORDS[:words]))
 
 
 def test_position_follows_the_words_played_and_is_sent_only_when_it_changes(tmp_path: Path) -> None:
@@ -81,8 +79,8 @@ def test_position_follows_the_words_played_and_is_sent_only_when_it_changes(tmp_
     pipeline, _, pump, wire = _start(tmp_path)
     try:
         for _ in range(15):
-            pump.step(frames=_SAMPLES_PER_WORD)
-        _wait_until(lambda: any(p["played"] == _letters(15) for p in wire.playing()))
+            pump.step(frames=SAMPLES_PER_WORD)
+        wait_until(lambda: any(p["played"] == _letters(15) for p in wire.playing()))
         reports = wire.playing()
         assert all(p["turn_id"] == "T" and p["held"] is False for p in reports)
         # Before the first audio is audible nothing is lit or paced (ahead 0); then all of it.
@@ -101,19 +99,19 @@ def test_a_hold_stops_the_position_and_letting_go_moves_it_on(tmp_path: Path) ->
     pipeline, _, pump, wire = _start(tmp_path)
     try:
         for _ in range(10):
-            pump.step(frames=_SAMPLES_PER_WORD)
-        _wait_until(lambda: any(p["played"] == _letters(10) for p in wire.playing()))
+            pump.step(frames=SAMPLES_PER_WORD)
+        wait_until(lambda: any(p["played"] == _letters(10) for p in wire.playing()))
         pipeline.pause_speaking(True)  # noqa: FBT003 - the capture side's one bit
-        _wait_until(lambda: wire.playing()[-1]["held"] is True)
+        wait_until(lambda: wire.playing()[-1]["held"] is True)
         held_at = wire.playing()[-1]["played"]
         for _ in range(10):
-            pump.step(frames=_SAMPLES_PER_WORD)  # the device keeps calling; she is silent
+            pump.step(frames=SAMPLES_PER_WORD)  # the device keeps calling; she is silent
         assert wire.playing()[-1]["played"] == held_at
         pipeline.pause_speaking(False)  # noqa: FBT003
-        _wait_until(lambda: wire.playing()[-1]["held"] is False)
+        wait_until(lambda: wire.playing()[-1]["held"] is False)
         for _ in range(5):
-            pump.step(frames=_SAMPLES_PER_WORD)
-        _wait_until(lambda: wire.playing()[-1]["played"] == _letters(15))
+            pump.step(frames=SAMPLES_PER_WORD)
+        wait_until(lambda: wire.playing()[-1]["played"] == _letters(15))
     finally:
         assert pipeline.close()
 
@@ -123,8 +121,8 @@ def test_a_stop_is_reported_before_the_terminal_event(tmp_path: Path) -> None:
     pipeline, _, pump, wire = _start(tmp_path)
     try:
         for _ in range(12):
-            pump.step(frames=_SAMPLES_PER_WORD)
-        _wait_until(lambda: any(p["played"] == _letters(12) for p in wire.playing()))
+            pump.step(frames=SAMPLES_PER_WORD)
+        wait_until(lambda: any(p["played"] == _letters(12) for p in wire.playing()))
         pipeline.stop_foreground_output("R", reason="barge_in")
         assert pipeline.wait_until_idle(timeout_s=2)
         phases = wire.phases()
@@ -141,7 +139,7 @@ def test_a_stop_is_reported_before_the_terminal_event(tmp_path: Path) -> None:
 def test_a_duck_keeps_her_place_though_it_stops_the_heard_text() -> None:
     """Quieter speech is still in place for the captions, which heard_text does not count."""
     lease = voice_ledger.GenerationLease("S", "R", "G", "T", 1, 1)
-    ledger = voice_ledger.PlaybackLedger(lease, sample_rate=_RATE)
+    ledger = voice_ledger.PlaybackLedger(lease, sample_rate=RATE)
     ledger.begin_segment(sequence=0, text="Hello there. ", segment_hash="a")
     accepted = ledger.accept_samples(sequence=0, sample_count=1_000)
     ledger.finish_segment(sequence=0)
@@ -164,8 +162,8 @@ def test_nothing_is_lit_or_paced_before_her_first_sound(tmp_path: Path) -> None:
     pipeline, _, pump, wire = _start(tmp_path)
     try:
         assert [(p["played"], p["ahead"]) for p in wire.playing()] == [(0, 0)]
-        pump.step(frames=_SAMPLES_PER_WORD)
-        _wait_until(lambda: wire.playing()[-1]["ahead"] == _LETTERS)
+        pump.step(frames=SAMPLES_PER_WORD)
+        wait_until(lambda: wire.playing()[-1]["ahead"] == _LETTERS)
         assert wire.playing()[-1]["played"] == _letters(1)  # one word of sound, one word lit
     finally:
         assert pipeline.close()
@@ -174,7 +172,7 @@ def test_nothing_is_lit_or_paced_before_her_first_sound(tmp_path: Path) -> None:
 def test_the_ledger_places_her_only_once_something_is_audible() -> None:
     """Accepted and submitted samples are not sound: played, ahead stay 0 until audible."""
     lease = voice_ledger.GenerationLease("S", "R", "G", "T", 1, 1)
-    ledger = voice_ledger.PlaybackLedger(lease, sample_rate=_RATE)
+    ledger = voice_ledger.PlaybackLedger(lease, sample_rate=RATE)
     ledger.begin_segment(sequence=0, text="Hello there. ", segment_hash="a")
     accepted = ledger.accept_samples(sequence=0, sample_count=1_000)
     ledger.record_submitted(

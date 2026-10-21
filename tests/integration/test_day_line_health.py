@@ -26,8 +26,8 @@ from jarvis.runtime.inherent_loop import _read_day
 from jarvis.state import phone_day
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.integration.test_day_line import HEALTH, VANCOUVER, Row, _load, _ms
 from tests.integration.weatherkit_world import Net, kit_for, make_key
+from tests.support.day_line import HEALTH, VANCOUVER, Row, load_rows, minutes_ms
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,7 +59,7 @@ def test_a_workout_is_an_item_with_what_health_knew_of_it(tmp_path: Path) -> Non
     """Activity, energy, distance and average heart rate where known; reported twice is once."""
     start_ms, end_ms = day_window(parse_day("2026-10-10"), ZONE)
     conn = open_event_log(tmp_path / "events.db")
-    _load(conn, [
+    load_rows(conn, [
         _workout("w1", 600, 645, meta={
             "total_energy_kcal": 412.5, "distance_m": 8000.0, "avg_heart_rate": 151.5,
             "indoor": False, "activity_type": 37,
@@ -70,26 +70,45 @@ def test_a_workout_is_an_item_with_what_health_knew_of_it(tmp_path: Path) -> Non
     ], start_ms)
 
     items = [
-        i for i in fold_day(conn, start_ms, end_ms, _ms(start_ms, 1200), DaySources(ZONE)).items
+        i
+        for i in fold_day(
+            conn, start_ms, end_ms, minutes_ms(start_ms, 1200), DaySources(ZONE)
+        ).items
         if i["kind"] == "workout"
     ]
     conn.close()
 
     assert items == [
         {
-            "id": "w1", "lane": "you", "kind": "workout", "state": "done",
-            "start_ms": _ms(start_ms, 600), "end_ms": _ms(start_ms, 645),
-            "activity": "running", "text": "running", "energy_kcal": 420,
+            "id": "w1",
+            "lane": "you",
+            "kind": "workout",
+            "state": "done",
+            "start_ms": minutes_ms(start_ms, 600),
+            "end_ms": minutes_ms(start_ms, 645),
+            "activity": "running",
+            "text": "running",
+            "energy_kcal": 420,
         },
         {
-            "id": "w2", "lane": "you", "kind": "workout", "state": "done",
-            "start_ms": _ms(start_ms, 900), "end_ms": _ms(start_ms, 930),
-            "activity": "workout", "text": "workout",
+            "id": "w2",
+            "lane": "you",
+            "kind": "workout",
+            "state": "done",
+            "start_ms": minutes_ms(start_ms, 900),
+            "end_ms": minutes_ms(start_ms, 930),
+            "activity": "workout",
+            "text": "workout",
         },
         {
-            "id": "w3", "lane": "you", "kind": "workout", "state": "done",
-            "start_ms": _ms(start_ms, 1000), "end_ms": _ms(start_ms, 1030),
-            "activity": "yoga", "text": "yoga",
+            "id": "w3",
+            "lane": "you",
+            "kind": "workout",
+            "state": "done",
+            "start_ms": minutes_ms(start_ms, 1000),
+            "end_ms": minutes_ms(start_ms, 1030),
+            "activity": "yoga",
+            "text": "yoga",
         },
     ]
 
@@ -98,11 +117,27 @@ def test_a_workout_with_all_its_meta_says_all_of_it(tmp_path: Path) -> None:
     """The three figures, as Health's own numbers."""
     start_ms, end_ms = day_window(parse_day("2026-10-10"), ZONE)
     conn = open_event_log(tmp_path / "events.db")
-    _load(conn, [_workout("w1", 600, 645, meta={
-        "total_energy_kcal": 412.5, "distance_m": 8000.0, "avg_heart_rate": 151.5,
-    })], start_ms)
+    load_rows(
+        conn,
+        [
+            _workout(
+                "w1",
+                600,
+                645,
+                meta={
+                    "total_energy_kcal": 412.5,
+                    "distance_m": 8000.0,
+                    "avg_heart_rate": 151.5,
+                },
+            )
+        ],
+        start_ms,
+    )
     (item,) = [
-        i for i in fold_day(conn, start_ms, end_ms, _ms(start_ms, 1200), DaySources(ZONE)).items
+        i
+        for i in fold_day(
+            conn, start_ms, end_ms, minutes_ms(start_ms, 1200), DaySources(ZONE)
+        ).items
         if i["kind"] == "workout"
     ]
     conn.close()
@@ -111,18 +146,28 @@ def test_a_workout_with_all_its_meta_says_all_of_it(tmp_path: Path) -> None:
 
 def _measure(conn: Any, metric: str, at_ms: int, value: float, *, ts: int | None = None) -> None:  # noqa: ANN401
     emit_event(
-        conn, type="phone.measure_observed", ingestion_node="phone",
-        ts_epoch_ms=at_ms if ts is None else ts, event_uid=f"{metric}-{at_ms}-{value}",
+        conn,
+        type="phone.measure_observed",
+        ingestion_node="phone",
+        ts_epoch_ms=at_ms if ts is None else ts,
+        event_uid=f"{metric}-{at_ms}-{value}",
         payload={
-            "metric": metric, "start_ms": at_ms, "end_ms": at_ms, "value": value,
-            "unit": "ms", "sample_uuid": UUID,
+            "metric": metric,
+            "start_ms": at_ms,
+            "end_ms": at_ms,
+            "value": value,
+            "unit": "ms",
+            "sample_uuid": UUID,
         },
     )
 
 
 def _total(conn: Any, at_ms: int, value: float, uid: str) -> None:  # noqa: ANN401
     emit_event(
-        conn, type="phone.health_observed", ingestion_node="phone", ts_epoch_ms=at_ms + HOUR,
+        conn,
+        type="phone.health_observed",
+        ingestion_node="phone",
+        ts_epoch_ms=at_ms + HOUR,
         event_uid=uid,
         payload={"metric": "steps", "start_ms": at_ms, "end_ms": at_ms + HOUR, "value": value},
     )
@@ -148,7 +193,9 @@ def test_the_summary_is_the_days_steps_resting_heart_rate_and_mean_sdnn(tmp_path
     _measure(conn, "heart_rate", start_ms + 12 * HOUR, 64.0)  # not a summary metric
 
     assert phone_day.day_summary(conn, start_ms, end_ms) == {
-        "steps": 2000, "resting_hr": 55.5, "hrv": 57.8,
+        "steps": 2000,
+        "resting_hr": 55.5,
+        "hrv": 57.8,
     }
     empty = phone_day.day_summary(conn, *day_window(date(2026, 10, 3), ZONE))
     conn.close()
@@ -174,7 +221,11 @@ def test_the_day_route_carries_the_summary_and_the_weather(tmp_path: Path) -> No
 
     assert body["summary"] == {"steps": 1000, "resting_hr": None, "hrv": None}
     assert body["weather"] == {
-        "condition": "rain", "high": 12.0, "low": 6.0, "sunrise_ms": 1, "sunset_ms": 2,
+        "condition": "rain",
+        "high": 12.0,
+        "low": 6.0,
+        "sunrise_ms": 1,
+        "sunset_ms": 2,
     }
     assert asked == [date(2026, 10, 10)]
     assert plain["weather"] is None
@@ -202,7 +253,8 @@ def _today() -> date:
 
 
 def test_the_weather_card_is_the_days_daily_row_asked_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Condition, high, low and sun times from the WeatherKit row; a second read is the first."""
     net = Net(monkeypatch)
@@ -215,15 +267,19 @@ def test_the_weather_card_is_the_days_daily_row_asked_once(
     again = home.day_weather_card(day)
 
     assert card == {
-        "condition": "rain", "high": 15.0, "low": 8.0,
-        "sunrise_ms": int(sunrise.timestamp() * 1000), "sunset_ms": int(sunset.timestamp() * 1000),
+        "condition": "rain",
+        "high": 15.0,
+        "low": 8.0,
+        "sunrise_ms": int(sunrise.timestamp() * 1000),
+        "sunset_ms": int(sunset.timestamp() * 1000),
     }
     assert again == card
     assert len([url for url in net.asked if "weatherkit" in url]) == 1
 
 
 def test_a_day_weatherkit_does_not_cover_is_none_and_asks_nothing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Eight days back and ten ahead are out of range: None, no request."""
     net = Net(monkeypatch)
@@ -235,7 +291,9 @@ def test_a_day_weatherkit_does_not_cover_is_none_and_asks_nothing(
 
 
 def test_without_a_key_or_when_apple_fails_the_card_is_none_and_a_failure_is_not_retried_at_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """No key: None. Apple down: None, logged by type only, asked again after the retry time."""
     assert _home(tmp_path / "unused", keyed=False).day_weather_card(_today()) is None

@@ -11,9 +11,6 @@ own.
 from __future__ import annotations
 
 import json
-import os
-import sys
-import time
 from typing import TYPE_CHECKING, Any, Self
 
 import httpx
@@ -22,68 +19,17 @@ import pytest
 from jarvis.deployment import bootstrap_runtime
 from jarvis.state import device_reads
 from jarvis.state.device_tokens import pair_device
-from jarvis.surface import claude_sessions
 from jarvis.surface.claude_sessions import ClaudeSessions
-from tests.integration.test_terminal_observers import _wait_for
-from tests.integration.test_terminal_reads import _Brain, _Terminal
+from tests.support.terminal import Brain, Terminal, wait_for
+from tests.support.terminal_claude import ASKING, BUSY, IDLE, WAITING, device_home
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.surface.terminal_link import TerminalHub
 
-NOW_MS = int(time.time() * 1000)
-IDLE = "1a2b3c4d-0000-4000-8000-000000000001"
-BUSY = "1a2b3c4d-0000-4000-8000-000000000002"
-WAITING = "1a2b3c4d-0000-4000-8000-000000000003"
-ASKING = "Fixed it. Want me to ship it?"
 _VOLATILE = {"request", "compacting", "error"}
 """What ``ClaudeHooks.merge`` lays on each row: not the board's own."""
-
-
-def _said(content: object, *, at: str | None = "2026-10-07T10:00:00+00:00") -> dict[str, object]:
-    return {"type": "user", "message": {"content": content}, "timestamp": at}
-
-
-def _answer(text: str) -> dict[str, object]:
-    return {"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}
-
-
-def _device_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Mac's Claude Code: a fake ``claude`` (agents and attach) and the transcripts."""
-    tmp_path.mkdir()
-    session = {"kind": "background", "cwd": "/x/jarvis", "startedAt": NOW_MS}
-    (tmp_path / "agents.json").write_text(json.dumps([
-        {**session, "sessionId": IDLE, "id": "job1", "status": "idle", "name": "overlay"},
-        {**session, "sessionId": BUSY, "id": "job2", "status": "busy", "name": "audit"},
-        {"kind": "interactive", "sessionId": WAITING, "status": "waiting", "name": "build",
-         "cwd": "/x/jarvis", "startedAt": NOW_MS - 1000, "pid": os.getpid()},
-    ]))
-    project = tmp_path / ".claude" / "projects" / "-x"
-    project.mkdir(parents=True)
-    transcript = project / f"{IDLE}.jsonl"
-    transcript.write_text("\n".join(json.dumps(e) for e in [
-        _said("fix the overlay"), _answer("Looking."), _answer(ASKING),
-    ]))
-    (project / f"{BUSY}.jsonl").write_text(json.dumps(_said("audit it")))
-    (project / f"{WAITING}.jsonl").write_text(json.dumps({"type": "last-prompt",
-                                                          "lastPrompt": "build it"}))
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake = bin_dir / "claude"
-    fake.write_text(
-        f"#!{sys.executable}\nimport json, sys\n"
-        f"if sys.argv[1] == 'agents': print(open({str(tmp_path / 'agents.json')!r}).read())\n"
-        "elif sys.argv[1] == 'attach':\n"
-        "    line = sys.stdin.readline().strip()\n"
-        f"    open({str(transcript)!r}, 'a').write('\\n' + json.dumps("
-        "{'type': 'user', 'message': {'content': line}}))\n"
-    )
-    fake.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(claude_sessions, "REFRESH_S", 0.0)
-    return transcript
 
 
 class _Jev:
@@ -108,8 +54,8 @@ class _Rig:
         self.jev = _Jev()
         self.token = pair_device(tmp_path, "macbook")
         log = bootstrap_runtime(tmp_path / "brain-root").event_log
-        self.brain = _Brain(tmp_path, log, deps=self._deps)
-        self.terminal = _Terminal(
+        self.brain = Brain(tmp_path, log, deps=self._deps)
+        self.terminal = Terminal(
             self.brain.url, self.token, store=None, repos=(),
             claude=ClaudeSessions() if device_reads_claude else None,
         )
@@ -123,7 +69,7 @@ class _Rig:
     def __enter__(self) -> Self:
         self.brain.__enter__()
         self.terminal.__enter__()
-        _wait_for(lambda: bool(self.brain.hub.connected()), "the terminal never connected")
+        wait_for(lambda: bool(self.brain.hub.connected()), "the terminal never connected")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -132,7 +78,7 @@ class _Rig:
 
     def disconnect(self) -> None:
         self.terminal.stop()
-        _wait_for(lambda: not self.brain.hub.connected(), "the terminal never left")
+        wait_for(lambda: not self.brain.hub.connected(), "the terminal never left")
 
     def get(self, path: str) -> httpx.Response:
         return httpx.get(self.brain.url + path, headers={"Authorization": f"Bearer {self.token}"})
@@ -147,7 +93,7 @@ class _Rig:
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The device's transcript of the idle session; the fake home is in place around it."""
-    return _device_home(tmp_path / "mac", monkeypatch)
+    return device_home(tmp_path / "mac", monkeypatch)
 
 
 def _board(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

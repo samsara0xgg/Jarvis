@@ -19,36 +19,29 @@ import json
 from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 import pytest
 
 from jarvis.decision import commitment_mail as triage
-from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
 from jarvis.shared import lang
 from jarvis.state import commitments, things
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
-from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import open_memory_db
+from tests.support.commitments import NOW, ZONE, local_at
+from tests.support.runtime_log import RuntimeLog
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
 
-ZONE = ZoneInfo("America/Los_Angeles")  # UTC-7 until Nov 1 2026, then UTC-8
-NOW = datetime(2026, 10, 14, 9, 0, tzinfo=ZONE)  # a Wednesday
 POTTERY = "Pottery class | Oct 20 to Nov 24"
 
 
 def _ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
-
-
-def _at(month: int, day: int, hour: int, minute: int = 0) -> datetime:
-    return datetime(2026, month, day, hour, minute, tzinfo=ZONE)
 
 
 # --- the local filter ----------------------------------------------------------------------
@@ -147,20 +140,12 @@ def test_a_time_with_no_offset_is_read_in_his_zone_and_text_is_cut() -> None:
 # --- the fold ------------------------------------------------------------------------------
 
 
-class _Log:
-    def __init__(self, root: Path) -> None:
-        self.paths = bootstrap_runtime(root)
-        self.conn = open_event_log(self.paths.event_log)
-        self.memory = root / "memory.db"
-        open_memory_db(self.memory).close()
-
-
 @pytest.fixture
-def log(tmp_path: Path) -> Iterator[_Log]:
+def log(tmp_path: Path) -> Iterator[RuntimeLog]:
     """A runtime root with a real event log and memory.db; the language is English."""
     before = lang.language()
     lang.set_language("en")
-    one = _Log(tmp_path)
+    one = RuntimeLog(tmp_path)
     yield one
     one.conn.close()
     lang.set_language(before)
@@ -175,45 +160,53 @@ def _record(start: datetime, **extra: Any) -> commitments.Commitment:  # noqa: A
     return commitments.Commitment(**(fields | extra))
 
 
-def _days(log: _Log, first: datetime, last: datetime) -> list[str]:
+def _days(log: RuntimeLog, first: datetime, last: datetime) -> list[str]:
     return [
         o.day for o in commitments.occurrences(log.conn, _ms(first), _ms(last), zone=ZONE)
     ]
 
 
-def test_a_weekly_series_runs_to_its_last_day_less_the_skipped_ones(log: _Log) -> None:
+def test_a_weekly_series_runs_to_its_last_day_less_the_skipped_ones(log: RuntimeLog) -> None:
     """A weekly series runs to its last day less the skipped ones."""
     commitments.note(log.conn, _record(
-        _at(10, 20, 19), weekly_until="2026-11-10", skip_dates=("2026-10-27",),
+        local_at(10, 20, 19), weekly_until="2026-11-10", skip_dates=("2026-10-27",),
     ))
-    assert _days(log, _at(10, 1, 0), _at(12, 1, 0)) == ["2026-10-20", "2026-11-03", "2026-11-10"]
+    assert _days(log, local_at(10, 1, 0), local_at(12, 1, 0)) == [
+        "2026-10-20",
+        "2026-11-03",
+        "2026-11-10",
+    ]
     # a window inside one occurrence still finds it; one that ends as it starts does not
-    assert _days(log, _at(10, 20, 19, 30), _at(10, 20, 20)) == ["2026-10-20"]
-    assert _days(log, _at(10, 20, 0), _at(10, 20, 19)) == []
-    assert _days(log, _at(10, 20, 20), _at(10, 21, 0)) == []
+    assert _days(log, local_at(10, 20, 19, 30), local_at(10, 20, 20)) == ["2026-10-20"]
+    assert _days(log, local_at(10, 20, 0), local_at(10, 20, 19)) == []
+    assert _days(log, local_at(10, 20, 20), local_at(10, 21, 0)) == []
 
 
-def test_an_occurrence_lasts_until_end_at_else_an_hour(log: _Log) -> None:
+def test_an_occurrence_lasts_until_end_at_else_an_hour(log: RuntimeLog) -> None:
     """An occurrence lasts until end at else an hour."""
-    commitments.note(log.conn, _record(_at(10, 20, 19), end_at=_at(10, 20, 21, 30).isoformat()))
-    commitments.note(log.conn, _record(_at(10, 21, 19), title="Other"))
-    one, two = commitments.occurrences(log.conn, _ms(_at(10, 1, 0)), _ms(_at(12, 1, 0)))
+    commitments.note(
+        log.conn, _record(local_at(10, 20, 19), end_at=local_at(10, 20, 21, 30).isoformat())
+    )
+    commitments.note(log.conn, _record(local_at(10, 21, 19), title="Other"))
+    one, two = commitments.occurrences(log.conn, _ms(local_at(10, 1, 0)), _ms(local_at(12, 1, 0)))
     assert [(o.end_ms - o.start_ms) // 60_000 for o in (one, two)] == [150, 60]
 
 
-def test_a_weekly_series_keeps_its_wall_clock_across_the_clock_change(log: _Log) -> None:
+def test_a_weekly_series_keeps_its_wall_clock_across_the_clock_change(log: RuntimeLog) -> None:
     """A weekly series keeps its wall clock across the clock change."""
-    commitments.note(log.conn, _record(_at(10, 28, 18, 30), weekly_until="2026-11-11"))
-    found = commitments.occurrences(log.conn, _ms(_at(10, 1, 0)), _ms(_at(12, 1, 0)), zone=ZONE)
+    commitments.note(log.conn, _record(local_at(10, 28, 18, 30), weekly_until="2026-11-11"))
+    found = commitments.occurrences(
+        log.conn, _ms(local_at(10, 1, 0)), _ms(local_at(12, 1, 0)), zone=ZONE
+    )
     assert [o.day for o in found] == ["2026-10-28", "2026-11-04", "2026-11-11"]
     local = [datetime.fromtimestamp(o.start_ms / 1000, ZONE) for o in found]
     assert [(t.hour, t.minute) for t in local] == [(18, 30)] * 3  # Nov 1 was the change
     assert found[1].start_ms - found[0].start_ms == (7 * 24 + 1) * 3_600_000
 
 
-def test_the_last_note_wins_and_a_drop_removes_the_commitment(log: _Log) -> None:
+def test_the_last_note_wins_and_a_drop_removes_the_commitment(log: RuntimeLog) -> None:
     """The last note wins and a drop removes the commitment."""
-    first = _record(_at(10, 20, 19))
+    first = _record(local_at(10, 20, 19))
     commitments.note(log.conn, first)
     changed = commitments.Commitment(**{**first.payload(), "skip_dates": (), "place": "Studio 5"})
     commitments.note(log.conn, changed)
@@ -226,22 +219,23 @@ def test_the_last_note_wins_and_a_drop_removes_the_commitment(log: _Log) -> None
         commitments.drop(log.conn, first.commitment_id, "whim")
 
 
-def test_the_last_sender_rule_wins(log: _Log) -> None:
+def test_the_last_sender_rule_wins(log: RuntimeLog) -> None:
     """The last sender rule wins."""
     commitments.set_sender_rule(log.conn, "Studio.EXAMPLE", "always")
     commitments.set_sender_rule(log.conn, "shop.example", "never")
     commitments.set_sender_rule(log.conn, "studio.example", "never")
     assert commitments.sender_rules(log.conn) == {
-        "studio.example": "never", "shop.example": "never",
+        "studio.example": "never",
+        "shop.example": "never",
     }
 
 
-def test_a_record_that_cannot_be_read_is_refused(log: _Log) -> None:
+def test_a_record_that_cannot_be_read_is_refused(log: RuntimeLog) -> None:
     """A record that cannot be read is refused."""
     for bad in (
-        _record(_at(10, 20, 19), source="rumour"),
-        _record(_at(10, 20, 19), start_at="2026-10-20T19:00:00"),
-        _record(_at(10, 20, 19), weekly_until="soon"),
+        _record(local_at(10, 20, 19), source="rumour"),
+        _record(local_at(10, 20, 19), start_at="2026-10-20T19:00:00"),
+        _record(local_at(10, 20, 19), weekly_until="soon"),
     ):
         with pytest.raises(ValueError, match=r"source|offset|date|Invalid"):
             commitments.note(log.conn, bad)
@@ -252,11 +246,19 @@ def test_a_record_that_cannot_be_read_is_refused(log: _Log) -> None:
 
 
 def _mail(
-    key: str, sender: str, subject: str, body: str, day: int,
+    key: str,
+    sender: str,
+    subject: str,
+    body: str,
+    day: int,
 ) -> dict[str, Any]:
     stamp = datetime(2026, 10, day, 8, 0, tzinfo=UTC).strftime("%a, %d %b %Y %H:%M:%S +0000")
     return {
-        "id": key, "threadId": key, "from": sender, "subject": subject, "date": stamp,
+        "id": key,
+        "threadId": key,
+        "from": sender,
+        "subject": subject,
+        "date": stamp,
         "body": body,
     }
 
@@ -315,18 +317,25 @@ class _Model:
 
 
 def _intake(
-    log: _Log, gmail: _Gmail, model: Callable[[str, str], str], cap: int = 60,
+    log: RuntimeLog,
+    gmail: _Gmail,
+    model: Callable[[str, str], str],
+    cap: int = 60,
 ) -> CommitmentIntake:
     settings = CommitmentSettings(300, date(2026, 9, 10), cap, "haiku-bg", 60)
     intake = CommitmentIntake(
-        settings, _Connections(gmail), log.memory, log.paths.event_log, model,  # type: ignore[arg-type]
+        settings,
+        _Connections(gmail),  # type: ignore[arg-type]
+        log.memory,
+        log.paths.event_log,
+        model,
     )
     intake.zone = "America/Los_Angeles"
     intake.now = lambda: NOW.astimezone(UTC)
     return intake
 
 
-def _verdicts(log: _Log) -> dict[str, str]:
+def _verdicts(log: RuntimeLog) -> dict[str, str]:
     with closing(open_memory_db(log.memory)) as conn:
         rows = conn.execute("SELECT message_id, verdict FROM commitment_mail").fetchall()
     return dict(rows)
@@ -342,23 +351,40 @@ _MAILS = [
     _mail("m5", "Studio <hello@studio.example>", _REMIND, "See you Tuesday 7 PM at Studio 5.", 5),
 ]
 _NEW_CLASS = {
-    "action": "new", "title": "Pottery class", "start_at": "2026-10-20T19:00:00-07:00",
-    "weekly_until": "2026-11-24", "place": "Studio 4", "private": False,
+    "action": "new",
+    "title": "Pottery class",
+    "start_at": "2026-10-20T19:00:00-07:00",
+    "weekly_until": "2026-11-24",
+    "place": "Studio 4",
+    "private": False,
     "evidence": "Tuesdays 7 PM, Oct 20 to Nov 24.",
 }
 
 
-def _setup_cycle(log: _Log) -> _Gmail:
-    ledger.upsert_mail(log.memory, {
-        "message_id": "m3", "thread_id": "m3", "received_at": "2026-10-03T08:00:00+00:00",
-        "sender_name": "Talent", "sender_domain": "acme.example", "subject": "Interview",
-        "kind": "interview", "company": "Acme", "confidence": 0.9, "extracted_by": "local",
-    }, NOW)
+def _setup_cycle(log: RuntimeLog) -> _Gmail:
+    ledger.upsert_mail(
+        log.memory,
+        {
+            "message_id": "m3",
+            "thread_id": "m3",
+            "received_at": "2026-10-03T08:00:00+00:00",
+            "sender_name": "Talent",
+            "sender_domain": "acme.example",
+            "subject": "Interview",
+            "kind": "interview",
+            "company": "Acme",
+            "confidence": 0.9,
+            "extracted_by": "local",
+        },
+        NOW,
+    )
     commitments.set_sender_rule(log.conn, "cafe.example", "never")
     return _Gmail([dict(m) for m in _MAILS])
 
 
-def test_a_cycle_reads_each_mail_by_its_own_rule_and_a_reminder_mail_updates(log: _Log) -> None:
+def test_a_cycle_reads_each_mail_by_its_own_rule_and_a_reminder_mail_updates(
+    log: RuntimeLog,
+) -> None:
     """A cycle reads each mail by its own rule and a reminder mail updates."""
     gmail = _setup_cycle(log)
     model = _Model({_CLASS: [_NEW_CLASS]})
@@ -378,28 +404,43 @@ def test_a_cycle_reads_each_mail_by_its_own_rule_and_a_reminder_mail_updates(log
     # the letters the model never saw: no sign of time, an interview, a never-rule sender
     assert model.asked == [_CLASS, _REMIND]
     assert _verdicts(log) == {
-        "m1": "filtered", "m2": "noted", "m3": "interview", "m4": "filtered", "m5": "noted",
+        "m1": "filtered",
+        "m2": "noted",
+        "m3": "interview",
+        "m4": "filtered",
+        "m5": "noted",
     }
     (held,) = things.open_things(log.conn)
     assert (held.title, held.kind, held.place, held.confirmed, held.source) == (
-        "Pottery class", "go", "Studio 5", False, "mail",
+        "Pottery class",
+        "go",
+        "Studio 5",
+        False,
+        "mail",
     )
     assert (held.source_ref, held.sender, held.weekly_until, held.rings) == (
-        "m2", "studio.example", "2026-11-24", ("-60m",),
+        "m2",
+        "studio.example",
+        "2026-11-24",
+        ("-60m",),
     )
     assert [(s.what, s.by, s.ref) for s in held.history] == [
-        ("added", "mail", "m2"), ("changed", "mail", "m5"),
+        ("added", "mail", "m2"),
+        ("changed", "mail", "m5"),
     ]
     assert intake.poll_once() == 0  # nothing is read twice
     assert model.asked == [_CLASS, _REMIND]
     assert {tool for tool, _ in gmail.calls} == {"gmail_search", "gmail_get"}
 
 
-def test_his_claude_daily_letter_is_filtered_before_the_model(log: _Log) -> None:
+def test_his_claude_daily_letter_is_filtered_before_the_model(log: RuntimeLog) -> None:
     """ADR 0295: a letter naming a time (his chat said "Friday 2 PM") is not read as a mail."""
     daily = _mail(
-        "m6", "Allen <me@example.com>", "Jarvis Claude 日报 2026-10-18",
-        "## Job chat\n- summary: interview Friday 2 PM", 6,
+        "m6",
+        "Allen <me@example.com>",
+        "Jarvis Claude 日报 2026-10-18",
+        "## Job chat\n- summary: interview Friday 2 PM",
+        6,
     )
     gmail = _Gmail([daily])
     model = _Model({})
@@ -410,25 +451,31 @@ def test_his_claude_daily_letter_is_filtered_before_the_model(log: _Log) -> None
     assert not any(tool == "gmail_get" and a["format"] == "full" for tool, a in gmail.calls)
 
 
-def test_a_new_that_repeats_a_held_time_is_not_a_second_commitment(log: _Log) -> None:
+def test_a_new_that_repeats_a_held_time_is_not_a_second_commitment(log: RuntimeLog) -> None:
     """A new that repeats a held time is not a second commitment."""
-    gmail = _Gmail([
-        _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
-        _mail("m5", "Studio <hello@studio.example>", _REMIND, "Tuesday 7 PM.", 5),
-    ])
+    gmail = _Gmail(
+        [
+            _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
+            _mail("m5", "Studio <hello@studio.example>", _REMIND, "Tuesday 7 PM.", 5),
+        ]
+    )
     model = _Model({_CLASS: [_NEW_CLASS], _REMIND: [{**_NEW_CLASS, "weekly_until": ""}]})
     assert _intake(log, gmail, model).poll_once() == 2
     assert _verdicts(log) == {"m2": "noted", "m5": "none"}
     assert len(things.open_things(log.conn)) == 1
 
 
-def test_a_sender_marked_always_is_confirmed_and_a_cancel_closes(log: _Log) -> None:
+def test_a_sender_marked_always_is_confirmed_and_a_cancel_closes(log: RuntimeLog) -> None:
     """A sender marked always is confirmed and a cancel closes the thing as cancelled."""
     commitments.set_sender_rule(log.conn, "studio.example", "always")
-    gmail = _Gmail([
-        _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
-        _mail("m6", "Studio <hello@studio.example>", "Class cancelled", "No class Tuesday 7 PM", 6),
-    ])
+    gmail = _Gmail(
+        [
+            _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
+            _mail(
+                "m6", "Studio <hello@studio.example>", "Class cancelled", "No class Tuesday 7 PM", 6
+            ),
+        ]
+    )
 
     def ask(_system: str, user: str) -> str:
         if "Class cancelled" in user:
@@ -441,18 +488,24 @@ def test_a_sender_marked_always_is_confirmed_and_a_cancel_closes(log: _Log) -> N
     (record,) = things.fold(log.conn).values()
     assert (record.confirmed, record.state) == (True, "cancelled")
     assert (record.history[-1].what, record.history[-1].by, record.history[-1].why) == (
-        "cancelled", "mail", "called off in a mail",
+        "cancelled",
+        "mail",
+        "called off in a mail",
     )
     assert things.open_things(log.conn) == []
 
 
-def test_one_unreadable_mail_does_not_stop_the_cycle_and_is_tried_three_times(log: _Log) -> None:
+def test_one_unreadable_mail_does_not_stop_the_cycle_and_is_tried_three_times(
+    log: RuntimeLog,
+) -> None:
     """One unreadable mail does not stop the cycle and is tried three times."""
-    gmail = _Gmail([
-        _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
-        _mail("m3", "Clinic <hello@clinic.example>", "Visit Friday 2 PM", "Friday 2 PM.", 3),
-        _mail("m4", "Cafe <hi@cafe.example>", "Event Saturday 3 PM", "Saturday 3 PM.", 4),
-    ])
+    gmail = _Gmail(
+        [
+            _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
+            _mail("m3", "Clinic <hello@clinic.example>", "Visit Friday 2 PM", "Friday 2 PM.", 3),
+            _mail("m4", "Cafe <hi@cafe.example>", "Event Saturday 3 PM", "Saturday 3 PM.", 4),
+        ]
+    )
     gmail.broken = {"m3"}
     model = _Model({_CLASS: [_NEW_CLASS]})
     intake = _intake(log, gmail, model)
@@ -464,12 +517,14 @@ def test_one_unreadable_mail_does_not_stop_the_cycle_and_is_tried_three_times(lo
     assert len(things.open_things(log.conn)) == 1
 
 
-def test_a_model_that_does_not_answer_ends_the_cycle_after_one_try(log: _Log) -> None:
+def test_a_model_that_does_not_answer_ends_the_cycle_after_one_try(log: RuntimeLog) -> None:
     """A model that does not answer ends the cycle after one try."""
-    gmail = _Gmail([
-        _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
-        _mail("m3", "Clinic <hello@clinic.example>", "Visit Friday 2 PM", "Friday 2 PM.", 3),
-    ])
+    gmail = _Gmail(
+        [
+            _mail("m2", "Studio <hello@studio.example>", _CLASS, "Tuesdays 7 PM.", 2),
+            _mail("m3", "Clinic <hello@clinic.example>", "Visit Friday 2 PM", "Friday 2 PM.", 3),
+        ]
+    )
     asked: list[str] = []
 
     def down(_system: str, user: str) -> str:
@@ -482,12 +537,14 @@ def test_a_model_that_does_not_answer_ends_the_cycle_after_one_try(log: _Log) ->
     assert _verdicts(log) == {"m2": "error"}
 
 
-def test_the_backfill_is_paged_and_read_oldest_first_a_cap_at_a_time(log: _Log) -> None:
+def test_the_backfill_is_paged_and_read_oldest_first_a_cap_at_a_time(log: RuntimeLog) -> None:
     """The backfill is paged and read oldest first a cap at a time."""
-    gmail = _Gmail([
-        _mail(f"m{n}", f"S <a@s{n}.example>", f"Visit Friday {n} PM", f"Friday {n} PM.", n)
-        for n in range(1, 6)
-    ])
+    gmail = _Gmail(
+        [
+            _mail(f"m{n}", f"S <a@s{n}.example>", f"Visit Friday {n} PM", f"Friday {n} PM.", n)
+            for n in range(1, 6)
+        ]
+    )
     model = _Model({})
     intake = _intake(log, gmail, model, cap=3)
     assert intake.poll_once() == 3
@@ -502,12 +559,16 @@ def test_the_backfill_is_paged_and_read_oldest_first_a_cap_at_a_time(log: _Log) 
     assert gmail.searches() - first == 2 + 1  # page one of the second cycle, then a page of seen
 
 
-def test_a_poller_with_no_model_reads_nothing(log: _Log) -> None:
+def test_a_poller_with_no_model_reads_nothing(log: RuntimeLog) -> None:
     """A poller with no model reads nothing."""
     gmail = _Gmail([_mail("m2", "S <a@s.example>", "Visit Friday 2 PM", "Friday 2 PM.", 2)])
     settings = CommitmentSettings(300, date(2026, 9, 10), 60, "haiku-bg", 60)
     intake = CommitmentIntake(
-        settings, _Connections(gmail), log.memory, log.paths.event_log, None,  # type: ignore[arg-type]
+        settings,
+        _Connections(gmail),  # type: ignore[arg-type]
+        log.memory,
+        log.paths.event_log,
+        None,
     )
     assert intake.poll_once() == 0
     assert gmail.calls == []
@@ -516,7 +577,7 @@ def test_a_poller_with_no_model_reads_nothing(log: _Log) -> None:
 # --- the rings -----------------------------------------------------------------------------
 
 
-def _rings(log: _Log) -> dict[str, str]:
+def _rings(log: RuntimeLog) -> dict[str, str]:
     """The pending reminders as ``due -> words``; all are the ledger's, none ``reminder-cm*``."""
     pending = reminder_state.pending(log.conn)
     assert all(r.reminder_id.startswith(things.RING_PREFIX) for r in pending)
@@ -526,14 +587,16 @@ def _rings(log: _Log) -> dict[str, str]:
     return {r.due_at_local: r.text for r in pending}
 
 
-def test_a_noted_thing_rings_by_the_ledger_and_a_move_and_a_cancel_follow(log: _Log) -> None:
+def test_a_noted_thing_rings_by_the_ledger_and_a_move_and_a_cancel_follow(log: RuntimeLog) -> None:
     """The poller arms nothing: the ring is the thing's, moved with it and gone with its cancel."""
     studio = "Studio <hello@studio.example>"
-    gmail = _Gmail([
-        _mail("m2", studio, _CLASS, "Tomorrow 7 PM.", 2),
-        _mail("m5", studio, _REMIND, "Moved to 8 PM.", 5),
-        _mail("m6", studio, "Class cancelled", "No class tomorrow 7 PM", 6),
-    ])
+    gmail = _Gmail(
+        [
+            _mail("m2", studio, _CLASS, "Tomorrow 7 PM.", 2),
+            _mail("m5", studio, _REMIND, "Moved to 8 PM.", 5),
+            _mail("m6", studio, "Class cancelled", "No class tomorrow 7 PM", 6),
+        ]
+    )
     once = {k: v for k, v in _NEW_CLASS.items() if k != "weekly_until"}
     once["start_at"] = "2026-10-15T19:00:00-07:00"
 
@@ -553,7 +616,8 @@ def test_a_noted_thing_rings_by_the_ledger_and_a_move_and_a_cancel_follow(log: _
     assert intake.poll_once() == 1
     (held,) = things.open_things(log.conn)
     assert (held.start_at, [m.start_at for m in held.moves]) == (
-        "2026-10-15T20:00:00-07:00", ["2026-10-15T19:00:00-07:00"],
+        "2026-10-15T20:00:00-07:00",
+        ["2026-10-15T19:00:00-07:00"],
     )
     assert _rings(log) == {"2026-10-15T19:00:00-07:00": "20:00 Pottery class · Studio 4"}
     assert intake.poll_once() == 1
@@ -561,12 +625,18 @@ def test_a_noted_thing_rings_by_the_ledger_and_a_move_and_a_cancel_follow(log: _
     assert _rings(log) == {}
 
 
-def test_an_update_that_gives_a_day_an_hour_swaps_its_ring_for_the_hour_before(log: _Log) -> None:
+def test_an_update_that_gives_a_day_an_hour_swaps_its_ring_for_the_hour_before(
+    log: RuntimeLog,
+) -> None:
     """A whole day rings the evening before; once a mail says the hour, it rings before that."""
-    gmail = _Gmail([
-        _mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 15.", 2),
-        _mail("m5", "Bank <a@bank.example>", "Security call", "Your call is Oct 15 at 10 AM.", 5),
-    ])
+    gmail = _Gmail(
+        [
+            _mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 15.", 2),
+            _mail(
+                "m5", "Bank <a@bank.example>", "Security call", "Your call is Oct 15 at 10 AM.", 5
+            ),
+        ]
+    )
     due = {**_DUE, "start_at": "2026-10-15"}
 
     def ask(_system: str, user: str) -> str:
@@ -575,7 +645,9 @@ def test_an_update_that_gives_a_day_an_hour_swaps_its_ring_for_the_hour_before(l
         (held,) = things.open_things(log.conn)
         key = held.thing_id.removeprefix(things.ID_PREFIX)
         timed = {
-            "action": "update", "commitment_id": key, "all_day": False,
+            "action": "update",
+            "commitment_id": key,
+            "all_day": False,
             "start_at": "2026-10-15T10:00:00-07:00",
         }
         return json.dumps([timed])
@@ -588,14 +660,14 @@ def test_an_update_that_gives_a_day_an_hour_swaps_its_ring_for_the_hour_before(l
     assert intake.poll_once() == 1
     (held,) = things.open_things(log.conn)
     assert (held.on_day, held.start_at, held.rings) == (
-        "", "2026-10-15T10:00:00-07:00", ("-60m",),
+        "",
+        "2026-10-15T10:00:00-07:00",
+        ("-60m",),
     )
     assert _rings(log) == {"2026-10-15T09:00:00-07:00": "10:00 Enable 2FA"}
 
 
 # --- the readers ---------------------------------------------------------------------------
-
-
 
 
 # --- the replay script ---------------------------------------------------------------------
@@ -606,20 +678,39 @@ def test_the_replay_script_filters_offline_and_carries_commitments_forward(tmp_p
     from scripts import commitment_replay  # noqa: PLC0415 - only this test needs it
 
     rows = [
-        {"message_id": "a", "sender_name": "Studio", "sender_domain": "Studio.example",
-         "subject": _CLASS, "received_at": "2026-10-02T08:00:00+00:00", "body": "Tuesdays 7 PM."},
-        {"message_id": "b", "sender_name": "Shop", "sender_domain": "shop.example",
-         "subject": "Deals", "received_at": "2026-10-01T08:00:00+00:00", "body": "Big sale."},
-        {"message_id": "c", "sender_name": "Studio", "sender_domain": "studio.example",
-         "subject": _REMIND, "received_at": "2026-10-05T08:00:00+00:00",
-         "body": "Tuesday 7 PM, Studio 5."},
+        {
+            "message_id": "a",
+            "sender_name": "Studio",
+            "sender_domain": "Studio.example",
+            "subject": _CLASS,
+            "received_at": "2026-10-02T08:00:00+00:00",
+            "body": "Tuesdays 7 PM.",
+        },
+        {
+            "message_id": "b",
+            "sender_name": "Shop",
+            "sender_domain": "shop.example",
+            "subject": "Deals",
+            "received_at": "2026-10-01T08:00:00+00:00",
+            "body": "Big sale.",
+        },
+        {
+            "message_id": "c",
+            "sender_name": "Studio",
+            "sender_domain": "studio.example",
+            "subject": _REMIND,
+            "received_at": "2026-10-05T08:00:00+00:00",
+            "body": "Tuesday 7 PM, Studio 5.",
+        },
     ]
     source, out = tmp_path / "in.jsonl", tmp_path / "out.jsonl"
     source.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     assert commitment_replay.main([str(source), str(out)]) == 0  # no --live: the filter alone
     offline = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert [(r["message_id"], r["filter"], r["asked"], r["actions"]) for r in offline] == [
-        ("b", False, False, None), ("a", True, False, None), ("c", True, False, None),
+        ("b", False, False, None),
+        ("a", True, False, None),
+        ("c", True, False, None),
     ]
 
     seen_known: list[bool] = []
@@ -632,15 +723,20 @@ def test_the_replay_script_filters_offline_and_carries_commitments_forward(tmp_p
 
     lines = commitment_replay.replay(rows, "America/Los_Angeles", _TODAY, ask)
     assert seen_known == [True]
-    assert [(r["message_id"], r["asked"], [a["action"] for a in r["actions"] or []])
-            for r in lines] == [("b", False, []), ("a", True, ["new"]), ("c", True, ["update"])]
+    assert [
+        (r["message_id"], r["asked"], [a["action"] for a in r["actions"] or []]) for r in lines
+    ] == [("b", False, []), ("a", True, ["new"]), ("c", True, ["update"])]
 
 
 # --- follow-up 1: all-day items, the interview race, quiet readers, replay days -----------
 
 _DUE = {
-    "action": "new", "title": "Enable 2FA", "start_at": "2026-10-31", "all_day": True,
-    "private": False, "evidence": "by Oct 31",
+    "action": "new",
+    "title": "Enable 2FA",
+    "start_at": "2026-10-31",
+    "all_day": True,
+    "private": False,
+    "evidence": "by Oct 31",
 }
 
 
@@ -650,14 +746,17 @@ _DUE = {
         (_DUE, ("2026-10-31T00:00:00-07:00", True)),
         ({**_DUE, "start_at": "2026-10-31T17:45:00-07:00"}, ("2026-10-31T00:00:00-07:00", True)),
         ({**_DUE, "end_at": "2026-11-01T00:00:00-07:00"}, ("2026-10-31T00:00:00-07:00", True)),
-        ({**_DUE, "all_day": False, "start_at": "2026-10-31T17:45:00"},
-         ("2026-10-31T17:45:00-07:00", False)),
+        (
+            {**_DUE, "all_day": False, "start_at": "2026-10-31T17:45:00"},
+            ("2026-10-31T17:45:00-07:00", False),
+        ),
         ({**_DUE, "all_day": "yes"}, None),
         ({**_DUE, "start_at": "someday"}, None),
     ],
 )
 def test_an_all_day_item_is_the_local_midnight_of_its_day(
-    raw: dict[str, Any], expected: tuple[str, bool] | None,
+    raw: dict[str, Any],
+    expected: tuple[str, bool] | None,
 ) -> None:
     """A date with no hour parses to that day's midnight; a bad flag drops the action."""
     found = _parse([raw])
@@ -673,7 +772,9 @@ def test_the_prompt_asks_for_dated_obligations_and_not_sales_deadlines() -> None
     """The wording the live exam depends on: the all-day rule and the sales exclusion."""
     system, _user = triage.build_prompt(
         triage.Mail("S", "s.example", "Subject", "2026-10-01T00:00:00+00:00", "Body"),
-        [], zone="America/Los_Angeles", today=_TODAY,
+        [],
+        zone="America/Los_Angeles",
+        today=_TODAY,
     )
     assert '"all_day": true' in system
     assert "date but no time" in system
@@ -681,19 +782,21 @@ def test_the_prompt_asks_for_dated_obligations_and_not_sales_deadlines() -> None
     assert "cannot tell the time" not in system
 
 
-def test_an_all_day_occurrence_is_its_whole_day(log: _Log) -> None:
+def test_an_all_day_occurrence_is_its_whole_day(log: RuntimeLog) -> None:
     """It overlaps any window inside its day and none outside; a weekly one keeps the rule."""
-    one = _record(_at(10, 31, 0), all_day=True, weekly_until="2026-11-07")
+    one = _record(local_at(10, 31, 0), all_day=True, weekly_until="2026-11-07")
     commitments.note(log.conn, one)
-    assert _days(log, _at(10, 31, 22), _at(11, 1, 1)) == ["2026-10-31"]
-    assert _days(log, _at(11, 1, 0), _at(11, 7, 0)) == []
-    assert _days(log, _at(11, 7, 12), _at(11, 8, 0)) == ["2026-11-07"]
-    (first, *_) = commitments.occurrences(log.conn, _ms(_at(10, 1, 0)), _ms(_at(12, 1, 0)))
+    assert _days(log, local_at(10, 31, 22), local_at(11, 1, 1)) == ["2026-10-31"]
+    assert _days(log, local_at(11, 1, 0), local_at(11, 7, 0)) == []
+    assert _days(log, local_at(11, 7, 12), local_at(11, 8, 0)) == ["2026-11-07"]
+    (first, *_) = commitments.occurrences(
+        log.conn, _ms(local_at(10, 1, 0)), _ms(local_at(12, 1, 0))
+    )
     assert first.end_ms - first.start_ms == 24 * 3_600_000
 
 
 def test_the_poller_notes_an_all_day_item_as_a_day_and_its_ring_is_the_evening_before(
-    log: _Log,
+    log: RuntimeLog,
 ) -> None:
     """A day with no hour is the thing's ``on_day``; its ring is 20:00 the evening before."""
     gmail = _Gmail([_mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 31.", 2)])
@@ -702,11 +805,11 @@ def test_the_poller_notes_an_all_day_item_as_a_day_and_its_ring_is_the_evening_b
     assert (held.on_day, held.start_at, held.end_at) == ("2026-10-31", "", "")
     assert (held.kind, held.rings) == ("go", ("-1d@20:00",))
     assert _rings(log) == {}  # Oct 30 is more than a week away: the ring waits
-    things.sync_rings(log.conn, zone=ZONE, now=_at(10, 30, 9).astimezone(UTC))
+    things.sync_rings(log.conn, zone=ZONE, now=local_at(10, 30, 9).astimezone(UTC))
     assert _rings(log) == {"2026-10-30T20:00:00-07:00": "Tomorrow: Enable 2FA"}
 
 
-def test_a_private_all_day_ring_says_no_more_than_that_something_is_to_do(log: _Log) -> None:
+def test_a_private_all_day_ring_says_no_more_than_that_something_is_to_do(log: RuntimeLog) -> None:
     """A mail that makes a thing private gives the ring no title."""
     private = {**_DUE, "private": True, "start_at": "2026-10-15"}
     gmail = _Gmail([_mail("m2", "Bank <a@bank.example>", "Security", "Enable 2FA by Oct 15.", 2)])
@@ -717,18 +820,26 @@ def test_a_private_all_day_ring_says_no_more_than_that_something_is_to_do(log: _
 def _mail_at(key: str, subject: str, when: datetime) -> dict[str, Any]:
     stamp = when.astimezone(UTC).strftime("%a, %d %b %Y %H:%M:%S +0000")
     return {
-        "id": key, "threadId": key, "from": "Studio <hello@studio.example>", "subject": subject,
-        "date": stamp, "body": "Tuesday 7 PM.",
+        "id": key,
+        "threadId": key,
+        "from": "Studio <hello@studio.example>",
+        "subject": subject,
+        "date": stamp,
+        "body": "Tuesday 7 PM.",
     }
 
 
-def test_a_young_mail_the_job_ledger_has_not_seen_waits_and_an_old_one_does_not(log: _Log) -> None:
+def test_a_young_mail_the_job_ledger_has_not_seen_waits_and_an_old_one_does_not(
+    log: RuntimeLog,
+) -> None:
     """Under 30 minutes and no job_seen row: unread and unrecorded; seen or older: read."""
-    gmail = _Gmail([
-        _mail_at("m1", "Old unseen", NOW - timedelta(minutes=45)),
-        _mail_at("m2", "Young unseen", NOW - timedelta(minutes=5)),
-        _mail_at("m3", "Young seen", NOW - timedelta(minutes=6)),
-    ])
+    gmail = _Gmail(
+        [
+            _mail_at("m1", "Old unseen", NOW - timedelta(minutes=45)),
+            _mail_at("m2", "Young unseen", NOW - timedelta(minutes=5)),
+            _mail_at("m3", "Young seen", NOW - timedelta(minutes=6)),
+        ]
+    )
     ledger.record_seen(log.memory, "m3", "not_job", NOW)
     model = _Model({})
     intake = _intake(log, gmail, model)
@@ -745,11 +856,16 @@ def test_the_replay_gives_each_mail_its_own_day_with_today_received(tmp_path: Pa
     """``--today received`` tells the model the mail's received date as today."""
     from scripts import commitment_replay  # noqa: PLC0415 - only this test needs it
 
-    rows = [{
-        "message_id": "a", "sender_name": "Bank", "sender_domain": "bank.example",
-        "subject": "Security", "received_at": "2026-10-02T20:00:00+00:00",
-        "body": "Enable 2FA by Oct 31.",
-    }]
+    rows = [
+        {
+            "message_id": "a",
+            "sender_name": "Bank",
+            "sender_domain": "bank.example",
+            "subject": "Security",
+            "received_at": "2026-10-02T20:00:00+00:00",
+            "body": "Enable 2FA by Oct 31.",
+        }
+    ]
     told: list[str] = []
 
     def ask(_system: str, user: str) -> str:

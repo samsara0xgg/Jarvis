@@ -19,7 +19,7 @@ from jarvis.shared import CallerPrincipal
 from jarvis.state.voice_settings import VoiceSettings
 from jarvis.surface import voice_tts
 from jarvis.surface.voice_controls import VoiceControls
-from tests.integration.test_wave2_streaming_media import _FakeWebSocket
+from tests.support.media import FakeWebSocket
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -147,11 +147,11 @@ def _session(voice: VoiceSettings | None, volume: int = 1) -> voice_tts.TTSSessi
 def test_the_session_task_start_carries_the_current_voice_and_a_stale_spare_reconnects() -> None:
     """A spare connected before the tool ran is not used for the answer that follows it."""
     async def _body() -> list[dict[str, Any]]:
-        sockets: list[_FakeWebSocket] = []
+        sockets: list[FakeWebSocket] = []
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             del additional_headers
-            sockets.append(_FakeWebSocket())
+            sockets.append(FakeWebSocket())
             return sockets[-1]
 
         voice = VoiceSettings()
@@ -175,11 +175,11 @@ def test_an_unchanged_spare_is_kept() -> None:
     async def _body() -> int:
         count = 0
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             nonlocal count
             del additional_headers
             count += 1
-            return _FakeWebSocket()
+            return FakeWebSocket()
 
         with patch.object(voice_tts, "_ws_connect", side_effect=_connect):
             session = _session(VoiceSettings())
@@ -194,10 +194,10 @@ def test_an_unchanged_spare_is_kept() -> None:
 def test_the_one_shot_task_start_reads_the_holder_too() -> None:
     """The one-shot client reads the holder at its task start."""
     async def _body() -> dict[str, Any]:
-        ws = _FakeWebSocket()
+        ws = FakeWebSocket()
         ws.audio_gate.set()
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             del additional_headers
             return ws
 

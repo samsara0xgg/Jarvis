@@ -14,15 +14,15 @@ import pytest
 
 from jarvis.shared.html_tags import HtmlTagFilter, strip_html
 from jarvis.state.memory_db import _plain
-from tests.integration.test_reaction_markup import _decide_batch
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 - the autouse fixture the peer needs
-    _Peer,
-    _spoken,
-    _spoken_runtime,
+from tests.support.reaction_markup import decide_batch
+from tests.support.routine import drive_streaming_turn, logged_payloads
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 - the autouse fixture the peer needs
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_turn_guards import _ScriptedModel
-from tests.integration.test_wire_routine_streaming import _drive, _payloads
+from tests.support.turn_guards import StepModel
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,12 +70,12 @@ def test_an_older_record_replays_without_the_tags() -> None:
 def test_a_spoken_reply_with_br_is_spoken_and_kept_with_a_newline(tmp_path: Path) -> None:
     """Chunks, the plan and the spoken text hold a newline and no tag, though the peer cuts it."""
     reply = "好的。<br>早点休息，晚安。"
-    with _Peer([[("final_answer", reply)]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-spoken", "记一下"))
-    chunks = "".join(p["text"] for p in _payloads(runtime.conn, "surface.response_chunk"))
+    with SpokenPeer([[("final_answer", reply)]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-spoken", "记一下"))
+    chunks = "".join(p["text"] for p in logged_payloads(runtime.conn, "surface.response_chunk"))
     assert chunks == result.response_plan.text == "好的。\n早点休息，晚安。"
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert emitted["voice_text"] == "好的。\n早点休息，晚安。"
     assert "<" not in chunks
 
@@ -83,14 +83,14 @@ def test_a_spoken_reply_with_br_is_spoken_and_kept_with_a_newline(tmp_path: Path
 def test_a_written_part_with_tags_is_cleaned_and_its_code_kept(tmp_path: Path) -> None:
     """The document of an enveloped reply loses <br> and <b>, not the html inside code ticks."""
     reply = "<voice>好的。</voice><document>第一行<br>第二行 <b>y</b> `<p>hi</p>`</document>"
-    with _Peer([[("final_answer", reply)]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-doc", "写个页面"))
+    with SpokenPeer([[("final_answer", reply)]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-doc", "写个页面"))
     shown = "<document>\n第一行\n第二行 y `<p>hi</p>`\n</document>"
     assert result.response_plan.text.endswith(shown)
 
 
 def test_the_batch_loop_full_text_has_the_newline_and_no_tag(tmp_path: Path) -> None:
     """The non-streamed path finalises the same way."""
-    result = _decide_batch(tmp_path, _ScriptedModel("到家就好。<br>早点休息。 a < b"), "cli_stdin")
+    result = decide_batch(tmp_path, StepModel("到家就好。<br>早点休息。 a < b"), "cli_stdin")
     assert result.response_plan.text == "到家就好。\n早点休息。 a < b"

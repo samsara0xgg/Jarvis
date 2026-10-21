@@ -30,19 +30,19 @@ from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.voice_controls import VoiceControls
-from tests.integration.test_incremental_tts import _chunk, _open, _pipeline
 from tests.integration.test_soft_barge_in import _Rig
-from tests.integration.test_wave2_streaming_media import (
-    _await_playback_started,
-    _CallbackPump,
-    _config,
-    _emit_response,
-    _FakeProvider,
-    _playback_rows_for,
-    _player,
-    _submit_response,
+from tests.support.media import (
+    CallbackPump,
+    FakeProvider,
+    await_playback_started,
+    emit_response,
+    make_player,
+    media_config,
+    playback_rows_for,
+    submit_response,
 )
-from tests.integration.test_wave4a_response_run import _LLM_CONFIG, _make_runtime
+from tests.support.response_run import LLM_CONFIG, make_runtime
+from tests.support.tts import append_chunk, append_open, make_pipeline
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -103,16 +103,16 @@ def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_nothing(
     """One answer audible, another queued behind it, the surface turns the mode off."""
     db_path = tmp_path / "exit.db"
     conn = open_event_log(db_path)
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     hold = threading.Event()
     provider.final_gates[("RA", 0)] = hold
-    player = _player()
+    player = make_player()
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=_config(),
+        config=media_config(),
         start_player=False,
     )
 
@@ -123,17 +123,17 @@ def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_nothing(
         stop_speaking=lambda: pipeline.stop_foreground_output(None, reason="barge_in"),
     )
     try:
-        with _CallbackPump(player):
-            older = _emit_response(
+        with CallbackPump(player):
+            older = emit_response(
                 conn, response_id="RA", group_id="G", turn_id="TA", text="这是一个很长的回答。",
             )
-            asyncio.run(_submit_response(pipeline, older))
-            _await_playback_started(conn, "RA")
-            wanted = _emit_response(
+            asyncio.run(submit_response(pipeline, older))
+            await_playback_started(conn, "RA")
+            wanted = emit_response(
                 conn, response_id="RB", group_id="G", turn_id="TB", text="你想要的回答。",
             )
-            asyncio.run(_submit_response(pipeline, wanted))
-            assert _playback_rows_for(conn, "RB", "surface.playback_started") == 0
+            asyncio.run(submit_response(pipeline, wanted))
+            assert playback_rows_for(conn, "RB", "surface.playback_started") == 0
 
             controls = VoiceControls(conversation=True)
             reply = _app(controls, rig.session.dismiss).post(
@@ -142,8 +142,8 @@ def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_nothing(
             assert reply.json()["conversation"] is False
             hold.set()
             assert pipeline.wait_until_idle(timeout_s=2.0)
-        interrupted = _playback_rows_for(conn, "RA", "surface.playback_interrupted")
-        queued_started = _playback_rows_for(conn, "RB", "surface.playback_started")
+        interrupted = playback_rows_for(conn, "RA", "surface.playback_interrupted")
+        queued_started = playback_rows_for(conn, "RB", "surface.playback_started")
     finally:
         hold.set()
         rig.close()
@@ -173,7 +173,7 @@ def _run(  # noqa: PLR0913 - one run's trigger, channel and turn
         },
         correlation={"turn_id": turn_id},
     )
-    factory = LLMSessionFactory(_LLM_CONFIG)
+    factory = LLMSessionFactory(LLM_CONFIG)
     snapshot = factory.snapshot(None)
     run = start_response_run(
         runtime.conn,
@@ -209,7 +209,7 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     A Live relay and a typed turn (ADR 0181) are the silent channels: nothing of them speaks.
     A spoken turn whose answer has not started stays too (ADR 0269): it answers in text.
     """
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
     assert runtime.response_runs is not None
     _run(runtime, "R-voice-old", "T-old")
     _answer_started(runtime, "T-old")
@@ -243,15 +243,15 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
 
     A second turn that had said nothing yet is not stopped with it (ADR 0269).
     """
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
     assert runtime.response_runs is not None
     db_path = runtime.runtime_paths.event_log
     run = _run(runtime, "RG", "T-RG")
     other = _run(runtime, "R-other", "T-other")
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     hold = threading.Event()
     provider.final_gates[("RG", 0)] = hold
-    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    pipeline, player = make_pipeline(db_path, provider, speak_from_segments=True)
     conn = open_event_log(db_path)
     rig = _Rig(
         tmp_path,
@@ -261,10 +261,10 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
         cancel_voice_runs=inherent_loop._make_cancel_voice_runs(runtime),  # noqa: SLF001
     )
     try:
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, [_open(conn, "RG")]))
-            asyncio.run(_submit_response(pipeline, [_chunk(conn, "RG", 0, "会议改到三点。")]))
-            _await_playback_started(conn, "RG")
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, [append_open(conn, "RG")]))
+            asyncio.run(submit_response(pipeline, [append_chunk(conn, "RG", 0, "会议改到三点。")]))
+            await_playback_started(conn, "RG")
 
             reply = _app(VoiceControls(conversation=True), rig.session.dismiss).post(
                 "/inherent/controls", json={"conversation": False},
@@ -278,8 +278,8 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
             assert cancelled == [("user_stop",)]
             hold.set()
             assert pipeline.wait_until_idle(timeout_s=2.0)
-        interrupted = _playback_rows_for(conn, "RG", "surface.playback_interrupted")
-        completed = _playback_rows_for(conn, "RG", "surface.playback_completed")
+        interrupted = playback_rows_for(conn, "RG", "surface.playback_interrupted")
+        completed = playback_rows_for(conn, "RG", "surface.playback_completed")
     finally:
         hold.set()
         rig.close()
@@ -314,7 +314,7 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
     The turn's run stays open and its answer reaches the screen, but the speaker is given
     none of it; the wait line of the same turn and an answer already under way are ended.
     """
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
     registry = runtime.response_runs
     assert registry is not None
     pending = _run(runtime, "R-pending", "T-pending")

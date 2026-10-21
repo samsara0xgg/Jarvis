@@ -10,7 +10,6 @@ answered in Chinese (offline replay: 5 of 5 English without it, 0 of 5 with it).
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -25,6 +24,7 @@ from jarvis.decision import (
 from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -32,12 +32,6 @@ if TYPE_CHECKING:
 
 ENGLISH_LINE = "[Reply language for this turn: English]"
 CHINESE_LINE = "[Reply language for this turn: Chinese]"
-
-
-@dataclass(frozen=True)
-class _StubRuntimePaths:
-    event_log: Path
-    artifacts_root: Path
 
 
 class _RecordingClient:
@@ -95,7 +89,7 @@ def _run(
     llm = _RecordingClient(call_a_tool=call_a_tool)
     kept: list[str] = []
     conn = open_event_log(tmp_path / "events.db")
-    paths = _StubRuntimePaths(
+    paths = StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
     )
     paths.artifacts_root.mkdir(parents=True, exist_ok=True)

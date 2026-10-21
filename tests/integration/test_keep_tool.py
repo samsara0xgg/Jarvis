@@ -28,7 +28,7 @@ from jarvis.state import core_memory
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import current_core_memory, open_memory_db
 from scripts import tool_exam
-from tests.integration.test_turn_guards import _batch, _guards, _ScriptedModel, _tool_texts
+from tests.support.turn_guards import StepModel, guard_batch, logged_guards, tool_texts
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -347,7 +347,7 @@ def memory_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     memory = tmp_path / "memory.db"
     open_memory_db(memory).close()
     monkeypatch.setattr(
-        "tests.integration.test_turn_guards.build_default_registry",
+        "tests.support.turn_guards.build_default_registry",
         lambda: build_default_registry(memory_db_path=memory),
     )
     return memory
@@ -355,17 +355,17 @@ def memory_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_the_model_saves_once_and_answers(tmp_path: Path, memory_registry: Path) -> None:
     """One keep, one answer: the second request carries the sentence that says it was saved."""
-    model = _ScriptedModel(("keep", {"text": "他不吃香菜"}), "好，记下了：他不吃香菜。")
-    text, conn = _batch(tmp_path, model)
+    model = StepModel(("keep", {"text": "他不吃香菜"}), "好，记下了：他不吃香菜。")
+    text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "好，记下了：他不吃香菜。"
         assert len(model.requests) == 2
         assert _lines(memory_registry) == [
             "他不吃香菜",
         ]
-        (result,) = _tool_texts(model.requests[-1][0])
+        (result,) = tool_texts(model.requests[-1][0])
         assert 'Saved to long-term memory: \\"他不吃香菜\\".' in result
-        assert _guards(conn) == []
+        assert logged_guards(conn) == []
     finally:
         conn.close()
 
@@ -375,19 +375,19 @@ def test_a_model_that_saves_again_with_other_arguments_still_writes_one_item(
 ) -> None:
     """Each variation after the first is answered "already", and the memory holds one line."""
     fact = "allergic to peanuts"
-    model = _ScriptedModel(
+    model = StepModel(
         ("keep", {"text": fact}),
         ("keep", {"text": f"{fact} "}),
         ("keep", {"text": f" {fact}"}),
         "好，记住了。",
     )
-    answer, conn = _batch(tmp_path, model)
+    answer, conn = guard_batch(tmp_path, model)
     try:
         assert answer == "好，记住了。"
         assert _lines(memory_registry) == [
             fact,
         ]
-        results = _tool_texts(model.requests[-1][0])
+        results = tool_texts(model.requests[-1][0])
         assert "Saved to long-term memory" in results[0]
         assert all("Already in long-term memory, nothing new" in one for one in results[1:])
     finally:
@@ -398,10 +398,10 @@ def test_an_answer_that_claims_a_save_before_any_call_is_sent_back_to_keep(
     tmp_path: Path, memory_registry: Path,
 ) -> None:
     """ADR 0240 on the tool: 「记下了」 with nothing kept goes back once, then keep runs."""
-    model = _ScriptedModel("记下了。", ("keep", {"text": "明天是我生日"}), "好。")
-    _, conn = _batch(tmp_path, model)
+    model = StepModel("记下了。", ("keep", {"text": "明天是我生日"}), "好。")
+    _, conn = guard_batch(tmp_path, model)
     try:
-        assert [g["guard"] for g in _guards(conn)] == ["unbacked"]
+        assert [g["guard"] for g in logged_guards(conn)] == ["unbacked"]
         assert len(model.requests) == 3
         assert _lines(memory_registry) == [
             "明天是我生日",

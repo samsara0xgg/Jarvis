@@ -29,10 +29,9 @@ from jarvis.runtime.terminal import _declared, _run, _Ui, bind_ui, make_executor
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.plugin_settings import local_key
 from jarvis.surface.claude_sessions import ClaudeSessions
-from tests.integration.test_claude_hooks import HOOK, SUGGESTION
-from tests.integration.test_terminal_claude import BUSY, WAITING, _device_home
-from tests.integration.test_terminal_observers import _free_port, _wait_for
-from tests.integration.test_terminal_reads import _Brain
+from tests.support.claude_hooks import HOOK, SUGGESTION
+from tests.support.terminal import Brain, free_port, wait_for
+from tests.support.terminal_claude import BUSY, WAITING, device_home
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -97,7 +96,7 @@ class _Rig:
     """A brain, a terminal serving the UI in front of it, and a companion's HTTP client."""
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _device_home(tmp_path / "mac", monkeypatch)
+        device_home(tmp_path / "mac", monkeypatch)
         self.root = tmp_path / "terminal-root"
         self.key = local_key(self.root)
         self.token = pair_device(tmp_path, "macbook")
@@ -108,10 +107,10 @@ class _Rig:
             return self.tap
 
         log = bootstrap_runtime(tmp_path / "brain-root").event_log
-        self.brain = _Brain(
+        self.brain = Brain(
             tmp_path, log, deps=lambda _hub: {"claude_sessions_read": True}, tap=tap,
         )
-        self.port = _free_port()
+        self.port = free_port()
         self.mac = _Mac(self.brain.url, self.token, self.root, self.port)
         self.http = httpx.Client(
             base_url=f"http://127.0.0.1:{self.port}", timeout=10,
@@ -121,7 +120,7 @@ class _Rig:
     def __enter__(self) -> Self:
         self.brain.__enter__()
         self.mac.__enter__()
-        _wait_for(lambda: bool(self.brain.hub.connected()), "the terminal never connected")
+        wait_for(lambda: bool(self.brain.hub.connected()), "the terminal never connected")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -246,10 +245,10 @@ def test_with_the_brain_away_the_hook_leaves_the_prompt_to_claude_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The terminal answers 503 for the brain; the hook prints nothing and exits at once."""
-    _device_home(tmp_path / "mac", monkeypatch)
+    device_home(tmp_path / "mac", monkeypatch)
     root = tmp_path / "terminal-root"
     local_key(root)  # the hook reads the terminal's own key from its root
-    port = _free_port()
+    port = free_port()
     with _Mac("http://127.0.0.1:9", "unused", root, port):
         payload = {"hook_event_name": "PermissionRequest", "session_id": WAITING,
                    "cwd": "/x/jarvis", "tool_name": "Bash", "tool_input": {}}

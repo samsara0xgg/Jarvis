@@ -52,17 +52,33 @@ from jarvis.surface.terminal_events import (
     PLAYBACK_EVENT_TYPES,
     BrainEvents,
 )
-from tests.integration.test_terminal_voice import (
+from tests.support.phone import (
+    GOOD,
+    HEALTH,
+    HOUR,
+    LOCATION,
+    MEASURE,
+    MINUTE,
+    MOTION,
+    NOW,
+    STATE,
+    TRACK,
+    UUID,
+    VISIT,
+    event_frame,
+    fixed_uid,
+)
+from tests.support.terminal import (
     REMOTE,
     TERMINAL_WS,
-    _ack,
-    _AsRemote,
-    _bearer,
-    _brain_client,
-    _free_port,
-    _hello,
-    _playback_frame,
-    _wait_for,
+    AsRemote,
+    ack_frame,
+    bearer,
+    brain_client,
+    free_port,
+    hello_frame,
+    playback_frame,
+    wait_for,
 )
 
 if TYPE_CHECKING:
@@ -70,47 +86,8 @@ if TYPE_CHECKING:
 
     from httpx2 import Response  # what the test client answers with
 
-NOW = int(time.time() * 1000)
-MINUTE = 60_000
-HOUR = 60 * MINUTE
-UUID = "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
 LOOPBACK = "127.0.0.1"
 
-GOOD: dict[str, dict[str, Any]] = {
-    "phone.visit_observed": {
-        "lat": 48.46, "lng": -123.31, "accuracy_m": 65.0, "arrived_at_ms": NOW - 3 * HOUR,
-        "departed_at_ms": NOW - HOUR, "place": "University of Victoria",
-    },
-    "phone.location_observed": {
-        "lat": 48.4284, "lng": -123.3656, "accuracy_m": 120, "place": "Douglas St, Victoria",
-        "speed_mps": 1.4,
-    },
-    "phone.motion_observed": {
-        "activity": "walking", "confidence": "high", "started_at_ms": NOW - 15 * MINUTE,
-        "ended_at_ms": NOW - MINUTE,
-    },
-    "phone.health_observed": {
-        "metric": "workout", "start_ms": NOW - 2 * HOUR, "end_ms": NOW - HOUR, "value": 3600,
-        "detail": "running", "unit": "s", "source": "Allen's Apple Watch",
-        "device": "Watch7,1", "sample_uuid": UUID,
-        "meta": {"indoor": False, "avg_heart_rate": 151.5, "time_zone": "America/Vancouver"},
-    },
-    "phone.state_observed": {"signal": "focus", "value": "on", "detail": "Work"},
-    "phone.measure_observed": {
-        "metric": "heart_rate", "start_ms": NOW - 3 * MINUTE, "end_ms": NOW - 3 * MINUTE,
-        "value": 64.0, "unit": "count/min", "sample_uuid": UUID, "source": "Allen's Apple Watch",
-        "device": "Watch7,1", "meta": {"motion_context": "sedentary"},
-    },
-    # ADR 0312: three fixes of a drive, the second with nothing iOS could not measure
-    "phone.track_observed": {
-        "started_at_ms": NOW - 2 * MINUTE, "ended_at_ms": NOW - 2 * MINUTE + 2000,
-        "fixes": [
-            [0, 48.4284123, -123.3656456, 4.7, 21.3, 3.1, 13.42, 0.6, 271.5, 4.2, 0],
-            [1000, 48.4284201, -123.3658311, 4.7, None, None, None, None, None, None, 0],
-            [2000, 48.4284299, -123.3660122, 9.5, 21.1, 3.3, 13.9, 0.7, 0.0, 12.0, 3],
-        ],
-    },
-}
 MINIMAL: dict[str, dict[str, Any]] = {
     "phone.visit_observed": {"lat": 0, "lng": 0, "accuracy_m": 0, "arrived_at_ms": NOW},
     "phone.location_observed": {"lat": 0, "lng": 0, "accuracy_m": 0},
@@ -130,19 +107,6 @@ MINIMAL: dict[str, dict[str, Any]] = {
 }
 
 
-def _uid(n: int) -> str:
-    return f"{n:032x}"
-
-
-def _frame(
-    n: int, kind: str, payload: dict[str, Any] | None = None, **extra: Any,  # noqa: ANN401
-) -> dict[str, Any]:
-    return {
-        "event_uid": _uid(n), "event_type": kind, "ts_epoch_ms": NOW,
-        "payload": GOOD[kind] if payload is None else payload, **extra,
-    }
-
-
 def _changed(kind: str, **changes: Any) -> dict[str, Any]:  # noqa: ANN401
     return {**GOOD[kind], **changes}
 
@@ -159,11 +123,6 @@ def _span(metric: str, value: float, detail: str | None = None) -> dict[str, Any
 
 # --- the payload check, as a table --------------------------------------------------------------
 
-VISIT, LOCATION, MOTION, HEALTH, STATE, MEASURE, TRACK = (
-    "phone.visit_observed", "phone.location_observed", "phone.motion_observed",
-    "phone.health_observed", "phone.state_observed", "phone.measure_observed",
-    "phone.track_observed",
-)
 FIX = GOOD[TRACK]["fixes"][0]
 
 
@@ -466,11 +425,11 @@ def _rows(log: Path) -> list[tuple[str, str, int, dict[str, Any], str, str]]:
 def _post(
     client: TestClient, token: str, frames: list[Any],
 ) -> Response:
-    return client.post(PHONE_EVENTS_PATH, json={"events": frames}, headers=_bearer(token))
+    return client.post(PHONE_EVENTS_PATH, json={"events": frames}, headers=bearer(token))
 
 
 def _ok(n: int) -> dict[str, Any]:
-    return {"type": "ack", "event_uid": _uid(n), "ok": True}
+    return {"type": "ack", "event_uid": fixed_uid(n), "ok": True}
 
 
 def _refused(uid: str | None, code: str) -> dict[str, Any]:
@@ -482,17 +441,19 @@ def test_a_heartbeat_series_at_the_largest_size_is_stored_whole_and_a_larger_one
 ) -> None:
     """4000 beats of the longest offsets fit one frame's 64 KiB; more is a ``bad_event``."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     beats = [[86_399_000 + i, i % 2] for i in range(4000)]
     series = {**GOOD[MEASURE], "metric": "heartbeat_series", "value": 4000, "beats": beats,
               "part": 0}
     too_many = {**series, "value": 4001, "beats": [*beats, [86_400_000, 0]]}
 
-    reply = _post(client, token, [_frame(1, MEASURE, series), _frame(2, MEASURE, too_many)])
+    reply = _post(
+        client, token, [event_frame(1, MEASURE, series), event_frame(2, MEASURE, too_many)]
+    )
 
-    assert reply.json() == {"acks": [_ok(1), _refused(_uid(2), "bad_event")]}
+    assert reply.json() == {"acks": [_ok(1), _refused(fixed_uid(2), "bad_event")]}
     [(uid, kind, _ts, stored, actor, _node)] = _rows(log)
-    assert (uid, kind, actor) == (_uid(1), MEASURE, "observer")
+    assert (uid, kind, actor) == (fixed_uid(1), MEASURE, "observer")
     assert stored == series
 
 
@@ -501,96 +462,104 @@ def test_a_mixed_batch_is_answered_one_ack_per_frame_in_order_and_stores_only_th
 ) -> None:
     """Seven good frames among fourteen refused, each for its own code; those leave no row."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     old = NOW - 10 * 24 * HOUR
     batch: list[Any] = [
-        _frame(1, VISIT),
-        _frame(2, LOCATION, _changed(LOCATION, lat=91)),
-        _frame(3, LOCATION),
-        _frame(4, MOTION),
-        _frame(5, "repo.state_observed", {"repo_path": "/r"}),
-        _frame(6, HEALTH),
-        _frame(7, STATE, {"signal": "focus", "value": "connected"}),
-        _frame(8, "phone.sleeping", {}),
-        _frame(9, STATE),
+        event_frame(1, VISIT),
+        event_frame(2, LOCATION, _changed(LOCATION, lat=91)),
+        event_frame(3, LOCATION),
+        event_frame(4, MOTION),
+        event_frame(5, "repo.state_observed", {"repo_path": "/r"}),
+        event_frame(6, HEALTH),
+        event_frame(7, STATE, {"signal": "focus", "value": "connected"}),
+        event_frame(8, "phone.sleeping", {}),
+        event_frame(9, STATE),
         "not a frame",
-        _frame(10, LOCATION, _changed(LOCATION, place="x" * 201)),
-        {**_frame(11, LOCATION), "source_event_id": _uid(1)},
-        {**_frame(12, LOCATION), "correlation": {"turn_id": "T"}},
-        {**_frame(13, LOCATION), "schema_version": 1},
-        {**_frame(14, LOCATION), "ts_epoch_ms": "now"},
-        {**_frame(15, LOCATION), "event_uid": "NOT-A-UID"},
-        {**_frame(16, LOCATION), "ts_epoch_ms": old},
-        {**_frame(17, LOCATION), "type": "event"},
-        {**_frame(18, LOCATION), "type": "tts"},
-        _frame(19, "surface.playback_completed", _playback_frame(_uid(19))["payload"]),
-        _frame(20, LOCATION, {"x": "a" * MAX_EVENT_CHARS}),
+        event_frame(10, LOCATION, _changed(LOCATION, place="x" * 201)),
+        {**event_frame(11, LOCATION), "source_event_id": fixed_uid(1)},
+        {**event_frame(12, LOCATION), "correlation": {"turn_id": "T"}},
+        {**event_frame(13, LOCATION), "schema_version": 1},
+        {**event_frame(14, LOCATION), "ts_epoch_ms": "now"},
+        {**event_frame(15, LOCATION), "event_uid": "NOT-A-UID"},
+        {**event_frame(16, LOCATION), "ts_epoch_ms": old},
+        {**event_frame(17, LOCATION), "type": "event"},
+        {**event_frame(18, LOCATION), "type": "tts"},
+        event_frame(19, "surface.playback_completed", playback_frame(fixed_uid(19))["payload"]),
+        event_frame(20, LOCATION, {"x": "a" * MAX_EVENT_CHARS}),
     ]
     reply = _post(client, token, batch)
 
     assert reply.status_code == 200
-    assert reply.json() == {"acks": [
-        _ok(1),
-        _refused(_uid(2), "bad_event"),
-        _ok(3),
-        _ok(4),
-        _refused(_uid(5), "event_type_not_allowed"),
-        _ok(6),
-        _refused(_uid(7), "bad_event"),
-        _refused(_uid(8), "event_type_not_allowed"),
-        _ok(9),
-        _refused(None, "bad_event"),
-        _refused(_uid(10), "bad_event"),
-        _refused(_uid(11), "bad_event"),
-        _refused(_uid(12), "bad_event"),
-        _refused(_uid(13), "bad_event"),
-        _refused(_uid(14), "bad_event"),
-        _refused(None, "bad_event"),
-        _ok(16),
-        _ok(17),
-        _refused(_uid(18), "bad_event"),
-        _refused(_uid(19), "event_type_not_allowed"),
-        _refused(_uid(20), "event_too_large"),
-    ]}
+    assert reply.json() == {
+        "acks": [
+            _ok(1),
+            _refused(fixed_uid(2), "bad_event"),
+            _ok(3),
+            _ok(4),
+            _refused(fixed_uid(5), "event_type_not_allowed"),
+            _ok(6),
+            _refused(fixed_uid(7), "bad_event"),
+            _refused(fixed_uid(8), "event_type_not_allowed"),
+            _ok(9),
+            _refused(None, "bad_event"),
+            _refused(fixed_uid(10), "bad_event"),
+            _refused(fixed_uid(11), "bad_event"),
+            _refused(fixed_uid(12), "bad_event"),
+            _refused(fixed_uid(13), "bad_event"),
+            _refused(fixed_uid(14), "bad_event"),
+            _refused(None, "bad_event"),
+            _ok(16),
+            _ok(17),
+            _refused(fixed_uid(18), "bad_event"),
+            _refused(fixed_uid(19), "event_type_not_allowed"),
+            _refused(fixed_uid(20), "event_too_large"),
+        ]
+    }
     rows = _rows(log)
     assert [(uid, kind) for uid, kind, *_ in rows] == [
-        (_uid(1), VISIT), (_uid(3), LOCATION), (_uid(4), MOTION), (_uid(6), HEALTH),
-        (_uid(9), STATE), (_uid(16), LOCATION), (_uid(17), LOCATION),
+        (fixed_uid(1), VISIT),
+        (fixed_uid(3), LOCATION),
+        (fixed_uid(4), MOTION),
+        (fixed_uid(6), HEALTH),
+        (fixed_uid(9), STATE),
+        (fixed_uid(16), LOCATION),
+        (fixed_uid(17), LOCATION),
     ]
     by_uid = {uid: (ts, payload, actor, node) for uid, _kind, ts, payload, actor, node in rows}
-    ts, payload, actor, node = by_uid[_uid(1)]
+    ts, payload, actor, node = by_uid[fixed_uid(1)]
     assert (ts, payload, actor, node) == (NOW, GOOD[VISIT], "observer", "phone")
     # the fix time of a location is the event's own time; a clock a week off is not trusted
-    assert by_uid[_uid(3)][0] == NOW
-    assert abs(by_uid[_uid(16)][0] - int(time.time() * 1000)) < 60_000
+    assert by_uid[fixed_uid(3)][0] == NOW
+    assert abs(by_uid[fixed_uid(16)][0] - int(time.time() * 1000)) < 60_000
     assert {node for *_rest, node in by_uid.values()} == {"phone"}
 
 
 def test_a_resent_batch_is_acknowledged_again_and_writes_nothing_twice(tmp_path: Path) -> None:
     """The phone lost the answer and sends the same frames; and one frame twice in one batch."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
-    batch = [_frame(1, VISIT), _frame(2, LOCATION), _frame(3, STATE)]
+    client, _hub, log = brain_client(tmp_path, speaks=False)
+    batch = [event_frame(1, VISIT), event_frame(2, LOCATION), event_frame(3, STATE)]
     first = _post(client, token, batch).json()
     assert first == {"acks": [_ok(1), _ok(2), _ok(3)]}
     assert len(_rows(log)) == 3
     assert _post(client, token, batch).json() == first
-    assert _post(client, token, [batch[1], batch[1], _frame(4, MOTION)]).json() == {
+    assert _post(client, token, [batch[1], batch[1], event_frame(4, MOTION)]).json() == {
         "acks": [_ok(2), _ok(2), _ok(4)],
     }
-    assert [uid for uid, *_ in _rows(log)] == [_uid(n) for n in (1, 2, 3, 4)]
+    assert [uid for uid, *_ in _rows(log)] == [fixed_uid(n) for n in (1, 2, 3, 4)]
 
 
 def test_each_device_writes_under_its_own_name(tmp_path: Path) -> None:
     """The name comes from the token alone; nothing in the frame can change it."""
     phone, spare = pair_device(tmp_path, "iphone"), pair_device(tmp_path, "ipad.old")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
-    assert _post(client, phone, [_frame(1, LOCATION)]).json() == {"acks": [_ok(1)]}
-    assert _post(client, spare, [_frame(2, LOCATION)]).json() == {"acks": [_ok(2)]}
-    liar = {**_frame(3, LOCATION), "ingestion_node": "macbook", "device": "macbook"}
-    assert _post(client, phone, [liar]).json() == {"acks": [_refused(_uid(3), "bad_event")]}
+    client, _hub, log = brain_client(tmp_path, speaks=False)
+    assert _post(client, phone, [event_frame(1, LOCATION)]).json() == {"acks": [_ok(1)]}
+    assert _post(client, spare, [event_frame(2, LOCATION)]).json() == {"acks": [_ok(2)]}
+    liar = {**event_frame(3, LOCATION), "ingestion_node": "macbook", "device": "macbook"}
+    assert _post(client, phone, [liar]).json() == {"acks": [_refused(fixed_uid(3), "bad_event")]}
     assert [(uid, node) for uid, *_mid, node in _rows(log)] == [
-        (_uid(1), "iphone"), (_uid(2), "ipad.old"),
+        (fixed_uid(1), "iphone"),
+        (fixed_uid(2), "ipad.old"),
     ]
 
 
@@ -599,23 +568,33 @@ def test_a_database_error_on_one_frame_is_retry_for_that_frame_and_the_resend_st
 ) -> None:
     """The append of one uid fails inside SQLite; its neighbours are stored and the retry lands."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     with sqlite3.connect(log) as conn:
         conn.execute(
             "CREATE TRIGGER fail_one BEFORE INSERT ON events "
-            f"WHEN NEW.event_uid = '{_uid(2)}' BEGIN SELECT RAISE(ABORT, 'disk is full'); END",
+            f"WHEN NEW.event_uid = '{fixed_uid(2)}' BEGIN SELECT RAISE(ABORT, 'disk is full'); END",
         )
-    batch = [_frame(1, LOCATION), _frame(2, LOCATION), _frame(3, STATE), _frame(4, LOCATION, {})]
-    assert _post(client, token, batch).json() == {"acks": [
-        _ok(1), _refused(_uid(2), "retry"), _ok(3), _refused(_uid(4), "bad_event"),
-    ]}
-    assert [uid for uid, *_ in _rows(log)] == [_uid(1), _uid(3)]
+    batch = [
+        event_frame(1, LOCATION),
+        event_frame(2, LOCATION),
+        event_frame(3, STATE),
+        event_frame(4, LOCATION, {}),
+    ]
+    assert _post(client, token, batch).json() == {
+        "acks": [
+            _ok(1),
+            _refused(fixed_uid(2), "retry"),
+            _ok(3),
+            _refused(fixed_uid(4), "bad_event"),
+        ]
+    }
+    assert [uid for uid, *_ in _rows(log)] == [fixed_uid(1), fixed_uid(3)]
 
     with sqlite3.connect(log) as conn:
         conn.execute("DROP TRIGGER fail_one")
     # the phone resends only what was `retry`
     assert _post(client, token, [batch[1]]).json() == {"acks": [_ok(2)]}
-    assert [uid for uid, *_ in _rows(log)] == [_uid(1), _uid(3), _uid(2)]
+    assert [uid for uid, *_ in _rows(log)] == [fixed_uid(1), fixed_uid(3), fixed_uid(2)]
 
 
 # --- the allowlists, both ways -------------------------------------------------------------------
@@ -626,27 +605,30 @@ def test_the_route_refuses_the_observers_and_playback_types_and_the_link_refuses
 ) -> None:
     """Each sender writes only its own types; the refusal is the same code on both transports."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     foreign = [
-        {"event_uid": _uid(100 + i), "event_type": kind, "ts_epoch_ms": NOW, "payload": {}}
+        {"event_uid": fixed_uid(100 + i), "event_type": kind, "ts_epoch_ms": NOW, "payload": {}}
         for i, kind in enumerate(sorted(OBSERVER_EVENT_TYPES | PLAYBACK_EVENT_TYPES))
     ]
     acks = _post(client, token, foreign).json()["acks"]
     assert [ack["code"] for ack in acks] == ["event_type_not_allowed"] * len(foreign)
     assert [ack["event_uid"] for ack in acks] == [frame["event_uid"] for frame in foreign]
 
-    with client.websocket_connect(TERMINAL_WS, headers=_bearer(token)) as ws:
-        ws.send_text(_hello(voice=True))  # even a voice terminal's list has no phone type
+    with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
+        ws.send_text(hello_frame(voice=True))  # even a voice terminal's list has no phone type
         ws.receive_json()
         for i, kind in enumerate(sorted(PHONE_EVENT_TYPES)):
             frame = {
-                "type": "event", "event_uid": _uid(200 + i), "event_type": kind,
-                "ts_epoch_ms": NOW, "payload": GOOD[kind],
+                "type": "event",
+                "event_uid": fixed_uid(200 + i),
+                "event_type": kind,
+                "ts_epoch_ms": NOW,
+                "payload": GOOD[kind],
             }
-            assert _ack(ws, frame) == _refused(_uid(200 + i), "event_type_not_allowed")
+            assert ack_frame(ws, frame) == _refused(fixed_uid(200 + i), "event_type_not_allowed")
     assert _rows(log) == []
     with sqlite3.connect(log) as conn:
-        left = conn.execute("SELECT COUNT(*) FROM events WHERE event_uid >= ?", (_uid(100),))
+        left = conn.execute("SELECT COUNT(*) FROM events WHERE event_uid >= ?", (fixed_uid(100),))
         assert left.fetchone() == (0,)
 
 
@@ -666,32 +648,43 @@ def test_the_local_key_alone_is_a_403_and_only_a_paired_devices_token_opens_the_
     A device token on loopback is the guard's 401, as on the terminal link.
     """
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     local = _loopback(client)
-    body = {"events": [_frame(1, LOCATION)]}
+    body = {"events": [event_frame(1, LOCATION)]}
 
-    keyed = local.post(PHONE_EVENTS_PATH, json=body, headers=_bearer(local_key(tmp_path)))
+    keyed = local.post(PHONE_EVENTS_PATH, json=body, headers=bearer(local_key(tmp_path)))
     assert (keyed.status_code, keyed.json()) == (
-        403, {"detail": "a paired device's token is required"},
+        403,
+        {"detail": "a paired device's token is required"},
     )
     assert local.post(PHONE_EVENTS_PATH, json=body).status_code == 401
     # a device token is not the local key: on loopback the guard checks the key
-    assert local.post(PHONE_EVENTS_PATH, json=body, headers=_bearer(token)).status_code == 401
+    assert local.post(PHONE_EVENTS_PATH, json=body, headers=bearer(token)).status_code == 401
 
     assert client.post(PHONE_EVENTS_PATH, json=body).status_code == 401
-    assert client.post(PHONE_EVENTS_PATH, json=body, headers=_bearer("wrong")).status_code == 401
-    assert client.post(
-        PHONE_EVENTS_PATH, json=body, headers=_bearer(local_key(tmp_path)),
-    ).status_code == 401
-    assert client.post(
-        PHONE_EVENTS_PATH, json=body, headers={"Authorization": token},
-    ).status_code == 401
+    assert client.post(PHONE_EVENTS_PATH, json=body, headers=bearer("wrong")).status_code == 401
+    assert (
+        client.post(
+            PHONE_EVENTS_PATH,
+            json=body,
+            headers=bearer(local_key(tmp_path)),
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            PHONE_EVENTS_PATH,
+            json=body,
+            headers={"Authorization": token},
+        ).status_code
+        == 401
+    )
     assert _rows(log) == []
 
     assert _post(client, token, body["events"]).status_code == 200
     unpair_device(tmp_path, "phone")
-    assert _post(client, token, [_frame(2, LOCATION)]).status_code == 401
-    assert [uid for uid, *_ in _rows(log)] == [_uid(1)]
+    assert _post(client, token, [event_frame(2, LOCATION)]).status_code == 401
+    assert [uid for uid, *_ in _rows(log)] == [fixed_uid(1)]
 
 
 def test_a_daemon_that_does_not_listen_has_no_such_route(tmp_path: Path) -> None:
@@ -699,12 +692,18 @@ def test_a_daemon_that_does_not_listen_has_no_such_route(tmp_path: Path) -> None
     token = pair_device(tmp_path, "phone")
     events_only = (BrainEvents(sqlite3.connect(":memory:")), None)
     for events, name in ((None, lambda _t: "phone"), events_only):
-        app = create_app(InherentDeps(
-            submit_callable=lambda _text: "T1", broadcaster=InherentBroadcaster(),
-            phone_events=events, device_name=name,
-        ))
+        app = create_app(
+            InherentDeps(
+                submit_callable=lambda _text: "T1",
+                broadcaster=InherentBroadcaster(),
+                phone_events=events,
+                device_name=name,
+            )
+        )
         require_local_key(
-            app, lambda _h: True, device_token_matches=lambda _t: True,
+            app,
+            lambda _h: True,
+            device_token_matches=lambda _t: True,
         )
         client = TestClient(app, base_url="http://127.0.0.1:8006", client=(REMOTE, 50000))
         assert _post(client, token, []).status_code == 404
@@ -716,15 +715,15 @@ def test_a_daemon_that_does_not_listen_has_no_such_route(tmp_path: Path) -> None
 def test_the_batch_has_limits_and_a_malformed_body_is_a_400(tmp_path: Path) -> None:
     """200 frames and 1 MiB a body, declared or streamed; anything else is not a batch."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
-    headers = {**_bearer(token), "Content-Type": "application/json"}
+    client, _hub, log = brain_client(tmp_path, speaks=False)
+    headers = {**bearer(token), "Content-Type": "application/json"}
     url = PHONE_EVENTS_PATH
 
     assert _post(client, token, []).json() == {"acks": []}
-    full = _post(client, token, [_frame(n, LOCATION) for n in range(200)])
+    full = _post(client, token, [event_frame(n, LOCATION) for n in range(200)])
     assert full.status_code == 200
     assert [ack["ok"] for ack in full.json()["acks"]] == [True] * 200
-    over = _post(client, token, [_frame(n, LOCATION) for n in range(200, 401)])
+    over = _post(client, token, [event_frame(n, LOCATION) for n in range(200, 401)])
     assert over.status_code == 413
     assert len(_rows(log)) == 200  # an over-long batch is refused whole
 
@@ -735,38 +734,50 @@ def test_the_batch_has_limits_and_a_malformed_body_is_a_400(tmp_path: Path) -> N
     exact = json.dumps({"events": []}).ljust(1024 * 1024)
     assert client.post(url, content=exact, headers=headers).json() == {"acks": []}
 
-    for content in ("", "[]", '{"events": {}}', '{"events": "x"}', "{", '{"event": []}', "null",
-                    b"\xff\xfe", "[" * 100_000):
+    for content in (
+        "",
+        "[]",
+        '{"events": {}}',
+        '{"events": "x"}',
+        "{",
+        '{"event": []}',
+        "null",
+        b"\xff\xfe",
+        "[" * 100_000,
+    ):
         assert client.post(url, content=content, headers=headers).status_code == 400, content
 
 
 def test_a_frame_over_the_64_kib_cap_is_refused_alone(tmp_path: Path) -> None:
     """The cap is the link's: a big frame is `event_too_large` and its neighbours are stored."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
-    big = _frame(2, LOCATION, {"place": "x" * MAX_EVENT_CHARS})
-    acks = _post(client, token, [_frame(1, LOCATION), big, _frame(3, LOCATION)]).json()["acks"]
-    assert acks == [_ok(1), _refused(_uid(2), "event_too_large"), _ok(3)]
-    assert [uid for uid, *_ in _rows(log)] == [_uid(1), _uid(3)]
+    client, _hub, log = brain_client(tmp_path, speaks=False)
+    big = event_frame(2, LOCATION, {"place": "x" * MAX_EVENT_CHARS})
+    acks = _post(client, token, [event_frame(1, LOCATION), big, event_frame(3, LOCATION)]).json()[
+        "acks"
+    ]
+    assert acks == [_ok(1), _refused(fixed_uid(2), "event_too_large"), _ok(3)]
+    assert [uid for uid, *_ in _rows(log)] == [fixed_uid(1), fixed_uid(3)]
 
 
 def test_nan_and_infinity_sent_as_json_literals_are_bad_events(tmp_path: Path) -> None:
     """Python's JSON reads `NaN`; the check does not let it into the log."""
     token = pair_device(tmp_path, "phone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     head = f'{{"event_type": "phone.location_observed", "ts_epoch_ms": {NOW}, '
     text = (
-        f'{{"events": [{head}"event_uid": "{_uid(1)}", '
+        f'{{"events": [{head}"event_uid": "{fixed_uid(1)}", '
         '"payload": {"lat": NaN, "lng": 1, "accuracy_m": 1}}, '
-        f'{head}"event_uid": "{_uid(2)}", '
+        f'{head}"event_uid": "{fixed_uid(2)}", '
         '"payload": {"lat": 1, "lng": 1, "accuracy_m": Infinity}}]}'
     )
     reply = client.post(
-        PHONE_EVENTS_PATH, content=text,
-        headers={**_bearer(token), "Content-Type": "application/json"},
+        PHONE_EVENTS_PATH,
+        content=text,
+        headers={**bearer(token), "Content-Type": "application/json"},
     )
     assert reply.json() == {
-        "acks": [_refused(_uid(1), "bad_event"), _refused(_uid(2), "bad_event")],
+        "acks": [_refused(fixed_uid(1), "bad_event"), _refused(fixed_uid(2), "bad_event")],
     }
     assert _rows(log) == []
 
@@ -779,7 +790,7 @@ class _LoopOwnedBrain:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.port = _free_port()
+        self.port = free_port()
         self.log = root / "events.db"
         open_event_log(self.log).close()
         self.server: uvicorn.Server | None = None
@@ -787,25 +798,34 @@ class _LoopOwnedBrain:
 
     async def _serve(self) -> None:
         conn = open_event_log(self.log)  # check_same_thread stays on: this thread only
-        app = create_app(InherentDeps(
-            submit_callable=lambda _text: "T1",
-            broadcaster=InherentBroadcaster(),
-            phone_events=BrainEvents(conn),
-            device_name=lambda token: device_name_for_token(self.root, token),
-        ))
+        app = create_app(
+            InherentDeps(
+                submit_callable=lambda _text: "T1",
+                broadcaster=InherentBroadcaster(),
+                phone_events=BrainEvents(conn),
+                device_name=lambda token: device_name_for_token(self.root, token),
+            )
+        )
         require_local_key(
-            app, lambda header: local_key_matches(local_key(self.root), header),
+            app,
+            lambda header: local_key_matches(local_key(self.root), header),
             device_token_matches=lambda token: device_token_matches(self.root, token),
         )
-        self.server = uvicorn.Server(uvicorn.Config(
-            _AsRemote(app), host=LOOPBACK, port=self.port, log_level="warning", lifespan="off",
-        ))
+        self.server = uvicorn.Server(
+            uvicorn.Config(
+                AsRemote(app),
+                host=LOOPBACK,
+                port=self.port,
+                log_level="warning",
+                lifespan="off",
+            )
+        )
         await self.server.serve()
         conn.close()
 
     def __enter__(self) -> Self:
         self.thread.start()
-        _wait_for(lambda: self.server is not None and self.server.started, "server never started")
+        wait_for(lambda: self.server is not None and self.server.started, "server never started")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -825,15 +845,21 @@ def test_on_a_real_server_the_batch_is_appended_on_the_loop_that_owns_the_log(
     token = pair_device(tmp_path, "phone")
     with _LoopOwnedBrain(tmp_path) as brain:
         reply = httpx.post(
-            brain.url, json={"events": [_frame(1, VISIT), _frame(2, LOCATION)]},
-            headers=_bearer(token), timeout=10,
+            brain.url,
+            json={"events": [event_frame(1, VISIT), event_frame(2, LOCATION)]},
+            headers=bearer(token),
+            timeout=10,
         )
         assert (reply.status_code, reply.json()) == (200, {"acks": [_ok(1), _ok(2)]})
         resent = httpx.post(
-            brain.url, json={"events": [_frame(2, LOCATION)]}, headers=_bearer(token), timeout=10,
+            brain.url,
+            json={"events": [event_frame(2, LOCATION)]},
+            headers=bearer(token),
+            timeout=10,
         )
         assert resent.json() == {"acks": [_ok(2)]}
         assert httpx.post(brain.url, json={"events": []}, timeout=10).status_code == 401
     assert [(uid, node) for uid, _k, _t, _p, _a, node in _rows(brain.log)] == [
-        (_uid(1), "phone"), (_uid(2), "phone"),
+        (fixed_uid(1), "phone"),
+        (fixed_uid(2), "phone"),
     ]

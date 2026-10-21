@@ -46,7 +46,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import append_attention_threads, attention_threads, open_memory_db
 from jarvis.state.shipments import Shipments
 from scripts import attention_replay
-from tests.integration.test_doing_run import CLOCKED, World, _tile, _Writer, world
+from tests.support.doing import CLOCKED, World, Writer, tile, world
 
 __all__ = ["world"]  # the doing tests' day, used here as a fixture
 
@@ -341,7 +341,7 @@ def _teller(answer: dict[str, tuple[str | None, str | None]]) -> Any:  # noqa: A
 
     def reply(prompt: str) -> str:
         if "\nKNOWN THREADS:" not in prompt:
-            return _tile(prompt)
+            return tile(prompt)
         told = []
         for line in prompt.splitlines():
             if line.startswith("k") and " | " in line:
@@ -378,7 +378,7 @@ def _page_threads(world: World, now: datetime) -> dict[str, tuple[str | None, in
     return found
 
 
-def _schedule(world: World, client: _Writer, *, prompt: str | None = TELL) -> DoingSchedule:
+def _schedule(world: World, client: Writer, *, prompt: str | None = TELL) -> DoingSchedule:
     settings = CLOCKED.__class__(**{**CLOCKED.__dict__, "threads_prompt": prompt})
     return DoingSchedule(
         settings=settings, sources=world.sources, memory_db=world.memory, event_log_path=world.log,
@@ -395,7 +395,7 @@ def test_a_run_first_has_the_new_keys_told_and_the_page_names_their_threads(
     assert _page_threads(world, _at(15)) == {
         "Ghostty jarvis": (None, 60), "WeChat": (None, 25), "Claude": (None, 20),
     }
-    client = _Writer(_teller(TOLD))
+    client = Writer(_teller(TOLD))
     schedule = _schedule(world, client)
     assert schedule.tidy(_at(15)).startswith("landed")
     assert client.systems[0] == TELL
@@ -425,7 +425,7 @@ def test_a_run_first_has_the_new_keys_told_and_the_page_names_their_threads(
 def test_without_a_threads_prompt_no_key_is_told(world: World, tmp_path: Path) -> None:
     """The run alone; the store stays empty and each key is its own thread."""
     world = _shipped_world(world, tmp_path)
-    client = _Writer(_teller(TOLD))
+    client = Writer(_teller(TOLD))
     assert _schedule(world, client, prompt=None).tidy(_at(15)).startswith("landed")
     assert client.systems == [CLOCKED.prompt]
     with closing(open_memory_db(world.memory)) as conn:
@@ -435,7 +435,7 @@ def test_without_a_threads_prompt_no_key_is_told(world: World, tmp_path: Path) -
 def test_a_telling_that_fails_leaves_the_run_standing(world: World, tmp_path: Path) -> None:
     """A refused answer twice, then the run: nothing told, the run lands."""
     world = _shipped_world(world, tmp_path)
-    client = _Writer(lambda p: '{"threads": []}' if "\nKNOWN THREADS:" in p else _tile(p))
+    client = Writer(lambda p: '{"threads": []}' if "\nKNOWN THREADS:" in p else tile(p))
     assert _schedule(world, client).tidy(_at(15)).startswith("landed")
     assert client.systems == [TELL, TELL, CLOCKED.prompt]
     assert "That answer" not in client.asked[1][-1]["content"]

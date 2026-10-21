@@ -9,11 +9,8 @@ material it was handed, the check requests it was asked, and what is persisted.
 from __future__ import annotations
 
 import json
-import os
-import re
 import sqlite3
 import subprocess
-import time as clock
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
@@ -29,18 +26,15 @@ from jarvis.decision.daily_report import (
     BRIEF_LEAD,
     CONTENT_LIMIT,
     DETAILS_TOOL_NAME,
-    JUDGE_TOOL_NAME,
     REPORT_TOOL_NAME,
     SEARCH_TOOL_NAME,
     SKILL,
-    SUMMARY_TOOL_NAME,
     DailyReportParseError,
     brief_of,
     compose_report,
     parse_report,
     screen_claims,
 )
-from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime import _work_state_tool_refresh
 from jarvis.runtime.daily_report import (
@@ -54,68 +48,32 @@ from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import gather_day, resolve_day, resolve_zone, save_report
 from jarvis.state.event_log import emit_event
 from jarvis.state.memory_db import append_record, open_memory_db
-from tests.integration.test_flat_tool_dispatch import _Fixture, _request
 from tests.integration.test_timesink_activity import add_capture, add_span, source
+from tests.support.daily_report import (
+    DAY,
+    JUDGE,
+    NOW,
+    REPORT,
+    SUMMARY,
+    TZ,
+    ZONE,
+    CannedReporter,
+    git_repo,
+    one_item,
+    provider_call,
+    report_of_items,
+    whole_item,
+)
+from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Mapping
+
+    from jarvis.decision.llm import ChatResult
 
 __all__ = ["source"]
 
-ZONE = "America/Vancouver"
-TZ = ZoneInfo(ZONE)
-DAY = date(2026, 9, 19)
-# 2026-09-19 in Vancouver is UTC-7, so the local day is [07:00Z, next 07:00Z).
-NOW = datetime(2026, 9, 20, 17, 0, tzinfo=UTC)
 QUERY_TOOLS = [SEARCH_TOOL_NAME, DETAILS_TOOL_NAME, REPORT_TOOL_NAME]
-JUDGE = [JUDGE_TOOL_NAME]
-SUMMARY = [SUMMARY_TOOL_NAME]
-
-_REPORT: dict[str, Any] = {
-    "items": [
-        {
-            "title": "每日工具的读取修复",
-            "activity": "改完 TimeSink 读取边界并提交。",
-            "progress": [{"part": None, "status": "completed", "refs": ["g1"]}],
-        },
-        {
-            "title": "浏览招聘页面",
-            "activity": "在 Chrome 里翻了职位列表。",
-            "progress": [{"part": None, "status": "browsed", "refs": ["a1", "s1"]}],
-        },
-        {
-            "title": "演示界面显示已部署",
-            "activity": "屏幕上出现“部署成功”。",
-            "progress": [{"part": None, "status": "completed", "refs": ["s1"]}],
-        },
-        {
-            "title": "没有依据的事项",
-            "activity": "引用了不存在的键。",
-            "progress": [{"part": None, "status": "discussed", "refs": ["zz9"]}],
-        },
-    ],
-    "decisions": [
-        {"text": "待办先放在本地。", "rationale": "Allen 自己说的。", "refs": ["r1"]},
-    ],
-    "open_items": [{"text": "屏幕采集还没跑满一天。", "refs": []}],
-    "user_next_steps": [
-        {"text": "明天继续写日报工具。", "refs": ["r1"]},
-        {"text": "顺手把 CI 修好。", "refs": ["s1"]},
-    ],
-    "suggestions": ["可以给屏幕采集加一条健康事件。"],
-    "uncertainties": ["有一段时间没有任何记录。"],
-}
-
-
-def _whole_item(
-    title: str, status: str, refs: list[str], activity: str = "活动与进展。"
-) -> dict[str, Any]:
-    """An item with one unnamed part: the shape of anything that is not code-plus-deployment."""
-    return {
-        "title": title,
-        "activity": activity,
-        "progress": [{"part": None, "status": status, "refs": refs}],
-    }
 
 
 def _parts(title: str, *parts: tuple[Any, ...], activity: str = "活动与进展。") -> dict[str, Any]:
@@ -129,82 +87,13 @@ def _parts(title: str, *parts: tuple[Any, ...], activity: str = "活动与进展
     }
 
 
-def _items(*items: dict[str, Any]) -> dict[str, Any]:
-    """A report of just these items, so a check reads few lines."""
-    return {
-        "items": list(items),
-        "decisions": [],
-        "open_items": [],
-        "user_next_steps": [],
-        "suggestions": [],
-        "uncertainties": [],
-    }
-
-
-def _one_item(title: str, status: str, refs: list[str]) -> dict[str, Any]:
-    """A report of exactly one whole item, so a check reads one status line."""
-    return _items(_whole_item(title, status, refs))
-
-
-def _call(name: str, payload: dict[str, Any], call_id: str = "c1") -> ChatResult:
-    """The provider's tool call around one payload."""
-    return ChatResult(
-        text=None,
-        tool_calls=(ToolCall(call_id, name, json.dumps(payload)),),
-        finish_reason="tool_calls",
-        input_tokens=1,
-        output_tokens=1,
-        raw={},
-    )
-
-
 def _reply(payload: dict[str, Any]) -> ChatResult:
-    return _call(REPORT_TOOL_NAME, payload)
+    return provider_call(REPORT_TOOL_NAME, payload)
 
 
 def _section(content: str, heading: str) -> str:
     """One section of a saved report or a material, up to the next heading."""
     return content.split(heading, 1)[1].split("\n## ", 1)[0]
-
-
-def git_repo(path: Path, commits: list[tuple[str, str, str]]) -> dict[str, str]:
-    """A real repository with the given (subject, committed_at, branch) commits; subject -> sha."""
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@x",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@x",
-    }
-
-    def git(*args: str, when: str | None = None) -> str:
-        dated = {**env, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when} if when else env
-        done = subprocess.run(  # noqa: S603 — test fixture over a temporary repository.
-            ["git", "-C", str(path), *args],  # noqa: S607
-            check=True,
-            capture_output=True,
-            text=True,
-            env=dated,
-        )
-        return done.stdout.strip()
-
-    path.mkdir()
-    git("init", "-q", "-b", "main")
-    shas = {}
-    branches = {"main"}
-    current = "main"
-    for index, (subject, when, branch) in enumerate(commits):
-        if branch != current:
-            # A branch is created off main once and returned to as is, never reset.
-            git("checkout", "-q", *(["-b", branch, "main"] if branch not in branches else [branch]))
-            branches.add(branch)
-            current = branch
-        (path / f"f{index}").write_text(subject, encoding="utf-8")
-        git("add", f"f{index}")
-        git("commit", "-q", "-m", subject, when=when)
-        shas[subject] = git("rev-parse", "HEAD")
-    git("checkout", "-q", "main")
-    return shas
 
 
 def codex_session_file(
@@ -239,120 +128,6 @@ def codex_session_file(
     return path
 
 
-Verdict = tuple[str, str, str | None]
-SUPPORTED: Verdict = ("supported", "原文显示这个部分已完成", "page")
-
-
-class CannedReporter:
-    """Answer each tool by name and record what was asked; ``fail`` raises like an outage.
-
-    Drafting rounds follow ``script``/``ask_details`` then return ``report``;
-    a check returns ``verdicts[title]`` (one verdict for every part, or one
-    per part) or ``verdict``; the summary returns ``main_line``.
-    """
-
-    def __init__(self, report: dict[str, Any] | None = None) -> None:
-        self.calls = 0
-        """Drafting calls made; the check and summary calls are counted in ``catalogs``."""
-        self.fail = False
-        self.fail_checks = False
-        self.malformed = False
-        self.malformed_once = False
-        self.malformed_checks: set[str] = set()
-        self.fail_check_titles: set[str] = set()
-        self.check_delay = 0.0
-        self.check_spans: list[tuple[float, float]] = []
-        """(start, end) of each check call, to show whether they overlapped."""
-        self.ask_details: list[str] | None = None
-        self.script: list[list[tuple[str, dict[str, Any]]]] = []
-        """Tool calls to make on each round before reporting: [[(tool, args), ...], ...]."""
-        self.report = report if report is not None else _REPORT
-        self.verdict: Verdict = SUPPORTED
-        self.verdicts: dict[str, Verdict | list[Verdict]] = {}
-        self.main_line = "主要在 Jarvis 仓库上改每日工具，并看了一轮招聘页面。"
-        self.materials: list[str] = []
-        self.replies: list[str] = []
-        """Per call, the tool replies it was shown (search hits and details)."""
-        self.catalogs: list[list[str]] = []
-        self.choices: list[str] = []
-        self.checks: list[str] = []
-        self.summaries: list[str] = []
-
-    @property
-    def material(self) -> str:
-        """What the first drafting call was given."""
-        return self.materials[0] if self.materials else ""
-
-    def analyze(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        system: str,
-        messages: list[dict[str, Any]],
-        tools: Sequence[dict[str, Any]],
-        tool_choice: str,
-    ) -> ChatResult:
-        """Mimic the model behind whichever tool catalog was offered."""
-        del conn
-        names = [str(t["name"]) for t in tools]
-        self.catalogs.append(names)
-        self.choices.append(tool_choice)
-        content = "\n".join(str(m.get("content") or "") for m in messages)
-        self.materials.append(content)
-        self.replies.append(
-            "\n".join(str(m.get("content") or "") for m in messages if m.get("role") == "tool")
-        )
-        if self.fail:
-            msg = "provider down"
-            raise ConnectionError(msg)
-        if names == JUDGE:
-            return self._judge(content)
-        if names == SUMMARY:
-            self.summaries.append(content)
-            return _call(SUMMARY_TOOL_NAME, {"main_line": self.main_line})
-        self.calls += 1
-        self.system = system
-        payload: dict[str, Any] = self.report
-        name = REPORT_TOOL_NAME
-        if self.malformed or (self.malformed_once and self.calls == 1):
-            payload = {"summary": "少了字段"}
-        elif self.ask_details is not None and self.calls == 1:
-            payload, name = {"keys": self.ask_details}, DETAILS_TOOL_NAME
-        elif self.calls <= len(self.script):
-            calls = tuple(
-                ToolCall(f"c{self.calls}-{index}", tool, json.dumps(args))
-                for index, (tool, args) in enumerate(self.script[self.calls - 1])
-            )
-            return ChatResult(
-                text=None, tool_calls=calls, finish_reason="tool_calls",
-                input_tokens=10, output_tokens=10, raw={},
-            )
-        return _call(name, payload, f"c{self.calls}")
-
-    def _judge(self, content: str) -> ChatResult:
-        self.checks.append(content)
-        started = clock.monotonic()
-        clock.sleep(self.check_delay)
-        self.check_spans.append((started, clock.monotonic()))
-        if self.fail_checks:
-            msg = "provider down during the checks"
-            raise ConnectionError(msg)
-        title = content.partition("\n")[0].removeprefix("Item: ")
-        if title in self.fail_check_titles:
-            msg = "provider down for one check"
-            raise ConnectionError(msg)
-        if title in self.malformed_checks:
-            return _call(JUDGE_TOOL_NAME, {"verdicts": "not a list"})
-        claimed = content.split("Parts claimed done:", 1)[1].split("The cited originals:", 1)[0]
-        numbers = [int(n) for n in re.findall(r"^(\d+)\. ", claimed, re.MULTILINE)]
-        chosen = self.verdicts.get(title, self.verdict)
-        rows = []
-        for number in numbers:
-            verdict, shows, screen = chosen[number - 1] if isinstance(chosen, list) else chosen
-            rows.append({"part": number, "verdict": verdict, "shows": shows, "screen": screen})
-        return _call(JUDGE_TOOL_NAME, {"verdicts": rows})
-
-
 class Rig:
     """The real registry + log + memory around one service and one canned reporter."""
 
@@ -370,7 +145,7 @@ class Rig:
         with closing(open_memory_db(self.memory)):
             pass
         self.reporter = CannedReporter()
-        self.fx = _Fixture(root, tools=())
+        self.fx = ToolWorld(root, tools=())
         self.service = DailyReportService(
             memory_path=self.memory,
             timesink_path=timesink,
@@ -401,7 +176,7 @@ class Rig:
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Dispatch through the real dispatcher and decode the persisted output."""
         self.sequence += 1
-        result = self.fx.dispatch(_request(name, f"dr{self.sequence}", arguments=args))
+        result = self.fx.dispatch(tool_request(name, f"dr{self.sequence}", arguments=args))
         assert result.slots[0].tool_output is not None
         assert len(result.slots[0].tool_output) <= 16384
         return dict(json.loads(result.slots[0].tool_output))
@@ -992,7 +767,7 @@ def test_commits_come_from_the_local_repository_not_only_the_observer(
         ],
     )
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo), "/no/such/repo"))
-    rig.reporter.report = _one_item("主线上的工作", "completed", ["g1"])
+    rig.reporter.report = one_item("主线上的工作", "completed", ["g1"])
     try:
         result = rig.run()
         assert result["outcome"] == "generated", result.get("error")
@@ -1093,7 +868,7 @@ def test_codex_sessions_are_agent_material_and_their_claims_are_self_report(
         cwd="/elsewhere",
     )
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", codex_sessions=sessions)
-    rig.reporter.report = _one_item("修 TimeSink 读取边界", "completed", ["c1"])
+    rig.reporter.report = one_item("修 TimeSink 读取边界", "completed", ["c1"])
     rig.reporter.ask_details = ["c1"]
     try:
         result = rig.run()
@@ -1205,7 +980,7 @@ def test_saved_git_and_session_refs_read_back_through_read_activity(
     rig = Rig(
         tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo),), codex_sessions=sessions
     )
-    rig.reporter.report = _one_item("回查", "attempted", ["g1", "c1"])
+    rig.reporter.report = one_item("回查", "attempted", ["g1", "c1"])
     try:
         assert rig.run()["outcome"] == "generated"
         saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
@@ -1281,7 +1056,7 @@ def test_everything_is_listed_and_still_searchable(
         ],
         [(DETAILS_TOOL_NAME, {"keys": ["g41", "c21", "r82"]})],
     ]
-    rig.reporter.report = _one_item("清单里的证据", "attempted", ["g41", "c21", "r81"])
+    rig.reporter.report = one_item("清单里的证据", "attempted", ["g41", "c21", "r81"])
     try:
         result = rig.run()
         assert result["outcome"] == "generated", result.get("error")
@@ -1410,7 +1185,7 @@ def test_a_branch_commit_is_committed_not_merged(
         shas[s][:7] for s in ("fix(screen): capture fd", "fix(screen): collector", "docs: on main")
     )
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo),))
-    rig.reporter.report = _items(
+    rig.reporter.report = report_of_items(
         _parts(
             "TimeSink 截屏采集",
             ("代码", "completed", ["g1", "g2"]),
@@ -1501,7 +1276,7 @@ def test_agent_claims_of_tests_and_deployment_are_self_report(
     )
     rig.record("rec-1", "我已经重启了守护进程，现在正常了。", ts="2026-09-19T15:00:00-07:00")
     s = f"s{terminal}"
-    rig.reporter.report = _items(
+    rig.reporter.report = report_of_items(
         _parts(
             "日报工具",
             ("代码", "completed", ["g1"]),
@@ -1570,7 +1345,7 @@ def test_the_merge_and_deploy_rules_follow_the_declared_claim_not_the_name(
     )
     perf = shas["perf: faster sync"][:7]
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", repos=(str(repo),))
-    rig.reporter.report = _items(
+    rig.reporter.report = report_of_items(
         _parts("TimeSink 发布", ("发布与性能新功能（未进 main）", "completed", ["g1"], "other")),
         _parts("TimeSink 上架", ("发布与性能新功能", "completed", ["g1"], "deployed")),
     )
@@ -1601,11 +1376,11 @@ def test_an_old_commit_or_a_question_cannot_verify_completion(rig: Rig) -> None:
         observed="2026-09-19T12:00:00-07:00",
     )
     rig.record("rec-2", "日报工具做完了吗？", ts="2026-09-19T12:30:00-07:00")
-    rig.reporter.report = _items(
-        _whole_item("靠旧提交撑起的完成", "completed", ["g1"]),
-        _whole_item("Allen 问过的事", "completed", ["r2"]),
-        _whole_item("Jarvis 自己说的事", "completed", ["r3"]),
-        _whole_item("Allen 请求过的事", "completed", ["r4"]),
+    rig.reporter.report = report_of_items(
+        whole_item("靠旧提交撑起的完成", "completed", ["g1"]),
+        whole_item("Allen 问过的事", "completed", ["r2"]),
+        whole_item("Jarvis 自己说的事", "completed", ["r3"]),
+        whole_item("Allen 请求过的事", "completed", ["r4"]),
     )
     rig.record("rec-3", "已经帮你记下了。", ts="2026-09-19T12:31:00-07:00", source_name="jarvis")
     rig.record("rec-4", "帮我把日报部署到 daemon", ts="2026-09-19T12:32:00-07:00")
@@ -1648,8 +1423,8 @@ def test_an_unrelated_citation_is_ruled_unsupported_by_the_check(
         text="RBC Workday My Applications Application Status Application Received",
     )
     s = f"s{form}"
-    rig.reporter.report = _items(
-        _whole_item("信息汇总模块验收", "completed", [s]),
+    rig.reporter.report = report_of_items(
+        whole_item("信息汇总模块验收", "completed", [s]),
         _parts("日报文档", ("文档", "completed", ["g1"])),
     )
     rig.reporter.verdicts["信息汇总模块验收"] = (
@@ -1691,9 +1466,9 @@ def test_an_exhausted_check_budget_leaves_claims_unverified(
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", check_budget=1)
     rig.record("rec-1", "申请已经交了。", ts="2026-09-19T11:00:00-07:00")
     rig.record("rec-2", "简历也更新完了。", ts="2026-09-19T11:05:00-07:00")
-    rig.reporter.report = _items(
-        _whole_item("投递申请", "completed", ["r1"]),
-        _whole_item("更新简历", "completed", ["r2"]),
+    rig.reporter.report = report_of_items(
+        whole_item("投递申请", "completed", ["r1"]),
+        whole_item("更新简历", "completed", ["r2"]),
     )
     try:
         result = rig.run()
@@ -1741,8 +1516,8 @@ def test_checks_run_together_and_a_failed_call_leaves_the_others(
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", check_budget=3)
     for number in range(1, 5):
         rig.record(f"rec-{number}", f"事项{number}完成了。", ts="2026-09-19T11:00:00-07:00")
-    rig.reporter.report = _items(
-        *(_whole_item(f"事项{n}", "completed", [f"r{n}"]) for n in range(1, 5))
+    rig.reporter.report = report_of_items(
+        *(whole_item(f"事项{n}", "completed", [f"r{n}"]) for n in range(1, 5))
     )
     rig.reporter.check_delay = 0.3
     try:
@@ -1786,7 +1561,7 @@ def test_over_budget_material_falls_back_to_index_lines_that_stay_readable(
         [(SEARCH_TOOL_NAME, {"query": "ECONNRESET"})],
         [(DETAILS_TOOL_NAME, {"keys": [f"s{capture}"]})],
     ]
-    rig.reporter.report = _one_item("看了报错", "browsed", [f"s{capture}"])
+    rig.reporter.report = one_item("看了报错", "browsed", [f"s{capture}"])
     result = rig.run()
     assert result["outcome"] == "generated", result.get("error")
     material = rig.reporter.material
@@ -1859,7 +1634,7 @@ def test_the_summary_is_written_after_the_checks_from_the_checked_table(rig: Rig
 
 def test_a_main_line_asserting_completion_is_replaced(rig: Rig) -> None:
     """The one model sentence may not say anything is done; the program's line stands instead."""
-    rig.reporter.report = _one_item("部署", "attempted", ["s1"])
+    rig.reporter.report = one_item("部署", "attempted", ["s1"])
     rig.reporter.main_line = "系统已经部署成功。"
     result = rig.run()
     assert result["outcome"] == "generated"
@@ -1885,7 +1660,7 @@ def test_a_supported_claim_is_worded_by_what_it_cites(
     rig: Rig, keys: list[str], label: str, listed_under: str
 ) -> None:
     """Under a supported verdict the status names the commit, Allen's record or the page."""
-    rig.reporter.report = _one_item("申请", "completed", keys)
+    rig.reporter.report = one_item("申请", "completed", keys)
     result = rig.run()
     assert result["outcome"] == "generated"
     assert f"### 1. 申请 — {label}" in rig.saved()
@@ -1897,9 +1672,9 @@ def test_a_supported_claim_is_worded_by_what_it_cites(
 def test_a_screen_the_judge_did_not_classify_is_not_called_a_page(rig: Rig) -> None:
     """A screen the judge left unclassified is omitted next to a commit, 屏幕显示 when alone."""
     rig.reporter.verdict = ("supported", "原文显示已完成", None)
-    rig.reporter.report = _items(
+    rig.reporter.report = report_of_items(
         _parts("有提交也有截屏", ("代码", "completed", ["g1", "s1"])),
-        _whole_item("只有截屏", "completed", ["s1"]),
+        whole_item("只有截屏", "completed", ["s1"]),
     )
     result = rig.run()
     assert result["outcome"] == "generated"
@@ -1921,7 +1696,7 @@ def test_a_mixed_item_reports_each_part_on_its_own(rig: Rig) -> None:
     once with every part's status; an item whose parts are all in progress
     is only counted.
     """
-    rig.reporter.report = _items(
+    rig.reporter.report = report_of_items(
         _parts(
             "仓库观察器",
             ("代码", "completed", ["g1"]),
@@ -1991,7 +1766,7 @@ def test_every_citation_reaches_the_report(tmp_path: Path, source: sqlite3.Conne
         )
         keys = [str(row["key"]) for row in evidence.sections["windows"]]
         assert len(keys) == 25
-        report = parse_report(_reply(_one_item("引用很多的事项", "attempted", keys)))
+        report = parse_report(_reply(one_item("引用很多的事项", "attempted", keys)))
         content, refs, _ = compose_report(
             report,
             evidence,
@@ -2087,7 +1862,7 @@ def test_three_query_rounds_then_the_report_is_required(
         [(DETAILS_TOOL_NAME, {"keys": [f"s{short}"]}), (SEARCH_TOOL_NAME, {"query": "RBC"})],
         [(SEARCH_TOOL_NAME, {"query": "Codex"})],
     ]
-    rig.reporter.report = _one_item("核对测试通过数", "attempted", [f"s{short}", "r1"])
+    rig.reporter.report = one_item("核对测试通过数", "attempted", [f"s{short}", "r1"])
     try:
         result = rig.run()
         assert result["outcome"] == "generated", result.get("error")
@@ -2150,7 +1925,7 @@ def test_details_serve_the_whole_original(tmp_path: Path, source: sqlite3.Connec
             (DETAILS_TOOL_NAME, {"keys": ["r1", f"s{capture}", "c1"]}),
         ],
     ]
-    rig.reporter.report = _one_item("长文里的事", "attempted", ["r1", f"s{capture}", "c1"])
+    rig.reporter.report = one_item("长文里的事", "attempted", ["r1", f"s{capture}", "c1"])
     try:
         result = rig.run()
         assert result["outcome"] == "generated", result.get("error")
@@ -2272,28 +2047,28 @@ def test_material_and_report_never_execute_embedded_instructions(rig: Rig) -> No
 def test_malformed_reports_are_rejected_field_by_field() -> None:
     """Every required field must be present with its type before anything is saved."""
     for broken in (
-        {**_REPORT, "items": "not a list"},
-        {**_REPORT, "items": [_whole_item("x", "shipped", [])]},
-        {**_REPORT, "items": [{"title": "x", "progress": [{"status": "browsed", "refs": []}]}]},
+        {**REPORT, "items": "not a list"},
+        {**REPORT, "items": [whole_item("x", "shipped", [])]},
+        {**REPORT, "items": [{"title": "x", "progress": [{"status": "browsed", "refs": []}]}]},
         # One status for the whole item is the old shape; each part carries its own now.
-        {**_REPORT, "items": [{"title": "x", "activity": "y", "status": "completed", "refs": []}]},
-        {**_REPORT, "items": [{"title": "x", "activity": "y", "progress": []}]},
-        {**_REPORT, "items": [{"title": "x", "activity": "y", "progress": ["代码"]}]},
+        {**REPORT, "items": [{"title": "x", "activity": "y", "status": "completed", "refs": []}]},
+        {**REPORT, "items": [{"title": "x", "activity": "y", "progress": []}]},
+        {**REPORT, "items": [{"title": "x", "activity": "y", "progress": ["代码"]}]},
         # A bare string cannot supply a status or an activity; guessing one would be invention.
-        {**_REPORT, "items": ["只写了一句话"]},
-        {**_REPORT, "open_items": [{"text": "x", "refs": "no"}]},
+        {**REPORT, "items": ["只写了一句话"]},
+        {**REPORT, "open_items": [{"text": "x", "refs": "no"}]},
     ):
         with pytest.raises(DailyReportParseError, match=r"malformed|missing|without"):
             parse_report(_reply(broken))
-    parsed = parse_report(_reply(_REPORT))
+    parsed = parse_report(_reply(REPORT))
     assert parsed["items"][0]["title"] == "每日工具的读取修复"
     assert "summary" not in parsed, "the draft carries no summary; it is written after the checks"
     # A one-field entry returned bare means the same thing, with no references behind it.
-    bare = parse_report(_reply({**_REPORT, "open_items": ["屏幕采集还没跑满一天。"]}))
+    bare = parse_report(_reply({**REPORT, "open_items": ["屏幕采集还没跑满一天。"]}))
     assert bare["open_items"] == [{"text": "屏幕采集还没跑满一天。", "refs": []}]
-    bare_next = parse_report(_reply({**_REPORT, "user_next_steps": ["明天继续。"]}))
+    bare_next = parse_report(_reply({**REPORT, "user_next_steps": ["明天继续。"]}))
     assert bare_next["user_next_steps"] == [{"text": "明天继续。", "refs": []}]
-    bare_decision = parse_report(_reply({**_REPORT, "decisions": ["待办放本地。"]}))
+    bare_decision = parse_report(_reply({**REPORT, "decisions": ["待办放本地。"]}))
     assert bare_decision["decisions"] == [
         {"text": "待办放本地。", "rationale": None, "refs": []}
     ]
@@ -2302,14 +2077,16 @@ def test_malformed_reports_are_rejected_field_by_field() -> None:
 def test_an_over_long_claim_is_cut_at_a_sentence_and_says_so() -> None:
     """Long activity text ends at its last full sentence inside the cap, never mid-word."""
     sentences = "提交 e17fbd2（当天，已在 main）修好了锁屏与睡眠状态的区分。" * 12
-    item = _whole_item("很长的事项", "attempted", [], activity=sentences)
-    long = parse_report(_reply(_items(item)))
+    item = whole_item("很长的事项", "attempted", [], activity=sentences)
+    long = parse_report(_reply(report_of_items(item)))
     activity = long["items"][0]["activity"]
     assert len(activity) <= 400
     assert activity.endswith("区分。…"), activity[-20:]
     assert "main）修好" not in activity[-12:], "the cut is at a sentence end, not inside one"
     # A wall of text with no sentence end is cut at the cap and marked.
-    wall = parse_report(_reply(_items(_whole_item("无标点", "attempted", [], activity="字" * 500))))
+    wall = parse_report(
+        _reply(report_of_items(whole_item("无标点", "attempted", [], activity="字" * 500)))
+    )
     assert wall["items"][0]["activity"] == "字" * 399 + "…"
 
 
@@ -2332,9 +2109,9 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
     ]
     assert len(keys) > 3, "the trim path is only interesting with more refs than it keeps"
     huge = {
-        **_REPORT,
+        **REPORT,
         "items": [
-            _whole_item(f"事项 {i}", "attempted", keys, activity="一" * 400) for i in range(12)
+            whole_item(f"事项 {i}", "attempted", keys, activity="一" * 400) for i in range(12)
         ],
         "decisions": [
             {"text": "二" * 400, "rationale": "三" * 240, "refs": keys} for _ in range(8)
@@ -2359,7 +2136,14 @@ def test_report_fits_the_save_limit(rig: Rig) -> None:
     assert all(f"#{n}" in content for n in range(1, len(keys) + 1))
     assert len(refs) <= 20
     assert set(coverage) <= {
-        "records", "git", "app", "screen", "agent", "todos", "calendar", "knowledge"
+        "records",
+        "git",
+        "app",
+        "screen",
+        "agent",
+        "todos",
+        "calendar",
+        "knowledge",
     }
 
 
@@ -2374,7 +2158,11 @@ def test_overbudget_regeneration_preserves_saved_report(
         rig.fx.conn,
         memory_path=rig.memory,
         timesink_path=rig.service._timesink_path,  # noqa: SLF001 — configured test store.
-        repos=("/repo/jarvis",), day=DAY, zone_name=ZONE, zone=TZ, now=NOW,
+        repos=("/repo/jarvis",),
+        day=DAY,
+        zone_name=ZONE,
+        zone=TZ,
+        now=NOW,
     )
     refs = {
         f"s{i}": f"timesink-capture:0123456789abcdef:{i:03}:0123456789abcdef0123456789abcdef"
@@ -2384,9 +2172,9 @@ def test_overbudget_regeneration_preserves_saved_report(
     monkeypatch.setattr("jarvis.runtime.daily_report.gather_day", lambda *_a, **_kw: evidence)
     keys = list(refs)
     rig.reporter.report = {
-        **_one_item("大报告", "attempted", keys),
+        **one_item("大报告", "attempted", keys),
         "items": [
-            _whole_item(f"事项{i}", "attempted", keys, activity="文" * 400) for i in range(12)
+            whole_item(f"事项{i}", "attempted", keys, activity="文" * 400) for i in range(12)
         ],
         "decisions": [
             {"text": "文" * 400, "rationale": "理" * 240, "refs": keys} for _ in range(8)
@@ -2402,7 +2190,10 @@ def test_overbudget_regeneration_preserves_saved_report(
 def test_schedule_writes_the_day_before_once_after_its_hour(rig: Rig) -> None:
     """ADR 0101: nothing before 05:00 local; yesterday once after it, saved and readable."""
     schedule = DailySchedule(
-        rig.service, event_log_path=rig.fx.paths.event_log, at=time(5), zone=TZ,
+        rig.service,
+        event_log_path=rig.fx.paths.event_log,
+        at=time(5),
+        zone=TZ,
     )
     assert schedule.due(datetime(2026, 9, 20, 11, 59, tzinfo=UTC)) is None, "04:59 local"
     after = datetime(2026, 9, 20, 12, 1, tzinfo=UTC)

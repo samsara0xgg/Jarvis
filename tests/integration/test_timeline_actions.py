@@ -22,7 +22,6 @@ from datetime import UTC
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
-from fastapi.testclient import TestClient
 
 from jarvis.runtime.inherent_loop import (
     _act_commitment,
@@ -35,32 +34,27 @@ from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.shared import lang
 from jarvis.state import places, things
 from jarvis.state import reminders as reminder_state
-from jarvis.state.device_tokens import device_token_matches, pair_device
 from jarvis.state.memory_db import append_day_prose, open_memory_db
-from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
-from tests.integration.test_commitments import NOW as COMMITMENT_NOW
-from tests.integration.test_commitments import ZONE as COMMITMENT_ZONE
-from tests.integration.test_commitments import _at as commitment_at
-from tests.integration.test_commitments import _Log
-from tests.integration.test_day_highlights import (
+from tests.support.commitments import NOW as COMMITMENT_NOW
+from tests.support.commitments import ZONE as COMMITMENT_ZONE
+from tests.support.commitments import local_at as commitment_at
+from tests.support.day_highlights import (
     DAY_KEY,
     Dispatcher,
-    _ids,
-    _marks,
-    _ms,
-    _picture,
-    _served,
-    _visit,
-    _work,
+    ids_of,
+    marks_of,
+    moment_ms,
+    picture_note,
+    served_day,
+    work_id,
 )
-from tests.integration.test_home_routes import LIST as TODO_LIST
-from tests.integration.test_home_routes import _Connections as HomeConnections
-from tests.integration.test_home_routes import _home
-from tests.integration.test_home_routes import _Microsoft as HomeMicrosoft
-from tests.integration.test_ledger import _at, _world
-from tests.integration.test_terminal_voice import REMOTE
+from tests.support.home_routes import LIST as TODO_LIST
+from tests.support.home_routes import Connections as HomeConnections
+from tests.support.home_routes import Microsoft as HomeMicrosoft
+from tests.support.home_routes import make_home
+from tests.support.ledger import ledger_at, ledger_world
+from tests.support.runtime_log import RuntimeLog
+from tests.support.timeline import Peers, peers_with, refused_without_credentials, stays_of
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -70,47 +64,6 @@ if TYPE_CHECKING:
 
 HIGHLIGHT = "/inherent/day/highlight"
 PLACES = "/inherent/memory/places"
-
-
-class Peers(NamedTuple):
-    """One app, reached the three ways the guard tells apart."""
-
-    local: TestClient  # loopback with the local key
-    paired: TestClient  # another peer with a paired device's token
-    bare_local: TestClient  # loopback, no key
-    bare_remote: TestClient  # another peer, no token
-
-
-def _peers(tmp_path: Path, **deps: Any) -> Peers:  # noqa: ANN401 — the deps under test
-    app = create_app(InherentDeps(
-        submit_callable=lambda _text: "T1", broadcaster=InherentBroadcaster(), **deps,
-    ))
-    key = local_key(tmp_path)
-    require_local_key(
-        app, functools.partial(local_key_matches, key),
-        device_token_matches=functools.partial(device_token_matches, tmp_path),
-    )
-    token = pair_device(tmp_path, "phone")
-    host = "http://127.0.0.1:8006"
-    loopback = ("127.0.0.1", 50000)
-    return Peers(
-        TestClient(app, base_url=host, client=loopback, headers={"Authorization": f"Bearer {key}"}),
-        TestClient(
-            app, base_url=host, client=(REMOTE, 50000),
-            headers={"Authorization": f"Bearer {token}"},
-        ),
-        TestClient(app, base_url=host, client=loopback),
-        TestClient(app, base_url=host, client=(REMOTE, 50000)),
-    )
-
-
-def _refused_without_credentials(peers: Peers, path: str, body: dict[str, Any]) -> None:
-    """No key on loopback, no token elsewhere, and a wrong token: 401, and nothing is written."""
-    assert peers.bare_local.post(path, json=body).status_code == 401
-    assert peers.bare_remote.post(path, json=body).status_code == 401
-    wrong = {"Authorization": "Bearer not-a-token"}
-    assert peers.bare_remote.post(path, json=body, headers=wrong).status_code == 401
-    assert peers.bare_local.post(path, json=body, headers=wrong).status_code == 401
 
 
 # --- highlight -------------------------------------------------------------------------------
@@ -124,17 +77,12 @@ class Day(NamedTuple):
     tmp_path: Path
 
 
-def _stays(src: LedgerSources) -> None:
-    for n in range(1, 8):
-        _visit(src, f"v{n}", _at(7, 6 + n), _at(7, 6 + n, 30), f"Place {n}")
-
-
 @pytest.fixture
 def day(tmp_path: Path) -> Day:
     """The stays, and the route wired as the runtime wires it, to the world's stores."""
-    src = _world(tmp_path)
-    _stays(src)
-    peers = _peers(tmp_path, highlight_set=functools.partial(_set_highlight, _marks(src)))
+    src = ledger_world(tmp_path)
+    stays_of(src)
+    peers = peers_with(tmp_path, highlight_set=functools.partial(_set_highlight, marks_of(src)))
     return Day(src, peers, tmp_path)
 
 
@@ -165,15 +113,15 @@ def test_his_mark_is_the_row_the_tool_writes_and_the_day_serves_it(
     assert reply.json() == {
         "ok": True, "highlights": [{"id": "v3", "label": "Long lunch", "by": "him"}],
     }
-    assert reply.json()["highlights"] == _served(day.src)["highlights"]
+    assert reply.json()["highlights"] == served_day(day.src)["highlights"]
 
-    other = _world(tmp_path_factory.mktemp("tool"))
-    _stays(other)
+    other = ledger_world(tmp_path_factory.mktemp("tool"))
+    stays_of(other)
     Dispatcher(tmp_path_factory.mktemp("tool-log"), other)(
         {"day": DAY_KEY, "time": "09:10", "label": "Long lunch"},
     )
     assert _rows(day.src) == _rows(other)
-    assert _rows(day.src)[0][1:] == ("v3", 1, "Long lunch", "stay", _ms(_at(7, 9)))
+    assert _rows(day.src)[0][1:] == ("v3", 1, "Long lunch", "stay", moment_ms(ledger_at(7, 9)))
 
 
 def test_marking_is_idempotent_and_a_mark_without_a_label_keeps_the_label(day: Day) -> None:
@@ -195,12 +143,12 @@ def test_unmarking_takes_off_only_that_mark_and_unmarking_what_is_not_marked_wri
     _mark(day.peers, "v2")
     reply = _mark(day.peers, "v1", on=False)
     assert reply.status_code == 200
-    assert _ids(reply.json()) == ["v2"]
+    assert ids_of(reply.json()) == ["v2"]
     rows = len(_rows(day.src))
-    assert _ids(_mark(day.peers, "v1", on=False).json()) == ["v2"]
-    assert _ids(_mark(day.peers, "v5", on=False).json()) == ["v2"]
+    assert ids_of(_mark(day.peers, "v1", on=False).json()) == ["v2"]
+    assert ids_of(_mark(day.peers, "v5", on=False).json()) == ["v2"]
     assert len(_rows(day.src)) == rows
-    assert _ids(_mark(day.peers, "v1").json()) == ["v1", "v2"]  # and back on
+    assert ids_of(_mark(day.peers, "v1").json()) == ["v1", "v2"]  # and back on
 
 
 def test_his_mark_wins_over_hers_and_unmarking_her_pick_hides_it(day: Day) -> None:
@@ -208,11 +156,11 @@ def test_his_mark_wins_over_hers_and_unmarking_her_pick_hides_it(day: Day) -> No
     append_day_prose(
         day.src.memory_db, day=DAY_KEY, text="Night prose.", model="m", input_chars=1,
         output_chars=1, line="Night line.", highlights=[
-            {"id": f"v{n}", "label": f"Hers {n}", "start_ms": _ms(_at(7, 6 + n))}
+            {"id": f"v{n}", "label": f"Hers {n}", "start_ms": moment_ms(ledger_at(7, 6 + n))}
             for n in range(1, 6)
         ],
     )
-    assert _ids(_served(day.src)) == ["v1", "v2", "v3", "v4", "v5"]
+    assert ids_of(served_day(day.src)) == ["v1", "v2", "v3", "v4", "v5"]
     reply = _mark(day.peers, "v7", label="Mine")
     assert [(h["id"], h["by"]) for h in reply.json()["highlights"]] == [
         ("v1", "her"), ("v2", "her"), ("v3", "her"), ("v4", "her"), ("v7", "him"),
@@ -221,7 +169,7 @@ def test_his_mark_wins_over_hers_and_unmarking_her_pick_hides_it(day: Day) -> No
     assert [(h["id"], h["by"]) for h in hidden.json()["highlights"]] == [
         ("v1", "her"), ("v3", "her"), ("v4", "her"), ("v5", "her"), ("v7", "him"),
     ]
-    assert hidden.json()["highlights"] == _served(day.src)["highlights"]
+    assert hidden.json()["highlights"] == served_day(day.src)["highlights"]
 
 
 def test_a_sixth_mark_of_his_is_a_409_that_drops_nothing_and_a_standing_one_still_answers(
@@ -235,24 +183,24 @@ def test_a_sixth_mark_of_his_is_a_409_that_drops_nothing_and_a_standing_one_stil
     assert refused.status_code == 409
     assert "unmark one first" in refused.json()["detail"]
     assert _rows(day.src) == before
-    assert _ids(_served(day.src)) == ["v1", "v2", "v3", "v4", "v5"]
+    assert ids_of(served_day(day.src)) == ["v1", "v2", "v3", "v4", "v5"]
     assert _mark(day.peers, "v5", label="Again").status_code == 200  # already his: relabelled
     assert _mark(day.peers, "v1", on=False).status_code == 200
-    assert _ids(_mark(day.peers, "v6").json()) == ["v2", "v3", "v4", "v5", "v6"]
+    assert ids_of(_mark(day.peers, "v6").json()) == ["v2", "v3", "v4", "v5", "v6"]
 
 
 def test_an_item_that_is_not_on_that_day_is_a_404_and_a_label_is_not_an_item(day: Day) -> None:
     """No such id, the right id on the wrong day, and a day with nothing: nothing is written."""
     assert _mark(day.peers, "v-nope").status_code == 404
     assert _mark(day.peers, "v3", on_day="2026-10-08").status_code == 404
-    assert _mark(day.peers, _work(7, 13), on_day="2026-10-06").status_code == 404
-    assert _mark(day.peers, _work(7, 13)).status_code == 200  # the work block is an item too
+    assert _mark(day.peers, work_id(7, 13), on_day="2026-10-06").status_code == 404
+    assert _mark(day.peers, work_id(7, 13)).status_code == 200  # the work block is an item too
     assert len(_rows(day.src)) == 1
 
 
 def test_a_picture_inside_a_stay_can_be_marked_by_its_own_id(day: Day) -> None:
     """The ids the day line shows are the ones the route takes."""
-    _picture(day.src, "a" * 32, _at(7, 9, 10), "A bowl of pho.")
+    picture_note(day.src, "a" * 32, ledger_at(7, 9, 10), "A bowl of pho.")
     reply = _mark(day.peers, f"picture-{'a' * 32}")
     assert reply.status_code == 200
     assert reply.json()["highlights"][0]["label"] == "picture 09:10"
@@ -297,16 +245,16 @@ def test_a_blank_label_is_no_label(day: Day) -> None:
 def test_the_highlight_route_is_for_the_local_key_and_paired_devices_alone(day: Day) -> None:
     """Loopback with the key, and a paired device's token from elsewhere; nobody else."""
     body = {"day": DAY_KEY, "id": "v3", "on": True}
-    _refused_without_credentials(day.peers, HIGHLIGHT, body)
+    refused_without_credentials(day.peers, HIGHLIGHT, body)
     assert _rows(day.src) == []
     assert day.peers.paired.post(HIGHLIGHT, json=body).status_code == 200
     assert day.peers.local.post(HIGHLIGHT, json={**body, "id": "v4"}).status_code == 200
-    assert _ids(_served(day.src)) == ["v3", "v4"]
+    assert ids_of(served_day(day.src)) == ["v3", "v4"]
 
 
 def test_a_brain_without_a_memory_store_has_no_highlight_route(tmp_path: Path) -> None:
     """Not wired: the route is not there, as with every optional route."""
-    peers = _peers(tmp_path)
+    peers = peers_with(tmp_path)
     body = {"day": DAY_KEY, "id": "v3", "on": True}
     assert peers.local.post(HIGHLIGHT, json=body).status_code == 404
 
@@ -317,7 +265,7 @@ def test_a_brain_without_a_memory_store_has_no_highlight_route(tmp_path: Path) -
 class Appointments(NamedTuple):
     """A runtime root with a mail-made thing and the route wired to its log."""
 
-    log: _Log
+    log: RuntimeLog
     peers: Peers
     hex: str
 
@@ -338,12 +286,12 @@ def appointments(tmp_path: Path) -> Iterator[Appointments]:
     """One unconfirmed appointment from a mail, in a real event log."""
     before = lang.language()
     lang.set_language("en")
-    log = _Log(tmp_path)
+    log = RuntimeLog(tmp_path)
     things.add(
         log.conn, _mail_made(20, 19, "thing-" + "ab" * 16), by="mail", evidence="Tuesdays 7 PM",
         ref="m2", zone=COMMITMENT_ZONE, now=COMMITMENT_NOW,
     )
-    peers = _peers(tmp_path, commitment_act=functools.partial(
+    peers = peers_with(tmp_path, commitment_act=functools.partial(
         _act_commitment, log.paths.event_log, COMMITMENT_ZONE,
     ))
     yield Appointments(log, peers, "ab" * 16)
@@ -351,7 +299,7 @@ def appointments(tmp_path: Path) -> Iterator[Appointments]:
     lang.set_language(before)
 
 
-def _events(log: _Log) -> list[tuple[str, dict[str, Any], str]]:
+def _events(log: RuntimeLog) -> list[tuple[str, dict[str, Any], str]]:
     """Every thing event as (type, payload, actor)."""
     with closing(sqlite3.connect(log.paths.event_log)) as conn:
         found = conn.execute(
@@ -445,7 +393,7 @@ def test_the_commitment_route_is_for_the_local_key_and_paired_devices_alone(
 ) -> None:
     """No credentials, no write."""
     log, peers, hex_id = appointments
-    _refused_without_credentials(peers, f"/inherent/commitments/{hex_id}", {"action": "cancel"})
+    refused_without_credentials(peers, f"/inherent/commitments/{hex_id}", {"action": "cancel"})
     assert len(_events(log)) == 1
     assert (
         peers.paired.post(f"/inherent/commitments/{hex_id}", json={"action": "cancel"})
@@ -459,7 +407,7 @@ def test_the_commitment_route_is_for_the_local_key_and_paired_devices_alone(
 class Checkbox(NamedTuple):
     """The real Home over a fake Microsoft, the mirror over a real log, and the route."""
 
-    log: _Log
+    log: RuntimeLog
     peers: Peers
     microsoft: HomeMicrosoft
     mirror: ThingsMirror
@@ -470,8 +418,8 @@ def _todo_peers(
     root: Path, microsoft: HomeMicrosoft, mirror: ThingsMirror | None, event_log: Path,
 ) -> Peers:
     """The checkbox route as the runtime wires it: ``Home`` writes To Do, the mirror follows."""
-    home = _home(microsoft)
-    return _peers(
+    home = make_home(microsoft)
+    return peers_with(
         root, today_read=functools.partial(_serve_today, event_log, COMMITMENT_ZONE, home.weather),
         todo_set=functools.partial(_set_todo, home, mirror, event_log, COMMITMENT_ZONE),
     )
@@ -482,7 +430,7 @@ def checkbox(tmp_path: Path) -> Iterator[Checkbox]:
     """To Do's tasks already mirrored into the ledger, the route wired as the runtime wires it."""
     before = lang.language()
     lang.set_language("en")
-    log = _Log(tmp_path)
+    log = RuntimeLog(tmp_path)
     microsoft = HomeMicrosoft()
     mirror = ThingsMirror(HomeConnections(microsoft), log.paths.event_log, COMMITMENT_ZONE)  # type: ignore[arg-type]
     mirror.now = lambda: COMMITMENT_NOW.astimezone(UTC)
@@ -586,7 +534,7 @@ def places_world(tmp_path: Path) -> PlacesWorld:
     db = tmp_path / "memory.db"
     open_memory_db(db).close()
     page = MemoryPage(db, None, history_since="2026-01-01T00:00:00")
-    return PlacesWorld(db, _peers(tmp_path, memory_page=page))
+    return PlacesWorld(db, peers_with(tmp_path, memory_page=page))
 
 
 def _changes(db: Path) -> list[tuple[str, str, str]]:
@@ -684,7 +632,7 @@ def test_the_place_route_is_for_the_local_key_and_paired_devices_alone(
     """No credentials, no place."""
     db, peers = places_world
     body = {"name": "Gym", "lat": 48.4, "lng": -123.3}
-    _refused_without_credentials(peers, PLACES, body)
+    refused_without_credentials(peers, PLACES, body)
     assert _changes(db) == []
     assert peers.paired.post(PLACES, json=body).status_code == 200
 

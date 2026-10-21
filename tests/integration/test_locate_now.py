@@ -45,8 +45,8 @@ from jarvis.surface.inherent_server import InherentDeps, create_app, require_loc
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH, payload_valid
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
-from tests.integration.test_push import BUNDLE, DEVICE_A, FakeApns, World
-from tests.integration.test_terminal_voice import _AsRemote, _free_port, _wait_for
+from tests.support.push import BUNDLE, DEVICE_A, FakeApns, World
+from tests.support.terminal import AsRemote, free_port, wait_for
 from tools.phone_fake_client import FakePhone
 
 if TYPE_CHECKING:
@@ -64,7 +64,7 @@ class Host:
         """Serve for the world's paired phone; ``waits`` is where its answers are delivered."""
         self.world = world
         self.waits = waits
-        self.port = _free_port()
+        self.port = free_port()
         self.hub: PhoneHub | None = None
         self.server: uvicorn.Server | None = None
         self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
@@ -86,14 +86,14 @@ class Host:
             device_token_matches=functools.partial(device_token_matches, self.world.root),
         )
         self.server = uvicorn.Server(uvicorn.Config(
-            _AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off",
+            AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off",
         ))
         await self.server.serve()
 
     def __enter__(self) -> Self:
         """Start serving and wait until it is up."""
         self.thread.start()
-        _wait_for(lambda: bool(self.server and self.server.started), "server never started")
+        wait_for(lambda: bool(self.server and self.server.started), "server never started")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -220,7 +220,7 @@ def test_a_late_located_leaves_the_last_report_with_its_age_and_is_still_stored(
             asked = phone.wait_text("locate")
             got = running.result(timeout=10)
             phone.send(_located(asked["request_id"]))
-            _wait_for(lambda: len(_locations(world)) == 2, "the late fix was not stored")
+            wait_for(lambda: len(_locations(world)) == 2, "the late fix was not stored")
         finally:
             phone.close()
     assert got["fresh"] is False
@@ -271,7 +271,7 @@ def test_a_malformed_located_is_refused_and_does_not_hold_the_wait(world: World)
             seen = len(phone.texts)
             phone.send({"type": "located", "request_id": "not valid!", "error": "denied"})
             phone.send({"type": "located", "request_id": "ok_id", "error": "later"})
-            _wait_for(lambda: len(phone.texts) >= seen + 2, "no errors came back")
+            wait_for(lambda: len(phone.texts) >= seen + 2, "no errors came back")
             assert [f["code"] for f in phone.texts[seen:]] == ["bad_located"] * 2
         finally:
             phone.close()
@@ -286,7 +286,7 @@ def test_a_located_nobody_waits_for_is_only_a_report(world: World) -> None:
         phone = host.phone()
         try:
             phone.send(_located("nobody-asked"))
-            _wait_for(lambda: len(_locations(world)) == 1, "the fix was not stored")
+            wait_for(lambda: len(_locations(world)) == 1, "the fix was not stored")
         finally:
             phone.close()
     assert _locations(world)[0]["request_id"] == "nobody-asked"
@@ -304,7 +304,7 @@ def test_with_no_socket_the_background_push_goes_out_and_a_posted_report_complet
     with Host(world, waits) as host, concurrent.futures.ThreadPoolExecutor(1) as pool:
         locator = _locator(world, waits, host.hub, push_s=5.0)
         running = pool.submit(locator)
-        _wait_for(lambda: bool(world.sandbox.requests), "no push went out")
+        wait_for(lambda: bool(world.sandbox.requests), "no push went out")
         [request] = world.sandbox.requests
         request_id = request["body"]["locate"]
         assert request["body"] == {"aps": {"content-available": 1}, "locate": request_id}
@@ -350,7 +350,7 @@ def test_a_silent_socket_escalates_to_the_push(world: World) -> None:
         try:
             running = pool.submit(_locator(world, waits, host.hub, socket_s=0.3, push_s=5.0))
             phone.wait_text("locate")
-            _wait_for(lambda: bool(world.sandbox.requests), "the push never went out")
+            wait_for(lambda: bool(world.sandbox.requests), "the push never went out")
             request_id = world.sandbox.requests[0]["body"]["locate"]
             host.post_report(
                 {"lat": LAT, "lng": LNG, "accuracy_m": 30.0, "request_id": request_id},

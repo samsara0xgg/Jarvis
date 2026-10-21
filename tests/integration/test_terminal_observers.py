@@ -15,13 +15,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
-import socket
 import sqlite3
-import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
 import pytest
 import uvicorn
@@ -46,13 +44,19 @@ from jarvis.surface.terminal_events import (
 from jarvis.surface.terminal_link import TerminalHub, run_terminal_client
 from jarvis.surface.timesink_observer import TimesinkObserver
 from jarvis.surface.usage_observer import DEVICE_SERVICES, UsageObserver
+from tests.support.terminal import (
+    REMOTE,
+    AsRemote,
+    brain_log,
+    commit_file,
+    free_port,
+    log_rows,
+    make_repo,
+    observer_brain_client,
+    unstamped,
+    wait_for,
+)
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from starlette.types import ASGIApp, Receive, Scope, Send
-
-REMOTE = "100.87.250.92"
 TERMINAL_WS = "ws://127.0.0.1:8006/terminal/ws"
 UID = "a" * 32
 OK_PAYLOAD = {
@@ -62,28 +66,6 @@ OK_PAYLOAD = {
 
 
 # --- fixtures: a git repo, a TimeSink database, a brain's log --------------------------------
-
-
-def _git(repo: Path, *args: str) -> str:
-    done = subprocess.run(  # noqa: S603 — a fixed git argv on a temp repo.
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.test", *args],  # noqa: S607
-        cwd=repo, check=True, capture_output=True, text=True,
-    )
-    return done.stdout.strip()
-
-
-def _make_repo(path: Path) -> Path:
-    path.mkdir()
-    _git(path, "init", "-q", "-b", "main")
-    commit(path, "first")
-    return path
-
-
-def commit(repo: Path, subject: str) -> None:
-    """Add a file and commit it with ``subject``."""
-    (repo / f"{subject}.txt").write_text(subject, encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", subject)
 
 
 def _make_timesink(path: Path) -> sqlite3.Connection:
@@ -118,24 +100,6 @@ def add_span(conn: sqlite3.Connection, start: str, end: str) -> None:
     conn.commit()
 
 
-def _brain_log(path: Path) -> sqlite3.Connection:
-    """The brain's event log, usable from the server's own thread."""
-    open_event_log(path).close()
-    return sqlite3.connect(path, check_same_thread=False)
-
-
-def rows(path: Path, *types: str) -> list[tuple[str, str, dict[str, Any]]]:
-    """``(type, ingestion_node, payload)`` of the log's rows, oldest first."""
-    marks = ",".join("?" for _ in types)
-    with sqlite3.connect(path) as conn:
-        found = conn.execute(
-            f"SELECT type, ingestion_node, payload_json FROM events WHERE type IN ({marks}) "  # noqa: S608
-            "ORDER BY id",
-            types,
-        ).fetchall()
-    return [(kind, node, json.loads(payload)) for kind, node, payload in found]
-
-
 def frame(**changes: Any) -> dict[str, Any]:  # noqa: ANN401
     """A good event frame, with ``changes`` laid over it."""
     base: dict[str, Any] = {
@@ -148,25 +112,6 @@ def frame(**changes: Any) -> dict[str, Any]:  # noqa: ANN401
 # --- the brain's end ---------------------------------------------------------------------
 
 
-def _brain_client(tmp_path: Path) -> tuple[TestClient, TerminalHub, Path]:
-    log = tmp_path / "events.db"
-    hub = TerminalHub(events=BrainEvents(_brain_log(log)))
-    app = create_app(
-        InherentDeps(
-            submit_callable=lambda _text: "T1",
-            broadcaster=InherentBroadcaster(),
-            terminals=hub,
-            device_name=functools.partial(device_name_for_token, tmp_path),
-        ),
-    )
-    require_local_key(
-        app,
-        functools.partial(local_key_matches, local_key(tmp_path)),
-        device_token_matches=functools.partial(device_token_matches, tmp_path),
-    )
-    return TestClient(app, base_url="http://127.0.0.1:8006", client=(REMOTE, 50000)), hub, log
-
-
 def _send(ws: Any, body: dict[str, Any] | str) -> dict[str, Any]:  # noqa: ANN401
     ws.send_text(body if isinstance(body, str) else json.dumps(body))
     return dict(ws.receive_json())
@@ -175,7 +120,7 @@ def _send(ws: Any, body: dict[str, Any] | str) -> dict[str, Any]:  # noqa: ANN40
 def test_an_event_frame_is_appended_once_under_the_terminals_name(tmp_path: Path) -> None:
     """The paired name is the row's `ingestion_node`; a resend is acknowledged, not repeated."""
     token = pair_device(tmp_path, "macbook")
-    client, _hub, log = _brain_client(tmp_path)
+    client, _hub, log = observer_brain_client(tmp_path)
     ts = int(time.time() * 1000) - 5_000
     with client.websocket_connect(
         TERMINAL_WS, headers={"Authorization": f"Bearer {token}"},
@@ -186,7 +131,7 @@ def test_an_event_frame_is_appended_once_under_the_terminals_name(tmp_path: Path
 
         assert _send(ws, frame(ts_epoch_ms=ts)) == {"type": "ack", "event_uid": UID, "ok": True}
         assert _send(ws, frame(ts_epoch_ms=ts)) == {"type": "ack", "event_uid": UID, "ok": True}
-    assert rows(log, "repo.state_observed") == [("repo.state_observed", "macbook", OK_PAYLOAD)]
+    assert log_rows(log, "repo.state_observed") == [("repo.state_observed", "macbook", OK_PAYLOAD)]
     with sqlite3.connect(log) as conn:
         assert conn.execute("SELECT event_uid, ts_epoch_ms, actor FROM events").fetchall() == [
             (UID, ts, "observer"),
@@ -216,7 +161,7 @@ def test_an_event_no_observer_produces_or_that_is_malformed_is_refused(
 ) -> None:
     """The allowlist, the size cap and the shape checks each refuse with a code and no row."""
     token = pair_device(tmp_path, "macbook")
-    client, _hub, log = _brain_client(tmp_path)
+    client, _hub, log = observer_brain_client(tmp_path)
     with client.websocket_connect(
         TERMINAL_WS, headers={"Authorization": f"Bearer {token}"},
     ) as ws:
@@ -234,7 +179,7 @@ def test_an_event_without_a_usable_uid_is_refused_and_an_unpaired_terminal_canno
 ) -> None:
     """No uid, or a uid that is not 32 hex digits: refused. An unpaired token never gets in."""
     token = pair_device(tmp_path, "macbook")
-    client, _hub, log = _brain_client(tmp_path)
+    client, _hub, log = observer_brain_client(tmp_path)
     with client.websocket_connect(
         TERMINAL_WS, headers={"Authorization": f"Bearer {token}"},
     ) as ws:
@@ -248,13 +193,13 @@ def test_an_event_without_a_usable_uid_is_refused_and_an_unpaired_terminal_canno
     ):
         pass
     assert refused.value.code == 1008
-    assert rows(log, "repo.state_observed") == []
+    assert log_rows(log, "repo.state_observed") == []
 
 
 def test_a_clock_far_from_the_brains_does_not_place_the_event(tmp_path: Path) -> None:
     """A timestamp more than a week old or minutes ahead is replaced by the arrival time."""
     token = pair_device(tmp_path, "macbook")
-    client, _hub, log = _brain_client(tmp_path)
+    client, _hub, log = observer_brain_client(tmp_path)
     before = int(time.time() * 1000)
     with client.websocket_connect(
         TERMINAL_WS, headers={"Authorization": f"Bearer {token}"},
@@ -274,7 +219,7 @@ def test_ready_carries_the_latest_repo_state_per_repo_and_the_latest_timesink_he
 ) -> None:
     """What an observer folds its baseline from: the newest row of each, no other type."""
     token = pair_device(tmp_path, "macbook")
-    client, hub, log = _brain_client(tmp_path)
+    client, hub, log = observer_brain_client(tmp_path)
     conn = sqlite3.connect(log)
     for path, head in (("/a", "1"), ("/b", "9"), ("/a", "2")):
         emit_event(conn, type="repo.state_observed", payload={**OK_PAYLOAD, "repo_path": path,
@@ -331,7 +276,7 @@ def test_a_brain_without_event_wiring_and_a_one_machine_runtime_take_no_events(
         assert _send(ws, frame())["code"] == "events_not_accepted"
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    repo = _make_repo(tmp_path / "repo")
+    repo = make_repo(tmp_path / "repo")
     root = tmp_path / "root"
     root.mkdir()
     (root / "settings.yaml").write_text(
@@ -362,10 +307,6 @@ def test_a_brain_without_event_wiring_and_a_one_machine_runtime_take_no_events(
 # --- the observers emit through the outbox --------------------------------------------------
 
 
-def _unstamped(payload: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in payload.items() if k != "observed_at_ms"}
-
-
 def _sent(outbox: EventOutbox) -> list[dict[str, Any]]:
     return [json.loads(text) for text in outbox._pending.values()]  # noqa: SLF001
 
@@ -376,7 +317,7 @@ def test_the_repo_observer_emits_through_the_outbox_what_it_appends_on_one_machi
     """Same observer, same repo, two sinks: the log and the outbox hold the same events."""
 
     async def scenario() -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]]]:
-        repo = _make_repo(tmp_path / "repo")
+        repo = make_repo(tmp_path / "repo")
         log = open_event_log(tmp_path / "local.db")
         local = RepoObserver(log, [repo])
         outbox = EventOutbox()
@@ -384,8 +325,8 @@ def test_the_repo_observer_emits_through_the_outbox_what_it_appends_on_one_machi
         remote = RepoObserver(scratch, [repo], emit_event=outbox.emit_event)
         local.poll_once()
         remote.poll_once()  # first sight of the repo: its state, no commits
-        commit(repo, "second")
-        commit(repo, "third")
+        commit_file(repo, "second")
+        commit_file(repo, "third")
         (repo / "dirty.txt").write_text("x", encoding="utf-8")
         local.poll_once()
         remote.poll_once()
@@ -398,8 +339,8 @@ def test_the_repo_observer_emits_through_the_outbox_what_it_appends_on_one_machi
         return on_one_machine, _sent(outbox)
 
     on_one_machine, sent = asyncio.run(scenario())
-    assert [(f["event_type"], _unstamped(f["payload"])) for f in sent] == [
-        (kind, _unstamped(payload)) for kind, payload in on_one_machine
+    assert [(f["event_type"], unstamped(f["payload"])) for f in sent] == [
+        (kind, unstamped(payload)) for kind, payload in on_one_machine
     ]
     assert [f["event_type"] for f in sent] == [
         "repo.state_observed", "project.commit_seen", "project.commit_seen", "repo.state_observed",
@@ -437,8 +378,8 @@ def test_the_timesink_observer_emits_through_the_outbox_what_it_appends_on_one_m
     on_one_machine, sent = asyncio.run(scenario())
     assert [f["payload"]["status"] for f in sent] == ["ok", "ok"]
     assert [f["payload"]["span_high"] for f in sent] == [0, 1]
-    assert [(f["event_type"], _unstamped(f["payload"])) for f in sent] == [
-        (kind, _unstamped(payload)) for kind, payload in on_one_machine
+    assert [(f["event_type"], unstamped(f["payload"])) for f in sent] == [
+        (kind, unstamped(payload)) for kind, payload in on_one_machine
     ]
 
 
@@ -451,7 +392,7 @@ def test_the_allowlist_is_what_the_moved_observers_produce(
     monkeypatch.setattr(usage_observer, "_codex_headers", lambda: None)
 
     async def scenario() -> set[str]:
-        repo = _make_repo(tmp_path / "repo")
+        repo = make_repo(tmp_path / "repo")
         store = _make_timesink(tmp_path / "ts.sqlite")
         add_span(store, "2026-10-06 09:00:00.000", "2026-10-06 09:05:00.000")
         outbox = EventOutbox()
@@ -459,7 +400,7 @@ def test_the_allowlist_is_what_the_moved_observers_produce(
             open_event_log(tmp_path / "a.db"), [repo], emit_event=outbox.emit_event,
         )
         repo_observer.poll_once()
-        commit(repo, "second")
+        commit_file(repo, "second")
         repo_observer.poll_once()
         timesink = TimesinkObserver(
             open_event_log(tmp_path / "b.db"), tmp_path / "ts.sqlite", emit_event=outbox.emit_event,
@@ -514,31 +455,13 @@ def test_the_outbox_refuses_a_type_no_observer_produces_and_keeps_a_bounded_buff
 # --- a real terminal client, outbox and observers against a real server ----------------------
 
 
-class _AsRemote:
-    """ASGI shim: the server sees every peer as a device on the tailnet, not on loopback."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] in {"http", "websocket"}:
-            scope = {**scope, "client": (REMOTE, 50000)}
-        await self.app(scope, receive, send)
-
-
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
 class _Brain:
     """A real uvicorn server with a real event log behind the terminal route."""
 
     def __init__(self, root: Path, port: int | None = None) -> None:
-        self.port = port or _free_port()
+        self.port = port or free_port()
         self.log = root / "events.db"
-        hub = TerminalHub(events=BrainEvents(_brain_log(self.log)))
+        hub = TerminalHub(events=BrainEvents(brain_log(self.log)))
         app = create_app(
             InherentDeps(
                 submit_callable=lambda _text: "T1",
@@ -553,7 +476,7 @@ class _Brain:
             device_token_matches=functools.partial(device_token_matches, root),
         )
         self.server = uvicorn.Server(
-            uvicorn.Config(_AsRemote(app), host="127.0.0.1", port=self.port,
+            uvicorn.Config(AsRemote(app), host="127.0.0.1", port=self.port,
                            log_level="warning", lifespan="off"),
         )
         self.thread = threading.Thread(
@@ -562,7 +485,7 @@ class _Brain:
 
     def __enter__(self) -> Self:
         self.thread.start()
-        _wait_for(lambda: self.server.started, "server never started")
+        wait_for(lambda: self.server.started, "server never started")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -572,13 +495,6 @@ class _Brain:
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
-
-
-def _wait_for(condition: Callable[[], bool], what: str) -> None:
-    deadline = time.monotonic() + 15
-    while not condition():
-        assert time.monotonic() < deadline, what
-        time.sleep(0.05)
 
 
 class _Terminal:
@@ -629,17 +545,19 @@ def _fast_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_real_terminal_reports_its_repo_and_timesink_to_the_brains_log(tmp_path: Path) -> None:
     """Repo state, a new commit and the TimeSink head land in the brain's log, tagged macbook."""
     token = pair_device(tmp_path, "macbook")
-    repo = _make_repo(tmp_path / "repo")
+    repo = make_repo(tmp_path / "repo")
     store = _make_timesink(tmp_path / "timesink.sqlite")
     add_span(store, "2026-10-06 09:00:00.000", "2026-10-06 09:05:00.000")
     watched = _Watched((str(repo),), 0.2, tmp_path / "timesink.sqlite", 0.2)
     with _Brain(tmp_path) as brain, _Terminal(brain.url, token, watched):
-        _wait_for(lambda: bool(rows(brain.log, "repo.state_observed")
-                               and rows(brain.log, "timesink.state_observed")),
+        wait_for(lambda: bool(log_rows(brain.log, "repo.state_observed")
+                               and log_rows(brain.log, "timesink.state_observed")),
                   "the first observations never arrived")
-        commit(repo, "second")
-        _wait_for(lambda: bool(rows(brain.log, "project.commit_seen")), "no commit arrived")
-    found = rows(brain.log, "repo.state_observed", "project.commit_seen", "timesink.state_observed")
+        commit_file(repo, "second")
+        wait_for(lambda: bool(log_rows(brain.log, "project.commit_seen")), "no commit arrived")
+    found = log_rows(
+        brain.log, "repo.state_observed", "project.commit_seen", "timesink.state_observed"
+    )
     assert {(kind, node) for kind, node, _ in found} == {
         ("repo.state_observed", "macbook"),
         ("project.commit_seen", "macbook"),
@@ -656,17 +574,17 @@ def test_a_restarted_terminal_continues_from_the_brains_baseline(tmp_path: Path)
     A commit made while the terminal was down is reported when it is back.
     """
     token = pair_device(tmp_path, "macbook")
-    repo = _make_repo(tmp_path / "repo")
+    repo = make_repo(tmp_path / "repo")
     watched = _Watched((str(repo),), 0.2, None, 300)
     with _Brain(tmp_path) as brain:
         with _Terminal(brain.url, token, watched):
-            _wait_for(lambda: bool(rows(brain.log, "repo.state_observed")), "first state")
-        commit(repo, "while down")
+            wait_for(lambda: bool(log_rows(brain.log, "repo.state_observed")), "first state")
+        commit_file(repo, "while down")
         with _Terminal(brain.url, token, watched):
-            _wait_for(lambda: bool(rows(brain.log, "project.commit_seen")), "the missed commit")
+            wait_for(lambda: bool(log_rows(brain.log, "project.commit_seen")), "the missed commit")
             time.sleep(0.8)  # several polls: an unchanged repo must stay quiet
-    states = rows(brain.log, "repo.state_observed")
-    commits = rows(brain.log, "project.commit_seen")
+    states = log_rows(brain.log, "repo.state_observed")
+    commits = log_rows(brain.log, "project.commit_seen")
     assert [s["last_commit_subject"] for _, _, s in states] == ["first", "while down"]
     assert [c["subject"] for _, _, c in commits] == ["while down"]
 
@@ -676,22 +594,24 @@ def test_events_made_while_the_brain_is_unreachable_are_delivered_once_it_is_bac
 ) -> None:
     """The terminal keeps what it saw in memory and sends it on reconnect, each event once."""
     token = pair_device(tmp_path, "macbook")
-    repo = _make_repo(tmp_path / "repo")
+    repo = make_repo(tmp_path / "repo")
     watched = _Watched((str(repo),), 0.1, None, 300)
-    port = _free_port()
+    port = free_port()
     with _Terminal(f"http://127.0.0.1:{port}", token, watched):
         with _Brain(tmp_path, port) as first:
-            _wait_for(lambda: bool(rows(first.log, "repo.state_observed")), "first state")
+            wait_for(lambda: bool(log_rows(first.log, "repo.state_observed")), "first state")
         # The brain is gone; the terminal keeps polling and queues what it sees.
-        commit(repo, "one")
-        commit(repo, "two")
+        commit_file(repo, "one")
+        commit_file(repo, "two")
         time.sleep(1.0)
-        assert [r[2]["subject"] for r in rows(first.log, "project.commit_seen")] == []
+        assert [r[2]["subject"] for r in log_rows(first.log, "project.commit_seen")] == []
         with _Brain(tmp_path, port) as second:
-            _wait_for(lambda: len(rows(second.log, "project.commit_seen")) == 2,
-                      "buffered commits were never delivered")
+            wait_for(
+                lambda: len(log_rows(second.log, "project.commit_seen")) == 2,
+                "buffered commits were never delivered",
+            )
             time.sleep(0.5)
-    commits = rows(second.log, "project.commit_seen")
+    commits = log_rows(second.log, "project.commit_seen")
     assert [c["subject"] for _, _, c in commits] == ["one", "two"]
     assert {node for _, node, _ in commits} == {"macbook"}
     assert terminal_events.MAX_PENDING >= 2

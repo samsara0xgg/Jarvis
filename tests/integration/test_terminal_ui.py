@@ -22,16 +22,12 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import httpx
 import numpy as np
 import pytest
-import uvicorn
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from websockets.exceptions import InvalidStatus, WebSocketException
 from websockets.sync.client import connect as ws_connect
@@ -66,242 +62,26 @@ from jarvis.surface.terminal_ui import (
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_controls import VoiceControls
 from tests.integration.test_terminal_listen import LISTEN_CONFIG, _heard
-from tests.integration.test_terminal_voice import (
+from tests.support.terminal import (
     SPEECH_CONFIG,
-    _AsRemote,
-    _brain_log,
-    _FakeProvider,
-    _free_port,
-    _open_stream,
-    _wait_for,
+    AsRemote,
+    VoiceSpeechProvider,
+    brain_log,
+    free_port,
+    open_stream,
+    wait_for,
 )
-from tests.integration.test_voice_file_replay import _write_wav
+from tests.support.terminal_ui import DEVICE_TOKEN, LOCAL, UvicornServer, terminal_rig
+from tests.support.voice_input import write_wav
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
-
-DEVICE_TOKEN = "device-token-for-the-tests"  # noqa: S105 — a fixture, not a secret
-LOCAL = "http://127.0.0.1"
 
 
 # --- a loop of its own for each server ----------------------------------------------------
 
 
-class _Server:
-    """A real uvicorn server on its own thread and loop, reachable by its port."""
-
-    def __init__(self, app: Any, port: int | None = None) -> None:  # noqa: ANN401 — an ASGI app.
-        self.port = port or _free_port()
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self.server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning",
-                           lifespan="off"),
-        )
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self) -> None:
-        async def serve() -> None:
-            self.loop = asyncio.get_running_loop()
-            await self.server.serve()
-
-        asyncio.run(serve())
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        _wait_for(lambda: self.server.started, "server never started")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
-
-    def stop(self) -> None:
-        """End the server; its sockets close, as a brain going away does."""
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
-
-    @property
-    def url(self) -> str:
-        return f"{LOCAL}:{self.port}"
-
-    def call(self, coro: Any) -> Any:  # noqa: ANN401
-        """Run a coroutine on this server's loop and wait for it."""
-        assert self.loop is not None
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout=10)
-
-
 # --- a fake brain that records what reaches it ---------------------------------------------
-
-
-@dataclass
-class _FakeBrain:
-    """The routes the tests need, and a record of every request (never of a body's meaning)."""
-
-    seen: list[dict[str, Any]] = field(default_factory=list)
-    gate: threading.Event = field(default_factory=threading.Event)
-    sockets: list[asyncio.Queue[str | None]] = field(default_factory=list)
-    settings: dict[str, Any] = field(default_factory=dict)
-    server: _Server | None = None
-
-    def app(self) -> FastAPI:  # noqa: C901 — one closed list of routes.
-        app = FastAPI()
-
-        @app.middleware("http")
-        async def record(request: Request, call_next: Any) -> Any:  # noqa: ANN401
-            body = await request.body()
-            self.seen.append({
-                "method": request.method, "path": request.url.path, "query": request.url.query,
-                "headers": dict(request.headers), "body": body,
-            })
-            if request.headers.get("authorization") != f"Bearer {DEVICE_TOKEN}":
-                return JSONResponse({"detail": "unauthorized"}, status_code=401)
-            return await call_next(request)
-
-        @app.get("/inherent/stream")
-        async def stream() -> StreamingResponse:
-            async def lines() -> AsyncIterator[bytes]:
-                yield b'{"level": 0.1}\n'
-                await asyncio.to_thread(self.gate.wait, 10)
-                yield b'{"text": "done"}\n'
-
-            return StreamingResponse(lines(), media_type="application/x-ndjson")
-
-        @app.get("/inherent/refuse")
-        async def refuse() -> JSONResponse:
-            return JSONResponse({"detail": "that is for the brain's own key"}, status_code=403)
-
-        @app.get("/inherent/settings")
-        async def settings_read() -> dict[str, Any]:
-            return self._page()
-
-        @app.post("/inherent/settings")
-        async def settings_save(request: Request) -> dict[str, Any]:
-            self.settings.update((await request.json())["changes"])
-            return self._page()
-
-        @app.post("/inherent/controls")
-        async def controls(request: Request) -> dict[str, Any]:
-            body = await request.json()
-            return {"mic_muted": False, "speech_muted": False,
-                    "conversation": body.get("conversation") is True, "quiet": "off"}
-
-        @app.websocket("/inherent/ws")
-        async def ws(socket_: WebSocket) -> None:
-            if socket_.headers.get("authorization") != f"Bearer {DEVICE_TOKEN}":
-                await socket_.close(code=1008)
-                return
-            await socket_.accept()
-            queue: asyncio.Queue[str | None] = asyncio.Queue()
-            self.sockets.append(queue)
-
-            async def listen() -> None:  # a push socket reads, as the daemon's does
-                with contextlib.suppress(WebSocketDisconnect):
-                    while True:
-                        await socket_.receive_text()
-
-            listening = asyncio.create_task(listen())
-            try:
-                while not listening.done():
-                    taking = asyncio.create_task(queue.get())
-                    await asyncio.wait({taking, listening}, return_when=asyncio.FIRST_COMPLETED)
-                    if not taking.done():
-                        taking.cancel()
-                        break
-                    if (text := taking.result()) is None:
-                        await socket_.close(code=1001)
-                        break
-                    await socket_.send_text(text)
-            finally:
-                listening.cancel()
-                self.sockets.remove(queue)
-
-        @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-        async def echo(request: Request) -> dict[str, Any]:
-            body = await request.body()
-            return {"method": request.method, "path": request.url.path,
-                    "query": request.url.query, "length": len(body),
-                    "sha": hashlib.sha256(body).hexdigest()}
-
-        return app
-
-    def _page(self) -> dict[str, Any]:
-        return {
-            "values": {"tts_voice": "Warm Bestie", "input_device": "System default",
-                       "output_device": "System default", **self.settings},
-            "options": {"input_device": ["System default"], "output_device": ["System default"]},
-            "defaults": {"input_device": None, "output_device": None},
-            "restart_pending": False,
-        }
-
-    def push(self, op: str, **payload: object) -> None:
-        """Send one op on every push socket the brain holds."""
-        assert self.server is not None
-        text = json.dumps({"op": op, "payload": payload})
-        for queue in list(self.sockets):
-            self.server.call(queue.put(text))
-
-    def drop_sockets(self) -> None:
-        """The brain closes its push sockets."""
-        assert self.server is not None
-        for queue in list(self.sockets):
-            self.server.call(queue.put(None))
-
-    def requests(self, path: str) -> list[dict[str, Any]]:
-        return [one for one in self.seen if one["path"] == path]
-
-
-@dataclass
-class _Rig:
-    """A fake brain, the terminal's UI app in front of it, and the local key a daemon would use."""
-
-    root: Path
-    brain: _FakeBrain
-    brain_server: _Server
-    ui: _Server
-    broadcaster: UiBroadcaster
-    key: str
-    device: Device
-
-    @property
-    def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.key}"}
-
-    def get(self, path: str, **kwargs: Any) -> httpx.Response:  # noqa: ANN401
-        kwargs.setdefault("headers", self.headers)
-        return httpx.get(f"{self.ui.url}{path}", **kwargs)
-
-    def post(self, path: str, **kwargs: Any) -> httpx.Response:  # noqa: ANN401
-        kwargs.setdefault("headers", self.headers)
-        return httpx.post(f"{self.ui.url}{path}", **kwargs)
-
-    def socket(self, **kwargs: Any) -> Any:  # noqa: ANN401
-        kwargs.setdefault("additional_headers", self.headers)
-        return ws_connect(f"ws://127.0.0.1:{self.ui.port}/inherent/ws", **kwargs)
-
-
-@contextlib.contextmanager
-def _rig(
-    tmp_path: Path, device: Device | None = None, *, brain_up: bool = True,
-) -> Any:  # noqa: ANN401 — a generator of _Rig.
-    fake = _FakeBrain()
-    brain_server = _Server(fake.app())
-    fake.server = brain_server
-    key = local_key(tmp_path)
-    broadcaster = UiBroadcaster()
-    chosen = device or Device()
-    if brain_up:
-        brain_server.__enter__()
-    try:
-        app = create_ui_app(
-            Brain(brain_server.url, DEVICE_TOKEN),
-            authorize=functools.partial(local_key_matches, key),
-            broadcaster=broadcaster, device=chosen,
-        )
-        with _Server(app) as ui:
-            yield _Rig(tmp_path, fake, brain_server, ui, broadcaster, key, chosen)
-    finally:
-        if brain_up:
-            brain_server.__exit__()
 
 
 # --- admission: the daemon's, and nothing more open ----------------------------------------
@@ -309,7 +89,7 @@ def _rig(
 
 def test_a_request_is_admitted_only_with_a_local_host_and_the_local_key(tmp_path: Path) -> None:
     """The Host check runs first; every route but the probe needs the key; v2 stays closed."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         assert rig.get("/inherent/setup", headers={}).status_code == 401
         wrong = {"Authorization": f"Bearer {rig.key}x"}
         assert rig.get("/inherent/setup", headers=wrong).status_code == 401
@@ -334,7 +114,7 @@ def test_a_request_is_admitted_only_with_a_local_host_and_the_local_key(tmp_path
 
 def test_the_push_socket_is_admitted_like_a_request(tmp_path: Path) -> None:
     """No key, a wrong key or a foreign Host never reaches the handshake's end."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         with pytest.raises(InvalidStatus) as refused:
             ws_connect(f"ws://127.0.0.1:{rig.ui.port}/inherent/ws")
         assert refused.value.response.status_code == 403
@@ -351,7 +131,7 @@ def test_the_push_socket_is_admitted_like_a_request(tmp_path: Path) -> None:
             assert b" 101 " not in raw.recv(200).split(b"\r\n")[0]
         assert not rig.brain.sockets
         with rig.socket():
-            _wait_for(lambda: bool(rig.brain.sockets), "the brain's socket never opened")
+            wait_for(lambda: bool(rig.brain.sockets), "the brain's socket never opened")
         assert rig.brain.seen == []
 
 
@@ -362,7 +142,7 @@ def test_a_get_and_a_post_reach_the_brain_under_the_device_token_and_never_the_l
     tmp_path: Path,
 ) -> None:
     """Method, path, query and body arrive whole; the credential is replaced, not added to."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         got = rig.get("/inherent/mail/abc?unread=1&limit=3", headers={
             **rig.headers, "Accept": "application/json", "Cookie": "session=1",
             "X-Anything": "no",
@@ -395,7 +175,7 @@ def test_a_get_and_a_post_reach_the_brain_under_the_device_token_and_never_the_l
 
 def test_the_plugin_routes_are_forwarded_under_the_device_token(tmp_path: Path) -> None:
     """ADR 0202: the companion's plugin request reaches the brain as this device, not as the key."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         listed = rig.get("/inherent/plugins", headers=rig.headers)
         assert listed.json()["path"] == "/inherent/plugins"
         body = json.dumps({"operation": "open", "data": {"plugin_id": "notion"}}).encode()
@@ -408,13 +188,13 @@ def test_the_plugin_routes_are_forwarded_under_the_device_token(tmp_path: Path) 
 
 def test_a_brain_refusal_comes_back_as_it_is_and_is_not_retried(tmp_path: Path) -> None:
     """A route the device token cannot open answers the UI with the brain's own refusal."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         refused = rig.get("/inherent/refuse")
         assert refused.status_code == 403
         assert refused.json() == {"detail": "that is for the brain's own key"}
         assert len(rig.brain.seen) == 1  # one try, under the one credential
 
-    with _rig(tmp_path) as rig, _Server(
+    with terminal_rig(tmp_path) as rig, UvicornServer(
         create_ui_app(
             Brain(rig.brain_server.url, "a-revoked-token"),
             authorize=functools.partial(local_key_matches, rig.key),
@@ -429,7 +209,7 @@ def test_a_brain_refusal_comes_back_as_it_is_and_is_not_retried(tmp_path: Path) 
 
 def test_a_streaming_answer_arrives_as_it_is_produced(tmp_path: Path) -> None:
     """The first NDJSON line is read while the brain has not yet produced the last."""
-    with _rig(tmp_path) as rig, httpx.stream(
+    with terminal_rig(tmp_path) as rig, httpx.stream(
         "GET", f"{rig.ui.url}/inherent/stream", headers=rig.headers, timeout=10,
     ) as response:
         assert response.headers["content-type"] == "application/x-ndjson"
@@ -463,12 +243,12 @@ def test_the_table_is_exactly_the_routes_this_terminal_answers_itself() -> None:
 def test_a_device_route_is_answered_here_and_never_asked_of_the_brain(tmp_path: Path) -> None:
     """Restart, the probe and dictation do not travel; without their device they are 404."""
     restarts: list[int] = []
-    with _rig(tmp_path, Device(restart=lambda: restarts.append(1))) as rig:
+    with terminal_rig(tmp_path, Device(restart=lambda: restarts.append(1))) as rig:
         assert rig.post("/inherent/restart").status_code == 202
         assert restarts == [1]
         assert rig.get("/api/health").json() == {"status": "ok"}
         assert rig.brain.seen == []
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         # no supervisor means no restart route, as on a daemon; forwarded it would restart the brain
         assert rig.post("/inherent/restart").status_code == 404
         # no capture session is a daemon without voice: the companion reads 404 as "voice is off"
@@ -511,7 +291,7 @@ def test_dictation_runs_on_this_machines_session_and_streams_like_a_daemons(
     """NDJSON from the local session, a second start is 409, and the brain never hears of it."""
     session = _Dictation()
     holder: list[_Dictation | None] = [None]
-    with _rig(tmp_path, Device(dictation=lambda: holder[0])) as rig:
+    with terminal_rig(tmp_path, Device(dictation=lambda: holder[0])) as rig:
         assert rig.post("/inherent/dictation", json={}).status_code == 404  # not listening yet
         holder[0] = session
         context = {"app": "Ghostty", "window": "claude", "selected": "", "before": "先看"}
@@ -536,7 +316,7 @@ def test_the_mic_and_speech_switches_act_here_and_the_rest_of_controls_is_the_br
     controls = VoiceControls()
     gains: list[bool] = []
     controls.on_speech_muted = gains.append
-    with _rig(tmp_path, Device(controls=controls)) as rig:
+    with terminal_rig(tmp_path, Device(controls=controls)) as rig:
         state = rig.post("/inherent/controls", json={"mic_muted": True, "conversation": True})
         assert state.json() == {"mic_muted": True, "speech_muted": False,
                                 "conversation": True, "quiet": "off"}
@@ -553,7 +333,7 @@ def test_the_mic_and_speech_switches_act_here_and_the_rest_of_controls_is_the_br
             {"mic_muted": True, "conversation": True}, {"speech_muted": True}, {},
         ]
     # with no brain the switch is still thrown, and the page is told why the rest failed
-    with _rig(tmp_path, Device(controls=controls), brain_up=False) as rig:
+    with terminal_rig(tmp_path, Device(controls=controls), brain_up=False) as rig:
         answer = rig.post("/inherent/controls", json={"mic_muted": False})
         assert answer.status_code == 503
         assert not controls.mic_muted
@@ -574,7 +354,7 @@ def test_each_settings_key_goes_to_its_owner(tmp_path: Path) -> None:
         "conversation_model", "conversation_effort",  # ADR 0297: the brain owns them
     }
     assert own.shared == {"keep_audio", "audio_days"}
-    with _rig(tmp_path, Device(settings=own)) as rig:
+    with terminal_rig(tmp_path, Device(settings=own)) as rig:
         page = rig.get("/inherent/settings").json()
         assert page["values"]["tts_voice"] == "Warm Bestie"  # the brain's
         assert page["values"]["input_device"] == "Mic A"  # this machine's
@@ -624,7 +404,7 @@ def test_the_answer_to_a_settings_notice_goes_to_the_brain_then_clears_the_brain
 
         return run
 
-    with _rig(tmp_path, Device(release=release(1))) as rig:
+    with terminal_rig(tmp_path, Device(release=release(1))) as rig:
         for body in ({"action": "seen"}, {"action": "feedback", "reaction": "dismissed"}):
             assert rig.post("/inherent/notices/settings-macbook", json=body).status_code == 200
         assert released == []
@@ -635,14 +415,14 @@ def test_the_answer_to_a_settings_notice_goes_to_the_brain_then_clears_the_brain
         # a reminder's or a mail's notice is forwarded as it is, whatever it carries
         rig.post("/inherent/notices/reminder-1", json=choose)
         assert released == [1]
-    with _rig(tmp_path, Device(release=release(2)), brain_up=False) as rig:
+    with terminal_rig(tmp_path, Device(release=release(2)), brain_up=False) as rig:
         assert rig.post("/inherent/notices/settings-macbook", json=choose).status_code == 503
     assert released == [1]
 
 
 def test_without_a_device_the_settings_and_controls_are_the_brains(tmp_path: Path) -> None:
     """A terminal with no voice has no microphone to choose or mute: the brain's page, as is."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         assert rig.get("/inherent/settings").json()["values"]["input_device"] == "System default"
         saved = rig.post("/inherent/settings", json={"changes": {"tts_voice": "X"}})
         assert saved.status_code == 200
@@ -658,7 +438,7 @@ def test_with_no_brain_forwarded_routes_say_so_and_local_ones_still_answer(
 ) -> None:
     """503 with the daemon's own error shape; the socket is refused so the companion retries."""
     restarts: list[int] = []
-    with _rig(tmp_path, Device(restart=lambda: restarts.append(1)), brain_up=False) as rig:
+    with terminal_rig(tmp_path, Device(restart=lambda: restarts.append(1)), brain_up=False) as rig:
         answer = rig.get("/inherent/notices")
         assert answer.status_code == 503
         assert answer.json() == {"detail": UNREACHABLE}
@@ -673,9 +453,9 @@ def test_a_brain_that_goes_away_closes_the_push_socket_so_the_companion_reconnec
     tmp_path: Path,
 ) -> None:
     """An open socket carrying nothing from the brain would show a daemon that is up."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         socket_ = rig.socket()
-        _wait_for(lambda: bool(rig.brain.sockets), "the brain's socket never opened")
+        wait_for(lambda: bool(rig.brain.sockets), "the brain's socket never opened")
         rig.brain.push("tool", turn_id="T1", label="x")
         assert json.loads(socket_.recv(timeout=5))["op"] == "tool"
         rig.brain.drop_sockets()
@@ -702,10 +482,10 @@ def test_the_brains_ops_and_this_terminals_own_voice_ops_arrive_once_each(
     """One stream, two sources, no op twice, and the one op both could send is sent by one."""
     controls = VoiceControls(mic_muted=True)
     speaking = [True]
-    with _rig(tmp_path, Device(controls=controls, speaks=lambda: speaking[0])) as rig:
+    with terminal_rig(tmp_path, Device(controls=controls, speaks=lambda: speaking[0])) as rig:
         companion = rig.socket()
-        _wait_for(lambda: bool(rig.brain.sockets), "the brain's socket never opened")
-        _wait_for(lambda: bool(rig.broadcaster._clients), "the companion never registered")  # noqa: SLF001
+        wait_for(lambda: bool(rig.brain.sockets), "the brain's socket never opened")
+        wait_for(lambda: bool(rig.broadcaster._clients), "the companion never registered")  # noqa: SLF001
         for turn in ("T1", "T2", "T3"):
             rig.brain.push("open", turn_id=turn, content="", streaming=True)
             rig.ui.call(rig.broadcaster.broadcast_voice(
@@ -739,13 +519,13 @@ def test_a_late_companion_gets_the_brains_snapshot_and_this_terminals_retained_c
     tmp_path: Path,
 ) -> None:
     """Each companion socket has its own brain socket, so the brain's greeting reaches each."""
-    with _rig(tmp_path) as rig:
+    with terminal_rig(tmp_path) as rig:
         rig.ui.call(rig.broadcaster.broadcast_voice_capability(
             version=1, state="listening", stream_epoch=1, reason="ready", wake_available=True,
             local_capture_available=True, ptt_upload_available=False, text_available=True,
         ))
         with rig.socket() as first, rig.socket() as second:
-            _wait_for(lambda: len(rig.brain.sockets) == 2, "both brain sockets never opened")
+            wait_for(lambda: len(rig.brain.sockets) == 2, "both brain sockets never opened")
             for companion in (first, second):
                 assert _frames(companion, 1)[0]["op"] == "voice_capability"
             rig.brain.push("live", phase="state", state="idle")
@@ -785,7 +565,7 @@ def test_a_held_port_ends_the_command_before_anything_starts(
 
 def test_the_ui_listens_on_loopback_only(tmp_path: Path) -> None:
     """Never another interface, whatever the port."""
-    sock = bind_ui(_free_port())
+    sock = bind_ui(free_port())
     try:
         assert sock.getsockname()[0] == "127.0.0.1"
     finally:
@@ -808,9 +588,9 @@ class _RealBrain:
 
     def __init__(self, root: Path, hooks: ListenHooks | None = None) -> None:
         self.log = root / "events.db"
-        conn = _brain_log(self.log)
+        conn = brain_log(self.log)
         self.broadcaster = InherentBroadcaster()
-        self.provider = _FakeProvider()
+        self.provider = VoiceSpeechProvider()
         self.hub = TerminalHub(events=BrainEvents(conn))
         if hooks is not None:
             self.hub.listening = BrainListening(self.hub, self.hub.events)  # type: ignore[arg-type]
@@ -830,7 +610,7 @@ class _RealBrain:
             app, functools.partial(local_key_matches, local_key(root)),
             device_token_matches=functools.partial(device_token_matches, root),
         )
-        self.server = _Server(_AsRemote(app))
+        self.server = UvicornServer(AsRemote(app))
 
     def __enter__(self) -> Self:
         self.server.__enter__()
@@ -893,15 +673,15 @@ def test_a_companion_adopts_a_terminal_and_hears_the_brain_and_the_terminals_own
     every turn, while this terminal does speak it.
     """
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-    monkeypatch.setattr(voice_tts, "_open_output_stream", _open_stream(pull=True))
+    monkeypatch.setattr(voice_tts, "_open_output_stream", open_stream(pull=True))
     token = pair_device(tmp_path, "macbook")
     root = tmp_path / "terminal-root"
     root.mkdir()
     key = local_key(root)
-    port = _free_port()
+    port = free_port()
     with _RealBrain(tmp_path) as brain, _Terminal(brain.server.url, token, root, port) as terminal:
-        _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
-        _wait_for(
+        wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+        wait_for(
             lambda: bool(brain.hub.voice and brain.hub.voice._peers),  # noqa: SLF001
             "the brain never took the terminal as a voice terminal",
         )
@@ -917,7 +697,7 @@ def test_a_companion_adopts_a_terminal_and_hears_the_brain_and_the_terminals_own
         }
 
         companion = ws_connect(f"ws://127.0.0.1:{port}/inherent/ws", additional_headers=local)
-        _wait_for(
+        wait_for(
             lambda: bool(brain.broadcaster._clients),  # noqa: SLF001
             "the terminal never opened the brain's socket",
         )
@@ -977,7 +757,7 @@ def test_dictation_records_on_the_terminal_and_the_brain_polishes_the_words(
     tests. The polish is a fake on the brain's hook, which must receive the words, where they
     land, and the word list kept on the terminal; the NDJSON the companion reads is a daemon's.
     """
-    wav = _write_wav(
+    wav = write_wav(
         tmp_path / "say.wav",
         np.concatenate([np.zeros(8_000, dtype="<i2"), np.full(16_000 * 14, 10_000, dtype="<i2")]),
     )
@@ -994,14 +774,14 @@ def test_dictation_records_on_the_terminal_and_the_brain_polishes_the_words(
         asked.append((raw, dict(context), language, list(terms)))
         return f"POLISHED[{raw}]"
 
-    port = _free_port()
+    port = free_port()
     local = {"Authorization": f"Bearer {local_key(root)}"}
     context = {"app": "Ghostty", "window": "claude", "selected": "", "before": "先看"}
     with (
         _RealBrain(tmp_path, ListenHooks(polish=polish)) as brain,
         _Terminal(brain.server.url, token, root, port, config),
     ):
-        _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+        wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
         deadline = time.monotonic() + 60
         while True:  # 404 until the capture session is up: the companion reads it as "voice is off"
             response = httpx.stream(

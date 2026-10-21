@@ -40,6 +40,7 @@ from jarvis.state.attachments import AttachmentRef
 from jarvis.state.event_log import EventTypeRegistry, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import open_memory_db
 from scripts import turn_things_replay
+from tests.support.runtime_log import RuntimeLog
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -396,14 +397,8 @@ def test_a_timed_new_thing_her_tool_wrote_in_the_turn_is_made_already(
 # --- the pass over a real log --------------------------------------------------------------
 
 
-class _Log:
-    """A runtime root with a real event log and memory.db."""
-
-    def __init__(self, root: Path) -> None:
-        self.paths = bootstrap_runtime(root)
-        self.conn = open_event_log(self.paths.event_log)
-        self.memory = root / "memory.db"
-        open_memory_db(self.memory).close()
+class _Log(RuntimeLog):
+    """The runtime root of these tests, with his memory records written into it."""
 
     def say(self, record_id: str, source: str, text: str, at: datetime) -> None:
         with closing(open_memory_db(self.memory)) as conn, conn:

@@ -14,18 +14,18 @@ from jarvis.state.event_log import iter_events, open_event_log
 from jarvis.surface import voice_media, voice_tts
 from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import OutputTimelineSnapshot, StalePlaybackGeneration
-from tests.integration.test_previous_answer_line import _asked, _next_turn_line
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _config,
-    _emit_response,
-    _FakeProvider,
-    _FakeSession,
-    _player,
-    _submit_response,
-    _terminal_for,
-    _wait_until,
+from tests.support.media import (
+    CallbackPump,
+    FakeProvider,
+    FakeSession,
+    emit_response,
+    make_player,
+    media_config,
+    submit_response,
+    terminal_for,
+    wait_until,
 )
+from tests.support.previous_answer import next_turn_line, record_asked
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -190,7 +190,7 @@ def test_the_switch_and_bounds_are_config_keys() -> None:
         with pytest.raises(ValueError, match=r"realtime\.streaming_output"):
             voice_media.streaming_media_config_from_mapping(bad)
     with pytest.raises(ValueError, match="trim_threshold_db"):
-        replace(_config(), trim_threshold_db=0.0)
+        replace(media_config(), trim_threshold_db=0.0)
 
 
 # -- the pipeline: every sample position follows the written timeline -----------------------
@@ -212,7 +212,7 @@ def _script() -> dict[int, tuple[np.ndarray, tuple[tuple[int, float], ...]]]:
     }
 
 
-class _TrimSession(_FakeSession):
+class _TrimSession(FakeSession):
     async def _events(self) -> AsyncIterator[voice_tts.TTSAudioEvent]:
         while not self._closed:
             segment = await self._segments.get()
@@ -229,7 +229,7 @@ class _TrimSession(_FakeSession):
             yield voice_tts.TTSSegmentFinished(sequence=segment.sequence)
 
 
-class _TrimProvider(_FakeProvider):
+class _TrimProvider(FakeProvider):
     def create_tts_session(
         self, *, endpoint_index: int, language: str, idle_close_s: float,
         command_queue_capacity: int, audio_queue_capacity: int,
@@ -244,23 +244,23 @@ class _Speech:
     def __init__(self, tmp_path: Path, *, trim: bool) -> None:
         db = tmp_path / f"speech-{trim}.db"
         self.conn = open_event_log(db)
-        self.player = _player(ring_seconds=2.0)
+        self.player = make_player(ring_seconds=2.0)
         self.pipeline = voice_media.StreamingTTSPipeline(
             provider=_TrimProvider(candidate_count=1), player=self.player,
             conn_factory=lambda: open_event_log(db), boot_high_water_id=0,
-            config=replace(_config(), trim_silence=trim), start_player=False,
+            config=replace(media_config(), trim_silence=trim), start_player=False,
         )
-        _asked(self.conn, "T")
-        rows = _emit_response(
+        record_asked(self.conn, "T")
+        rows = emit_response(
             self.conn, response_id="R", group_id="G", turn_id="T", text=list(_TEXTS),
         )
-        asyncio.run(_submit_response(self.pipeline, rows))
-        _wait_until(lambda: self.alignment().keys() == {0, 1})
+        asyncio.run(submit_response(self.pipeline, rows))
+        wait_until(lambda: self.alignment().keys() == {0, 1})
         self.generation = next(
             int(e.payload["playback_generation_id"]) for e in iter_events(self.conn)
             if e.type == "surface.playback_alignment"
         )
-        _wait_until(lambda: self.snapshot().all_segments_closed)
+        wait_until(lambda: self.snapshot().all_segments_closed)
 
     def alignment(self) -> dict[int, list[list[int]]]:
         return {
@@ -294,7 +294,7 @@ def test_the_player_gets_trimmed_audio_and_off_is_the_provider_audio_byte_for_by
         speech = _Speech(tmp_path, trim=trim)
         try:
             frames = speech.snapshot().accepted_samples
-            pump = _CallbackPump(speech.player, record=True)
+            pump = CallbackPump(speech.player, record=True)
             for _ in range(frames // 500 + 1):
                 pump.step(frames=500)
             played[trim] = pump.signal[:frames]
@@ -340,7 +340,7 @@ def test_heard_text_captions_and_already_said_follow_the_written_timeline(
     try:
         first_word_end = speech.alignment()[0][0][1]
         assert first_word_end < _LEAD  # untrimmed this is _LEAD + _TONE // 2
-        pump = _CallbackPump(speech.player)
+        pump = CallbackPump(speech.player)
         pump.step(frames=first_word_end - 1)
         before = speech.snapshot()
         assert (before.heard_text, before.played_letters) == ("", 0)
@@ -349,18 +349,18 @@ def test_heard_text_captions_and_already_said_follow_the_written_timeline(
         assert (after.heard_partial_sequence, after.heard_partial_text_end) == (0, _A_WORD)
         assert after.heard_text == _TEXTS[0][:_A_WORD]
         assert (after.played_letters, after.playing_letters) == (1, 2)
-        _wait_until(lambda: any(
+        wait_until(lambda: any(
             e.type == "surface.playback_checkpoint"
             and e.payload.get("heard_text") == _TEXTS[0][:_A_WORD]
             for e in iter_events(speech.conn)
         ))
         speech.pipeline.stop_foreground_output("R", reason="barge_in")
         assert speech.pipeline.wait_until_idle(timeout_s=2)
-        kind, payload = _terminal_for(speech.conn, response_id="R")
+        kind, payload = terminal_for(speech.conn, response_id="R")
         assert kind == "surface.playback_interrupted"
         assert payload["heard_text"] == _TEXTS[0][:_A_WORD]
         # ADR 0083: the next turn is told where she stopped.
-        line = _next_turn_line(speech.conn)
+        line = next_turn_line(speech.conn)
         assert line is not None
         assert f'{_TEXTS[0][:_A_WORD]}"; the rest was not spoken' in line
     finally:

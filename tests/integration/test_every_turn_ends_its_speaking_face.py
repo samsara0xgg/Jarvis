@@ -21,14 +21,14 @@ from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.runtime import inherent_loop
 from jarvis.state.event_log import PHONE_VOICE_CHANNEL, emit_event, open_event_log
 from jarvis.surface.terminal_ui import Device, _own_voice
-from tests.integration.test_incremental_tts import _cancel, _chunk, _open, _pipeline, _wait_for
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _emit_response,
-    _FakeProvider,
-    _RecordingBroadcaster,
-    _submit_response,
+from tests.support.media import (
+    CallbackPump,
+    FakeProvider,
+    RecordingBroadcaster,
+    emit_response,
+    submit_response,
 )
+from tests.support.tts import append_cancel, append_chunk, append_open, make_pipeline, wait_for_rows
 
 if TYPE_CHECKING:
     import sqlite3
@@ -219,22 +219,22 @@ def test_an_answer_dropped_from_the_queue_is_announced_spoken(tmp_path: Path) ->
     db_path = tmp_path / "events.db"
     conn = open_event_log(db_path)
     actions: list[str] = []
-    pipeline, player = _pipeline(
+    pipeline, player = make_pipeline(
         db_path,
-        _FakeProvider(candidate_count=1),
+        FakeProvider(candidate_count=1),
         speak_from_segments=True,
-        broadcaster=_RecordingBroadcaster(actions),
+        broadcaster=RecordingBroadcaster(actions),
     )
     try:
-        with _CallbackPump(player):
-            first = [_open(conn, "RA"), _chunk(conn, "RA", 0, "第一句。")]
-            asyncio.run(_submit_response(pipeline, first))
-            _wait_for(conn, "surface.playback_segment_prepared", "RA", 1)
-            queued = _emit_response(
+        with CallbackPump(player):
+            first = [append_open(conn, "RA"), append_chunk(conn, "RA", 0, "第一句。")]
+            asyncio.run(submit_response(pipeline, first))
+            wait_for_rows(conn, "surface.playback_segment_prepared", "RA", 1)
+            queued = emit_response(
                 conn, response_id="RB", group_id="G-RA", turn_id="T-RB", text="排队的后续。",
             )
-            asyncio.run(_submit_response(pipeline, queued))
-            asyncio.run(_submit_response(pipeline, [_cancel(conn, "RA")]))
+            asyncio.run(submit_response(pipeline, queued))
+            asyncio.run(submit_response(pipeline, [append_cancel(conn, "RA")]))
             assert pipeline.wait_until_idle(timeout_s=2.0)
     finally:
         assert pipeline.close()

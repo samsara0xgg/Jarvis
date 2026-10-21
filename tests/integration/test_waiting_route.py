@@ -24,8 +24,8 @@ from jarvis.state.plugin_settings import local_key_matches
 from jarvis.surface import claude_hooks, claude_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
-from tests.integration.test_claude_hooks import SUGGESTION
-from tests.integration.test_reminders import _World
+from tests.support.claude_hooks import SUGGESTION
+from tests.support.reminders import ReminderWorld
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -122,9 +122,11 @@ def _until[T](read: Callable[[], T], found: Callable[[T], bool]) -> T:
 
 
 @pytest.fixture
-def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[_World, _Claude]]:
+def world(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[ReminderWorld, _Claude]]:
     """A runtime root with a fired reminder, and a Claude Code home."""
-    made = _World(tmp_path / "jarvis")
+    made = ReminderWorld(tmp_path / "jarvis")
     made.set(1, "stand up")
     made.clock = made.start + timedelta(minutes=2)
     assert made.reminders.tick() == 1
@@ -133,19 +135,25 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[_Wo
 
 
 def test_one_read_holds_every_card_and_the_answers_stay_on_their_own_routes(
-    world: tuple[_World, _Claude],
+    world: tuple[ReminderWorld, _Claude],
 ) -> None:
     """A confirmation, an ask, a fired reminder, a plugin sign-in and a held Claude prompt."""
     reminders, claude = world
-    app = create_app(InherentDeps(
-        submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
-        card_read=lambda: {"card": CONFIRMATION}, card_decide=lambda *_a: "T1",
-        question_read=lambda: {"card": CLARIFICATION}, question_answer=lambda *_a: "T2",
-        plugin_read=lambda: {"plugins": [], "request": PLUGIN_REQUEST},
-        plugin_action=lambda *_a: {},
-        plugin_authorize=lambda header: header == f"Bearer {DEVICE_TOKEN}",
-        **_notice_deps(None, reminders.reminders, None),
-    ))
+    app = create_app(
+        InherentDeps(
+            submit_callable=_noop,
+            broadcaster=InherentBroadcaster(),
+            claude_sessions_read=True,
+            card_read=lambda: {"card": CONFIRMATION},
+            card_decide=lambda *_a: "T1",
+            question_read=lambda: {"card": CLARIFICATION},
+            question_answer=lambda *_a: "T2",
+            plugin_read=lambda: {"plugins": [], "request": PLUGIN_REQUEST},
+            plugin_action=lambda *_a: {},
+            plugin_authorize=lambda header: header == f"Bearer {DEVICE_TOKEN}",
+            **_notice_deps(None, reminders.reminders, None),
+        )
+    )
     _guard(app)
     with _phone(app) as phone:
         before = phone.get("/inherent/waiting")
@@ -154,7 +162,8 @@ def test_one_read_holds_every_card_and_the_answers_stay_on_their_own_routes(
 
         hook = claude.prompt(phone)
         body = _until(
-            lambda: phone.get("/inherent/waiting").json(), lambda b: b["claude_requests"],
+            lambda: phone.get("/inherent/waiting").json(),
+            lambda b: b["claude_requests"],
         )
 
         # The cards are the ones the existing routes serve, byte for byte.
@@ -172,19 +181,23 @@ def test_one_read_holds_every_card_and_the_answers_stay_on_their_own_routes(
 
         (request,) = body["claude_requests"]
         row = next(
-            r for r in phone.get("/inherent/claude-sessions").json()["sessions"]
+            r
+            for r in phone.get("/inherent/claude-sessions").json()["sessions"]
             if r["session_id"] == "s1"
         )
         assert {k: request[k] for k in ("id", "tool", "input", "cwd", "always")} == row["request"]
         assert request["input"] == {"command": "npm run build"}
         assert request["always"] == "Don't ask again for Bash(npm run build:*)"
         assert (request["session_id"], request["title"], request["project"]) == (
-            "s1", "build", row["project"],
+            "s1",
+            "build",
+            row["project"],
         )
 
         # Answering is the existing route; the held hook gets its decision, and it leaves the list.
         answered = phone.post(
-            f"/inherent/claude-requests/{request['id']}", json={"decision": "allow"},
+            f"/inherent/claude-requests/{request['id']}",
+            json={"decision": "allow"},
         )
         assert answered.json() == {"ok": True}
         hook.join(timeout=5)
@@ -223,10 +236,15 @@ def test_a_source_that_cannot_be_read_is_empty_and_the_rest_still_arrive() -> No
         msg = "gmail is down"
         raise RuntimeError(msg)
 
-    app = create_app(InherentDeps(
-        submit_callable=_noop, broadcaster=InherentBroadcaster(), notices_read=broken,
-        card_read=lambda: {"card": CONFIRMATION}, card_decide=lambda *_a: "T1",
-    ))
+    app = create_app(
+        InherentDeps(
+            submit_callable=_noop,
+            broadcaster=InherentBroadcaster(),
+            notices_read=broken,
+            card_read=lambda: {"card": CONFIRMATION},
+            card_decide=lambda *_a: "T1",
+        )
+    )
     _guard(app)
     with _phone(app) as phone:
         assert phone.get("/inherent/notices").status_code == 502
@@ -235,14 +253,19 @@ def test_a_source_that_cannot_be_read_is_empty_and_the_rest_still_arrive() -> No
 
 
 def test_reading_waiting_is_listening_so_a_phone_with_the_app_open_keeps_prompts_held(
-    world: tuple[_World, _Claude], monkeypatch: pytest.MonkeyPatch,
+    world: tuple[ReminderWorld, _Claude],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Held while `/waiting` keeps being read; let go back to Claude Code's dialog once it stops."""
     _, claude = world
     monkeypatch.setattr(claude_hooks, "LISTENER_S", 0.6)
-    app = create_app(InherentDeps(
-        submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
-    ))
+    app = create_app(
+        InherentDeps(
+            submit_callable=_noop,
+            broadcaster=InherentBroadcaster(),
+            claude_sessions_read=True,
+        )
+    )
     _guard(app)
     with _phone(app) as phone:
         # Nobody has read anything: the prompt is left to Claude Code at once.

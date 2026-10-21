@@ -27,7 +27,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 
 # The decide()-level test needs a DecideContext with a scripted LLM; the
 # conversational-turn regression already builds exactly that one.
-from tests.integration.test_conversational_turn_no_gate_downgrade import _build_ctx
+from tests.support.turn_context import build_decide_context
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -63,7 +63,7 @@ def test_attention_policy_speaks_ordinary_answers_only(tmp_path: Path) -> None:
 
 def test_decide_keeps_reconciliation_turns_in_queue_review(tmp_path: Path) -> None:
     """Same two verdicts through the real decide(): system turn stays silent."""
-    ctx, conn, _llm = _build_ctx(tmp_path, draft_text="今天下午三点有一个会。")
+    ctx, conn, _llm = build_decide_context(tmp_path, draft_text="今天下午三点有一个会。")
     try:
         utterance = emit_event(
             conn,

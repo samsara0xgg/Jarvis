@@ -35,7 +35,7 @@ from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.shared import lang
 from jarvis.state import reminders as reminder_state
 from jarvis.state import things
-from tests.integration.test_commitments import _Log
+from tests.support.runtime_log import RuntimeLog
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -123,7 +123,7 @@ class _Connections:
 class _World:
     """The mirror over a real log, with its fake server."""
 
-    def __init__(self, log: _Log, microsoft: _Microsoft | None) -> None:
+    def __init__(self, log: RuntimeLog, microsoft: _Microsoft | None) -> None:
         self.log, self.microsoft = log, microsoft
         self.mirror = ThingsMirror(_Connections(microsoft), log.paths.event_log, ZONE)  # type: ignore[arg-type]
         self.mirror.now = lambda: NOW.astimezone(UTC)
@@ -141,18 +141,18 @@ class _World:
 
 
 @pytest.fixture
-def log(tmp_path: Path) -> Iterator[_Log]:
+def log(tmp_path: Path) -> Iterator[RuntimeLog]:
     """A runtime root with a real event log; the language is English."""
     before = lang.language()
     lang.set_language("en")
-    one = _Log(tmp_path)
+    one = RuntimeLog(tmp_path)
     yield one
     one.conn.close()
     lang.set_language(before)
 
 
 @pytest.fixture
-def world(log: _Log) -> _World:
+def world(log: RuntimeLog) -> _World:
     """The mirror and its fake server over the log."""
     return _World(log, _Microsoft())
 
@@ -434,7 +434,7 @@ def test_jarvis_own_event_is_not_read_in_and_one_read_before_it_was_owned_is_can
 
 
 def test_with_no_connection_or_a_failed_read_nothing_is_written_and_it_is_said_once(
-    log: _Log, caplog: pytest.LogCaptureFixture,
+    log: RuntimeLog, caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Everything is read before anything is written; a read that fails leaves the ledger be."""
     caplog.set_level(logging.WARNING, logger=things_mirror.__name__)

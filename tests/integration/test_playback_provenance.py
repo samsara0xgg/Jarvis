@@ -11,13 +11,13 @@ import pytest
 
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface import voice_media
-from tests.integration.test_wave2_streaming_media import (
-    _config,
-    _emit_response,
-    _FakeProvider,
-    _player,
-    _submit_response,
-    _terminal_rows,
+from tests.support.media import (
+    FakeProvider,
+    emit_response,
+    make_player,
+    media_config,
+    submit_response,
+    terminal_rows,
 )
 
 if TYPE_CHECKING:
@@ -36,13 +36,13 @@ def test_uncommitted_playback_mapping_never_reaches_provider_or_player(
 ) -> None:
     """A durable mapping failure terminates the lease without issuing a TTS request."""
     path = tmp_path / "events.db"
-    provider = _FakeProvider()
+    provider = FakeProvider()
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider,
-        player=_player(),
+        player=make_player(),
         conn_factory=lambda: open_event_log(path),
         boot_high_water_id=0,
-        config=_config(),
+        config=media_config(),
         start_player=False,
     )
 
@@ -55,14 +55,14 @@ def test_uncommitted_playback_mapping_never_reaches_provider_or_player(
     monkeypatch.setattr(voice_media, "emit_event", fail_mapping)
     try:
         with contextlib.closing(open_event_log(path)) as conn:
-            rows = _emit_response(
+            rows = emit_response(
                 conn, response_id="R", group_id="G", turn_id="T", text="Mapped sentence."
             )
-            asyncio.run(_submit_response(pipeline, rows))
+            asyncio.run(submit_response(pipeline, rows))
             deadline = time.monotonic() + 1
-            while not _terminal_rows(conn) and time.monotonic() < deadline:
+            while not terminal_rows(conn) and time.monotonic() < deadline:
                 time.sleep(0.005)
-            terminals = _terminal_rows(conn)
+            terminals = terminal_rows(conn)
             assert len(terminals) == 1
             kind, payload = terminals[0]
             assert kind == "surface.playback_failed"

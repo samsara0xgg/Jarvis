@@ -27,8 +27,15 @@ from jarvis.state.memory_db import (
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.integration.test_core_memory import _changes, _Consolidator, _schedule
-from tests.integration.test_day_summaries import TODAY, _day, _insert, _rid, _stamp, _Summariser
+from tests.support.core_memory import Consolidator, consolidator_changes, core_schedule
+from tests.support.day_summaries import (
+    TODAY,
+    DaySummariser,
+    day_ago,
+    insert_records,
+    record_id,
+    stamp_ago,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,8 +96,8 @@ class World:
             ]
 
 
-def _nightly(world: World, model: _Consolidator, today_ago: int = 0) -> None:
-    schedule = _schedule(world.tmp, model)
+def _nightly(world: World, model: Consolidator, today_ago: int = 0) -> None:
+    schedule = core_schedule(world.tmp, model)
     schedule.write(TODAY - timedelta(days=today_ago))
 
 
@@ -98,26 +105,28 @@ def _nightly(world: World, model: _Consolidator, today_ago: int = 0) -> None:
 def world(tmp_path: Path) -> World:
     """Three past days of talk, two remembered facts and one nightly pass over day 3 and day 2."""
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
         [
-            (_rid(3, 1), _stamp(3, 9), "allen", "我现在住在 Victoria"),
-            (_rid(3, 2), _stamp(3, 9, 1), "jarvis", "好的, 记下了"),
-            (_rid(2, 1), _stamp(2, 20), "allen", "我周五要交稿"),
-            (_rid(2, 2), _stamp(2, 20, 2), "allen", "我不喝咖啡了"),
-            (_rid(2, 3), _stamp(2, 20, 3), "jarvis_live", "那我记住你不喝咖啡"),
+            (record_id(3, 1), stamp_ago(3, 9), "allen", "我现在住在 Victoria"),
+            (record_id(3, 2), stamp_ago(3, 9, 1), "jarvis", "好的, 记下了"),
+            (record_id(2, 1), stamp_ago(2, 20), "allen", "我周五要交稿"),
+            (record_id(2, 2), stamp_ago(2, 20, 2), "allen", "我不喝咖啡了"),
+            (record_id(2, 3), stamp_ago(2, 20, 3), "jarvis_live", "那我记住你不喝咖啡"),
         ],
     )
     remember_fact(path, "城市", "Vancouver")
     remember_fact(path, "饮食", "每天喝咖啡", "兴趣和品味")
     remember_fact(path, "项目", "写论文", "生活里的几件事")
-    d3, d2 = _day(3).isoformat(), _day(2).isoformat()
-    model = _Consolidator()
+    d3, d2 = day_ago(3).isoformat(), day_ago(2).isoformat()
+    model = Consolidator()
     model.script[d3] = [
-        _changes({"op": "rewrite", "item": 1, "text": "城市: Victoria", "sources": ["r1"]}),
+        consolidator_changes(
+            {"op": "rewrite", "item": 1, "text": "城市: Victoria", "sources": ["r1"]}
+        ),
     ]
     model.script[d2] = [
-        _changes(
+        consolidator_changes(
             {"op": "add", "section": "定下来的规矩", "text": "周五交稿", "sources": ["r1"]},
             {"op": "stale", "item": 2, "sources": ["r2"]},
             {"op": "rewrite", "item": 3, "text": "写论文: 第二章", "sources": ["r2"]},
@@ -138,7 +147,7 @@ def test_the_page_lists_ten_sections_and_what_the_night_did(world: World) -> Non
     assert page["max_chars"] == page["booted_max_chars"] == 4000
     assert page["chars"] == len(core_memory.render(current_core_memory(world.path).doc))
     new = page["new"]
-    assert new["day"] == _day(2).isoformat()
+    assert new["day"] == day_ago(2).isoformat()
     kinds = {e["kind"]: e for e in new["entries"]}
     assert set(kinds) == {"add", "stale", "rewrite"}
     assert kinds["add"]["text"] == "周五交稿"
@@ -160,11 +169,11 @@ def test_an_item_opens_with_its_sources_as_words_and_its_history(world: World) -
     assert detail["number"] == 1
     assert detail["chars"] == len("城市: Victoria")
     assert [(s["who"], s["text"], s["day"]) for s in detail["sources"]] == [
-        ("user", "我现在住在 Victoria", _day(3).isoformat()),
+        ("user", "我现在住在 Victoria", day_ago(3).isoformat()),
     ]
     assert detail["born"]["origin"] == "remember"
     assert [e["origin"] for e in detail["edits"]] == ["nightly"]
-    assert detail["edits"][0]["day"] == _day(3).isoformat()
+    assert detail["edits"][0]["day"] == day_ago(3).isoformat()
     assert detail["pinned"] is False
     assert [h["text"] for h in detail["history"]] == ["城市: Vancouver"]  # the night's rewrite
     assert world.client.get("/inherent/memory/item/nope").status_code == 404
@@ -232,11 +241,14 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
     pinned = world.items()["城市: Victoria"]
     world.post("/item/edit", {"id": pinned["id"], "text": "城市: Victoria (BC)", "section": None})
     free = world.items()["周五交稿"]
-    d1 = _day(1).isoformat()
-    _insert(world.path, [(_rid(1, 1), _stamp(1, 21), "allen", "我搬到 Seattle 了, 周五的稿也交了")])
-    model = _Consolidator()
+    d1 = day_ago(1).isoformat()
+    insert_records(
+        world.path,
+        [(record_id(1, 1), stamp_ago(1, 21), "allen", "我搬到 Seattle 了, 周五的稿也交了")],
+    )
+    model = Consolidator()
     model.script[d1] = [
-        _changes(
+        consolidator_changes(
             {"op": "rewrite", "item": 1, "text": "城市: Seattle", "sources": ["r1"]},
             {"op": "stale", "item": 1, "sources": ["r1"]},
             {"op": "stale", "item": 2, "sources": ["r1"]},  # 周五交稿, now before 写论文
@@ -270,7 +282,7 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
     assert world.items()["城市: Victoria (BC)"]["pinned"] is True
 
 
-def _consolidation_input(world: World, model: _Consolidator, day: str) -> str:
+def _consolidation_input(world: World, model: Consolidator, day: str) -> str:
     _nightly(world, model)
     return model.inputs[day]
 
@@ -356,8 +368,8 @@ def test_undo_refuses_when_a_later_version_touched_the_same_item_and_for_the_fir
     first = versions["versions"][-1]
     assert first["kind"] == "migration"
     assert world.post("/undo", {"version": first["id"]}, status=400)
-    _insert(world.path, [(_rid(1, 1), _stamp(1, 9), "allen", "今天没什么事")])
-    _nightly(world, _Consolidator())  # an empty answer: a version that only advances upto_day
+    insert_records(world.path, [(record_id(1, 1), stamp_ago(1, 9), "allen", "今天没什么事")])
+    _nightly(world, Consolidator())  # an empty answer: a version that only advances upto_day
     empty = next(v for v in world.get("/versions")["versions"] if v["kind"] == "nightly")
     assert empty["undoable"] is False
     assert world.post("/undo", {"version": empty["id"]}, status=400)
@@ -380,7 +392,7 @@ def test_the_versions_list_names_each_kind_and_marks_the_current_one(world: Worl
     assert kinds.count("remember") == 3
     assert [v["current"] for v in versions["versions"]] == [True] + [False] * (len(kinds) - 1)
     latest = versions["versions"][0]
-    assert latest["day"] == _day(2).isoformat() or latest["day"] == _day(3).isoformat()
+    assert latest["day"] == day_ago(2).isoformat() or latest["day"] == day_ago(3).isoformat()
     assert latest["counts"] == {"add": 1, "chg": 1, "old": 1}
     assert {line["tag"] for line in latest["lines"]} == {"add", "chg", "old"}
     assert latest["undoable"] is True
@@ -420,14 +432,14 @@ def test_the_cap_is_saved_in_settings_validated_and_obeyed_by_the_next_write(wor
 
 def _search_world(tmp_path: Path, since: str = "") -> World:
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
         [
-            (_rid(5, 1), _stamp(5, 8), "allen", "你从一数到五十, 慢一点"),
-            (_rid(5, 2), _stamp(5, 8, 1), "jarvis", "好.一, 二, 三……一直数到五十."),
-            (_rid(2, 1), _stamp(2, 17, 16), "allen", "我 9 月 28 号让你从一数到几."),
-            (_rid(2, 2), _stamp(2, 17, 17), "jarvis_live", "你让我从 1 数到 50."),
-            (_rid(2, 3), _stamp(2, 17, 18), "allen", "今天天气怎么样"),
+            (record_id(5, 1), stamp_ago(5, 8), "allen", "你从一数到五十, 慢一点"),
+            (record_id(5, 2), stamp_ago(5, 8, 1), "jarvis", "好.一, 二, 三……一直数到五十."),
+            (record_id(2, 1), stamp_ago(2, 17, 16), "allen", "我 9 月 28 号让你从一数到几."),
+            (record_id(2, 2), stamp_ago(2, 17, 17), "jarvis_live", "你让我从 1 数到 50."),
+            (record_id(2, 3), stamp_ago(2, 17, 18), "allen", "今天天气怎么样"),
         ],
     )
     return World(tmp_path, since=since)
@@ -437,7 +449,7 @@ def test_search_groups_by_day_newest_first_with_both_speakers_and_filters(tmp_pa
     """Any of the words, a window of text around the first match, the two speakers' filters."""
     world = _search_world(tmp_path)
     found = world.get("/search", q="数到", who="all")
-    assert [d["day"] for d in found["days"]] == [_day(2).isoformat(), _day(5).isoformat()]
+    assert [d["day"] for d in found["days"]] == [day_ago(2).isoformat(), day_ago(5).isoformat()]
     assert (found["total"], found["words"], found["truncated"]) == (4, ["数到"], False)
     first = found["days"][0]["hits"]
     assert [(h["who"], h["text"]) for h in first] == [
@@ -452,46 +464,46 @@ def test_search_groups_by_day_newest_first_with_both_speakers_and_filters(tmp_pa
     assert world.get("/search", q="   ")["days"] == []
     assert world.get("/search", q="100%")["total"] == 0  # LIKE wildcards are plain text
     hit = found["days"][0]["hits"][0]
-    assert hit["ts"].startswith(_day(2).isoformat())
+    assert hit["ts"].startswith(day_ago(2).isoformat())
 
 
 def test_search_stops_at_the_history_boundary_and_says_where_it_starts(tmp_path: Path) -> None:
     """Records before ``history_since`` are not results; the answer names the boundary."""
-    since = _stamp(3, 0)
+    since = stamp_ago(3, 0)
     world = _search_world(tmp_path, since=since)
     found = world.get("/search", q="数到")
-    assert [d["day"] for d in found["days"]] == [_day(2).isoformat()]
+    assert [d["day"] for d in found["days"]] == [day_ago(2).isoformat()]
     assert found["since"] == since
 
 
 def test_a_day_view_pages_the_conversation_and_can_start_at_a_record(tmp_path: Path) -> None:
     """Oldest first, one local day, ``around`` opens near a record, a bad day is 400."""
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
         [
-            (_rid(2, n), _stamp(2, 9, n % 60), "allen" if n % 2 else "jarvis", f"第{n}句")
+            (record_id(2, n), stamp_ago(2, 9, n % 60), "allen" if n % 2 else "jarvis", f"第{n}句")
             for n in range(1, 31)
         ]
-        + [(_rid(3, 1), _stamp(3, 9), "allen", "前一天")],
+        + [(record_id(3, 1), stamp_ago(3, 9), "allen", "前一天")],
     )
     world = World(tmp_path)
-    day = _day(2).isoformat()
+    day = day_ago(2).isoformat()
     first = world.get(f"/day/{day}/records", limit=10)
     assert (first["total"], first["offset"], len(first["records"])) == (30, 0, 10)
     assert [r["text"] for r in first["records"][:2]] == ["第1句", "第2句"]
     assert [r["who"] for r in first["records"][:2]] == ["user", "jarvis"]
-    near = world.get(f"/day/{day}/records", around=_rid(2, 25), limit=10)
+    near = world.get(f"/day/{day}/records", around=record_id(2, 25), limit=10)
     assert near["offset"] == 16
     assert "第25句" in [r["text"] for r in near["records"]]
     assert world.client.get("/inherent/memory/day/not-a-day/records").status_code == 400
 
 
-def _summarise(world: World, replies: dict[str, str]) -> _Summariser:
+def _summarise(world: World, replies: dict[str, str]) -> DaySummariser:
     """Run the real day-summary job; ``replies`` maps a day to the model's answer."""
-    summariser = _Summariser()
+    summariser = DaySummariser()
     summariser.replies = replies
-    schedule = _schedule(world.tmp, _Consolidator())
+    schedule = core_schedule(world.tmp, Consolidator())
     schedule._client = summariser  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
     schedule.write(TODAY)
     return summariser
@@ -512,17 +524,17 @@ def test_a_day_summary_edit_wins_over_the_generated_one_and_is_never_regenerated
     A line the user left as it was keeps its record id.
     """
     path = tmp_path / "memory.db"
-    day = _day(1).isoformat()
-    _insert(
+    day = day_ago(1).isoformat()
+    insert_records(
         path,
         [
-            (_rid(1, 1), _stamp(1, 9), "allen", "谈一下实时语音"),
-            (_rid(1, 2), _stamp(1, 9, 5), "allen", "周末天气"),
+            (record_id(1, 1), stamp_ago(1, 9), "allen", "谈一下实时语音"),
+            (record_id(1, 2), stamp_ago(1, 9, 5), "allen", "周末天气"),
         ],
         pad=True,
     )
     world = World(tmp_path)
-    old = GENERATED.format(day=day, a=_rid(1, 1), b=_rid(1, 2))
+    old = GENERATED.format(day=day, a=record_id(1, 1), b=record_id(1, 2))
     summariser = _summarise(world, {day: old})
     assert summariser.asked == [day]
     cards = world.get("/days")["days"]
@@ -557,9 +569,9 @@ def test_a_day_summary_edit_wins_over_the_generated_one_and_is_never_regenerated
     assert rows[0][0] == old  # the generated row is still there, as history
     assert rows[1][0] == (
         f"## {day}\n### Topics\n"
-        f"- 回顾昨天的工作: 实时语音和字幕 [record_id={_rid(1, 1)}]\n- 改过的一行\n"
+        f"- 回顾昨天的工作: 实时语音和字幕 [record_id={record_id(1, 1)}]\n- 改过的一行\n"
         "### Decisions and facts the user stated\n"
-        f"- demo 定在 10 月 9 日 [record_id={_rid(1, 1)}]\n"
+        f"- demo 定在 10 月 9 日 [record_id={record_id(1, 1)}]\n"
         "### Unfinished\n- 字幕还没修好"
     )
     assert world.get("/days")["days"][0]["kind"] == "user"
@@ -567,8 +579,8 @@ def test_a_day_summary_edit_wins_over_the_generated_one_and_is_never_regenerated
     # recall (the model's tool) reads the newest row.
     from jarvis.state.daily_records import recall  # noqa: PLC0415 — one reader, one use
 
-    start = _stamp(2, 0)
-    spoken = recall(path, {"from": start, "to": _stamp(0, 0)})
+    start = stamp_ago(2, 0)
+    spoken = recall(path, {"from": start, "to": stamp_ago(0, 0)})
     assert [s["summary"] for s in spoken["summaries"]] == [rows[1][0]]
     # The night never writes a day that has a row: a second run asks the model nothing.
     again = _summarise(world, {day: "## x\n### Topics\nnone"})
@@ -582,7 +594,7 @@ def test_a_day_summary_edit_wins_over_the_generated_one_and_is_never_regenerated
         "decisions": [],
         "unfinished": [],
     }
-    other = _day(4).isoformat()
+    other = day_ago(4).isoformat()
     append_day_summary(
         path,
         day=other,
@@ -633,17 +645,25 @@ def test_an_edit_that_grows_a_section_past_its_cap_or_puts_an_id_number_in_docum
     """Per-section caps work like ``max_chars`` (ADR 0258): refused unless the edit is no longer."""
     made = World(tmp_path)
     made.page = MemoryPage(
-        made.path, made.settings, history_since="",
+        made.path,
+        made.settings,
+        history_since="",
         section_caps={**core_memory.SECTION_CAPS, "身体": 30},
     )
-    made.client = TestClient(create_app(InherentDeps(
-        submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(),
-        memory_page=made.page,
-    )))
+    made.client = TestClient(
+        create_app(
+            InherentDeps(
+                submit_callable=lambda _text: None,
+                broadcaster=InherentBroadcaster(),
+                memory_page=made.page,
+            )
+        )
+    )
     remember_fact(made.path, "睡眠", "每天十一点睡", "身体")
     body = made.items()["睡眠: 每天十一点睡"]
     refused = made.client.post(
-        "/inherent/memory/item/edit", json={"id": body["id"], "text": "睡眠: " + "长" * 40},
+        "/inherent/memory/item/edit",
+        json={"id": body["id"], "text": "睡眠: " + "长" * 40},
     )
     assert refused.status_code == 400
     assert "身体" in refused.json()["detail"]

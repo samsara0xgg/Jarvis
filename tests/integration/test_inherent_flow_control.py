@@ -27,13 +27,13 @@ from jarvis.runtime.inherent_view_sequencer import (
 )
 from jarvis.surface.inherent_protocol import ServerEnvelope
 from jarvis.surface.inherent_server import V2Session
-from tests.integration.test_inherent_sequencer import (
-    _ack,
-    _chunk_payload,
-    _open_payload,
-    _Rig,
-    _settle,
-    _Socket,
+from tests.support.sequencer import (
+    SequencerRig,
+    Socket,
+    ack_envelope,
+    chunk_payload,
+    open_payload,
+    settle,
 )
 
 _D11_DEFAULTS = FlowControlLimits()
@@ -52,7 +52,7 @@ class _Clock:
         self.now += seconds
 
 
-class _SlowSocket(_Socket):
+class _SlowSocket(Socket):
     """Records every frame it is handed, then blocks in ``send_text`` while held."""
 
     def __init__(self) -> None:
@@ -68,37 +68,37 @@ class _SlowSocket(_Socket):
         await self.release.wait()
 
 
-async def _attach(rig: _Rig, socket: _Socket, connection_id: str) -> InherentClient:
+async def _attach(rig: SequencerRig, socket: Socket, connection_id: str) -> InherentClient:
     session = V2Session(
         connection_id=connection_id, send_text=socket.send_text, close=socket.close,
     )
     client = await rig.hub.attach(session)
-    await _settle()
+    await settle()
     return client
 
 
-async def _adopt(rig: _Rig, socket: _Socket, connection_id: str) -> InherentClient:
+async def _adopt(rig: SequencerRig, socket: Socket, connection_id: str) -> InherentClient:
     client = await _attach(rig, socket, connection_id)
     end = socket.of_type("snapshot.end")[0]["payload"]
-    await client.on_frame(_ack(connection_id, end["through_cursor"], end["snapshot_id"]))
-    await _settle()
+    await client.on_frame(ack_envelope(connection_id, end["through_cursor"], end["snapshot_id"]))
+    await settle()
     return client
 
 
-def _ephemeral_frames(socket: _Socket) -> list[dict[str, Any]]:
+def _ephemeral_frames(socket: Socket) -> list[dict[str, Any]]:
     return socket.of_type("ephemeral")
 
 
-async def _big_chunks(rig: _Rig, count: int, size: int, batch: int) -> None:
+async def _big_chunks(rig: SequencerRig, count: int, size: int, batch: int) -> None:
     """One open response and ``count`` chunks of ``size`` bytes, ``batch`` rows per drain."""
-    rig.emit("surface.response_open", _open_payload("RESPbig", "RGRPbig", "Tbig"))
+    rig.emit("surface.response_open", open_payload("RESPbig", "RGRPbig", "Tbig"))
     for sequence in range(count):
         rig.emit(
             "surface.response_chunk",
-            _chunk_payload("RESPbig", "RGRPbig", "Tbig", sequence, "x" * size),
+            chunk_payload("RESPbig", "RGRPbig", "Tbig", sequence, "x" * size),
         )
         if sequence % batch == batch - 1:
-            await _settle(0.01)
+            await settle(0.01)
 
 
 # --- rule 3: backpressure closes one client, the other keeps flowing --------------
@@ -110,10 +110,10 @@ def test_a_durable_enqueue_past_the_frame_limit_closes_only_the_blocked_client(
     """D11 rules 3 and 4 on ``durable_frames``: resync notice, 1008, and A keeps advancing."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
-            live_socket = _Socket()
+            live_socket = Socket()
             await _adopt(rig, live_socket, "CA")
             slow_socket = _SlowSocket()
             slow = await _adopt(rig, slow_socket, "CB")
@@ -124,7 +124,7 @@ def test_a_durable_enqueue_past_the_frame_limit_closes_only_the_blocked_client(
             while not slow.closed and turns * 3 < 2 * _D11_DEFAULTS.durable_frames:
                 rig.turn(turns)
                 turns += 1
-                await _settle(0.01)
+                await settle(0.01)
             assert slow.closed
             # One frame sat in the blocked send; the lane behind it held the limit.
             assert len(slow_socket.frames) == handed_before + 1
@@ -132,7 +132,7 @@ def test_a_durable_enqueue_past_the_frame_limit_closes_only_the_blocked_client(
             assert turns * 3 > _D11_DEFAULTS.durable_frames
             closed_at = live_socket.cursors()[-1]
             slow_socket.release.set()
-            await _settle()
+            await settle()
             notice = slow_socket.of_type("server.resync_required")
             # Exactly the reason, no `kind`: the client decodes this frame by
             # `message_type` alone.
@@ -141,7 +141,7 @@ def test_a_durable_enqueue_past_the_frame_limit_closes_only_the_blocked_client(
             assert slow_socket.close_state() == (1008, "client_backpressure")
             # Rule 4: the other client never noticed.
             rig.turn(turns)
-            await _settle()
+            await settle()
             cursors = live_socket.cursors()
             assert cursors == sorted(set(cursors))
             assert cursors[-1] > closed_at
@@ -158,38 +158,38 @@ def test_a_durable_enqueue_past_the_byte_limit_closes_with_the_frame_count_under
     """D11 rule 3 on ``durable_bytes``: large chunks trip the byte bound first."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
-            live_socket = _Socket()
+            live_socket = Socket()
             await _adopt(rig, live_socket, "CA")
             slow_socket = _SlowSocket()
             slow = await _adopt(rig, slow_socket, "CB")
             slow_socket.hold()
             chunk = 60_000
             # Streamed one row per drain, as the render path commits chunks.
-            rig.emit("surface.response_open", _open_payload("RESPbig", "RGRPbig", "Tbig"))
+            rig.emit("surface.response_open", open_payload("RESPbig", "RGRPbig", "Tbig"))
             chunks = 0
             while not slow.closed and chunks < _D11_DEFAULTS.durable_frames:
                 rig.emit(
                     "surface.response_chunk",
-                    _chunk_payload("RESPbig", "RGRPbig", "Tbig", chunks, "x" * chunk),
+                    chunk_payload("RESPbig", "RGRPbig", "Tbig", chunks, "x" * chunk),
                 )
                 chunks += 1
-                await _settle(0.01)
+                await settle(0.01)
             # The byte bound tripped: far fewer frames than durable_frames.
             assert chunks + 1 < _D11_DEFAULTS.durable_frames
             slow_socket.release.set()
-            await _settle()
+            await settle()
             assert slow_socket.close_state() == (1008, "client_backpressure")
             notice = slow_socket.of_type("server.resync_required")
             assert [f["payload"]["reason"] for f in notice] == ["client_backpressure"]
             closed_at = live_socket.cursors()[-1]
             rig.emit(
                 "surface.response_chunk",
-                _chunk_payload("RESPbig", "RGRPbig", "Tbig", chunks, "tail"),
+                chunk_payload("RESPbig", "RGRPbig", "Tbig", chunks, "tail"),
             )
-            await _settle()
+            await settle()
             cursors = live_socket.cursors()
             assert cursors == sorted(set(cursors))
             assert cursors[-1] > closed_at
@@ -203,19 +203,19 @@ def test_a_durable_enqueue_past_the_byte_limit_closes_with_the_frame_count_under
 # --- D8 handoff: a plan larger than the lane ---------------------------------------
 
 
-async def _open_response(rig: _Rig, index: int, size: int) -> None:
+async def _open_response(rig: SequencerRig, index: int, size: int) -> None:
     """One still-open response of ``size`` inline bytes; its group gets a page of its own."""
     response, group, turn = f"RESPbig{index}", f"RGRPbig{index}", f"Tbig{index}"
-    rig.emit("surface.response_open", _open_payload(response, group, turn))
-    rig.emit("surface.response_chunk", _chunk_payload(response, group, turn, 0, "x" * size))
-    await _settle(0.01)
+    rig.emit("surface.response_open", open_payload(response, group, turn))
+    rig.emit("surface.response_chunk", chunk_payload(response, group, turn, 0, "x" * size))
+    await settle(0.01)
 
 
-async def _over_total_view(rig: _Rig) -> None:
+async def _over_total_view(rig: SequencerRig) -> None:
     """Three open responses: over ``durable_bytes`` in total, every page frame under it."""
     for index in range(3):
         await _open_response(rig, index, 400_000)
-    await _settle()
+    await settle()
 
 
 def test_a_snapshot_over_the_lane_budget_in_total_is_delivered_and_the_client_adopts(
@@ -224,11 +224,11 @@ def test_a_snapshot_over_the_lane_budget_in_total_is_delivered_and_the_client_ad
     """D8: the handoff waits for the sender instead of closing on its own burst."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             await _over_total_view(rig)
-            socket = _Socket()
+            socket = Socket()
             client = await _attach(rig, socket, "CB")
             notice = [f["payload"]["reason"] for f in socket.of_type("server.resync_required")]
             ends = socket.of_type("snapshot.end")
@@ -241,8 +241,8 @@ def test_a_snapshot_over_the_lane_budget_in_total_is_delivered_and_the_client_ad
             assert sum(sizes) > _D11_DEFAULTS.durable_bytes
             assert max(sizes) < _D11_DEFAULTS.durable_bytes
             end = ends[0]["payload"]
-            await client.on_frame(_ack("CB", end["through_cursor"], end["snapshot_id"]))
-            await _settle()
+            await client.on_frame(ack_envelope("CB", end["through_cursor"], end["snapshot_id"]))
+            await settle()
             assert socket.of_type("server.resync_required") == []
             assert socket.close_state() is None
         finally:
@@ -257,7 +257,7 @@ def test_a_handoff_to_a_client_that_never_drains_still_closes_at_the_adoption_de
     """The capacity wait gets no budget of its own: rule 9's deadline still ends it."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path, adoption_deadline_s=0.2)
+        rig = SequencerRig(tmp_path, adoption_deadline_s=0.2)
         await rig.start()
         try:
             socket = _SlowSocket()
@@ -266,7 +266,7 @@ def test_a_handoff_to_a_client_that_never_drains_still_closes_at_the_adoption_de
             await _attach(rig, socket, "CB")
             # 50ms into a 200ms deadline: still waiting, not closed.
             assert socket.close_state() is None
-            await _settle(0.6)
+            await settle(0.6)
             assert socket.close_state() == (1008, "resync_required")
             assert socket.of_type("snapshot.end") == []
         finally:
@@ -282,12 +282,12 @@ def test_a_single_frame_larger_than_the_whole_lane_closes_at_once_with_its_own_r
     """No depth can hold it, so it fails now rather than spending the 5s deadline."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             await _open_response(rig, 0, _D11_DEFAULTS.durable_bytes + 200_000)
-            await _settle()
-            socket = _Socket()
+            await settle()
+            socket = Socket()
             # One 50ms settle inside _attach, two orders below the untouched 5s deadline.
             await _attach(rig, socket, "CB")
             notice = [f["payload"] for f in socket.of_type("server.resync_required")]
@@ -311,29 +311,29 @@ def test_no_ack_progress_for_ack_stall_s_with_a_non_empty_window_closes_on_injec
 
     async def _body() -> None:
         clock = _Clock()
-        rig = _Rig(tmp_path, clock=clock, ack_stall_poll_s=0.01)
+        rig = SequencerRig(tmp_path, clock=clock, ack_stall_poll_s=0.01)
         await rig.start()
         try:
-            live_socket = _Socket()
+            live_socket = Socket()
             live = await _adopt(rig, live_socket, "CA")
-            socket = _Socket()
+            socket = Socket()
             client = await _adopt(rig, socket, "CB")
             rig.turn(1)
-            await _settle()
-            await live.on_frame(_ack("CA", live_socket.cursors()[-1]))
+            await settle()
+            await live.on_frame(ack_envelope("CA", live_socket.cursors()[-1]))
             assert live.unacked_frames == 0
             assert client.unacked_frames == 3
             assert client.unacked_bytes == sum(len(r.encode()) for r in socket.raw[-3:])
             clock.advance(_D11_DEFAULTS.ack_stall_s - 0.5)
-            await _settle()
+            await settle()
             assert socket.close_state() is None
             clock.advance(0.5)
-            await _settle()
+            await settle()
             assert socket.close_state() == (1008, "ack_stalled")
             assert client.closed
             rig.turn(2)
-            await _settle()
-            await live.on_frame(_ack("CA", live_socket.cursors()[-1]))
+            await settle()
+            await live.on_frame(ack_envelope("CA", live_socket.cursors()[-1]))
             assert live_socket.close_state() is None
             assert len(live_socket.cursors()) == 6
         finally:
@@ -348,10 +348,10 @@ def test_a_client_that_acks_every_25_messages_or_100_ms_is_never_closed(tmp_path
 
     async def _body() -> None:
         clock = _Clock()
-        rig = _Rig(tmp_path, clock=clock, ack_stall_poll_s=0.01)
+        rig = SequencerRig(tmp_path, clock=clock, ack_stall_poll_s=0.01)
         await rig.start()
         try:
-            socket = _Socket()
+            socket = Socket()
             client = await _adopt(rig, socket, "CA")
             batch_ms = _D11_DEFAULTS.ack_batch_ms / 1000
             elapsed = 0.0
@@ -361,9 +361,9 @@ def test_a_client_that_acks_every_25_messages_or_100_ms_is_never_closed(tmp_path
                 for _ in range(_D11_DEFAULTS.ack_batch_messages // 3 + 1):
                     rig.turn(turn)
                     turn += 1
-                await _settle()
+                await settle()
                 assert client.unacked_frames >= _D11_DEFAULTS.ack_batch_messages
-                await client.on_frame(_ack("CA", socket.cursors()[-1]))
+                await client.on_frame(ack_envelope("CA", socket.cursors()[-1]))
                 assert client.unacked_frames == 0
             # By time: one frame every 100 ms of injected time, ACKed each time.
             while elapsed < 3 * _D11_DEFAULTS.ack_stall_s:
@@ -371,10 +371,10 @@ def test_a_client_that_acks_every_25_messages_or_100_ms_is_never_closed(tmp_path
                 turn += 1
                 clock.advance(batch_ms)
                 elapsed += batch_ms
-                await _settle(0.005)
-                await client.on_frame(_ack("CA", socket.cursors()[-1]))
-            await _settle()
-            await client.on_frame(_ack("CA", socket.cursors()[-1]))
+                await settle(0.005)
+                await client.on_frame(ack_envelope("CA", socket.cursors()[-1]))
+            await settle()
+            await client.on_frame(ack_envelope("CA", socket.cursors()[-1]))
             assert socket.close_state() is None
             assert not client.closed
             assert client.unacked_frames == 0
@@ -394,24 +394,24 @@ def test_at_most_eight_consecutive_control_frames_leave_before_one_ready_durable
     """D11 rule 10: with both lanes backed up, control never starves durable truth."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             socket = _SlowSocket()
             client = await _adopt(rig, socket, "CA")
             socket.hold()
             rig.turn(0)
-            await _settle()
+            await settle()
             held = len(socket.frames)
             # 20 evictions put 20 ephemeral.clear frames on the control lane.
             for index in range(_D11_DEFAULTS.ephemeral_keys + 20):
                 client.enqueue_ephemeral(f"k{index}", "connection.notice", {"code": "n"})
             for turn in range(1, 8):
                 rig.turn(turn)
-            await _settle()
+            await settle()
             assert not client.closed
             socket.release.set()
-            await _settle()
+            await settle()
             after = socket.frames[held:]
             kinds = [
                 "control" if f["payload"].get("kind") == "ephemeral.clear"
@@ -448,14 +448,14 @@ def test_32_keys_coalesce_in_place_and_the_33rd_clears_the_evicted_key_first(
     """D11 rules 2 and 12: latest value per key, ordered clear before a new key's frame."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             socket = _SlowSocket()
             client = await _adopt(rig, socket, "CA")
             socket.hold()
             rig.turn(0)
-            await _settle()
+            await settle()
             keys = [f"utt{i}" for i in range(_D11_DEFAULTS.ephemeral_keys)]
             for revision in (1, 2):
                 for key in keys:
@@ -464,7 +464,7 @@ def test_32_keys_coalesce_in_place_and_the_33rd_clears_the_evicted_key_first(
                         {"utterance_id": key, "revision": revision, "text": f"r{revision}"},
                     )
             socket.release.set()
-            await _settle()
+            await settle()
             frames = _ephemeral_frames(socket)
             assert [f["payload"]["utterance_id"] for f in frames] == keys
             assert {f["payload"]["revision"] for f in frames} == {2}
@@ -476,7 +476,7 @@ def test_32_keys_coalesce_in_place_and_the_33rd_clears_the_evicted_key_first(
             client.enqueue_ephemeral(
                 "utt-new", "input.partial", {"utterance_id": "utt-new", "revision": 1, "text": "n"},
             )
-            await _settle()
+            await settle()
             tail = _ephemeral_frames(socket)[len(keys):]
             assert [f["payload"]["kind"] for f in tail] == ["ephemeral.clear", "input.partial"]
             assert tail[0]["payload"] == {"kind": "ephemeral.clear", "key": keys[0]}
@@ -506,18 +506,18 @@ def test_a_catch_up_over_either_budget_closes_the_client_with_nothing_partial_se
     assert rows * chunk > CATCH_UP_BYTE_BUDGET or rows + 1 > CATCH_UP_FRAME_BUDGET
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
-            live_socket = _Socket()
+            live_socket = Socket()
             await _adopt(rig, live_socket, "CA")
-            socket = _Socket()
+            socket = Socket()
             client = await _attach(rig, socket, "CB")
             end = socket.of_type("snapshot.end")[0]["payload"]
             await _big_chunks(rig, count=rows, size=chunk, batch=8)
-            await _settle()
-            await client.on_frame(_ack("CB", end["through_cursor"], end["snapshot_id"]))
-            await _settle()
+            await settle()
+            await client.on_frame(ack_envelope("CB", end["through_cursor"], end["snapshot_id"]))
+            await settle()
             assert socket.close_state() == (1008, "catch_up_budget")
             assert socket.cursors() == []
             assert client.closed
@@ -542,26 +542,26 @@ def test_an_exception_in_one_snapshot_path_closes_that_client_and_serves_the_oth
         raise RuntimeError(msg)
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
-            live_socket = _Socket()
+            live_socket = Socket()
             await _adopt(rig, live_socket, "CA")
             monkeypatch.setattr("jarvis.runtime.inherent_hub.build_snapshot_plan", _boom)
-            broken_socket = _Socket()
+            broken_socket = Socket()
             broken = await _attach(rig, broken_socket, "CB")
             monkeypatch.undo()
             assert broken_socket.close_state() == (1008, "internal_error")
             assert broken.closed
             assert broken_socket.frames == []
             rig.turn(1)
-            await _settle()
+            await settle()
             assert len(live_socket.cursors()) == 3
-            third_socket = _Socket()
+            third_socket = Socket()
             await _adopt(rig, third_socket, "CC")
             assert third_socket.close_state() is None
             rig.turn(2)
-            await _settle()
+            await settle()
             assert len(third_socket.cursors()) == 3
             assert len(live_socket.cursors()) == 6
         finally:

@@ -11,26 +11,7 @@ import pytest
 
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.surface import voice_audio, voice_session
-
-
-class _EnergySession:
-    """Minimal ONNX-shaped session whose probability follows frame energy."""
-
-    def __init__(self) -> None:
-        self.run_count = 0
-
-    def run(
-        self,
-        _output_names: object,
-        inputs: dict[str, np.ndarray],
-    ) -> list[np.ndarray]:
-        self.run_count += 1
-        probability = 0.9 if np.any(inputs["x"]) else 0.0
-        return [
-            np.asarray([[probability]], dtype=np.float32),
-            inputs["h"].copy(),
-            inputs["c"].copy(),
-        ]
+from tests.support.voice_input import EnergySession
 
 
 class _FrameStream:
@@ -77,7 +58,7 @@ def test_reused_vad_resets_prewarms_and_waits_for_consecutive_silence(
     silence = np.zeros(voice_audio.SILERO_CHUNK_SAMPLES, dtype=np.int16).tobytes()
     utterance_frames = [speech] * speech_frames + [silence] * required_misses
     streams = [_FrameStream(utterance_frames.copy()), _FrameStream(utterance_frames.copy())]
-    session = _EnergySession()
+    session = EnergySession()
 
     with (
         patch.object(voice_audio, "_load_silero_session", return_value=session),

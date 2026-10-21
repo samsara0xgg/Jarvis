@@ -24,8 +24,6 @@ from jarvis.state.daily_contract import DailyError
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.projects import Project
 from tests.integration.test_projects import NOW, ZONE, Rig, _project, rig, source
-from tests.integration.test_terminal_observers import _wait_for
-from tests.integration.test_terminal_reads import _Brain, _Terminal
 from tests.integration.test_timesink_moment import (
     CHROME,
     T0,
@@ -35,6 +33,7 @@ from tests.integration.test_timesink_moment import (
     _zh,
     jev,
 )
+from tests.support.terminal import Brain, Terminal, wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -56,15 +55,15 @@ class _Link:
         token = pair_device(tmp_path, "macbook")
         log = bootstrap_runtime(tmp_path / "brain-root").event_log
         self.log = log
-        self.brain = _Brain(tmp_path, log)
-        self.terminal = _Terminal(
+        self.brain = Brain(tmp_path, log)
+        self.terminal = Terminal(
             self.brain.url, token, store=store, repos=repos, projects=projects,
         )
 
     def __enter__(self) -> Self:
         self.brain.__enter__()
         self.terminal.__enter__()
-        _wait_for(lambda: bool(self.brain.hub.connected()), "the terminal never connected")
+        wait_for(lambda: bool(self.brain.hub.connected()), "the terminal never connected")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -77,7 +76,7 @@ class _Link:
 
     def disconnect(self) -> None:
         self.terminal.stop()
-        _wait_for(lambda: not self.brain.hub.connected(), "the terminal never left")
+        wait_for(lambda: not self.brain.hub.connected(), "the terminal never left")
 
 
 # --- the moment -------------------------------------------------------------------------------

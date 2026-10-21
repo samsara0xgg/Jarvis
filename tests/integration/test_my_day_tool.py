@@ -30,17 +30,9 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
 from jarvis.surface.terminal_link import TerminalHub
 from scripts import tool_exam
-from tests.integration.test_day_line import _load
-from tests.integration.test_ledger import (
-    CHROME,
-    NOW,
-    ZONE,
-    _at,
-    _terminal_link,
-    _utc,
-    _world,
-)
-from tests.integration.test_ledger_phone import ORIGIN, phone_rows
+from tests.support.day_line import load_rows
+from tests.support.ledger import CHROME, NOW, ZONE, ledger_at, ledger_world, terminal_link, utc_text
+from tests.support.ledger_phone import ORIGIN, phone_rows
 
 REPO = Path(__file__).resolve().parents[2]
 WECHAT = "com.tencent.xinWeChat"
@@ -81,7 +73,7 @@ def _briefing(conn: sqlite3.Connection, day: str, content: str, version: int = 1
 
 def _build(root: Path, *, analysed: bool = True) -> LedgerSources:
     """The ledger's world plus a call, WeChat, three commits, the phone, a work state, reports."""
-    src = _world(root)
+    src = ledger_world(root)
     assert src.timesink is not None
     with closing(sqlite3.connect(src.timesink)) as conn, conn:
         conn.execute(
@@ -90,23 +82,35 @@ def _build(root: Path, *, analysed: bool = True) -> LedgerSources:
         )
         conn.execute(
             "INSERT INTO callSpan VALUES (?, ?, 'us.zoom.xos', 'zoom.us')",
-            (_utc(_at(8, 10, 15)), _utc(_at(8, 10, 45))),
+            (utc_text(ledger_at(8, 10, 15)), utc_text(ledger_at(8, 10, 45))),
         )
         conn.execute(
             "INSERT INTO span (start, end, appBundleID, appName, title, document) "
             "VALUES (?, ?, ?, 'WeChat', 'chat', '')",
-            (_utc(_at(8, 12)), _utc(_at(8, 12, 40)), WECHAT),
+            (utc_text(ledger_at(8, 12)), utc_text(ledger_at(8, 12, 40)), WECHAT),
         )
     with closing(open_event_log(src.event_log)) as conn:
-        _load(conn, phone_rows(), ORIGIN)
-        for sha, when in (("c0", _at(6, 11)), ("c1", _at(6, 12)), ("c2", _at(8, 13))):
+        load_rows(conn, phone_rows(), ORIGIN)
+        for sha, when in (
+            ("c0", ledger_at(6, 11)),
+            ("c1", ledger_at(6, 12)),
+            ("c2", ledger_at(8, 13)),
+        ):
             ms = int(when.timestamp() * 1000)
-            emit_event(conn, type="project.commit_seen", ts_epoch_ms=ms, payload={
-                "repo_path": "/Users/a/Projects/jarvis", "commit_sha": sha, "subject": "s",
-                "committed_at_ms": ms, "actor": "observer",
-            })
+            emit_event(
+                conn,
+                type="project.commit_seen",
+                ts_epoch_ms=ms,
+                payload={
+                    "repo_path": "/Users/a/Projects/jarvis",
+                    "commit_sha": sha,
+                    "subject": "s",
+                    "committed_at_ms": ms,
+                    "actor": "observer",
+                },
+            )
         if analysed:
-            _state(conn, _at(8, 14, 30).isoformat(), "Writing the my_day tool tests")
+            _state(conn, ledger_at(8, 14, 30).isoformat(), "Writing the my_day tool tests")
         _briefing(conn, "2026-10-07", REPORT.format("An old first version."))
         _briefing(conn, "2026-10-07", REPORT.format("He polished the resume and applied."), 2)
         _briefing(conn, "2026-10-05", ZH_REPORT)
@@ -138,7 +142,10 @@ def test_the_tool_is_a_small_read_only_menu_entry_that_replaces_four(tool: Tool)
     assert tool.input_schema["additionalProperties"] is False
     assert set(tool.input_schema["properties"]) == {"date", "to", "about", "page"}
     assert set(tool.supersedes) == {
-        "get_briefing", "query_activity", "read_activity", "refresh_work_state",
+        "get_briefing",
+        "query_activity",
+        "read_activity",
+        "refresh_work_state",
     }
     # It reads the saved analysis; nothing in what it is built from can start a paid one.
     assert list(inspect.signature(build_my_day_tool).parameters) == ["sources", "clock"]
@@ -157,7 +164,8 @@ SUMMARIES: list[tuple[dict[str, str | int], str]] = [
         "yesterday (Wed), from his saved daily report: He polished the resume and applied.",
     ),
     (  # a report saved in Chinese
-        {"date": "2026-10-05"}, "Mon Oct 5, from his saved daily report: 他整理了简历。",
+        {"date": "2026-10-05"},
+        "Mon Oct 5, from his saved daily report: 他整理了简历。",
     ),
     (  # no report: the live aggregate
         {"date": "2026-10-06"},
@@ -191,7 +199,9 @@ SUMMARIES: list[tuple[dict[str, str | int], str]] = [
 
 @pytest.mark.parametrize(("args", "summary"), SUMMARIES)
 def test_each_path_leads_with_the_words_he_would_say(
-    tool: Tool, args: dict[str, Any], summary: str,
+    tool: Tool,
+    args: dict[str, Any],
+    summary: str,
 ) -> None:
     """Every path's summary is the exact sentence, first, within four thousand characters."""
     got = _call(tool, **args)
@@ -211,7 +221,8 @@ def test_today_carries_the_fields_and_what_he_is_doing_now_with_its_age(tool: To
     assert got["commits"] == ["jarvis 1"]
     assert got["places"] == ["Home 15h"]
     assert got["now"] == {
-        "text": "Writing the my_day tool tests", "basis": "observed",
+        "text": "Writing the my_day tool tests",
+        "basis": "observed",
         "as_of": "30 minutes ago, at 2:30 pm",
     }
     assert "missing" not in got
@@ -230,10 +241,11 @@ def test_an_old_analysis_is_shown_with_its_age_and_a_warning(tmp_path: Path) -> 
     """An analysis older than three hours is shown with its age and a warning."""
     src = _build(tmp_path)
     with closing(open_event_log(src.event_log)) as conn:
-        _state(conn, _at(7, 13, 45).isoformat(), "Reading a paper", "inferred")
+        _state(conn, ledger_at(7, 13, 45).isoformat(), "Reading a paper", "inferred")
     got = _call(_tool(src))
     assert got["now"] == {
-        "text": "Reading a paper", "basis": "inferred",
+        "text": "Reading a paper",
+        "basis": "inferred",
         "as_of": "25 hours ago, at yesterday (Wed) 1:45 pm",
         "stale": "this analysis is old and may not describe the present",
     }
@@ -249,14 +261,16 @@ def test_an_analysis_with_no_present_claim_does_not_pass_the_past_off_as_now(
     """Without a `now` claim the day's activities are named as covered, not as the present."""
     src = _build(tmp_path, analysed=False)
     item = {
-        "analyzed_at": _at(8, 14, 30).isoformat(), "now": None,
+        "analyzed_at": ledger_at(8, 14, 30).isoformat(),
+        "now": None,
         "activities": [{"text": "Polishing the resume", "basis": "stated"}, {"text": "Mail"}],
     }
     with closing(open_event_log(src.event_log)) as conn:
         emit_event(conn, type="work_state.revised", payload={"item": item, "trigger": "auto"})
     got = _call(_tool(src))
     assert got["now"] == {
-        "as_of": "30 minutes ago, at 2:30 pm", "covered": ["Polishing the resume", "Mail"],
+        "as_of": "30 minutes ago, at 2:30 pm",
+        "covered": ["Polishing the resume", "Mail"],
     }
     assert (
         " The latest work analysis (30 minutes ago, at 2:30 pm) names nothing he is doing right "
@@ -271,7 +285,7 @@ def test_a_past_day_without_a_report_gives_when_it_began_and_ended(src: LedgerSo
         conn.execute(
             "INSERT INTO span (start, end, appBundleID, appName, title, document) "
             "VALUES (?, ?, ?, 'Chrome', 'repl', '')",
-            (_utc(_at(6, 23, 30)), _utc(_at(7, 0, 40)), CHROME),
+            (utc_text(ledger_at(6, 23, 30)), utc_text(ledger_at(7, 0, 40)), CHROME),
         )
     got = _call(_tool(src), date="2026-10-06")
     assert got["started"] == "9:00 am"
@@ -320,14 +334,14 @@ def test_about_pages_by_number_and_says_where_the_list_ends(tmp_path: Path) -> N
     """20 window titles, longest first: pages of 8, 8 and 4, then a sentence for page 4."""
     src = _build(tmp_path)
     assert src.timesink is not None
-    start = _at(8, 1)
+    start = ledger_at(8, 1)
     with closing(sqlite3.connect(src.timesink)) as conn, conn:
         for i in range(1, 21):  # chat-01 lasts 2 minutes, chat-20 lasts 40
             end = start + timedelta(minutes=2 * i)
             conn.execute(
                 "INSERT INTO span (start, end, appBundleID, appName, title, document) "
                 "VALUES (?, ?, 'org.signal', 'Signal', ?, '')",
-                (_utc(start), _utc(end), f"chat-{i:02d}"),
+                (utc_text(start), utc_text(end), f"chat-{i:02d}"),
             )
             start = end
     tool = _tool(src)
@@ -341,7 +355,8 @@ def test_about_pages_by_number_and_says_where_the_list_ends(tmp_path: Path) -> N
     past = _call(tool, date="2026-10-08", about="signal", page=4)
     assert past == {
         "summary": 'There is no page 4 of "signal"; its list ends at page 3.',
-        "inside": [], "more": False,
+        "inside": [],
+        "more": False,
     }
 
 
@@ -375,7 +390,7 @@ def test_a_terminal_that_is_away_is_named_and_the_brains_own_data_still_answers(
     src: LedgerSources,
 ) -> None:
     """A brain whose terminal is away says so and answers from what the brain holds."""
-    away = TerminalScreen(_terminal_link(src.timesink, [], up=[False]))
+    away = TerminalScreen(terminal_link(src.timesink, [], up=[False]))
     brain = LedgerSources(src.memory_db, src.event_log, None, ZONE, away)
     got = _call(_tool(brain), date="2026-10-05", to="2026-10-07")
     assert got["missing"] == ["apps, projects and calls (his computer's terminal is not connected)"]
@@ -407,7 +422,11 @@ def test_a_terminal_that_does_not_answer_holds_my_day_two_seconds_and_its_late_a
 
         link = hub.attach("macbook", frozenset({TIMESINK_READ}), send)
         brain = LedgerSources(
-            src.memory_db, src.event_log, None, ZONE, TerminalScreen(hub.call, wait_s=TURN_WAIT_S),
+            src.memory_db,
+            src.event_log,
+            None,
+            ZONE,
+            TerminalScreen(hub.call, wait_s=TURN_WAIT_S),
         )
         tool = _tool(brain)
         began = time.monotonic()
@@ -415,7 +434,10 @@ def test_a_terminal_that_does_not_answer_holds_my_day_two_seconds_and_its_late_a
         took = time.monotonic() - began
         for frame in asked:  # the Mac wakes and answers what it was asked
             reply = terminal_runtime._read_device(  # noqa: SLF001
-                frame["tool"], frame["arguments"], src.timesink, (),
+                frame["tool"],
+                frame["arguments"],
+                src.timesink,
+                (),
             )
             hub.deliver(link, {"type": "result", "id": frame["id"], **reply})
         await asyncio.sleep(0.2)
@@ -433,7 +455,7 @@ def test_a_terminal_that_does_not_answer_holds_my_day_two_seconds_and_its_late_a
 
 def test_a_connected_terminal_gives_what_one_machine_gives(src: LedgerSources) -> None:
     """A connected terminal reads the same as the machine that holds TimeSink."""
-    up = TerminalScreen(_terminal_link(src.timesink, [], up=[True]))
+    up = TerminalScreen(terminal_link(src.timesink, [], up=[True]))
     brain = LedgerSources(src.memory_db, src.event_log, None, ZONE, up)
     for args in ({}, {"date": "2026-10-06"}, {"date": "2026-10-05", "to": "2026-10-08"}):
         assert _call(_tool(brain), **args) == _call(_tool(src), **args)
@@ -444,7 +466,7 @@ def test_a_long_span_with_long_names_is_trimmed_to_four_thousand_and_says_so(
     tmp_path: Path,
 ) -> None:
     """31 days with long project names: rows are dropped from the end and the cut is said."""
-    src = _world(tmp_path)
+    src = ledger_world(tmp_path)
     assert src.timesink is not None
     names = [f"{chr(65 + i)}-" + "project-name-" * 9 for i in range(5)]  # 119 characters each
     with closing(sqlite3.connect(src.timesink)) as conn, conn:
@@ -453,14 +475,20 @@ def test_a_long_span_with_long_names_is_trimmed_to_four_thousand_and_says_so(
         for i, name in enumerate(names, 1):
             conn.execute("INSERT INTO project VALUES (?, ?)", (i, name))
             conn.execute(
-                "INSERT INTO jevProjectVerdict VALUES (?, '', 'w', '', ?)", (f"app.{i}", i),
+                "INSERT INTO jevProjectVerdict VALUES (?, '', 'w', '', ?)",
+                (f"app.{i}", i),
             )
         for n in range(31):  # Sep 8 .. Oct 8
-            day = _at(8, 9) - timedelta(days=n)
+            day = ledger_at(8, 9) - timedelta(days=n)
             conn.execute(
                 "INSERT INTO span (start, end, appBundleID, appName, title, document) "
                 "VALUES (?, ?, ?, ?, 'w', '')",
-                (_utc(day), _utc(day + timedelta(hours=1)), f"app.{n % 5 + 1}", f"App {n % 5}"),
+                (
+                    utc_text(day),
+                    utc_text(day + timedelta(hours=1)),
+                    f"app.{n % 5 + 1}",
+                    f"App {n % 5}",
+                ),
             )
     got = _call(_tool(src), date="2026-09-08", to="2026-10-08")
     assert _size(got) <= 4000
@@ -471,26 +499,40 @@ def test_a_long_span_with_long_names_is_trimmed_to_four_thousand_and_says_so(
 
 ERRORS: list[tuple[dict[str, Any], str]] = [
     ({"bogus": 1}, "my_day: no argument 'bogus'; the arguments are date, to, about and page"),
-    ({"to": "2026-10-08"},
-     "my_day: to is the last day of a span that date starts; pass date=... as well"),
+    (
+        {"to": "2026-10-08"},
+        "my_day: to is the last day of a span that date starts; pass date=... as well",
+    ),
     ({"page": 2}, "my_day: page continues the list that about=... gives; pass the same about"),
     ({"date": "2026-10-09"}, "my_day: 2026-10-09 has not happened yet; today is 2026-10-08"),
-    ({"date": "soon"},
-     "my_day: a date looks like 2026-10-01 (or the words today, yesterday), not 'soon'"),
-    ({"date": "2026-10-08", "to": "2026-10-01"},
-     "my_day: to=2026-10-01 is before date=2026-10-08; to is the span's last day"),
-    ({"date": "2026-09-01", "to": "2026-10-08"},
-     "my_day: a span is at most 31 days; ask for a longer stretch in parts"),
-    ({"date": "2026-10-08", "about": "x", "page": 0},
-     "my_day: page must be a whole number, e.g. page=2 for items 9-16"),
-    ({"date": "2026-10-08", "about": "x", "page": "two"},
-     "my_day: page must be a whole number, e.g. page=2 for items 9-16"),
+    (
+        {"date": "soon"},
+        "my_day: a date looks like 2026-10-01 (or the words today, yesterday), not 'soon'",
+    ),
+    (
+        {"date": "2026-10-08", "to": "2026-10-01"},
+        "my_day: to=2026-10-01 is before date=2026-10-08; to is the span's last day",
+    ),
+    (
+        {"date": "2026-09-01", "to": "2026-10-08"},
+        "my_day: a span is at most 31 days; ask for a longer stretch in parts",
+    ),
+    (
+        {"date": "2026-10-08", "about": "x", "page": 0},
+        "my_day: page must be a whole number, e.g. page=2 for items 9-16",
+    ),
+    (
+        {"date": "2026-10-08", "about": "x", "page": "two"},
+        "my_day: page must be a whole number, e.g. page=2 for items 9-16",
+    ),
 ]
 
 
 @pytest.mark.parametrize(("args", "message"), ERRORS)
 def test_a_wrong_call_says_what_happened_and_what_to_pass(
-    tool: Tool, args: dict[str, Any], message: str,
+    tool: Tool,
+    args: dict[str, Any],
+    message: str,
 ) -> None:
     """Each wrong call is refused with the sentence that tells the model what to pass."""
     error = _failure(tool, **args)

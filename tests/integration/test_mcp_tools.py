@@ -10,14 +10,11 @@ from __future__ import annotations
 import io
 import json
 import logging
-import socket
-import subprocess
 import sys
 import threading
 import time
 import urllib.request
 import webbrowser
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -28,31 +25,15 @@ from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool
 from jarvis.runtime import mcp_login
 from jarvis.shared import CallerPrincipal
-from tests.integration.test_flat_tool_dispatch import _chain, _Fixture, _request
+from tests.support import mcp as mcp_support
+from tests.support.mcp import ECHO, SERVERS, free_port
+from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
-HERE = Path(__file__).parent
-ECHO = {"echo": {"command": sys.executable, "args": [str(HERE / "mcp_echo_server.py")]}}
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-def _wait_listening(port: int, timeout_s: float = 20.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                return
-        except OSError:
-            time.sleep(0.1)
-    msg = f"port {port} never came up"
-    raise TimeoutError(msg)
+oauth_url = mcp_support.oauth_url  # the fixture, found by name in this module
 
 
 @pytest.fixture
@@ -63,32 +44,12 @@ def servers() -> Iterator[McpServers]:
     mcp.stop()
 
 
-@pytest.fixture
-def oauth_url(request: pytest.FixtureRequest) -> Iterator[str]:
-    """The OAuth-protected Streamable HTTP server, alive for one test."""
-    port = _free_port()
-    proc = subprocess.Popen(  # noqa: S603 — our own test server script.
-        [
-            sys.executable,
-            str(HERE / "mcp_oauth_server.py"),
-            str(port),
-            getattr(request, "param", "client_secret_post"),
-        ]
-    )
-    try:
-        _wait_listening(port)
-        yield f"http://127.0.0.1:{port}/mcp"
-    finally:
-        proc.terminate()
-        proc.wait(timeout=10)
-
-
 def _call(tmp_path: Path, tools: tuple[Any, ...], name: str, action_id: str) -> dict[str, Any]:
     """Dispatch through the real registry and return the decoded terminal payload."""
-    fx = _Fixture(tmp_path / action_id, tools=tools)
+    fx = ToolWorld(tmp_path / action_id, tools=tools)
     try:
-        fx.dispatch(_request(name, action_id))
-        observed = _chain(fx, action_id)
+        fx.dispatch(tool_request(name, action_id))
+        observed = tool_chain(fx, action_id)
         assert observed["semantics"] == "observation"
         return dict(json.loads(observed["tool_output"]))
     finally:
@@ -109,20 +70,20 @@ def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: Mcp
     assert all(t.deferred for t in tools)  # ADR 0034
     assert add.input_schema["required"] == ["a", "b"]
 
-    fx = _Fixture(tmp_path, tools=tools)
+    fx = ToolWorld(tmp_path, tools=tools)
     try:
-        fx.dispatch(_request("mcp__echo__echo", "M1", arguments={"text": "你好 MCP"}))
-        observed = _chain(fx, "M1")
+        fx.dispatch(tool_request("mcp__echo__echo", "M1", arguments={"text": "你好 MCP"}))
+        observed = tool_chain(fx, "M1")
         assert observed["semantics"] == "observation"
         # mcp 2.x wraps a bare `str` return as structured content; that wins over the text block.
         assert json.loads(observed["tool_output"]) == {"result": "你好 MCP"}
 
-        fx.dispatch(_request("mcp__echo__add", "M2", arguments={"a": 1, "b": 2}))
-        observed = _chain(fx, "M2")
+        fx.dispatch(tool_request("mcp__echo__add", "M2", arguments={"a": 1, "b": 2}))
+        observed = tool_chain(fx, "M2")
         assert json.loads(observed["tool_output"]) == {"sum": 3}
 
-        fx.dispatch(_request("mcp__echo__boom", "M3"))
-        observed = _chain(fx, "M3")
+        fx.dispatch(tool_request("mcp__echo__boom", "M3"))
+        observed = tool_chain(fx, "M3")
         assert observed["semantics"] == "error"
         assert observed["error"] == "mcp_tool_error"
         # mcp 2.x masks the server-side exception; the model sees the SDK's generic text.
@@ -205,7 +166,7 @@ def test_stdio_args_expand_from_the_environment(
     servers: McpServers, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ADR 0055: `$HOME`-style paths in args, so the install location stays out of the config."""
-    monkeypatch.setenv("ECHO_DIR", str(HERE))
+    monkeypatch.setenv("ECHO_DIR", str(SERVERS))
     entry = {"echo": {"command": sys.executable, "args": ["$ECHO_DIR/mcp_echo_server.py"]}}
     assert {t.name for t in servers.connect(entry)} == {
         "mcp__echo__echo", "mcp__echo__add", "mcp__echo__send", "mcp__echo__boom",
@@ -257,7 +218,7 @@ def test_daemon_without_a_login_skips_the_oauth_server(
     """No token set: skipped before any connection; a registration alone is not a login."""
     token_dir = tmp_path / "mcp"
     spec = {"url": "http://127.0.0.1:9/mcp", "auth": "oauth"}
-    daemon = McpServers(timeout_s=20, token_dir=token_dir, callback_port=_free_port())
+    daemon = McpServers(timeout_s=20, token_dir=token_dir, callback_port=free_port())
     try:
         assert daemon.connect({"svc": spec}) == ()
         assert not token_dir.exists()
@@ -281,7 +242,7 @@ def test_daemon_without_a_login_skips_the_oauth_server(
 )
 def test_oauth_login_then_the_daemon_reuses_and_refreshes(tmp_path: Path, oauth_url: str) -> None:
     """Login through the loopback redirect; the daemon reuses the file, refreshes on expiry."""
-    token_dir, port = tmp_path / "mcp", _free_port()
+    token_dir, port = tmp_path / "mcp", free_port()
     spec = {"url": oauth_url, "auth": "oauth"}
     opened: list[str] = []
 
@@ -353,7 +314,7 @@ def test_mcp_login_without_a_browser_prints_the_url_and_finishes_through_the_loo
     The redirect lands on 127.0.0.1 only (an ``ssh -L`` from the browser's machine arrives
     there), and the token is stored on this machine.
     """
-    port = _free_port()
+    port = free_port()
     config = tmp_path / "config" / "jarvis.yaml"
     config.parent.mkdir()
     entry = {"svc": {"url": oauth_url, "auth": "oauth"}}
@@ -386,7 +347,7 @@ def test_mcp_login_without_a_browser_prints_the_url_and_finishes_through_the_loo
 
 def test_the_callback_listener_binds_loopback_only() -> None:
     """The one port a login opens is not reachable from the network."""
-    listener = _Listener(_free_port())
+    listener = _Listener(free_port())
     try:
         assert listener.server_address[0] == "127.0.0.1"
     finally:
@@ -403,7 +364,7 @@ def test_browser_guard_leaves_payment_and_sign_in_to_allen(
     menu += ["browser_type", "browser_press_key"]
     spec = {
         "command": sys.executable,
-        "args": [str(HERE / "mcp_browser_server.py"), str(reached)],
+        "args": [str(SERVERS / "mcp_browser_server.py"), str(reached)],
         "enabled_tools": menu,
         "default_tools_approval_mode": "approve",
     }
@@ -411,12 +372,12 @@ def test_browser_guard_leaves_payment_and_sign_in_to_allen(
     # Codex's enabled_tools: browser_evaluate is listed by the server but never registered.
     assert {t.name for t in tools} == {f"mcp__browser__{n}" for n in menu}
 
-    fx = _Fixture(tmp_path / "log", tools=tools)
+    fx = ToolWorld(tmp_path / "log", tools=tools)
     try:
 
         def run(action_id: str, tool: str, **arguments: object) -> dict[str, Any]:
-            fx.dispatch(_request(f"mcp__browser__{tool}", action_id, arguments=arguments))
-            return _chain(fx, action_id)
+            fx.dispatch(tool_request(f"mcp__browser__{tool}", action_id, arguments=arguments))
+            return tool_chain(fx, action_id)
 
         def refused(action_id: str, tool: str, **arguments: object) -> str:
             outcome = run(action_id, tool, **arguments)

@@ -30,187 +30,33 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
+from tests.support.voice_input import (
+    FakeBackend,
+    FakeWakeEngine,
+    RecordingPipeline,
+    StatefulEnergySession,
+    make_ingress,
+    pcm_frame,
+    wait_until_true,
+)
 from tools.realtime_trace_report import TraceRow, summarize_trace
+
+# Old names for test_soft_barge_in.py, which has not migrated; its pass drops this block.
+# isort: off
+from tests.support import voice_input as _shim
+
+_FakeBackend = _shim.FakeBackend
+_FakeWakeEngine = _shim.FakeWakeEngine
+_ingress = _shim.make_ingress
+_wait_until = _shim.wait_until_true
+# isort: on
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
 
-def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while not predicate():
-        if time.monotonic() >= deadline:
-            pytest.fail("condition did not become true before bounded deadline")
-        time.sleep(0.001)
-
-
-def _pcm(value: int, *, frames: int = voice_audio.SILERO_CHUNK_SAMPLES) -> bytes:
-    return np.full(frames, value, dtype="<i2").tobytes()
-
-
-class _FakeBackend:
-    """Callback-capable backend with exact owner/fault/epoch accounting."""
-
-    def __init__(
-        self,
-        *,
-        stop_status: voice_backend.BackendStopStatus = voice_backend.BackendStopStatus.CLOSED,
-    ) -> None:
-        self.format = voice_backend.AudioInputFormat(16_000, 1, 512)
-        self.stop_status = stop_status
-        self.sinks: dict[int, voice_backend.InputFrameSink] = {}
-        self.attempts: dict[int, str] = {}
-        self.active_epoch: int | None = None
-        self.active_attempt_id: str | None = None
-        self.device_uid = "fake-input-A"
-        self.pending_fault: voice_backend.BackendFault | None = None
-        self.start_count = 0
-        self.stop_count = 0
-        self.active_owner_count = 0
-        self.max_active_owner_count = 0
-        self.ownership_version = 0
-
-    def start(
-        self,
-        *,
-        stream_epoch: int,
-        attempt_id: str,
-        frame_sink: voice_backend.InputFrameSink,
-        render_source: voice_backend.RenderSource | None = None,
-        timeout_s: float | None = None,
-    ) -> voice_backend.BackendStartResult:
-        del timeout_s
-        assert render_source is None
-        assert self.active_epoch is None, "a second physical owner was opened"
-        self.start_count += 1
-        self.active_epoch = stream_epoch
-        self.active_attempt_id = attempt_id
-        self.ownership_version += 1
-        self.active_owner_count += 1
-        self.max_active_owner_count = max(
-            self.max_active_owner_count,
-            self.active_owner_count,
-        )
-        self.sinks[stream_epoch] = frame_sink
-        self.attempts[stream_epoch] = attempt_id
-        profile = voice_backend.InputDeviceProfile(
-            device_uid=self.device_uid,
-            device_name=self.device_uid,
-            backend="fake",
-            input_format=self.format,
-        )
-        return voice_backend.BackendStartResult(
-            status=voice_backend.BackendStartStatus.STARTED,
-            stream_epoch=stream_epoch,
-            profile=profile,
-            attempt_id=attempt_id,
-        )
-
-    def stop(
-        self,
-        *,
-        stream_epoch: int,
-        attempt_id: str,
-        timeout_s: float | None = None,
-    ) -> voice_backend.BackendStopResult:
-        del timeout_s
-        self.stop_count += 1
-        if (
-            self.active_epoch == stream_epoch
-            and self.active_attempt_id == attempt_id
-            and self.stop_status is voice_backend.BackendStopStatus.CLOSED
-        ):
-            self.active_epoch = None
-            self.active_attempt_id = None
-            self.active_owner_count -= 1
-            self.ownership_version += 1
-        return voice_backend.BackendStopResult(
-            status=self.stop_status,
-            stream_epoch=stream_epoch,
-            reason=(
-                "injected_stuck_backend"
-                if self.stop_status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN
-                else None
-            ),
-            attempt_id=attempt_id,
-        )
-
-    def emit(
-        self,
-        *,
-        epoch: int,
-        value: int,
-        discontinuity: bool = False,
-    ) -> None:
-        callback_owned = bytearray(_pcm(value))
-        self.sinks[epoch](
-            stream_epoch=epoch,
-            attempt_id=self.attempts[epoch],
-            callback_buffer=callback_owned,
-            frame_count=512,
-            adc_time_s=time.monotonic(),
-            captured_monotonic_ns=time.monotonic_ns(),
-            discontinuity_before=discontinuity,
-        )
-        # If ingress retained a borrowed callback buffer, every subscriber
-        # would now observe this mutation instead of ``value``.
-        callback_owned[:] = b"\x7f" * len(callback_owned)
-
-    def poll_fault(self, *, stream_epoch: int) -> voice_backend.BackendFault | None:
-        fault = self.pending_fault
-        if fault is not None and fault.stream_epoch == stream_epoch:
-            self.pending_fault = None
-            return fault
-        return None
-
-    def current_device_uid(self) -> str | None:
-        return self.device_uid
-
-    def current_output_route(self) -> voice_backend.OutputRoute | None:
-        return None
-
-    def input_format(self) -> voice_backend.AudioInputFormat:
-        return self.format
-
-    def output_format(self) -> None:
-        return None
-
-    def capabilities(self) -> voice_backend.BackendCapabilities:
-        return voice_backend.BackendCapabilities(
-            owns_default_input=True,
-            owns_render_clock=False,
-            aec=False,
-            natural_barge_in=False,
-            reliable_adc_time=True,
-            reliable_dac_time=False,
-        )
-
-    def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
-        state = (
-            voice_backend.BackendLifecycleState.CLOSED
-            if self.active_epoch is None
-            else voice_backend.BackendLifecycleState.OPEN
-            if self.stop_status is voice_backend.BackendStopStatus.CLOSED
-            else voice_backend.BackendLifecycleState.UNCERTAIN
-        )
-        return voice_backend.BackendOwnershipSnapshot(
-            state=state,
-            stream_epoch=self.active_epoch,
-            attempt_id=self.active_attempt_id,
-            version=self.ownership_version,
-            physical_owner_possible=self.active_epoch is not None,
-            helper_thread_alive=False,
-            reason=(
-                "injected_stuck_backend"
-                if self.active_epoch is not None
-                and state is voice_backend.BackendLifecycleState.UNCERTAIN
-                else None
-            ),
-        )
-
-
-class _ScriptedWakeBackend(_FakeBackend):
+class _ScriptedWakeBackend(FakeBackend):
     """Inject one typed wake-open result while retaining real owner accounting."""
 
     def __init__(self) -> None:
@@ -253,89 +99,6 @@ class _ScriptedWakeBackend(_FakeBackend):
             reason=f"injected_{status.value}",
             attempt_id=attempt_id,
         )
-
-
-class _EnergySession:
-    """ONNX-shaped Silero fixture whose probability follows sample energy."""
-
-    def __init__(self) -> None:
-        self.input_h_values: list[float] = []
-        self.input_c_values: list[float] = []
-
-    def run(
-        self,
-        _output_names: object,
-        inputs: dict[str, np.ndarray],
-    ) -> list[np.ndarray]:
-        self.input_h_values.append(float(inputs["h"].flat[0]))
-        self.input_c_values.append(float(inputs["c"].flat[0]))
-        probability = 0.9 if np.any(inputs["x"]) else 0.0
-        return [
-            np.asarray([[probability]], dtype=np.float32),
-            inputs["h"].copy() + 1.0,
-            inputs["c"].copy() + 10.0,
-        ]
-
-
-class _FakeWakeEngine:
-    """Detect selected wake windows and retain reset/close proof."""
-
-    model_name = "hey_jarvis_v0.1"
-
-    def __init__(self, detections: set[int] | None = None) -> None:
-        self._detections = detections
-        self.calls = 0
-        self.resets = 0
-        self.closed = False
-
-    def predict(self, _frame_bytes: bytes) -> dict[str, float]:
-        call = self.calls
-        self.calls += 1
-        detected = self._detections is None or call in self._detections
-        return {self.model_name: 0.9 if detected else 0.0}
-
-    def reset(self) -> None:
-        self.resets += 1
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _RecordingPipeline:
-    """Whole-WAV adapter fixture; never owns a hardware stream."""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def run_turn(self, **kwargs: Any) -> Any:  # noqa: ANN401
-        self.calls.append(dict(kwargs))
-        return MagicMock()
-
-
-def _ingress(
-    backend: _FakeBackend,
-    *,
-    native_capacity: int = 64,
-    subscriber_capacity: int = 16,
-    wake_input_channel: int | None = None,
-    echo_canceller: Any = None,  # noqa: ANN401
-) -> voice_audio.AudioIngress:
-    return voice_audio.AudioIngress(
-        backend=backend,
-        echo_canceller=echo_canceller,
-        config=replace(
-            voice_audio.AudioIngressConfig(),
-            wake_input_channel=wake_input_channel,
-            native_ring_capacity=native_capacity,
-            default_subscriber_capacity=subscriber_capacity,
-            worker_poll_s=0.0005,
-            fault_poll_s=0.001,
-            route_poll_s=60.0,
-            reopen_initial_backoff_s=0.001,
-            reopen_max_backoff_s=0.002,
-            shutdown_timeout_s=1.0,
-        ),
-    )
 
 
 def _read_frames(
@@ -434,12 +197,12 @@ def test_sounddevice_backend_asserts_one_default_input_owner_and_uses_callback()
         busy = second.start(stream_epoch=1, attempt_id="second-1", frame_sink=_sink)
         assert busy.status is voice_backend.BackendStartStatus.OWNER_BUSY
         streams[0].callback(
-            bytearray(_pcm(123)),
+            bytearray(pcm_frame(123)),
             512,
             MagicMock(inputBufferAdcTime=1.25),
             MagicMock(input_overflow=False, __bool__=lambda _self: False),
         )
-        assert copied == [_pcm(123)]
+        assert copied == [pcm_frame(123)]
         assert first.stop(stream_epoch=1, attempt_id="first-1").definitively_closed
         assert second.start(stream_epoch=2, attempt_id="second-2", frame_sink=_sink).started
         assert second.stop(stream_epoch=2, attempt_id="second-2").definitively_closed
@@ -567,7 +330,7 @@ def test_sounddevice_close_timeout_joins_one_helper_then_serializes_retry() -> N
         assert stream.abort_calls == 1
         assert stream.close_calls == 1
         close_release.set()
-        _wait_until(
+        wait_until_true(
             lambda: backend.ownership_snapshot().state
             is voice_backend.BackendLifecycleState.CLOSED,
         )
@@ -760,7 +523,7 @@ def test_sounddevice_open_timeout_late_success_closes_before_owner_release() -> 
             is voice_backend.BackendStartStatus.OWNER_BUSY
         )
         release_first_open.set()
-        _wait_until(lambda: bool(streams) and streams[0].closed)
+        wait_until_true(lambda: bool(streams) and streams[0].closed)
         assert successor.start(
             stream_epoch=3,
             attempt_id="timeout-3",
@@ -838,7 +601,7 @@ def test_sounddevice_close_timeout_releases_owner_only_after_late_close() -> Non
             is voice_backend.BackendStartStatus.OWNER_BUSY
         )
         release_close.set()
-        _wait_until(lambda: streams[0].closed)
+        wait_until_true(lambda: streams[0].closed)
         assert successor.start(
             stream_epoch=3,
             attempt_id="close-3",
@@ -854,8 +617,8 @@ def test_sounddevice_close_timeout_releases_owner_only_after_late_close() -> Non
 
 def test_wake_capture_diagnostics_share_cursor_and_own_callback_buffers() -> None:
     """All subscriber lanes observe one cursor and callback mutation is isolated."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     wake = ingress.subscribe(name="wake-test", purpose=voice_audio.SubscriberPurpose.WAKE)
     capture = ingress.subscribe(
         name="capture-test",
@@ -894,7 +657,7 @@ def test_wake_capture_diagnostics_share_cursor_and_own_callback_buffers() -> Non
     retained = wake_frames[0].pcm16_mono
     for value in range(7, 30):
         backend.emit(epoch=epoch, value=value)
-    assert retained == _pcm(1), "consumer retained a wrapped/callback-owned buffer"
+    assert retained == pcm_frame(1), "consumer retained a wrapped/callback-owned buffer"
     result = ingress.close()
     assert result.definitively_closed
     assert result.open_subscribers == 0
@@ -904,7 +667,7 @@ def test_wake_capture_diagnostics_share_cursor_and_own_callback_buffers() -> Non
 def test_the_wake_word_hears_its_own_channel_and_the_rest_hear_channel_zero() -> None:
     """ADR 0103: on a two-channel device wake reads channel 1, capture channel 0, one cursor."""
 
-    class _StereoBackend(_FakeBackend):
+    class _StereoBackend(FakeBackend):
         def emit_stereo(self, *, epoch: int, left: int, right: int) -> None:
             frame = np.empty((512, 2), dtype="<i2")
             frame[:, 0], frame[:, 1] = left, right
@@ -924,7 +687,7 @@ def test_the_wake_word_hears_its_own_channel_and_the_rest_hear_channel_zero() ->
     ).wake_input_channel == 1
     backend = _StereoBackend()
     backend.format = voice_backend.AudioInputFormat(16_000, 2, 512)
-    ingress = _ingress(backend, wake_input_channel=1)
+    ingress = make_ingress(backend, wake_input_channel=1)
     wake = ingress.subscribe(name="wake-test", purpose=voice_audio.SubscriberPurpose.WAKE)
     capture = ingress.subscribe(
         name="capture-test",
@@ -939,8 +702,16 @@ def test_the_wake_word_hears_its_own_channel_and_the_rest_hear_channel_zero() ->
     capture_frames = _read_frames(capture, 3)
     assert [frame.sample_cursor for frame in wake_frames] == [0, 512, 1024]
     assert [frame.sample_cursor for frame in capture_frames] == [0, 512, 1024]
-    assert [frame.pcm16_mono for frame in wake_frames] == [_pcm(101), _pcm(102), _pcm(103)]
-    assert [frame.pcm16_mono for frame in capture_frames] == [_pcm(1), _pcm(2), _pcm(3)]
+    assert [frame.pcm16_mono for frame in wake_frames] == [
+        pcm_frame(101),
+        pcm_frame(102),
+        pcm_frame(103),
+    ]
+    assert [frame.pcm16_mono for frame in capture_frames] == [
+        pcm_frame(1),
+        pcm_frame(2),
+        pcm_frame(3),
+    ]
     assert ingress.close().definitively_closed
 
 
@@ -951,15 +722,21 @@ def test_a_mono_microphone_opens_mono_when_a_wake_channel_is_asked_for() -> None
         5: {"index": 5, "name": "reSpeaker XVF3800 4-Mic Array", "max_input_channels": 2},
     }
     fake_sd = MagicMock()
-    fake_sd.query_devices = lambda device, _kind: devices[device] if isinstance(
-        device, int,
-    ) else next(one for one in devices.values() if one["name"] == device)
+    fake_sd.query_devices = lambda device, _kind: (
+        devices[device]
+        if isinstance(
+            device,
+            int,
+        )
+        else next(one for one in devices.values() if one["name"] == device)
+    )
     fake_sd.default.device = (3, 4)
     asked = voice_backend.AudioInputFormat(16_000, 2, 512)
     with patch.dict("sys.modules", {"sounddevice": fake_sd}):
         mono = voice_backend._default_input_device_profile(asked)
         stereo = voice_backend._default_input_device_profile(
-            asked, "reSpeaker XVF3800 4-Mic Array",
+            asked,
+            "reSpeaker XVF3800 4-Mic Array",
         )
     assert mono.input_format.channels == 1
     assert stereo.input_format.channels == 2
@@ -1019,7 +796,9 @@ def test_a_start_with_the_pick_absent_listens_on_the_default() -> None:
         patch.object(voice_backend, "_open_sounddevice_input_stream", side_effect=_open),
     ):
         result = backend.start(
-            stream_epoch=1, attempt_id="a-1", frame_sink=lambda **_kwargs: None,
+            stream_epoch=1,
+            attempt_id="a-1",
+            frame_sink=lambda **_kwargs: None,
         )
         assert result.started
         assert [one.channels for one in opened] == [1]
@@ -1029,7 +808,7 @@ def test_a_start_with_the_pick_absent_listens_on_the_default() -> None:
 def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() -> None:
     """32 ms input becomes continuous 80 ms wake windows and gap-free utterance PCM."""
     framer = voice_session.WakeWindowFramer()
-    source = b"".join(_pcm(value) for value in range(1, 11))
+    source = b"".join(pcm_frame(value) for value in range(1, 11))
     windows: list[bytes] = []
     end_cursors: list[int] = []
     for sequence in range(10):
@@ -1042,7 +821,7 @@ def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() 
             adc_time_s=None,
             captured_monotonic_ns=sequence,
             discontinuity_before=sequence == 0,
-            pcm16_mono=_pcm(sequence + 1),
+            pcm16_mono=pcm_frame(sequence + 1),
         )
         for window, end_cursor in framer.feed(frame):
             windows.append(window)
@@ -1051,7 +830,7 @@ def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() 
     assert end_cursors == [1280, 2560, 3840, 5120]
 
     thresholds = voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         vad = voice_audio.SileroVad(mode="record")
         vad._t = thresholds
         assembler = voice_session.UtteranceAssembler(
@@ -1077,7 +856,7 @@ def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() 
                 adc_time_s=None,
                 captured_monotonic_ns=index,
                 discontinuity_before=index == 0,
-                pcm16_mono=_pcm(value),
+                pcm16_mono=pcm_frame(value),
             )
             for index, value in enumerate(
                 [0, 0, 0, 0, 0, 10_000, 11_000, 12_000, 0, 0],
@@ -1102,7 +881,7 @@ def test_wake_window_and_pre_roll_are_contiguous_without_missing_or_duplicate() 
 def test_active_discontinuity_fails_current_audio_and_next_arm_restarts_clean() -> None:
     """A gap is never sent to ASR; a fresh wake can complete after reset."""
     thresholds = voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         vad = voice_audio.SileroVad(mode="record")
         vad._t = thresholds
         assembler = voice_session.UtteranceAssembler(
@@ -1127,7 +906,7 @@ def test_active_discontinuity_fails_current_audio_and_next_arm_restarts_clean() 
             adc_time_s=None,
             captured_monotonic_ns=0,
             discontinuity_before=False,
-            pcm16_mono=_pcm(10_000),
+            pcm16_mono=pcm_frame(10_000),
         )
         assert assembler.feed(first) is None
         gapped = replace(
@@ -1148,7 +927,7 @@ def test_active_discontinuity_fails_current_audio_and_next_arm_restarts_clean() 
                 stream_epoch=2,
                 sequence=index,
                 sample_cursor=index * 512,
-                pcm16_mono=_pcm(value),
+                pcm16_mono=pcm_frame(value),
             )
             for index, value in enumerate([20_000, 21_000, 0, 0])
         ]
@@ -1163,8 +942,8 @@ def test_active_discontinuity_fails_current_audio_and_next_arm_restarts_clean() 
 
 def test_idle_overflow_recovers_and_active_overflow_marks_discontinuity() -> None:
     """Idle drops oldest/rebuilds; active capture receives an explicit gap marker."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend, subscriber_capacity=2)
+    backend = FakeBackend()
+    ingress = make_ingress(backend, subscriber_capacity=2)
     capture = ingress.subscribe(
         name="small-capture",
         purpose=voice_audio.SubscriberPurpose.CAPTURE,
@@ -1175,7 +954,7 @@ def test_idle_overflow_recovers_and_active_overflow_marks_discontinuity() -> Non
     assert epoch is not None
     for value in range(8):
         backend.emit(epoch=epoch, value=value)
-    _wait_until(lambda: capture.overflow_count > 0)
+    wait_until_true(lambda: capture.overflow_count > 0)
     idle_frames = _read_frames(capture, 2)
     assert idle_frames[0].discontinuity_before
     assert [np.frombuffer(frame.pcm16_mono, dtype="<i2")[0] for frame in idle_frames] == [
@@ -1186,7 +965,7 @@ def test_idle_overflow_recovers_and_active_overflow_marks_discontinuity() -> Non
     capture.set_active_utterance(active=True)
     for value in range(8, 14):
         backend.emit(epoch=epoch, value=value)
-    _wait_until(lambda: capture.active_discontinuity_count > 0)
+    wait_until_true(lambda: capture.active_discontinuity_count > 0)
     active_frames = _read_frames(capture, 2)
     assert active_frames[0].discontinuity_before
     assert ingress.metrics().active_discontinuities > 0
@@ -1195,8 +974,8 @@ def test_idle_overflow_recovers_and_active_overflow_marks_discontinuity() -> Non
 
 def test_fault_reopen_sleep_wake_and_late_epoch_callback_rejection() -> None:
     """Every reopen resets profile/cursor and old callbacks are rejected."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     capture = ingress.subscribe(
         name="epoch-capture",
         purpose=voice_audio.SubscriberPurpose.CAPTURE,
@@ -1212,7 +991,7 @@ def test_fault_reopen_sleep_wake_and_late_epoch_callback_rejection() -> None:
         detail="integration",
         recoverable=True,
     )
-    _wait_until(lambda: ingress.stream_epoch == 2)
+    wait_until_true(lambda: ingress.stream_epoch == 2)
     backend.emit(epoch=first_epoch, value=99)
     backend.emit(epoch=2, value=2)
     reopened = _read_frames(capture, 1)[0]
@@ -1247,13 +1026,16 @@ def test_echo_cancellation_follows_the_microphone_each_open_without_a_player_reb
 
     canceller = EchoCanceller()
     player = voice_tts.AudioStreamPlayer(
-        sample_rate_hz=48000, lazy_open=True, playback_tap=canceller.add_playback,
+        sample_rate_hz=48000,
+        lazy_open=True,
+        playback_tap=canceller.add_playback,
     )
     tap = player._playback_tap
-    backend = _FakeBackend()
-    ingress = _ingress(backend, echo_canceller=canceller)
+    backend = FakeBackend()
+    ingress = make_ingress(backend, echo_canceller=canceller)
     capture = ingress.subscribe(
-        name="aec-capture", purpose=voice_audio.SubscriberPurpose.CAPTURE,
+        name="aec-capture",
+        purpose=voice_audio.SubscriberPurpose.CAPTURE,
     )
 
     def heard() -> np.ndarray:
@@ -1279,8 +1061,7 @@ def test_echo_cancellation_follows_the_microphone_each_open_without_a_player_reb
         "echo cancellation off (the microphone does its own) on microphone "
         "'reSpeaker XVF3800 4-Mic Array'",
         "echo cancellation on on microphone 'MacBook Pro Microphone'",
-        "echo cancellation off (the microphone does its own) on microphone "
-        "'RESPEAKER Lite'",
+        "echo cancellation off (the microphone does its own) on microphone 'RESPEAKER Lite'",
     ]
     assert player._playback_tap is tap  # the same player and tap served all three opens
     assert ingress.close().definitively_closed
@@ -1292,21 +1073,25 @@ def test_respeaker_is_cancelled_when_she_plays_on_another_speaker(
     """ADR 0191: the board only cancels what it plays, so the speaker decides with the mic."""
     from jarvis.surface.voice_aec import EchoCanceller  # noqa: PLC0415
 
-    class _RoutedBackend(_FakeBackend):
+    class _RoutedBackend(FakeBackend):
         route_name = "MacBook Pro Speakers"
 
         def current_output_route(self) -> voice_backend.OutputRoute | None:
             return voice_backend.OutputRoute(
-                uid=self.route_name, name=self.route_name, transport_type="bltn",
-                data_source=None, sample_rate_hz=48000,
+                uid=self.route_name,
+                name=self.route_name,
+                transport_type="bltn",
+                data_source=None,
+                sample_rate_hz=48000,
             )
 
     canceller = EchoCanceller()
     backend = _RoutedBackend()
     backend.device_uid = "reSpeaker XVF3800 4-Mic Array"
-    ingress = _ingress(backend, echo_canceller=canceller)
+    ingress = make_ingress(backend, echo_canceller=canceller)
     capture = ingress.subscribe(
-        name="aec-capture", purpose=voice_audio.SubscriberPurpose.CAPTURE,
+        name="aec-capture",
+        purpose=voice_audio.SubscriberPurpose.CAPTURE,
     )
 
     def heard() -> np.ndarray:
@@ -1342,7 +1127,7 @@ def test_respeaker_is_cancelled_when_she_plays_on_another_speaker(
 def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
     """A close racing fault teardown cannot open a replacement epoch."""
 
-    class _CoordinatedBackend(_FakeBackend):
+    class _CoordinatedBackend(FakeBackend):
         def __init__(self) -> None:
             super().__init__()
             self.stop_entered = threading.Event()
@@ -1361,7 +1146,7 @@ def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
             return super().stop(stream_epoch=stream_epoch, attempt_id=attempt_id)
 
     backend = _CoordinatedBackend()
-    ingress = _ingress(backend)
+    ingress = make_ingress(backend)
     assert ingress.start().started
     epoch = ingress.stream_epoch
     assert epoch == 1
@@ -1375,7 +1160,7 @@ def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
     results: list[voice_audio.IngressCloseResult] = []
     closer = threading.Thread(target=lambda: results.append(ingress.close()))
     closer.start()
-    _wait_until(lambda: ingress._closing)
+    wait_until_true(lambda: ingress._closing)
     backend.release_stop.set()
     closer.join(timeout=1.0)
     assert not closer.is_alive()
@@ -1388,7 +1173,7 @@ def test_device_fault_close_race_revokes_reopen_before_shutdown() -> None:
 
 def test_sleep_wins_real_fault_handler_backoff_without_post_sleep_reopen() -> None:
     """SUSPENDED remains final when sleep races an in-progress recovery loop."""
-    backend = _FakeBackend()
+    backend = FakeBackend()
     capabilities: list[voice_audio.InputCapabilitySnapshot] = []
 
     def _record_capability(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
@@ -1417,7 +1202,7 @@ def test_sleep_wins_real_fault_handler_backoff_without_post_sleep_reopen() -> No
         recoverable=True,
         attempt_id=backend.active_attempt_id,
     )
-    _wait_until(lambda: ingress.metrics().faults == 1 and backend.stop_count == 1)
+    wait_until_true(lambda: ingress.metrics().faults == 1 and backend.stop_count == 1)
     ingress.stop_for_sleep()
     time.sleep(0.25)
     assert backend.start_count == 1
@@ -1439,8 +1224,8 @@ def test_sleep_wins_real_fault_handler_backoff_without_post_sleep_reopen() -> No
 
 def test_sleep_generation_revokes_fault_paused_at_physical_reopen_gate() -> None:
     """A sleep intent that wins the final CAS prevents a post-sleep open."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     assert ingress.start().started
     epoch = ingress.stream_epoch
     assert epoch == 1
@@ -1485,7 +1270,7 @@ def test_sleep_generation_revokes_fault_paused_at_physical_reopen_gate() -> None
 
 def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None:
     """A late fault terminal result cannot overwrite the SUSPENDED snapshot."""
-    backend = _FakeBackend()
+    backend = FakeBackend()
     capabilities: list[voice_audio.InputCapabilitySnapshot] = []
 
     def _capture_capability(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
@@ -1557,7 +1342,7 @@ def test_sleep_generation_rejects_fault_terminal_publish_after_timeout() -> None
 def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
     """Terminal control revokes an in-flight foreign open without lock inflation."""
 
-    class _BlockedReopenBackend(_FakeBackend):
+    class _BlockedReopenBackend(FakeBackend):
         def __init__(self) -> None:
             super().__init__()
             self.reopen_entered = threading.Event()
@@ -1647,7 +1432,7 @@ def test_blocked_fault_capability_observer_cannot_delay_close_generation() -> No
             observer_entered.set()
             assert observer_release.wait(timeout=1.0)
 
-    backend = _FakeBackend()
+    backend = FakeBackend()
     ingress = voice_audio.AudioIngress(
         backend=backend,
         config=replace(
@@ -1681,7 +1466,7 @@ def test_blocked_fault_capability_observer_cannot_delay_close_generation() -> No
     observer_release.set()
     dispatcher = ingress._capability_dispatcher
     assert dispatcher is not None
-    _wait_until(lambda: not dispatcher.thread_alive)
+    wait_until_true(lambda: not dispatcher.thread_alive)
     assert observed_versions == sorted(observed_versions)
     assert observed_versions[-1] == ingress.capability.version
 
@@ -1699,7 +1484,7 @@ def test_blocked_stopped_capability_observer_is_outside_close_deadline() -> None
             assert stopped_release.wait(timeout=1.0)
 
     ingress = voice_audio.AudioIngress(
-        backend=_FakeBackend(),
+        backend=FakeBackend(),
         config=replace(
             voice_audio.AudioIngressConfig(),
             shutdown_timeout_s=0.04,
@@ -1717,7 +1502,7 @@ def test_blocked_stopped_capability_observer_is_outside_close_deadline() -> None
     stopped_release.set()
     dispatcher = ingress._capability_dispatcher
     assert dispatcher is not None
-    _wait_until(lambda: not dispatcher.thread_alive)
+    wait_until_true(lambda: not dispatcher.thread_alive)
     assert observed_versions == sorted(observed_versions)
     assert observed_versions[-1] == ingress.capability.version
 
@@ -1732,7 +1517,7 @@ def test_late_wake_report_cannot_overwrite_stopped_capability() -> None:
         observed.append(snapshot)
 
     ingress = voice_audio.AudioIngress(
-        backend=_FakeBackend(),
+        backend=FakeBackend(),
         config=replace(
             voice_audio.AudioIngressConfig(),
             shutdown_timeout_s=0.03,
@@ -1766,7 +1551,7 @@ def test_late_wake_report_cannot_overwrite_stopped_capability() -> None:
     assert ingress.capability.version == stopped_version
     dispatcher = ingress._capability_dispatcher
     assert dispatcher is not None
-    _wait_until(lambda: not dispatcher.thread_alive)
+    wait_until_true(lambda: not dispatcher.thread_alive)
     states = [snapshot.state for snapshot in observed]
     assert states[-1] is voice_audio.InputCapabilityState.STOPPED
     assert voice_audio.InputCapabilityState.WAKE_UNAVAILABLE not in states
@@ -1774,7 +1559,7 @@ def test_late_wake_report_cannot_overwrite_stopped_capability() -> None:
 
 def test_uncertain_close_keeps_capability_lane_until_definitive_retry() -> None:
     """CLOSE_UNCERTAIN never consumes the final STOPPED observer delivery."""
-    backend = _FakeBackend(stop_status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN)
+    backend = FakeBackend(stop_status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN)
     observed: list[voice_audio.InputCapabilitySnapshot] = []
 
     def _observe(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
@@ -1799,7 +1584,7 @@ def test_uncertain_close_keeps_capability_lane_until_definitive_retry() -> None:
     backend.stop_status = voice_backend.BackendStopStatus.CLOSED
     second = ingress.close()
     assert second.definitively_closed
-    _wait_until(lambda: not dispatcher.thread_alive)
+    wait_until_true(lambda: not dispatcher.thread_alive)
     assert [snapshot.version for snapshot in observed] == sorted(
         snapshot.version for snapshot in observed
     )
@@ -1816,11 +1601,11 @@ def test_duplex_session_runs_two_silero_utterances_without_second_round_truncati
         "record",
         voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    wake_engine = _FakeWakeEngine(detections={0, 4})
-    pipeline = _RecordingPipeline()
-    silero_session = _EnergySession()
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
+    wake_engine = FakeWakeEngine(detections={0, 4})
+    pipeline = RecordingPipeline()
+    silero_session = StatefulEnergySession()
     with patch.object(voice_audio, "_load_silero_session", return_value=silero_session):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
@@ -1848,11 +1633,11 @@ def test_duplex_session_runs_two_silero_utterances_without_second_round_truncati
         for value in [0, 0, 0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        _wait_until(lambda: len(pipeline.calls) == 1)
+        wait_until_true(lambda: len(pipeline.calls) == 1)
         for value in [0, 0, 0, 0, 20_000, 21_000, 22_000, 0, 0, 0, 0, 0]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        _wait_until(lambda: len(pipeline.calls) == 2)
+        wait_until_true(lambda: len(pipeline.calls) == 2)
 
         lengths = [len(call["audio_bytes"]) for call in pipeline.calls]
         assert lengths[0] == lengths[1]
@@ -1895,11 +1680,11 @@ def test_duplex_session_runs_two_silero_utterances_without_second_round_truncati
 
 def test_output_active_keeps_sampling_but_cannot_cancel_or_commit_echo() -> None:
     """Wave 3 suppresses wake decisions during output and has no cancel callable."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    engine = _FakeWakeEngine()
-    pipeline = _RecordingPipeline()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
+    engine = FakeWakeEngine()
+    pipeline = RecordingPipeline()
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
@@ -1919,7 +1704,7 @@ def test_output_active_keeps_sampling_but_cannot_cancel_or_commit_echo() -> None
         assert epoch is not None
         for value in range(12):
             backend.emit(epoch=epoch, value=value + 1)
-        _wait_until(lambda: session.metrics().wake_suppressed_during_output > 0)
+        wait_until_true(lambda: session.metrics().wake_suppressed_during_output > 0)
         assert ingress.metrics().callback_calls == 12
         assert pipeline.calls == []
         assert session.metrics().wake_detections > 0
@@ -1929,14 +1714,14 @@ def test_output_active_keeps_sampling_but_cannot_cancel_or_commit_echo() -> None
 def test_wake_prediction_failure_downgrades_only_wake_then_recovers() -> None:
     """Wake model faults retain input/PTT/text and recover after a real score."""
 
-    class _RecoveringWakeEngine(_FakeWakeEngine):
+    class _RecoveringWakeEngine(FakeWakeEngine):
         def predict(self, frame_bytes: bytes) -> dict[str, float]:
             if self.calls < 3:
                 self.calls += 1
                 raise RuntimeError
             return super().predict(frame_bytes)
 
-    backend = _FakeBackend()
+    backend = FakeBackend()
     capabilities: list[voice_audio.InputCapabilitySnapshot] = []
 
     def _record_capability(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
@@ -1953,12 +1738,12 @@ def test_wake_prediction_failure_downgrades_only_wake_then_recovers() -> None:
         capability_sink=_record_capability,
     )
     engine = _RecoveringWakeEngine(set())
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
             vad=voice_audio.SileroVad(mode="record"),
-            pipeline=_RecordingPipeline(),
+            pipeline=RecordingPipeline(),
             broadcaster=None,
             output_active=None,
             wake_threshold=0.5,
@@ -1975,8 +1760,10 @@ def test_wake_prediction_failure_downgrades_only_wake_then_recovers() -> None:
         for value in range(12):
             backend.emit(epoch=epoch, value=value + 1)
             time.sleep(0.002)
-        _wait_until(lambda: session.metrics().wake_prediction_failures == 3)
-        _wait_until(lambda: ingress.capability.state is voice_audio.InputCapabilityState.AVAILABLE)
+        wait_until_true(lambda: session.metrics().wake_prediction_failures == 3)
+        wait_until_true(
+            lambda: ingress.capability.state is voice_audio.InputCapabilityState.AVAILABLE
+        )
         assert any(
             snapshot.state is voice_audio.InputCapabilityState.WAKE_UNAVAILABLE
             and not snapshot.wake_available
@@ -1993,7 +1780,7 @@ def test_wake_scores_from_the_floor_up_are_logged_once_per_attempt(
 ) -> None:
     """A miss logs its peak when the score falls back; a score under the floor logs nothing."""
 
-    class _ScoredWakeEngine(_FakeWakeEngine):
+    class _ScoredWakeEngine(FakeWakeEngine):
         scores = (0.05, 0.3, 0.6, 0.02, 0.15, 0.0)
 
         def predict(self, _frame_bytes: bytes) -> dict[str, float]:
@@ -2002,7 +1789,7 @@ def test_wake_scores_from_the_floor_up_are_logged_once_per_attempt(
             return {self.model_name: self.scores[call] if call < len(self.scores) else 0.0}
 
     caplog.set_level("INFO", logger="jarvis.surface.voice_session")
-    backend = _FakeBackend()
+    backend = FakeBackend()
     ingress = voice_audio.AudioIngress(
         backend=backend,
         config=replace(
@@ -2013,12 +1800,12 @@ def test_wake_scores_from_the_floor_up_are_logged_once_per_attempt(
         ),
     )
     engine = _ScoredWakeEngine(set())
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=engine,
             vad=voice_audio.SileroVad(mode="record"),
-            pipeline=_RecordingPipeline(),
+            pipeline=RecordingPipeline(),
             broadcaster=None,
             output_active=None,
             wake_threshold=0.95,
@@ -2034,7 +1821,7 @@ def test_wake_scores_from_the_floor_up_are_logged_once_per_attempt(
         for value in range(24):
             backend.emit(epoch=epoch, value=value + 1)
             time.sleep(0.002)
-        _wait_until(lambda: engine.calls > len(_ScoredWakeEngine.scores))
+        wait_until_true(lambda: engine.calls > len(_ScoredWakeEngine.scores))
         assert session.close().definitively_closed
     logged = [r.getMessage() for r in caplog.records if r.getMessage().startswith("wake score")]
     assert logged == ["wake score 0.600, below 0.95", "wake score 0.150, below 0.95"]
@@ -2042,8 +1829,8 @@ def test_wake_scores_from_the_floor_up_are_logged_once_per_attempt(
 
 def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None:
     """Stuck close never authorizes reopen; full final-ASR queue rejects newest."""
-    backend = _FakeBackend(stop_status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN)
-    ingress = _ingress(backend)
+    backend = FakeBackend(stop_status=voice_backend.BackendStopStatus.CLOSE_UNCERTAIN)
+    ingress = make_ingress(backend)
     subscription = ingress.subscribe(
         name="stuck-capture",
         purpose=voice_audio.SubscriberPurpose.CAPTURE,
@@ -2058,11 +1845,11 @@ def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None
     assert backend.start_count == 1
     assert subscription.read(timeout_s=0.001) is None
 
-    healthy_backend = _FakeBackend()
-    second_ingress = _ingress(healthy_backend)
-    pipeline = _RecordingPipeline()
-    engine = _FakeWakeEngine(set())
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    healthy_backend = FakeBackend()
+    second_ingress = make_ingress(healthy_backend)
+    pipeline = RecordingPipeline()
+    engine = FakeWakeEngine(set())
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=second_ingress,
             wake_engine=engine,
@@ -2085,7 +1872,7 @@ def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None
             0,
             512,
             "acoustic_pause",
-            _pcm(1),
+            pcm_frame(1),
         )
         second = replace(first, utterance_id="U2", turn_id="T2")
         session._handle_capture_outcome(first)
@@ -2154,8 +1941,8 @@ def test_voice_pipeline_build_is_feature_off_cold_and_explicit_prewarm_is_availa
 
 def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> None:  # noqa: PLR0915
     """1,000 real thread/callback cycles show no wrap, epoch, deadlock, or leak."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend, native_capacity=8, subscriber_capacity=2)
+    backend = FakeBackend()
+    ingress = make_ingress(backend, native_capacity=8, subscriber_capacity=2)
     assert ingress.start().started
     retained: list[bytes] = []
     for cycle in range(1_000):
@@ -2207,7 +1994,7 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
         frame = _read_frames(successor, 1)[0]
         assert frame.stream_epoch == successor_epoch
         assert frame.sample_cursor == 0
-        assert frame.pcm16_mono == _pcm(cycle % 30_000)
+        assert frame.pcm16_mono == pcm_frame(cycle % 30_000)
         if cycle < 8:
             retained.append(frame.pcm16_mono)
         successor.close()
@@ -2222,7 +2009,7 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
     assert backend.start_count == 1_001
     assert backend.stop_count == 1_001
     assert ingress.metrics().late_epoch_callbacks_rejected == 1_000
-    assert retained == [_pcm(index) for index in range(8)]
+    assert retained == [pcm_frame(index) for index in range(8)]
     assert not any(
         thread.name.startswith("jarvis-audio-ingress") and thread.is_alive()
         for thread in threading.enumerate()
@@ -2232,7 +2019,7 @@ def test_real_concurrent_churn_1000_epoch_subscribe_fanout_close_cycles() -> Non
 def test_false_wake_armed_timeout_requires_a_fresh_wake_for_later_speech() -> None:
     """Silence expires ARMED identity; unrelated future speech cannot commit."""
     thresholds = voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         vad = voice_audio.SileroVad(mode="record")
         vad._t = thresholds
         assembler = voice_session.UtteranceAssembler(
@@ -2260,7 +2047,7 @@ def test_false_wake_armed_timeout_requires_a_fresh_wake_for_later_speech() -> No
                 adc_time_s=None,
                 captured_monotonic_ns=index,
                 discontinuity_before=False,
-                pcm16_mono=_pcm(value),
+                pcm16_mono=pcm_frame(value),
             )
 
         assert assembler.feed(_frame(0, 0)) is None
@@ -2282,8 +2069,8 @@ def test_false_wake_armed_timeout_requires_a_fresh_wake_for_later_speech() -> No
 
 def test_old_callback_paused_before_ring_commit_cannot_contaminate_new_epoch() -> None:
     """The ring's exact publication token is revalidated after slot copy."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     capture = ingress.subscribe(
         name="publication-race",
         purpose=voice_audio.SubscriberPurpose.CAPTURE,
@@ -2334,8 +2121,8 @@ def test_old_callback_paused_before_ring_commit_cannot_contaminate_new_epoch() -
 
 def test_subscribe_insert_racing_reopen_receives_successor_epoch() -> None:
     """Membership and token publication share one lock across epoch commit."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     assert ingress.start().started
     entered = threading.Event()
     release = threading.Event()
@@ -2381,8 +2168,8 @@ def test_subscribe_insert_racing_reopen_receives_successor_epoch() -> None:
 
 def test_subscribe_insert_racing_close_returns_no_live_membership() -> None:
     """Close marks the gate and drains membership atomically with subscribe."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     assert ingress.start().started
     entered = threading.Event()
     release = threading.Event()
@@ -2424,7 +2211,7 @@ def test_ring_overflow_vs_consumer_commit_1000_cycles_marks_first_post_gap() -> 
 
     def _write(sequence: int, value: int) -> bool:
         return ring.write(
-            pcm=_pcm(value),
+            pcm=pcm_frame(value),
             byte_count=1024,
             stream_epoch=1,
             sequence=sequence,
@@ -2455,6 +2242,7 @@ def test_ring_overflow_vs_consumer_commit_1000_cycles_marks_first_post_gap() -> 
 
         ring._consumer_before_commit_hook = _pause
         raced: list[voice_audio._OwnedPcmFrame | None] = []
+
         def _consume(
             target: list[voice_audio._OwnedPcmFrame | None] = raced,
         ) -> None:
@@ -2562,15 +2350,15 @@ def test_backend_same_instance_open_close_attempts_are_serial_and_monotonic() ->
         second_closer.join(timeout=1.0)
         assert len(closes) == 2
         assert all(
-            result.status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN
-            for result in closes
+            result.status is voice_backend.BackendStopStatus.CLOSE_UNCERTAIN for result in closes
         )
         assert all(not result.definitively_closed for result in closes)
         assert streams[0].close_calls == 1
         close_release.set()
-        _wait_until(
-            lambda: backend.ownership_snapshot().state
-            is voice_backend.BackendLifecycleState.CLOSED,
+        wait_until_true(
+            lambda: (
+                backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
+            ),
         )
         replay = backend.stop(stream_epoch=1, attempt_id="A")
         assert replay.definitively_closed
@@ -2659,9 +2447,10 @@ def test_open_timeout_recovery_debt_survives_ingress_close(
         assert first_close.backend_result is not None
         assert second_close.backend_result is not None
         release_second_open.set()
-        _wait_until(
-            lambda: backend.ownership_snapshot().state
-            is voice_backend.BackendLifecycleState.CLOSED,
+        wait_until_true(
+            lambda: (
+                backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
+            ),
         )
         assert ingress.close().definitively_closed
     assert len(streams) == 2
@@ -2670,7 +2459,7 @@ def test_open_timeout_recovery_debt_survives_ingress_close(
 
 def test_sleep_lock_timeout_wake_and_close_never_overwrite_physical_debt() -> None:
     """Ingress lock timeout still closes backend debt and forbids a second open."""
-    backend = _FakeBackend()
+    backend = FakeBackend()
     ingress = voice_audio.AudioIngress(
         backend=backend,
         config=replace(
@@ -2698,14 +2487,14 @@ def test_sleep_lock_timeout_wake_and_close_never_overwrite_physical_debt() -> No
 
 def test_duplex_partial_thread_start_failure_closes_started_owners() -> None:
     """A later Thread.start failure joins only threads that actually started."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    wake_engine = _FakeWakeEngine(set())
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
+    wake_engine = FakeWakeEngine(set())
     session = voice_session.DuplexVoiceSession(
         ingress=ingress,
         wake_engine=wake_engine,
         vad=MagicMock(spec=voice_audio.SileroVad),
-        pipeline=_RecordingPipeline(),
+        pipeline=RecordingPipeline(),
         broadcaster=None,
         output_active=None,
         wake_threshold=0.5,
@@ -2737,7 +2526,7 @@ def test_correlated_endpoint_candidate_is_reportable_by_turn() -> None:
     """Assembler endpoint and gap-free commit share turn/session identity."""
     reset_realtime_trace()
     thresholds = voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         vad = voice_audio.SileroVad(mode="record")
         vad._t = thresholds
         assembler = voice_session.UtteranceAssembler(
@@ -2764,16 +2553,16 @@ def test_correlated_endpoint_candidate_is_reportable_by_turn() -> None:
                     adc_time_s=None,
                     captured_monotonic_ns=index,
                     discontinuity_before=False,
-                    pcm16_mono=_pcm(value),
+                    pcm16_mono=pcm_frame(value),
                 ),
             )
         assert isinstance(outcome, voice_session.CapturedUtterance)
-        backend = _FakeBackend()
+        backend = FakeBackend()
         session = voice_session.DuplexVoiceSession(
-            ingress=_ingress(backend),
-            wake_engine=_FakeWakeEngine(set()),
+            ingress=make_ingress(backend),
+            wake_engine=FakeWakeEngine(set()),
             vad=MagicMock(spec=voice_audio.SileroVad),
-            pipeline=_RecordingPipeline(),
+            pipeline=RecordingPipeline(),
             broadcaster=None,
             output_active=None,
             wake_threshold=0.5,
@@ -2785,8 +2574,7 @@ def test_correlated_endpoint_candidate_is_reportable_by_turn() -> None:
         endpoint = next(point for point in points if point.name == "endpoint_candidate")
         assert endpoint.attributes["turn_id"] == outcome.turn_id
         rows = tuple(
-            TraceRow(point.name, point.monotonic_ns, dict(point.attributes))
-            for point in points
+            TraceRow(point.name, point.monotonic_ns, dict(point.attributes)) for point in points
         )
         report = summarize_trace(rows, scenario="live_voice", turn_id=outcome.turn_id)
         assert "endpoint_candidate_to_gap_free_audio_ms" in report["durations_ms"]
@@ -2891,7 +2679,7 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
 ) -> None:
     """Every attempted input result rolls back before output abort and can retry."""
     backend = _ScriptedWakeBackend()
-    ingress = _ingress(backend)
+    ingress = make_ingress(backend)
     assert ingress.start().started
     initial_stop = ingress.stop_for_sleep()
     assert initial_stop is not None
@@ -2909,10 +2697,7 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
     abort_saw_closed_input = threading.Event()
 
     def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
-        assert (
-            backend.ownership_snapshot().state
-            is voice_backend.BackendLifecycleState.CLOSED
-        )
+        assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
         abort_saw_closed_input.set()
         return voice_media.MediaPowerTransitionResult(
             "suspended",
@@ -2928,10 +2713,7 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
     assert abort_saw_closed_input.is_set()
     assert ingress._control_intent == "suspended"
     assert ingress._suspended
-    assert (
-        backend.ownership_snapshot().state
-        is voice_backend.BackendLifecycleState.CLOSED
-    )
+    assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
     assert backend.active_owner_count == 0
     media.admit_wake_start.assert_not_called()
 
@@ -2948,8 +2730,8 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
 
 def test_started_input_is_exactly_closed_when_output_admit_cas_loses() -> None:
     """A successful input reopen is rolled back if output admission loses CAS."""
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     assert ingress.start().started
     initial_stop = ingress.stop_for_sleep()
     assert initial_stop is not None
@@ -2965,10 +2747,7 @@ def test_started_input_is_exactly_closed_when_output_admit_cas_loses() -> None:
     media.admit_wake_start.side_effect = [False, True]
 
     def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
-        assert (
-            backend.ownership_snapshot().state
-            is voice_backend.BackendLifecycleState.CLOSED
-        )
+        assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
         return voice_media.MediaPowerTransitionResult(
             "suspended",
             111,
@@ -2999,7 +2778,7 @@ def test_started_input_is_exactly_closed_when_output_admit_cas_loses() -> None:
 def test_pending_wake_input_failure_rolls_back_real_ingress_before_output_abort() -> None:
     """The pending continuation uses the same input-first transaction rollback."""
     backend = _ScriptedWakeBackend()
-    ingress = _ingress(backend)
+    ingress = make_ingress(backend)
     assert ingress.start().started
     initial_stop = ingress.stop_for_sleep()
     assert initial_stop is not None
@@ -3023,10 +2802,7 @@ def test_pending_wake_input_failure_rolls_back_real_ingress_before_output_abort(
 
     def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
         assert ingress._control_intent == "suspended"
-        assert (
-            backend.ownership_snapshot().state
-            is voice_backend.BackendLifecycleState.CLOSED
-        )
+        assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
         rollback_before_abort.set()
         return voice_media.MediaPowerTransitionResult(
             "suspended",
@@ -3140,8 +2916,8 @@ def test_power_coordinator_real_media_debt_keeps_real_ingress_suspended(
 
     db_path = tmp_path / "power-output-debt.db"
     open_event_log(db_path).close()
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     assert ingress.start().started
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress = ingress
@@ -3184,7 +2960,7 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
     """Fresh output starts before the real ingress opens its wake epoch."""
     actions: list[str] = []
 
-    class _OrderedBackend(_FakeBackend):
+    class _OrderedBackend(FakeBackend):
         def start(
             self,
             *,
@@ -3234,7 +3010,7 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
     db_path = tmp_path / "power-output-success.db"
     open_event_log(db_path).close()
     backend = _OrderedBackend()
-    ingress = _ingress(backend)
+    ingress = make_ingress(backend)
     assert ingress.start().started
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress = ingress
@@ -3335,9 +3111,11 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
         assert woke.output_result is not None
         assert woke.output_result.status == "uncertain"
         assert woke.output_result.helper_thread_alive
-        _wait_until(
-            lambda: coordinator._pending_wake_thread is not None
-            and coordinator._pending_wake_thread.is_alive(),
+        wait_until_true(
+            lambda: (
+                coordinator._pending_wake_thread is not None
+                and coordinator._pending_wake_thread.is_alive()
+            ),
         )
         duplicate_results: list[inherent_loop._VoicePowerTransition] = []
         duplicate = threading.Thread(
@@ -3415,7 +3193,7 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
         woke = coordinator.on_wake()
         assert woke.output_result is not None
         assert woke.output_result.helper_thread_alive
-        _wait_until(lambda: coordinator._pending_wake_state == "in_flight")
+        wait_until_true(lambda: coordinator._pending_wake_state == "in_flight")
         time.sleep(0.08)
         assert coordinator._pending_wake_thread is not None
         assert coordinator._pending_wake_thread.is_alive()
@@ -3423,7 +3201,7 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
         assert player.start_calls == 0
         player.stop_release.set()
         assert input_resumed.wait(timeout=1.0)
-        _wait_until(lambda: coordinator._pending_wake_state == "recovered")
+        wait_until_true(lambda: coordinator._pending_wake_state == "recovered")
         assert player.start_calls == 1
         assert player.max_owners == 1
         session.ingress.resume_after_wake.assert_called_once()
@@ -3475,7 +3253,7 @@ def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
         first_wake = coordinator.on_wake()
         assert first_wake.output_result is not None
         assert first_wake.output_result.helper_thread_alive
-        _wait_until(lambda: resume_calls >= 2)
+        wait_until_true(lambda: resume_calls >= 2)
         session.ingress.report_output_unavailable.reset_mock()
         second_sleep = coordinator.before_sleep()
         assert second_sleep.output_result is not None
@@ -3558,13 +3336,13 @@ def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
         assert woke.output_result is not None
         assert woke.output_result.reason == "actor_resume_timeout"
         assert woke.output_result.helper_thread_alive
-        _wait_until(lambda: coordinator._pending_wake_state == "in_flight")
+        wait_until_true(lambda: coordinator._pending_wake_state == "in_flight")
         time.sleep(0.06)
         assert player.start_calls == 1
         assert not input_resumed.is_set()
         actor_resume_release.set()
         assert input_resumed.wait(timeout=1.0)
-        _wait_until(lambda: coordinator._pending_wake_state == "recovered")
+        wait_until_true(lambda: coordinator._pending_wake_state == "recovered")
         assert player.start_calls == 1
         assert player.max_owners == 1
         session.ingress.resume_after_wake.assert_called_once()
@@ -3679,7 +3457,7 @@ def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
     waking.join(timeout=1.0)
     assert not waking.is_alive()
     assert wake_results[-1].status == "uncertain"
-    _wait_until(lambda: media._power_state == "suspended")
+    wait_until_true(lambda: media._power_state == "suspended")
     assert player.start_calls == 1
     assert player.stop_calls == 2
     assert player.max_owners == 1
@@ -3736,9 +3514,11 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
         woke = coordinator.on_wake()
         assert woke.output_result is not None
         assert woke.output_result.helper_thread_alive
-        _wait_until(
-            lambda: coordinator._pending_wake_thread is not None
-            and coordinator._pending_wake_thread.is_alive(),
+        wait_until_true(
+            lambda: (
+                coordinator._pending_wake_thread is not None
+                and coordinator._pending_wake_thread.is_alive()
+            ),
         )
         coordinator.close(timeout_s=0.01)
         media.request_close()
@@ -3794,7 +3574,7 @@ def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
         attempt_id = timed_out.attempt_id
         assert player.stop.call_count == 0
         release_terminalization.set()
-        _wait_until(lambda: media._power_state == "suspended")
+        wait_until_true(lambda: media._power_state == "suspended")
         assert media._power_attempt_id == attempt_id
         assert player.stop.call_count == 1
         assert media._power_helper is not None
@@ -3862,10 +3642,10 @@ def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
     assert wake.helper_thread_alive
     assert player.start_entered.wait(timeout=1.0)
     assert not media.close(wait_timeout_s=0.04)
-    _wait_until(media._closed.is_set)
+    wait_until_true(media._closed.is_set)
     assert not media.cleanup_complete
     player.start_release.set()
-    _wait_until(lambda: media.cleanup_complete)
+    wait_until_true(lambda: media.cleanup_complete)
     assert not player.physical_open
     assert player.start_calls == 1
     assert player.stop_calls == 2  # initial suspend + late-start compensation
@@ -3965,7 +3745,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         assert input_close_entered.wait(timeout=1.0)
         assert not media._shutdown_requested.is_set()
         player.start_release.set()
-        _wait_until(lambda: player.stop_calls >= 2 and not player.physical_open)
+        wait_until_true(lambda: player.stop_calls >= 2 and not player.physical_open)
         assert input_close_entered.is_set()
         assert player.start_calls == 1
         assert player.max_owners == 1
@@ -4033,14 +3813,14 @@ def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
     assert wake.status == "uncertain"
     assert player.start_entered.wait(timeout=1.0)
     assert not media.close(wait_timeout_s=0.03)
-    _wait_until(media._closed.is_set)
+    wait_until_true(media._closed.is_set)
     player.start_release.set()
     assert player.compensation_seen.wait(timeout=1.0)
     assert not media.cleanup_complete
-    _wait_until(lambda: player.physical_open)
+    wait_until_true(lambda: player.physical_open)
     player.debt_release.set()
-    _wait_until(lambda: media.cleanup_complete)
-    _wait_until(lambda: not player.physical_open)
+    wait_until_true(lambda: media.cleanup_complete)
+    wait_until_true(lambda: not player.physical_open)
     assert player.start_calls == 1
     assert player.max_owners == 1
     assert media._player_stop_thread is not None
@@ -4108,13 +3888,13 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
     media.revoke_wake_starts_for_shutdown()
     assert player.compensation_seen.wait(timeout=1.0)
     assert not media.close(wait_timeout_s=0.03)
-    _wait_until(media._closed.is_set)
+    wait_until_true(media._closed.is_set)
     assert not media.cleanup_complete
     assert player.start_calls == 1
     assert player.max_owners == 1
     player.debt_release.set()
-    _wait_until(lambda: not player.physical_open)
-    _wait_until(lambda: media.cleanup_complete)
+    wait_until_true(lambda: not player.physical_open)
+    wait_until_true(lambda: media.cleanup_complete)
     assert media._power_state == "suspended"
     assert media._power_helper is not None
     media._power_helper.join(timeout=1.0)
@@ -4188,7 +3968,7 @@ def test_session_silero_prepare_failure_is_pre_device_and_enables_legacy() -> No
     }
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
-    backend = _FakeBackend()
+    backend = FakeBackend()
     engine = MagicMock()
     vad = MagicMock(spec=voice_audio.SileroVad)
     vad.prepare_utterance.side_effect = RuntimeError("injected Silero prepare failure")
@@ -4241,7 +4021,7 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
     }
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
-    backend = _FakeBackend()
+    backend = FakeBackend()
     engine = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
     before = sum(
@@ -4281,12 +4061,14 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
     assert result == (None, False)
     assert backend.start_count == 0
     engine.close.assert_called_once_with()
-    _wait_until(
-        lambda: sum(
-            thread.name == "jarvis-audio-capability-dispatch" and thread.is_alive()
-            for thread in threading.enumerate()
-        )
-        == before,
+    wait_until_true(
+        lambda: (
+            sum(
+                thread.name == "jarvis-audio-capability-dispatch" and thread.is_alive()
+                for thread in threading.enumerate()
+            )
+            == before
+        ),
     )
 
 
@@ -4636,7 +4418,7 @@ class _VoiceBroadcastRecorder:
 def _listening_session(
     recorder: _VoiceBroadcastRecorder,
     ingress: voice_audio.AudioIngress,
-    wake_engine: _FakeWakeEngine,
+    wake_engine: FakeWakeEngine,
     *,
     armed_no_speech_timeout_s: float = 2.0,
 ) -> voice_session.DuplexVoiceSession:
@@ -4669,18 +4451,18 @@ def test_wake_arm_broadcasts_listening_before_transcribing_on_the_same_turn(
         "record",
         voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     recorder = _VoiceBroadcastRecorder()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
-        session = _listening_session(recorder, ingress, _FakeWakeEngine(detections={0}))
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
+        session = _listening_session(recorder, ingress, FakeWakeEngine(detections={0}))
         assert session.start().started
         epoch = ingress.stream_epoch
         assert epoch == 1
         for value in [0, 0, 0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        _wait_until(lambda: len(recorder.calls) == 1)
+        wait_until_true(lambda: len(recorder.calls) == 1)
         close = session.close()
     assert close.definitively_closed
 
@@ -4727,14 +4509,14 @@ def test_false_wake_armed_timeout_broadcasts_listening_then_empty_never_transcri
         "record",
         voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     recorder = _VoiceBroadcastRecorder()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = _listening_session(
             recorder,
             ingress,
-            _FakeWakeEngine(detections={0}),
+            FakeWakeEngine(detections={0}),
             armed_no_speech_timeout_s=0.064,
         )
         assert session.start().started
@@ -4743,7 +4525,7 @@ def test_false_wake_armed_timeout_broadcasts_listening_then_empty_never_transcri
         for _ in range(12):
             backend.emit(epoch=epoch, value=0)
             time.sleep(0.002)
-        _wait_until(lambda: session.metrics().armed_no_speech_timeouts == 1)
+        wait_until_true(lambda: session.metrics().armed_no_speech_timeouts == 1)
         metrics = session.metrics()
         close = session.close()
     assert close.definitively_closed
@@ -4765,19 +4547,19 @@ def test_a_second_wake_while_already_armed_broadcasts_no_second_listening(
         "record",
         voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     recorder = _VoiceBroadcastRecorder()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         # Every wake window detects, so a second detection lands while ARMED.
-        session = _listening_session(recorder, ingress, _FakeWakeEngine())
+        session = _listening_session(recorder, ingress, FakeWakeEngine())
         assert session.start().started
         epoch = ingress.stream_epoch
         assert epoch == 1
         for value in [0, 0, 0, 0, 10_000, 11_000, 12_000]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        _wait_until(lambda: recorder.voice_calls != [])
+        wait_until_true(lambda: recorder.voice_calls != [])
         metrics = session.metrics()
         close = session.close()
     assert close.definitively_closed
@@ -4798,14 +4580,14 @@ def test_listening_carries_the_armed_turn_id_when_arm_replay_itself_expires(
         "record",
         voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
     recorder = _VoiceBroadcastRecorder()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = _listening_session(
             recorder,
             ingress,
-            _FakeWakeEngine(detections=set()),
+            FakeWakeEngine(detections=set()),
             armed_no_speech_timeout_s=0.032,
         )
         assembler = session._assembler
@@ -4824,7 +4606,7 @@ def test_listening_carries_the_armed_turn_id_when_arm_replay_itself_expires(
                     adc_time_s=None,
                     captured_monotonic_ns=index,
                     discontinuity_before=False,
-                    pcm16_mono=_pcm(0),
+                    pcm16_mono=pcm_frame(0),
                 ),
             )
         session._detections.put_nowait(voice_session.WakeDetection(1, 0, 0, 0.9))

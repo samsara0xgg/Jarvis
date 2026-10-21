@@ -17,9 +17,10 @@ from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime
 from jarvis.surface import voice_audio, voice_backend
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.voice_backend import DeviceProfileKey, OutputRoute, RouteKind
+from tests.support.voice_input import wait_until_true
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Iterator
     from pathlib import Path
 
 _INPUT_FORMAT = voice_backend.AudioInputFormat(16_000, 1, 512)
@@ -39,14 +40,6 @@ _JACK_KEY = DeviceProfileKey(
     input_sample_rate=16_000,
     output_sample_rate=48_000,
 )
-
-
-def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout_s
-    while not predicate():
-        if time.monotonic() >= deadline:
-            pytest.fail("condition did not become true before bounded deadline")
-        time.sleep(0.001)
 
 
 @pytest.mark.parametrize(
@@ -411,8 +404,8 @@ def test_profile_resolves_at_open_and_re_resolves_on_output_only_change() -> Non
         assert ingress.capability.allowed_barge_mode == "ptt"
 
         backend.output_route = replace(_SPEAKERS, uid="BlackHole16ch_UID", transport_type="virt")
-        _wait_until(lambda: ingress.stream_epoch == 2)
-        _wait_until(lambda: ingress.device_profile is not None)
+        wait_until_true(lambda: ingress.stream_epoch == 2)
+        wait_until_true(lambda: ingress.device_profile is not None)
         second = ingress.device_profile
         assert second is not None
         assert second.stream_epoch == 2
@@ -435,8 +428,8 @@ def test_input_change_re_resolves_through_the_existing_default_device_path() -> 
     backend = _RouteBackend()
     with _started(backend, observer=True) as ingress:
         backend.device_uid = "sounddevice:0:allen Microphone"
-        _wait_until(lambda: ingress.stream_epoch == 2)
-        _wait_until(lambda: ingress.device_profile is not None)
+        wait_until_true(lambda: ingress.stream_epoch == 2)
+        wait_until_true(lambda: ingress.device_profile is not None)
         snapshot = ingress.device_profile
         assert snapshot is not None
         assert snapshot.stream_epoch == 2
@@ -460,7 +453,7 @@ def test_observer_off_never_queries_output_and_keeps_input_path() -> None:
         time.sleep(0.05)
         assert ingress.stream_epoch == 1
         backend.device_uid = "sounddevice:0:allen Microphone"
-        _wait_until(lambda: ingress.stream_epoch == 2)
+        wait_until_true(lambda: ingress.stream_epoch == 2)
         assert backend.output_queries == 0
         assert _traces("audio_route_changed") == []
         assert ingress.close().definitively_closed
@@ -472,12 +465,12 @@ def test_transient_output_misses_are_tolerated_and_three_misses_fault_once() -> 
     with _started(backend, observer=True) as ingress:
         queries = backend.output_queries
         backend.output_script = [None, None]
-        _wait_until(lambda: backend.output_queries >= queries + 4)
+        wait_until_true(lambda: backend.output_queries >= queries + 4)
         assert ingress.stream_epoch == 1
         assert _traces("audio_input_fault") == []
         backend.output_route = None
-        _wait_until(lambda: ingress.stream_epoch == 2)
-        _wait_until(lambda: ingress.device_profile is not None)
+        wait_until_true(lambda: ingress.stream_epoch == 2)
+        wait_until_true(lambda: ingress.device_profile is not None)
         profile = ingress.device_profile
         assert profile is not None
         assert profile.key.output_uid is None
@@ -492,8 +485,8 @@ def test_same_uid_data_source_flip_re_resolves_headphones() -> None:
     backend = _RouteBackend()
     with _started(backend, observer=True) as ingress:
         backend.output_route = replace(_SPEAKERS, data_source="hdpn")
-        _wait_until(lambda: ingress.stream_epoch == 2)
-        _wait_until(lambda: ingress.device_profile is not None)
+        wait_until_true(lambda: ingress.stream_epoch == 2)
+        wait_until_true(lambda: ingress.device_profile is not None)
         profile = ingress.device_profile
         assert profile is not None
         assert profile.key.output_uid == _SPEAKERS.uid
@@ -530,8 +523,8 @@ def test_output_route_query_never_runs_under_the_control_lock() -> None:
     try:
         assert backend.lock_free_observations == [True]
         backend.output_route = replace(_SPEAKERS, uid="BlackHole16ch_UID", transport_type="virt")
-        _wait_until(lambda: ingress.stream_epoch == 2)
-        _wait_until(lambda: ingress.device_profile is not None)
+        wait_until_true(lambda: ingress.stream_epoch == 2)
+        wait_until_true(lambda: ingress.device_profile is not None)
         assert backend.lock_free_observations
         assert all(backend.lock_free_observations)
     finally:
@@ -600,7 +593,7 @@ def test_late_settled_open_recovers_from_close_uncertain() -> None:
     with _started(backend, observer=True) as ingress:
         backend.next_start_status = voice_backend.BackendStartStatus.OPEN_UNCERTAIN
         backend.output_route = replace(_SPEAKERS, uid="BlackHole16ch_UID", transport_type="virt")
-        _wait_until(
+        wait_until_true(
             lambda: ingress.capability.state is voice_audio.InputCapabilityState.CLOSE_UNCERTAIN,
         )
         assert ingress.capability.reason == "reopen_state_uncertain"
@@ -609,7 +602,7 @@ def test_late_settled_open_recovers_from_close_uncertain() -> None:
         # The foreign open settles late: the backend proves the device CLOSED.
         assert backend.active_attempt_id is not None
         backend.stop(stream_epoch=2, attempt_id=backend.active_attempt_id)
-        _wait_until(
+        wait_until_true(
             lambda: ingress.capability.state is voice_audio.InputCapabilityState.AVAILABLE
             and ingress.stream_epoch == 3,
         )

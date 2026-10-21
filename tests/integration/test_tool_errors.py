@@ -36,7 +36,7 @@ from jarvis.execution.voice_tools import build_voice_tool
 from jarvis.execution.weather_tool import build_weather_tool
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.shared import CallerPrincipal
-from tests.integration.test_flat_tool_dispatch import _chain, _Fixture, _request
+from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -212,10 +212,10 @@ def test_a_failing_definition_tool_answers_in_the_same_words(
     name, args, code, phrases = row
     registry = build_default_registry(obsidian_vault_root=tmp_path / "vault")
     held = [cast("ToolDefinition", t) for t in registry.get_definitions() if t.name == name]
-    fx = _Fixture(tmp_path / "run", tools=tuple(held))
+    fx = ToolWorld(tmp_path / "run", tools=tuple(held))
     try:
-        fx.dispatch(_request(name, "E1", arguments=args))
-        output = json.loads(_chain(fx, "E1")["tool_output"])
+        fx.dispatch(tool_request(name, "E1", arguments=args))
+        output = json.loads(tool_chain(fx, "E1")["tool_output"])
     finally:
         fx.close()
     assert output["code"] == code
@@ -245,15 +245,15 @@ def test_tool_search_errors_name_the_argument_and_what_to_pass() -> None:
 
 def test_the_registry_says_which_tool_is_missing_and_who_may_call(tmp_path: Path) -> None:
     """An unknown name points at tool_search; a refused caller lists who is allowed."""
-    fx = _Fixture(tmp_path, tools=(_ask_user(),))
+    fx = ToolWorld(tmp_path, tools=(_ask_user(),))
     try:
         with pytest.raises(UnknownToolError) as unknown:
-            fx.dispatch(_request("nowhere", "U1"))
+            fx.dispatch(tool_request("nowhere", "U1"))
         assert str(unknown.value) == (
             "unknown tool: 'nowhere'; call only a tool in your list, or find one with tool_search"
         )
         with pytest.raises(CallerNotAllowedError) as refused:
-            fx.dispatch(_request("ask_user", "U2", caller=CallerPrincipal.OBSERVER))
+            fx.dispatch(tool_request("ask_user", "U2", caller=CallerPrincipal.OBSERVER))
         assert str(refused.value) == (
             "tool 'ask_user' is not callable from caller_principal='observer'; "
             "allowed: jarvis_llm"
@@ -276,10 +276,10 @@ def test_a_tool_that_crashes_is_reported_as_failed_not_as_a_repeatable_error(
         handler=lambda _a, _c: _boom(), allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
         risk_level="L0", read_only=True,
     )
-    fx = _Fixture(tmp_path, tools=(crash,))
+    fx = ToolWorld(tmp_path, tools=(crash,))
     try:
-        fx.dispatch(_request("crash", "C1"))
-        output = json.loads(_chain(fx, "C1")["tool_output"])
+        fx.dispatch(tool_request("crash", "C1"))
+        output = json.loads(tool_chain(fx, "C1")["tool_output"])
     finally:
         fx.close()
     assert output == {

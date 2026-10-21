@@ -29,24 +29,24 @@ from jarvis.state.event_log import (
     open_event_log,
 )
 from tests.canary._helpers import repo_root
-from tests.integration.test_conversational_turn_no_gate_downgrade import _build_ctx
 from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
-    _Peer,
-    _spoken,
-    _spoken_runtime,
+from tests.support.routine import drive_streaming_turn
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_surrogate_route import (
+from tests.support.surrogate import (
     LLM_ANSWER,
     TABLE,
-    _events,
-    _Jev,
-    _ran_tier0,
+    SurrogateJev,
     jev,  # noqa: F401 - the fixture
+    logged_events,
+    ran_tier0,
 )
-from tests.integration.test_voice_words_jev import LISTENING, LONG_LINE
-from tests.integration.test_wire_routine_streaming import _drive
+from tests.support.turn_context import build_decide_context
+from tests.support.voice_words import LISTENING, LONG_LINE
 
 if TYPE_CHECKING:
     import sqlite3
@@ -429,10 +429,10 @@ def test_the_state_has_the_speaker_note_the_previous_line_and_the_judged_line() 
 
 
 def _say(
-    tmp_path: Path, words: str, lines: _Lines, jev_endpoint: _Jev,
+    tmp_path: Path, words: str, lines: _Lines, jev_endpoint: SurrogateJev,
 ) -> tuple[Any, sqlite3.Connection, Any]:
     """One utterance through decide() whose request was begun, as the surface does."""
-    ctx, conn, llm = _build_ctx(tmp_path, draft_text=LLM_ANSWER)
+    ctx, conn, llm = build_decide_context(tmp_path, draft_text=LLM_ANSWER)
     route = SurrogateRoute(
         model="typesafe/jev-1.13", min_confidence=0.95, timeout_ms=400, url=jev_endpoint.url,
     )
@@ -447,24 +447,30 @@ def _say(
     return decide(trigger, ctx), conn, llm
 
 
-def test_the_instant_function_comes_from_the_merged_request(tmp_path: Path, jev: _Jev) -> None:  # noqa: F811
+def test_the_instant_function_comes_from_the_merged_request(
+    tmp_path: Path,
+    jev: SurrogateJev,  # noqa: F811
+) -> None:
     """A confident instant runs by the Tier 0 path from the one request; no separate call."""
     lines = _Lines(tmp_path)
     lines.say(intent=("time", 0.95), tool_group=("none", 0.99))
     result, conn, llm = _say(tmp_path, _WORDS, lines, jev)
-    (ran,) = _ran_tier0(conn)
+    (ran,) = ran_tier0(conn)
     assert (ran["pattern_id"], ran["caller_principal"]) == ("time_now", "regex_router")
     assert llm.chat_calls == 0
     assert result.response_plan is not None
     assert jev.requests == []
     assert len(lines.route.sent) == 1
-    (event,) = _events(conn, "route.surrogate_decided")
+    (event,) = logged_events(conn, "route.surrogate_decided")
     assert (event["choice"], event["confidence"], event["accepted"]) == ("time", 0.95, True)
 
 
 @pytest.mark.parametrize(("choice", "confidence"), [("keep_going", 0.99), ("time", 0.9)])
 def test_a_control_word_or_a_weak_choice_leaves_the_turn_to_the_model(
-    tmp_path: Path, jev: _Jev, choice: str, confidence: float,  # noqa: F811
+    tmp_path: Path,
+    jev: SurrogateJev,  # noqa: F811
+    choice: str,
+    confidence: float,
 ) -> None:
     """A control word is not an instant function; below 0.95 nothing runs."""
     lines = _Lines(tmp_path)
@@ -473,17 +479,20 @@ def test_a_control_word_or_a_weak_choice_leaves_the_turn_to_the_model(
     assert llm.chat_calls == 1
     assert result.response_plan is not None
     assert result.response_plan.text == LLM_ANSWER
-    (event,) = _events(conn, "route.surrogate_decided")
+    (event,) = logged_events(conn, "route.surrogate_decided")
     assert (event["choice"], event["accepted"], event["error"]) == (choice, False, None)
     assert jev.requests == []
 
 
-def test_a_turn_without_a_begun_request_asks_on_its_own(tmp_path: Path, jev: _Jev) -> None:  # noqa: F811
+def test_a_turn_without_a_begun_request_asks_on_its_own(tmp_path: Path, jev: SurrogateJev) -> None:  # noqa: F811
     """Typed text and PTT never go through the surface: today's separate question."""
     lines = _Lines(tmp_path)
-    ctx, conn, _llm = _build_ctx(tmp_path, draft_text=LLM_ANSWER)
+    ctx, conn, _llm = build_decide_context(tmp_path, draft_text=LLM_ANSWER)
     route = SurrogateRoute(
-        model="typesafe/jev-1.13", min_confidence=0.9, timeout_ms=400, url=jev.url,
+        model="typesafe/jev-1.13",
+        min_confidence=0.9,
+        timeout_ms=400,
+        url=jev.url,
     )
     ctx = replace(ctx, tier0_table=TABLE, surrogate_route=route, oneshot=lines.oneshot)
     trigger = emit_event(
@@ -498,28 +507,38 @@ def test_a_turn_without_a_begun_request_asks_on_its_own(tmp_path: Path, jev: _Je
 
 
 def test_a_tool_the_spoken_model_proposes_is_noted_with_the_group_jev_predicted(
-    tmp_path: Path, jev: _Jev,  # noqa: F811
+    tmp_path: Path,
+    jev: SurrogateJev,  # noqa: F811
 ) -> None:
     """Real spoken stream, one request shared: the dataset pairs group and the tool called."""
     outputs = [[("call", "kept")], [("final_answer", "好。")]]
     words = "看一下我的便签"
-    with _Peer(outputs) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+    with SpokenPeer(outputs) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
         lines = _Lines(tmp_path / "jev")
         lines.say(intent=("none", 0.99), tool_group=("records_notes", 0.97))
         route = SurrogateRoute(
-            model="typesafe/jev-1.13", min_confidence=0.9, timeout_ms=400, url=jev.url,
+            model="typesafe/jev-1.13",
+            min_confidence=0.9,
+            timeout_ms=400,
+            url=jev.url,
             parallel=True,
         )
         runtime = replace(
-            runtime, tier0_table=TABLE, surrogate_route=route, oneshot=lines.oneshot,
+            runtime,
+            tier0_table=TABLE,
+            surrogate_route=route,
+            oneshot=lines.oneshot,
         )
         lines.oneshot.begin("turn-a", words, "", False, False)  # noqa: FBT003
-        _drive(runtime, _spoken(runtime.conn, "turn-a", words))
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-a", words))
     assert jev.requests == []
     [row] = lines.lines("tool")
     assert (row["ref"], row["tool"], row["group"], row["confidence"]) == (
-        "turn-a", "kept", "records_notes", 0.97,
+        "turn-a",
+        "kept",
+        "records_notes",
+        0.97,
     )
     assert lines.emitted == []  # records_notes has no line
 
@@ -529,7 +548,10 @@ def test_a_tool_the_spoken_model_proposes_is_noted_with_the_group_jev_predicted(
 
 def _config(**changes: Any) -> dict[str, Any]:  # noqa: ANN401 - config values
     block: dict[str, Any] = {
-        "enabled": True, "model": "m", "timeout_ms": 800, "zdr": True,
+        "enabled": True,
+        "model": "m",
+        "timeout_ms": 800,
+        "zdr": True,
         "relation": {"enabled": True, "at": 0.98, "window_s": 30},
         "tool_line": {"enabled": True, "at": 0.95, "groups": ["web_search"]},
         **changes,
@@ -588,7 +610,9 @@ def test_the_shipped_config_has_the_block_off_and_it_boots_when_switched_on(
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text("utf-8"))
     block = config["realtime"]["jev_oneshot"]
     assert (block["enabled"], block["relation"]["enabled"], block["tool_line"]["enabled"]) == (
-        False, False, False,
+        False,
+        False,
+        False,
     )
     assert (block["relation"]["at"], block["relation"]["window_s"]) == (0.98, 30)
     assert block["tool_line"]["at"] == 0.95

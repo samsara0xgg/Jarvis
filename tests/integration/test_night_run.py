@@ -15,14 +15,12 @@ import asyncio
 import contextlib
 import json
 import logging
-import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from datetime import time as clock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -32,137 +30,26 @@ from jarvis.decision.tier0 import (
     render_tier0_response,
     validate_tier0_table,
 )
-from jarvis.deployment import bootstrap_runtime
 from jarvis.deployment.night_power import Battery, Presence, parse_battery
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import night_run
 from jarvis.runtime.night_run import DIM, NightRun, NightSettings, night_settings
 from jarvis.runtime.night_watch import NightWatch, claude_rows, codex_rows, host_rows
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event
 from jarvis.surface import voice_ducking
 from jarvis.surface.agent_host import host_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
+from tests.support.night import ZONE, FakeMacPower, NightFixture, night_ms
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest
 
-ZONE = ZoneInfo("America/Vancouver")
 MINUTE = 60_000
-
-
-def _ms(hour: int, minute: int = 0, *, day: int = 29) -> int:
-    """Local time on September ``day``; day 31 is October 1."""
-    at = datetime(2026, 9, 1, hour, minute, tzinfo=ZONE) + timedelta(days=day - 1)
-    return int(at.timestamp() * 1000)
-
-
-class _Mac:
-    """Answers like MacPower and writes down every change asked of it."""
-
-    def __init__(self) -> None:
-        self.level: float | None = 0.8
-        # Every device that takes a mute, by UID, and the ones behind the default output.
-        self.mutes: dict[str, bool] = {"speakers": False, "phones": False, "tv": False}
-        self.default: tuple[str, ...] | None = ("speakers", "phones")
-        self.seen: Presence | None = Presence(locked=True, idle_s=9_999.0)
-        self.cell: Battery | None = Battery(on_battery=False, percent=90)
-        self.held: dict[int, float] = {}
-        self.calls: list[tuple[Any, ...]] = []
-        self._ids = 40
-
-    def hold_awake(self, seconds: float) -> int | None:
-        self._ids += 1
-        self.held[self._ids] = seconds
-        self.calls.append(("hold", round(seconds)))
-        return self._ids
-
-    def release(self, assertion: int) -> bool:
-        self.calls.append(("release", assertion))
-        return self.held.pop(assertion, None) is not None
-
-    def sleep_display(self) -> bool:
-        self.calls.append(("display_sleep",))
-        return True
-
-    def brightness(self) -> float | None:
-        return self.level
-
-    def set_brightness(self, level: float) -> bool:
-        self.level = level
-        return True
-
-    def outputs(self) -> dict[str, bool | None] | None:
-        if self.default is None:
-            return None
-        return {uid: self.mutes.get(uid) for uid in self.default}
-
-    def is_muted(self, uid: str) -> bool | None:
-        return self.mutes.get(uid)
-
-    def set_muted(self, uid: str, *, muted: bool) -> bool:
-        if uid not in self.mutes:
-            return False
-        self.mutes[uid] = muted
-        self.calls.append(("mute" if muted else "unmute", uid))
-        return True
-
-    def presence(self) -> Presence | None:
-        return self.seen
-
-    def battery(self) -> Battery | None:
-        return self.cell
-
-
-class _Clock:
-    """Wall time and the monotonic clock, moved together."""
-
-    def __init__(self, ms: int) -> None:
-        self.ms = ms
-        self.mono = 5_000.0
-
-    def go(self, *, to: int | None = None, seconds: float = 0.0) -> None:
-        step_ms = to - self.ms if to is not None else int(seconds * 1000)
-        self.ms += step_ms
-        self.mono += step_ms / 1000
-
-
-class _Fixture:
-    def __init__(self, tmp_path: Path, *, at: int) -> None:
-        self.paths = bootstrap_runtime(tmp_path)
-        self.conn = open_event_log(self.paths.event_log)
-        self.mac = _Mac()
-        self.clock = _Clock(at)
-        self.night = self.boot(self.mac)
-
-    def controller(self, mac: _Mac) -> NightRun:
-        return NightRun(
-            self.paths.event_log, NightSettings(), mac, zone=ZONE,
-            now_ms=lambda: self.clock.ms, monotonic=lambda: self.clock.mono,
-            sleep=lambda _s: None,
-        )
-
-    def boot(self, mac: _Mac) -> NightRun:
-        """A daemon start: a fresh controller over the same log, read back."""
-        night = self.controller(mac)
-        night.recover()
-        return night
-
-    def rows(self) -> list[tuple[str, dict[str, Any]]]:
-        return [
-            (etype, json.loads(payload))
-            for etype, payload in self.conn.execute(
-                "SELECT type, payload_json FROM events WHERE type LIKE 'night.%' ORDER BY id",
-            )
-        ]
-
-    def close(self) -> None:
-        with contextlib.suppress(sqlite3.Error):
-            self.conn.close()
 
 
 def _phase(night: NightRun) -> str | None:
@@ -170,7 +57,7 @@ def _phase(night: NightRun) -> str | None:
     return None if shown is None else str(shown["phase"])
 
 
-def _dark(fx: _Fixture) -> str:
+def _dark(fx: NightFixture) -> str:
     """Start the default run at the fixture's time and let the bedtime seconds pass."""
     fx.night.start(hours=None, until=None, source="companion")
     fx.clock.go(seconds=8)
@@ -184,7 +71,7 @@ def test_a_run_holds_the_mac_goes_dark_and_a_look_before_morning_stays_a_look(
     tmp_path: Path,
 ) -> None:
     """Start holds until the deadline; dark comes after the card; a look re-sleeps."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     mac, clock, night = fx.mac, fx.clock, fx.night
     reply = night.start(hours=None, until=None, source="companion")
     assert reply["status"] == "started"
@@ -192,8 +79,8 @@ def test_a_run_holds_the_mac_goes_dark_and_a_look_before_morning_stays_a_look(
     assert list(mac.held.values()) == [2 * 3600]
     [(etype, started)] = fx.rows()
     assert etype == "night.started"
-    assert started["until_ms"] == _ms(1, day=30)
-    assert started["wake_at_ms"] == _ms(6, day=30)
+    assert started["until_ms"] == night_ms(1, day=30)
+    assert started["wake_at_ms"] == night_ms(6, day=30)
     assert started["guarded"] is True
     assert _phase(night) == "starting"
 
@@ -214,7 +101,7 @@ def test_a_run_holds_the_mac_goes_dark_and_a_look_before_morning_stays_a_look(
     assert _phase(night) == "dark"
 
     # 23:30: the owner unlocks and looks. Before 06:00 that is a look, not getting up.
-    clock.go(to=_ms(23, 30))
+    clock.go(to=night_ms(23, 30))
     mac.seen = Presence(locked=False, idle_s=1.0)
     night.tick()
     assert _phase(night) == "glance"
@@ -233,24 +120,24 @@ def test_the_deadline_lets_only_the_hold_go_and_getting_up_puts_things_back(
     tmp_path: Path,
 ) -> None:
     """At the deadline the Mac may sleep, still dark; at 07:00 the return restores."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     mac, clock, night = fx.mac, fx.clock, fx.night
     night_id = _dark(fx)
     [held_id] = mac.held
 
     # 01:00, the deadline: only the assertion goes. The Mac then sleeps at 01:05.
-    clock.go(to=_ms(1, day=30))
+    clock.go(to=night_ms(1, day=30))
     night.tick()
     assert fx.rows()[-1] == ("night.released", {"night_id": night_id, "reason": "deadline"})
     assert ("release", held_id) in mac.calls
     assert not mac.held
     assert mac.mutes["speakers"] is True
     assert _phase(night) == "dark"
-    emit_event(fx.conn, type="mac.sleeping", payload={"ts_epoch_ms": _ms(1, 5, day=30)},
-               ts_epoch_ms=_ms(1, 5, day=30))
+    emit_event(fx.conn, type="mac.sleeping", payload={"ts_epoch_ms": night_ms(1, 5, day=30)},
+               ts_epoch_ms=night_ms(1, 5, day=30))
 
     # 07:00: input on the unlocked session is getting up.
-    clock.go(to=_ms(7, day=30))
+    clock.go(to=night_ms(7, day=30))
     mac.seen = Presence(locked=False, idle_s=2.0)
     night.tick()
     assert fx.rows()[-1] == (
@@ -263,15 +150,28 @@ def test_the_deadline_lets_only_the_hold_go_and_getting_up_puts_things_back(
     shown = night.snapshot()
     assert shown["night"] is None
     assert shown["last"] == {
-        "id": night_id, "started_ms": _ms(23), "until_ms": _ms(1, day=30),
-        "released_ms": _ms(1, day=30), "release_reason": "deadline", "ended_ms": _ms(7, day=30),
-        "reason": "returned", "slept_ms": _ms(1, 5, day=30),
+        "id": night_id,
+        "started_ms": night_ms(23),
+        "until_ms": night_ms(1, day=30),
+        "released_ms": night_ms(1, day=30),
+        "release_reason": "deadline",
+        "ended_ms": night_ms(7, day=30),
+        "reason": "returned",
+        "slept_ms": night_ms(1, 5, day=30),
         "restored": {"brightness": True, "volume": True},
         # No watch wired: nothing seen, the deadline alone held the Mac.
         "watch": {
-            "seen": False, "blind": False, "blind_since_ms": None, "lists": {}, "busy": 0,
-            "quiet_ms": None, "sessions": [], "monitor_ms": None, "extra_ms": 0,
-            "busy_at_deadline": None, "busy_at_release": 0,
+            "seen": False,
+            "blind": False,
+            "blind_since_ms": None,
+            "lists": {},
+            "busy": 0,
+            "quiet_ms": None,
+            "sessions": [],
+            "monitor_ms": None,
+            "extra_ms": 0,
+            "busy_at_deadline": None,
+            "busy_at_release": 0,
         },
         "totals": {"nights": 1, "extra_ms": 0, "blind": 0},
     }
@@ -282,7 +182,7 @@ def test_what_the_owner_changed_in_the_night_stays_and_a_sleep_while_held_is_rep
     tmp_path: Path,
 ) -> None:
     """Only what is still as the run left it comes back; a sleep while held is kept."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     mac, clock, night = fx.mac, fx.clock, fx.night
     mac.mutes["phones"] = True  # muted before the run: not the run's to unmute
     night.start(hours=3, until=None, source="conversation", action_id="act-1")
@@ -292,9 +192,13 @@ def test_what_the_owner_changed_in_the_night_stays_and_a_sleep_while_held_is_rep
     # The owner turned the speakers back on and the panel up; the lid closed at 23:40.
     mac.mutes["speakers"] = False
     mac.level = 0.5
-    emit_event(fx.conn, type="mac.sleeping", payload={"ts_epoch_ms": _ms(23, 40)},
-               ts_epoch_ms=_ms(23, 40))
-    clock.go(to=_ms(23, 50))
+    emit_event(
+        fx.conn,
+        type="mac.sleeping",
+        payload={"ts_epoch_ms": night_ms(23, 40)},
+        ts_epoch_ms=night_ms(23, 40),
+    )
+    clock.go(to=night_ms(23, 50))
     assert night.end(action_id="act-2") == {"status": "ended", "spoken": lang.t("night.ended")}
     assert mac.mutes == {"speakers": False, "phones": True, "tv": False}
     assert not any(call[0] == "unmute" for call in mac.calls)
@@ -302,7 +206,7 @@ def test_what_the_owner_changed_in_the_night_stays_and_a_sleep_while_held_is_rep
     assert not mac.held
     last = night.snapshot()["last"]
     assert last["restored"] == {"brightness": False, "volume": False}
-    assert last["slept_ms"] == _ms(23, 40)
+    assert last["slept_ms"] == night_ms(23, 40)
     assert last["reason"] == "ended"
 
     # Only the panel touched this time, and the output moved to the TV: what the
@@ -319,7 +223,8 @@ def test_what_the_owner_changed_in_the_night_stays_and_a_sleep_while_held_is_rep
     assert unmuted == [("unmute", "speakers"), ("unmute", "phones")]
     assert mac.level == 0.9
     correlations = [
-        json.loads(corr) for (corr,) in fx.conn.execute(
+        json.loads(corr)
+        for (corr,) in fx.conn.execute(
             "SELECT correlation_json FROM events WHERE type IN ('night.started', 'night.ended') "
             "AND correlation_json IS NOT NULL ORDER BY id",
         )
@@ -330,19 +235,19 @@ def test_what_the_owner_changed_in_the_night_stays_and_a_sleep_while_held_is_rep
 
 def test_a_restart_picks_the_run_up_and_a_missed_deadline_is_written_down(tmp_path: Path) -> None:
     """A new daemon holds the rest of the run; a deadline it missed is released on boot."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     _dark(fx)
 
     # 23:30: the daemon restarts; the new one holds the rest of the two hours.
-    fx.clock.go(to=_ms(23, 30))
-    mac = _Mac()
+    fx.clock.go(to=night_ms(23, 30))
+    mac = FakeMacPower()
     mac.level = DIM
     mac.mutes.update(speakers=True, phones=True)
     night = fx.boot(mac)
     assert _phase(night) == "dark"
     assert mac.calls == [("hold", 90 * 60)]
     # 07:10, back: what the first daemon found is what comes back.
-    fx.clock.go(to=_ms(7, 10, day=30))
+    fx.clock.go(to=night_ms(7, 10, day=30))
     mac.seen = Presence(locked=False, idle_s=1.0)
     night.tick()
     assert [etype for etype, _ in fx.rows()[-2:]] == ["night.released", "night.ended"]
@@ -351,10 +256,10 @@ def test_a_restart_picks_the_run_up_and_a_missed_deadline_is_written_down(tmp_pa
     assert not mac.held
 
     # A run whose deadline passed while no daemon ran gets its release on boot.
-    fx.clock.go(to=_ms(22, day=30))
+    fx.clock.go(to=night_ms(22, day=30))
     night.start(hours=1, until=None, source="companion")
-    fx.clock.go(to=_ms(23, 30, day=30))
-    later = _Mac()
+    fx.clock.go(to=night_ms(23, 30, day=30))
+    later = FakeMacPower()
     rebooted = fx.boot(later)
     assert not any(call[0] == "hold" for call in later.calls)
     assert fx.rows()[-1][0] == "night.released"
@@ -367,7 +272,7 @@ def test_cancel_before_dark_changes_nothing_and_a_daytime_run_ends_at_the_first_
     tmp_path: Path,
 ) -> None:
     """Cancel inside the card's seconds touches nothing; a day run has no looks."""
-    fx = _Fixture(tmp_path, at=_ms(14))
+    fx = NightFixture(tmp_path, at=night_ms(14))
     mac, clock, night = fx.mac, fx.clock, fx.night
     night.start(hours=None, until=None, source="companion")
     clock.go(seconds=3)
@@ -378,7 +283,7 @@ def test_cancel_before_dark_changes_nothing_and_a_daytime_run_ends_at_the_first_
     assert not mac.held
 
     # 14:10 has no morning within reach: the first return after dark is getting up.
-    clock.go(to=_ms(14, 10))
+    clock.go(to=night_ms(14, 10))
     assert night.start(hours=None, until=None, source="companion")["until"] == "16:10"
     assert fx.rows()[-1][1]["wake_at_ms"] is None
     clock.go(seconds=8)
@@ -397,7 +302,7 @@ def test_the_dark_waits_out_the_goodnight_line_and_a_low_battery_lets_the_mac_go
     tmp_path: Path,
 ) -> None:
     """Dark waits while a line plays, 20 s past due at most; 9% on battery releases the hold."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     mac, clock, night = fx.mac, fx.clock, fx.night
     ducker = voice_ducking.SystemAudioDucker()
     night.busy = lambda: ducker.active or ducker.outputting  # as the daemon wires it
@@ -429,10 +334,11 @@ def test_the_dark_waits_out_the_goodnight_line_and_a_low_battery_lets_the_mac_go
 
 
 def test_an_output_without_a_mute_is_logged_and_the_rest_still_happens(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A display's own speakers take no mute: the log names them; the rest goes on."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     mac, night = fx.mac, fx.night
     mac.default = ("speakers", "hdmi")  # the display has no mute, so none in mac.mutes
     with caplog.at_level(logging.WARNING, logger="jarvis.runtime.night_run"):
@@ -459,7 +365,7 @@ def test_an_output_without_a_mute_is_logged_and_the_rest_still_happens(
 
 def test_spoken_requests_reach_the_run_through_tier0_and_the_tools(tmp_path: Path) -> None:
     """The owner's phrases hit the night rows; the tools start, refuse and end the run."""
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     registry = build_default_registry(night=fx.night)
     table = load_tier0_table(repo_root() / "config" / "tier0_patterns.yaml")
     regex_tools = registry.for_caller(CallerPrincipal.REGEX_ROUTER)
@@ -497,9 +403,15 @@ def test_spoken_requests_reach_the_run_through_tier0_and_the_tools(tmp_path: Pat
         lifecycle.register(action_id)
         lifecycle.transition(action_id, "authorized")
         request = ActionRequest(
-            action_id=action_id, tool_name=name, target_entity_ref=None,
-            caller_principal=CallerPrincipal.REGEX_ROUTER, risk_level="L1", arguments=args,
-            authorization_lease=None, run_id=None, turn_id=None,
+            action_id=action_id,
+            tool_name=name,
+            target_entity_ref=None,
+            caller_principal=CallerPrincipal.REGEX_ROUTER,
+            risk_level="L1",
+            arguments=args,
+            authorization_lease=None,
+            run_id=None,
+            turn_id=None,
         )
         bundle = registry.dispatch(request, fx.conn, fx.paths, lifecycle)
         return dict(bundle.slots[0].payload)
@@ -524,8 +436,16 @@ def test_spoken_requests_reach_the_run_through_tier0_and_the_tools(tmp_path: Pat
 
 def _sess(session_id: str, st: str, **extra: object) -> dict[str, Any]:
     """One row of the agent host's list, as ``GET /events`` sends it."""
-    return {"id": session_id, "agent": "claude", "title": f"session {session_id}", "st": st,
-            "archived": False, "parked": False, "updated": _ms(22, 30), **extra}
+    return {
+        "id": session_id,
+        "agent": "claude",
+        "title": f"session {session_id}",
+        "st": st,
+        "archived": False,
+        "parked": False,
+        "updated": night_ms(22, 30),
+        **extra,
+    }
 
 
 class _Lists:
@@ -546,18 +466,18 @@ class _Lists:
         return found
 
 
-def _watching(fx: _Fixture) -> _Lists:
+def _watching(fx: NightFixture) -> _Lists:
     lists = _Lists()
     fx.night.watch = lists
     return lists
 
 
-def _at(fx: _Fixture, hour: int, minute: int = 0, *, day: int = 30) -> None:
-    fx.clock.go(to=_ms(hour, minute, day=day))
+def _at(fx: NightFixture, hour: int, minute: int = 0, *, day: int = 30) -> None:
+    fx.clock.go(to=night_ms(hour, minute, day=day))
     fx.night.tick()
 
 
-def _up(fx: _Fixture, *, day: int = 30) -> dict[str, Any]:
+def _up(fx: NightFixture, *, day: int = 30) -> dict[str, Any]:
     """07:00, the owner is up: the morning card's run."""
     fx.mac.seen = Presence(locked=False, idle_s=1.0)
     _at(fx, 7, day=day)
@@ -566,15 +486,15 @@ def _up(fx: _Fixture, *, day: int = 30) -> dict[str, Any]:
     return dict(last)
 
 
-def _released(fx: _Fixture) -> list[str]:
+def _released(fx: NightFixture) -> list[str]:
     return [payload["reason"] for etype, payload in fx.rows() if etype == "night.released"]
 
 
-def _bedtime_with_work(fx: _Fixture) -> _Lists:
+def _bedtime_with_work(fx: NightFixture) -> _Lists:
     """23:00: two sessions at work, one waiting, three the night leaves alone."""
     lists = _watching(fx)
     lists.host = [
-        _sess("A", "work", since=_ms(22, 25, day=29), now="在改 night_run.py"),
+        _sess("A", "work", since=night_ms(22, 25, day=29), now="在改 night_run.py"),
         _sess("B", "done", bg="1 个后台任务 · 构建"),  # its background build still runs
         _sess("C", "wait", now="要跑 Bash"),
         _sess("D", "done"),  # idle all night: not watched
@@ -583,16 +503,22 @@ def _bedtime_with_work(fx: _Fixture) -> _Lists:
     ]
     reply = fx.night.start(hours=None, until=None, source="conversation")
     assert reply["working"] == 2
-    assert reply["spoken"] == lang.t("night.started_watching", until=lang.spoken_time(
-        datetime(2026, 9, 30, 1, 0, tzinfo=ZONE)), seconds=8, working=2)
+    assert reply["spoken"] == lang.t(
+        "night.started_watching",
+        until=lang.spoken_time(datetime(2026, 9, 30, 1, 0, tzinfo=ZONE)),
+        seconds=8,
+        working=2,
+    )
     [(_, look)] = [row for row in fx.rows() if row[0] == "night.watched"]
     assert look["seen"] is True
     assert look["lists"] == {"startrail": True}
     assert [(row["id"], row["st"], row["busy"]) for row in look["sessions"]] == [
-        ("A", "work", True), ("B", "done", True), ("C", "wait", False),
+        ("A", "work", True),
+        ("B", "done", True),
+        ("C", "wait", False),
     ]
     shown = fx.night.snapshot()["night"]
-    assert shown["cap_ms"] == _ms(11, day=30)
+    assert shown["cap_ms"] == night_ms(11, day=30)
     assert shown["watch"]["busy"] == 2
     assert shown["watch"]["release_ms"] is None  # held while they work
     return lists
@@ -602,7 +528,7 @@ def test_a_session_at_work_holds_the_mac_past_the_deadline_until_it_settles(
     tmp_path: Path,
 ) -> None:
     """Past 01:00 the hold is renewed while A works; 3 minutes after it stops the Mac goes."""
-    fx = _Fixture(tmp_path, at=_ms(23, day=29))
+    fx = NightFixture(tmp_path, at=night_ms(23, day=29))
     mac, night = fx.mac, fx.night
     lists = _bedtime_with_work(fx)
     [first] = mac.held
@@ -625,9 +551,9 @@ def test_a_session_at_work_holds_the_mac_past_the_deadline_until_it_settles(
     assert third != second
 
     # 02:11: A is done. The hold lasts three more minutes, then goes as "settled".
-    host[0] = _sess("A", "done", updated=_ms(2, 11, day=30))
+    host[0] = _sess("A", "done", updated=night_ms(2, 11, day=30))
     _at(fx, 2, 11)
-    assert night.snapshot()["night"]["watch"]["release_ms"] == _ms(2, 14, day=30)
+    assert night.snapshot()["night"]["watch"]["release_ms"] == night_ms(2, 14, day=30)
     _at(fx, 2, 13)
     assert _released(fx) == []
     _at(fx, 2, 14)
@@ -641,14 +567,14 @@ def test_a_session_at_work_holds_the_mac_past_the_deadline_until_it_settles(
     last = _up(fx)
     watch = last["watch"]
     assert last["release_reason"] == "settled"
-    assert watch["monitor_ms"] == _ms(2, 14, day=30)
+    assert watch["monitor_ms"] == night_ms(2, 14, day=30)
     assert watch["busy_at_deadline"] == 1
     assert watch["extra_ms"] == 0
     story = {row["id"]: row for row in watch["sessions"]}
     assert story["A"]["st"] == "done"
-    assert story["A"]["changed_ms"] == _ms(2, 11, day=30)
-    assert story["A"]["trail"] == [[_ms(23, day=29), _ms(2, 11, day=30)]]
-    assert story["B"]["trail"] == [[_ms(23, day=29), _ms(0, 31, day=30)]]
+    assert story["A"]["changed_ms"] == night_ms(2, 11, day=30)
+    assert story["A"]["trail"] == [[night_ms(23, day=29), night_ms(2, 11, day=30)]]
+    assert story["B"]["trail"] == [[night_ms(23, day=29), night_ms(0, 31, day=30)]]
     assert story["C"]["st"] == "wait"
     assert story["C"]["trail"] == []
     assert last["totals"] == {"nights": 1, "extra_ms": 0, "blind": 0}
@@ -659,24 +585,25 @@ def test_the_deadline_holds_when_nothing_works_and_the_morning_counts_the_extra(
     tmp_path: Path,
 ) -> None:
     """Idle sessions: the Mac goes at 01:00; watching alone would have let it go at 23:03."""
-    fx = _Fixture(tmp_path, at=_ms(23, day=29))
+    fx = NightFixture(tmp_path, at=night_ms(23, day=29))
     lists = _watching(fx)
     lists.host = [_sess("C", "wait")]
     reply = fx.night.start(hours=None, until=None, source="companion")
-    assert reply["spoken"] == lang.t("night.started", until=lang.spoken_time(
-        datetime(2026, 9, 30, 1, 0, tzinfo=ZONE)), seconds=8)
+    assert reply["spoken"] == lang.t(
+        "night.started", until=lang.spoken_time(datetime(2026, 9, 30, 1, 0, tzinfo=ZONE)), seconds=8
+    )
     shown = fx.night.snapshot()["night"]
-    assert shown["watch"]["release_ms"] == _ms(1, day=30)
+    assert shown["watch"]["release_ms"] == night_ms(1, day=30)
     _at(fx, 0, 59)
     assert _released(fx) == []
     _at(fx, 1, 0)
     assert _released(fx) == ["deadline"]
     watch = _up(fx)["watch"]
-    assert watch["monitor_ms"] == _ms(23, 3, day=29)
-    assert watch["extra_ms"] == _ms(1, day=30) - _ms(23, 3, day=29)
+    assert watch["monitor_ms"] == night_ms(23, 3, day=29)
+    assert watch["extra_ms"] == night_ms(1, day=30) - night_ms(23, 3, day=29)
 
     # A second night, the same: the totals add the two.
-    fx.clock.go(to=_ms(23, day=30))
+    fx.clock.go(to=night_ms(23, day=30))
     fx.night.start(hours=1, until=None, source="companion")
     _at(fx, 0, 0, day=31)
     totals = _up(fx, day=31)["totals"]
@@ -688,10 +615,16 @@ def test_twelve_hours_is_the_cap_and_a_list_that_goes_quiet_leaves_the_deadline(
     tmp_path: Path,
 ) -> None:
     """Work that never stops is let go at 11:00; lists that stop answering end the extension."""
-    fx = _Fixture(tmp_path, at=_ms(23, day=29))
+    fx = NightFixture(tmp_path, at=night_ms(23, day=29))
     lists = _watching(fx)
-    lists.codex = {"T": {"session_id": "T", "state": "running", "prompt": "迁移数据",
-                         "since_ms": _ms(22, day=29)}}
+    lists.codex = {
+        "T": {
+            "session_id": "T",
+            "state": "running",
+            "prompt": "迁移数据",
+            "since_ms": night_ms(22, day=29),
+        }
+    }
     fx.night.start(hours=None, until=None, source="companion")
     assert fx.rows()[-1][1]["lists"] == {"codex": True, "startrail": True}
     for hour in range(1, 11):
@@ -710,7 +643,7 @@ def test_twelve_hours_is_the_cap_and_a_list_that_goes_quiet_leaves_the_deadline(
     assert watch["busy_at_release"] == 1
 
     # Past the deadline, the lists stop answering: three missed looks, then the Mac goes.
-    fx.clock.go(to=_ms(23, day=30))
+    fx.clock.go(to=night_ms(23, day=30))
     fx.night.start(hours=1, until=None, source="companion")
     _at(fx, 0, 10, day=31)
     lists.host = None
@@ -720,7 +653,7 @@ def test_twelve_hours_is_the_cap_and_a_list_that_goes_quiet_leaves_the_deadline(
     assert _released(fx) == ["cap"]
     assert fx.night.snapshot()["night"]["watch"]["seen"] is True
     _at(fx, 0, 13, day=31)
-    assert fx.night.snapshot()["night"]["watch"]["blind_since_ms"] == _ms(0, 13, day=31)
+    assert fx.night.snapshot()["night"]["watch"]["blind_since_ms"] == night_ms(0, 13, day=31)
     assert _released(fx) == ["cap", "blind"]
     last = _up(fx, day=31)
     assert last["watch"]["blind"] is True
@@ -730,7 +663,7 @@ def test_twelve_hours_is_the_cap_and_a_list_that_goes_quiet_leaves_the_deadline(
 
 def test_with_no_list_to_read_the_deadline_alone_decides(tmp_path: Path) -> None:
     """The Agents window is not running: the bedtime card says so, the deadline lets go."""
-    fx = _Fixture(tmp_path, at=_ms(23, day=29))
+    fx = NightFixture(tmp_path, at=night_ms(23, day=29))
     lists = _watching(fx)
     lists.host = None
     fx.night.start(hours=None, until=None, source="companion")
@@ -749,20 +682,20 @@ def test_a_restart_past_the_deadline_keeps_holding_while_the_last_look_saw_work(
     tmp_path: Path,
 ) -> None:
     """The new daemon renews for 15 minutes, looks, and lets go once the work has settled."""
-    fx = _Fixture(tmp_path, at=_ms(23, day=29))
+    fx = NightFixture(tmp_path, at=night_ms(23, day=29))
     lists = _watching(fx)
     lists.host = [_sess("A", "work")]
     _dark(fx)
     _at(fx, 0, 58)
-    fx.clock.go(to=_ms(1, 30, day=30))
-    mac = _Mac()
+    fx.clock.go(to=night_ms(1, 30, day=30))
+    mac = FakeMacPower()
     night = fx.boot(mac)
     assert mac.calls == [("hold", 900)]
     assert _released(fx) == []
     night.watch = lists
     lists.host = [_sess("A", "done")]
     night.tick()
-    fx.clock.go(to=_ms(1, 33, day=30))
+    fx.clock.go(to=night_ms(1, 33, day=30))
     night.tick()
     assert _released(fx) == ["settled"]
     assert not mac.held
@@ -773,12 +706,16 @@ def test_going_to_answer_a_session_keeps_the_screen_on_until_a_quiet_minute(
     tmp_path: Path,
 ) -> None:
     """Stay: no dark at the card's 8 s; the screen goes once the owner leaves it a minute."""
-    fx = _Fixture(tmp_path, at=_ms(23, day=29))
-    client = TestClient(create_app(InherentDeps(
-        submit_callable=lambda _text: None,
-        broadcaster=InherentBroadcaster(),
-        night=fx.night,
-    )))
+    fx = NightFixture(tmp_path, at=night_ms(23, day=29))
+    client = TestClient(
+        create_app(
+            InherentDeps(
+                submit_callable=lambda _text: None,
+                broadcaster=InherentBroadcaster(),
+                night=fx.night,
+            )
+        )
+    )
     client.post("/inherent/night", json={"action": "start"})
     fx.clock.go(seconds=3)
     staying = client.post("/inherent/night", json={"action": "stay"}).json()["night"]
@@ -823,7 +760,7 @@ def test_the_watch_reads_the_host_claude_code_and_codex_lists() -> None:
     sessions = [
         _sess("A", "pack"),
         _sess("B", "done", tasks=[{"id": "t", "kind": "local_bash", "what": "构建", "st": "run"}]),
-        _sess("C", "err", updated=_ms(1, 7, day=30)),
+        _sess("C", "err", updated=night_ms(1, 7, day=30)),
     ]
     _Host.hello = b"data: " + json.dumps({"t": "hello", "sessions": sessions}).encode()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Host)
@@ -832,45 +769,79 @@ def test_the_watch_reads_the_host_claude_code_and_codex_lists() -> None:
     try:
         assert host_sessions(port, "k-1") == sessions
         assert host_sessions(port, "wrong") is None
-        codex = {"X": {"session_id": "X", "state": "needs_input", "prompt": "改名",
-                       "since_ms": _ms(23, day=29)}}
+        codex = {
+            "X": {
+                "session_id": "X",
+                "state": "needs_input",
+                "prompt": "改名",
+                "since_ms": night_ms(23, day=29),
+            }
+        }
         found = NightWatch(port=port, key=lambda: "k-1", claude=None, codex=codex)()
     finally:
         server.shutdown()
         server.server_close()
     assert [(row["id"], row["st"], row["busy"]) for row in found["startrail"] or []] == [
-        ("A", "pack", True), ("B", "done", True), ("C", "err", False),
+        ("A", "pack", True),
+        ("B", "done", True),
+        ("C", "err", False),
     ]
-    assert found["codex"] == [{"id": "X", "agent": "codex", "title": "改名", "st": "wait",
-                               "busy": False, "since_ms": _ms(23, day=29), "what": ""}]
+    assert found["codex"] == [
+        {
+            "id": "X",
+            "agent": "codex",
+            "title": "改名",
+            "st": "wait",
+            "busy": False,
+            "since_ms": night_ms(23, day=29),
+            "what": "",
+        }
+    ]
     assert "claude" not in found
     assert host_sessions(port, "k-1", timeout=0.5) is None  # nobody listens any more
-    board = {"sessions": [
-        {"session_id": "S", "phase": "working", "compacting": True, "title": "t",
-         "updated_ms": 1, "activity": "Bash"},
-        {"session_id": "T", "phase": "needs_input", "title": "u", "updated_ms": 5},
-    ], "error": None}
+    board = {
+        "sessions": [
+            {
+                "session_id": "S",
+                "phase": "working",
+                "compacting": True,
+                "title": "t",
+                "updated_ms": 1,
+                "activity": "Bash",
+            },
+            {"session_id": "T", "phase": "needs_input", "title": "u", "updated_ms": 5},
+        ],
+        "error": None,
+    }
     assert [(row["id"], row["st"], row["busy"]) for row in claude_rows(board) or []] == [
-        ("S", "pack", True), ("T", "wait", False),
+        ("S", "pack", True),
+        ("T", "wait", False),
     ]
     assert claude_rows({"sessions": [], "error": "claude agents --json: boom"}) is None
 
 
 def test_the_companion_routes_start_darken_and_end_the_run(tmp_path: Path) -> None:
     """GET draws the run; POST starts, darkens and ends it; bad bodies are 422."""
-    fx = _Fixture(tmp_path, at=_ms(23))
-    client = TestClient(create_app(InherentDeps(
-        submit_callable=lambda _text: None,
-        broadcaster=InherentBroadcaster(),
-        night=fx.night,
-    )))
+    fx = NightFixture(tmp_path, at=night_ms(23))
+    client = TestClient(
+        create_app(
+            InherentDeps(
+                submit_callable=lambda _text: None,
+                broadcaster=InherentBroadcaster(),
+                night=fx.night,
+            )
+        )
+    )
     assert client.get("/inherent/night").json() == {
-        "night": None, "last": None, "hours": 2.0, "laptop": False,
+        "night": None,
+        "last": None,
+        "hours": 2.0,
+        "laptop": False,
     }
     shown = client.post("/inherent/night", json={"action": "start", "hours": 1.5}).json()
     assert shown["night"]["phase"] == "starting"
-    assert shown["night"]["until_ms"] == _ms(23) + 90 * MINUTE
-    assert shown["night"]["dark_at_ms"] == _ms(23) + 8000
+    assert shown["night"]["until_ms"] == night_ms(23) + 90 * MINUTE
+    assert shown["night"]["dark_at_ms"] == night_ms(23) + 8000
     assert shown["laptop"] is True
     darkened = client.post("/inherent/night", json={"action": "dark"}).json()
     assert darkened["night"]["phase"] == "dark"
@@ -885,11 +856,12 @@ def test_the_companion_routes_start_darken_and_end_the_run(tmp_path: Path) -> No
 
 
 def test_the_daemon_loop_serves_ticks_and_stops_serving(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``run()`` recovers, then serves and ticks; once stopped, a start is refused."""
     monkeypatch.setattr(night_run, "TICK_S", 0.01)
-    fx = _Fixture(tmp_path, at=_ms(23))
+    fx = NightFixture(tmp_path, at=night_ms(23))
     night = fx.controller(fx.mac)
     assert night.start(hours=None, until=None, source="conversation")["status"] == "unavailable"
 
@@ -918,7 +890,8 @@ def test_the_daemon_loop_serves_ticks_and_stops_serving(
 def test_settings_and_the_macs_own_answers_parse() -> None:
     """``night:`` settings fall back per value; pmset's battery text parses."""
     assert night_settings({"night": {"hours": 3, "morning": "07:30"}}) == NightSettings(
-        hours=3.0, morning=clock(7, 30),
+        hours=3.0,
+        morning=clock(7, 30),
     )
     assert night_settings({"night": {"hours": 40, "morning": "late"}}) == NightSettings()
     assert night_settings({}) == NightSettings()

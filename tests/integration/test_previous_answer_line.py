@@ -19,45 +19,21 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis.decision import _previous_answer_line
-from jarvis.decision.packet import assemble_packet
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.integration.test_incremental_tts import (
-    _cancel,
-    _chunk,
-    _emitted,
-    _open,
-    _pipeline,
-    _wait_for,
-)
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _emit_response,
-    _FakeProvider,
-    _submit_response,
+from tests.support.media import CallbackPump, FakeProvider, emit_response, submit_response
+from tests.support.previous_answer import next_turn_line, record_asked
+from tests.support.tts import (
+    append_cancel,
+    append_chunk,
+    append_emitted,
+    append_open,
+    make_pipeline,
+    wait_for_rows,
 )
 
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
-
-
-def _asked(conn: sqlite3.Connection, turn_id: str) -> None:
-    emit_event(
-        conn,
-        type="utterance.received",
-        payload={"turn_id": turn_id, "transcript": "synthetic", "channel": "inherent_wake"},
-    )
-
-
-def _next_turn_line(conn: sqlite3.Connection) -> str | None:
-    trigger = emit_event(
-        conn,
-        type="utterance.received",
-        payload={"turn_id": "next", "transcript": "and?", "channel": "inherent_wake"},
-    )
-    packet = assemble_packet(trigger, conn)
-    return _previous_answer_line(packet)
 
 
 @pytest.mark.parametrize(
@@ -73,19 +49,19 @@ def test_an_answer_played_to_its_end_is_not_reported_interrupted(
     """Whitespace between sentences and stripped markup are not "the rest"."""
     db_path = tmp_path / "events.db"
     conn = open_event_log(db_path)
-    pipeline, player = _pipeline(
-        db_path, _FakeProvider(candidate_count=1), speak_from_segments=True
+    pipeline, player = make_pipeline(
+        db_path, FakeProvider(candidate_count=1), speak_from_segments=True
     )
     try:
-        _asked(conn, "T-RP")
-        with _CallbackPump(player):
-            rows = [_open(conn, "RP")]
-            rows += [_chunk(conn, "RP", index, text) for index, text in enumerate(chunks)]
-            rows.append(_emitted(conn, "RP", "".join(chunks)))
-            asyncio.run(_submit_response(pipeline, rows))
-            _wait_for(conn, "surface.playback_completed", "RP", 1)
+        record_asked(conn, "T-RP")
+        with CallbackPump(player):
+            rows = [append_open(conn, "RP")]
+            rows += [append_chunk(conn, "RP", index, text) for index, text in enumerate(chunks)]
+            rows.append(append_emitted(conn, "RP", "".join(chunks)))
+            asyncio.run(submit_response(pipeline, rows))
+            wait_for_rows(conn, "surface.playback_completed", "RP", 1)
             assert pipeline.wait_until_idle(timeout_s=2.0)
-        assert _next_turn_line(conn) is None
+        assert next_turn_line(conn) is None
     finally:
         assert pipeline.close()
         conn.close()
@@ -93,20 +69,20 @@ def test_an_answer_played_to_its_end_is_not_reported_interrupted(
 
 def _play_cut(conn: sqlite3.Connection, db_path: Path, *, gated: int) -> None:
     """Allen asks; the answer's segment ``gated`` never gets audio and is cancelled."""
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     provider.segment_gates[("RP", gated)] = threading.Event()  # never opens
-    pipeline, player = _pipeline(db_path, provider, speak_from_segments=True)
+    pipeline, player = make_pipeline(db_path, provider, speak_from_segments=True)
     try:
-        _asked(conn, "T-RP")
-        with _CallbackPump(player):
-            rows = [_open(conn, "RP"), _chunk(conn, "RP", 0, "It is 3 PM. ")]
-            rows.append(_chunk(conn, "RP", 1, "The meeting starts at four."))
-            asyncio.run(_submit_response(pipeline, rows))
+        record_asked(conn, "T-RP")
+        with CallbackPump(player):
+            rows = [append_open(conn, "RP"), append_chunk(conn, "RP", 0, "It is 3 PM. ")]
+            rows.append(append_chunk(conn, "RP", 1, "The meeting starts at four."))
+            asyncio.run(submit_response(pipeline, rows))
             if gated:
-                _wait_for(conn, "surface.playback_checkpoint", "RP", 1)
+                wait_for_rows(conn, "surface.playback_checkpoint", "RP", 1)
             else:
-                _wait_for(conn, "surface.playback_segment_prepared", "RP", 1)
-            asyncio.run(_submit_response(pipeline, [_cancel(conn, "RP")]))
+                wait_for_rows(conn, "surface.playback_segment_prepared", "RP", 1)
+            asyncio.run(submit_response(pipeline, [append_cancel(conn, "RP")]))
             assert pipeline.wait_until_idle(timeout_s=2.0)
     finally:
         assert pipeline.close()
@@ -121,7 +97,7 @@ def test_an_answer_cut_after_its_first_sentence_still_says_where(tmp_path: Path)
     conn = open_event_log(db_path)
     try:
         _play_cut(conn, db_path, gated=1)
-        assert _next_turn_line(conn) == _CUT
+        assert next_turn_line(conn) == _CUT
     finally:
         conn.close()
 
@@ -132,7 +108,7 @@ def test_an_answer_cancelled_before_its_first_sample_was_not_heard(tmp_path: Pat
     conn = open_event_log(db_path)
     try:
         _play_cut(conn, db_path, gated=0)
-        line = _next_turn_line(conn)
+        line = next_turn_line(conn)
     finally:
         conn.close()
     assert line == "Previous answer: interrupted before any of it was spoken"
@@ -144,8 +120,8 @@ def test_a_turn_dropped_unanswered_does_not_hide_the_cut_before_it(tmp_path: Pat
     conn = open_event_log(db_path)
     try:
         _play_cut(conn, db_path, gated=1)
-        _asked(conn, "T-half")
-        assert _next_turn_line(conn) == _CUT
+        record_asked(conn, "T-half")
+        assert next_turn_line(conn) == _CUT
     finally:
         conn.close()
 
@@ -156,9 +132,9 @@ def test_an_answer_given_after_the_cut_ends_the_look_back(tmp_path: Path) -> Non
     conn = open_event_log(db_path)
     try:
         _play_cut(conn, db_path, gated=1)
-        _asked(conn, "T-later")
-        _emit_response(conn, response_id="RL", group_id="GL", turn_id="T-later", text="Sure.")
-        assert _next_turn_line(conn) is None
+        record_asked(conn, "T-later")
+        emit_response(conn, response_id="RL", group_id="GL", turn_id="T-later", text="Sure.")
+        assert next_turn_line(conn) is None
     finally:
         conn.close()
 
@@ -170,16 +146,19 @@ def test_an_answer_stopped_before_it_played_was_never_spoken(tmp_path: Path) -> 
     """
     db_path = tmp_path / "events.db"
     conn = open_event_log(db_path)
-    pipeline, player = _pipeline(
-        db_path, _FakeProvider(candidate_count=1), speak_from_segments=True,
+    pipeline, player = make_pipeline(
+        db_path, FakeProvider(candidate_count=1), speak_from_segments=True,
     )
     try:
-        _asked(conn, "T-RP")
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, [_open(conn, "RP")]))
+        record_asked(conn, "T-RP")
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, [append_open(conn, "RP")]))
             pipeline.hold_output(held=True)
-            rest = [_chunk(conn, "RP", 0, "会议改到三点。"), _emitted(conn, "RP", "会议改到三点。")]
-            asyncio.run(_submit_response(pipeline, rest))
+            rest = [
+                append_chunk(conn, "RP", 0, "会议改到三点。"),
+                append_emitted(conn, "RP", "会议改到三点。"),
+            ]
+            asyncio.run(submit_response(pipeline, rest))
             assert pipeline.stop_foreground_output("RP") == "applied"
             pipeline.hold_output(held=False)
             assert pipeline.wait_until_idle(timeout_s=2.0)
@@ -188,7 +167,7 @@ def test_an_answer_stopped_before_it_played_was_never_spoken(tmp_path: Path) -> 
             "WHERE type = 'surface.speech_dropped'",
         ).fetchall()
         assert dropped == [("user_stop",)]
-        assert _next_turn_line(conn) == (
+        assert next_turn_line(conn) == (
             "Previous answer: never spoken aloud; it was stopped before it began to play "
             "and was only shown on screen"
         )
@@ -203,14 +182,14 @@ def test_a_cut_answer_before_one_never_spoken_is_still_named(tmp_path: Path) -> 
     conn = open_event_log(db_path)
     try:
         _play_cut(conn, db_path, gated=1)
-        _asked(conn, "T-never")
-        _emit_response(conn, response_id="RN", group_id="GN", turn_id="T-never", text="Sure.")
+        record_asked(conn, "T-never")
+        emit_response(conn, response_id="RN", group_id="GN", turn_id="T-never", text="Sure.")
         emit_event(
             conn,
             type="surface.speech_dropped",
             payload={"response_id": "RN", "turn_id": "T-never", "reason": "displaced"},
         )
-        line = _next_turn_line(conn)
+        line = next_turn_line(conn)
     finally:
         conn.close()
     assert line is not None

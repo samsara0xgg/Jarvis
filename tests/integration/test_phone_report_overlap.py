@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from jarvis.surface import voice_ledger
-from tests.integration.test_phone_voice import _answer, _Host
-from tests.integration.test_terminal_voice import _wait_for
+from tests.support.phone import VoiceHost, answer_rows
+from tests.support.terminal import wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,15 +70,15 @@ def test_a_phone_whose_reports_overlap_by_one_sample_completes_its_answers(
 ) -> None:
     """(b): the answer is heard whole, ended by its completion, and nothing interrupts it."""
     text = "The first sentence."
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone(report_overlap=1)
         try:
             phone.hello()
             phone.send_ready()
             phone.say("u-1", "what is the weather", spoken=True)
             turn = phone.wait_text("said")["turn_id"]
-            _answer(host.log, turn, "R-1", text)
-            _wait_for(
+            answer_rows(host.log, turn, "R-1", text)
+            wait_for(
                 lambda: "surface.playback_completed" in host.playback("R-1"),
                 "the answer never completed",
                 timeout_s=20,

@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING, Any, Self
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_stream import LLMTextDelta
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
-    _frames,
-    _spoken,
-    _spoken_runtime,
+from tests.support.routine import drive_streaming_turn
+from tests.support.spoken import (
+    fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
+    response_frames,
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_wire_routine_streaming import _drive
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,7 +89,7 @@ class _KeepAlivePeer:
                 else:
                     body = "".join(
                         f"event: {frame['type']}\ndata: {json.dumps(frame)}\n\n"
-                        for frame in _frames(self.outputs.pop(0))
+                        for frame in response_frames(self.outputs.pop(0))
                     ).encode()
                     kind = "text/event-stream"
                 writer.write(
@@ -120,14 +120,17 @@ def test_a_tool_turns_requests_share_one_connection(tmp_path: Path) -> None:
     outputs = [[("commentary", "我看一下。"), ("call", "kept")], [("final_answer", "没有。")]]
     reset_realtime_trace()
     with _KeepAlivePeer(outputs) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-reuse", "我记过什么"))
+        runtime = spoken_runtime(tmp_path, peer.url)
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-reuse", "我记过什么")
+        )
     assert result.response_plan.text == "没有。"
     assert peer.requests == [("POST", "/v1/responses")] * 2
     assert peer.connections == 1
     # The provider's trace records still carry the turn they belong to.
     sent = [
-        point for point in realtime_trace_snapshot()
+        point
+        for point in realtime_trace_snapshot()
         if point.name == "llm_sdk_request_call_started_upper_bound"
     ]
     assert [point.attributes.get("turn_id") for point in sent] == ["turn-reuse"] * 2
@@ -136,13 +139,13 @@ def test_a_tool_turns_requests_share_one_connection(tmp_path: Path) -> None:
 def test_the_warm_up_opens_the_connection_the_turn_then_uses(tmp_path: Path) -> None:
     """Warming when Allen starts talking leaves one open connection for his request."""
     with _KeepAlivePeer([[("final_answer", "在。")]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+        runtime = spoken_runtime(tmp_path, peer.url)
         started = time.monotonic()
         runtime.llm_client.warm_stream()
         assert time.monotonic() - started < 0.05  # never waits on the network
         runtime.llm_client.warm_stream()  # a second onset right after is not a second warm-up
         _wait_for(lambda: peer.requests)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-warm", "你在吗"))
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-warm", "你在吗"))
     assert result.response_plan.text == "在。"
     assert peer.requests == [("GET", "/v1/models/fixture-model"), ("POST", "/v1/responses")]
     assert peer.connections == 1
@@ -151,14 +154,22 @@ def test_the_warm_up_opens_the_connection_the_turn_then_uses(tmp_path: Path) -> 
 def test_a_cancelled_stream_drops_its_request_on_the_resident_loop() -> None:
     """Cancelling mid-answer closes that request's connection; nothing keeps reading it."""
     with _KeepAlivePeer([[("final_answer", "一二三四五六七八九十" * 20)]], hang=True) as peer:
-        client = LLMClient({
-            "provider": "openai", "model": "fixture-model", "base_url": peer.url,
-            "api_key_env": "ROUTINE_STREAM_FIXTURE_KEY", "max_tokens": 64, "max_retries": 0,
-        })
+        client = LLMClient(
+            {
+                "provider": "openai",
+                "model": "fixture-model",
+                "base_url": peer.url,
+                "api_key_env": "ROUTINE_STREAM_FIXTURE_KEY",
+                "max_tokens": 64,
+                "max_retries": 0,
+            }
+        )
         settled: list[str] = []
         handle = client.stream_events(
-            messages=[{"role": "user", "content": "数数"}], system="",
-            on_settled=lambda result: settled.append(result.outcome), responses=True,
+            messages=[{"role": "user", "content": "数数"}],
+            system="",
+            on_settled=lambda result: settled.append(result.outcome),
+            responses=True,
         )
 
         async def _read_then_cancel() -> None:

@@ -9,7 +9,6 @@ Silero session and a scripted partial decoder.
 from __future__ import annotations
 
 import time
-import wave
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
@@ -18,6 +17,16 @@ import numpy as np
 import pytest
 
 from jarvis.surface import voice_audio, voice_backend, voice_session
+from tests.support.voice_input import write_wav
+
+# Old names for test_terminal_listen.py, which has not migrated; its pass drops this block.
+# isort: off
+from tests.support import voice_input as _shim
+from tests.support.voice_input import EnergySession
+
+_EnergySession = _shim.EnergySession
+_write_wav = _shim.write_wav
+# isort: on
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,15 +43,6 @@ def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> Non
         time.sleep(0.002)
 
 
-def _write_wav(path: Path, pcm: np.ndarray, *, rate: int = 16_000, channels: int = 1) -> Path:
-    with wave.open(str(path), "wb") as writer:
-        writer.setnchannels(channels)
-        writer.setsampwidth(2)
-        writer.setframerate(rate)
-        writer.writeframes(pcm.astype("<i2").tobytes())
-    return path
-
-
 def _ingress(backend: voice_backend.AudioDuplexBackend) -> voice_audio.AudioIngress:
     return voice_audio.AudioIngress(
         backend=backend,
@@ -54,18 +54,6 @@ def _ingress(backend: voice_backend.AudioDuplexBackend) -> voice_audio.AudioIngr
             shutdown_timeout_s=1.0,
         ),
     )
-
-
-class _EnergySession:
-    """ONNX-shaped Silero fixture whose probability follows sample energy."""
-
-    def run(self, _output_names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
-        probability = 0.9 if np.any(inputs["x"]) else 0.0
-        return [
-            np.asarray([[probability]], dtype=np.float32),
-            inputs["h"].copy(),
-            inputs["c"].copy(),
-        ]
 
 
 class _AlwaysOnWake:
@@ -100,7 +88,7 @@ def test_replay_feeds_real_ingress_contiguously_at_real_time_pace(tmp_path: Path
     """File frames arrive gap-free and on the audio clock; silence follows EOF."""
     samples = 8_000  # 0.5 s
     pcm = (np.arange(samples) % 2_000).astype("<i2")
-    path = _write_wav(tmp_path / "half_second.wav", pcm)
+    path = write_wav(tmp_path / "half_second.wav", pcm)
     backend = voice_backend.FileReplayBackend(path)
     ingress = _ingress(backend)
     subscription = ingress.subscribe(
@@ -150,7 +138,7 @@ def test_replay_rejects_non_canonical_wav(
 ) -> None:
     """Only 16 kHz mono PCM16 fixtures may enter the canonical ingress."""
     pcm = np.zeros(1_024 * channels, dtype="<i2")
-    path = _write_wav(tmp_path / "bad.wav", pcm, rate=rate, channels=channels)
+    path = write_wav(tmp_path / "bad.wav", pcm, rate=rate, channels=channels)
     with pytest.raises(ValueError, match=match):
         voice_backend.FileReplayBackend(path)
 
@@ -167,11 +155,11 @@ def test_two_burst_replay_commits_two_utterances_through_the_duplex_session(
     )
     tone = np.full(int(0.4 * 16_000), 10_000, dtype="<i2")
     gap = np.zeros(int(0.3 * 16_000), dtype="<i2")
-    path = _write_wav(tmp_path / "two_bursts.wav", np.concatenate([tone, gap, tone]))
+    path = write_wav(tmp_path / "two_bursts.wav", np.concatenate([tone, gap, tone]))
     backend = voice_backend.FileReplayBackend(path)
     ingress = _ingress(backend)
     pipeline = _RecordingPipeline()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=EnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=_AlwaysOnWake(),

@@ -21,13 +21,13 @@ from jarvis.decision.tier0 import load_tier0_table, match_tier0
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_audio, voice_pipeline, voice_session
 from tests.canary._helpers import repo_root
-from tests.integration.test_wave3_single_audio_ingress import (
-    _EnergySession,
-    _FakeBackend,
-    _FakeWakeEngine,
-    _ingress,
-    _RecordingPipeline,
-    _wait_until,
+from tests.support.voice_input import (
+    FakeBackend,
+    FakeWakeEngine,
+    RecordingPipeline,
+    StatefulEnergySession,
+    make_ingress,
+    wait_until_true,
 )
 
 if TYPE_CHECKING:
@@ -152,7 +152,7 @@ def test_a_greeting_in_a_turn_he_opened_himself_is_kept(
     assert _transcripts(tmp_path) == [committed]
 
 
-class _WakeOnlyFirst(_RecordingPipeline):
+class _WakeOnlyFirst(RecordingPipeline):
     """The first commit is a bare wake phrase; later ones are questions."""
 
     def run_turn(self, **kwargs: Any) -> Any:  # noqa: ANN401
@@ -186,12 +186,12 @@ def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
         "record",
         voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    wake_engine = _FakeWakeEngine(detections={0})
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
+    wake_engine = FakeWakeEngine(detections={0})
     pipeline = _WakeOnlyFirst()
     voice = _VoiceLog()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=wake_engine,
@@ -215,12 +215,12 @@ def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
         for value in [0, 0, 0, 0, 10_000, 11_000, 12_000, 0, 0, 0, 0, 0]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        _wait_until(lambda: len(pipeline.calls) == 1)
+        wait_until_true(lambda: len(pipeline.calls) == 1)
         time.sleep(0.02)
         for value in [0, 0, 20_000, 21_000, 22_000, 0, 0, 0, 0, 0]:
             backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
-        _wait_until(lambda: len(pipeline.calls) == 2)
+        wait_until_true(lambda: len(pipeline.calls) == 2)
         assert session.metrics().wake_detections == 1
         first = pipeline.calls[0]["turn_id"]
         assert ("empty", first, {"reason": "wake_only"}) in voice.phases

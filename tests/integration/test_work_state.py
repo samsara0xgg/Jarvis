@@ -37,8 +37,8 @@ from jarvis.state.work_state import (
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.timesink_observer import TimesinkObserver, latest_observation
-from tests.integration.test_flat_tool_dispatch import _Fixture, _request
 from tests.integration.test_timesink_activity import add_capture, add_span, source
+from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -116,7 +116,7 @@ class Rig:
         with open_memory_db(self.memory):
             pass
         self.analyst = CannedAnalyst()
-        self.fx = _Fixture(root, tools=())
+        self.fx = ToolWorld(root, tools=())
         self.service = WorkStateService(
             event_log_path=self.fx.paths.event_log,
             memory_path=self.memory,
@@ -144,7 +144,7 @@ class Rig:
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Dispatch through the real dispatcher and decode the persisted output."""
         self.sequence += 1
-        result = self.fx.dispatch(_request(name, f"ws{self.sequence}", arguments=args))
+        result = self.fx.dispatch(tool_request(name, f"ws{self.sequence}", arguments=args))
         assert result.slots[0].tool_output is not None
         return dict(json.loads(result.slots[0].tool_output))
 
@@ -484,7 +484,7 @@ def test_http_routes_share_the_service(rig: Rig) -> None:
 
 def test_head_poll_emits_only_on_change(tmp_path: Path, source: sqlite3.Connection) -> None:
     """The 5-minute sync records collector state once per change, including extending rows."""
-    fx = _Fixture(tmp_path, tools=())
+    fx = ToolWorld(tmp_path, tools=())
     try:
         observer = TimesinkObserver(fx.conn, tmp_path / "timesink.sqlite")
         assert observer.recover_baseline() is None

@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING
 
 from jarvis.runtime import _live_lines
 from jarvis.surface.voice_cues import VoiceCues
-from tests.integration.test_backend_prompt_assembly import HISTORY, LINE, STATUS, _drive_one_turn
 from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
-from tests.integration.test_wave3_single_audio_ingress import _wait_until
+from tests.support.prompt_assembly import HISTORY, REPLY_LINE, STATUS, drive_one_turn
+from tests.support.voice_input import wait_until_true
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 def _request(tmp_path: Path, cues: VoiceCues) -> str:
     (tmp_path / "turn").mkdir()
-    _, messages = _drive_one_turn(
+    _, messages = drive_one_turn(
         tmp_path / "turn", HISTORY, live_context=_live_lines((cues.line,)),
     )
     content = messages[2]["content"]
@@ -41,7 +41,7 @@ def test_a_laugh_over_her_and_a_happy_sentence_reach_the_next_request(tmp_path: 
         rig.speaking = False
         rig.asr._texts.append("你说得太好笑了。")  # noqa: SLF001 - scripts the next clip
         rig.say(LONG)
-        _wait_until(lambda: rig.turns() == ["你说得太好笑了。"])
+        wait_until_true(lambda: rig.turns() == ["你说得太好笑了。"])
     finally:
         rig.close()
 
@@ -50,7 +50,7 @@ def test_a_laugh_over_her_and_a_happy_sentence_reach_the_next_request(tmp_path: 
         "he sounded happy; "
         "he laughed without words while you were speaking.\n"
     )
-    assert _request(tmp_path, cues) == f"{STATUS}{cue_line}\n后天呢\n\n{LINE}"
+    assert _request(tmp_path, cues) == f"{STATUS}{cue_line}\n后天呢\n\n{REPLY_LINE}"
     # Read once: the same state now adds nothing.
     assert cues.line() is None
 
@@ -59,4 +59,4 @@ def test_no_cues_add_nothing_and_a_noisy_label_is_not_one(tmp_path: Path) -> Non
     """Empty state, NEUTRAL speech and BGM leave the request as it was."""
     cues = VoiceCues()
     cues.heard("好的。", "NEUTRAL", "BGM")
-    assert _request(tmp_path, cues) == f"{STATUS}\n后天呢\n\n{LINE}"
+    assert _request(tmp_path, cues) == f"{STATUS}\n后天呢\n\n{REPLY_LINE}"

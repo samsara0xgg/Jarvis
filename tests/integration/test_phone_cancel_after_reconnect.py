@@ -29,8 +29,8 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents, phone_turn_id
-from tests.integration.test_terminal_voice import _AsRemote, _free_port
-from tests.integration.test_wave4a_response_run import _make_runtime, _open_run
+from tests.support.response_run import make_runtime, open_run
+from tests.support.terminal import AsRemote, free_port
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -61,7 +61,7 @@ class _Host:
     """
 
     def __init__(self, tmp_path: Path) -> None:
-        self.runtime: JarvisRuntime = _make_runtime(
+        self.runtime: JarvisRuntime = make_runtime(
             tmp_path / "runtime", lifecycle=True, cancel=True,
         )
         keys = tmp_path / "keys"
@@ -90,9 +90,9 @@ class _Host:
             app, lambda header: local_key_matches(local_key(keys), header),
             device_token_matches=lambda one: device_token_matches(keys, one),
         )
-        self.port = _free_port()
+        self.port = free_port()
         self.server = _Server(uvicorn.Config(
-            _AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off",
+            AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off",
         ))
         self.thread = threading.Thread(target=lambda: asyncio.run(self.server.serve()), daemon=True)
 
@@ -153,7 +153,7 @@ def _answering(host: _Host, device: str, utterance_id: str) -> tuple[str, Respon
     ws.close()
     turn_id = said["turn_id"]
     assert turn_id == phone_turn_id(device, utterance_id)
-    return turn_id, _open_run(host.runtime, response_id=f"RESP-{device}", turn_id=turn_id)
+    return turn_id, open_run(host.runtime, response_id=f"RESP-{device}", turn_id=turn_id)
 
 
 def test_a_cancel_on_a_new_socket_stops_the_answer_the_old_socket_asked_for(host: _Host) -> None:

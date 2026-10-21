@@ -21,7 +21,6 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import ChatStreamChunk, LLMClient
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import VisionCallError, _build_vision_cost_recorder, _LLMVisionClient
-from jarvis.shared import ActionRequest, AuthorizationLease, CallerPrincipal
 from jarvis.shared.realtime import (
     AlreadyConsumed,
     AlreadyTerminal,
@@ -56,9 +55,10 @@ from jarvis.state.lifecycle_terminal import (
     terminalize_playback,
     terminalize_response,
 )
+from tests.support.concurrency import confirmation_candidate, seed_accepted_confirmation
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Iterator
 
     from jarvis.shared import Event
     from jarvis.shared.realtime import ConfirmationConsumptionOutcome, TerminalOutcome
@@ -400,89 +400,11 @@ def test_terminal_failure_after_append_rolls_back_without_publish(tmp_path: Path
     conn.close()
 
 
-def _seed_accepted_confirmation(
-    conn: sqlite3.Connection,
-    *,
-    suffix: str,
-) -> tuple[Event, Mapping[str, object]]:
-    now_ms = 2_000_000
-    content = "safe"
-    content_bytes = content.encode("utf-8")
-    target = f"file:/tmp/{suffix}.txt"
-    snapshot: dict[str, object] = {
-        "tool_name": "write_file",
-        "caller": "jarvis_llm",
-        "canonical_target": f"/tmp/{suffix}.txt",
-        "target_entity_ref": target,
-        "risk_level": "L3",
-        "args_meta": {
-            "target": target,
-            "mode": "overwrite",
-            "content_sha256": hashlib.sha256(content_bytes).hexdigest(),
-            "content_bytes": len(content_bytes),
-            "content_artifact": f"/tmp/{suffix}.pending",
-        },
-    }
-    requested = emit_event(
-        conn,
-        type="confirmation.requested",
-        payload={
-            "confirmation_id": f"CONF-{suffix}",
-            "action_snapshot": snapshot,
-            "template_line": "approved",
-            "expires_at_ms": now_ms + 60_000,
-        },
-    )
-    accepted = emit_event(
-        conn,
-        type="confirmation.accepted",
-        payload={
-            "confirmation_id": f"CONF-{suffix}",
-            "utterance_raw": "可以",
-            "grammar_rule_id": "yes",
-        },
-        source_event_id=requested.event_uid,
-    )
-    return accepted, snapshot
-
-
-def _confirmation_candidate(
-    accepted_event_uid: str,
-    snapshot: Mapping[str, object],
-    *,
-    random_suffix: str,
-) -> tuple[ActionRequest, AuthorizationLease]:
-    target = cast("str", snapshot["target_entity_ref"])
-    request = ActionRequest(
-        action_id=f"random-action-{random_suffix}",
-        tool_name="write_file",
-        target_entity_ref=target,
-        caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level="L3",
-        arguments={"target": target, "mode": "overwrite", "content": "safe"},
-        authorization_lease=None,
-        run_id=None,
-        turn_id="T-confirm",
-    )
-    lease: AuthorizationLease = {
-        "lease_id": f"random-lease-{random_suffix}",
-        "granted_by": "allen",
-        "granted_to": CallerPrincipal.JARVIS_LLM,
-        "allowed_tools": frozenset({"write_file"}),
-        "allowed_targets": frozenset({target}),
-        "expires_at_ms": 2_050_000,
-        "max_uses": 1,
-        "reason": "approved",
-        "source_confirmation_event_id": accepted_event_uid,
-    }
-    return request, lease
-
-
 def test_confirmation_acceptance_two_connection_race_has_one_dispatch(tmp_path: Path) -> None:
     """Different random candidates resolve to one stable accepted-event debt."""
     path = tmp_path / "confirmation-race.db"
     setup = open_event_log(path)
-    accepted, snapshot = _seed_accepted_confirmation(setup, suffix="race")
+    accepted, snapshot = seed_accepted_confirmation(setup, suffix="race")
     ensure_authorized_dispatch_schema(setup)
     setup.close()
     bus = CommittedEventBus()
@@ -492,7 +414,7 @@ def test_confirmation_acceptance_two_connection_race_has_one_dispatch(tmp_path: 
 
     def _worker(suffix: str) -> ConfirmationConsumptionOutcome:
         conn = _raw_connection(path)
-        request, lease = _confirmation_candidate(
+        request, lease = confirmation_candidate(
             accepted.event_uid,
             snapshot,
             random_suffix=suffix,
@@ -555,8 +477,8 @@ def test_authorized_dispatch_recovery_rejects_persisted_tampering(
 ) -> None:
     """Recovery never returns dispatchable debt from a mismatched durable chain."""
     conn = open_event_log(tmp_path / f"dispatch-recovery-{tamper}.db")
-    accepted, snapshot = _seed_accepted_confirmation(conn, suffix=tamper)
-    request, lease = _confirmation_candidate(
+    accepted, snapshot = seed_accepted_confirmation(conn, suffix=tamper)
+    request, lease = confirmation_candidate(
         accepted.event_uid,
         snapshot,
         random_suffix=tamper,
@@ -627,8 +549,8 @@ def test_confirmation_gate_source_override_cannot_escape_accepted_uid(
 ) -> None:
     """Callers cannot redirect the passing gate's cause chain."""
     conn = open_event_log(tmp_path / "confirmation-gate-source.db")
-    accepted, snapshot = _seed_accepted_confirmation(conn, suffix="gate-source")
-    request, lease = _confirmation_candidate(
+    accepted, snapshot = seed_accepted_confirmation(conn, suffix="gate-source")
+    request, lease = confirmation_candidate(
         accepted.event_uid,
         snapshot,
         random_suffix="gate-source",
@@ -660,9 +582,9 @@ def test_confirmation_failure_injection_is_all_or_nothing(
 ) -> None:
     """Gate, accepted-event claim, and outbox share one rollback boundary."""
     conn = open_event_log(tmp_path / f"confirmation-{failure_stage}.db")
-    accepted, snapshot = _seed_accepted_confirmation(conn, suffix=failure_stage)
+    accepted, snapshot = seed_accepted_confirmation(conn, suffix=failure_stage)
     ensure_authorized_dispatch_schema(conn)
-    request, lease = _confirmation_candidate(
+    request, lease = confirmation_candidate(
         accepted.event_uid,
         snapshot,
         random_suffix="fault",
@@ -703,8 +625,8 @@ def test_confirmation_revalidation_refuses_without_partial_debt(
 ) -> None:
     """Slot, expiry, scope, use-count, and snapshot drift all fail closed."""
     conn = open_event_log(tmp_path / f"confirmation-revalidate-{case}.db")
-    accepted, snapshot = _seed_accepted_confirmation(conn, suffix=case)
-    request, lease = _confirmation_candidate(
+    accepted, snapshot = seed_accepted_confirmation(conn, suffix=case)
+    request, lease = confirmation_candidate(
         accepted.event_uid,
         snapshot,
         random_suffix=case,

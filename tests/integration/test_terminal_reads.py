@@ -10,27 +10,24 @@ there, in the tool's own result and, for the background jobs, in the coverage th
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import functools
 import hashlib
 import json
 import sqlite3
-import threading
 import time
 from contextlib import closing
 from datetime import UTC, datetime
 from datetime import time as dtime
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any
 
 import pytest
-import uvicorn
 
 from jarvis.deployment import bootstrap_runtime
-from jarvis.execution.tools import build_default_registry, make_screen_capture
+from jarvis.execution.tools import build_default_registry
 from jarvis.runtime import _reads_connected, bootstrap_runtime_app
 from jarvis.runtime.daily_report import DailyReportService, DailySchedule
-from jarvis.runtime.terminal import _declared, _observe, _Watched, make_executor
+from jarvis.runtime.terminal import _Watched
 from jarvis.runtime.work_state import WorkStateService
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state import device_reads, timesink
@@ -42,44 +39,20 @@ from jarvis.state.daily_report import (
     resolve_zone,
     search_day,
 )
-from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
+from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
-from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.work_state import gather_evidence
 from jarvis.surface import terminal_link
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
-from jarvis.surface.terminal_events import BrainEvents, EventOutbox
-from jarvis.surface.terminal_link import TerminalHub, run_terminal_client
-from tests.integration.test_daily_report import (
-    DAY,
-    NOW,
-    TZ,
-    ZONE,
-    CannedReporter,
-    _one_item,
-    git_repo,
-)
-from tests.integration.test_flat_tool_dispatch import _Fixture, _request
-from tests.integration.test_terminal_observers import (
-    _AsRemote,
-    _free_port,
-    _make_repo,
-    _wait_for,
-    commit,
-    rows,
-)
 from tests.integration.test_timesink_activity import add_capture, add_event, add_span, source
+from tests.support.daily_report import DAY, NOW, TZ, ZONE, CannedReporter, git_repo, one_item
+from tests.support.terminal import Brain, Terminal, commit_file, log_rows, make_repo, wait_for
+from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from starlette.types import ASGIApp
-
-    from jarvis.state.projects import Project
-    from jarvis.surface.claude_sessions import ClaudeSessions
 
 __all__ = ["source"]
 
@@ -89,117 +62,6 @@ QUERY = {"from": FROM, "to": TO, "sources": ["app", "screen"]}
 
 
 # --- the rig: a brain's hub on a real socket, a terminal with its own files ---------------------
-
-
-class _Brain:
-    """A real uvicorn server carrying a hub on ``/terminal/ws``, over a real event log."""
-
-    def __init__(
-        self, root: Path, log: Path,
-        deps: Callable[[TerminalHub], dict[str, Any]] | None = None,
-        tap: Callable[[ASGIApp], ASGIApp] | None = None,
-    ) -> None:
-        self.hub = TerminalHub(events=BrainEvents(_brain_log(log)))
-        app = create_app(
-            InherentDeps(
-                submit_callable=lambda _text: "T1",
-                broadcaster=InherentBroadcaster(),
-                terminals=self.hub,
-                device_name=functools.partial(device_name_for_token, root),
-                **({} if deps is None else deps(self.hub)),
-            ),
-        )
-        require_local_key(
-            app,
-            functools.partial(local_key_matches, local_key(root)),
-            device_token_matches=functools.partial(device_token_matches, root),
-        )
-        self.port = _free_port()
-        self.server = uvicorn.Server(
-            uvicorn.Config(_AsRemote(app if tap is None else tap(app)), host="127.0.0.1",
-                           port=self.port, log_level="warning", lifespan="off"),
-        )
-        self.thread = threading.Thread(
-            target=lambda: asyncio.run(self.server.serve()), daemon=True,
-        )
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        _wait_for(lambda: self.server.started, "server never started")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
-
-
-def _brain_log(path: Path) -> sqlite3.Connection:
-    open_event_log(path).close()
-    return sqlite3.connect(path, check_same_thread=False)
-
-
-class _Terminal:
-    """A terminal's link as ``run_terminal`` builds it: the real executor over its own files."""
-
-    def __init__(  # noqa: PLR0913 — the link, the device's files and what watches them.
-        self,
-        url: str,
-        token: str,
-        *,
-        store: Path | None,
-        repos: tuple[str, ...],
-        watched: _Watched | None = None,
-        projects: tuple[Project, ...] = (),
-        claude: ClaudeSessions | None = None,
-    ) -> None:
-        registry = build_default_registry(obsidian_vault_root=None)
-        registry.register(make_screen_capture(800))
-        self._args = (
-            url, token, _declared(registry),
-            make_executor(
-                registry, timesink_store=store, repos=repos, projects=projects, claude=claude,
-            ),
-            watched,
-        )
-        self.loop = asyncio.new_event_loop()
-        self.task: asyncio.Task[None] | None = None
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self) -> None:
-        async def main() -> None:
-            url, token, tools, execute, watched = self._args
-            outbox = None if watched is None else EventOutbox()
-            observing = None if watched is None or outbox is None else asyncio.create_task(
-                _observe(outbox, watched),
-            )
-            self.task = asyncio.create_task(run_terminal_client(
-                url, token, tools=tools, execute=execute, events=outbox,
-            ))
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
-            finally:
-                if observing is not None:
-                    observing.cancel()
-                    await asyncio.wait({observing})
-
-        self.loop.run_until_complete(main())
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        return self
-
-    def stop(self) -> None:
-        self.loop.call_soon_threadsafe(lambda: self.task and self.task.cancel())
-        self.thread.join(timeout=10)
-
-    def __exit__(self, *_exc: object) -> None:
-        self.stop()
 
 
 @pytest.fixture(autouse=True)
@@ -218,13 +80,13 @@ class _Tools:
             pass
         self.log = bootstrap_runtime(root).event_log
         self.registry = build_default_registry(memory_db_path=self.memory, **registry)
-        self.fx = _Fixture(root, tools=self.registry.get_definitions())
+        self.fx = ToolWorld(root, tools=self.registry.get_definitions())
         self.sequence = 0
 
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Dispatch and decode the persisted output; an error has ``error`` and ``code``."""
         self.sequence += 1
-        result = self.fx.dispatch(_request(name, f"t{self.sequence}", arguments=args))
+        result = self.fx.dispatch(tool_request(name, f"t{self.sequence}", arguments=args))
         assert result.slots[0].tool_output is not None
         return dict(json.loads(result.slots[0].tool_output))
 
@@ -255,8 +117,8 @@ class _Rig:
     store: Path
     repo: Path
     shas: dict[str, str]
-    brain: _Brain
-    terminal: _Terminal
+    brain: Brain
+    terminal: Terminal
     device: Callable[..., dict[str, Any]]
 
 
@@ -267,16 +129,16 @@ def rig(tmp_path: Path, source: sqlite3.Connection) -> Iterator[_Rig]:
     store = tmp_path / "timesink.sqlite"
     token = pair_device(tmp_path, "macbook")
     log = bootstrap_runtime(tmp_path / "brain-root").event_log
-    with _Brain(tmp_path, log) as brain, _Terminal(
+    with Brain(tmp_path, log) as brain, Terminal(
         brain.url, token, store=store, repos=(str(repo),),
     ) as terminal:
-        _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+        wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
         yield _Rig(store, repo, shas, brain, terminal, brain.hub.call)
 
 
 def _disconnect(rig: _Rig) -> None:
     rig.terminal.stop()
-    _wait_for(lambda: not rig.brain.hub.connected(), "the terminal never left")
+    wait_for(lambda: not rig.brain.hub.connected(), "the terminal never left")
 
 
 # --- the timeline tool ---------------------------------------------------------------------
@@ -323,16 +185,16 @@ def test_a_brains_git_rows_are_the_terminals_observations_and_its_coverage_names
     cannot know alone is whether a repository is watched, which it asks the terminal.
     """
     del source
-    repo = _make_repo(tmp_path / "watched")
+    repo = make_repo(tmp_path / "watched")
     token = pair_device(tmp_path, "macbook")
     log = bootstrap_runtime(tmp_path / "brain").event_log
-    with _Brain(tmp_path, log) as brain, _Terminal(
+    with Brain(tmp_path, log) as brain, Terminal(
         brain.url, token, store=None, repos=(str(repo),),
         watched=_Watched((str(repo),), 0.1, None, 300),
     ):
-        _wait_for(lambda: bool(rows(log, "repo.state_observed")), "no first state")
-        commit(repo, "second")
-        _wait_for(lambda: bool(rows(log, "project.commit_seen")), "no commit")
+        wait_for(lambda: bool(log_rows(log, "repo.state_observed")), "no first state")
+        commit_file(repo, "second")
+        wait_for(lambda: bool(log_rows(log, "project.commit_seen")), "no commit")
         on_brain = _Tools(tmp_path / "brain", device_link=brain.hub.call)
         window = {"from": "2020-01-01T00:00:00Z", "to": "2099-01-01T00:00:00Z",
                   "sources": ["git"]}
@@ -547,7 +409,7 @@ def test_the_daily_report_on_a_brain_cites_the_terminals_data_and_records_the_ga
     """Generated citing what the terminal verified; with none, the coverage says what is missing."""
     on_brain = _Service(tmp_path / "svc", device=rig.device, store=None, repos=())
     _record(on_brain.memory, "rec-1", "明天继续写日报工具。")
-    on_brain.reporter.report = _one_item("日报工具", "completed", ["r1", "s1", "a1"])
+    on_brain.reporter.report = one_item("日报工具", "completed", ["r1", "s1", "a1"])
     done = on_brain.run()
     assert done["outcome"] == "generated", done
     assert done["coverage"]["app"] != "unavailable"
@@ -561,7 +423,7 @@ def test_the_daily_report_on_a_brain_cites_the_terminals_data_and_records_the_ga
     assert device_reads.NOT_CONNECTED in nothing["served"]["app"]
     assert any(device_reads.NOT_CONNECTED in limit for limit in nothing["limits"])
 
-    again.reporter.report = _one_item("日报工具", "completed", ["r1"])
+    again.reporter.report = one_item("日报工具", "completed", ["r1"])
     _record(again.memory, "rec-1", "明天继续写日报工具。")
     partial = again.run()
     assert partial["outcome"] == "generated", partial
@@ -582,7 +444,7 @@ def test_a_day_written_while_the_terminal_was_away_is_written_again_when_it_conn
     store = tmp_path / "timesink.sqlite"
     token = pair_device(tmp_path, "macbook")
     log = bootstrap_runtime(tmp_path / "brain-root").event_log
-    with _Brain(tmp_path, log) as brain:
+    with Brain(tmp_path, log) as brain:
         svc = _Service(tmp_path / "svc", device=brain.hub.call, store=None, repos=())
         schedule = DailySchedule(
             svc.service, event_log_path=tmp_path / "svc" / "events.db", at=dtime(5), zone=TZ,
@@ -595,16 +457,16 @@ def test_a_day_written_while_the_terminal_was_away_is_written_again_when_it_conn
         assert schedule.catch_up() is None, "no terminal to ask yet"
 
         _record(svc.memory, "rec-1", "明天继续写日报工具。")
-        svc.reporter.report = _one_item("日报工具", "completed", ["r1"])
+        svc.reporter.report = one_item("日报工具", "completed", ["r1"])
         partial = schedule.write(DAY, now=NOW, catch_up=True)  # still no terminal
         assert (partial["outcome"], partial["device_gap"]) == ("generated", True)
         assert partial["coverage"]["app"] == "unavailable"
         assert schedule.catch_up() is None
 
-        with _Terminal(brain.url, token, store=store, repos=(str(repo),)):
-            _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+        with Terminal(brain.url, token, store=store, repos=(str(repo),)):
+            wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
             assert schedule.catch_up() == DAY
-            svc.reporter.report = _one_item("日报工具", "completed", ["r1", "s1", "a1"])
+            svc.reporter.report = one_item("日报工具", "completed", ["r1", "s1", "a1"])
             done = schedule.write(DAY, now=NOW, catch_up=True)
             assert (done["outcome"], done["device_gap"]) == ("generated", False)
             assert done["version"] == partial["version"] + 1
@@ -623,7 +485,7 @@ def test_a_catch_up_gives_up_after_its_few_tries_and_a_one_machine_schedule_has_
         DeviceCallError("gone", code="device_timeout"),
     ), store=None, repos=())
     _record(svc.memory, "rec-1", "明天继续写日报工具。")
-    svc.reporter.report = _one_item("日报工具", "completed", ["r1"])
+    svc.reporter.report = one_item("日报工具", "completed", ["r1"])
     schedule = DailySchedule(
         svc.service, event_log_path=tmp_path / "svc" / "events.db", at=dtime(5), zone=TZ,
         device_ready=lambda: True,
@@ -837,10 +699,10 @@ def test_a_terminal_with_no_timesink_or_repositories_answers_that_it_has_none(
     del source
     token = pair_device(tmp_path, "macbook")
     log = bootstrap_runtime(tmp_path / "brain-root").event_log
-    with _Brain(tmp_path, log) as brain, _Terminal(
+    with Brain(tmp_path, log) as brain, Terminal(
         brain.url, token, store=None, repos=(),
     ):
-        _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+        wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
         tools = _Tools(tmp_path / "brain", device_link=brain.hub.call)
         page = tools.call("query_activity", QUERY)
         assert page["store"] is None

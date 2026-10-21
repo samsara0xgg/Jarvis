@@ -29,7 +29,7 @@ from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_controls import VoiceControls
 from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
-from tests.integration.test_wave4a_response_run import _make_runtime
+from tests.support.response_run import make_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -88,7 +88,7 @@ def _scene(tmp_path: Path, open_for: tuple[str, ...]) -> JarvisRuntime:
     that names another turn, so it has no opening row (a reconciliation turn). ``W-mac`` and
     ``W-iphone`` are recent sentences whose run has not opened yet.
     """
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
     nodes = {"mac": MAC_NODE, "iphone": PHONE}
     for name in open_for:
         turn_id = TURNS[name]
@@ -239,7 +239,7 @@ def test_a_devices_voice_cancels_only_the_runs_of_its_own_turns(
 
 def test_the_hold_on_completion_stays_global(tmp_path: Path) -> None:
     """ADR 0053's hold is on every run whoever speaks: a terminal's hold reaches the registry."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
     registry = runtime.response_runs
     assert registry is not None
     _hooks(runtime).hold_runs(True)  # noqa: FBT003

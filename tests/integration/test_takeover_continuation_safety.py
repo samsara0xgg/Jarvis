@@ -30,12 +30,12 @@ from jarvis.runtime import (
 )
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
-from tests.integration.test_wave4a_response_run import (
-    _drive_turn_on_own_connection,
-    _emit_intent,
-    _event_count,
-    _make_runtime,
-    _payloads,
+from tests.support.response_run import (
+    drive_turn_on_own_connection,
+    emit_intent,
+    event_count,
+    make_runtime,
+    payloads_of,
 )
 
 if TYPE_CHECKING:
@@ -47,8 +47,8 @@ def test_cancel_wins_against_late_provider_tool_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Real runtime/L3 drops late tools while retaining the provider's cost."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = _emit_intent(runtime.conn, "cancel-late-tools", "我记过什么")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    intent = emit_intent(runtime.conn, "cancel-late-tools", "我记过什么")
     entered = threading.Event()
     release = threading.Event()
     calls: list[int] = []
@@ -75,14 +75,14 @@ def test_cancel_wins_against_late_provider_tool_batch(
     cancel = make_response_cancel_callable(runtime)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            _drive_turn_on_own_connection,
+            drive_turn_on_own_connection,
             runtime,
             user_intent_event=intent,
             available_surfaces=frozenset(),
         )
         try:
             assert entered.wait(5)
-            response_id = _payloads(runtime.conn, "response.started")[0]["response_id"]
+            response_id = payloads_of(runtime.conn, "response.started")[0]["response_id"]
             outcome = cancel(response_id, "generation", "user_stop")
             assert outcome == "cancelled"
         finally:
@@ -90,16 +90,16 @@ def test_cancel_wins_against_late_provider_tool_batch(
         with pytest.raises(ResponseCancelledError):
             future.result(timeout=5)
     assert calls == [1]
-    assert _event_count(runtime.conn, "cost.recorded") == 1
-    assert _event_count(runtime.conn, "action.dispatched") == 0
-    assert _event_count(runtime.conn, "surface.response_emitted") == 0
+    assert event_count(runtime.conn, "cost.recorded") == 1
+    assert event_count(runtime.conn, "action.dispatched") == 0
+    assert event_count(runtime.conn, "surface.response_emitted") == 0
     runtime.conn.close()
 
 
 def test_cancel_deadline_includes_admission_lock(tmp_path: Path) -> None:
     """A blocked admission fence consumes the same total budget as SQLite setup."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
-    intent = _emit_intent(runtime.conn, "lock-budget", "fixture")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
+    intent = emit_intent(runtime.conn, "lock-budget", "fixture")
     opened = _start_drive_turn_response(runtime, user_intent_event=intent, turn_id="lock-budget")
     assert opened is not None
     run, _terminalizer, _route = opened
@@ -110,14 +110,14 @@ def test_cancel_deadline_includes_admission_lock(tmp_path: Path) -> None:
         assert outcome == "timeout"
         assert time.monotonic() - start < .25
         assert not run.cancellation_token.is_cancelled
-        assert _event_count(runtime.conn, "response.cancelled") == 0
+        assert event_count(runtime.conn, "response.cancelled") == 0
     assert cancel(run.response_id, "generation", "user_stop") == "cancelled"
     runtime.conn.close()
 
 
 def test_two_reentries_record_one_worker_cost(tmp_path: Path) -> None:
     """Two independent SQLite writers cannot charge a worker run twice."""
-    runtime = _make_runtime(tmp_path)
+    runtime = make_runtime(tmp_path)
     barrier = threading.Barrier(2)
 
     def record() -> None:
@@ -136,7 +136,7 @@ def test_two_reentries_record_one_worker_cost(tmp_path: Path) -> None:
         futures = [pool.submit(record) for _ in range(2)]
         for future in futures:
             future.result(timeout=5)
-    assert _event_count(runtime.conn, "cost.recorded") == 1
+    assert event_count(runtime.conn, "cost.recorded") == 1
     runtime.conn.close()
 
 
@@ -158,7 +158,7 @@ async def _held_terminal_scenario(  # noqa: PLR0915 - live-turn and orphan watch
     marker_fails: bool = False,
 ) -> None:
     """The actual watcher distinguishes a live turn's consumed row from a true orphan."""
-    runtime = _make_runtime(tmp_path)
+    runtime = make_runtime(tmp_path)
     mark = mark_trigger_consumed
     marker_calls: list[str] = []
 
@@ -209,12 +209,12 @@ async def _held_terminal_scenario(  # noqa: PLR0915 - live-turn and orphan watch
                 drive_turn(runtime, user_intent_event=trigger, available_surfaces=frozenset())
         else:
             drive_turn(runtime, user_intent_event=trigger, available_surfaces=frozenset())
-        assert _event_count(runtime.conn, "turn.ended") == 1
+        assert event_count(runtime.conn, "turn.ended") == 1
         assert trigger_was_consumed(runtime.conn, terminal.event_uid)
         execution_tools.release_turn_actions("held-turn")
         await asyncio.sleep(0.03)
         assert driven == []
-        assert _event_count(runtime.conn, "turn.ended") == 1
+        assert event_count(runtime.conn, "turn.ended") == 1
         orphan = emit_event(
             runtime.conn,
             type="action.failed",

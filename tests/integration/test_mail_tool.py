@@ -26,12 +26,12 @@ from jarvis.runtime.home import Home, mail_text
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event, open_event_log
 from scripts import tool_exam
-from tests.integration.test_home_routes import (
+from tests.support.home_routes import (
     ZONE,
-    _Connections,
-    _Gmail,
-    _Jev,
-    _Microsoft,
+    Connections,
+    Gmail,
+    HomeJev,
+    Microsoft,
     jev,  # noqa: F401 - the fixture.
 )
 
@@ -104,7 +104,7 @@ class _Mailbox:
 def _mail(mailbox: _Mailbox | None) -> Tool:
     """The ``mail`` tool over a real ``Home`` whose Gmail is ``mailbox`` (None: not connected)."""
     home = Home(
-        _Connections(_Microsoft(), mailbox),  # type: ignore[arg-type]
+        Connections(Microsoft(), mailbox),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None,
     )
     (tool,) = build_mail_tool(home.mail, home.gmail, mail_text, ZoneInfo(ZONE), lambda: NOW)
@@ -142,12 +142,12 @@ def test_the_tool_is_a_small_read_only_native_menu_entry() -> None:
 
 
 def test_no_arguments_lists_the_marked_letters_without_junk_bodies_or_addresses(
-    jev: _Jev,  # noqa: F811
+    jev: HomeJev,  # noqa: F811
 ) -> None:
     """The overview is mail_inbox's: marks and importance ride along, the junk is counted."""
-    gmail = _Gmail()
+    gmail = Gmail()
     home = Home(
-        _Connections(_Microsoft(), gmail),  # type: ignore[arg-type]
+        Connections(Microsoft(), gmail),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None, jev.reply(importance=True),
     )
     (tool,) = build_mail_tool(home.mail, home.gmail, mail_text, ZoneInfo(ZONE), lambda: NOW)

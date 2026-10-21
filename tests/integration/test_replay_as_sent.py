@@ -22,8 +22,8 @@ from jarvis.state.memory_db import (
     record_sent,
     render_context,
 )
-from tests.integration.test_spoken_streaming import _Peer, _spoken, _spoken_runtime
-from tests.integration.test_wire_routine_streaming import _drive
+from tests.support.routine import drive_streaming_turn
+from tests.support.spoken import SpokenPeer, spoken_intent, spoken_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,14 +39,14 @@ def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _two_turns(tmp_path: Path, *, replay_sent: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     outputs = [[("final_answer", "我在。")], [("final_answer", "明天也在。")]]
-    with _Peer(outputs) as peer:
+    with SpokenPeer(outputs) as peer:
         runtime = replace(
-            _spoken_runtime(tmp_path, peer.url),
+            spoken_runtime(tmp_path, peer.url),
             memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
             session=SessionSettings(replay_sent=replay_sent),
         )
-        _drive(runtime, _spoken(runtime.conn, "turn-1", "你在吗"))
-        _drive(runtime, _spoken(runtime.conn, "turn-2", "那明天呢"))
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "你在吗"))
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "那明天呢"))
     (_, first), (_, second) = peer.requests
     return first, second
 

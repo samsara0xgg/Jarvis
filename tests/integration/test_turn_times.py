@@ -25,8 +25,8 @@ from jarvis.runtime import _turn_times
 from jarvis.state import reminders
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface.cli import emit_surface_user_intent
-from tests.integration.test_spoken_streaming import _Peer, _spoken_runtime
-from tests.integration.test_wire_routine_streaming import _drive, _payloads
+from tests.support.routine import drive_streaming_turn, logged_payloads
+from tests.support.spoken import SpokenPeer, spoken_runtime
 
 if TYPE_CHECKING:
     import sqlite3
@@ -214,17 +214,26 @@ def test_the_final_row_carries_times_and_leaves_the_key_out_when_there_are_none(
 ) -> None:
     """Through ``drive_turn``: the answer's ``surface.response_emitted`` is what the phone reads."""
     due = datetime.now(ZONE).replace(microsecond=0) + timedelta(days=1)
-    with _Peer([[("final_answer", "好的, 明天提醒你。")], [("final_answer", "没问题。")]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+    with SpokenPeer(
+        [[("final_answer", "好的, 明天提醒你。")], [("final_answer", "没问题。")]]
+    ) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
         rid = _reminder(runtime.conn, "T-with", "A-with", due, "给妈妈打电话")
         for turn in ("T-with", "T-without"):
             intent = emit_surface_user_intent(
-                runtime.conn, transcript="把它推到明天", turn_id=turn, channel="inherent_ptt",
+                runtime.conn,
+                transcript="把它推到明天",
+                turn_id=turn,
+                channel="inherent_ptt",
                 ingestion_node="iphone",
             )
-            _drive(runtime, intent)
+            drive_streaming_turn(runtime, intent)
     with_times, without = (
-        [p for p in _payloads(runtime.conn, "surface.response_emitted") if p["turn_id"] == turn]
+        [
+            p
+            for p in logged_payloads(runtime.conn, "surface.response_emitted")
+            if p["turn_id"] == turn
+        ]
         for turn in ("T-with", "T-without")
     )
     assert with_times[-1]["times"] == [

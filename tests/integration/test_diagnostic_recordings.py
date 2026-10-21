@@ -13,8 +13,8 @@ from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.shared import llm_io_log
 from jarvis.surface import voice_tts
 from jarvis.surface.voice_artifact_store import TtsRecorder
-from tests.integration.test_typed_llm_stream import _SSE, _client, _frames
-from tests.integration.test_wave2_streaming_media import _FakeWebSocket
+from tests.support.media import FakeWebSocket
+from tests.support.typed_stream import SSEPeer, stream_client, stream_frames
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -35,9 +35,9 @@ def test_tts_audio_is_kept_per_segment_with_what_was_sent(tmp_path: Path) -> Non
     recorder = TtsRecorder(tmp_path)
 
     async def _speak() -> None:
-        ws = _FakeWebSocket()
+        ws = FakeWebSocket()
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             del additional_headers
             return ws
 
@@ -88,10 +88,10 @@ def test_a_streamed_request_logs_its_body_and_what_came_back(
     monkeypatch.setenv("TYPED_STREAM_FIXTURE_KEY", "synthetic")
 
     async def _run() -> None:
-        peer = _SSE(_frames("openai"))
+        peer = SSEPeer(stream_frames("openai"))
         async with peer.running() as url:
             with llm_io_log.labels(kind="decision", turn_id="T1", response_id="R1"):
-                handle = _client("openai", url).stream_events(
+                handle = stream_client("openai", url).stream_events(
                     messages=[{"role": "user", "content": "key sk-abcdefghijklmnopqrstuvwx"}],
                     system="be brief",
                     tools=[{"name": "lookup", "input_schema": {"type": "object"}}],

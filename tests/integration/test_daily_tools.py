@@ -16,50 +16,19 @@ from jarvis.execution.tools import (
     Tool,
     ToolContext,
     ToolError,
-    build_default_registry,
 )
 from jarvis.state.event_log import emit_event, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
-from tests.integration.test_flat_tool_dispatch import _Fixture, _request
+from tests.support.tool_world import ToolWorld, tool_request
+
+# Old names for test_timesink_activity.py, which has not migrated; its pass drops this block.
+# isort: off
+from tests.support.daily_tools import DailyHarness as DailyHarness  # noqa: PLC0414
+# isort: on
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
-
-
-class DailyHarness:
-    """Use the current flat dispatcher and real default registry."""
-
-    def __init__(
-        self,
-        root: Path,
-        *,
-        timesink_path: Path | None = None,
-    ) -> None:
-        """Create an isolated default-registry fixture."""
-        self.memory = root / "memory.db"
-        with closing(open_memory_db(self.memory)):
-            pass
-        self.tools = build_default_registry(
-            memory_db_path=self.memory, timesink_db_path=timesink_path
-        ).get_definitions()
-        self.fx = _Fixture(root, tools=self.tools)
-        self.sequence = 0
-
-    def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch and decode the actual persisted tool output."""
-        self.sequence += 1
-        result = self.fx.dispatch(_request(name, f"daily{self.sequence}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        output = json.loads(result.slots[0].tool_output)
-        assert output.get("truncated") is not True
-        caps = {tool.name: tool.max_result_chars for tool in self.tools if isinstance(tool, Tool)}
-        assert len(result.slots[0].tool_output) <= caps[name]
-        return dict(output)
-
-    def record(self, identity: str, text: str = "Use local todos") -> None:
-        """Append real conversation material without a model."""
-        append_record(self.memory, record_id=identity, source="allen", text=text)
 
 
 @pytest.fixture
@@ -570,9 +539,9 @@ def test_no_memory_file_is_created_by_history_lookup(tmp_path: Path) -> None:
     """Unavailable history is reported, not fabricated as an empty initialized store."""
     missing = tmp_path / "missing.db"
     tools = build_daily_tools(missing)
-    fx = _Fixture(tmp_path, tools=tools)
+    fx = ToolWorld(tmp_path, tools=tools)
     try:
-        result = fx.dispatch(_request("search_records", "missing", arguments={}))
+        result = fx.dispatch(tool_request("search_records", "missing", arguments={}))
         assert result.slots[0].error == "source_unavailable"
         assert not missing.exists()
     finally:

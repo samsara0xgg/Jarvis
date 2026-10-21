@@ -28,6 +28,7 @@ from jarvis.shared.realtime_trace import (
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_audio, voice_backend, voice_pipeline, voice_session
 from tests.canary._helpers import repo_root
+from tests.support.voice_input import EnergySession
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,18 +63,6 @@ def _frame(index: int, value: int) -> voice_audio.CanonicalAudioFrame:
         discontinuity_before=False,
         pcm16_mono=_pcm(value),
     )
-
-
-class _EnergySession:
-    """ONNX-shaped Silero fixture whose probability follows sample energy."""
-
-    def run(self, _output_names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
-        probability = 0.9 if np.any(inputs["x"]) else 0.0
-        return [
-            np.asarray([[probability]], dtype=np.float32),
-            inputs["h"].copy(),
-            inputs["c"].copy(),
-        ]
 
 
 class _ScriptedDecoder:
@@ -125,7 +114,7 @@ class _Harness:
         self._patch = patch.object(
             voice_audio,
             "_load_silero_session",
-            return_value=_EnergySession(),
+            return_value=EnergySession(),
         )
         self._patch.start()
         vad = voice_audio.SileroVad(mode="record")
@@ -809,7 +798,7 @@ def test_late_partial_revision_is_discarded_and_only_final_text_is_committed(
         ),
     )
     wake_engine = _FakeWakeEngine()
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=EnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
             wake_engine=wake_engine,

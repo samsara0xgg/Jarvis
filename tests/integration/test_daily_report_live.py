@@ -26,7 +26,7 @@ from jarvis.runtime.daily_report import DailyReportService
 from jarvis.runtime.work_state import build_analyst
 from jarvis.state.daily_report import resolve_day, resolve_zone
 from jarvis.state.event_log import emit_event
-from tests.integration.test_flat_tool_dispatch import _Fixture, _request
+from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -83,7 +83,9 @@ class LiveRig:
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Dispatch through the real dispatcher and decode the persisted output."""
         self.sequence += 1
-        result = self.fx.dispatch(_request(name, f"live-dr{self.sequence}", arguments=arguments))
+        result = self.fx.dispatch(
+            tool_request(name, f"live-dr{self.sequence}", arguments=arguments)
+        )
         assert result.slots[0].tool_output is not None
         assert len(result.slots[0].tool_output) <= 16384
         return dict(json.loads(result.slots[0].tool_output))
@@ -145,7 +147,7 @@ def live(tmp_path: Path) -> Iterator[LiveRig]:
     assert reporter is not None
     zone_name, zone = resolve_zone(config["work_state"].get("timezone"), None)
     now = datetime.now(UTC)
-    fx = _Fixture(tmp_path, tools=())
+    fx = ToolWorld(tmp_path, tools=())
     imported = _import_git_events(
         default_runtime_root() / "mac_events.db",
         fx.conn,
@@ -253,9 +255,9 @@ def test_live_daily_report_generates_reuses_and_regenerates(live: LiveRig) -> No
 
     # Whatever the day held must be cited from the store it came from.
     counts = outcome["evidence_counts"]
-    refs = live.call(
-        "get_briefing", {"local_date": live.yesterday, "timezone": live.zone_name}
-    )["source_refs"]
+    refs = live.call("get_briefing", {"local_date": live.yesterday, "timezone": live.zone_name})[
+        "source_refs"
+    ]
     kinds = {ref.split(":")[0] for ref in refs}
     if counts["screen"]:
         assert outcome["coverage"]["screen"] == "available"
@@ -304,9 +306,7 @@ def test_live_daily_report_generates_reuses_and_regenerates(live: LiveRig) -> No
 
 def test_live_report_for_a_day_still_running(live: LiveRig) -> None:
     """The current local day is cut at now: a report says so, and an empty morning saves nothing."""
-    result = live.call(
-        "daily_work_report", {"local_date": live.today, "timezone": live.zone_name}
-    )
+    result = live.call("daily_work_report", {"local_date": live.today, "timezone": live.zone_name})
     assert result["outcome"] in {"generated", "no_evidence"}, result.get("error")
     evidence: dict[str, Any] = {
         "local_date": live.today,

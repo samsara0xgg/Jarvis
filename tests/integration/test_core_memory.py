@@ -9,23 +9,18 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 import threading
 from contextlib import closing
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision.llm import ChatResult
 from jarvis.decision.surrogate_route import KEY_ENV, JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings
-from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.state import core_memory
-from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import (
-    MemorySettings,
     brief_note,
     core_memory_pending_days,
     current_core_memory,
@@ -36,12 +31,22 @@ from jarvis.state.memory_db import (
     set_user_name,
     user_name,
 )
-from tests.integration.test_daily_tools import DailyHarness
-from tests.integration.test_day_summaries import TODAY, _day, _insert, _rid, _stamp, _Summariser
+from tests.support.core_memory import Consolidator, consolidator_changes, core_schedule, seed_days
+from tests.support.daily_tools import DailyHarness
+from tests.support.day_summaries import (
+    TODAY,
+    day_ago,
+    insert_records,
+    record_id,
+    stamp_ago,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from jarvis.decision.llm import ChatResult
+    from jarvis.runtime.day_summary import DaySummarySchedule
 
 LEGACY_TS = "2026-09-01T09:00:00-07:00"
 
@@ -194,80 +199,21 @@ def test_keep_writes_a_fact_and_says_so(daily: DailyHarness) -> None:
 # --- the nightly pass ---------------------------------------------------------
 
 
-class _Consolidator:
-    """Stands in for the core_memory preset's client; ``script`` maps a day to its answers."""
-
-    provider = "openai"
-    model = "fake-consolidator"
-
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-        self.inputs: dict[str, str] = {}
-        self.script: dict[str, list[str | Exception]] = {}
-
-    def chat(self, *, messages: list[dict[str, Any]], **_kwargs: object) -> ChatResult:
-        text = str(messages[0]["content"])
-        day = re.search(r"\[Records of (\S+),", text).group(1)  # type: ignore[union-attr]
-        self.asked.append(day)
-        self.inputs[day] = text
-        answers = self.script.get(day) or ['{"changes": []}']
-        answer = answers[min(self.asked.count(day) - 1, len(answers) - 1)]
-        if isinstance(answer, Exception):
-            raise answer
-        return ChatResult(
-            text=answer,
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=1,
-            output_tokens=1,
-            raw={},
-            model_used=self.model,
-        )
-
-
-def _changes(*ops: dict[str, Any]) -> str:
-    return json.dumps({"changes": list(ops)}, ensure_ascii=False)
-
-
-def _schedule(tmp_path: Path, model: _Consolidator, **core: Any) -> DaySummarySchedule:  # noqa: ANN401
-    log = tmp_path / "events.db"
-    open_event_log(log).close()
-    schedule = DaySummarySchedule(
-        memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
-        settings=DaySummarySettings(at=time(5, 0), preset="p", prompt="summarise", max_chars=500),
-        llm_config={},
-        event_log_path=log,
-        pricing_table={},
-        core_memory=CoreMemorySettings(preset="c", prompt="consolidate", **core),
-    )
-    schedule._client = _Summariser()  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    schedule._core_client = model  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    return schedule
-
-
-def _days(path: Path, *ago: int) -> None:
-    """One short user record on each of the given days (kept word for word: no summary call)."""
-    _insert(
-        path,
-        [(_rid(n, 1), _stamp(n, 9), "allen", f"第{n}天说的话") for n in ago],
-    )
-
-
 def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_path: Path) -> None:
     """add, rewrite (with a move) and stale apply; an empty list advances ``upto_day``."""
     path = tmp_path / "memory.db"
-    _days(path, 4, 3, 2, 0)
+    seed_days(path, 4, 3, 2, 0)
     remember_fact(path, "城市", "Victoria")
-    d4, d3, d2, d0 = (_day(n).isoformat() for n in (4, 3, 2, 0))
-    model = _Consolidator()
+    d4, d3, d2, d0 = (day_ago(n).isoformat() for n in (4, 3, 2, 0))
+    model = Consolidator()
     model.script[d4] = [
-        _changes(
+        consolidator_changes(
             {"op": "add", "section": "兴趣和品味", "text": "喜欢咖啡", "sources": ["r1"]},
             {"op": "add", "section": "生活里的几件事", "text": "写论文", "sources": ["r1"]},
         ),
     ]
     model.script[d3] = [
-        _changes(
+        consolidator_changes(
             {
                 "op": "rewrite",
                 "item": 2,
@@ -278,7 +224,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
             {"op": "stale", "item": 3, "sources": ["r1"]},
         ),
     ]
-    schedule = _schedule(tmp_path, model)
+    schedule = core_schedule(tmp_path, model)
 
     schedule.write(TODAY)
 
@@ -287,7 +233,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     expected = "### 兴趣和品味 (6/2000)\n[2] 喜欢咖啡\n### 生活里的几件事 (5/10000)\n[3] 写论文"
     assert expected in model.inputs[d3]
     assert f"[Summary of {d3}]\n## {d3} (the whole day, word for word)" in model.inputs[d3]
-    assert f"r1 | {_stamp(3, 9)} | allen | 第3天说的话" in model.inputs[d3]
+    assert f"r1 | {stamp_ago(3, 9)} | allen | 第3天说的话" in model.inputs[d3]
     assert _items(path) == {"经历": ["城市: Victoria"], "定下来的规矩": ["更喜欢 茶"]}
     after = [v[:2] for v in _versions(path)]
     assert after == [
@@ -303,7 +249,7 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     rewritten = current_core_memory(path).doc["定下来的规矩"][0]
     assert (rewritten["since"], rewritten["sources"], rewritten["topic"]) == (
         d3,
-        [_rid(3, 1)],
+        [record_id(3, 1)],
         None,
     )
 
@@ -321,45 +267,57 @@ def _bad_answers() -> dict[str, tuple[str, dict[str, Any]]]:
         "not json": ("sure, here you go", {}),
         "no changes list": ('{"edits": []}', {}),
         "unknown item": (
-            _changes({"op": "stale", "item": 9, "sources": [rid]}),
+            consolidator_changes({"op": "stale", "item": 9, "sources": [rid]}),
             {},
         ),
         "foreign record id": (
-            _changes({"op": "add", "section": "兴趣和品味", "text": "x", "sources": ["r2"]}),
+            consolidator_changes(
+                {"op": "add", "section": "兴趣和品味", "text": "x", "sources": ["r2"]}
+            ),
             {},
         ),
         "a real record id instead of a label": (
-            _changes({"op": "add", "section": "兴趣和品味", "text": "x", "sources": [_rid(3, 1)]}),
+            consolidator_changes(
+                {"op": "add", "section": "兴趣和品味", "text": "x", "sources": [record_id(3, 1)]}
+            ),
             {},
         ),
         "no sources": (
-            _changes({"op": "add", "section": "兴趣和品味", "text": "x", "sources": []}),
+            consolidator_changes(
+                {"op": "add", "section": "兴趣和品味", "text": "x", "sources": []}
+            ),
             {},
         ),
         "bad section": (
-            _changes({"op": "add", "section": "其他", "text": "x", "sources": [rid]}),
+            consolidator_changes({"op": "add", "section": "其他", "text": "x", "sources": [rid]}),
             {},
         ),
         "item targeted twice": (
-            _changes(stale, {"op": "rewrite", "item": 1, "text": "y", "sources": [rid]}),
+            consolidator_changes(
+                stale, {"op": "rewrite", "item": 1, "text": "y", "sources": [rid]}
+            ),
             {},
         ),
         "too many stale": (
-            _changes(stale, {"op": "stale", "item": 2, "sources": [rid]}),
+            consolidator_changes(stale, {"op": "stale", "item": 2, "sources": [rid]}),
             {"max_stale": 1},
         ),
         "over its section cap": (
-            _changes({"op": "add", "section": "身体", "text": "长" * 100, "sources": [rid]}),
+            consolidator_changes(
+                {"op": "add", "section": "身体", "text": "长" * 100, "sources": [rid]}
+            ),
             {"section_caps": {**core_memory.SECTION_CAPS, "身体": 99}},
         ),
         "an ID number in 证件和硬期限": (
-            _changes(
+            consolidator_changes(
                 {"op": "add", "section": "证件和硬期限", "text": "护照 E1234567", "sources": [rid]},
             ),
             {},
         ),
         "over max_chars": (
-            _changes({"op": "add", "section": "兴趣和品味", "text": "长" * 100, "sources": [rid]}),
+            consolidator_changes(
+                {"op": "add", "section": "兴趣和品味", "text": "长" * 100, "sources": [rid]}
+            ),
             {"max_chars": 60},
         ),
     }
@@ -372,16 +330,16 @@ def test_a_rejected_answer_stores_nothing_and_is_asked_once_more(
 ) -> None:
     """The whole list is dropped on any gate; the day stays open for the next run."""
     path = tmp_path / "memory.db"
-    _days(path, 3, 2)
+    seed_days(path, 3, 2)
     remember_fact(path, "城市", "Victoria")
     remember_fact(path, "口味", "辣")
     answer, limits = _bad_answers()[case]
-    d3, d2 = _day(3).isoformat(), _day(2).isoformat()
-    model = _Consolidator()
+    d3, d2 = day_ago(3).isoformat(), day_ago(2).isoformat()
+    model = Consolidator()
     model.script[d3] = [answer]
     before = _versions(path)
 
-    _schedule(tmp_path, model, **limits).write(TODAY)
+    core_schedule(tmp_path, model, **limits).write(TODAY)
 
     assert model.asked == [d3, d3]  # asked once more, then the chain stops before day 2
     assert _versions(path) == before
@@ -392,44 +350,54 @@ def test_a_rejected_answer_stores_nothing_and_is_asked_once_more(
 def test_sources_are_short_labels_in_time_order_and_stored_as_real_ids(tmp_path: Path) -> None:
     """The model sees r1, r2, ... and never the 32-hex ids; the store keeps the real ones."""
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
         [
-            (_rid(3, 2), _stamp(3, 9, 1), "jarvis", "好的"),  # inserted first, later in time
-            (_rid(3, 1), _stamp(3, 9), "allen", "我喜欢茶"),
+            (
+                record_id(3, 2),
+                stamp_ago(3, 9, 1),
+                "jarvis",
+                "好的",
+            ),  # inserted first, later in time
+            (record_id(3, 1), stamp_ago(3, 9), "allen", "我喜欢茶"),
         ],
     )
-    d3 = _day(3).isoformat()
-    model = _Consolidator()
+    d3 = day_ago(3).isoformat()
+    model = Consolidator()
     model.script[d3] = [
-        _changes({"op": "add", "section": "兴趣和品味", "text": "喜欢茶", "sources": ["r1", "r2"]}),
+        consolidator_changes(
+            {"op": "add", "section": "兴趣和品味", "text": "喜欢茶", "sources": ["r1", "r2"]}
+        ),
     ]
-    _schedule(tmp_path, model).write(TODAY)
+    core_schedule(tmp_path, model).write(TODAY)
     assert (
-        f"r1 | {_stamp(3, 9)} | allen | 我喜欢茶\nr2 | {_stamp(3, 9, 1)} | jarvis | 好的"
+        f"r1 | {stamp_ago(3, 9)} | allen | 我喜欢茶\nr2 | {stamp_ago(3, 9, 1)} | jarvis | 好的"
         in (model.inputs[d3])
     )
-    assert _rid(3, 1) not in model.inputs[d3]
-    assert current_core_memory(path).doc["兴趣和品味"][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
+    assert record_id(3, 1) not in model.inputs[d3]
+    assert current_core_memory(path).doc["兴趣和品味"][0]["sources"] == [
+        record_id(3, 1),
+        record_id(3, 2),
+    ]
     nightly = _versions(path)[-1]
-    assert nightly[2][0]["sources"] == [_rid(3, 1), _rid(3, 2)]
+    assert nightly[2][0]["sources"] == [record_id(3, 1), record_id(3, 2)]
 
 
 def test_a_second_attempt_that_passes_lands(tmp_path: Path) -> None:
     """The retry reads the same input and may fix the answer."""
     path = tmp_path / "memory.db"
-    _days(path, 3)
-    d3 = _day(3).isoformat()
-    model = _Consolidator()
+    seed_days(path, 3)
+    d3 = day_ago(3).isoformat()
+    model = Consolidator()
     model.script[d3] = [
         "nope",
         "```json\n"
-        + _changes(
+        + consolidator_changes(
             {"op": "add", "section": "生活里的几件事", "text": "写完论文", "sources": ["r1"]},
         )
         + "\n```",
     ]
-    _schedule(tmp_path, model).write(TODAY)
+    core_schedule(tmp_path, model).write(TODAY)
     assert model.asked == [d3, d3]
     assert _items(path) == {"生活里的几件事": ["写完论文"]}
 
@@ -437,14 +405,16 @@ def test_a_second_attempt_that_passes_lands(tmp_path: Path) -> None:
 def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path: Path) -> None:
     """Later days build on earlier ones, so none runs past a failure."""
     path = tmp_path / "memory.db"
-    _days(path, 4, 3, 2)
-    d4, d3, d2 = (_day(n).isoformat() for n in (4, 3, 2))
-    model = _Consolidator()
+    seed_days(path, 4, 3, 2)
+    d4, d3, d2 = (day_ago(n).isoformat() for n in (4, 3, 2))
+    model = Consolidator()
     model.script[d4] = [
-        _changes({"op": "add", "section": "兴趣和品味", "text": "喜欢咖啡", "sources": ["r1"]}),
+        consolidator_changes(
+            {"op": "add", "section": "兴趣和品味", "text": "喜欢咖啡", "sources": ["r1"]}
+        ),
     ]
     model.script[d3] = [TimeoutError("provider unreachable")]
-    schedule = _schedule(tmp_path, model)
+    schedule = core_schedule(tmp_path, model)
 
     schedule.write(TODAY)
     assert model.asked == [d4, d3]  # d2 is not asked
@@ -452,7 +422,7 @@ def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path
     assert core_memory_pending_days(path, TODAY) == [d3, d2]
 
     model.script[d3] = [
-        _changes({"op": "stale", "item": 1, "sources": ["r1"]}),
+        consolidator_changes({"op": "stale", "item": 1, "sources": ["r1"]}),
     ]
     model.asked.clear()
     schedule.write(TODAY + timedelta(days=1))
@@ -464,11 +434,11 @@ def test_a_failing_day_stops_the_chain_and_the_next_run_resumes_from_it(tmp_path
 def test_a_remember_during_the_call_makes_the_answer_stale(tmp_path: Path) -> None:
     """Item numbers belong to the version the model saw; a newer version drops the answer."""
     path = tmp_path / "memory.db"
-    _days(path, 3)
+    seed_days(path, 3)
     remember_fact(path, "城市", "Victoria")
-    d3 = _day(3).isoformat()
+    d3 = day_ago(3).isoformat()
 
-    class _Racing(_Consolidator):
+    class _Racing(Consolidator):
         def chat(self, *, messages: list[dict[str, Any]], **kwargs: object) -> ChatResult:
             if not self.asked:
                 remember_fact(path, "口味", "辣")  # lands between the read and the write
@@ -476,10 +446,10 @@ def test_a_remember_during_the_call_makes_the_answer_stale(tmp_path: Path) -> No
 
     model = _Racing()
     model.script[d3] = [
-        _changes({"op": "stale", "item": 1, "sources": ["r1"]}),
+        consolidator_changes({"op": "stale", "item": 1, "sources": ["r1"]}),
         '{"changes": []}',
     ]
-    _schedule(tmp_path, model).write(TODAY)
+    core_schedule(tmp_path, model).write(TODAY)
     assert model.asked == [d3, d3]  # the first answer was refused; the retry saw both items
     assert _items(path) == {"经历": ["城市: Victoria", "口味: 辣"]}
     assert current_core_memory(path).upto_day == d3
@@ -558,13 +528,13 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
 
 def _reviewed(
     tmp_path: Path,
-    model: _Consolidator,
+    model: Consolidator,
     route: SurrogateRoute | None,
     review_min_confidence: float | None = None,
     *,
     review_drop: bool = False,
 ) -> DaySummarySchedule:
-    schedule = _schedule(tmp_path, model)
+    schedule = core_schedule(tmp_path, model)
     schedule._core_memory = CoreMemorySettings(  # noqa: SLF001 — the review knobs under test
         preset="c",
         prompt="consolidate",
@@ -581,15 +551,15 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
 ) -> None:
     """A keep at the bar lands; a lower keep or another choice drops just that change, logged."""
     path = tmp_path / "memory.db"
-    _days(path, 3)
+    seed_days(path, 3)
     remember_fact(path, "城市", "Victoria")
-    d3 = _day(3).isoformat()
+    d3 = day_ago(3).isoformat()
     kept = {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
     unsure = {"op": "add", "section": "兴趣和品味", "text": "LOW 喜欢茶", "sources": ["r1"]}
     joke = {"op": "rewrite", "item": 1, "text": "JOKE 住在火星", "sources": ["r1"]}
     stale = {"op": "stale", "item": 1, "sources": ["r1"]}
-    model = _Consolidator()
-    model.script[d3] = [_changes(kept, unsure, joke)]
+    model = Consolidator()
+    model.script[d3] = [consolidator_changes(kept, unsure, joke)]
     jev_log = tmp_path / "jev.jsonl"
 
     _reviewed(
@@ -605,7 +575,7 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
     assert [c["op"] for c in logged] == ["add", "dropped", "dropped"]
     assert logged[1] == {
         "op": "dropped",
-        "change": {**unsure, "sources": [_rid(3, 1)]},
+        "change": {**unsure, "sources": [record_id(3, 1)]},
         "choice": "keep",
         "confidence": 0.6,
     }
@@ -615,10 +585,10 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
     states = sorted(r["state"] for r in jev.requests)
     assert len(states) == 3
     joke_state = (
-        f"Section: 经历\nItem: JOKE 住在火星\nCited lines:\n{_stamp(3, 9)} | allen | 第3天说的话"
+        f"Section: 经历\nItem: JOKE 住在火星\nCited lines:\n{stamp_ago(3, 9)} | allen | 第3天说的话"
     )
     assert joke_state in states
-    assert _rid(3, 1) not in "".join(states)
+    assert record_id(3, 1) not in "".join(states)
     assert set(jev.requests[0]["questions"]["review"]["criteria"]) == {
         "keep",
         "garbled",
@@ -632,9 +602,9 @@ def test_jev_keeps_a_confident_keep_and_drops_only_the_rest_with_a_log(
 
     # A stale change is never reviewed.
     jev.requests.clear()
-    _days(path, 2)
-    d2 = _day(2).isoformat()
-    model.script[d2] = [_changes({**stale, "item": 1})]
+    seed_days(path, 2)
+    d2 = day_ago(2).isoformat()
+    model.script[d2] = [consolidator_changes({**stale, "item": 1})]
     _reviewed(
         tmp_path,
         model,
@@ -655,11 +625,11 @@ def test_a_jev_failure_rejects_the_day_like_a_gate_and_stops_the_chain(
 ) -> None:
     """Nothing is stored, the day is asked once more, and the next day is not reached."""
     path = tmp_path / "memory.db"
-    _days(path, 3, 2)
-    d3, d2 = _day(3).isoformat(), _day(2).isoformat()
-    model = _Consolidator()
+    seed_days(path, 3, 2)
+    d3, d2 = day_ago(3).isoformat(), day_ago(2).isoformat()
+    model = Consolidator()
     model.script[d3] = [
-        _changes(
+        consolidator_changes(
             {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]},
         ),
     ]
@@ -692,13 +662,13 @@ def test_log_only_review_lands_every_change_and_stores_each_verdict(
 ) -> None:
     """Without review_drop nothing is dropped; each add and rewrite gets a reviewed entry."""
     path = tmp_path / "memory.db"
-    _days(path, 3)
+    seed_days(path, 3)
     remember_fact(path, "城市", "Victoria")
-    d3 = _day(3).isoformat()
+    d3 = day_ago(3).isoformat()
     kept = {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]}
     joke = {"op": "rewrite", "item": 1, "text": "JOKE 住在火星", "sources": ["r1"]}
-    model = _Consolidator()
-    model.script[d3] = [_changes(kept, joke)]
+    model = Consolidator()
+    model.script[d3] = [consolidator_changes(kept, joke)]
     jev_log = tmp_path / "jev.jsonl"
 
     _reviewed(tmp_path, model, jev.route(JevLog(jev_log)), review_min_confidence=0.9).write(TODAY)
@@ -723,11 +693,11 @@ def test_log_only_review_failure_lands_the_day_unreviewed(
 ) -> None:
     """A Jev failure is a warning: the changes land with no reviewed entries."""
     path = tmp_path / "memory.db"
-    _days(path, 3)
-    d3 = _day(3).isoformat()
-    model = _Consolidator()
+    seed_days(path, 3)
+    d3 = day_ago(3).isoformat()
+    model = Consolidator()
     model.script[d3] = [
-        _changes(
+        consolidator_changes(
             {"op": "add", "section": "兴趣和品味", "text": "HIGH 喜欢咖啡", "sources": ["r1"]},
         ),
     ]
@@ -747,11 +717,11 @@ def test_log_only_review_failure_lands_the_day_unreviewed(
 def test_review_is_off_without_review_min_confidence(tmp_path: Path, jev: _Jev) -> None:
     """No key in the block, no Jev call; the block parses the bar, model and timeout."""
     path = tmp_path / "memory.db"
-    _days(path, 3)
-    d3 = _day(3).isoformat()
-    model = _Consolidator()
+    seed_days(path, 3)
+    d3 = day_ago(3).isoformat()
+    model = Consolidator()
     model.script[d3] = [
-        _changes(
+        consolidator_changes(
             {"op": "add", "section": "兴趣和品味", "text": "JOKE 住在火星", "sources": ["r1"]},
         ),
     ]
@@ -783,8 +753,12 @@ def test_a_version_with_the_old_six_names_loads_into_the_ten_without_losing_an_i
     """
     path = tmp_path / "memory.db"
     old = {
-        "关于你": ["a"], "偏好": ["b"], "常提到的人": ["c"], "正在做的事": ["d"],
-        "定下来的规矩": ["e"], "承诺和待办": ["f"],
+        "关于你": ["a"],
+        "偏好": ["b"],
+        "常提到的人": ["c"],
+        "正在做的事": ["d"],
+        "定下来的规矩": ["e"],
+        "承诺和待办": ["f"],
     }
     raw: dict[str, Any] = {
         "sections": {
@@ -799,7 +773,10 @@ def test_a_version_with_the_old_six_names_loads_into_the_ten_without_losing_an_i
             (LEGACY_TS, json.dumps(raw, ensure_ascii=False)),
         )
     assert _items(path) == {
-        "经历": ["a"], "兴趣和品味": ["b"], "身边的人": ["c"], "生活里的几件事": ["d"],
+        "经历": ["a"],
+        "兴趣和品味": ["b"],
+        "身边的人": ["c"],
+        "生活里的几件事": ["d"],
         "定下来的规矩": ["e"],
     }
     assert [item["text"] for item in due_items(path)] == ["f"]

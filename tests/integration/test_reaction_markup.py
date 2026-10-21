@@ -15,18 +15,18 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision import decide
 from jarvis.decision.reaction_markup import ReactionFilter, split_reaction
 from jarvis.shared import lang
-from jarvis.state.event_log import emit_event, open_event_log
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 - the autouse fixture the peer needs
-    _Peer,
-    _spoken,
-    _spoken_runtime,
+from jarvis.state.event_log import emit_event
+from tests.support.reaction_markup import decide_batch
+from tests.support.routine import drive_streaming_turn, logged_payloads, user_intent
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 - the autouse fixture the peer needs
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_turn_guards import _context, _ScriptedModel
-from tests.integration.test_wire_routine_streaming import _drive, _intent, _payloads
+from tests.support.turn_guards import StepModel
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -81,13 +81,15 @@ def test_a_tag_is_held_back_and_never_leaks_into_a_piece() -> None:
 def test_a_spoken_reply_loses_the_tag_before_a_word_is_spoken(tmp_path: Path) -> None:
     """Chunks, the plan and the spoken text hold no tag, though the peer cuts it in pieces."""
     reply = f"好的<react>{THUMB}</react>，晚安。再见。"
-    with _Peer([[("final_answer", reply)]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-spoken", "记一下"))
-    chunks = [payload["text"] for payload in _payloads(runtime.conn, "surface.response_chunk")]
+    with SpokenPeer([[("final_answer", reply)]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-spoken", "记一下"))
+    chunks = [
+        payload["text"] for payload in logged_payloads(runtime.conn, "surface.response_chunk")
+    ]
     assert "".join(chunks) == result.response_plan.text == "好的，晚安。再见。"
     assert "react" not in "".join(chunks) + result.response_plan.text
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert emitted["voice_text"] == "好的，晚安。再见。"
 
 
@@ -95,20 +97,20 @@ def test_a_typed_reply_that_is_only_the_tag_is_an_empty_answer_that_passes_the_g
     tmp_path: Path,
 ) -> None:
     """Nothing to stream, no failure line, no second request: the turn simply has no words."""
-    with _Peer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _intent(runtime.conn, "turn-typed", "我到家了"))
+    with SpokenPeer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
+        result = drive_streaming_turn(runtime, user_intent(runtime.conn, "turn-typed", "我到家了"))
     assert result.response_plan.text == ""
     assert len(peer.requests) == 1
-    assert _payloads(runtime.conn, "surface.response_chunk") == []
-    assert _payloads(runtime.conn, "turn.failed") == []
-    (ended,) = _payloads(runtime.conn, "turn.ended")
+    assert logged_payloads(runtime.conn, "surface.response_chunk") == []
+    assert logged_payloads(runtime.conn, "turn.failed") == []
+    (ended,) = logged_payloads(runtime.conn, "turn.ended")
     assert ended["turn_id"] == "turn-typed"
 
 
 def _budget_runtime(tmp_path: Path, url: str) -> Any:  # noqa: ANN401 - JarvisRuntime
     """A spoken-route runtime that may call one tool, so its second request is the budget's."""
-    runtime = _spoken_runtime(tmp_path, url)
+    runtime = spoken_runtime(tmp_path, url)
     return replace(runtime, config={**runtime.config, "llm": {"max_tool_iterations": 1}})
 
 
@@ -116,7 +118,7 @@ def _budget_runtime(tmp_path: Path, url: str) -> Any:  # noqa: ANN401 - JarvisRu
 def test_the_wrap_up_after_the_tool_budget_that_is_only_a_tag(tmp_path: Path, channel: str) -> None:
     """Typed: it is the answer. Spoken: the limit line it always got for an empty wrap-up."""
     outputs = [[("call", "kept")], [("final_answer", f"<react>{THUMB}</react>")]]
-    with _Peer(outputs) as peer:
+    with SpokenPeer(outputs) as peer:
         runtime = _budget_runtime(tmp_path, peer.url)
         intent = emit_event(
             runtime.conn,
@@ -124,39 +126,23 @@ def test_the_wrap_up_after_the_tool_budget_that_is_only_a_tag(tmp_path: Path, ch
             payload={"transcript": "我记过什么", "turn_id": "T-budget", "channel": channel},
             correlation={"turn_id": "T-budget"},
         )
-        result = _drive(runtime, intent)
+        result = drive_streaming_turn(runtime, intent)
     assert len(peer.requests) == 2
     limit = lang.t("tool_budget.exhausted", lang="zh")
     assert result.response_plan.text == ("" if channel == "cli_stdin" else limit)
 
 
-def _decide_batch(
-    tmp_path: Path, model: _ScriptedModel, channel: str, budget: int = 8,
-) -> Any:  # noqa: ANN401 - DecideResult
-    conn = open_event_log(tmp_path / "events.db")
-    try:
-        trigger = emit_event(
-            conn,
-            type="surface.user_intent",
-            payload={"transcript": "我到家了", "turn_id": "T-batch", "channel": channel},
-            correlation={"turn_id": "T-batch"},
-        )
-        return decide(trigger, _context(conn, tmp_path, model, budget))
-    finally:
-        conn.close()
-
-
 def test_the_batch_loop_cuts_the_tag_and_hands_the_reaction_on(tmp_path: Path) -> None:
     """The plan holds the words alone, and the result carries the emoji."""
-    model = _ScriptedModel(f"到家就好。<react>{THUMB}</react>")
-    result = _decide_batch(tmp_path, model, "cli_stdin")
+    model = StepModel(f"到家就好。<react>{THUMB}</react>")
+    result = decide_batch(tmp_path, model, "cli_stdin")
     assert (result.response_plan.text, result.reaction) == ("到家就好。", THUMB)
 
 
 def test_the_batch_loop_answers_a_typed_message_with_a_tag_alone(tmp_path: Path) -> None:
     """One request, an empty answer, no limit line and no second try."""
-    model = _ScriptedModel(f"<react>{THUMB}</react>")
-    result = _decide_batch(tmp_path, model, "cli_stdin")
+    model = StepModel(f"<react>{THUMB}</react>")
+    result = decide_batch(tmp_path, model, "cli_stdin")
     assert (result.response_plan.text, result.reaction) == ("", THUMB)
     assert len(model.requests) == 1
 
@@ -164,8 +150,8 @@ def test_the_batch_loop_answers_a_typed_message_with_a_tag_alone(tmp_path: Path)
 @pytest.mark.parametrize("channel", ["cli_stdin", "inherent_ptt"])
 def test_the_batch_loops_wrap_up_that_is_only_a_tag(tmp_path: Path, channel: str) -> None:
     """Typed: the answer. Spoken: the limit line, as for any empty wrap-up."""
-    model = _ScriptedModel(("kept", {}), f"<react>{THUMB}</react>")
-    result = _decide_batch(tmp_path, model, channel, budget=1)
+    model = StepModel(("kept", {}), f"<react>{THUMB}</react>")
+    result = decide_batch(tmp_path, model, channel, budget=1)
     limit = lang.t("tool_budget.exhausted", lang="zh")
     assert result.response_plan.text == ("" if channel == "cli_stdin" else limit)
     assert result.reaction == THUMB
@@ -173,7 +159,7 @@ def test_the_batch_loops_wrap_up_that_is_only_a_tag(tmp_path: Path, channel: str
 
 def test_a_reply_without_a_tag_has_no_reaction(tmp_path: Path) -> None:
     """The field stays empty, and the plan is the reply untouched."""
-    result = _decide_batch(tmp_path, _ScriptedModel("到家就好。"), "cli_stdin")
+    result = decide_batch(tmp_path, StepModel("到家就好。"), "cli_stdin")
     assert (result.response_plan.text, result.reaction) == ("到家就好。", None)
 
 
@@ -213,16 +199,16 @@ def test_a_partial_did_line_is_held_back_and_never_leaks_into_a_piece() -> None:
 def test_a_copied_did_line_is_not_spoken_streamed_or_emitted(tmp_path: Path, spoken: bool) -> None:  # noqa: FBT001
     """The peer cuts the line in pieces; chunks, the plan and the emitted answer hold none of it."""
     reply = "好的，晚安。[You did: saved a note, checked where you are]再见。"
-    with _Peer([[("final_answer", reply)]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+    with SpokenPeer([[("final_answer", reply)]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
         intent = (
-            _spoken(runtime.conn, "turn-did", "记一下")
+            spoken_intent(runtime.conn, "turn-did", "记一下")
             if spoken
-            else _intent(runtime.conn, "turn-did", "记一下")
+            else user_intent(runtime.conn, "turn-did", "记一下")
         )
-        result = _drive(runtime, intent)
-    chunks = "".join(p["text"] for p in _payloads(runtime.conn, "surface.response_chunk"))
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+        result = drive_streaming_turn(runtime, intent)
+    chunks = "".join(p["text"] for p in logged_payloads(runtime.conn, "surface.response_chunk"))
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert chunks == result.response_plan.text == "好的，晚安。再见。"
     assert emitted["text"] == "好的，晚安。再见。"
     if spoken:

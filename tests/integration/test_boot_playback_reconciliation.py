@@ -15,7 +15,7 @@ from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from tests.canary._helpers import repo_root
-from tests.integration.test_conversation_history import _display, _playback
+from tests.support.conversation_history import record_playback, show_display
 
 if TYPE_CHECKING:
     import sqlite3
@@ -49,9 +49,9 @@ def test_boot_reconciler_closes_open_playback_exactly_once(
     lands on the unheard cursor. The replay fold must accept either.
     """
     with contextlib.closing(open_event_log(tmp_path / "reconcile.db")) as conn:
-        _display(conn)
+        show_display(conn)
         if checkpointed:
-            _playback(conn, "surface.playback_checkpoint", {})
+            record_playback(conn, "surface.playback_checkpoint", {})
         start = _rows(conn, "surface.playback_started")[-1]
         assert _rows(conn, "surface.playback_interrupted") == []
 
@@ -93,7 +93,7 @@ def test_boot_reconciler_skips_a_started_row_without_a_session_id(tmp_path: Path
     would otherwise raise straight out of the startup barrier.
     """
     with contextlib.closing(open_event_log(tmp_path / "malformed.db")) as conn:
-        _display(conn)
+        show_display(conn)
         start = _rows(conn, "surface.playback_started")[-1]
         emit_event(
             conn,
@@ -130,7 +130,7 @@ def test_boot_helper_closes_playback_on_its_own_connection(tmp_path: Path) -> No
     """
     path = tmp_path / "boot.db"
     with contextlib.closing(open_event_log(path)) as conn:
-        _display(conn)
+        show_display(conn)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         closed = pool.submit(

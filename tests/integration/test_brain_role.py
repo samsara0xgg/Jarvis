@@ -24,9 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.runtime import RuntimeBootstrapError, bootstrap_runtime_app
+from jarvis.runtime import RuntimeBootstrapError
 from jarvis.shared import CallerPrincipal
 from jarvis.state.plugin_settings import local_key
+from tests.support.brain_role import brain_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,14 +37,6 @@ DEVICE_TOOLS = {
     "search_notes",
 }
 NIGHT_TOOLS = {"start_night_run", "end_night_run"}
-
-
-def _runtime(tmp_path: Path, settings: str, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
-    root = tmp_path / "root"
-    root.mkdir()
-    (root / "settings.yaml").write_text(settings, encoding="utf-8")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    return bootstrap_runtime_app(runtime_root=root)
 
 
 def _menu(runtime: Any) -> set[str]:  # noqa: ANN401
@@ -56,8 +49,8 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
     """`all` offers open, clipboard and screen as before; a brain has them as proxies only."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    default = _runtime(tmp_path / "a", "assistant_name: Jarvis\n", monkeypatch)
-    brain = _runtime(tmp_path / "b", "runtime:\n  role: brain\n", monkeypatch)
+    default = brain_runtime(tmp_path / "a", "assistant_name: Jarvis\n", monkeypatch)
+    brain = brain_runtime(tmp_path / "b", "runtime:\n  role: brain\n", monkeypatch)
     try:
         assert default.role == "all"
         assert {"open_path", "read_file", "read_clipboard", "open_url", "screen_look"} <= {
@@ -90,7 +83,7 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
 def test_an_unknown_role_stops_the_boot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A typo in `runtime.role` is a boot error, not a silent `all`."""
     with pytest.raises(RuntimeBootstrapError, match=r"runtime\.role must be all or brain"):
-        _runtime(tmp_path, "runtime:\n  role: terminal\n", monkeypatch)
+        brain_runtime(tmp_path, "runtime:\n  role: terminal\n", monkeypatch)
 
 
 def _get(url: str, headers: dict[str, str] | None = None) -> bytes:

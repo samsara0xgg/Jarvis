@@ -29,7 +29,7 @@ from jarvis.runtime import RuntimeBootstrapError, _turn_end_asks
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.integration.test_claude_session_board import NOW_MS, _home, _noop
+from tests.support.claude_board import NOW_MS, board_home, noop
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -97,7 +97,7 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
 
 def _client(asks: TurnEndAsks | None) -> TestClient:
     deps = InherentDeps(
-        submit_callable=_noop,
+        submit_callable=noop,
         broadcaster=InherentBroadcaster(),
         turn_end_asks=None if asks is None else functools.partial(_ask, asks),
         turn_end_answered=None if asks is None else asks.answered,
@@ -246,7 +246,7 @@ def test_the_terminal_board_gets_asks_without_waiting(
     jev: _Jev, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A finished session's row says asks None until Jev has answered, then true or false."""
-    bin_dir = _home(
+    bin_dir = board_home(
         tmp_path,
         [
             {
@@ -270,7 +270,7 @@ def test_the_terminal_board_gets_asks_without_waiting(
     jev.delay_s = 1.0
     asks = jev.asks()
     client = TestClient(create_app(InherentDeps(
-        submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
+        submit_callable=noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
         turn_end_peek=asks.peek,
     )))
     began = time.monotonic()
@@ -281,7 +281,7 @@ def test_the_terminal_board_gets_asks_without_waiting(
     time.sleep(1.4)
     # The board is cached for a few seconds; ask the transcript's row again through a new app.
     client = TestClient(create_app(InherentDeps(
-        submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
+        submit_callable=noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
         turn_end_peek=asks.peek,
     )))
     rows = {r["session_id"]: r for r in client.get("/inherent/claude-sessions").json()["sessions"]}
@@ -350,7 +350,7 @@ def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_mess
     jev: _Jev, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A user turn after a scored finish: Allen's counts once; a task notification does not."""
-    bin_dir = _home(
+    bin_dir = board_home(
         tmp_path,
         [{
             "sessionId": "s-bg", "id": "job1", "kind": "background", "status": "idle",
@@ -365,7 +365,7 @@ def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_mess
 
     def read_board() -> dict[str, Any]:
         client = TestClient(create_app(InherentDeps(
-            submit_callable=_noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
+            submit_callable=noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
             turn_end_peek=asks.peek, turn_end_answered=asks.answered,
         )))
         rows = client.get("/inherent/claude-sessions").json()["sessions"]

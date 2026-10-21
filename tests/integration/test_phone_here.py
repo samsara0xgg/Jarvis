@@ -21,7 +21,6 @@ Acceptance checks, each against a real event log:
 from __future__ import annotations
 
 import concurrent.futures
-import functools
 import json
 import sqlite3
 import time
@@ -31,7 +30,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from jarvis.decision.commentary import _dispatch_key
 from jarvis.execution import transit_tool
@@ -42,13 +40,10 @@ from jarvis.execution.tools import (
     register_live_action,
     release_turn_actions,
 )
-from jarvis.runtime import _phone_here, bootstrap_runtime_app, inherent_loop
+from jarvis.runtime import _phone_here, bootstrap_runtime_app
 from jarvis.shared import CallerPrincipal
 from jarvis.state import places as place_state
-from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.device_tokens import (
-    device_name_for_token,
-    device_token_matches,
     pair_device,
 )
 from jarvis.state.event_log import (
@@ -58,21 +53,11 @@ from jarvis.state.event_log import (
     turn_origin,
 )
 from jarvis.state.phone_location import NoPhoneReport, read_phone_here
-from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.surface.cli import emit_surface_user_intent
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import (
-    AskOutcome,
-    InherentDeps,
-    create_app,
-    require_local_key,
-)
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
-from tests.integration.test_phone_attachments import PNG
-from tests.integration.test_phone_events import GOOD, LOCATION, VISIT, _frame
-from tests.integration.test_terminal_voice import _bearer, _brain_client
-from tests.integration.test_transit_tool import FIX as MAC_FIX
-from tests.integration.test_transit_tool import _serve
+from tests.support.phone import GOOD, LOCATION, PNG, VISIT, event_frame, here_daemon
+from tests.support.terminal import bearer, brain_client
+from tests.support.transit import FIX as MAC_FIX
+from tests.support.transit import serve_routes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -228,15 +213,15 @@ def test_the_latest_report_is_the_reading_with_its_age(name: str, tmp_path: Path
 def test_a_batch_posted_to_the_route_is_what_here_reads(tmp_path: Path) -> None:
     """Phone to brain to `here`: a visit, then a newer location, through the real route and log."""
     token = pair_device(tmp_path, "iphone")
-    client, _hub, log = _brain_client(tmp_path, speaks=False)
+    client, _hub, log = brain_client(tmp_path, speaks=False)
     now = int(time.time() * 1000)
     visit_payload = {**GOOD[VISIT], "arrived_at_ms": now - 3 * HOUR, "departed_at_ms": now - HOUR}
     fix_payload = {**GOOD[LOCATION], "lat": 48.43, "lng": -123.37, "accuracy_m": 80}
     batch = [
-        {**_frame(1, VISIT, visit_payload), "ts_epoch_ms": now - HOUR},
-        {**_frame(2, LOCATION, fix_payload), "ts_epoch_ms": now - 20 * MIN},
+        {**event_frame(1, VISIT, visit_payload), "ts_epoch_ms": now - HOUR},
+        {**event_frame(2, LOCATION, fix_payload), "ts_epoch_ms": now - 20 * MIN},
     ]
-    posted = client.post(PHONE_EVENTS_PATH, json={"events": batch}, headers=_bearer(token))
+    posted = client.post(PHONE_EVENTS_PATH, json={"events": batch}, headers=bearer(token))
     assert [ack["ok"] for ack in posted.json()["acks"]] == [True, True]
     with sqlite3.connect(log) as conn:
         here = read_phone_here(conn)
@@ -302,7 +287,7 @@ def test_on_a_brain_where_am_i_and_bus_here_say_it_is_the_phones_last_report(
 
     They carry the report's age and accuracy; bus starts the trip from the reported position.
     """
-    seen = _serve(monkeypatch)
+    seen = serve_routes(monkeypatch)
     # A direct call has no `action.running` event to link the bus card to.
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     brain = _brain(tmp_path, monkeypatch)
@@ -496,7 +481,7 @@ def test_bus_here_starts_from_the_device_the_turn_came_from(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The origin of the request and the label follow the turn: phone, Mac, or the fallback."""
-    seen = _serve(monkeypatch)
+    seen = serve_routes(monkeypatch)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     log = tmp_path / "events.db"
     conn = open_event_log(log)
@@ -533,7 +518,7 @@ def test_an_old_phone_report_is_flagged_unless_it_is_inside_a_kept_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Over 30 min old and outside every kept place: flagged. Inside home: said as home, no flag."""
-    _serve(monkeypatch)
+    serve_routes(monkeypatch)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     log, memory = tmp_path / "events.db", tmp_path / "memory.db"
     conn = open_event_log(log)
@@ -619,53 +604,12 @@ def test_the_descriptions_name_the_sources_the_host_has(tmp_path: Path) -> None:
 
 # --- the routes a phone uses write its name ---------------------------------------------------
 
-REMOTE = "100.87.250.92"
-LOOPBACK = "127.0.0.1"
-
-
-def _daemon(tmp_path: Path) -> tuple[Path, str, str, TestClient, TestClient]:
-    """A daemon's routes over a real log: ``(log, local key, device token, loopback, tailnet)``."""
-    root = tmp_path / "root"
-    root.mkdir()
-    log = root / "events.db"
-    open_event_log(log).close()
-
-    def submit_plain(text: str) -> str:
-        with closing(open_runtime_event_log(log)) as conn:
-            turn = f"T{int(time.time_ns())}"
-            emit_surface_user_intent(conn, transcript=text, turn_id=turn)
-            return turn
-
-    deps = InherentDeps(
-        submit_callable=submit_plain,
-        broadcaster=InherentBroadcaster(),
-        attachments=Attachments(root / "artifacts" / ATTACHMENTS_DIRNAME),
-        images_ok=True,
-        submit_attachments=functools.partial(inherent_loop._submit_with_attachments, log),  # noqa: SLF001
-        submit_as_device=functools.partial(inherent_loop._submit_as_device, log),  # noqa: SLF001
-        share_callable=functools.partial(inherent_loop._keep_share, log),  # noqa: SLF001
-        ask_outcome=lambda _turn: AskOutcome(spoken="ok"),
-        device_name=functools.partial(device_name_for_token, root),
-    )
-    app = create_app(deps)
-    key = local_key(root)
-    require_local_key(
-        app, functools.partial(local_key_matches, key), extra_hosts=[REMOTE],
-        device_token_matches=functools.partial(device_token_matches, root),
-    )
-    token = pair_device(root, "iphone")
-    return (
-        log, key, token,
-        TestClient(app, base_url=f"http://{LOOPBACK}:8006", client=(LOOPBACK, 50000)),
-        TestClient(app, base_url=f"http://{REMOTE}:8006", client=(REMOTE, 50000)),
-    )
-
 
 def test_a_paired_devices_words_over_http_open_turns_written_under_its_name(
     tmp_path: Path,
 ) -> None:
     """`submit`, `submit` with a file, `ask` and `share`: the turn is the device's or the Mac's."""
-    log, key, token, loopback, remote = _daemon(tmp_path)
+    log, key, token, loopback, remote = here_daemon(tmp_path)
     phone, local = {"Authorization": f"Bearer {token}"}, {"Authorization": f"Bearer {key}"}
     file_id = remote.post(
         "/inherent/attachments", files={"file": ("a.png", PNG)}, headers=phone,

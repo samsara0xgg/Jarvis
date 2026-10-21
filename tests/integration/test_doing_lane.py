@@ -63,9 +63,9 @@ from jarvis.state.memory_db import (
     latest_doing_run,
     open_memory_db,
 )
-from tests.integration.test_day_highlights import DAY, DAY_KEY, NOW_MS, VANCOUVER, _served
-from tests.integration.test_ledger import _at, _world
-from tests.integration.test_timeline_actions import _peers, _refused_without_credentials, _stays
+from tests.support.day_highlights import DAY, DAY_KEY, NOW_MS, VANCOUVER, served_day
+from tests.support.ledger import ledger_at, ledger_world
+from tests.support.timeline import peers_with, refused_without_credentials, stays_of
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -903,9 +903,9 @@ def _fold(src: LedgerSources) -> list[dict[str, Any]]:
 
 def test_the_day_serves_spans_and_coverage_and_its_items_are_unchanged(tmp_path: Path) -> None:
     """Fact spans and doing spans together by start, coverage of the waking window."""
-    src = _world(tmp_path)
-    _stays(src)
-    day = _served(src)
+    src = ledger_world(tmp_path)
+    stays_of(src)
+    day = served_day(src)
     assert day["items"] == _fold(src)
     spans = day["spans"]
     keys = [(s["start_ms"], s["id"]) for s in spans]
@@ -914,7 +914,7 @@ def test_the_day_serves_spans_and_coverage_and_its_items_are_unchanged(tmp_path:
     assert {s["id"] for s in facts} >= {f"v{n}" for n in range(1, 8)}
     assert {(s["lane"], s["kind"]) for s in facts} >= {("place", "stay"), ("use", "work")}
     doing = [s for s in spans if s["lane"] == "doing"]
-    assert doing[0]["start_ms"] == int(_at(7, 6).timestamp()) * 1000  # waking from 06:00
+    assert doing[0]["start_ms"] == int(ledger_at(7, 6).timestamp()) * 1000  # waking from 06:00
     assert doing[-1]["end_ms"] == day_window(DAY, VANCOUVER)[1]
     waking = doing[-1]["end_ms"] - doing[0]["start_ms"]
     assert day["coverage"] == {
@@ -930,10 +930,10 @@ def test_the_day_serves_spans_and_coverage_and_its_items_are_unchanged(tmp_path:
 
 def test_kept_places_colour_the_stays_but_do_not_fill_the_day(tmp_path: Path) -> None:
     """A kept place gives its stays a category and itself; where he was is not what he did."""
-    src = _world(tmp_path)
-    _stays(src)
+    src = ledger_world(tmp_path)
+    stays_of(src)
     places.save(src.memory_db, name="UVic", lat=1.0, lng=2.0, role="school", origin="user")
-    day = _served(src)
+    day = served_day(src)
     doing = [s for s in day["spans"] if s["lane"] == "doing"]
     study = [s for s in doing if s["category"] == "study"]
     assert len(study) == 6  # the seventh stay is the Mac's work block, which names its segment
@@ -948,12 +948,12 @@ def test_a_memory_db_made_before_the_tables_gets_them_without_a_version_bump(
     tmp_path: Path,
 ) -> None:
     """Additive: the day opens a store that lacks the tables and creates them empty."""
-    src = _world(tmp_path)
-    _stays(src)
+    src = ledger_world(tmp_path)
+    stays_of(src)
     with closing(open_memory_db(src.memory_db)) as conn, conn:
         conn.execute("DROP TABLE doing_runs")
         conn.execute("DROP TABLE doing_answers")
-    assert _served(src)["spans"]
+    assert served_day(src)["spans"]
     with closing(open_memory_db(src.memory_db)) as conn:
         assert conn.execute("SELECT count(*) FROM doing_runs").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM doing_answers").fetchone()[0] == 0
@@ -964,20 +964,20 @@ def test_a_memory_db_made_before_the_tables_gets_them_without_a_version_bump(
 
 
 def _span_at(src: LedgerSources, hour: int, minute: int = 0) -> dict[str, Any]:
-    start = int(_at(7, hour, minute).timestamp()) * 1000
-    return next(s for s in _served(src)["spans"] if s["id"] == f"doing-{start}")
+    start = int(ledger_at(7, hour, minute).timestamp()) * 1000
+    return next(s for s in served_day(src)["spans"] if s["id"] == f"doing-{start}")
 
 
 @pytest.fixture
 def world(tmp_path: Path) -> tuple[LedgerSources, Any]:
     """The stays of 10-07 and the route wired as the runtime wires it."""
-    src = _world(tmp_path)
-    _stays(src)
+    src = ledger_world(tmp_path)
+    stays_of(src)
     answers = DoingAnswers(
         src.event_log, DaySources(VANCOUVER, src.timesink, src.memory_db),
         clock=lambda: NOW_MS / 1000,
     )
-    return src, _peers(tmp_path, doing_answer=functools.partial(_answer_doing, answers))
+    return src, peers_with(tmp_path, doing_answer=functools.partial(_answer_doing, answers))
 
 
 def _rows(src: LedgerSources) -> list[tuple[Any, ...]]:
@@ -1008,7 +1008,7 @@ def test_his_words_answer_a_span_and_the_day_shows_them_afterwards(world: tuple[
         (DAY_KEY, span["id"], span["start_ms"], span["end_ms"], None, "Dentist", 1.0, 2.0, None,
          "timeline"),
     ]
-    neighbours = [s for s in _served(src)["spans"] if s["lane"] == "doing" and s["confirmed"]]
+    neighbours = [s for s in served_day(src)["spans"] if s["lane"] == "doing" and s["confirmed"]]
     assert [s["id"] for s in neighbours] == [span["id"]]  # nothing else took his word
 
 
@@ -1050,7 +1050,7 @@ def test_a_stretch_he_names_is_carved_in_and_the_rest_of_the_span_stays(
         span["id"], first, last, "Lay down",
     )
     assert (held["basis"], held["confirmed"]) == ("stated", True)
-    rest = next(s for s in _served(src)["spans"] if s["id"] == f"doing-{last}")
+    rest = next(s for s in served_day(src)["spans"] if s["id"] == f"doing-{last}")
     assert (rest["end_ms"], rest["confirmed"], rest["title"]) == (span["end_ms"], False, None)
     assert _rows(src) == [
         (DAY_KEY, "", first, last, None, "Lay down", 1.0, 2.0, None, "timeline"),
@@ -1142,7 +1142,7 @@ def test_today_is_cut_at_now_and_its_plan_after_now_is_served_but_not_answerable
             plan.PlanItem("p1", "Lunch", "fixed", "his", start="12:00", minutes=60),
             plan.PlanItem("p2", "Dinner", "fixed", "his", start="18:00", minutes=60),
         ], "digest", "model")
-    day = _served(src, today)
+    day = served_day(src, today)
     spans = day["spans"]
     assert day["coverage"]["waking_end_ms"] == NOW_MS
     happened = [s for s in spans if s["lane"] == "doing" and s["basis"] != "planned"]
@@ -1206,30 +1206,30 @@ def test_the_answer_route_is_for_the_local_key_and_paired_devices_alone(
     """As the highlight route is guarded."""
     src, peers = world
     body = {"day": DAY_KEY, "span_id": _span_at(src, 9)["id"], "text": "Dentist"}
-    _refused_without_credentials(peers, ANSWER, body)
+    refused_without_credentials(peers, ANSWER, body)
     assert _rows(src) == []
     assert peers.paired.post(ANSWER, json=body).status_code == 200
 
 
 def test_a_brain_without_a_memory_store_has_no_answer_route(tmp_path: Path) -> None:
     """Not wired: the route is not there."""
-    peers = _peers(tmp_path)
+    peers = peers_with(tmp_path)
     body = {"day": DAY_KEY, "span_id": "doing-1", "text": "x"}
     assert peers.local.post(ANSWER, json=body).status_code == 404
 
 
 def test_the_day_over_http_carries_spans_and_coverage_as_json(tmp_path: Path) -> None:
     """``GET /inherent/day`` serialises the new fields."""
-    src = _world(tmp_path)
-    _stays(src)
+    src = ledger_world(tmp_path)
+    stays_of(src)
 
     async def day_read(day: Any) -> dict[str, Any]:  # noqa: ANN401 — the route's argument
         return _read_day(src.event_log, VANCOUVER, src.memory_db, src.timesink, day, NOW_MS)
 
-    peers = _peers(tmp_path, day_read=day_read)
+    peers = peers_with(tmp_path, day_read=day_read)
     got = peers.local.get(f"/inherent/day?date={DAY_KEY}")
     assert got.status_code == 200
     body = got.json()
     assert set(body["coverage"]) == {"waking_start_ms", "waking_end_ms", "waking_ms", "filled_ms"}
     assert {s["lane"] for s in body["spans"]} == {"doing", "place", "use"}
-    assert body["items"] == _served(src)["items"]
+    assert body["items"] == served_day(src)["items"]

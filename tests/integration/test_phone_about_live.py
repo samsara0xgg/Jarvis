@@ -28,7 +28,7 @@ from jarvis.state import reminders
 from jarvis.state.event_log import iter_events_of_types
 from jarvis.state.memory_db import MemorySettings
 from jarvis.surface.cli import emit_surface_user_intent
-from tests.integration.test_wire_routine_streaming import _drive, _payloads, _runtime
+from tests.support.routine import drive_streaming_turn, logged_payloads, routine_runtime
 
 if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
@@ -44,7 +44,7 @@ def _live_runtime(tmp_path: Path) -> JarvisRuntime:
     """The routine-stream runtime of the integration tests, with the shipped model and prompt."""
     shipped = yaml.safe_load((_REPO / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     # As shipped (routine streaming off); the fixture URL is never called.
-    base = _runtime(tmp_path, "http://127.0.0.1:9/v1", routine=False)
+    base = routine_runtime(tmp_path, "http://127.0.0.1:9/v1", routine=False)
     return replace(
         base,
         llm_client=LLMClient(shipped["llm"]),
@@ -80,8 +80,8 @@ def _ask(runtime: JarvisRuntime, first: str, due: datetime, *, with_about: bool)
         runtime.conn, transcript=_WORDS, turn_id="T-live-about", channel="cli_stdin",
         ingestion_node="iphone", about=about,
     )
-    _drive(runtime, intent)
-    return str(_payloads(runtime.conn, "surface.response_emitted")[-1]["text"])
+    drive_streaming_turn(runtime, intent)
+    return str(logged_payloads(runtime.conn, "surface.response_emitted")[-1]["text"])
 
 
 def _require_key() -> None:

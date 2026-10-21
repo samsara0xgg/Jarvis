@@ -36,7 +36,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.integration.test_wave4a_response_run import _final_result, _realtime_config
+from tests.support.response_run import final_result, realtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,7 +109,7 @@ def test_on_word_thinks_its_own_turn_only(
     """Each answer's response.started names the effort its own words called for."""
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
-    config = _realtime_config(lifecycle=True, cancel=False)
+    config = realtime_config(lifecycle=True, cancel=False)
     runtime = JarvisRuntime(
         config=config,
         runtime_paths=paths,
@@ -126,7 +126,7 @@ def test_on_word_thinks_its_own_turn_only(
         committed_event_bus=CommittedEventBus(),
         think_mode=load_think_mode(_LLM),
     )
-    monkeypatch.setattr(runtime_module, "decide", _final_result())
+    monkeypatch.setattr(runtime_module, "decide", final_result())
     start = int(time.time() * 1000)
     clock = _clocked(monkeypatch, start)
     think = runtime.think_mode

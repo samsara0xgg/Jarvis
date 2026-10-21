@@ -7,17 +7,13 @@ answers per day and records what it was asked.
 
 from __future__ import annotations
 
-import re
 from contextlib import closing
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision.day_summary import REQUIRED_HEADINGS
-from jarvis.decision.llm import ChatResult
 from jarvis.runtime.day_summary import (
-    VERBATIM_UNDER_CHARS,
     DaySummarySchedule,
     DaySummarySettings,
 )
@@ -29,35 +25,22 @@ from jarvis.state.memory_db import (
     open_memory_db,
     pending_days,
 )
-from tests.integration.test_daily_tools import DailyHarness
+from tests.support.daily_tools import DailyHarness
+from tests.support.day_summaries import (
+    GOOD,
+    TODAY,
+    DaySummariser,
+    day_ago,
+    insert_records,
+    record_id,
+    stamp_ago,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-TODAY = datetime.now().astimezone().date()
-GOOD = "\n".join(f"{heading}\nnone" for heading in REQUIRED_HEADINGS)
-
-
-def _day(ago: int) -> date:
-    return TODAY - timedelta(days=ago)
-
-
-def _rid(ago: int, index: int) -> str:
-    return f"{ago:016x}{index:016x}"  # 32 hex digits: the shape of an event uid
-
-
-def _stamp(ago: int, hour: int, minute: int = 0, *, utc: bool = False) -> str:
-    moment = datetime.combine(_day(ago), time(hour, minute)).astimezone()
-    return (moment.astimezone(UTC) if utc else moment).isoformat(timespec="seconds")
-
-
-def _insert(path: Path, rows: list[tuple[str, str, str, str]], *, pad: bool = False) -> None:
-    """``pad`` lengthens every record past the verbatim threshold, so its day is summarised."""
-    if pad:
-        rows = [(rid, ts, src, text + "长" * VERBATIM_UNDER_CHARS) for rid, ts, src, text in rows]
-    with closing(open_memory_db(path)) as conn, conn:
-        conn.executemany("INSERT INTO records (id, ts, source, text) VALUES (?, ?, ?, ?)", rows)
+    from jarvis.decision.llm import ChatResult
 
 
 def _stored(path: Path) -> dict[str, list[str]]:
@@ -68,41 +51,8 @@ def _stored(path: Path) -> dict[str, list[str]]:
     return out
 
 
-class _Summariser:
-    """Stands in for the day-summary preset's client; ``replies`` maps a day to its answer."""
-
-    provider = "openai"
-    model = "fake-day-summariser"
-
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-        self.replies: dict[str, str] = {}
-        self.systems: list[str] = []
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,
-        **_kwargs: object,
-    ) -> ChatResult:
-        text = str(messages[0]["content"])
-        day = re.match(r"\[Records of (\S+),", text).group(1)  # type: ignore[union-attr]
-        self.asked.append(day)
-        self.systems.append(system)
-        return ChatResult(
-            text=self.replies.get(day, f"## {day}\n{GOOD}"),
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=1,
-            output_tokens=1,
-            raw={},
-            model_used=self.model,
-        )
-
-
 def _schedule(
-    tmp_path: Path, summariser: _Summariser, at: time = time(5, 0),
+    tmp_path: Path, summariser: DaySummariser, at: time = time(5, 0),
 ) -> DaySummarySchedule:
     log = tmp_path / "events.db"
     open_event_log(log).close()
@@ -128,22 +78,22 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
 ) -> None:
     """Oldest first, today skipped, a day with a row skipped, a rejected day stores nothing."""
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
         [
-            (_rid(5, 1), _stamp(5, 9), "allen", "第五天"),
-            (_rid(4, 1), _stamp(4, 9), "allen", "已有摘要的一天"),
-            (_rid(3, 1), _stamp(3, 9), "allen", "第三天"),
-            (_rid(3, 2), _stamp(3, 9, 1), "jarvis", "好的"),
+            (record_id(5, 1), stamp_ago(5, 9), "allen", "第五天"),
+            (record_id(4, 1), stamp_ago(4, 9), "allen", "已有摘要的一天"),
+            (record_id(3, 1), stamp_ago(3, 9), "allen", "第三天"),
+            (record_id(3, 2), stamp_ago(3, 9, 1), "jarvis", "好的"),
             # 23:59:30 on day 1 local, written in UTC: its stored date may be day 0.
-            (_rid(1, 1), _stamp(1, 23, 59, utc=True), "allen", "跨零点"),
-            (_rid(0, 1), _stamp(0, 0, 1), "allen", "今天"),
+            (record_id(1, 1), stamp_ago(1, 23, 59, utc=True), "allen", "跨零点"),
+            (record_id(0, 1), stamp_ago(0, 0, 1), "allen", "今天"),
         ],
         pad=True,
     )
     append_day_summary(
         path,
-        day=_day(4).isoformat(),
+        day=day_ago(4).isoformat(),
         summary="old",
         model="m",
         record_count=1,
@@ -151,29 +101,29 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
         output_chars=3,
     )
     assert [d for d, _, _ in pending_days(path, TODAY)] == [
-        _day(5).isoformat(),
-        _day(3).isoformat(),
-        _day(1).isoformat(),
+        day_ago(5).isoformat(),
+        day_ago(3).isoformat(),
+        day_ago(1).isoformat(),
     ]
 
-    summariser = _Summariser()
-    summariser.replies[_day(5).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"  # unknown id
-    summariser.replies[_day(1).isoformat()] = "## x\n### Topics\nno other headings"
+    summariser = DaySummariser()
+    summariser.replies[day_ago(5).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"
+    summariser.replies[day_ago(1).isoformat()] = "## x\n### Topics\nno other headings"
     schedule = _schedule(tmp_path, summariser)
 
     assert _run_once(schedule, datetime.now().astimezone().replace(hour=4, minute=59)) is None
     outcomes = _run_once(schedule, datetime.now().astimezone().replace(hour=5, minute=0))
     assert outcomes is not None
     # A rejected answer is asked once more in the same run.
-    d5, d3, d1 = (_day(i).isoformat() for i in (5, 3, 1))
+    d5, d3, d1 = (day_ago(i).isoformat() for i in (5, 3, 1))
     assert summariser.asked == [d5, d5, d3, d1, d1]
     assert set(summariser.systems) == {"summarise"}
-    assert outcomes[_day(5).isoformat()].startswith("rejected (cites record ids")
-    assert outcomes[_day(1).isoformat()].startswith("rejected (missing headings")
-    assert outcomes[_day(3).isoformat()].startswith("landed (2 records")
+    assert outcomes[day_ago(5).isoformat()].startswith("rejected (cites record ids")
+    assert outcomes[day_ago(1).isoformat()].startswith("rejected (missing headings")
+    assert outcomes[day_ago(3).isoformat()].startswith("landed (2 records")
     stored = _stored(path)
-    assert set(stored) == {_day(4).isoformat(), _day(3).isoformat()}
-    assert stored[_day(4).isoformat()] == ["old"]
+    assert set(stored) == {day_ago(4).isoformat(), day_ago(3).isoformat()}
+    assert stored[day_ago(4).isoformat()] == ["old"]
     # Once per local date: no second run today, even though two days are still open.
     assert _run_once(schedule, datetime.now().astimezone().replace(hour=23)) is None
 
@@ -183,50 +133,53 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
     tomorrow = datetime.now().astimezone() + timedelta(days=1)
     assert schedule.due(tomorrow.replace(hour=5, minute=1)) == TODAY + timedelta(days=1)
     schedule.write(TODAY + timedelta(days=1))
-    assert summariser.asked == [_day(5).isoformat(), _day(1).isoformat(), TODAY.isoformat()]
-    assert set(_stored(path)) == {_day(i).isoformat() for i in (5, 4, 3, 1, 0)}
+    assert summariser.asked == [day_ago(5).isoformat(), day_ago(1).isoformat(), TODAY.isoformat()]
+    assert set(_stored(path)) == {day_ago(i).isoformat() for i in (5, 4, 3, 1, 0)}
 
 
 def test_a_failing_call_does_not_stop_the_days_after_it(tmp_path: Path) -> None:
     """One day's provider error is logged; the next day still lands."""
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
-        [(_rid(3, 1), _stamp(3, 9), "allen", "a"), (_rid(2, 1), _stamp(2, 9), "allen", "b")],
+        [
+            (record_id(3, 1), stamp_ago(3, 9), "allen", "a"),
+            (record_id(2, 1), stamp_ago(2, 9), "allen", "b"),
+        ],
         pad=True,
     )
-    summariser = _Summariser()
+    summariser = DaySummariser()
     real_chat = summariser.chat
 
     def flaky(*, messages: list[dict[str, Any]], system: str, **kwargs: object) -> ChatResult:
-        if _day(3).isoformat() in str(messages[0]["content"]):
+        if day_ago(3).isoformat() in str(messages[0]["content"]):
             msg = "provider unreachable"
             raise TimeoutError(msg)
         return real_chat(messages=messages, system=system, **kwargs)
 
     summariser.chat = flaky  # type: ignore[method-assign]
     outcomes = _schedule(tmp_path, summariser).write(TODAY)
-    assert outcomes[_day(3).isoformat()] == "failed"
-    assert outcomes[_day(2).isoformat()].startswith("landed")
-    assert set(_stored(path)) == {_day(2).isoformat()}
+    assert outcomes[day_ago(3).isoformat()] == "failed"
+    assert outcomes[day_ago(2).isoformat()].startswith("landed")
+    assert set(_stored(path)) == {day_ago(2).isoformat()}
 
 
 def test_a_short_day_is_kept_word_for_word_without_a_model_call(tmp_path: Path) -> None:
     """Under the threshold the day's own lines are its entry; the model is not asked."""
     path = tmp_path / "memory.db"
-    _insert(
+    insert_records(
         path,
         [
-            (_rid(2, 1), _stamp(2, 9), "allen", "早"),
-            (_rid(2, 2), _stamp(2, 9, 1), "jarvis", "早上好"),
-            (_rid(2, 3), _stamp(2, 9, 2), "picture_note", "[Picture note]\n一碗面"),
+            (record_id(2, 1), stamp_ago(2, 9), "allen", "早"),
+            (record_id(2, 2), stamp_ago(2, 9, 1), "jarvis", "早上好"),
+            (record_id(2, 3), stamp_ago(2, 9, 2), "picture_note", "[Picture note]\n一碗面"),
         ],
     )
-    summariser = _Summariser()
+    summariser = DaySummariser()
     outcomes = _schedule(tmp_path, summariser).write(TODAY)
-    assert outcomes[_day(2).isoformat()].startswith("verbatim (3 records")
+    assert outcomes[day_ago(2).isoformat()].startswith("verbatim (3 records")
     assert summariser.asked == []
-    entry = _stored(path)[_day(2).isoformat()][-1]
+    entry = _stored(path)[day_ago(2).isoformat()][-1]
     assert entry.endswith(
         "09:00 user: 早\n09:01 assistant: 早上好\n09:02 picture note: [Picture note]\n一碗面",
     ), "a picture's note is neither of them speaking (ADR 0223)"
@@ -255,32 +208,32 @@ def test_recall_returns_the_current_summary_of_each_day_before_the_lines(
     daily: DailyHarness,
 ) -> None:
     """The latest row of a day wins, a day without one is absent, today has none."""
-    _insert(
+    insert_records(
         daily.memory,
         [
-            (_rid(2, 1), _stamp(2, 9), "allen", "前天说的话"),
-            (_rid(1, 1), _stamp(1, 9), "allen", "昨天说的话"),
-            (_rid(1, 2), _stamp(1, 9, 1), "jarvis", "昨天的回答"),
+            (record_id(2, 1), stamp_ago(2, 9), "allen", "前天说的话"),
+            (record_id(1, 1), stamp_ago(1, 9), "allen", "昨天说的话"),
+            (record_id(1, 2), stamp_ago(1, 9, 1), "jarvis", "昨天的回答"),
         ],
     )
     for text in ("first try", "current"):
         append_day_summary(
             daily.memory,
-            day=_day(1).isoformat(),
+            day=day_ago(1).isoformat(),
             summary=text,
             model="m",
             record_count=2,
             input_chars=2,
             output_chars=len(text),
         )
-    day = _day(1).isoformat()
+    day = day_ago(1).isoformat()
 
     one = daily.call("recall", {"from": day})
     assert one["summaries"] == [{"day": day, "summary": "current"}]
     assert [line.split(": ", 1)[1] for line in one["lines"]] == ["昨天说的话", "昨天的回答"]
     assert list(one).index("summaries") < list(one).index("lines")
 
-    wide = daily.call("recall", {"from": _day(2).isoformat(), "to": TODAY.isoformat()})
+    wide = daily.call("recall", {"from": day_ago(2).isoformat(), "to": TODAY.isoformat()})
     assert wide["summaries"] == [{"day": day, "summary": "current"}]  # the day before has none
     assert wide["total"] == 3
     assert daily.call("recall", {"from": TODAY.isoformat()})["summaries"] == []
@@ -291,18 +244,18 @@ def test_recall_returns_the_current_summary_of_each_day_before_the_lines(
 def test_a_restart_does_not_ask_again_for_a_day_already_tried(tmp_path: Path) -> None:
     """The log's summary calls since ``at`` today stand for the run a restart forgot."""
     path = tmp_path / "memory.db"
-    _insert(path, [(_rid(2, 1), _stamp(2, 9), "allen", "第二天")], pad=True)
-    summariser = _Summariser()
-    summariser.replies[_day(2).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"  # rejected
+    insert_records(path, [(record_id(2, 1), stamp_ago(2, 9), "allen", "第二天")], pad=True)
+    summariser = DaySummariser()
+    summariser.replies[day_ago(2).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"  # rejected
     # The log stamps its rows with the real clock, so the run happens now, after a midnight ``at``.
     now = datetime.now().astimezone()
     assert _run_once(_schedule(tmp_path, summariser, time.min), now) is not None
-    assert summariser.asked == [_day(2).isoformat()] * 2
+    assert summariser.asked == [day_ago(2).isoformat()] * 2
     restarted = _schedule(tmp_path, summariser, time.min)
     assert restarted.due(now) is None, "tried after at: the restart waits"
-    assert summariser.asked == [_day(2).isoformat()] * 2
+    assert summariser.asked == [day_ago(2).isoformat()] * 2
     fresh = tmp_path / "fresh"
     fresh.mkdir()
-    assert _schedule(fresh, _Summariser(), time.min).due(now) == now.date(), (
+    assert _schedule(fresh, DaySummariser(), time.min).due(now) == now.date(), (
         "a log with no call today: a start still writes"
     )

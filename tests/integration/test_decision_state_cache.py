@@ -21,7 +21,7 @@ from jarvis.state.event_log import (
 )
 from jarvis.state.projections import ProjectionFold, fold_projections
 from jarvis.state.turn_overlap import turn_activity_since
-from tests.integration.test_incremental_decision_snapshot import _Log
+from tests.support.random_log import RandomLog
 
 if TYPE_CHECKING:
     import sqlite3
@@ -55,7 +55,7 @@ def test_threads_with_their_own_connections_each_get_the_log_at_their_cursor(
             conn.close()
 
     with contextlib.closing(writer):
-        log = _Log(writer, seed=11)
+        log = RandomLog(writer, seed=11)
         readers = [threading.Thread(target=_read) for _ in range(2)]
         for thread in readers:
             thread.start()
@@ -77,7 +77,7 @@ def test_a_state_that_differs_from_the_log_is_dropped_by_the_self_check(
     path = tmp_path / "events.db"
     conn = open_event_log(path)
     with contextlib.closing(conn):
-        log = _Log(conn, seed=5)
+        log = RandomLog(conn, seed=5)
         for _ in range(60):
             log.step()
         original = read_decision_snapshot
@@ -110,7 +110,7 @@ def test_a_read_in_flight_during_a_reset_does_not_republish_its_state(
     path = tmp_path / "events.db"
     conn = open_event_log(path)
     with contextlib.closing(conn):
-        log = _Log(conn, seed=8)
+        log = RandomLog(conn, seed=8)
         for _ in range(40):
             log.step()
         cache = DecisionStateCache(partial(open_event_log, path), verify_every_reads=0)
@@ -139,7 +139,7 @@ def test_a_read_inside_the_callers_transaction_never_publishes_its_state(tmp_pat
     path = tmp_path / "events.db"
     conn = open_event_log(path)
     with contextlib.closing(conn):
-        log = _Log(conn, seed=2)
+        log = RandomLog(conn, seed=2)
         for _ in range(30):
             log.step()
         cache = DecisionStateCache(partial(open_event_log, path), verify_every_reads=0)
@@ -168,7 +168,7 @@ def test_a_packet_reads_through_the_turns_reader_and_matches_the_cold_packet(
     path = tmp_path / "events.db"
     conn = open_event_log(path)
     with contextlib.closing(conn):
-        log = _Log(conn, seed=2)
+        log = RandomLog(conn, seed=2)
         for _ in range(50):
             log.step()
         trigger = emit_event(
@@ -198,7 +198,7 @@ def test_the_self_check_waits_until_the_daemon_is_idle(tmp_path: Path) -> None:
     path = tmp_path / "events.db"
     conn = open_event_log(path)
     with contextlib.closing(conn):
-        log = _Log(conn, seed=8)
+        log = RandomLog(conn, seed=8)
         for _ in range(40):
             log.step()
         busy = [True]

@@ -22,13 +22,21 @@ from jarvis.execution.transit_tool import TransitOffers
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state import departures
 from jarvis.state.event_log import iter_events_of_types, open_event_log
-from tests.integration.test_transit_tool import FAKE_KEY, PLACES, _bus, _fix, _ms, _routes, _serve
+from tests.support.transit import (
+    FAKE_KEY,
+    PLACES,
+    bus_route,
+    fix_with,
+    local_ms,
+    routes_with,
+    serve_routes,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-ROUTES = _routes(_bus("26", "17:12"), _bus("28", "17:20"))
+ROUTES = routes_with(bus_route("26", "17:12"), bus_route("28", "17:20"))
 """Now is 17:00: the 26 leaves at 17:12 (walk 4: leave 17:08) and the 28 at 17:20 (leave 17:16)."""
 
 
@@ -47,9 +55,9 @@ class Follower:
             "alight_stop": self.stop, "alight_known": self.stop is not None,
             "next_stop": "Cedar Ave", "stops_left": 3 if self.stop else None,
             "minutes_to_alight": 12 if self.stop else None,
-            "eta_ms": _ms(17, 12) if self.stop else None, "position_live": True,
+            "eta_ms": local_ms(17, 12) if self.stop else None, "position_live": True,
             "arrival_live": True,
-            "started_at_ms": _ms(17, 0), "source": "said", "warned": False,
+            "started_at_ms": local_ms(17, 0), "source": "said", "warned": False,
             "credit": "BC Transit",
         }
 
@@ -110,7 +118,7 @@ class World:
         self.lifecycle = ActionLifecycle()
         self.registry = build_default_registry(
             transit_api_key=FAKE_KEY, transit_places=lambda: PLACES, transit_offers=self.offers,
-            here_location=_fix(), ride_control=self.follower.control(),
+            here_location=fix_with(), ride_control=self.follower.control(),
         )
 
     def call(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -135,7 +143,7 @@ class World:
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     """Google served by hand at 17:00; the follower idle."""
-    made = World(tmp_path, seen=_serve(monkeypatch, answer=ROUTES))
+    made = World(tmp_path, seen=serve_routes(monkeypatch, answer=ROUTES))
     yield made
     made.conn.close()
 
@@ -285,11 +293,11 @@ def test_without_the_follower_the_tool_still_plans_and_pins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No `ride_control`: times and pins work; a ride is an error that says it is not set up."""
-    _serve(monkeypatch, answer=ROUTES)
+    serve_routes(monkeypatch, answer=ROUTES)
     made = World(tmp_path)
     registry = build_default_registry(
         transit_api_key=FAKE_KEY, transit_places=lambda: PLACES, transit_offers=made.offers,
-        here_location=_fix(),
+        here_location=fix_with(),
     )
     made.registry = registry
     assert made.call({"to": "home"})["options"]
@@ -332,12 +340,12 @@ def test_a_newer_plan_renumbers_the_list_and_a_pin_takes_the_new_first(world: Wo
     """Option 1 is the first of the latest list; a newer pin replaces the older."""
     world.call({"to": "home"})
     assert world.call({"pin": [1]})["pinned"] is True
-    held = departures.active(world.conn, _ms(17, 0))
+    held = departures.active(world.conn, local_ms(17, 0))
     assert held is not None
     assert [t.first_route for t in held.trips] == ["26"]
     world.call({"to": "UVic", "route": "28"})  # a new list: the 28 first, then the 26
     assert world.call({"pin": [1]})["summary"].startswith("Pinned on the notch: the 28 from")
-    held = departures.active(world.conn, _ms(17, 0))
+    held = departures.active(world.conn, local_ms(17, 0))
     assert held is not None
     assert [t.first_route for t in held.trips] == ["28"]
 

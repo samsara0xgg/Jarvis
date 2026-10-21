@@ -19,13 +19,12 @@ from jarvis.decision.voice_words import VoiceWords, words_state
 from jarvis.runtime import RuntimeBootstrapError, _voice_words
 from jarvis.surface import voice_session
 from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
+from tests.support.voice_words import LISTENING, LONG_LINE
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 SHORT_ORDER = "我让你退一下。"  # a dismissal only inside a sentence
-LISTENING = "I see."  # no word list knows it
-LONG_LINE = "给我讲一个关于太空旅行的很长很长而且很精彩的故事好吗谢谢你"  # more than 24 characters
 
 
 class _FakeRoute(SurrogateRoute):

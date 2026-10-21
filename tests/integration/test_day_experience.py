@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import date, datetime, time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -24,7 +23,7 @@ from jarvis.state.day_experience import (
     fold_day,
     weekly,
 )
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import open_event_log
 from jarvis.state.job_ledger import add_card_feedback, snapshot_card
 from jarvis.state.memory_db import (
     experience_days,
@@ -32,12 +31,12 @@ from jarvis.state.memory_db import (
     open_memory_db,
     put_day_experience,
 )
+from tests.support.day_experience import DAY, noon_of, write_log
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-DAY = date(2026, 10, 14)
 START, END = day_bounds_ms(DAY)
 S = 1000
 
@@ -360,20 +359,6 @@ def test_labels_name_each_spoken_turn_by_its_verdict_and_the_week_ranks_them() -
 # --- the store and the cards' reactions, over real files ----------------------------------
 
 
-def _log(path: Path, rows: Sequence[tuple[str, datetime, dict[str, Any], str]]) -> None:
-    with closing(open_event_log(path)) as conn:
-        for kind, when, payload, node in rows:
-            emit_event(
-                conn, type=kind, payload=payload, ingestion_node=node,
-                ts_epoch_ms=int(when.timestamp() * 1000),
-                correlation={"turn_id": payload["turn_id"]} if "turn_id" in payload else None,
-            )
-
-
-def _noon(day: date, minute: int = 0) -> datetime:
-    return datetime.combine(day, time(12, minute)).astimezone()
-
-
 def test_the_store_replaces_a_date_and_reads_the_newest_rows_oldest_first(tmp_path: Path) -> None:
     """One row per local date; a second write of a date replaces it."""
     path = tmp_path / "memory.db"
@@ -392,16 +377,45 @@ def test_the_store_replaces_a_date_and_reads_the_newest_rows_oldest_first(tmp_pa
 def test_a_cards_reactions_in_memory_db_reach_the_proactive_counts(tmp_path: Path) -> None:
     """A snapshot, one reaction and one unanswered card, read back through memory.db."""
     log, memory = tmp_path / "events.db", tmp_path / "memory.db"
-    _log(log, [("utterance.received", _noon(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac")])
-    moment = _noon(DAY)
-    snapshot_card(memory, kind="pop", card_id="c1", pack_json="{}", judge_id="j",
-                  judge_version="1", level="card", reason="r", now=moment)
+    write_log(
+        log, [("utterance.received", noon_of(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac")]
+    )
+    moment = noon_of(DAY)
+    snapshot_card(
+        memory,
+        kind="pop",
+        card_id="c1",
+        pack_json="{}",
+        judge_id="j",
+        judge_version="1",
+        level="card",
+        reason="r",
+        now=moment,
+    )
     add_card_feedback(memory, "c1", "acted", moment)
-    snapshot_card(memory, kind="pop", card_id="c2", pack_json="{}", judge_id="j",
-                  judge_version="1", level="card", reason="r", now=moment)
+    snapshot_card(
+        memory,
+        kind="pop",
+        card_id="c2",
+        pack_json="{}",
+        judge_id="j",
+        judge_version="1",
+        level="card",
+        reason="r",
+        now=moment,
+    )
     add_card_feedback(memory, "c2", "right", moment)
-    snapshot_card(memory, kind="wait", card_id="c3", pack_json="{}", judge_id="j",
-                  judge_version="1", level="card", reason="r", now=moment)
+    snapshot_card(
+        memory,
+        kind="wait",
+        card_id="c3",
+        pack_json="{}",
+        judge_id="j",
+        judge_version="1",
+        level="card",
+        reason="r",
+        now=moment,
+    )
     add_card_feedback(memory, "c3", "ignored", moment)
     with closing(open_event_log(log)) as conn:
         metrics = compute_day(conn, memory, DAY)

@@ -18,10 +18,8 @@ local midnight that opens the case's day; the day is 2026-10-10 in Vancouver.
 
 from __future__ import annotations
 
-import math
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -31,41 +29,19 @@ from jarvis.state.day_line import day_window, fold_day, parse_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.ledger import _Phone
 from jarvis.state.phone_location import LOCATION_EVENT, VISIT_EVENT
-from tests.integration import test_places
-from tests.integration.test_day_line import MINUTE, Row, _load, _ms, _stores, motion
+from tests.support.day_line import MINUTE, Row, load_rows, make_stores, minutes_ms, motion
+from tests.support.fixes import DAY, HOME, Seen, as_seen, cut, fix, spot, trail
+from tests.support.places import NOW, NOW_MS, TODAY, ZONE, ms_days_ago
 
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
 
-ZONE = ZoneInfo("America/Vancouver")
-DAY = "2026-10-10"
-HOME = (10.0, 20.0)
-_M_PER_DEGREE = 111_194.9
-
-
-def spot(
-    north: float = 0.0, east: float = 0.0, *, of: tuple[float, float] = HOME,
-) -> tuple[float, float]:
-    """The point ``north`` metres north and ``east`` metres east of ``of``."""
-    lat = of[0] + north / _M_PER_DEGREE
-    return lat, of[1] + east / (_M_PER_DEGREE * math.cos(math.radians(of[0])))
 
 
 SCHOOL = spot(2240)  # 2.24 km north of home
 FAR = spot(5000)  # a fix a little before now, nowhere near: the first of the next run
 QUARRY, AWAY = (30.0, 40.0), (30.05, 40.0)
-
-
-def fix(
-    uid: str, minute: float, at: tuple[float, float] = HOME, *, acc: float = 20.0,
-    place: str | None = None,
-) -> Row:
-    """A ``phone.location_observed`` row at ``minute``."""
-    payload: dict[str, Any] = {"lat": at[0], "lng": at[1], "accuracy_m": acc}
-    if place is not None:
-        payload["place"] = place
-    return Row(LOCATION_EVENT, uid, payload, minute)
 
 
 def visit(uid: str, arrived: float, departed: float | None = None, place: str | None = None) -> Row:
@@ -79,49 +55,12 @@ def visit(uid: str, arrived: float, departed: float | None = None, place: str | 
     return Row(VISIT_EVENT, uid, payload, departed or arrived)
 
 
-def trail(  # noqa: PLR0913 - a straight line of fixes: its name, span, step and ends
-    name: str, first: float, last: float, step: float, start: tuple[float, float],
-    end: tuple[float, float],
-) -> list[Row]:
-    """Fixes every ``step`` minutes from ``first`` to ``last``, on the line ``start`` to ``end``."""
-    count = round((last - first) / step)
-    return [
-        fix(
-            f"{name}{k}", first + k * step,
-            (
-                start[0] + (end[0] - start[0]) * k / count,
-                start[1] + (end[1] - start[1]) * k / count,
-            ),
-        )
-        for k in range(count + 1)
-    ]
-
-
 def line(name: str, first: float, last: float, step: float, metres: float) -> list[Row]:
     """Fixes every ``step`` minutes, ``metres`` apart, going north from home."""
     return [
         fix(f"{name}{k}", first + k * step, spot(metres * k))
         for k in range(round((last - first) / step) + 1)
     ]
-
-
-class Seen(NamedTuple):
-    """An item of the day as the table expects it; ``acc`` is checked only when given."""
-
-    kind: str
-    uid: str
-    start: float
-    end: float | None
-    place: str | None = None
-    cut: bool = False
-    acc: float | None = None
-
-
-def cut(
-    uid: str, start: float, end: float | None, place: str | None = None, acc: float | None = None,
-) -> Seen:
-    """An expected stay cut from fixes."""
-    return Seen("stay", uid, start, end, place, cut=True, acc=acc)
 
 
 def visited(uid: str, start: float, end: float | None, place: str | None = None) -> Seen:
@@ -355,37 +294,19 @@ CASES: list[Case] = [
 ]
 
 
-def _seen(items: list[dict[str, Any]], origin: int, expected: list[Seen]) -> list[Seen]:
-    """The day's stays and moves as the table words them (``@`` ids with their start in minutes)."""
-    found: list[Seen] = []
-    for item, want in zip(items, expected, strict=False):
-        uid = str(item["id"])
-        if "@" in uid:
-            head, tail = uid.split("@")
-            uid = f"{head}@{(int(tail) - origin) // MINUTE}"
-        found.append(Seen(
-            item["kind"], uid, (item["start_ms"] - origin) / MINUTE,
-            None if item["end_ms"] is None else (item["end_ms"] - origin) / MINUTE,
-            item.get("place"), item.get("cut_from") == "fixes",
-            item.get("accuracy_m") if want.acc is not None else None,
-        ))
-    found.extend(
-        Seen(item["kind"], str(item["id"]), 0, None) for item in items[len(expected):]
-    )
-    return found
-
-
 @pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
 def test_the_fixes_fold_into_the_stays_of_the_day(tmp_path: Path, case: Case) -> None:
     """Each case: rows appended in order, the day cut in its zone, folded at its own now."""
     start_ms, end_ms = day_window(parse_day(DAY), ZONE)
     conn = open_event_log(tmp_path / "events.db")
-    _load(conn, case.rows, start_ms)
-    line_ = fold_day(conn, start_ms, end_ms, _ms(start_ms, case.now), _stores(tmp_path, ZONE))
+    load_rows(conn, case.rows, start_ms)
+    line_ = fold_day(
+        conn, start_ms, end_ms, minutes_ms(start_ms, case.now), make_stores(tmp_path, ZONE)
+    )
     conn.close()
 
     items = [i for i in line_.items if i["kind"] in ("stay", "move")]
-    assert _seen(items, start_ms, case.items) == case.items
+    assert as_seen(items, start_ms, case.items) == case.items
     assert line_.missing == []
 
 
@@ -394,16 +315,29 @@ def test_a_cut_stay_has_the_shape_of_a_visit_stay_and_its_first_fixs_uid(tmp_pat
     start_ms, end_ms = day_window(parse_day(DAY), ZONE)
     conn = open_event_log(tmp_path / "events.db")
     rows = [
-        fix("a1", 540, spot(10), place="Home St"), fix("a2", 543, spot(-10), place="Home St"),
-        fix("a3", 547, spot(30), place="Other Rd"), fix("a4", 549, spot(-30), place=None),
+        fix("a1", 540, spot(10), place="Home St"),
+        fix("a2", 543, spot(-10), place="Home St"),
+        fix("a3", 547, spot(30), place="Other Rd"),
+        fix("a4", 549, spot(-30), place=None),
     ]
-    _load(conn, rows, start_ms)
-    line_ = fold_day(conn, start_ms, end_ms, _ms(start_ms, 1200), _stores(tmp_path, ZONE))
+    load_rows(conn, rows, start_ms)
+    line_ = fold_day(
+        conn, start_ms, end_ms, minutes_ms(start_ms, 1200), make_stores(tmp_path, ZONE)
+    )
     conn.close()
 
     (item,) = [i for i in line_.items if i["kind"] == "stay"]
     assert set(item) == {
-        "id", "lane", "kind", "start_ms", "end_ms", "state", "lat", "lng", "accuracy_m", "place",
+        "id",
+        "lane",
+        "kind",
+        "start_ms",
+        "end_ms",
+        "state",
+        "lat",
+        "lng",
+        "accuracy_m",
+        "place",
         "cut_from",
     }
     assert (item["id"], item["lane"], item["state"], item["end_ms"]) == ("a1", "you", "now", None)
@@ -416,24 +350,30 @@ def test_the_stamp_notices_a_late_fix_and_the_stays_are_folded_again(tmp_path: P
     start_ms, _ = day_window(parse_day(DAY), ZONE)
     conn = open_event_log(tmp_path / "events.db")
     rows = [fix("a1", 540), fix("a2", 545), fix("a3", 550)]
-    _load(conn, rows, start_ms)
-    first, last = _ms(start_ms, 0), _ms(start_ms, 1440)
-    now = _ms(start_ms, 1200)
+    load_rows(conn, rows, start_ms)
+    first, last = minutes_ms(start_ms, 0), minutes_ms(start_ms, 1440)
+    now = minutes_ms(start_ms, 1200)
 
     def folded() -> list[tuple[str, int, int | None]]:
         read = phone_day.read_rows(conn, first - phone_day.LOOKBACK_MS)
-        return [(s.origin[1], (s.start - start_ms) // MINUTE, None if s.end is None else
-                 (s.end - start_ms) // MINUTE) for s in phone_day.stays(read, now)]
+        return [
+            (
+                s.origin[1],
+                (s.start - start_ms) // MINUTE,
+                None if s.end is None else (s.end - start_ms) // MINUTE,
+            )
+            for s in phone_day.stays(read, now)
+        ]
 
     stamp = phone_day.stamp(conn, first, last)
     assert folded() == [("a1", 540, None)]
 
-    _load(conn, [fix("late", 800, SCHOOL)], start_ms)  # a late batch: timed in the range
+    load_rows(conn, [fix("late", 800, SCHOOL)], start_ms)  # a late batch: timed in the range
     assert phone_day.stamp(conn, first, last) != stamp
     assert folded() == [("a1", 540, 800), ("late", 800, None)]
 
     again = phone_day.stamp(conn, first, last)
-    _load(conn, [fix("tomorrow", 1500, SCHOOL)], start_ms)  # timed after the range
+    load_rows(conn, [fix("tomorrow", 1500, SCHOOL)], start_ms)  # timed after the range
     assert phone_day.stamp(conn, first, last) == again
     conn.close()
 
@@ -445,23 +385,36 @@ def _days_at_the_quarry(conn: sqlite3.Connection, name: str | None) -> None:
     """Three days of fixes only at one made-up spot, an hour each, left on foot for elsewhere."""
     at = QUARRY
     for days_ago in (1, 2, 3):
-        noon = test_places.at(days_ago, 12)
+        noon = ms_days_ago(days_ago, 12)
         for number, minutes in enumerate((0, 3, 6)):
             emit_event(
-                conn, type=LOCATION_EVENT, ts_epoch_ms=noon + minutes * MINUTE,
+                conn,
+                type=LOCATION_EVENT,
+                ts_epoch_ms=noon + minutes * MINUTE,
                 payload={"lat": at[0], "lng": at[1], "accuracy_m": 25.0, "place": name or ""},
-                event_uid=f"q{days_ago}-{number}", ingestion_node="phone",
+                event_uid=f"q{days_ago}-{number}",
+                ingestion_node="phone",
             )
         emit_event(
-            conn, type=LOCATION_EVENT, ts_epoch_ms=noon + 70 * MINUTE, event_uid=f"qa{days_ago}",
-            payload={"lat": AWAY[0], "lng": AWAY[1], "accuracy_m": 25.0}, ingestion_node="phone",
+            conn,
+            type=LOCATION_EVENT,
+            ts_epoch_ms=noon + 70 * MINUTE,
+            event_uid=f"qa{days_ago}",
+            payload={"lat": AWAY[0], "lng": AWAY[1], "accuracy_m": 25.0},
+            ingestion_node="phone",
         )
         emit_event(
-            conn, type=phone_day.MOTION_EVENT, ts_epoch_ms=noon + 60 * MINUTE, payload={
-                "activity": "walking", "confidence": "high",
-                "started_at_ms": noon + 60 * MINUTE, "ended_at_ms": noon + 70 * MINUTE,
+            conn,
+            type=phone_day.MOTION_EVENT,
+            ts_epoch_ms=noon + 60 * MINUTE,
+            payload={
+                "activity": "walking",
+                "confidence": "high",
+                "started_at_ms": noon + 60 * MINUTE,
+                "ended_at_ms": noon + 70 * MINUTE,
             },
-            event_uid=f"qw{days_ago}", ingestion_node="phone",
+            event_uid=f"qw{days_ago}",
+            ingestion_node="phone",
         )
 
 
@@ -469,21 +422,25 @@ def test_the_places_tally_counts_a_stay_cut_from_fixes(tmp_path: Path) -> None:
     """Three days of fixes and no visit make a spot with their days and the usual length."""
     conn = open_event_log(tmp_path / "events.db")
     _days_at_the_quarry(conn, "Quarry Rd 9")
-    seen = places.read_stays(conn, test_places.NOW_MS, ZONE)
+    seen = places.read_stays(conn, NOW_MS, ZONE)
     there = [s for s in seen if s.fields.get("place") == "Quarry Rd 9"]
     assert [(s.fields["cut_from"], (s.end or 0) - s.start) for s in there] == (
         [("fixes", 60 * MINUTE)] * 3
     )
 
-    counted = places.tally(seen, [], test_places.NOW_MS, ZONE)
+    counted = places.tally(seen, [], NOW_MS, ZONE)
     (found,) = [one for one in counted.spots if metres((one.lat, one.lng), QUARRY) < 100]
     assert found.facts == places.Facts(
-        3, 3, test_places.TODAY - timedelta(days=1), 60, "Quarry Rd 9",
+        3,
+        3,
+        TODAY - timedelta(days=1),
+        60,
+        "Quarry Rd 9",
     )
     assert (found.lat, found.lng) == pytest.approx(QUARRY, abs=1e-9)
 
     kept = places.Place("p1", "Quarry", "other", 30.0, 40.0, 120, None, "user", "t", "t")
-    held = places.tally(seen, [kept], test_places.NOW_MS, ZONE)
+    held = places.tally(seen, [kept], NOW_MS, ZONE)
     assert held.kept == {"p1": found.facts}
     assert not [one for one in held.spots if metres((one.lat, one.lng), QUARRY) < 100]
     conn.close()
@@ -493,9 +450,9 @@ def test_the_ledger_names_a_cut_stay_by_its_kept_place_or_the_phones_words(tmp_p
     """The ledger's stay minutes take the merged list: named by the kept circle, else the fix's."""
     conn = open_event_log(tmp_path / "events.db")
     _days_at_the_quarry(conn, "Quarry Rd 9")
-    since = test_places.at(5, 0)
+    since = ms_days_ago(5, 0)
     rows = phone_day.read_rows(conn, since - phone_day.LOOKBACK_MS)
-    as_of = test_places.NOW
+    as_of = NOW
     kept = places.Place("p1", "Quarry", "other", 30.0, 40.0, 120, None, "user", "t", "t")
 
     for held, name in (([], "Quarry Rd 9"), ([kept], "Quarry")):

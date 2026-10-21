@@ -43,7 +43,16 @@ from jarvis.state.day_line import DayLine, day_window, fold_day, parse_day
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.integration.test_day_line import MINUTE, Row, _load, _raw, _stores, fired, remind, visit
+from tests.support.day_line import (
+    MINUTE,
+    Row,
+    fired,
+    load_rows,
+    make_stores,
+    raw_row,
+    remind,
+    visit,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -161,10 +170,10 @@ class Rig:
         """
         self.path = tmp_path / "events.db"
         self.conn: sqlite3.Connection = open_event_log(self.path)
-        _load(self.conn, rows or [], ORIGIN)
+        load_rows(self.conn, rows or [], ORIGIN)
         for row in old:
-            _raw(self.conn, row.uid, row.type, json.dumps(row.payload), _at(row.ts))
-        self.stores = _stores(tmp_path, ZONE)
+            raw_row(self.conn, row.uid, row.type, json.dumps(row.payload), _at(row.ts))
+        self.stores = make_stores(tmp_path, ZONE)
 
     def close(self) -> None:
         """Close the log."""
@@ -541,7 +550,7 @@ def test_the_day_route_serves_events_labels_and_departures(tmp_path: Path) -> No
     log = tmp_path / "events.db"
     conn = open_event_log(log)
     pin = [pinned("P1", [trip("a", 520, 515)], "r1", "a", 0), *remind("r1", 515, "go")]
-    _load(conn, pin, ORIGIN)
+    load_rows(conn, pin, ORIGIN)
     _mirror(log, _Microsoft([STANDUP, READING_WEEK, DENTIST])).sync()
     reading_week = _phone_id(conn, READING_WEEK)
     conn.close()
@@ -572,7 +581,7 @@ def test_the_day_route_without_microsoft_serves_the_rest_and_never_names_the_cal
     """Outlook never mirrored: no labels, nothing of the calendar in ``missing``."""
     log = tmp_path / "events.db"
     conn = open_event_log(log)
-    _load(conn, [visit("home", 480, place="Home")], ORIGIN)
+    load_rows(conn, [visit("home", 480, place="Home")], ORIGIN)
     conn.close()
     body = _read_day(log, ZONE, None, None, date(2026, 10, 10), _at(720))
 

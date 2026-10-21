@@ -23,10 +23,8 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from jarvis.execution.mcp_oauth import FileTokenStorage, build_oauth
 from jarvis.execution.mcp_tools import McpServers
-from tests.integration.test_mcp_tools import (
-    _free_port,
-)
-from tests.integration.test_mcp_tools import (
+from tests.support.mcp import free_port
+from tests.support.mcp import (
     oauth_url as oauth_url,  # noqa: PLC0414 — re-export fixture.
 )
 
@@ -57,7 +55,7 @@ def test_the_registered_and_requested_redirect_is_the_configured_one(
     tmp_path: Path, oauth_url: str, configured: str | None
 ) -> None:
     """Configured, the public URI; unset, the loopback URI exactly as before."""
-    port = _free_port()
+    port = free_port()
     expected = configured or f"http://127.0.0.1:{port}/callback"
     opened: list[str] = []
 

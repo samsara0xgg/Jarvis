@@ -23,7 +23,12 @@ from jarvis.state.memory_db import (
     record_sent,
     render_context,
 )
-from tests.integration.test_rolling_summary import _fill, _summaries, _Summariser, _tick
+from tests.support.rolling_summary import (
+    CompactSummariser,
+    fill_records,
+    rolling_summaries,
+    tick_sweep,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -199,7 +204,7 @@ def test_rolling_is_unchanged_by_the_new_keys(tmp_path: Path) -> None:
     assert SessionSettings().context_raw_max_chars == 40000
 
 
-def _sweep(tmp_path: Path, summariser: _Summariser, **settings: object) -> CompactionSweep:
+def _sweep(tmp_path: Path, summariser: CompactSummariser, **settings: object) -> CompactionSweep:
     from jarvis.state.event_log import open_event_log  # noqa: PLC0415
 
     log = tmp_path / "events.db"
@@ -219,18 +224,18 @@ def _sweep(tmp_path: Path, summariser: _Summariser, **settings: object) -> Compa
 
 def test_the_compaction_sweep_does_nothing_in_this_mode(tmp_path: Path) -> None:
     """The window fold runs in rolling mode (control) and never in day_summaries mode."""
-    _fill(tmp_path / "memory.db", 0, 149)
-    control = _Summariser()
-    _tick(_sweep(tmp_path, control))
+    fill_records(tmp_path / "memory.db", 0, 149)
+    control = CompactSummariser()
+    tick_sweep(_sweep(tmp_path, control))
     assert control.requests  # the window folds what it hides in rolling mode
 
     other = tmp_path / "other"
     other.mkdir()
-    _fill(other / "memory.db", 0, 149)
-    quiet = _Summariser()
-    _tick(_sweep(other, quiet, context=DAY_SUMMARIES_CONTEXT))
+    fill_records(other / "memory.db", 0, 149)
+    quiet = CompactSummariser()
+    tick_sweep(_sweep(other, quiet, context=DAY_SUMMARIES_CONTEXT))
     assert quiet.requests == []
-    assert _summaries(other / "memory.db") == []
+    assert rolling_summaries(other / "memory.db") == []
 
 
 def test_a_gap_since_the_last_record_is_still_noted_with_no_raw_record(tmp_path: Path) -> None:

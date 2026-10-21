@@ -21,13 +21,10 @@ import socket
 import subprocess
 import threading
 import time
-import uuid
-from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.server import serve
@@ -37,7 +34,6 @@ from jarvis.deployment.night_power import MacPower
 from jarvis.execution import tools as tools_module
 from jarvis.execution.tools import (
     TERMINAL_TOOL_NAMES,
-    ActionLifecycle,
     ToolRegistry,
     build_default_registry,
     make_screen_capture,
@@ -46,7 +42,6 @@ from jarvis.runtime import _make_entity_resolver, _sound_output, audio_output
 from jarvis.runtime.night_run import NightRun, NightSettings
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.terminal import _declared, make_executor
-from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state.device_tokens import (
     device_name_for_token,
@@ -65,17 +60,15 @@ from jarvis.surface.terminal_link import (
     run_terminal_client,
 )
 from jarvis.surface.terminal_voice import BrainVoice
-from tests.integration.test_terminal_voice import _NoRows
+from tests.support.terminal import REMOTE, NoRows, TokenBrain, dispatch_tool, wait_for
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
-    from starlette.types import ASGIApp, Receive, Scope, Send
-
     from jarvis.runtime.job_mail import JobMail
+    from jarvis.shared import RawResult
 
-REMOTE = "100.87.250.92"
 TERMINAL_WS = "ws://127.0.0.1:8006/terminal/ws"
 PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 20
 # The tools a brain keeps on its menu that act on a device (`write_file` has no caller).
@@ -88,37 +81,6 @@ PROXIED = DEVICE - {"screen_look"} | {"start_night_run", "end_night_run"}
 
 
 # --- helpers ---------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _Paths:
-    event_log: Path
-    artifacts_root: Path
-
-
-def _dispatch(
-    registry: ToolRegistry,
-    root: Path,
-    tool: str,
-    arguments: Mapping[str, Any],
-    entity: str | None = None,
-) -> RawResult:
-    """Run one tool the way the decision layer does; always on a worker thread."""
-    conn = open_event_log(root / "events.db")
-    try:
-        lifecycle = ActionLifecycle()
-        action_id = uuid.uuid4().hex
-        lifecycle.register(action_id)
-        lifecycle.transition(action_id, "authorized")
-        request = ActionRequest(
-            action_id=action_id, tool_name=tool, target_entity_ref=entity,
-            caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L0",
-            arguments=dict(arguments), authorization_lease=None, run_id=None, turn_id=None,
-        )
-        paths = _Paths(root / "events.db", root / "artifacts")
-        return registry.dispatch(request, conn, paths, lifecycle).slots[0]
-    finally:
-        conn.close()
 
 
 class _FakeVision:
@@ -238,7 +200,7 @@ def test_a_proxy_returns_what_the_terminal_answers_and_keeps_the_tools_semantics
         })
         results = [
             await asyncio.to_thread(
-                _dispatch, registry, tmp_path, tool, args, entity)
+                dispatch_tool, registry, tmp_path, tool, args, entity)
             for tool, args, entity in (
                 ("read_file", {"target": "notes"}, "file:/Users/a/n.txt"),
                 ("open_url", {"url": "https://example.com/"}, None),
@@ -267,7 +229,7 @@ def test_a_terminals_own_failure_reaches_the_model_with_its_code(tmp_path: Path)
             "ok": False, "code": "file_not_found", "message": "read_file: nope is not a file",
         })
         return await asyncio.to_thread(
-            _dispatch, _brain_registry(hub, tmp_path), tmp_path, "read_file", {}, "file:/nope",
+            dispatch_tool, _brain_registry(hub, tmp_path), tmp_path, "read_file", {}, "file:/nope",
         )
 
     result = _on_a_thread(scenario)
@@ -283,13 +245,13 @@ def test_with_no_terminal_the_result_says_the_device_is_not_connected(tmp_path: 
     async def scenario() -> tuple[RawResult, RawResult, RawResult]:
         hub = TerminalHub(call_timeout_s=5)
         registry = _brain_registry(hub, tmp_path)
-        first = await asyncio.to_thread(_dispatch, registry, tmp_path, "read_clipboard", {})
+        first = await asyncio.to_thread(dispatch_tool, registry, tmp_path, "read_clipboard", {})
         terminal = _FakeTerminal(hub, {"read_clipboard"}, _ok({"content": "", "total_bytes": 0}))
         while_connected = await asyncio.to_thread(
-            _dispatch, registry, tmp_path, "read_clipboard", {},
+            dispatch_tool, registry, tmp_path, "read_clipboard", {},
         )
         hub.detach(terminal.link)
-        after = await asyncio.to_thread(_dispatch, registry, tmp_path, "read_clipboard", {})
+        after = await asyncio.to_thread(dispatch_tool, registry, tmp_path, "read_clipboard", {})
         return first, while_connected, after
 
     first, while_connected, after = _on_a_thread(scenario)
@@ -310,7 +272,7 @@ def test_a_terminal_that_did_not_declare_the_tool_is_not_asked(tmp_path: Path) -
         hub = TerminalHub(call_timeout_s=5)
         terminal = _FakeTerminal(hub, {"read_clipboard"}, _ok({}))
         result = await asyncio.to_thread(
-            _dispatch, _brain_registry(hub, tmp_path), tmp_path, "open_url", {"url": "x"},
+            dispatch_tool, _brain_registry(hub, tmp_path), tmp_path, "open_url", {"url": "x"},
         )
         return result, terminal
 
@@ -328,7 +290,7 @@ def test_a_call_times_out_when_the_terminal_does_not_answer(tmp_path: Path) -> N
         terminal = _FakeTerminal(hub, {"read_clipboard"}, lambda _f, _t: None)
         began = time.monotonic()
         result = await asyncio.to_thread(
-            _dispatch, _brain_registry(hub, tmp_path), tmp_path, "read_clipboard", {},
+            dispatch_tool, _brain_registry(hub, tmp_path), tmp_path, "read_clipboard", {},
         )
         return result, time.monotonic() - began, len(terminal.link.pending)
 
@@ -353,7 +315,7 @@ def test_a_terminal_that_drops_mid_call_fails_the_call_at_once(tmp_path: Path) -
         _FakeTerminal(hub, {"read_clipboard"}, drop)
         began = time.monotonic()
         result = await asyncio.to_thread(
-            _dispatch, _brain_registry(hub, tmp_path), tmp_path, "read_clipboard", {},
+            dispatch_tool, _brain_registry(hub, tmp_path), tmp_path, "read_clipboard", {},
         )
         return result, time.monotonic() - began
 
@@ -400,7 +362,7 @@ def test_a_call_for_what_she_says_unprompted_goes_to_the_voice_terminal() -> Non
             return str(reply["result"])
 
         seen = [await played()]
-        hub.voice = BrainVoice(cast("Any", object()), _NoRows())
+        hub.voice = BrainVoice(cast("Any", object()), NoRows())
         speaker.link.speech = hub.voice.attach("macbook", speaker.send, None)
         seen.append(await played())
         hub.detach(speaker.link)
@@ -494,7 +456,7 @@ def test_screen_look_on_a_brain_describes_what_the_terminal_captured(tmp_path: P
     registry = _offering(build_default_registry(
         device_link=link, vision_client=vision, obsidian_vault_root=None,
     ))
-    result = _dispatch(registry, tmp_path, "screen_look", {"question": " what is open? "})
+    result = dispatch_tool(registry, tmp_path, "screen_look", {"question": " what is open? "})
     assert result.error is None
     assert calls == [("screen_capture", {}, None)]
     assert result.payload["description"] == "a terminal window and a browser"
@@ -522,7 +484,7 @@ def test_a_screenshot_that_is_not_a_png_within_the_cap_never_reaches_vision(
     registry = _offering(build_default_registry(
         device_link=lambda *_: reply, vision_client=vision, obsidian_vault_root=None,
     ))
-    result = _dispatch(registry, tmp_path, "screen_look", {})
+    result = dispatch_tool(registry, tmp_path, "screen_look", {})
     assert result.error == "screen_capture_failed"
     assert vision.calls == []
 
@@ -533,7 +495,7 @@ def test_screen_look_on_a_brain_with_no_terminal_says_so_and_does_not_describe(
     """No terminal: the tool's error is the not-connected sentence; vision is not called."""
     vision = _FakeVision()
     registry = _brain_registry(TerminalHub(), tmp_path, vision)
-    result = _dispatch(registry, tmp_path, "screen_look", {})
+    result = dispatch_tool(registry, tmp_path, "screen_look", {})
     assert result.error == "device_not_connected"
     assert "is not connected right now" in json.loads(result.tool_output or "")["error"]
     assert vision.calls == []
@@ -561,14 +523,14 @@ def test_the_terminals_screen_capture_returns_the_image_and_holds_no_vision(
     assert "vision" not in tool.handler.__code__.co_names
     registry = ToolRegistry()
     registry.register(tool)
-    result = _dispatch(registry, tmp_path, "screen_capture", {})
+    result = dispatch_tool(registry, tmp_path, "screen_capture", {})
     assert result.error is None
     assert base64.b64decode(result.payload["image_b64"]) == PNG
     assert seen == [900]
     assert not (tmp_path / "artifacts").exists()
 
     monkeypatch.setattr(tools_module, "SCREEN_CAPTURE_MAX_IMAGE_BYTES", len(PNG) - 1)
-    assert _dispatch(registry, tmp_path, "screen_capture", {}).error == "screen_image_too_large"
+    assert dispatch_tool(registry, tmp_path, "screen_capture", {}).error == "screen_image_too_large"
 
 
 # --- the terminal's runner -------------------------------------------------
@@ -739,7 +701,6 @@ def test_a_first_frame_that_is_not_a_hello_closes_the_socket(tmp_path: Path, hel
     assert hub.connected() == []
 
 
-
 class _OneWriterSocket:
     """The brain's end of a terminal socket whose send waits on a full buffer, as uvicorn's does.
 
@@ -810,64 +771,6 @@ def test_the_brain_sends_a_terminal_one_frame_at_a_time() -> None:
 # --- a real terminal client against a real server --------------------------
 
 
-class _AsRemote:
-    """ASGI shim: the server sees every peer as a device on the tailnet, not on loopback."""
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] in {"http", "websocket"}:
-            scope = {**scope, "client": (REMOTE, 50000)}
-        await self.app(scope, receive, send)
-
-
-class _Brain:
-    """A real uvicorn server with the terminal route and device-token check."""
-
-    def __init__(self, tmp_path: Path) -> None:
-        self.hub = TerminalHub(call_timeout_s=10)
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            self.port = probe.getsockname()[1]
-        app = create_app(
-            InherentDeps(
-                submit_callable=lambda _text: "T1",
-                broadcaster=InherentBroadcaster(),
-                terminals=self.hub,
-                device_name=functools.partial(device_name_for_token, tmp_path),
-            ),
-        )
-        require_local_key(
-            app,
-            functools.partial(local_key_matches, local_key(tmp_path)),
-            device_token_matches=functools.partial(device_token_matches, tmp_path),
-        )
-        self.server = uvicorn.Server(
-            uvicorn.Config(_AsRemote(app), host="127.0.0.1", port=self.port,
-                           log_level="warning", lifespan="off"),
-        )
-        self.thread = threading.Thread(
-            target=lambda: asyncio.run(self.server.serve()), daemon=True,
-        )
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        deadline = time.monotonic() + 10
-        while not self.server.started:
-            assert time.monotonic() < deadline, "server never started"
-            time.sleep(0.05)
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
-
-
 class _Client:
     """`run_terminal_client` on its own thread and loop, stoppable like Ctrl-C."""
 
@@ -905,13 +808,6 @@ class _Client:
         self.stop()
 
 
-def _wait_for(condition: Callable[[], bool], what: str) -> None:
-    deadline = time.monotonic() + 10
-    while not condition():
-        assert time.monotonic() < deadline, what
-        time.sleep(0.05)
-
-
 def test_a_real_terminal_runs_a_brains_call_and_the_brain_notices_when_it_stops(
     tmp_path: Path,
 ) -> None:
@@ -920,21 +816,23 @@ def test_a_real_terminal_runs_a_brains_call_and_the_brain_notices_when_it_stops(
     note = tmp_path / "note.txt"
     note.write_text("on the mac\n", encoding="utf-8")
     execute = make_executor(_terminal_registry(tmp_path))
-    with _Brain(tmp_path) as brain, _Client(brain.url, token, execute) as terminal:
-        _wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
+    with TokenBrain(tmp_path) as brain, _Client(brain.url, token, execute) as terminal:
+        wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
         [(name, tools)] = brain.hub.connected()
         assert (name, tools) == ("macbook", frozenset({"read_file", "read_clipboard"}))
 
         registry = _brain_registry(brain.hub, tmp_path)
-        result = _dispatch(registry, tmp_path, "read_file", {"target": "note"}, f"file:{note}")
+        result = dispatch_tool(registry, tmp_path, "read_file", {"target": "note"}, f"file:{note}")
         assert result.error is None
         assert result.payload["content"] == "on the mac\n"
-        gone = _dispatch(registry, tmp_path, "read_file", {"target": "x"}, f"file:{tmp_path}/no")
+        gone = dispatch_tool(
+            registry, tmp_path, "read_file", {"target": "x"}, f"file:{tmp_path}/no"
+        )
         assert gone.error == "file_not_found"
 
         terminal.stop()
-        _wait_for(lambda: not brain.hub.connected(), "the brain never saw the terminal leave")
-        stopped = _dispatch(registry, tmp_path, "read_file", {"target": "x"}, f"file:{note}")
+        wait_for(lambda: not brain.hub.connected(), "the brain never saw the terminal leave")
+        stopped = dispatch_tool(registry, tmp_path, "read_file", {"target": "x"}, f"file:{note}")
         assert stopped.error == "device_not_connected"
         assert json.loads(stopped.tool_output or "")["error"] == (
             "macbook is not connected right now, so read_file cannot run"
@@ -946,7 +844,7 @@ def test_a_terminal_with_an_unpaired_or_revoked_token_stops_with_a_reason(
     tmp_path: Path,
 ) -> None:
     """HTTP 403 from the brain ends the client; it does not retry a token that cannot work."""
-    with _Brain(tmp_path) as brain, _Client(brain.url, "not-paired", lambda *_: {}) as terminal:
+    with TokenBrain(tmp_path) as brain, _Client(brain.url, "not-paired", lambda *_: {}) as terminal:
         terminal.thread.join(timeout=10)
         assert isinstance(terminal.error, TerminalRefusedError)
         assert "HTTP 403" in str(terminal.error)
@@ -972,18 +870,31 @@ def test_a_terminal_reconnects_with_backoff_when_the_link_drops(
             if connections == 1:
                 await ws.close()
                 return
-            await ws.send(json.dumps({"type": "call", "id": "c1", "tool": "read_clipboard",
-                                      "arguments": {}, "target_entity_ref": None}))
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "call",
+                        "id": "c1",
+                        "tool": "read_clipboard",
+                        "arguments": {},
+                        "target_entity_ref": None,
+                    }
+                )
+            )
             answered.set_result(json.loads(await ws.recv()))
 
         port_holder = socket.socket()
         port_holder.bind(("127.0.0.1", 0))
         port = port_holder.getsockname()[1]
         port_holder.close()  # nothing listens yet: the first attempts are refused
-        client = asyncio.create_task(run_terminal_client(
-            f"http://127.0.0.1:{port}", "t", tools=frozenset({"read_clipboard"}),
-            execute=lambda *_: {"ok": True, "output": {"content": "x", "total_bytes": 1}},
-        ))
+        client = asyncio.create_task(
+            run_terminal_client(
+                f"http://127.0.0.1:{port}",
+                "t",
+                tools=frozenset({"read_clipboard"}),
+                execute=lambda *_: {"ok": True, "output": {"content": "x", "total_bytes": 1}},
+            )
+        )
         await asyncio.sleep(0.2)
         async with serve(brain, "127.0.0.1", port):
             reply = await asyncio.wait_for(answered, 10)
@@ -994,8 +905,12 @@ def test_a_terminal_reconnects_with_backoff_when_the_link_drops(
 
     connections, reply = asyncio.run(scenario())
     assert connections == 2
-    assert reply == {"type": "result", "id": "c1", "ok": True,
-                     "output": {"content": "x", "total_bytes": 1}}
+    assert reply == {
+        "type": "result",
+        "id": "c1",
+        "ok": True,
+        "output": {"content": "x", "total_bytes": 1},
+    }
 
 
 def test_a_tool_that_raises_on_the_terminal_is_an_error_answer_not_a_dead_link() -> None:
@@ -1008,8 +923,17 @@ def test_a_tool_that_raises_on_the_terminal_is_an_error_answer_not_a_dead_link()
             await ws.recv()
             await ws.send(json.dumps({"type": "ready", "device": "d"}))
             for call_id in ("1", "2"):
-                await ws.send(json.dumps({"type": "call", "id": call_id, "tool": "t",
-                                          "arguments": {}, "target_entity_ref": None}))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "call",
+                            "id": call_id,
+                            "tool": "t",
+                            "arguments": {},
+                            "target_entity_ref": None,
+                        }
+                    )
+                )
                 got.append(json.loads(await ws.recv()))
 
         def execute(_tool: str, _args: Mapping[str, Any], _entity: str | None) -> dict[str, Any]:
@@ -1020,17 +944,27 @@ def test_a_tool_that_raises_on_the_terminal_is_an_error_answer_not_a_dead_link()
 
         async with serve(brain, "127.0.0.1", 0) as server:
             port = next(iter(server.sockets)).getsockname()[1]
-            client = asyncio.create_task(run_terminal_client(
-                f"http://127.0.0.1:{port}", "t", tools=frozenset({"t"}), execute=execute,
-            ))
+            client = asyncio.create_task(
+                run_terminal_client(
+                    f"http://127.0.0.1:{port}",
+                    "t",
+                    tools=frozenset({"t"}),
+                    execute=execute,
+                )
+            )
             while len(got) < 2:  # noqa: ASYNC110 — a short poll in a test
                 await asyncio.sleep(0.02)
             client.cancel()
         return got
 
     got = asyncio.run(scenario())
-    assert got[0] == {"type": "result", "id": "1", "ok": False, "code": "terminal_error",
-                      "message": "RuntimeError"}
+    assert got[0] == {
+        "type": "result",
+        "id": "1",
+        "ok": False,
+        "code": "terminal_error",
+        "message": "RuntimeError",
+    }
     assert got[1]["ok"] is True
 
 
@@ -1038,16 +972,20 @@ def test_a_tool_that_raises_on_the_terminal_is_an_error_answer_not_a_dead_link()
 
 
 def test_the_terminal_command_refuses_a_missing_or_loose_token_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """No brain is contacted without a 0600 token; the reason is on stderr, exit 1."""
     loose = tmp_path / "loose"
     loose.write_text("secret-token\n", encoding="utf-8")
     loose.chmod(0o644)
-    for token_file, reason in ((tmp_path / "missing", "pair this device first"),
-                               (loose, "readable by others")):
-        code = main(["terminal", "--brain", "http://127.0.0.1:1", "--brain-token-file",
-                     str(token_file)])
+    for token_file, reason in (
+        (tmp_path / "missing", "pair this device first"),
+        (loose, "readable by others"),
+    ):
+        code = main(
+            ["terminal", "--brain", "http://127.0.0.1:1", "--brain-token-file", str(token_file)]
+        )
         err = capsys.readouterr().err
         assert code == 1
         assert reason in err
@@ -1057,7 +995,9 @@ def test_the_terminal_command_refuses_a_missing_or_loose_token_file(
 
 
 def test_ctrl_c_stops_the_terminal_command_cleanly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """KeyboardInterrupt while connected is exit 0, not a traceback."""
     token = tmp_path / "token"
@@ -1068,21 +1008,40 @@ def test_ctrl_c_stops_the_terminal_command_cleanly(
         raise KeyboardInterrupt
 
     monkeypatch.setattr("jarvis.runtime.terminal.run_terminal_client", interrupted)
-    code = main(["terminal", "--brain", "http://127.0.0.1:1", "--brain-token-file", str(token),
-                 "--runtime-root", str(tmp_path)])
+    code = main(
+        [
+            "terminal",
+            "--brain",
+            "http://127.0.0.1:1",
+            "--brain-token-file",
+            str(token),
+            "--runtime-root",
+            str(tmp_path),
+        ]
+    )
     assert code == 0
     assert "Traceback" not in capsys.readouterr().err
 
 
 def test_a_refused_token_makes_the_command_exit_with_the_reason(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Against a real brain: an unpaired token is exit 1 and a sentence, no retry loop."""
     token = tmp_path / "token"
     token.write_text("not-paired\n", encoding="utf-8")
     token.chmod(0o600)
-    with _Brain(tmp_path) as brain:
-        code = main(["terminal", "--brain", brain.url, "--brain-token-file", str(token),
-                     "--runtime-root", str(tmp_path)])
+    with TokenBrain(tmp_path) as brain:
+        code = main(
+            [
+                "terminal",
+                "--brain",
+                brain.url,
+                "--brain-token-file",
+                str(token),
+                "--runtime-root",
+                str(tmp_path),
+            ]
+        )
     assert code == 1
     assert "refused this device's token (HTTP 403)" in capsys.readouterr().err

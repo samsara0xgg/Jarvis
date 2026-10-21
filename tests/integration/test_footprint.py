@@ -50,7 +50,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_events import MAX_BATCH_BYTES, MAX_BATCH_FRAMES, PHONE_EVENTS_PATH
 from jarvis.surface.terminal_events import BrainEvents
-from tests.integration.test_terminal_voice import _brain_log
+from tests.support.terminal import brain_log
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -286,7 +286,7 @@ class Brain:
         app = create_app(InherentDeps(
             submit_callable=lambda _text: "T",
             broadcaster=InherentBroadcaster(),
-            phone_events=BrainEvents(_brain_log(self.log)),
+            phone_events=BrainEvents(brain_log(self.log)),
             device_name=functools.partial(device_name_for_token, tmp_path),
             day_read=functools.partial(
                 inherent_loop._serve_day, self.log, ZONE, self.memory, None,  # noqa: SLF001

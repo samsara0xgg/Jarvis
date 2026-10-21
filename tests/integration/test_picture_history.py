@@ -57,8 +57,8 @@ from jarvis.state.memory_db import (
     render_context,
 )
 from tests.integration.test_anthropic_adaptation import _reply, _run
-from tests.integration.test_phone_attachments import NOTES, PNG, _daemon, _turn
-from tests.integration.test_picture_notes import ANSWER, FILLER_EN, WORDS, World
+from tests.support.phone import NOTES, PNG, attachment_turn, attachments_daemon
+from tests.support.picture_notes import ANSWER, FILLER_EN, WORDS, World
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -405,14 +405,14 @@ def test_a_history_ending_on_his_picture_folds_into_the_live_message_with_both_p
     tmp_path: Path,
 ) -> None:
     """An unanswered picture turn, then a new one: one message, the file id then the bytes."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     live = d.upload(PNG, "IMG_2.png").json()["id"]
     history = [{"role": "user", "content": [
         {"type": "text", "text": "look\n[attached: image IMG_1.png]"},
         {"type": "image_file", "file_id": "file_001"},
     ]}]
 
-    model, _ = _turn(d, "and this?", [live], history=history)
+    model, _ = attachment_turn(d, "and this?", [live], history=history)
 
     (message,) = [m for m in model.requests[0] if m["role"] == "user"]
     kinds = [part["type"] for part in message["content"]]
@@ -637,7 +637,7 @@ def test_what_the_model_sees_is_unchanged_by_the_rows_stripping(world: World) ->
 
 def test_a_paired_device_opens_a_stored_file_and_a_gone_one_is_a_404(tmp_path: Path) -> None:
     """Bytes and type as stored; the same credentials as every other route."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG, "IMG_1.png").json()["id"]
     notes = d.upload(NOTES, "notes.txt").json()["id"]
 
@@ -665,7 +665,7 @@ def test_the_file_route_takes_the_credential_that_fits_the_peer_and_nothing_else
     tmp_path: Path,
 ) -> None:
     """Loopback: the local key. The tailnet: a paired device's token. Anything else is 401."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG).json()["id"]
     path = f"/inherent/attachments/{picture}"
     wrong = {"Authorization": "Bearer nope"}
@@ -683,7 +683,7 @@ def test_the_file_route_takes_the_credential_that_fits_the_peer_and_nothing_else
 
 def test_without_an_attachment_store_the_file_route_does_not_exist(tmp_path: Path) -> None:
     """Off like the upload route: 404 for a peer that is allowed in."""
-    d = _daemon(tmp_path, wired=False)
+    d = attachments_daemon(tmp_path, wired=False)
 
     assert d.remote.get(f"/inherent/attachments/{'a' * 32}", headers=d.auth()).status_code == 404
 
@@ -874,7 +874,7 @@ def test_a_saved_picture_starts_uploading_at_once_and_the_next_render_finds_its_
     """POST /inherent/attachments starts the upload; a picture only, once, and not a refusal."""
     client = FilesClient()
     holder: Any = SimpleNamespace(picture_files=None, llm_session_factory=None, llm_client=client)
-    d = _daemon(
+    d = attachments_daemon(
         tmp_path,
         saved=lambda ref: inherent_loop._start_upload(holder, ref),  # noqa: SLF001
     )
@@ -897,7 +897,7 @@ def test_a_failing_start_never_fails_the_upload_route(tmp_path: Path) -> None:
         msg = "no pool"
         raise RuntimeError(msg)
 
-    d = _daemon(tmp_path, saved=broken)
+    d = attachments_daemon(tmp_path, saved=broken)
 
     sent = d.upload(PNG, "IMG_1.png")
 

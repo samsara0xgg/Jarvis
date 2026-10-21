@@ -27,23 +27,23 @@ from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight
 from jarvis.surface import voice_media
-from tests.integration.test_foreground_arbitration import _emit_emitted, _emit_open, _whole
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
-    _Peer,
-    _spoken,
-    _spoken_runtime,
+from tests.support.arbitration import emit_open_chunk, emit_terminal, emit_whole_response
+from tests.support.media import (
+    Behavior,
+    CallbackPump,
+    FakeProvider,
+    make_player,
+    media_config,
+    submit_response,
+    terminal_rows,
 )
-from tests.integration.test_wave2_streaming_media import (
-    _Behavior,
-    _CallbackPump,
-    _config,
-    _FakeProvider,
-    _player,
-    _submit_response,
-    _terminal_rows,
+from tests.support.routine import drive_streaming_turn, wait_for
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_wire_routine_streaming import _drive, _wait_for
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -55,15 +55,15 @@ _WAIT = partial(decide_foreground, wait_for_lane=True)
 
 
 def _pipeline(
-    db_path: Path, provider: _FakeProvider, decision: Callable[..., str],
+    db_path: Path, provider: FakeProvider, decision: Callable[..., str],
 ) -> tuple[voice_media.StreamingTTSPipeline, Any]:
-    player = _player()
+    player = make_player()
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=_config(),
+        config=media_config(),
         foreground_decision_callable=decision,
         start_player=False,
     )
@@ -74,7 +74,7 @@ def _outcomes(db_path: Path) -> list[tuple[str, str]]:
     """Each playback terminal in the order it was written."""
     return [
         (str(payload["response_id"]), kind.removeprefix("surface.playback_"))
-        for kind, payload in _terminal_rows(open_event_log(db_path))
+        for kind, payload in terminal_rows(open_event_log(db_path))
     ]
 
 
@@ -104,20 +104,20 @@ def test_an_answer_arriving_while_she_speaks_waits_for_her_to_finish(
     """
     db_path = tmp_path / "lane.db"
     conn = open_event_log(db_path)
-    provider = _FakeProvider(
-        {("RMAIL", 0): _Behavior("success", final_delay_s=0.01)}, candidate_count=1,
+    provider = FakeProvider(
+        {("RMAIL", 0): Behavior("success", final_delay_s=0.01)}, candidate_count=1,
     )
     playing = threading.Event()
     provider.segment_gates[("RMAIL", 0)] = playing
     pipeline, player = _pipeline(db_path, provider, _WAIT if wait else decide_foreground)
     try:
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, _whole(
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, emit_whole_response(
                 conn, response_id="RMAIL", group_id="GMAIL", turn_id="TMAIL",
                 text="你有三封新邮件。",
             )))
-            _wait_for(lambda: ("RMAIL", 0) in provider.opened)
-            asyncio.run(_submit_response(pipeline, _whole(
+            wait_for(lambda: ("RMAIL", 0) in provider.opened)
+            asyncio.run(submit_response(pipeline, emit_whole_response(
                 conn, response_id="RLINE", group_id="GNEXT", turn_id="TNEXT",
                 text="我查一下。",
             )))
@@ -139,22 +139,22 @@ def test_an_older_turns_late_answer_is_said_after_not_dropped(
     """The slow answer opened first and finished last: on, it follows; off, it is lost."""
     db_path = tmp_path / "late.db"
     conn = open_event_log(db_path)
-    provider = _FakeProvider(
-        {("RNOW", 0): _Behavior("success", final_delay_s=0.01)}, candidate_count=1,
+    provider = FakeProvider(
+        {("RNOW", 0): Behavior("success", final_delay_s=0.01)}, candidate_count=1,
     )
     playing = threading.Event()
     provider.segment_gates[("RNOW", 0)] = playing
     pipeline, player = _pipeline(db_path, provider, _WAIT if wait else decide_foreground)
     try:
-        with _CallbackPump(player):
-            _emit_open(conn, response_id="RMAIL", group_id="GMAIL", turn_id="TMAIL",
+        with CallbackPump(player):
+            emit_open_chunk(conn, response_id="RMAIL", group_id="GMAIL", turn_id="TMAIL",
                        text="对了，邮件查到了。")
-            asyncio.run(_submit_response(pipeline, _whole(
+            asyncio.run(submit_response(pipeline, emit_whole_response(
                 conn, response_id="RNOW", group_id="GNOW", turn_id="TNOW",
                 text="明天晴。",
             )))
-            _wait_for(lambda: ("RNOW", 0) in provider.opened)
-            asyncio.run(_submit_response(pipeline, _emit_emitted(
+            wait_for(lambda: ("RNOW", 0) in provider.opened)
+            asyncio.run(submit_response(pipeline, emit_terminal(
                 conn, response_id="RMAIL", group_id="GMAIL", turn_id="TMAIL",
                 text="对了，邮件查到了。",
             )))
@@ -173,23 +173,23 @@ def test_her_own_next_part_goes_ahead_of_another_turns_waiting_answer(tmp_path: 
     """Lead-in playing, the slow answer waiting, then the lead-in's answer: it goes first."""
     db_path = tmp_path / "order.db"
     conn = open_event_log(db_path)
-    provider = _FakeProvider(
-        {("RLINE", 0): _Behavior("success", final_delay_s=0.01)}, candidate_count=1,
+    provider = FakeProvider(
+        {("RLINE", 0): Behavior("success", final_delay_s=0.01)}, candidate_count=1,
     )
     playing = threading.Event()
     provider.segment_gates[("RLINE", 0)] = playing
     pipeline, player = _pipeline(db_path, provider, _WAIT)
     try:
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, _whole(
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, emit_whole_response(
                 conn, response_id="RLINE", group_id="GNOW", turn_id="TNOW", text="我看看。",
             )))
-            _wait_for(lambda: ("RLINE", 0) in provider.opened)
-            asyncio.run(_submit_response(pipeline, _whole(
+            wait_for(lambda: ("RLINE", 0) in provider.opened)
+            asyncio.run(submit_response(pipeline, emit_whole_response(
                 conn, response_id="RMAIL", group_id="GMAIL", turn_id="TMAIL",
                 text="对了，邮件查到了。",
             )))
-            asyncio.run(_submit_response(pipeline, _whole(
+            asyncio.run(submit_response(pipeline, emit_whole_response(
                 conn, response_id="RNOW", group_id="GNOW", turn_id="TNOW", text="明天晴。",
             )))
             playing.set()
@@ -202,7 +202,7 @@ def test_her_own_next_part_goes_ahead_of_another_turns_waiting_answer(tmp_path: 
     ]
 
 
-class _FirstHeldPeer(_Peer):
+class _FirstHeldPeer(SpokenPeer):
     """The first request waits for ``go`` before the peer reads it."""
 
     def __init__(self, outputs: list[list[tuple[str, str]]]) -> None:
@@ -239,16 +239,16 @@ def test_two_turns_at_once_answer_their_own_words(
         [("final_answer", "对了，备忘录查到了：你还没有记过。")],
     ]
     with _FirstHeldPeer(outputs) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+        runtime = spoken_runtime(tmp_path, peer.url)
         runtime = replace(
             runtime, response_flags=replace(runtime.response_flags, slow_results=slow),
         )
-        memos = _spoken(runtime.conn, "turn-memo", "我记过什么")
+        memos = spoken_intent(runtime.conn, "turn-memo", "我记过什么")
         with ThreadPoolExecutor(max_workers=1) as pool:
-            memo_turn = pool.submit(_drive, runtime, memos)
+            memo_turn = pool.submit(drive_streaming_turn, runtime, memos)
             assert peer.arrived.wait(10)
-            weather: Event = _spoken(runtime.conn, "turn-weather", "明天天气怎么样")
-            _drive(runtime, weather)
+            weather: Event = spoken_intent(runtime.conn, "turn-weather", "明天天气怎么样")
+            drive_streaming_turn(runtime, weather)
             peer.go.set()
             memo_turn.result(timeout=20)
     weather_request, memo_first, memo_after_tool = (body for _path, body in peer.requests)

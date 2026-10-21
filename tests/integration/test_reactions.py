@@ -45,13 +45,13 @@ from jarvis.state.memory_db import (
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
-from tests.integration.test_phone_steps import _frames, _Host
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 - the autouse fixture the peer needs
-    _Peer,
-    _spoken_runtime,
+from tests.support.phone import StepsHost, frames_of
+from tests.support.routine import drive_streaming_turn, logged_rows
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 - the autouse fixture the peer needs
+    spoken_runtime,
 )
-from tests.integration.test_wire_routine_streaming import _drive, _rows
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -247,7 +247,7 @@ def reaction_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def memory_world(tmp_path: Path, url: str) -> Any:  # noqa: ANN401 - JarvisRuntime
     """A spoken-route runtime on a localhost peer, with a memory.db."""
-    runtime = _spoken_runtime(tmp_path, url)
+    runtime = spoken_runtime(tmp_path, url)
     return replace(
         runtime,
         memory=MemorySettings(
@@ -264,7 +264,7 @@ def turn(runtime: Any, said: str, channel: str, turn_id: str) -> Event:  # noqa:
         payload={"transcript": said, "turn_id": turn_id, "channel": channel},
         correlation={"turn_id": turn_id},
     )
-    _drive(runtime, intent)
+    drive_streaming_turn(runtime, intent)
     return intent
 
 
@@ -272,25 +272,29 @@ def test_a_typed_reply_that_is_only_her_reaction_leaves_one_line_and_no_text_row
     tmp_path: Path,
 ) -> None:
     """History shows she reacted; the conversation shows no empty answer from her."""
-    with _Peer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
+    with SpokenPeer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
         runtime = memory_world(tmp_path, peer.url)
         intent = turn(runtime, "我到家了", "cli_stdin", "T-typed")
     memory = tmp_path / "memory.db"
 
     assert [(rid, source) for rid, source, _ in lines(memory)] == [
         (intent.event_uid, "allen"),
-        (f"reaction:{_rows(runtime.conn, 'surface.response_emitted')[0][4]}", "jarvis_reaction"),
+        (
+            f"reaction:{logged_rows(runtime.conn, 'surface.response_emitted')[0][4]}",
+            "jarvis_reaction",
+        ),
     ]
     assert lines(memory)[1][2] == f"[You reacted {THUMB}]"
     assert reaction_events(runtime.conn) == [
         {"target": intent.event_uid, "by": "jarvis", "emoji": THUMB},
     ]
-    assert _rows(runtime.conn, "turn.failed", "response.failed") == []
-    assert len(_rows(runtime.conn, "turn.ended", "response.completed")) == 2
+    assert logged_rows(runtime.conn, "turn.failed", "response.failed") == []
+    assert len(logged_rows(runtime.conn, "turn.ended", "response.completed")) == 2
     rows, _ = conversation_rows(memory)
     assert [row["source"] for row in rows] == ["allen"]
     assert [turn_["role"] for turn_ in render_context(memory, exclude_id="live").history] == [
-        "user", "assistant",
+        "user",
+        "assistant",
     ]
 
 
@@ -298,7 +302,7 @@ def test_a_typed_reply_with_words_and_a_tag_keeps_the_words_and_adds_the_line(
     tmp_path: Path,
 ) -> None:
     """The row has the words alone; her reaction comes after it, in her role."""
-    with _Peer([[("final_answer", f"到家就好。<react>{THUMB}</react>")]]) as peer:
+    with SpokenPeer([[("final_answer", f"到家就好。<react>{THUMB}</react>")]]) as peer:
         runtime = memory_world(tmp_path, peer.url)
         intent = turn(runtime, "我到家了", "cli_stdin", "T-both")
 
@@ -315,19 +319,21 @@ def test_a_spoken_reply_that_is_only_a_tag_keeps_the_empty_answer_it_always_had(
     tmp_path: Path,
 ) -> None:
     """Nothing new is invented for a spoken turn: an empty answer row, and the reaction."""
-    with _Peer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
+    with SpokenPeer([[("final_answer", f"<react>{THUMB}</react>")]]) as peer:
         runtime = memory_world(tmp_path, peer.url)
         turn(runtime, "我到家了", "inherent_ptt", "T-spoken")
 
     assert [(source, text) for _, source, text in lines(tmp_path / "memory.db")] == [
-        ("allen", "我到家了"), ("jarvis", ""), ("jarvis_reaction", f"[You reacted {THUMB}]"),
+        ("allen", "我到家了"),
+        ("jarvis", ""),
+        ("jarvis_reaction", f"[You reacted {THUMB}]"),
     ]
     assert len(reaction_events(runtime.conn)) == 1
 
 
 def test_a_reply_without_the_tag_writes_no_reaction(tmp_path: Path) -> None:
     """The ordinary turn writes no event and no line."""
-    with _Peer([[("final_answer", "到家就好。")]]) as peer:
+    with SpokenPeer([[("final_answer", "到家就好。")]]) as peer:
         runtime = memory_world(tmp_path, peer.url)
         turn(runtime, "我到家了", "cli_stdin", "T-plain")
 
@@ -361,9 +367,15 @@ def test_a_typed_message_that_arrives_mid_turn_gets_the_eyes_and_nothing_else_do
     assert reaction_events(conn) == [{"target": second.event_uid, "by": "jarvis", "emoji": EYES}]
 
     for turn_id in ("T1", "T2", "T3"):  # all answered
-        emit_event(conn, type="turn.ended", payload={
-            "turn_id": turn_id, "final_response_hash": "h", "consumed_trigger_event_uid": "x",
-        })
+        emit_event(
+            conn,
+            type="turn.ended",
+            payload={
+                "turn_id": turn_id,
+                "final_response_hash": "h",
+                "consumed_trigger_event_uid": "x",
+            },
+        )
     late = typed(conn, 4)
     inherent_loop._claim_intent_in_thread(log, late)  # noqa: SLF001
     inherent_loop._mark_seen(log, late)  # noqa: SLF001
@@ -421,7 +433,9 @@ class Daemon:
     def react(self, body: dict[str, Any]) -> Response:
         """Post a reaction as the paired phone."""
         return self.remote.post(
-            "/inherent/reactions", json=body, headers={"Authorization": f"Bearer {self.token}"},
+            "/inherent/reactions",
+            json=body,
+            headers={"Authorization": f"Bearer {self.token}"},
         )
 
     def now(self) -> dict[str, dict[str, str]]:
@@ -438,7 +452,8 @@ def test_his_reaction_is_kept_replaced_and_taken_off_and_never_starts_a_turn(
 
     first = d.react({"target": "a1", "emoji": THUMB})
     assert (first.status_code, first.json()) == (
-        200, {"target": "a1", "by": "allen", "emoji": THUMB},
+        200,
+        {"target": "a1", "by": "allen", "emoji": THUMB},
     )
     assert d.react({"target": "a1", "emoji": "\u2764\ufe0f"}).status_code == 200
     assert d.react({"target": "u1", "emoji": FAMILY}).is_success
@@ -454,7 +469,7 @@ def test_his_reaction_is_kept_replaced_and_taken_off_and_never_starts_a_turn(
     ]
     assert d.turns == []
     with closing(open_event_log(d.log)) as conn:
-        assert _rows(conn, "surface.user_intent", "turn.started") == []
+        assert logged_rows(conn, "surface.user_intent", "turn.started") == []
 
 
 @pytest.mark.parametrize(
@@ -471,7 +486,8 @@ def test_his_reaction_is_kept_replaced_and_taken_off_and_never_starts_a_turn(
     ],
 )
 def test_anything_but_one_emoji_on_a_message_is_a_400_and_writes_nothing(
-    tmp_path: Path, body: dict[str, Any],
+    tmp_path: Path,
+    body: dict[str, Any],
 ) -> None:
     """Two emoji, words, nothing, a digit, a space, mail, a picture note and an unknown id."""
     d = Daemon(tmp_path)
@@ -485,7 +501,7 @@ def test_a_reaction_line_cannot_itself_be_reacted_to(tmp_path: Path) -> None:
     """The record a reaction left is not a message."""
     d = Daemon(tmp_path)
     d.react({"target": "u1", "emoji": THUMB})
-    (line_id, *_), = [row for row in lines(d.memory) if row[1] == "allen_reaction"]
+    ((line_id, *_),) = [row for row in lines(d.memory) if row[1] == "allen_reaction"]
     assert d.react({"target": line_id, "emoji": THUMB}).status_code == 400
 
 
@@ -502,8 +518,11 @@ def test_the_route_is_behind_the_same_credentials_as_the_rest(tmp_path: Path) ->
     assert post(d.remote, {"Authorization": f"Bearer {d.token}"}) == 200
     assert post(d.loopback, local) == 200
     assert [
-        post(d.remote, {}), post(d.remote, wrong), post(d.remote, local),
-        post(d.loopback, {}), post(d.loopback, wrong),
+        post(d.remote, {}),
+        post(d.remote, wrong),
+        post(d.remote, local),
+        post(d.loopback, {}),
+        post(d.loopback, wrong),
     ] == [401] * 5
     assert d.react({"target": "u1"}).status_code == 422, "the emoji field is required, even null"
 
@@ -512,12 +531,12 @@ def test_the_route_is_behind_the_same_credentials_as_the_rest(tmp_path: Path) ->
 
 
 def _three(phone: Any) -> bool:  # noqa: ANN401 - the fake phone
-    return len(_frames(phone, "reaction")) == 3
+    return len(frames_of(phone, "reaction")) == 3
 
 
 def test_every_phone_gets_every_reaction_and_said_names_the_record(tmp_path: Path) -> None:
     """A reaction frame reaches a phone that opened no turn; `said` carries the record id."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         mine, other = host.phone(), host.phone(host.other_token)
         try:
             mine.say("u-typed", "我到家了", spoken=False)
@@ -539,16 +558,17 @@ def test_every_phone_gets_every_reaction_and_said_names_the_record(tmp_path: Pat
                 reactions.allen_reacts(conn, host.memory, target="a1", emoji=None)
             for phone in (mine, other):
                 phone.wait_until(
-                    functools.partial(_three, phone), "three reaction frames",
+                    functools.partial(_three, phone),
+                    "three reaction frames",
                 )
                 assert [
-                    (f["target"], f["by"], f["emoji"]) for f in _frames(phone, "reaction")
+                    (f["target"], f["by"], f["emoji"]) for f in frames_of(phone, "reaction")
                 ] == [("a1", "allen", THUMB), (intent_uid, "jarvis", EYES), ("a1", "allen", None)]
             assert not other.rows(), "the other phone opened no turn, so it has no rows"
 
             late = host.phone()  # a phone that connects later reads the rows, not the past events
             time.sleep(0.3)
-            assert _frames(late, "reaction") == []
+            assert frames_of(late, "reaction") == []
             late.close()
         finally:
             mine.close()
@@ -559,7 +579,9 @@ def test_the_turn_after_a_reaction_only_answer_is_not_told_that_one_was_interrup
     tmp_path: Path,
 ) -> None:
     """An answer of only a reaction is an answer: the next turn's state says nothing of it."""
-    with _Peer([[("final_answer", f"<react>{THUMB}</react>")], [("final_answer", "好。")]]) as peer:
+    with SpokenPeer(
+        [[("final_answer", f"<react>{THUMB}</react>")], [("final_answer", "好。")]]
+    ) as peer:
         runtime = memory_world(tmp_path, peer.url)
         turn(runtime, "我到家了", "cli_stdin", "T-first")
         turn(runtime, "晚饭吃什么", "cli_stdin", "T-second")

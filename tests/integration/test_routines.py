@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from jarvis.state import places, rides, routines
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.phone_day import HEALTH_EVENT
-from tests.integration.test_places import stay
+from tests.support.places import stay
 
 if TYPE_CHECKING:
     import sqlite3

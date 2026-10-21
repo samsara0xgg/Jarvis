@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -27,6 +26,7 @@ from jarvis.decision.stream_envelope import split_envelope
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import _max_tool_iterations
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
     import sqlite3
@@ -35,12 +35,6 @@ if TYPE_CHECKING:
 
 ANSWER = "查到了：今天没有网易云音乐的前台记录；微信聊天对象无法从截图确认。"  # noqa: RUF001 — fullwidth punctuation, a Chinese reply.
 BUDGET = 3
-
-
-@dataclass(frozen=True)
-class _StubRuntimePaths:
-    event_log: Path
-    artifacts_root: Path
 
 
 class _ToolHungryClient:
@@ -108,7 +102,7 @@ class _ToolHungryClient:
 
 def _run(tmp_path: Path, llm: _ToolHungryClient) -> tuple[str, sqlite3.Connection]:
     conn = open_event_log(tmp_path / "events.db")
-    paths = _StubRuntimePaths(
+    paths = StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
     )
     paths.artifacts_root.mkdir(parents=True, exist_ok=True)

@@ -10,48 +10,20 @@ from typing import TYPE_CHECKING
 import pytest
 
 from jarvis.decision.packet import assemble_packet
-from jarvis.shared.realtime import AuthorizedDispatch
 from jarvis.state import decision_snapshot
 from jarvis.state.authorization_snapshot import read_authorization_snapshot
 from jarvis.state.authorized_dispatch_outbox import (
-    authorize_confirmation_dispatch,
     ensure_authorized_dispatch_schema,
 )
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import append_event_in_transaction, emit_event, open_event_log
-from tests.integration.test_wave1_concurrency_safety import (
-    _confirmation_candidate,
-    _seed_accepted_confirmation,
-)
+from tests.support.authorization import consume_debt, seed_debt
+from tests.support.concurrency import seed_accepted_confirmation
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from pathlib import Path
 
-    from jarvis.shared import Event
     from jarvis.state.authorization_snapshot import AuthorizationFacts, AuthorizationSnapshot
-
-
-def _consume(
-    conn: sqlite3.Connection, accepted: Event, snapshot: Mapping[str, object]
-) -> AuthorizedDispatch:
-    request, lease = _confirmation_candidate(accepted.event_uid, snapshot, random_suffix="snapshot")
-    result = authorize_confirmation_dispatch(
-        conn,
-        source_confirmation_event_id=accepted.event_uid,
-        action_request=request,
-        lease=lease,
-        gate_payload={"gate": "pre_action", "outcome": "pass", "reasons": []},
-        now_ms=2_010_000,
-    )
-    assert isinstance(result, AuthorizedDispatch)
-    return result
-
-
-def _seed_debt(conn: sqlite3.Connection) -> AuthorizedDispatch:
-    ensure_authorized_dispatch_schema(conn)
-    accepted, snapshot = _seed_accepted_confirmation(conn, suffix="snapshot")
-    return _consume(conn, accepted, snapshot)
 
 
 def test_empty_snapshot_performs_no_schema_or_data_writes(tmp_path: Path) -> None:
@@ -96,10 +68,10 @@ def test_new_confirmation_slot_cannot_hide_prior_accepted_debt(
     """Expired acceptance A stays visible after UI slot B replaces it."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
         ensure_authorized_dispatch_schema(conn)
-        accepted, snapshot = _seed_accepted_confirmation(conn, suffix="A")
+        accepted, snapshot = seed_accepted_confirmation(conn, suffix="A")
         if consume:
-            _consume(conn, accepted, snapshot)
-        newer, _snapshot = _seed_accepted_confirmation(conn, suffix="B")
+            consume_debt(conn, accepted, snapshot)
+        newer, _snapshot = seed_accepted_confirmation(conn, suffix="B")
         state = read_decision_snapshot(conn)
         assert state.authorizations.complete
         assert state.projections.pending_confirmations.slot is not None
@@ -121,7 +93,7 @@ def test_unrelated_leased_gate_cannot_mark_confirmation_consumed(tmp_path: Path)
     """Legacy slot folding is not the authority for atomic consumption identity."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
         ensure_authorized_dispatch_schema(conn)
-        accepted, _snapshot = _seed_accepted_confirmation(conn, suffix="A")
+        accepted, _snapshot = seed_accepted_confirmation(conn, suffix="A")
         emit_event(
             conn,
             type="gate.evaluated",
@@ -159,7 +131,7 @@ def test_corrupt_or_partial_authorization_debt_is_explicitly_incomplete(
 ) -> None:
     """Every mutation occurs in a disposable DB; the reader never repairs corruption."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        _seed_debt(conn)
+        seed_debt(conn)
         conn.execute(sql)
         conn.commit()
         before = conn.total_changes
@@ -180,7 +152,7 @@ def test_dispatch_state_requires_exact_atomic_admission_source(
 ) -> None:
     """Pending cannot have an admission, and dispatched must bind the correct gate."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        dispatch = _seed_debt(conn)
+        dispatch = seed_debt(conn)
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("UPDATE authorized_dispatch_outbox SET state = ?", (state_value,))
         append_event_in_transaction(
@@ -205,7 +177,7 @@ def test_packet_event_cursor_and_operational_tables_share_one_read_view(
         contextlib.closing(open_event_log(path)) as writer,
     ):
         ensure_authorized_dispatch_schema(reader)
-        accepted, frozen = _seed_accepted_confirmation(reader, suffix="race")
+        accepted, frozen = seed_accepted_confirmation(reader, suffix="race")
         original = read_authorization_snapshot
         consumed = False
 
@@ -214,7 +186,7 @@ def test_packet_event_cursor_and_operational_tables_share_one_read_view(
         ) -> AuthorizationSnapshot:
             nonlocal consumed
             if not consumed:
-                _consume(writer, accepted, frozen)
+                consume_debt(writer, accepted, frozen)
                 consumed = True
             return original(conn, facts)
 
@@ -263,7 +235,7 @@ def test_malformed_confirmation_successor_cannot_crash_or_reactivate_old_slot(
     """Validly appended malformed fields become explicit unknown packet evidence."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
         ensure_authorized_dispatch_schema(conn)
-        accepted, frozen = _seed_accepted_confirmation(conn, suffix="old")
+        accepted, frozen = seed_accepted_confirmation(conn, suffix="old")
         emit_event(
             conn,
             type="confirmation.requested",
@@ -307,7 +279,7 @@ def test_foreign_identity_cannot_borrow_an_existing_acceptance_or_gate(
 ) -> None:
     """Reverse source joins validate identity, not merely source UID membership."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        dispatch = _seed_debt(conn)
+        dispatch = seed_debt(conn)
         if kind == "gate":
             emit_event(
                 conn,

@@ -21,41 +21,41 @@ import pytest
 from jarvis.shared import lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_media, voice_tts
-from tests.integration.test_incremental_tts import _wait_for
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _config,
-    _emit_response,
-    _FakeProvider,
-    _FakeWebSocket,
-    _player,
-    _submit_response,
-    _wait_until,
+from tests.support.media import (
+    CallbackPump,
+    FakeProvider,
+    FakeWebSocket,
+    emit_response,
+    make_player,
+    media_config,
+    submit_response,
+    wait_until,
 )
+from tests.support.tts import wait_for_rows
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
 def _answer_after_he_talked(
-    tmp_path: Path, provider: _FakeProvider, text: str = "Hi.",
+    tmp_path: Path, provider: FakeProvider, text: str = "Hi.",
 ) -> None:
     """Allen talks (the hold), stops, and his answer is spoken to its end."""
     db = tmp_path / "events.db"
     conn = open_event_log(db)
-    player = _player()
+    player = make_player()
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider, player=player, conn_factory=lambda: open_event_log(db),
-        boot_high_water_id=0, config=_config(), start_player=False,
+        boot_high_water_id=0, config=media_config(), start_player=False,
     )
     try:
         pipeline.hold_output(held=True)
-        _wait_until(lambda: "connect" in provider.actions)
+        wait_until(lambda: "connect" in provider.actions)
         pipeline.hold_output(held=False)
-        with _CallbackPump(player):
-            rows = _emit_response(conn, response_id="R", group_id="G", turn_id="T", text=text)
-            asyncio.run(_submit_response(pipeline, rows))
-            _wait_for(conn, "surface.playback_completed", "R", 1)
+        with CallbackPump(player):
+            rows = emit_response(conn, response_id="R", group_id="G", turn_id="T", text=text)
+            asyncio.run(submit_response(pipeline, rows))
+            wait_for_rows(conn, "surface.playback_completed", "R", 1)
         assert pipeline.wait_until_idle(timeout_s=2.0)
     finally:
         assert pipeline.close()
@@ -65,7 +65,7 @@ def _answer_after_he_talked(
 def test_the_session_connected_while_he_talks_speaks_his_answer(tmp_path: Path) -> None:
     """One session in all: connected during the hold, then bound to the answer."""
     lang.set_language("en")
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     _answer_after_he_talked(tmp_path, provider)
     assert provider.created == 1
     assert provider.languages == ["en"]
@@ -74,7 +74,7 @@ def test_the_session_connected_while_he_talks_speaks_his_answer(tmp_path: Path) 
 
 def test_a_spare_in_the_other_language_is_not_used(tmp_path: Path) -> None:
     """The spare was started for zh; an English answer connects its own for en."""
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     _answer_after_he_talked(tmp_path, provider)
     assert provider.languages == ["zh", "en"]
     assert provider.opened == [("R", 0)]
@@ -82,7 +82,7 @@ def test_a_spare_in_the_other_language_is_not_used(tmp_path: Path) -> None:
 
 def test_a_spare_in_the_answers_language_is_used(tmp_path: Path) -> None:
     """A Chinese answer binds the zh spare started for the system language."""
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     _answer_after_he_talked(tmp_path, provider, text="\u4f60\u597d\u3002")
     assert provider.languages == ["zh"]
 
@@ -90,30 +90,30 @@ def test_a_spare_in_the_answers_language_is_used(tmp_path: Path) -> None:
 def test_the_next_spare_reads_the_language_of_the_last_answer(tmp_path: Path) -> None:
     """A Chinese answer makes the next spare zh, whatever the system language, and it is used."""
     lang.set_language("en")
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     db = tmp_path / "events.db"
     conn = open_event_log(db)
-    player = _player()
+    player = make_player()
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider, player=player, conn_factory=lambda: open_event_log(db),
-        boot_high_water_id=0, config=_config(), start_player=False,
+        boot_high_water_id=0, config=media_config(), start_player=False,
     )
     try:
-        with _CallbackPump(player):
+        with CallbackPump(player):
             for turn, response_id in enumerate(("R1", "R2"), start=1):
                 pipeline.hold_output(held=True)
 
                 def spare_connected(n: int = turn) -> bool:
                     return provider.actions.count("connect") == n
 
-                _wait_until(spare_connected)
+                wait_until(spare_connected)
                 pipeline.hold_output(held=False)
-                rows = _emit_response(
+                rows = emit_response(
                     conn, response_id=response_id, group_id=f"G{turn}", turn_id=f"T{turn}",
                     text="\u4f60\u597d\u3002",
                 )
-                asyncio.run(_submit_response(pipeline, rows))
-                _wait_for(conn, "surface.playback_completed", response_id, 1)
+                asyncio.run(submit_response(pipeline, rows))
+                wait_for_rows(conn, "surface.playback_completed", response_id, 1)
         assert pipeline.wait_until_idle(timeout_s=2.0)
     finally:
         assert pipeline.close()
@@ -126,7 +126,7 @@ def test_the_next_spare_reads_the_language_of_the_last_answer(tmp_path: Path) ->
 
 def test_a_stale_spare_is_closed_and_the_answer_connects_its_own(tmp_path: Path) -> None:
     """Past its age a spare may already be closed by MiniMax: never trusted."""
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     with patch.object(voice_media, "_SPARE_SESSION_MAX_AGE_S", -1.0):
         _answer_after_he_talked(tmp_path, provider)
     assert provider.created == 2
@@ -135,7 +135,7 @@ def test_a_stale_spare_is_closed_and_the_answer_connects_its_own(tmp_path: Path)
 
 def test_a_spare_that_never_connected_is_not_used(tmp_path: Path) -> None:
     """A failed early connect costs nothing: the answer opens a session as before."""
-    provider = _FakeProvider(candidate_count=1)
+    provider = FakeProvider(candidate_count=1)
     provider.connect_error = OSError("connection refused")
     _answer_after_he_talked(tmp_path, provider)
     assert provider.created == 2
@@ -146,10 +146,10 @@ def test_a_connected_minimax_session_binds_without_a_second_handshake() -> None:
     """``connect`` does the transport and the task handshake; ``open`` only binds."""
 
     async def _body() -> tuple[int, list[str]]:
-        ws = _FakeWebSocket()
+        ws = FakeWebSocket()
         connects = 0
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             nonlocal connects
             del additional_headers
             connects += 1
@@ -197,9 +197,9 @@ def test_the_streaming_task_start_names_the_language(
 ) -> None:
     """The prewarm path: the language is in the task_start before any text exists."""
     async def _body() -> dict[str, object]:
-        ws = _FakeWebSocket()
+        ws = FakeWebSocket()
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             del additional_headers
             return ws
 
@@ -226,10 +226,10 @@ def test_the_streaming_task_start_names_the_language(
 def test_the_legacy_task_start_names_the_language_of_its_text(text: str, boost: str) -> None:
     """The one-shot client knows its text, so the text picks the language."""
     async def _body() -> dict[str, object]:
-        ws = _FakeWebSocket()
+        ws = FakeWebSocket()
         ws.audio_gate.set()
 
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> _FakeWebSocket:
+        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
             del additional_headers
             return ws
 

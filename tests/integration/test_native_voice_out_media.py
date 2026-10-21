@@ -23,16 +23,16 @@ import pytest
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.voice_native_out import NativeAudioStreamPlayer
-from tests.integration.test_wave2_streaming_media import (
-    _Behavior,
-    _CallbackPump,
-    _config,
-    _emit_response,
-    _FakeProvider,
-    _playback_rows_for,
-    _player,
-    _submit_response,
-    _terminal_rows,
+from tests.support.media import (
+    Behavior,
+    CallbackPump,
+    FakeProvider,
+    emit_response,
+    make_player,
+    media_config,
+    playback_rows_for,
+    submit_response,
+    terminal_rows,
 )
 
 if TYPE_CHECKING:
@@ -47,9 +47,9 @@ def test_a_slow_settle_does_not_let_the_response_task_fail_the_turn_first(tmp_pa
     """The interrupt's settle is slow (ack not back); a response task reaching its end meanwhile."""
     db_path = tmp_path / "slow.db"
     conn = open_event_log(db_path)
-    provider = _FakeProvider(candidate_count=1)
-    provider.behaviors[("RSLOW", 0)] = _Behavior(samples=24_000, final_delay_s=0.0)
-    player = _player()
+    provider = FakeProvider(candidate_count=1)
+    provider.behaviors[("RSLOW", 0)] = Behavior(samples=24_000, final_delay_s=0.0)
+    player = make_player()
     real_settle = player.settle_interrupted_generation
     callers: list[object] = []
     first_poll: list[float] = []
@@ -70,15 +70,15 @@ def test_a_slow_settle_does_not_let_the_response_task_fail_the_turn_first(tmp_pa
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(_config(), response_timeout_s=10.0),
+        config=replace(media_config(), response_timeout_s=10.0),
         start_player=False,
     )
     try:
-        with _CallbackPump(player):
-            rows = _emit_response(
+        with CallbackPump(player):
+            rows = emit_response(
                 conn, response_id="RSLOW", group_id="G", turn_id="T", text="Counting slowly.",
             )
-            asyncio.run(_submit_response(pipeline, rows))
+            asyncio.run(submit_response(pipeline, rows))
             deadline = time.monotonic() + 5
             while player.played_samples < 800:
                 assert time.monotonic() < deadline
@@ -90,7 +90,7 @@ def test_a_slow_settle_does_not_let_the_response_task_fail_the_turn_first(tmp_pa
         pipeline.close()
     verdict = open_event_log(db_path)
     try:
-        terminals = [(kind, payload.get("reason")) for kind, payload in _terminal_rows(verdict)]
+        terminals = [(kind, payload.get("reason")) for kind, payload in terminal_rows(verdict)]
         assert terminals == [("surface.playback_interrupted", "user_stop")]
     finally:
         verdict.close()
@@ -106,8 +106,8 @@ def test_a_stop_while_audio_is_still_being_written_is_an_interruption_not_a_fail
     """At 8 kHz a callback lasts 64 ms, longer than settle's bounded wait: the None path too."""
     db_path = tmp_path / "stop.db"
     conn = open_event_log(db_path)
-    provider = _FakeProvider(candidate_count=1)
-    provider.behaviors[("RSTOP", 0)] = _Behavior(
+    provider = FakeProvider(candidate_count=1)
+    provider.behaviors[("RSTOP", 0)] = Behavior(
         samples=rate * 3, sample_rate_hz=rate, final_delay_s=0.0,
     )
     player = NativeAudioStreamPlayer(
@@ -123,14 +123,14 @@ def test_a_stop_while_audio_is_still_being_written_is_an_interruption_not_a_fail
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(_config(), canonical_sample_rate_hz=rate, response_timeout_s=10.0),
+        config=replace(media_config(), canonical_sample_rate_hz=rate, response_timeout_s=10.0),
         start_player=False,
     )
     try:
-        rows = _emit_response(
+        rows = emit_response(
             conn, response_id="RSTOP", group_id="G", turn_id="T", text="Counting slowly.",
         )
-        asyncio.run(_submit_response(pipeline, rows))
+        asyncio.run(submit_response(pipeline, rows))
         deadline = time.monotonic() + 5
         while player.played_samples < rate // 4:  # audio is playing and the ring is full
             assert time.monotonic() < deadline
@@ -142,9 +142,9 @@ def test_a_stop_while_audio_is_still_being_written_is_an_interruption_not_a_fail
         player.stop()
     verdict = open_event_log(db_path)
     try:
-        terminals = [(kind, payload.get("reason")) for kind, payload in _terminal_rows(verdict)]
+        terminals = [(kind, payload.get("reason")) for kind, payload in terminal_rows(verdict)]
         assert terminals == [("surface.playback_interrupted", "user_stop")]
-        assert _playback_rows_for(verdict, "RSTOP", "surface.playback_failed") == 0
+        assert playback_rows_for(verdict, "RSTOP", "surface.playback_failed") == 0
     finally:
         verdict.close()
         conn.close()

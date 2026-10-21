@@ -27,17 +27,15 @@ import os
 import sqlite3
 import stat
 import time
-from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import yaml
-from fastapi.testclient import TestClient
 
 from jarvis.decision import DecideContext, LifecycleLike, RuntimePathsLike, ToolRegistryLike, decide
-from jarvis.decision.llm import ChatResult, LLMClient, _messages_to_responses_input
+from jarvis.decision.llm import LLMClient, _messages_to_responses_input
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.deployment import bootstrap_runtime, data
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
@@ -48,42 +46,40 @@ from jarvis.state.attachments import (
     ATTACHMENTS_DIRNAME,
     MAX_IMAGE_BYTES,
     MAX_UPLOAD_BODY_BYTES,
-    AttachmentRef,
     AttachmentRefused,
     Attachments,
 )
-from jarvis.state.device_tokens import device_token_matches, pair_device, unpair_device
+from jarvis.state.device_tokens import unpair_device
 from jarvis.state.event_log import (
     iter_events_for_turn,
-    iter_events_of_types,
     open_event_log,
     open_runtime_event_log,
 )
-from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.shares import SHARES_LINE_PREFIX, shares_line
 from jarvis.surface.cli import emit_surface_user_intent
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from tests.support.phone import (
+    NOTES,
+    PNG,
+    TIER0_TABLE,
+    CapturingModel,
+    Daemon,
+    attachment_turn,
+    attachments_daemon,
+)
+from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
 
-    from httpx2 import Response  # what the test client answers with
+    from fastapi.testclient import TestClient
+    # what the test client answers with
 
-REMOTE = "100.87.250.92"
-LOOPBACK = "127.0.0.1"
 MIB = 1024 * 1024
-TIER0_TABLE = Path(__file__).parents[2] / "config" / "tier0_patterns.yaml"
 
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-)
 JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\x00" * 64
 GIF = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00;"
 WEBP = b"RIFF\x1a\x00\x00\x00WEBPVP8 \x0e\x00\x00\x00" + b"\x00" * 14
 HEIC = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 32
 PDF = b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
-NOTES = b"Dinner at 7\nBring the red folder\n"
 
 
 def _big(magic: bytes, size: int) -> bytes:
@@ -169,88 +165,11 @@ def test_a_full_store_refuses_and_a_model_without_pictures_refuses_pictures(
 # --- the routes -----------------------------------------------------------------------------------
 
 
-@dataclass
-class Daemon:
-    """The app behind the local key and device tokens, with real callables on a real log."""
-
-    root: Path
-    log: Path
-    store: Attachments
-    key: str
-    token: str
-    loopback: TestClient
-    remote: TestClient
-
-    def events(self, event_type: str) -> list[dict[str, Any]]:
-        """The payloads of the log's events of one type, oldest first."""
-        with closing(open_runtime_event_log(self.log)) as conn:
-            return [dict(e.payload) for e in iter_events_of_types(conn, [event_type])]
-
-    def intents(self) -> list[dict[str, Any]]:
-        """The turns started so far."""
-        return self.events("surface.user_intent")
-
-    def upload(self, content: bytes, name: str = "photo.png", *, via: str = "remote") -> Response:
-        """Post one file with the credential that fits the peer."""
-        client = self.remote if via == "remote" else self.loopback
-        headers = {"Authorization": f"Bearer {self.token if via == 'remote' else self.key}"}
-        return client.post(
-            "/inherent/attachments", files={"file": (name, content, "application/octet-stream")},
-            headers=headers,
-        )
-
-    def auth(self) -> dict[str, str]:
-        """The paired phone's header."""
-        return {"Authorization": f"Bearer {self.token}"}
-
-
-def _daemon(
-    tmp_path: Path, *, images_ok: bool = True, wired: bool = True,
-    saved: Callable[[AttachmentRef], None] | None = None,
-) -> Daemon:
-    root = tmp_path / "root"
-    root.mkdir()
-    log = root / "events.db"
-    open_event_log(log).close()
-    store = Attachments(root / "artifacts" / ATTACHMENTS_DIRNAME)
-
-    def submit_plain(text: str) -> str:
-        with closing(open_runtime_event_log(log)) as conn:
-            event = emit_surface_user_intent(conn, transcript=text, turn_id="T-plain")
-            return str(event.payload["turn_id"])
-
-    deps = InherentDeps(
-        submit_callable=submit_plain,
-        broadcaster=InherentBroadcaster(),
-        attachments=store if wired else None,
-        attachment_saved=saved,
-        images_ok=images_ok,
-        submit_attachments=functools.partial(inherent_loop._submit_with_attachments, log)  # noqa: SLF001
-        if wired else None,
-        share_callable=functools.partial(inherent_loop._keep_share, log)  # noqa: SLF001
-        if wired else None,
-    )
-    app = create_app(deps)
-    key = local_key(root)
-    require_local_key(
-        app,
-        functools.partial(local_key_matches, key),
-        extra_hosts=[REMOTE],
-        device_token_matches=functools.partial(device_token_matches, root),
-    )
-    token = pair_device(root, "iphone")
-    return Daemon(
-        root=root, log=log, store=store, key=key, token=token,
-        loopback=TestClient(app, base_url=f"http://{LOOPBACK}:8006", client=(LOOPBACK, 50000)),
-        remote=TestClient(app, base_url=f"http://{REMOTE}:8006", client=(REMOTE, 50000)),
-    )
-
-
 def test_only_the_local_key_on_loopback_and_a_paired_token_from_the_tailnet_open_the_routes(
     tmp_path: Path,
 ) -> None:
     """Both new routes: the right credential for the peer opens them; every other thing is 401."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     share = {"text": "hello"}
     wrong = {"Authorization": "Bearer nope"}
 
@@ -278,7 +197,7 @@ def test_only_the_local_key_on_loopback_and_a_paired_token_from_the_tailnet_open
 
 def test_an_upload_is_answered_with_an_id_the_store_can_find(tmp_path: Path) -> None:
     """The answer names the stored file; the bytes on disk are the bytes sent."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
 
     sent = d.upload(PNG, "IMG_0001.PNG")
 
@@ -295,7 +214,7 @@ def test_an_upload_is_answered_with_an_id_the_store_can_find(tmp_path: Path) -> 
 
 def test_the_upload_caps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A body over the cap is refused from its length, one with no length is, a bad type is."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
 
     over = d.remote.post(
         "/inherent/attachments", headers=d.auth(),
@@ -322,7 +241,7 @@ def test_the_upload_caps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_a_model_that_takes_no_pictures_refuses_them_and_still_takes_text(tmp_path: Path) -> None:
     """With ``images_ok`` false a picture is a 422 and a text file is stored."""
-    d = _daemon(tmp_path, images_ok=False)
+    d = attachments_daemon(tmp_path, images_ok=False)
 
     assert d.upload(PNG).status_code == 422
     assert d.upload(NOTES, "notes.txt").status_code == 200
@@ -332,7 +251,7 @@ def test_a_daemon_without_the_store_has_no_upload_and_refuses_a_submit_with_ids(
     tmp_path: Path,
 ) -> None:
     """Unwired, the upload route is absent and a submit naming a file is 501."""
-    d = _daemon(tmp_path, wired=False)
+    d = attachments_daemon(tmp_path, wired=False)
 
     assert d.upload(PNG).status_code == 404
     refused = d.remote.post(
@@ -345,7 +264,7 @@ def test_a_daemon_without_the_store_has_no_upload_and_refuses_a_submit_with_ids(
 
 def test_a_submit_names_its_files_and_the_turn_carries_their_ids(tmp_path: Path) -> None:
     """The intent event holds the words and the ids, never the bytes; no words get a fixed line."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     first = d.upload(PNG).json()["id"]
     second = d.upload(NOTES, "n.txt").json()["id"]
 
@@ -369,7 +288,7 @@ def test_a_submit_names_its_files_and_the_turn_carries_their_ids(tmp_path: Path)
 
 def test_a_turn_takes_four_files_and_eight_mib_of_pictures(tmp_path: Path) -> None:
     """Over four ids, an unknown or malformed id, or three 3.5 MiB pictures: nothing starts."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     ids = [d.upload(PNG, f"{n}.png").json()["id"] for n in range(5)]
     large = [d.upload(_big(PNG, 7 * MIB // 2), f"{n}.png").json()["id"] for n in range(3)]
 
@@ -390,7 +309,7 @@ def test_a_turn_takes_four_files_and_eight_mib_of_pictures(tmp_path: Path) -> No
 
 def test_a_share_that_is_not_asked_about_is_kept_as_one_event(tmp_path: Path) -> None:
     """Link, text and picture each become a ``user.shared`` event and start no turn."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG).json()["id"]
 
     link = d.remote.post("/inherent/share", headers=d.auth(), json={
@@ -414,7 +333,7 @@ def test_a_share_that_is_not_asked_about_is_kept_as_one_event(tmp_path: Path) ->
 
 def test_asking_her_makes_the_share_one_turn(tmp_path: Path) -> None:
     """With ``ask`` the note and what was shared are the turn's words; a picture rides along."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG).json()["id"]
 
     link = d.remote.post("/inherent/share", headers=d.auth(), json={
@@ -461,7 +380,7 @@ def test_asking_her_makes_the_share_one_turn(tmp_path: Path) -> None:
 )
 def test_a_bad_share_is_refused_whole(tmp_path: Path, body: dict[str, Any], status: int) -> None:
     """Whatever is wrong, nothing is kept and no turn starts."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
 
     refused = d.remote.post("/inherent/share", headers=d.auth(), json=body)
 
@@ -471,7 +390,7 @@ def test_a_bad_share_is_refused_whole(tmp_path: Path, body: dict[str, Any], stat
 
 def test_saved_shares_reach_the_next_turns_state_block_newest_first(tmp_path: Path) -> None:
     """One line, the latest five of the last three days; none older, none when none saved."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG).json()["id"]
     with closing(open_runtime_event_log(d.log)) as conn:
         assert shares_line(conn) is None
@@ -499,89 +418,12 @@ def test_saved_shares_reach_the_next_turns_state_block_newest_first(tmp_path: Pa
 # --- what the model gets --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _StubRuntimePaths:
-    event_log: Path
-    artifacts_root: Path
-
-
-class _CapturingModel:
-    """Answers with fixed text and keeps every request it was handed."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    def __init__(self) -> None:
-        self.model = "stub-model"
-        self.requests: list[list[dict[str, Any]]] = []
-
-    @property
-    def last_input_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_output_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_finish_reason(self) -> str | None:
-        return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_CapturingModel]:
-        yield self
-
-    def chat(
-        self, *, messages: list[dict[str, Any]], system: str,  # noqa: ARG002
-        tools: list[dict[str, Any]] | None = None,  # noqa: ARG002
-        tool_choice: str | None = "auto",  # noqa: ARG002
-    ) -> ChatResult:
-        self.requests.append([dict(m) for m in messages])
-        return ChatResult(
-            text="It is a one pixel picture.", tool_calls=(), finish_reason="stop",
-            input_tokens=0, output_tokens=0, raw={}, model_used="stub-model", tokens_in=0,
-            tokens_out=0,
-        )
-
-
-def _turn(  # noqa: PLR0913 — one keyword per thing a turn can be given.
-    d: Daemon, said: str, ids: Sequence[str], *,
-    live_context: tuple[str, ...] = (), tier0: bool = False, sent: list[str] | None = None,
-    history: Sequence[dict[str, Any]] = (),
-) -> tuple[_CapturingModel, str]:
-    """Submit over HTTP, then run the stored intent through the real ``decide()``."""
-    posted = d.remote.post(
-        "/inherent/submit", headers=d.auth(), json={"text": said, "attachments": list(ids)},
-    )
-    assert posted.status_code == 200
-    model = _CapturingModel()
-    paths = _StubRuntimePaths(event_log=d.log, artifacts_root=d.root / "artifacts")
-    with closing(open_event_log(d.log)) as conn:
-        turn_id = posted.json()["turn_id"]
-        (trigger,) = list(iter_events_for_turn(conn, turn_id, ["surface.user_intent"]))
-        ctx = DecideContext(
-            conn=conn,
-            runtime_paths=cast("RuntimePathsLike", paths),
-            tool_registry=cast("ToolRegistryLike", build_default_registry()),
-            lifecycle=cast("LifecycleLike", ActionLifecycle()),
-            llm_client=cast("LLMClient", model),
-            system_prompt="stub system prompt",
-            history=history,
-            time_note="Time: 2026-10-10T12:00-07:00 Saturday",
-            live_context=live_context,
-            read_attachments=d.store.load_many,
-            record_sent_message=None if sent is None else sent.append,
-            tier0_table=load_tier0_table(TIER0_TABLE) if tier0 else None,
-        )
-        result = decide(trigger, ctx)
-    assert result.response_plan is not None
-    return model, result.response_plan.text
-
-
 def test_an_uploaded_picture_reaches_the_model_call_as_an_image_part(tmp_path: Path) -> None:
     """Upload, submit, decide: the turn's user message is its words plus the picture's data URL."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG, "IMG_1.png").json()["id"]
 
-    model, answer = _turn(d, "what is this?", [picture])
+    model, answer = attachment_turn(d, "what is this?", [picture])
 
     assert answer == "It is a one pixel picture."
     (request,) = model.requests
@@ -600,11 +442,11 @@ def test_a_text_file_rides_the_message_as_marked_material_and_no_picture_part(
     tmp_path: Path,
 ) -> None:
     """A text file's head is in the message text, marked as his material; content stays a string."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     notes = d.upload(NOTES, "notes.txt").json()["id"]
     long = d.upload(b"x" * 25_000, "long.txt").json()["id"]
 
-    model, _ = _turn(d, "read these", [notes, long])
+    model, _ = attachment_turn(d, "read these", [notes, long])
 
     (live,) = [m for m in model.requests[0] if m["role"] == "user"]
     assert isinstance(live["content"], str)
@@ -621,12 +463,12 @@ def test_a_picture_goes_on_this_turns_message_only_and_history_keeps_the_marker(
     tmp_path: Path,
 ) -> None:
     """The earlier turns are text; a replayed message holds the marker line and no pixels."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG, "IMG_1.png").json()["id"]
     sent: list[str] = []
     earlier = ({"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello."})
 
-    model, _ = _turn(d, "what is this?", [picture], sent=sent, history=earlier)
+    model, _ = attachment_turn(d, "what is this?", [picture], sent=sent, history=earlier)
 
     request = model.requests[0]
     assert request[:2] == list(earlier)
@@ -638,20 +480,20 @@ def test_a_picture_goes_on_this_turns_message_only_and_history_keeps_the_marker(
 
 def test_a_file_that_has_expired_is_named_as_such(tmp_path: Path) -> None:
     """The retention sweep may have taken it between submit and turn: the model is told."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG).json()["id"]
     posted = d.remote.post(
         "/inherent/submit", headers=d.auth(), json={"text": "and this?", "attachments": [picture]},
     )
     for stored in d.store.directory.iterdir():
         stored.unlink()
-    model = _CapturingModel()
+    model = CapturingModel()
     with closing(open_event_log(d.log)) as conn:
         turn_id = posted.json()["turn_id"]
         (trigger,) = list(iter_events_for_turn(conn, turn_id, ["surface.user_intent"]))
         ctx = DecideContext(
             conn=conn,
-            runtime_paths=cast("RuntimePathsLike", _StubRuntimePaths(d.log, d.root)),
+            runtime_paths=cast("RuntimePathsLike", StubRuntimePaths(d.log, d.root)),
             tool_registry=cast("ToolRegistryLike", build_default_registry()),
             lifecycle=cast("LifecycleLike", ActionLifecycle()),
             llm_client=cast("LLMClient", model), system_prompt="s",
@@ -666,20 +508,20 @@ def test_a_file_that_has_expired_is_named_as_such(tmp_path: Path) -> None:
 
 def test_words_with_a_file_never_take_a_shortcut(tmp_path: Path) -> None:
     """"What time is it" is answered without the model alone; with a picture the model answers."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     picture = d.upload(PNG).json()["id"]
     alone = _turn_without_files(d, "what time is it", tier0=True)
 
-    model, answer = _turn(d, "what time is it", [picture], tier0=True)
+    model, answer = attachment_turn(d, "what time is it", [picture], tier0=True)
 
     assert alone.requests == []
     assert len(model.requests) == 1
     assert answer == "It is a one pixel picture."
 
 
-def _turn_without_files(d: Daemon, said: str, *, tier0: bool) -> _CapturingModel:
-    model = _CapturingModel()
-    paths = _StubRuntimePaths(event_log=d.log, artifacts_root=d.root / "artifacts")
+def _turn_without_files(d: Daemon, said: str, *, tier0: bool) -> CapturingModel:
+    model = CapturingModel()
+    paths = StubRuntimePaths(event_log=d.log, artifacts_root=d.root / "artifacts")
     with closing(open_event_log(d.log)) as conn:
         trigger = emit_surface_user_intent(conn, transcript=said, turn_id="T-alone")
         decide(trigger, DecideContext(
@@ -696,7 +538,7 @@ def _turn_without_files(d: Daemon, said: str, *, tier0: bool) -> _CapturingModel
 
 def test_a_turn_without_files_is_what_it_was(tmp_path: Path) -> None:
     """No ids, no change: the user message stays one string, with no marker."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
 
     model = _turn_without_files(d, "hello there", tier0=False)
 
@@ -707,7 +549,7 @@ def test_a_turn_without_files_is_what_it_was(tmp_path: Path) -> None:
 
 def test_saved_shares_reach_the_model_in_the_state_block(tmp_path: Path) -> None:
     """Share, then ask something else: the next request's state block carries the share line."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     d.remote.post("/inherent/share", headers=d.auth(), json={
         "url": "https://example.com/menu", "title": "Menu", "note": "for friday",
     })
@@ -720,13 +562,13 @@ def test_saved_shares_reach_the_model_in_the_state_block(tmp_path: Path) -> None
     assert 'link https://example.com/menu "Menu" with the note "for friday"' in live["content"]
 
 
-def _turn_without_files_with_live(d: Daemon, said: str, lines: tuple[str, ...]) -> _CapturingModel:
-    model = _CapturingModel()
+def _turn_without_files_with_live(d: Daemon, said: str, lines: tuple[str, ...]) -> CapturingModel:
+    model = CapturingModel()
     with closing(open_event_log(d.log)) as conn:
         trigger = emit_surface_user_intent(conn, transcript=said, turn_id="T-shares")
         decide(trigger, DecideContext(
             conn=conn,
-            runtime_paths=cast("RuntimePathsLike", _StubRuntimePaths(d.log, d.root)),
+            runtime_paths=cast("RuntimePathsLike", StubRuntimePaths(d.log, d.root)),
             tool_registry=cast("ToolRegistryLike", build_default_registry()),
             lifecycle=cast("LifecycleLike", ActionLifecycle()),
             llm_client=cast("LLMClient", model), system_prompt="s", live_context=lines,
@@ -854,14 +696,14 @@ def test_the_v2_hello_reports_pictures_from_the_wiring() -> None:
 
 def test_the_stub_route_is_gone(tmp_path: Path) -> None:
     """``/inherent/image-submit`` is no route any more; the upload route replaced it."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
 
     assert d.remote.post("/inherent/image-submit", headers=d.auth()).status_code == 404
 
 
 def test_a_second_connection_reads_what_the_first_wrote(tmp_path: Path) -> None:
     """The share and the submit write on their own connections; the log shows both at once."""
-    d = _daemon(tmp_path)
+    d = attachments_daemon(tmp_path)
     d.remote.post("/inherent/share", headers=d.auth(), json={"text": "one"})
 
     with closing(sqlite3.connect(d.log)) as reader:

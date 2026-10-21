@@ -29,10 +29,6 @@ import threading
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Self
 
-import h2.config
-import h2.connection
-import h2.events
-import httpx
 import pytest
 import uvicorn
 from cryptography.hazmat.primitives import hashes, serialization
@@ -40,27 +36,23 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from fastapi.testclient import TestClient
 
-from jarvis.deployment import bootstrap_runtime
 from jarvis.runtime import inherent_loop
 from jarvis.runtime.push import KEY_ENV, Push
 from jarvis.runtime.reminders import SPEAK_UNTIL, Reminders, line
 from jarvis.shared import lang
 from jarvis.state import push_tokens
-from jarvis.state import reminders as folded
 from jarvis.state.device_tokens import (
     device_name_for_token,
     device_token_matches,
     pair_device,
     unpair_device,
 )
-from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
+from jarvis.state.event_log import emit_event
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.push_tokens import register_body
 from jarvis.surface.apns import (
     REGISTER_PATH,
     TOKEN_TTL_S,
-    ApnsClient,
-    ProviderToken,
     PushMessage,
     alert_payload,
 )
@@ -69,7 +61,8 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
-from tests.integration.test_terminal_voice import _AsRemote, _free_port, _wait_for
+from tests.support.push import BUNDLE, DEVICE_A, KEY_ID, TEAM_ID, FakeApns, World
+from tests.support.terminal import AsRemote, free_port, wait_for
 from tools.phone_fake_client import FakePhone
 
 if TYPE_CHECKING:
@@ -77,96 +70,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 REMOTE = "100.87.250.92"
-KEY_ID = "ABC123DEFG"
-TEAM_ID = "TEAM123456"
-BUNDLE = "app.example.jarvis"
-DEVICE_A = "a1" * 32
 DEVICE_B = "b2" * 32
 LIVE_A = "c3" * 60
 UBER = "uber://?action=setPickup&pickup=my_location&dropoff[formatted_address]=UVic"
 
 
 # --- the fake APNs ---------------------------------------------------------------------------
-
-
-class FakeApns:
-    """An HTTP/2 server on loopback that records each request and answers as told."""
-
-    def __init__(self) -> None:
-        """Not started; ``requests`` collects what arrives."""
-        self.requests: list[dict[str, Any]] = []
-        # ``(request) -> (status, reason)``; the default accepts everything.
-        self.reply: Callable[[dict[str, Any]], tuple[int, str | None]] = lambda _r: (200, None)
-        self.port = 0
-        self._loop = asyncio.new_event_loop()
-        self._up = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def __enter__(self) -> Self:
-        """Start serving."""
-        self._thread.start()
-        assert self._up.wait(5)
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        """Stop serving, ending the connections the client kept open."""
-        asyncio.run_coroutine_threadsafe(self._stop(), self._loop).result(5)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(5)
-        self._loop.close()
-
-    async def _stop(self) -> None:
-        current = asyncio.current_task()
-        tasks = [t for t in asyncio.all_tasks() if t is not current]
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    @property
-    def url(self) -> str:
-        """The base URL the client is pointed at."""
-        return f"http://127.0.0.1:{self.port}"
-
-    def _run(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        server = self._loop.run_until_complete(asyncio.start_server(self._serve, "127.0.0.1", 0))
-        self.port = server.sockets[0].getsockname()[1]
-        self._up.set()
-        self._loop.run_forever()
-        server.close()
-
-    async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        conn = h2.connection.H2Connection(h2.config.H2Configuration(client_side=False))
-        conn.initiate_connection()
-        writer.write(conn.data_to_send())
-        streams: dict[int, dict[str, Any]] = {}
-        while data := await reader.read(65536):
-            for event in conn.receive_data(data):
-                if isinstance(event, h2.events.RequestReceived):
-                    headers = {k.decode(): v.decode() for k, v in event.headers}
-                    streams[event.stream_id] = {"headers": headers, "body": b""}
-                elif isinstance(event, h2.events.DataReceived):
-                    streams[event.stream_id]["body"] += event.data
-                    conn.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
-                elif isinstance(event, h2.events.StreamEnded):
-                    self._answer(conn, event.stream_id, streams.pop(event.stream_id))
-            writer.write(conn.data_to_send())
-            await writer.drain()
-        writer.close()
-
-    def _answer(self, conn: h2.connection.H2Connection, stream: int, got: dict[str, Any]) -> None:
-        headers = got["headers"]
-        request = {
-            "path": headers[":path"],
-            "device": headers[":path"].rsplit("/", 1)[-1],
-            "headers": headers,
-            "body": json.loads(got["body"]),
-        }
-        self.requests.append(request)
-        status, reason = self.reply(request)
-        body = b"" if reason is None else json.dumps({"reason": reason}).encode()
-        conn.send_headers(stream, [(":status", str(status)), ("content-type", "application/json")])
-        conn.send_data(stream, body, end_stream=True)
 
 
 # --- one runtime root with a paired phone ----------------------------------------------------
@@ -179,97 +88,6 @@ def _pem() -> bytes:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-
-
-class Clock:
-    """A clock the test moves by hand."""
-
-    def __init__(self) -> None:
-        """Start at a fixed instant."""
-        self.now = 1_800_000_000.0
-
-    def __call__(self) -> float:
-        """Epoch seconds."""
-        return self.now
-
-
-class World:
-    """A runtime root, a paired phone that registered, a fake APNs and the sender over them."""
-
-    def __init__(self, root: Path, sandbox: FakeApns, production: FakeApns) -> None:
-        """Build the sender over the two fake endpoints."""
-        self.paths = bootstrap_runtime(root)
-        self.root = self.paths.root
-        self.sandbox, self.production = sandbox, production
-        self.clock = Clock()
-        self.key = ec.generate_private_key(ec.SECP256R1())
-        self.token = ProviderToken(self.key, KEY_ID, TEAM_ID, self.clock)
-        self.client = ApnsClient(
-            self.token,
-            BUNDLE,
-            transport=httpx.HTTPTransport(http1=False, http2=True),
-            hosts={"sandbox": sandbox.url, "production": production.url},
-            clock=self.clock,
-        )
-        self.push = Push(self.root, self.paths.event_log, self.client)
-        self.push.clock = self.clock
-        self.log = open_event_log(self.paths.event_log)
-        self.phone_token = pair_device(self.root, "phone")
-
-    def register(
-        self, name: str = "phone", device: str = DEVICE_A, environment: str = "sandbox",
-        live: str | None = None,
-    ) -> None:
-        """A device registers through the same function the route calls."""
-        body: dict[str, Any] = {"device_token": device, "environment": environment}
-        if live is not None:
-            body["live_activity_token"] = live
-        register_body(self.root, name, body)
-
-    def requests(self) -> list[dict[str, Any]]:
-        """Every request either endpoint got."""
-        return [*self.sandbox.requests, *self.production.requests]
-
-    def fired(self) -> int:
-        """How many ``reminder.fired`` rows the log holds."""
-        return sum(1 for _ in iter_events_of_types(self.log, ["reminder.fired"]))
-
-    def remind(self, text: str, at: datetime) -> str:
-        """Schedule a reminder."""
-        return folded.schedule(self.log, due=at, text=text, action_id="A1")
-
-    def confirm(
-        self, cid: str, *, expires_in_s: float = 600, text: str = "Send the draft?",
-        turn: str | None = None,
-    ) -> None:
-        """Ask for a confirmation, within ``turn`` if one is given."""
-        emit_event(self.log, type="confirmation.requested", payload={
-            "confirmation_id": cid, "action_snapshot": {"tool_name": "gmail_send"},
-            "template_line": text, "expires_at_ms": int((self.clock() + expires_in_s) * 1000),
-        }, correlation=None if turn is None else {"turn_id": turn})
-
-    def ask(self, qid: str, question: str = "Which stop?", turn: str = "T1") -> None:
-        """Put up an ask card."""
-        emit_event(self.log, type="clarification.requested", payload={
-            "clarification_id": qid, "question": question, "fields": [], "turn_id": turn,
-        })
-
-    def turn(self, turn_id: str, device: str) -> None:
-        """Open ``turn_id`` with words ``device`` typed (ADR 0212)."""
-        emit_event(
-            self.log, type="surface.user_intent", ingestion_node=device,
-            payload={"transcript": "do it", "turn_id": turn_id, "channel": "cli_stdin"},
-            correlation={"turn_id": turn_id},
-        )
-
-    def settle(self) -> None:
-        """Wait for what the sender handed its own thread."""
-        self.push._pool.submit(lambda: None).result(5)  # noqa: SLF001 — one worker, in order
-
-    def close(self) -> None:
-        """Release the client and the log."""
-        self.client.close()
-        self.log.close()
 
 
 @pytest.fixture
@@ -661,7 +479,7 @@ class PhoneHost:
     def __init__(self, world: World) -> None:
         """Serve the route for the world's paired phone; no voice, the host speaks nothing."""
         self.world = world
-        self.port = _free_port()
+        self.port = free_port()
         self.hub: PhoneHub | None = None
         self.server: uvicorn.Server | None = None
         self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
@@ -683,14 +501,14 @@ class PhoneHost:
             device_token_matches=functools.partial(device_token_matches, self.world.root),
         )
         self.server = uvicorn.Server(uvicorn.Config(
-            _AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off",
+            AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off",
         ))
         await self.server.serve()
 
     def __enter__(self) -> Self:
         """Start serving and wait until it is up."""
         self.thread.start()
-        _wait_for(lambda: bool(self.server and self.server.started), "server never started")
+        wait_for(lambda: bool(self.server and self.server.started), "server never started")
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -731,7 +549,7 @@ def test_a_waiting_item_is_not_pushed_while_the_phones_real_socket_is_open_and_i
             assert len(world.requests()) == 1  # nothing for the two items asked while it is open
         finally:
             phone.close()
-        _wait_for(lambda: not hub.connected("phone"), "the socket never closed")
+        wait_for(lambda: not hub.connected("phone"), "the socket never closed")
 
         world.confirm("C2", text="The app was closed")
         world.push.poll()
@@ -818,7 +636,6 @@ def test_a_claude_request_held_while_he_is_away_pushes_at_once(world: World) -> 
     world.push.poll()
     world.push.poll()
     assert len(world.requests()) == 1
-
 
 
 def test_an_apps_login_link_goes_once_to_the_phone_that_asked_and_never_to_a_computer(

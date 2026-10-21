@@ -14,7 +14,6 @@ import dataclasses
 import json
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -25,7 +24,6 @@ from jarvis.decision import (
     LifecycleLike,
     RuntimePathsLike,
     ToolRegistryLike,
-    decide,
     request_confirmation,
 )
 from jarvis.decision.confirm_grammar import load_confirm_grammar
@@ -36,9 +34,9 @@ from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.plugin_approval import Paths, logged_dicts, press, say
 
 if TYPE_CHECKING:
-    import sqlite3
     from collections.abc import Iterator
 
 HERE = Path(__file__).parent
@@ -46,15 +44,6 @@ REPO = HERE.parent.parent
 ECHO = {"echo": {"command": sys.executable, "args": [str(HERE / "mcp_echo_server.py")]}}
 ASK = "要执行 echo add吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
 LETTER = {"to": "allen@example.com", "subject": "周六见", "body": "周六早上八点停车场见。"}
-
-
-@dataclass(frozen=True)
-class _Paths:
-    event_log: Path
-    artifacts_root: Path
-
-    def pending_write_path(self, confirmation_id: str) -> Path:
-        return self.artifacts_root / "pending_writes" / confirmation_id
 
 
 class _ScriptedClient:
@@ -127,7 +116,7 @@ def _context(tmp_path: Path, servers: McpServers, llm: _ScriptedClient) -> Decid
     mcp_tools = servers.connect(ECHO)
     for one in (*mcp_tools, *build_tool_search(mcp_tools, {"echo": "Echo test server"})):
         registry.register(one)
-    paths = _Paths(event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts")
+    paths = Paths(event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts")
     paths.artifacts_root.mkdir(parents=True, exist_ok=True)
     return DecideContext(
         conn=open_event_log(paths.event_log),
@@ -145,47 +134,13 @@ def _context(tmp_path: Path, servers: McpServers, llm: _ScriptedClient) -> Decid
     )
 
 
-def _say(ctx: DecideContext, text: str, turn_id: str) -> str:
-    trigger = emit_event(
-        ctx.conn,
-        type="surface.user_intent",
-        payload={"transcript": text, "turn_id": turn_id},
-        correlation={"turn_id": turn_id},
-    )
-    result = decide(trigger, ctx)
-    assert result.response_plan is not None
-    return result.response_plan.text
-
-
-def _press(ctx: DecideContext, decision: dict[str, Any], turn_id: str) -> str:
-    """A card's button: an empty-transcript intent naming the confirmation (ADR 0062)."""
-    trigger = emit_event(
-        ctx.conn,
-        type="surface.user_intent",
-        payload={"transcript": "", "turn_id": turn_id, "confirmation_decision": decision},
-        correlation={"turn_id": turn_id},
-    )
-    result = decide(trigger, ctx)
-    assert result.response_plan is not None
-    return result.response_plan.text
-
-
-def _rows(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
-    return [
-        json.loads(row[0])
-        for row in conn.execute(
-            "SELECT payload_json FROM events WHERE type=? ORDER BY id", (event_type,)
-        )
-    ]
-
-
 def _ask(
     tmp_path: Path, servers: McpServers, **context: Any,  # noqa: ANN401 — DecideContext fields
 ) -> tuple[DecideContext, _ScriptedClient]:
     """Turn 1: the adder is not offered until searched, and calling it asks instead of running."""
     llm = _ScriptedClient()
     ctx = dataclasses.replace(_context(tmp_path, servers, llm), **context)
-    assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
+    assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
     first, second = llm.offered
     assert "tool_search" in first
     assert not [name for name in first if name.startswith("mcp__")]
@@ -193,8 +148,8 @@ def _ask(
     # ADR 0056: the hit's server brings its read-only echo along; boom has no hint, so it stays off.
     assert "mcp__echo__echo" in second
     assert "mcp__echo__boom" not in second
-    assert _rows(ctx.conn, "confirmation.requested")[0]["template_line"] == ASK
-    assert len(_rows(ctx.conn, "action.result_observed")) == 1  # only the search ran
+    assert logged_dicts(ctx.conn, "confirmation.requested")[0]["template_line"] == ASK
+    assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1  # only the search ran
     return ctx, llm
 
 
@@ -202,14 +157,16 @@ def test_searched_plugin_tool_asks_then_runs_on_yes(tmp_path: Path, servers: Mcp
     """Allen's 可以 re-proposes the frozen arguments through the outbox and the adder runs once."""
     ctx, llm = _ask(tmp_path, servers)
     try:
-        assert _say(ctx, "可以", "T2") == "已执行 echo add。"
+        assert say(ctx, "可以", "T2") == "已执行 echo add。"
         assert len(llm.offered) == 2  # the yes is matched by grammar, never by the model
-        assert len(_rows(ctx.conn, "confirmation.accepted")) == 1
+        assert len(logged_dicts(ctx.conn, "confirmation.accepted")) == 1
         added = [
-            r for r in _rows(ctx.conn, "action.proposed") if r["tool_name"] == "mcp__echo__add"
+            r
+            for r in logged_dicts(ctx.conn, "action.proposed")
+            if r["tool_name"] == "mcp__echo__add"
         ]
         assert [r["arguments"] for r in added] == [{"a": 17, "b": 25}, {"a": 17, "b": 25}]
-        assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
+        assert json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "sum": 42
         }
     finally:
@@ -230,9 +187,9 @@ def test_the_ask_and_its_answer_follow_the_words_not_the_system_language(
     lang.set_language("en")
     ctx = _context(tmp_path, servers, _ScriptedClient())
     try:
-        assert _say(ctx, words[0], "T1") == ask
-        assert _rows(ctx.conn, "confirmation.requested")[0]["template_line"] == ask
-        assert _say(ctx, words[1], "T2") == ran
+        assert say(ctx, words[0], "T1") == ask
+        assert logged_dicts(ctx.conn, "confirmation.requested")[0]["template_line"] == ask
+        assert say(ctx, words[1], "T2") == ran
     finally:
         ctx.conn.close()
 
@@ -241,9 +198,9 @@ def test_searched_plugin_tool_does_nothing_on_no(tmp_path: Path, servers: McpSer
     """Allen's 不要 closes the ask; the adder never runs."""
     ctx, _ = _ask(tmp_path, servers)
     try:
-        assert _say(ctx, "不要", "T2") == "好，不执行 echo add了。"  # noqa: RUF001 — the fixed Chinese rejection.
-        assert len(_rows(ctx.conn, "confirmation.rejected")) == 1
-        assert len(_rows(ctx.conn, "action.result_observed")) == 1  # still only the search
+        assert say(ctx, "不要", "T2") == "好，不执行 echo add了。"  # noqa: RUF001 — the fixed Chinese rejection.
+        assert len(logged_dicts(ctx.conn, "confirmation.rejected")) == 1
+        assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1  # still only the search
     finally:
         ctx.conn.close()
 
@@ -254,28 +211,28 @@ def test_an_unrelated_turn_leaves_the_card_to_its_button(
     """ADR 0062: a 好 meant for the model's own question never fires the card; its button does."""
     ctx, llm = _ask(tmp_path, servers)
     try:
-        _say(ctx, "现在几点", "T2")
+        say(ctx, "现在几点", "T2")
         assert "A card is waiting for the user's button: mcp__echo__add" in llm.seen[-1]
-        assert _rows(ctx.conn, "confirmation.rejected") == []  # the card still waits
-        _say(ctx, "好", "T3")
+        assert logged_dicts(ctx.conn, "confirmation.rejected") == []  # the card still waits
+        say(ctx, "好", "T3")
         assert len(llm.offered) == 4  # the 好 reached the model, not the grammar
-        assert _rows(ctx.conn, "confirmation.accepted") == []
-        assert len(_rows(ctx.conn, "action.result_observed")) == 1  # still only the search
-        card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
-        pressed = _press(ctx, {"confirmation_id": card, "decision": "accept"}, "T4")
+        assert logged_dicts(ctx.conn, "confirmation.accepted") == []
+        assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1  # still only the search
+        card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+        pressed = press(ctx, {"confirmation_id": card, "decision": "accept"}, "T4")
         assert pressed == "已执行 echo add。"
         assert len(llm.offered) == 4  # the button never reaches the model
-        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.accepted")] == [
+        assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.accepted")] == [
             "card_button"
         ]
-        assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
+        assert json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "sum": 42
         }
         # Pressed again, the card is gone: nothing runs twice.
-        assert _press(ctx, {"confirmation_id": card, "decision": "accept"}, "T5") == (
+        assert press(ctx, {"confirmation_id": card, "decision": "accept"}, "T5") == (
             "这张卡已经处理过或被换掉了，没有执行。"  # noqa: RUF001 — the fixed Chinese stale line.
         )
-        assert len(_rows(ctx.conn, "action.result_observed")) == 2
+        assert len(logged_dicts(ctx.conn, "action.result_observed")) == 2
     finally:
         ctx.conn.close()
 
@@ -286,15 +243,15 @@ def test_a_card_pressed_after_its_words_window_still_sends(
     """ADR 0062: ``confirmation.ttl_ms`` bounds only a spoken yes; a card's button never expires."""
     ctx, llm = _ask(tmp_path, servers, confirmation_ttl_ms=0)  # the words window is shut at the ask
     try:
-        card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
-        assert _say(ctx, "可以", "T2") != "已执行 echo add。"  # the yes is not a button
-        assert _rows(ctx.conn, "confirmation.accepted") == []
-        pressed = _press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3")
+        card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+        assert say(ctx, "可以", "T2") != "已执行 echo add。"  # the yes is not a button
+        assert logged_dicts(ctx.conn, "confirmation.accepted") == []
+        pressed = press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3")
         assert pressed == "已执行 echo add。"
-        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.accepted")] == [
+        assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.accepted")] == [
             "card_button"
         ]
-        assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
+        assert json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "sum": 42
         }
         assert len(llm.offered) == 3  # only the yes reached the model; the button never does
@@ -307,23 +264,27 @@ def test_a_letter_card_sends_what_allen_edited(tmp_path: Path, servers: McpServe
     llm = _ScriptedClient(query="send a letter", call=("send", LETTER))
     ctx = _context(tmp_path, servers, llm)
     try:
-        ask = _say(ctx, "给我自己发一封信", "T1")
+        ask = say(ctx, "给我自己发一封信", "T1")
         assert ask == "信写好了，发给 allen@example.com，主题「周六见」。要发吗？"  # noqa: RUF001
-        card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+        card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
         edits = {"body": "周六早上九点停车场见。", "to": 42, "cc": "someone@else"}
-        pressed = _press(ctx, {"confirmation_id": card, "decision": "accept", "edits": edits}, "T2")
+        pressed = press(ctx, {"confirmation_id": card, "decision": "accept", "edits": edits}, "T2")
         assert pressed == "已执行 echo send。"
         edited = {**LETTER, "body": "周六早上九点停车场见。"}
         # Only the existing string field changed; the new snapshot is exactly what ran.
-        asked = _rows(ctx.conn, "confirmation.requested")
+        asked = logged_dicts(ctx.conn, "confirmation.requested")
         assert [r["action_snapshot"]["args_meta"] for r in asked] == [LETTER, edited]
-        assert _rows(ctx.conn, "confirmation.accepted")[0]["confirmation_id"] == asked[1][
-            "confirmation_id"
-        ]
-        proposed = _rows(ctx.conn, "action.proposed")
+        assert (
+            logged_dicts(ctx.conn, "confirmation.accepted")[0]["confirmation_id"]
+            == asked[1]["confirmation_id"]
+        )
+        proposed = logged_dicts(ctx.conn, "action.proposed")
         sent = [r for r in proposed if r["tool_name"] == "mcp__echo__send"]
         assert sent[-1]["arguments"] == edited
-        assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == edited
+        assert (
+            json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"])
+            == edited
+        )
     finally:
         ctx.conn.close()
 
@@ -332,14 +293,14 @@ def test_the_cards_x_dismisses_it(tmp_path: Path, servers: McpServers) -> None:
     """ADR 0062: the card's close button is a rejection bound to its id; nothing runs."""
     ctx, _ = _ask(tmp_path, servers)
     try:
-        card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
-        assert _press(ctx, {"confirmation_id": card, "decision": "reject"}, "T2") == (
+        card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+        assert press(ctx, {"confirmation_id": card, "decision": "reject"}, "T2") == (
             "好，不执行 echo add了。"  # noqa: RUF001 — the fixed Chinese rejection.
         )
-        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.rejected")] == [
+        assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.rejected")] == [
             "card_dismiss"
         ]
-        assert len(_rows(ctx.conn, "action.result_observed")) == 1  # still only the search
+        assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1  # still only the search
     finally:
         ctx.conn.close()
 
@@ -352,7 +313,10 @@ class _WithdrawingClient(_ScriptedClient):
         if len(self.offered) in {3, 5}:  # the first model call of turns T2 and T4
             call = ToolCall(call_id="w", name="dismiss_card", arguments_json="{}")
             return dataclasses.replace(
-                result, text=None, tool_calls=(call,), finish_reason="tool_calls",
+                result,
+                text=None,
+                tool_calls=(call,),
+                finish_reason="tool_calls",
             )
         return result
 
@@ -367,29 +331,30 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
     llm = _WithdrawingClient()
     ctx = _context(tmp_path, servers, llm)
     try:
-        assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
-        card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
-        _say(ctx, "OK撤销吧，不发了。", "T2")  # noqa: RUF001 — Allen's words, 2026-09-26 23:33
+        assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
+        card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+        say(ctx, "OK撤销吧，不发了。", "T2")  # noqa: RUF001 — Allen's words, 2026-09-26 23:33
         assert "To take it down without running it, call dismiss_card." in llm.seen[2]
-        rejected = _rows(ctx.conn, "confirmation.rejected")
+        rejected = logged_dicts(ctx.conn, "confirmation.rejected")
         assert [(r["confirmation_id"], r["grammar_rule_id"]) for r in rejected] == [
             (card, "card_withdrawn"),
         ]
-        assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
+        assert json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "summary": "Took down the mcp__echo__add confirmation card (not run).",
             "dismissed": ["the mcp__echo__add confirmation card (not run)"],
         }
-        assert _press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3") == (
+        assert press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3") == (
             "这张卡已经处理过或被换掉了，没有执行。"  # noqa: RUF001 — the fixed Chinese stale line.
         )
-        _say(ctx, "撤销吧", "T4")
-        last = _rows(ctx.conn, "action.result_observed")[-1]
+        say(ctx, "撤销吧", "T4")
+        last = logged_dicts(ctx.conn, "action.result_observed")[-1]
         assert "error" not in last  # nothing waiting is not a failure to retry
         assert json.loads(last["tool_output"]) == {
-            "summary": "No card is waiting; nothing to do.", "dismissed": [],
+            "summary": "No card is waiting; nothing to do.",
+            "dismissed": [],
         }
         assert "A card is waiting" not in llm.seen[-1]
-        proposed = _rows(ctx.conn, "action.proposed")
+        proposed = logged_dicts(ctx.conn, "action.proposed")
         assert [r["tool_name"] for r in proposed].count("mcp__echo__add") == 1  # never run
     finally:
         ctx.conn.close()
@@ -401,20 +366,27 @@ def test_dismiss_card_takes_down_a_confirmation_and_a_question_card_together(
     """ADR 0247: with both cards up one call takes both down, and neither action runs."""
     ctx = _context(tmp_path, servers, _WithdrawingClient())
     try:
-        assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
-        emit_event(ctx.conn, type="clarification.requested", payload={
-            "clarification_id": "Q1", "question": "Which one?", "turn_id": "T1",
-            "fields": [{"label": "which", "choices": ["a", "b"]}],
-        })
-        _say(ctx, "撤销吧", "T2")
-        out = json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"])
+        assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
+        emit_event(
+            ctx.conn,
+            type="clarification.requested",
+            payload={
+                "clarification_id": "Q1",
+                "question": "Which one?",
+                "turn_id": "T1",
+                "fields": [{"label": "which", "choices": ["a", "b"]}],
+            },
+        )
+        say(ctx, "撤销吧", "T2")
+        out = json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"])
         assert out["dismissed"] == [
-            "the mcp__echo__add confirmation card (not run)", 'the question card "Which one?"',
+            "the mcp__echo__add confirmation card (not run)",
+            'the question card "Which one?"',
         ]
-        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.rejected")] == [
+        assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.rejected")] == [
             "card_withdrawn",
         ]
-        assert len(_rows(ctx.conn, "clarification.withdrawn")) == 1
+        assert len(logged_dicts(ctx.conn, "clarification.withdrawn")) == 1
     finally:
         ctx.conn.close()
 
@@ -429,17 +401,22 @@ def test_a_card_raised_without_a_turn_sends_on_his_button(
         for no_card in ("mcp__echo__echo", "mcp__echo__nothing"):  # read-only, unknown
             assert request_confirmation(ctx.conn, ctx.tool_registry, no_card, {}, ttl_ms=1) is None
         asked = request_confirmation(
-            ctx.conn, ctx.tool_registry, "mcp__echo__send", LETTER, ttl_ms=60_000, lang="zh",
+            ctx.conn,
+            ctx.tool_registry,
+            "mcp__echo__send",
+            LETTER,
+            ttl_ms=60_000,
+            lang="zh",
         )
         assert asked is not None
-        assert _rows(ctx.conn, "confirmation.requested")[0]["template_line"] == (
+        assert logged_dicts(ctx.conn, "confirmation.requested")[0]["template_line"] == (
             "信写好了，发给 allen@example.com，主题「周六见」。要发吗？"  # noqa: RUF001
         )
-        assert _rows(ctx.conn, "action.proposed") == []  # nothing ran, no model asked
-        assert _press(ctx, {"confirmation_id": asked, "decision": "accept"}, "T1") == (
+        assert logged_dicts(ctx.conn, "action.proposed") == []  # nothing ran, no model asked
+        assert press(ctx, {"confirmation_id": asked, "decision": "accept"}, "T1") == (
             "已执行 echo send。"
         )
         assert llm.offered == []
-        assert len(_rows(ctx.conn, "action.result_observed")) == 1
+        assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1
     finally:
         ctx.conn.close()

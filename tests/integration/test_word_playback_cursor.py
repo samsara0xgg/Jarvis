@@ -8,74 +8,37 @@ import json
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface import voice_ledger, voice_media, voice_tts
 from jarvis.surface.voice_ledger import StalePlaybackGeneration
-from tests.integration.test_incremental_tts import _spoken, _Trail
-from tests.integration.test_previous_answer_line import _asked, _next_turn_line
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _config,
-    _emit_response,
-    _FakeProvider,
-    _FakeSession,
-    _player,
-    _submit_response,
-    _terminal_for,
-    _wait_until,
+from tests.support.media import (
+    SAMPLES_PER_WORD,
+    TEXT,
+    WORDS,
+    AlignedProvider,
+    AlignedSession,
+    CallbackPump,
+    emit_response,
+    make_player,
+    media_config,
+    submit_response,
+    terminal_for,
+    wait_until,
 )
+from tests.support.previous_answer import next_turn_line, record_asked
+from tests.support.tts import Trail, spoken_rows
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
     from pathlib import Path
 
-_WORDS = tuple(f"{number}、" for number in range(1, 51))
-_TEXT = "".join(_WORDS)
-_PREFIX = "".join(_WORDS[:15])
-_SAMPLES_PER_WORD = 80
-_RATE = 8_000
+_PREFIX = "".join(WORDS[:15])
 
 
-class _AlignedSession(_FakeSession):
-    scale = 1.0  # the share of the audio the provider's word times span
-
-    async def _events(self) -> AsyncIterator[voice_tts.TTSAudioEvent]:
-        segment = await self._segments.get()
-        assert segment.text == _TEXT
-        # MiniMax's word "end" is where the word starts (voiced onset for the first).
-        ends = tuple(
-            (len("".join(_WORDS[:index])), (index - 1) * 10.0 * self.scale)
-            for index in range(1, len(_WORDS) + 1)
-        )
-        yield voice_tts.TTSAudioChunk(
-            sequence=segment.sequence, pcm=b"", sample_rate_hz=_RATE,
-            timing_text=segment.text, word_boundaries=ends,
-        )
-        yield voice_tts.TTSAudioChunk(
-            sequence=segment.sequence,
-            pcm=np.full(len(_WORDS) * _SAMPLES_PER_WORD, 2_000, dtype="<i2").tobytes(),
-            sample_rate_hz=_RATE,
-        )
-        yield voice_tts.TTSSegmentFinished(sequence=segment.sequence)
-
-
-class _SqueezedSession(_AlignedSession):
+class _SqueezedSession(AlignedSession):
     scale = 0.3  # every word "said" in a third of the real audio, as MiniMax often does
-
-
-class _AlignedProvider(_FakeProvider):
-    session = _AlignedSession
-
-    def create_tts_session(
-        self, *, endpoint_index: int, language: str, idle_close_s: float,
-        command_queue_capacity: int, audio_queue_capacity: int,
-    ) -> voice_tts.TTSSession:
-        del language, idle_close_s, command_queue_capacity, audio_queue_capacity
-        return self.session(self, endpoint_index=endpoint_index)
 
 
 @pytest.mark.parametrize("quiet_tail", [False, True])
@@ -86,21 +49,21 @@ def test_counting_cut_at_fifteen_keeps_fifteen_in_next_turn(
     """All fifty numbers are one segment; quiet later samples cannot erase fifteen."""
     db = tmp_path / "words.db"
     conn = open_event_log(db)
-    player = _player(ring_seconds=1.0)
+    player = make_player(ring_seconds=1.0)
     pipeline = voice_media.StreamingTTSPipeline(
-        provider=_AlignedProvider(candidate_count=1), player=player,
+        provider=AlignedProvider(candidate_count=1), player=player,
         conn_factory=lambda: open_event_log(db), boot_high_water_id=0,
-        config=_config(), start_player=False,
+        config=media_config(), start_player=False,
     )
     try:
-        _asked(conn, "T")
-        rows = _emit_response(conn, response_id="R", group_id="G", turn_id="T", text=_TEXT)
-        asyncio.run(_submit_response(pipeline, rows))
-        _wait_until(lambda: player.bytes_pending() == len(_WORDS) * _SAMPLES_PER_WORD * 4)
-        pump = _CallbackPump(player)
+        record_asked(conn, "T")
+        rows = emit_response(conn, response_id="R", group_id="G", turn_id="T", text=TEXT)
+        asyncio.run(submit_response(pipeline, rows))
+        wait_until(lambda: player.bytes_pending() == len(WORDS) * SAMPLES_PER_WORD * 4)
+        pump = CallbackPump(player)
         for _ in range(15):
-            pump.step(frames=_SAMPLES_PER_WORD)
-        _wait_until(lambda: any(
+            pump.step(frames=SAMPLES_PER_WORD)
+        wait_until(lambda: any(
             event.type == "surface.playback_checkpoint"
             and event.payload.get("heard_text") == _PREFIX
             for event in iter_events(conn)
@@ -108,10 +71,10 @@ def test_counting_cut_at_fifteen_keeps_fifteen_in_next_turn(
         if quiet_tail:
             # Under the heard floor: words at the barge-in yield (0.2) count as heard (ADR 0083).
             player.set_gain(0.1, ramp_ms=0)
-            pump.step(frames=_SAMPLES_PER_WORD)
+            pump.step(frames=SAMPLES_PER_WORD)
         pipeline.stop_foreground_output("R", reason="barge_in")
         assert pipeline.wait_until_idle(timeout_s=2)
-        kind, payload = _terminal_for(conn, response_id="R")
+        kind, payload = terminal_for(conn, response_id="R")
         assert kind == "surface.playback_interrupted"
         assert payload["heard_text"] == _PREFIX
         history = fold_conversation_history(iter_events(conn))
@@ -119,16 +82,16 @@ def test_counting_cut_at_fifteen_keeps_fifteen_in_next_turn(
         assert heard is not None
         assert heard.text == _PREFIX
         if silent_reply:
-            _asked(conn, "T-silent")
-            rows = _emit_response(
+            record_asked(conn, "T-silent")
+            rows = emit_response(
                 conn, response_id="R-silent", group_id="G-silent",
-                turn_id="T-silent", text=_TEXT,
+                turn_id="T-silent", text=TEXT,
             )
-            asyncio.run(_submit_response(pipeline, rows))
-            _wait_until(lambda: player.bytes_pending() > 0)
+            asyncio.run(submit_response(pipeline, rows))
+            wait_until(lambda: player.bytes_pending() > 0)
             pipeline.stop_foreground_output("R-silent", reason="barge_in")
             assert pipeline.wait_until_idle(timeout_s=2)
-        line = _next_turn_line(conn)
+        line = next_turn_line(conn)
         assert line is not None
         assert '15、"; the rest was not spoken' in line
         assert "50" not in line
@@ -142,9 +105,9 @@ def test_partial_cursor_requires_a_durable_word_mapping(tmp_path: Path, *, durab
     """A text hash alone cannot manufacture the prefix; the exact word end is required."""
     conn = open_event_log(tmp_path / "mapping.db")
     try:
-        trail = _Trail(conn)
-        trail.chunk(_TEXT)
-        start = trail.start(first_segment=_TEXT)
+        trail = Trail(conn)
+        trail.chunk(TEXT)
+        start = trail.start(first_segment=TEXT)
         trail.prepare(0)
         identity = {
             "session_id": "S", "response_id": "R", "turn_id": "T", "playback_generation_id": 1,
@@ -152,7 +115,7 @@ def test_partial_cursor_requires_a_durable_word_mapping(tmp_path: Path, *, durab
         if durable:
             emit_event(conn, type="surface.playback_alignment", payload={
                 **identity, "sequence": 0,
-                "speech_text_hash": hashlib.sha256(_TEXT.encode()).hexdigest(),
+                "speech_text_hash": hashlib.sha256(TEXT.encode()).hexdigest(),
                 "word_boundaries": [[len(_PREFIX), 1_200]],
             }, source_event_id=start.event_uid)
         emit_event(conn, type="surface.playback_checkpoint", payload={
@@ -162,7 +125,7 @@ def test_partial_cursor_requires_a_durable_word_mapping(tmp_path: Path, *, durab
             "heard_text": _PREFIX, "heard_text_hash": hashlib.sha256(_PREFIX.encode()).hexdigest(),
             "cursor_quality": "estimated",
         }, source_event_id=start.event_uid)
-        assert _spoken(conn) == ((True, _PREFIX) if durable else (False, None))
+        assert spoken_rows(conn) == ((True, _PREFIX) if durable else (False, None))
     finally:
         conn.close()
 
@@ -254,19 +217,19 @@ def test_empty_confirmed_text_does_not_mean_no_audio(tmp_path: Path, ended: str)
     """An uncertain cursor cannot turn actual playback into an unspoken answer."""
     conn = open_event_log(tmp_path / "uncertain.db")
     try:
-        trail = _Trail(conn)
-        trail.chunk(_TEXT)
-        start = trail.start(first_segment=_TEXT)
+        trail = Trail(conn)
+        trail.chunk(TEXT)
+        start = trail.start(first_segment=TEXT)
         trail.prepare(0)
-        trail.emitted(_TEXT)
+        trail.emitted(TEXT)
         emit_event(conn, type=f"surface.playback_{ended}", payload={
             "session_id": "S", "response_id": "R", "turn_id": "T", "playback_generation_id": 1,
             "heard_through_sequence": None, "submitted_samples": 1_200,
             "heard_text": "", "heard_text_hash": hashlib.sha256(b"").hexdigest(),
             "cursor_quality": "estimated", "reason": "barge_in",
-            "speech_text_hash": hashlib.sha256(_TEXT.encode()).hexdigest(),
+            "speech_text_hash": hashlib.sha256(TEXT.encode()).hexdigest(),
         }, source_event_id=start.event_uid)
-        line = _next_turn_line(conn)
+        line = next_turn_line(conn)
         assert line is not None
         assert "before any of it was spoken" not in line
         expected = (
@@ -281,27 +244,27 @@ def test_squeezed_provider_timing_keeps_no_word_ends(tmp_path: Path) -> None:
     """Words squeezed into a third of the audio are not believed: the segment stays whole."""
     db = tmp_path / "squeezed.db"
     conn = open_event_log(db)
-    player = _player(ring_seconds=1.0)
-    provider = _AlignedProvider(candidate_count=1)
+    player = make_player(ring_seconds=1.0)
+    provider = AlignedProvider(candidate_count=1)
     provider.session = _SqueezedSession
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider, player=player, conn_factory=lambda: open_event_log(db),
-        boot_high_water_id=0, config=_config(), start_player=False,
+        boot_high_water_id=0, config=media_config(), start_player=False,
     )
     try:
-        _asked(conn, "T")
-        rows = _emit_response(conn, response_id="R", group_id="G", turn_id="T", text=_TEXT)
-        asyncio.run(_submit_response(pipeline, rows))
-        _wait_until(lambda: player.bytes_pending() == len(_WORDS) * _SAMPLES_PER_WORD * 4)
-        _wait_until(lambda: getattr(player.poll_generation(1), "all_segments_closed", False))
-        pump = _CallbackPump(player)
+        record_asked(conn, "T")
+        rows = emit_response(conn, response_id="R", group_id="G", turn_id="T", text=TEXT)
+        asyncio.run(submit_response(pipeline, rows))
+        wait_until(lambda: player.bytes_pending() == len(WORDS) * SAMPLES_PER_WORD * 4)
+        wait_until(lambda: getattr(player.poll_generation(1), "all_segments_closed", False))
+        pump = CallbackPump(player)
         for _ in range(15):
-            pump.step(frames=_SAMPLES_PER_WORD)
+            pump.step(frames=SAMPLES_PER_WORD)
         snapshot = player.poll_generation(1)
         assert not isinstance(snapshot, StalePlaybackGeneration)
         # Fifteen of fifty words have played; the provider's squeezed times would say all fifty.
         assert (snapshot.played_letters, snapshot.heard_text) == (0, "")
-        assert snapshot.playing_letters == sum(ch.isalnum() for ch in _TEXT)
+        assert snapshot.playing_letters == sum(ch.isalnum() for ch in TEXT)
         assert not [e for e in iter_events(conn) if e.type == "surface.playback_alignment"]
     finally:
         assert pipeline.close()

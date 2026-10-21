@@ -19,36 +19,27 @@ whose tools failed; an answer that copies the line has it cut from the history a
 
 from __future__ import annotations
 
-import asyncio
-import functools
-import json
 import sqlite3
-import threading
 import time
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING
 
-import httpx
 import pytest
-import uvicorn
 
-from jarvis.runtime import inherent_loop
 from jarvis.shared import lang, steps
-from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
-from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
-from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.memory_db import append_record, conversation_rows, render_context
-from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.state.turn_steps import answer_did
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
-from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
-from jarvis.surface.terminal_events import BrainEvents
-from tests.integration.test_terminal_voice import _AsRemote, _free_port, _wait_for
-from tools.phone_fake_client import FakePhone
+from jarvis.state.memory_db import append_record, conversation_rows
+from tests.support.phone import (
+    StepsHost,
+    answer_with_record,
+    frames_of,
+    history_of,
+    logged_tool_call,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterator
     from pathlib import Path
+
+    from tools.phone_fake_client import FakePhone
 
 
 @pytest.fixture(autouse=True)
@@ -57,218 +48,6 @@ def _english() -> Iterator[None]:
     lang.set_language("en")
     yield
     lang.set_language(before)
-
-
-class _Host:
-    """The phone route, the attachment routes and the conversation route on one log."""
-
-    def __init__(self, root: Path, *, files: bool = True) -> None:
-        self.root = root
-        self.files = files
-        self.log = root / "events.db"
-        self.memory = root / "memory.db"
-        open_event_log(self.log).close()
-        self.store = Attachments(root / "artifacts" / ATTACHMENTS_DIRNAME)
-        self.token = pair_device(root, "iphone")
-        self.other_token = pair_device(root, "ipad")
-        self.port = _free_port()
-        self.server: uvicorn.Server | None = None
-        self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
-
-    def _conversation(self, after: int, limit: int, before: int) -> dict[str, Any]:
-        """What the daemon's ``_read_conversation`` does, with the real step lookup."""
-        rows, more = conversation_rows(
-            self.memory,
-            since="",
-            after=after,
-            before=before,
-            limit=limit,
-        )
-        inherent_loop._add_steps(self.log, rows)  # noqa: SLF001
-        inherent_loop._add_places(self.log, rows)  # noqa: SLF001
-        return {"since": "", "rows": rows, "has_more": more}
-
-    async def _main(self) -> None:
-        conn = sqlite3.connect(self.log, check_same_thread=False)
-        hub = PhoneHub(
-            events=BrainEvents(conn),
-            rows=inherent_loop._PhoneRows(conn),  # noqa: SLF001
-            check_attachments=self.store.check_for_turn if self.files else None,
-        )
-        submit_files = functools.partial(inherent_loop._submit_with_attachments, self.log)  # noqa: SLF001
-        submit_as_device = functools.partial(inherent_loop._submit_as_device, self.log)  # noqa: SLF001
-        app = create_app(
-            InherentDeps(
-                submit_callable=lambda _text: "T1",
-                broadcaster=InherentBroadcaster(),
-                phone=hub,
-                device_name=functools.partial(device_name_for_token, self.root),
-                attachments=self.store,
-                submit_attachments=submit_files,
-                submit_as_device=submit_as_device,
-                conversation_read=self._conversation,
-            ),
-        )
-        require_local_key(
-            app,
-            functools.partial(local_key_matches, local_key(self.root)),
-            device_token_matches=functools.partial(device_token_matches, self.root),
-        )
-        self.server = uvicorn.Server(
-            uvicorn.Config(
-                _AsRemote(app),
-                host="127.0.0.1",
-                port=self.port,
-                log_level="warning",
-                lifespan="off",
-            ),
-        )
-        await self.server.serve()
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        _wait_for(lambda: bool(self.server and self.server.started), "server never started")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        assert self.server is not None
-        self.server.should_exit = True
-        self.thread.join(timeout=20)
-
-    def phone(self, token: str | None = None) -> FakePhone:
-        phone = FakePhone(
-            f"ws://127.0.0.1:{self.port}{PHONE_PATH}",
-            token or self.token,
-            voice=False,
-        ).start()
-        phone.hello()
-        return phone
-
-    def http(self, method: str, path: str, **kwargs: Any) -> httpx.Response:  # noqa: ANN401
-        return httpx.request(
-            method,
-            f"http://127.0.0.1:{self.port}{path}",
-            headers={"Authorization": f"Bearer {self.token}"},
-            timeout=10,
-            **kwargs,
-        )
-
-    def upload(self, content: bytes, name: str) -> str:
-        sent = self.http("POST", "/inherent/attachments", files={"file": (name, content)})
-        assert sent.status_code == 200, sent.text
-        return str(sent.json()["id"])
-
-    def intents(self) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.log) as raw:
-            return [
-                {**json.loads(row[0]), "_node": row[1]}
-                for row in raw.execute(
-                    "SELECT payload_json, ingestion_node FROM events "
-                    "WHERE type = 'surface.user_intent' ORDER BY id",
-                )
-            ]
-
-
-def _answer(
-    host: _Host, turn_id: str, text: str, places: list[dict[str, Any]] | None = None,
-) -> str:
-    """Her answer's rows, and its memory record under the emitted row's uid; that uid."""
-    conn = open_event_log(host.log)
-    try:
-        base = {"turn_id": turn_id, "response_id": f"R-{turn_id}", "phase": "final"}
-        emit_event(
-            conn,
-            type="surface.response_open",
-            payload={
-                **base,
-                "query": "q",
-                "kind": "text",
-                "response_group_id": "G",
-                "channel": "speech",
-            },
-        )
-        emit_event(
-            conn,
-            type="surface.response_chunk",
-            payload={
-                **base,
-                "text": text,
-                "response_group_id": "G",
-                "sequence": 0,
-                "channel": "speech",
-                "segment_hash": "h",
-            },
-        )
-        emitted = emit_event(
-            conn,
-            type="surface.response_emitted",
-            payload={
-                **base,
-                "text": text,
-                "response_group_id": "G",
-                "channel": "speech",
-                **({"places": places} if places else {}),
-            },
-        )
-    finally:
-        conn.close()
-    append_record(host.memory, record_id=emitted.event_uid, source="jarvis", text=text)
-    return emitted.event_uid
-
-
-def _tool(  # noqa: PLR0913 - one keyword per thing a logged call can vary in
-    host: _Host,
-    turn_id: str,
-    tool: str,
-    arguments: object,
-    *,
-    take: float = 0.15,
-    ending: str = "action.result_observed",
-    error: str | None = None,
-) -> None:
-    """One tool call as the dispatcher logs it: proposed, running, then its terminal row."""
-    conn = open_event_log(host.log)
-    action = f"A-{tool}-{time.monotonic_ns()}"
-    try:
-        emit_event(
-            conn,
-            type="action.proposed",
-            payload={
-                "action_id": action,
-                "tool_name": tool,
-                "caller_principal": "jarvis_llm",
-                "risk_level": "L1",
-                "arguments": arguments,
-                "turn_id": turn_id,
-            },
-            correlation={"action_id": action, "turn_id": turn_id},
-        )
-        running = emit_event(
-            conn,
-            type="action.running",
-            payload={"action_id": action},
-            correlation={"action_id": action, "turn_id": turn_id},
-        )
-        time.sleep(take)
-        ended = {"action_id": action}
-        if ending == "action.result_observed":
-            ended |= {"semantics": "error" if error else "observation", "tool_output": "{}"}
-        if error:
-            ended["error"] = error
-        emit_event(
-            conn,
-            type=ending,
-            payload=ended,
-            source_event_id=running.event_uid,
-            correlation={"action_id": action},
-        )
-    finally:
-        conn.close()
-
-
-def _frames(phone: FakePhone, kind: str) -> list[dict[str, Any]]:
-    with phone.lock:
-        return [f for f in phone.texts if f.get("type") == kind]
 
 
 def _wait_row(phone: FakePhone, event_type: str) -> None:
@@ -285,7 +64,7 @@ def test_a_typed_say_with_a_stored_file_is_the_turn_submit_makes_and_is_answered
     tmp_path: Path,
 ) -> None:
     """(a) The same turn as /inherent/submit, acknowledged at once, answered in rows."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         file_id = host.upload(b"line one\nline two\n", "notes.txt")
         phone = host.phone()
         try:
@@ -315,17 +94,17 @@ def test_a_typed_say_with_a_stored_file_is_the_turn_submit_makes_and_is_answered
                 by_http["_node"],
             )
             assert by_say["_node"] == "iphone"
-            _answer(host, said["turn_id"], "Two lines.")
+            answer_with_record(host, said["turn_id"], "Two lines.")
             _wait_row(phone, "surface.response_emitted")
             assert {r["payload"]["turn_id"] for r in phone.rows()} == {said["turn_id"]}
 
             phone.say("u-files", "what is in this", spoken=False, attachments=[file_id])
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "no said for the resend")
-            assert _frames(phone, "said")[1]["turn_id"] == said["turn_id"]  # the same turn
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 2, "no said for the resend")
+            assert frames_of(phone, "said")[1]["turn_id"] == said["turn_id"]  # the same turn
             assert len(host.intents()) == 2
 
             phone.say("u-blank", "  ", spoken=False, attachments=[file_id])
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 3, "no said for blank words")
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 3, "no said for blank words")
             assert host.intents()[-1]["transcript"] == lang.t("attach.no_words")
         finally:
             phone.close()
@@ -333,7 +112,7 @@ def test_a_typed_say_with_a_stored_file_is_the_turn_submit_makes_and_is_answered
 
 def test_one_message_is_one_turn_over_http_and_the_socket(tmp_path: Path) -> None:
     """ADR 0262: one `utterance_id` sent twice, or by say then submit, is one turn."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         phone = host.phone()
         try:
             body = {"text": "the driver got off", "utterance_id": "m-bus"}
@@ -342,13 +121,13 @@ def test_one_message_is_one_turn_over_http_and_the_socket(tmp_path: Path) -> Non
             assert (first.status_code, again.status_code) == (200, 200)
             assert first.json()["turn_id"] == again.json()["turn_id"]
             phone.say("m-bus", "the driver got off", spoken=False)  # the socket's resend
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 1, "no said for the resend")
-            assert _frames(phone, "said")[0]["turn_id"] == first.json()["turn_id"]
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 1, "no said for the resend")
+            assert frames_of(phone, "said")[0]["turn_id"] == first.json()["turn_id"]
             assert len(host.intents()) == 1
 
             phone.say("m-late", "second", spoken=False)  # a say first, then its HTTP fallback
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "no said for the say")
-            late = _frames(phone, "said")[1]
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 2, "no said for the say")
+            late = frames_of(phone, "said")[1]
             sent = host.http(
                 "POST", "/inherent/submit", json={"text": "second", "utterance_id": "m-late"},
             )
@@ -381,7 +160,7 @@ def test_a_say_the_store_or_the_frame_check_refuses_opens_no_turn(
     code: str,
 ) -> None:
     """(a) A bad id, files on spoken words or a refusing store: an error, no turn, no ack."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.send(
@@ -396,14 +175,14 @@ def test_a_say_the_store_or_the_frame_check_refuses_opens_no_turn(
             assert phone.wait_text("error")["code"] == code
             time.sleep(0.2)
             assert not host.intents()
-            assert not _frames(phone, "said")
+            assert not frames_of(phone, "said")
         finally:
             phone.close()
 
 
 def test_a_resent_say_whose_files_expired_is_answered_with_its_turn(tmp_path: Path) -> None:
     """(a) The turn exists, so the resend gets its `said`; a new say naming the file is refused."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         file_id = host.upload(b"notes\n", "notes.txt")
         phone = host.phone()
         try:
@@ -413,9 +192,9 @@ def test_a_resent_say_whose_files_expired_is_answered_with_its_turn(tmp_path: Pa
             assert path is not None
             path.unlink()  # the retention sweep, as far as the store can tell
             phone.say("u-exp", "read this", spoken=False, attachments=[file_id])
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "the resend got no said")
-            assert _frames(phone, "said")[1]["turn_id"] == turn
-            assert not _frames(phone, "error")
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 2, "the resend got no said")
+            assert frames_of(phone, "said")[1]["turn_id"] == turn
+            assert not frames_of(phone, "error")
             assert len(host.intents()) == 1
             phone.say("u-new", "read this", spoken=False, attachments=[file_id])
             assert phone.wait_text("error")["code"] == "attachment_refused"
@@ -426,7 +205,7 @@ def test_a_resent_say_whose_files_expired_is_answered_with_its_turn(tmp_path: Pa
 
 def test_a_host_without_a_store_refuses_files_and_still_takes_words(tmp_path: Path) -> None:
     """(a) No store: files are refused with their own code, plain words still pass."""
-    with _Host(tmp_path, files=False) as host:
+    with StepsHost(tmp_path, files=False) as host:
         phone = host.phone()
         try:
             phone.say("u-1", "look", spoken=False, attachments=["a" * 32])
@@ -444,30 +223,30 @@ def test_a_turns_tool_calls_reach_its_device_as_steps_in_log_order_with_the_rows
     tmp_path: Path,
 ) -> None:
     """(b) Running then done or failed, labelled from the table, only for the device's own turns."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         phone, other = host.phone(), host.phone(host.other_token)
         try:
             phone.say("u-typed", "bus to uvic and cakes", spoken=False)
             turn = phone.wait_text("said")["turn_id"]
             other.say("u-other", "someone else", spoken=False)
             other_turn = other.wait_text("said")["turn_id"]
-            _tool(host, other_turn, "web_search", {"query": "not for the iphone"})
-            _tool(host, turn, "tool_search", {"query": "plumbing"})  # not a step
-            _tool(host, turn, "transit", {"origin": "here", "destination": "Library"})
-            _tool(host, turn, "web_search", {"query": "small  cakes\nin town"}, take=0.3)
-            _tool(host, turn, "read_file", {"path": "/Users/someone/secret.txt"})
-            _tool(
+            logged_tool_call(host, other_turn, "web_search", {"query": "not for the iphone"})
+            logged_tool_call(host, turn, "tool_search", {"query": "plumbing"})  # not a step
+            logged_tool_call(host, turn, "transit", {"origin": "here", "destination": "Library"})
+            logged_tool_call(host, turn, "web_search", {"query": "small  cakes\nin town"}, take=0.3)
+            logged_tool_call(host, turn, "read_file", {"path": "/Users/someone/secret.txt"})
+            logged_tool_call(
                 host,
                 turn,
                 "mcp__gmail__gmail_send",
                 {"to": "x@example.com", "body": "hi"},
                 error="send_failed",
             )
-            _tool(host, turn, "frobnicate", "{}", ending="action.timeout_assumed")
-            _answer(host, turn, "Take the 28; cakes are downtown.")
+            logged_tool_call(host, turn, "frobnicate", "{}", ending="action.timeout_assumed")
+            answer_with_record(host, turn, "Take the 28; cakes are downtown.")
             _wait_row(phone, "surface.response_emitted")
-            phone.wait_until(lambda: len(_frames(phone, "step")) >= 10, "steps never arrived")
-            frames = _frames(phone, "step")
+            phone.wait_until(lambda: len(frames_of(phone, "step")) >= 10, "steps never arrived")
+            frames = frames_of(phone, "step")
 
             shown = [(f["step"], f["tool"], f["label"], f["state"]) for f in frames]
             assert shown == [
@@ -495,8 +274,8 @@ def test_a_turns_tool_calls_reach_its_device_as_steps_in_log_order_with_the_rows
             ]
             assert kinds.index("surface.response_open") == 10
             # the other device got its own turn's steps, and only those
-            other.wait_until(lambda: len(_frames(other, "step")) == 2, "ipad got no steps")
-            assert [(f["turn_id"], f["label"], f["state"]) for f in _frames(other, "step")] == [
+            other.wait_until(lambda: len(frames_of(other, "step")) == 2, "ipad got no steps")
+            assert [(f["turn_id"], f["label"], f["state"]) for f in frames_of(other, "step")] == [
                 (other_turn, "Searching the web \u00b7 not for the iphone", "running"),
                 (other_turn, "Searching the web \u00b7 not for the iphone", "done"),
             ]
@@ -507,7 +286,7 @@ def test_a_turns_tool_calls_reach_its_device_as_steps_in_log_order_with_the_rows
 
 def test_a_spoken_turn_gets_steps_like_a_typed_one(tmp_path: Path) -> None:
     """(b) A turn the phone spoke is its own, so its tools show the same way."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.say("u-voice", "is it raining", spoken=True)
@@ -518,9 +297,11 @@ def test_a_spoken_turn_gets_steps_like_a_typed_one(tmp_path: Path) -> None:
                     "WHERE type = 'utterance.received'",
                 ).fetchone()
             assert channel == "phone_voice"
-            _tool(host, turn, "weather", {})
-            phone.wait_until(lambda: len(_frames(phone, "step")) == 2, "no steps for a spoken turn")
-            assert [(f["label"], f["state"]) for f in _frames(phone, "step")] == [
+            logged_tool_call(host, turn, "weather", {})
+            phone.wait_until(
+                lambda: len(frames_of(phone, "step")) == 2, "no steps for a spoken turn"
+            )
+            assert [(f["label"], f["state"]) for f in frames_of(phone, "step")] == [
                 ("Checking the weather", "running"),
                 ("Checking the weather", "done"),
             ]
@@ -535,18 +316,20 @@ def test_the_conversation_row_of_her_answer_carries_the_steps_read_from_the_log(
     tmp_path: Path,
 ) -> None:
     """(c) The summary comes from the log: per step label and ms, a total and a phrase."""
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.say("u-1", "bus and cakes", spoken=False)
             busy = phone.wait_text("said")["turn_id"]
             phone.say("u-2", "thanks", spoken=False)
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "no second said")
-            quiet = _frames(phone, "said")[1]["turn_id"]
-            _tool(host, busy, "transit", {"destination": "home"})
-            _tool(host, busy, "web_search", {"query": "small cakes"}, ending="action.cancelled")
-            busy_answer = _answer(host, busy, "Take the 28.")
-            quiet_answer = _answer(host, quiet, "You are welcome.")
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 2, "no second said")
+            quiet = frames_of(phone, "said")[1]["turn_id"]
+            logged_tool_call(host, busy, "transit", {"destination": "home"})
+            logged_tool_call(
+                host, busy, "web_search", {"query": "small cakes"}, ending="action.cancelled"
+            )
+            busy_answer = answer_with_record(host, busy, "Take the 28.")
+            quiet_answer = answer_with_record(host, quiet, "You are welcome.")
         finally:
             phone.close()
         # a new reader of the same files: nothing is held in memory between the turn and now
@@ -575,19 +358,25 @@ def test_the_conversation_row_of_her_answer_carries_the_steps_read_from_the_log(
 def test_the_conversation_row_of_her_answer_carries_the_places_it_showed(tmp_path: Path) -> None:
     """ADR 0279: history redraws the map card from the row's ``places``; none, no key."""
     places = [
-        {"name": "Ramen Shop", "lat": 48.43, "lng": -123.37, "address": "1 Fort St",
-         "place_id": "ChIJone", "kind": "place"},
+        {
+            "name": "Ramen Shop",
+            "lat": 48.43,
+            "lng": -123.37,
+            "address": "1 Fort St",
+            "place_id": "ChIJone",
+            "kind": "place",
+        },
     ]
-    with _Host(tmp_path) as host:
+    with StepsHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.say("u-1", "ramen near me", spoken=False)
             shown = phone.wait_text("said")["turn_id"]
             phone.say("u-2", "thanks", spoken=False)
-            phone.wait_until(lambda: len(_frames(phone, "said")) == 2, "no second said")
-            plain = _frames(phone, "said")[1]["turn_id"]
-            with_places = _answer(host, shown, "There is one.", places)
-            without = _answer(host, plain, "You are welcome.")
+            phone.wait_until(lambda: len(frames_of(phone, "said")) == 2, "no second said")
+            plain = frames_of(phone, "said")[1]["turn_id"]
+            with_places = answer_with_record(host, shown, "There is one.", places)
+            without = answer_with_record(host, plain, "You are welcome.")
         finally:
             phone.close()
         rows = {r["id"]: r for r in host.http("GET", "/inherent/conversation").json()["rows"]}
@@ -707,36 +496,27 @@ def test_every_kind_has_both_wordings() -> None:
             assert lang.t(f"step.{kind}.done", lang=language)
 
 
-def _history_of(host: _Host) -> list[dict[str, Any]]:
-    """The history the model gets, with the line of what each answer did read from the log."""
-
-    def did(ids: Sequence[str]) -> dict[str, str]:
-        conn = open_event_log(host.log)
-        try:
-            return answer_did(conn, ids)
-        finally:
-            conn.close()
-
-    return list(render_context(host.memory, exclude_id="", did=did).history)
-
-
 def test_the_history_follows_an_answer_whose_turn_ran_tools_with_what_it_did(
     tmp_path: Path,
 ) -> None:
     """(e) ADR 0267: the line is English, on its own, only after a turn with a tool that worked."""
     lang.set_language("zh")  # the reader is the model: the line does not follow the setting
-    host = _Host(tmp_path)
-    _tool(host, "T1", "keep", {"text": "buy milk"}, take=0)
-    _tool(host, "T1", "where_am_i", {}, take=0)
-    _tool(host, "T1", "keep", {"text": "again"}, take=0)  # a repeat of a kind is named once
-    _tool(host, "T3", "web_search", {"query": "x"}, take=0, error="boom")  # failed: not listed
+    host = StepsHost(tmp_path)
+    logged_tool_call(host, "T1", "keep", {"text": "buy milk"}, take=0)
+    logged_tool_call(host, "T1", "where_am_i", {}, take=0)
+    logged_tool_call(
+        host, "T1", "keep", {"text": "again"}, take=0
+    )  # a repeat of a kind is named once
+    logged_tool_call(
+        host, "T3", "web_search", {"query": "x"}, take=0, error="boom"
+    )  # failed: not listed
     append_record(host.memory, record_id="u1", source="allen", text="save a note")
-    _answer(host, "T1", "Noted.")
+    answer_with_record(host, "T1", "Noted.")
     append_record(host.memory, record_id="u2", source="allen", text="thanks")
-    _answer(host, "T2", "You are welcome.")
+    answer_with_record(host, "T2", "You are welcome.")
     append_record(host.memory, record_id="u3", source="allen", text="search")
-    _answer(host, "T3", "The search failed.")
-    contents = [turn["content"] for turn in _history_of(host)]
+    answer_with_record(host, "T3", "The search failed.")
+    contents = [turn["content"] for turn in history_of(host)]
     assert contents[1].endswith("Noted.\n[You did: saved a note, checked where you are]")
     assert contents[3].endswith("You are welcome.")
     assert contents[5].endswith("The search failed.")
@@ -747,14 +527,20 @@ def test_a_line_she_copies_into_her_answer_is_cut_from_the_history_and_the_page(
     tmp_path: Path,
 ) -> None:
     """(e) The line is the program's; her copy of it is not words of hers, anywhere it is read."""
-    host = _Host(tmp_path)
+    host = StepsHost(tmp_path)
     append_record(host.memory, record_id="u1", source="allen", text="save a note")
     append_record(
-        host.memory, record_id="a1", source="jarvis", text="Saved.\n[You did: saved a note]",
+        host.memory,
+        record_id="a1",
+        source="jarvis",
+        text="Saved.\n[You did: saved a note]",
     )
     append_record(
-        host.memory, record_id="a2", source="jarvis", text="Done [You did: set a reminder] ok",
+        host.memory,
+        record_id="a2",
+        source="jarvis",
+        text="Done [You did: set a reminder] ok",
     )
-    assert [t["content"] for t in _history_of(host)][1] == "Saved.\nDone ok"
+    assert [t["content"] for t in history_of(host)][1] == "Saved.\nDone ok"
     rows, _ = conversation_rows(host.memory, since="", after=0, before=0, limit=10)
     assert [r["text"] for r in rows if r["source"] == "jarvis"] == ["Saved.", "Done ok"]

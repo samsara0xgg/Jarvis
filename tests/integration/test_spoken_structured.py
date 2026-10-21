@@ -25,18 +25,14 @@ from jarvis.decision.stream_json import SpokenJsonExtractor
 from jarvis.state.memory_db import MemorySettings, append_record
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.voice_media import _ResponseBuffer, _ResponseChunk
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
-    _Peer,
-    _spoken,
-    _spoken_runtime,
+from tests.support.routine import drive_streaming_turn, logged_payloads, logged_rows, wait_for
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_wire_routine_streaming import (
-    _drive,
-    _payloads,
-    _rows,
-    _wait_for,
-)
+from tests.support.spoken_structured import structured_reply
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,13 +44,8 @@ _SPOKEN = "今天有三件事。时间我写在屏幕上了。"
 _WRITTEN = '- 10:00 产品会\n- 14:30 评审 "Q3"\nhttps://zoom.us/j/123'
 
 
-def _reply(spoken: str, written: str, *, ascii_only: bool = True) -> str:
-    """The model's text under the schema: the literal ``{"spoken":...,"written":...}``."""
-    return json.dumps({"spoken": spoken, "written": written}, ensure_ascii=ascii_only)
-
-
 def _structured_runtime(tmp_path: Path, url: str, *, structured: bool = True) -> JarvisRuntime:
-    runtime = _spoken_runtime(tmp_path, url)
+    runtime = spoken_runtime(tmp_path, url)
     flags = replace(runtime.response_flags, spoken_structured=structured)
     return replace(runtime, response_flags=flags)
 
@@ -85,7 +76,7 @@ def _preset_runtime(
 
 
 def _chunks(runtime: JarvisRuntime) -> list[str]:
-    return [payload["text"] for payload in _payloads(runtime.conn, "surface.response_chunk")]
+    return [payload["text"] for payload in logged_payloads(runtime.conn, "surface.response_chunk")]
 
 
 # ---- the extractor ----------------------------------------------------------
@@ -104,7 +95,9 @@ def test_the_extractor_gives_the_same_text_wherever_the_deltas_split(
     spoken: str, written: str, *, ascii_only: bool,
 ) -> None:
     """Split at every position (every pair of them, and one character at a time)."""
-    text = _reply(spoken, written, ascii_only=ascii_only).replace("/", "\\/")  # \/ is JSON too
+    text = structured_reply(spoken, written, ascii_only=ascii_only).replace(
+        "/", "\\/"
+    )  # \/ is JSON too
     cuts = range(len(text) + 1)
     splits = [[text[:i], text[i:j], text[j:]] for i in cuts for j in range(i, len(text) + 1)]
     for deltas in [*splits, list(text)]:
@@ -134,21 +127,27 @@ def test_a_cut_stream_keeps_what_was_already_unescaped() -> None:
     assert (written.finish().written, written.failed) == ("", False)
 
 
-@pytest.mark.parametrize(("spoken", "said", "written"), [
-    ("Here:\n```python\nprint(1)\n```\nDone.", "Here:\n\nDone.",
-     "- note\n\n```python\nprint(1)\n```"),
-    ("Use `ls` and ``x``.", "Use `ls` and ``x``.", "- note"),
-    ("Open:\n```\nrm -rf", "Open:\n", "- note\n\n```\nrm -rf\n```"),
-])
+@pytest.mark.parametrize(
+    ("spoken", "said", "written"),
+    [
+        (
+            "Here:\n```python\nprint(1)\n```\nDone.",
+            "Here:\n\nDone.",
+            "- note\n\n```python\nprint(1)\n```",
+        ),
+        ("Use `ls` and ``x``.", "Use `ls` and ``x``.", "- note"),
+        ("Open:\n```\nrm -rf", "Open:\n", "- note\n\n```\nrm -rf\n```"),
+    ],
+)
 def test_a_code_block_in_spoken_goes_to_the_screen(spoken: str, said: str, written: str) -> None:
     """A fenced block is never said wherever the deltas split; it lands after written, once."""
-    text = _reply(spoken, "- note", ascii_only=True)
+    text = structured_reply(spoken, "- note", ascii_only=True)
     for deltas in [[text], list(text)]:
         extractor = SpokenJsonExtractor()
         assert "".join(extractor.feed(delta) for delta in deltas) == said
         assert extractor.finish().written == written
     extractor = SpokenJsonExtractor()
-    extractor.feed(_reply("A:\n```\nprint(1)\n```", "print(1)", ascii_only=True))
+    extractor.feed(structured_reply("A:\n```\nprint(1)\n```", "print(1)", ascii_only=True))
     assert extractor.finish().written == "print(1)"
 
 
@@ -167,11 +166,13 @@ def test_the_extractor_fails_on_what_the_schema_cannot_produce(text: str) -> Non
 def test_a_reply_that_is_only_code_says_it_is_on_screen(tmp_path: Path) -> None:
     """Code put in spoken is not read aloud: the screen gets it, the voice one line about it."""
     code = '```python\nprint("hi")\n```'
-    with _Peer([[("final_answer", _reply(code, ""))]]) as peer:
+    with SpokenPeer([[("final_answer", structured_reply(code, ""))]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        _drive(runtime, _spoken(runtime.conn, "turn-c", "用Python写个Hello World"))
+        drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-c", "用Python写个Hello World")
+        )
     assert _chunks(runtime) == ["代码在屏幕上。"]
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert (emitted["voice_text"], emitted["document_text"]) == ("代码在屏幕上。", code)
 
 
@@ -179,16 +180,18 @@ def test_a_structured_answer_speaks_its_spoken_part_and_keeps_written_as_the_doc
     tmp_path: Path,
 ) -> None:
     """Chunks are the spoken sentences only; the plan is the envelope; the request, the schema."""
-    with _Peer([[("final_answer", _reply(_SPOKEN, _WRITTEN))]]) as peer:
+    with SpokenPeer([[("final_answer", structured_reply(_SPOKEN, _WRITTEN))]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-s", "今天有什么安排"))
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-s", "今天有什么安排")
+        )
     conn = runtime.conn
     assert _chunks(runtime) == ["今天有三件事。", "时间我写在屏幕上了。"]
     assert result.response_plan.text == compose_envelope(_SPOKEN, _WRITTEN)
-    (emitted,) = _payloads(conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(conn, "surface.response_emitted")
     assert (emitted["voice_text"], emitted["document_text"]) == (_SPOKEN, _WRITTEN)
     assert emitted["written_apart"] is True
-    assert {gate["outcome"] for gate in _payloads(conn, "gate.evaluated")} == {"permit"}
+    assert {gate["outcome"] for gate in logged_payloads(conn, "gate.evaluated")} == {"permit"}
     ((path, body),) = peer.requests
     assert path == "/v1/responses"
     assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
@@ -205,7 +208,7 @@ def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
     from jarvis.runtime.inherent_loop import _TTS_SILENT_CHANNELS  # noqa: PLC0415
     from jarvis.state.event_log import emit_event  # noqa: PLC0415
 
-    with _Peer([[("final_answer", _reply(_SPOKEN, _WRITTEN))]]) as peer:
+    with SpokenPeer([[("final_answer", structured_reply(_SPOKEN, _WRITTEN))]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         typed = emit_event(
             runtime.conn,
@@ -213,14 +216,14 @@ def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
             payload={"transcript": "今天有什么安排", "turn_id": "turn-t", "channel": "cli_stdin"},
             correlation={"turn_id": "turn-t"},
         )
-        result = _drive(runtime, typed)
+        result = drive_streaming_turn(runtime, typed)
     assert len(peer.requests) == 1, "the answer request only: no spoken-form rewrite"
     ((path, body),) = peer.requests
     assert path == "/v1/responses"
     assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
     assert 'a JSON object with \\"spoken\\" and \\"written\\"' in json.dumps(body)
     assert result.response_plan.text == compose_envelope(_SPOKEN, _WRITTEN)
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert (emitted["voice_text"], emitted["document_text"]) == (_SPOKEN, _WRITTEN)
     # Nothing of it is played: the speaker's silent set holds its intent channel.
     assert "cli_stdin" in _TTS_SILENT_CHANNELS
@@ -228,13 +231,20 @@ def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
 
 def test_the_surface_never_speaks_the_written_part(tmp_path: Path) -> None:
     """Chunks plus the emitted voice text are all L5 can speak; written is in neither."""
-    with _Peer([[("final_answer", _reply(_SPOKEN, _WRITTEN))]]) as peer:
+    with SpokenPeer([[("final_answer", structured_reply(_SPOKEN, _WRITTEN))]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        _drive(runtime, _spoken(runtime.conn, "turn-quiet", "今天有什么安排"))
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-quiet", "今天有什么安排"))
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     buffer = _ResponseBuffer(
-        row_id=1, source_event_id="e", response_id="r", response_group_id="g", turn_id="t",
-        phase="final", channel="both", gate_mode="sentence", stream=True,
+        row_id=1,
+        source_event_id="e",
+        response_id="r",
+        response_group_id="g",
+        turn_id="t",
+        phase="final",
+        channel="both",
+        gate_mode="sentence",
+        stream=True,
     )
     for sequence, text in enumerate(_chunks(runtime)):
         buffer.chunks[sequence] = _ResponseChunk(sequence, text, "hash")
@@ -299,14 +309,16 @@ def test_the_done_envelope_carries_the_whole_spoken_answer() -> None:
 def test_the_first_spoken_sentence_commits_before_written_has_arrived(tmp_path: Path) -> None:
     """Spoken streams first: its first sentence is a durable chunk while the reply is still open."""
     spoken = "我能听见你。今天也辛苦了。"
-    reply = _reply(spoken, _WRITTEN, ascii_only=False)
-    with _Peer([[("final_answer", reply)]], hold=True) as peer:
+    reply = structured_reply(spoken, _WRITTEN, ascii_only=False)
+    with SpokenPeer([[("final_answer", reply)]], hold=True) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_drive, runtime, _spoken(runtime.conn, "turn-first", "你好"))
-            _wait_for(lambda: _rows(runtime.conn, "surface.response_chunk"))
+            future = pool.submit(
+                drive_streaming_turn, runtime, spoken_intent(runtime.conn, "turn-first", "你好")
+            )
+            wait_for(lambda: logged_rows(runtime.conn, "surface.response_chunk"))
             assert peer.completed == 0
-            assert not _rows(runtime.conn, "response.completed")
+            assert not logged_rows(runtime.conn, "response.completed")
             assert _chunks(runtime) == ["我能听见你。"]
             peer.release.set()
             result = future.result(timeout=20)
@@ -316,36 +328,40 @@ def test_the_first_spoken_sentence_commits_before_written_has_arrived(tmp_path: 
 
 def test_an_empty_written_part_is_a_plain_spoken_answer(tmp_path: Path) -> None:
     """Nothing more for the screen: no envelope, no ``written_apart``, nothing on ``done``."""
-    with _Peer([[("final_answer", _reply("我能听见你。", ""))]]) as peer:
+    with SpokenPeer([[("final_answer", structured_reply("我能听见你。", ""))]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-chat", "你能听见我吗"))
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-chat", "你能听见我吗")
+        )
     assert result.response_plan.text == "我能听见你。"
     assert _chunks(runtime) == ["我能听见你。"]
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert "written_apart" not in emitted
     assert emitted["voice_text"] == "我能听见你。"
 
 
 def test_a_stream_cut_in_written_keeps_the_spoken_part(tmp_path: Path) -> None:
     """Spoken was said as written; an unfinished written part is not a document."""
-    cut = _reply(_SPOKEN, _WRITTEN)[: -len(_WRITTEN) // 2]
+    cut = structured_reply(_SPOKEN, _WRITTEN)[: -len(_WRITTEN) // 2]
     assert '"written"' in cut
-    with _Peer([[("final_answer", cut)]]) as peer:
+    with SpokenPeer([[("final_answer", cut)]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-cut-w", "今天有什么安排"))
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-cut-w", "今天有什么安排")
+        )
     assert result.response_plan.text == _SPOKEN
     assert "".join(_chunks(runtime)) == _SPOKEN
-    (emitted,) = _payloads(runtime.conn, "surface.response_emitted")
+    (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert "written_apart" not in emitted
 
 
 def test_a_stream_cut_in_spoken_keeps_only_the_unescaped_prefix(tmp_path: Path) -> None:
     """Cut inside a unicode escape: the text before it is kept, no escape text."""
-    full = _reply("你好。我看一下", "")
+    full = structured_reply("你好。我看一下", "")
     cut = full[: full.index("\\u770b") + len("\\u770b") + len("\\u4e0")]  # 我看, then 「\u4e0」
-    with _Peer([[("final_answer", cut)]]) as peer:
+    with SpokenPeer([[("final_answer", cut)]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-cut-s", "你好"))
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-cut-s", "你好"))
     assert result.response_plan.text == "你好。我看"
     assert "".join(_chunks(runtime)) == "你好。我看"
     assert "\\" not in result.response_plan.text
@@ -353,12 +369,14 @@ def test_a_stream_cut_in_spoken_keeps_only_the_unescaped_prefix(tmp_path: Path) 
 
 def test_a_tool_call_comes_first_and_the_schema_answer_after_its_result(tmp_path: Path) -> None:
     """Both requests carry the schema; no line before the call; then the schema answer."""
-    answer = _reply("你还没有记过备忘录。", "")
+    answer = structured_reply("你还没有记过备忘录。", "")
     outputs = [[("call", "kept")], [("final_answer", answer)]]
-    with _Peer(outputs) as peer:
+    with SpokenPeer(outputs) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-call", "我记过什么"))
-    (proposed,) = _payloads(runtime.conn, "action.proposed")
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-call", "我记过什么")
+        )
+    (proposed,) = logged_payloads(runtime.conn, "action.proposed")
     assert proposed["tool_name"] == "kept"
     assert not proposed.get("lead_in")
     assert len(peer.requests) == 2
@@ -370,27 +388,35 @@ def test_a_tool_call_comes_first_and_the_schema_answer_after_its_result(tmp_path
 def test_text_that_is_not_the_schema_is_read_as_it_would_be_without_it(tmp_path: Path) -> None:
     """Plain words and the old envelope both go through the splitter, as today."""
     tagged = "<voice>今天有一个会。</voice><document>- 10:00 产品会</document>"
-    with _Peer([[("final_answer", "我能听见你。")]]) as peer:
+    with SpokenPeer([[("final_answer", "我能听见你。")]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        plain = _drive(runtime, _spoken(runtime.conn, "turn-plain", "你好"))
+        plain = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-plain", "你好"))
     assert plain.response_plan.text == "我能听见你。"
-    with _Peer([[("final_answer", tagged)]]) as peer:
+    with SpokenPeer([[("final_answer", tagged)]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
-        enveloped = _drive(runtime, _spoken(runtime.conn, "turn-tags", "今天有什么安排"))
+        enveloped = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-tags", "今天有什么安排")
+        )
     assert enveloped.response_plan.text == compose_envelope("今天有一个会。", "- 10:00 产品会")
-    emitted = _payloads(runtime.conn, "surface.response_emitted")[-1]  # the first turn's is above
+    emitted = logged_payloads(runtime.conn, "surface.response_emitted")[
+        -1
+    ]  # the first turn's is above
     assert "written_apart" not in emitted  # the old envelope's document is the whole answer
 
 
 @pytest.mark.parametrize("structured", [False, True])
 def test_the_request_carries_the_schema_only_when_the_switch_is_on(
-    tmp_path: Path, *, structured: bool,
+    tmp_path: Path,
+    *,
+    structured: bool,
 ) -> None:
     """Off: today's body and today's note, byte for byte what spoken streaming sent."""
     answer = "<voice>今天有一个会。</voice><document>- 10:00 产品会</document>"
-    with _Peer([[("final_answer", answer)]]) as peer:
+    with SpokenPeer([[("final_answer", answer)]]) as peer:
         runtime = _structured_runtime(tmp_path, peer.url, structured=structured)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-sw", "今天有什么安排"))
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-sw", "今天有什么安排")
+        )
     ((_path, body),) = peer.requests
     note = json.dumps(body["input"], ensure_ascii=False) + body["instructions"]
     if structured:
@@ -407,13 +433,15 @@ def test_the_request_carries_the_schema_only_when_the_switch_is_on(
 
 @pytest.mark.parametrize("spoken_structured", [False, None, True])
 def test_a_preset_chooses_the_reply_shape_of_every_request_of_its_turn(
-    tmp_path: Path, *, spoken_structured: bool | None,
+    tmp_path: Path,
+    *,
+    spoken_structured: bool | None,
 ) -> None:
     """Both requests (the call, then the answer after its result) carry one shape, the preset's."""
     answer = "你还没有记过备忘录。"
-    with _Peer([[("call", "kept")], [("final_answer", answer)]]) as peer:
+    with SpokenPeer([[("call", "kept")], [("final_answer", answer)]]) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=spoken_structured)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-p", "我记过什么"))
+        result = drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-p", "我记过什么"))
     assert len(peer.requests) == 2
     for _path, body in peer.requests:
         sent = json.dumps(body, ensure_ascii=False)
@@ -428,31 +456,43 @@ def test_a_preset_chooses_the_reply_shape_of_every_request_of_its_turn(
     assert result.response_plan.text == answer
 
 
-@pytest.mark.parametrize(("line", "answer"), [
-    ("我来查明天的天气和这周剩下的日程。", "明天多云间晴。"),
-    ("Let me check tomorrow.", "Tomorrow is sunny."),  # "check tomorrow.Tomorrow" reads as a domain
-])
+@pytest.mark.parametrize(
+    ("line", "answer"),
+    [
+        ("我来查明天的天气和这周剩下的日程。", "明天多云间晴。"),
+        (
+            "Let me check tomorrow.",
+            "Tomorrow is sunny.",
+        ),  # "check tomorrow.Tomorrow" reads as a domain
+    ],
+)
 def test_a_request_after_a_call_starts_a_new_paragraph(
-    tmp_path: Path, line: str, answer: str,
+    tmp_path: Path,
+    line: str,
+    answer: str,
 ) -> None:
     """Anthropic labels no phase: the text before a call and the answer after it are apart."""
-    with _Peer([[("final_answer", line), ("call", "kept")], [("final_answer", answer)]]) as peer:
+    with SpokenPeer(
+        [[("final_answer", line), ("call", "kept")], [("final_answer", answer)]]
+    ) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
-        result = _drive(runtime, _spoken(runtime.conn, "turn-para", "明天天气和这周安排"))
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-para", "明天天气和这周安排")
+        )
     expected = f"{line}\n\n{answer}"
     assert len(peer.requests) == 2
     assert result.response_plan.text == expected
     assert "".join(_chunks(runtime)) == expected
-    assert _payloads(runtime.conn, "surface.response_emitted")[-1]["text"] == expected
+    assert logged_payloads(runtime.conn, "surface.response_emitted")[-1]["text"] == expected
 
 
 def test_the_line_before_a_call_goes_out_before_the_call_runs(tmp_path: Path) -> None:
     """Its last mark ends the request: no next character comes to release it, so it is let go."""
     line = "我来查一下你记过什么。"
     outputs = [[("final_answer", line), ("call", "kept")], [("final_answer", "还没有。")]]
-    with _Peer(outputs) as peer:
+    with SpokenPeer(outputs) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
-        _drive(runtime, _spoken(runtime.conn, "turn-early", "我记过什么"))
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-early", "我记过什么"))
     order = [
         (kind, json.loads(payload).get("text", ""))
         for kind, payload in runtime.conn.execute(
@@ -467,25 +507,33 @@ def test_what_she_said_before_a_call_is_in_the_next_requests_history(tmp_path: P
     """Anthropic labels no phase: the line before a call is an answer; the next request has it."""
     line = "我把它理解成社区矫正办公室。先查一下地址。"
     outputs = [[("final_answer", line), ("call", "kept")], [("final_answer", "在 Quadra St。")]]
-    with _Peer(outputs) as peer:
+    with SpokenPeer(outputs) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
-        _drive(runtime, _spoken(runtime.conn, "turn-said", "怎么去社区矫正办公室"))
+        drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-said", "怎么去社区矫正办公室")
+        )
     _, second = peer.requests[1]
     assert line in json.dumps(second, ensure_ascii=False), "her own words before the call"
 
 
 @pytest.mark.parametrize("spoken_structured", [False, True])
 def test_the_prefix_warm_gets_the_text_format_the_turn_sent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, spoken_structured: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    spoken_structured: bool,
 ) -> None:
     """Anthropic's cache is keyed on the text format, so the warm request takes the turn's own."""
     warmed: list[dict[str, Any]] = []
     monkeypatch.setattr(runtime_module, "_warm_next_prefix", lambda *_a, **kw: warmed.append(kw))
-    with _Peer([[("final_answer", "今天是晴天。")]]) as peer:
+    with SpokenPeer([[("final_answer", "今天是晴天。")]]) as peer:
         runtime = _preset_runtime(
-            tmp_path, peer.url, spoken_structured=spoken_structured, warm=True,
+            tmp_path,
+            peer.url,
+            spoken_structured=spoken_structured,
+            warm=True,
         )
-        _drive(runtime, _spoken(runtime.conn, "turn-1", "今天天气怎么样"))
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
     ((_path, body),) = peer.requests
     sent = {"format": SPOKEN_REPLY_FORMAT} if spoken_structured else None
     assert body.get("text") == sent
@@ -502,13 +550,15 @@ def test_a_spoken_turn_stops_at_the_voice_cap_and_wraps_up_in_the_spoken_shape(
     """The cap is the voice one, not 40; the no-tool wrap-up keeps the schema and its language."""
     cap = 2
     said, details = "查到两封。还有些没查完。", "- 邮件一\n- 邮件二"
-    wrap_up = _reply(said, details)
+    wrap_up = structured_reply(said, details)
     outputs = [[("call", "kept")]] * cap + [[("final_answer", wrap_up)]]
-    with _Peer(outputs) as peer:
+    with SpokenPeer(outputs) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         llm = {"max_tool_iterations": 40, "max_tool_iterations_voice": cap}
         runtime = replace(runtime, config={**runtime.config, "llm": llm})
-        result = _drive(runtime, _spoken(runtime.conn, "turn-cap", "帮我找找邮件里跟 co-op 有关的"))
+        result = drive_streaming_turn(
+            runtime, spoken_intent(runtime.conn, "turn-cap", "帮我找找邮件里跟 co-op 有关的")
+        )
     assert len(peer.requests) == cap + 1
     assert all(body["tools"] for _, body in peer.requests[:cap])
     _, last = peer.requests[-1]

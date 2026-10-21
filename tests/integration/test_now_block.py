@@ -25,8 +25,8 @@ from jarvis.runtime.now_block import (
 )
 from jarvis.state import things
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.integration.test_backend_prompt_assembly import HISTORY, LINE, STATUS, _drive_one_turn
-from tests.integration.test_ledger import NOW, ZONE, _at
+from tests.support.ledger import NOW, ZONE, ledger_at
+from tests.support.prompt_assembly import HISTORY, REPLY_LINE, STATUS, drive_one_turn
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -69,37 +69,47 @@ LONG = "Reading the replay exam output and comparing the three models " * 8
     [
         # Fresh: as my_day words it, with the age first and the clock after.
         (
-            [_claim(_at(8, 14, 30), "Writing the my_day tool tests")],
+            [_claim(ledger_at(8, 14, 30), "Writing the my_day tool tests")],
             f"{DOING_PREFIX} (as of 30 minutes ago, at 2:30 pm): Writing the my_day tool tests.",
         ),
         (
-            [_claim(_at(8, 14, 59), "Reviewing a diff")],
+            [_claim(ledger_at(8, 14, 59), "Reviewing a diff")],
             f"{DOING_PREFIX} (as of 1 minute ago, at 2:59 pm): Reviewing a diff.",
         ),
         # The latest analysis wins; an older one is not mixed in.
         (
-            [_claim(_at(8, 9), "Old thing"), _claim(_at(8, 14, 45), "New thing")],
+            [_claim(ledger_at(8, 9), "Old thing"), _claim(ledger_at(8, 14, 45), "New thing")],
             f"{DOING_PREFIX} (as of 15 minutes ago, at 2:45 pm): New thing.",
         ),
         # Over three hours: the warning my_day gives rides with it, so it is never read as now.
         (
-            [_claim(_at(8, 11), "Reading a paper")],
+            [_claim(ledger_at(8, 11), "Reading a paper")],
             f"{DOING_PREFIX} (as of 4 hours ago, at 11:00 am): Reading a paper.{NOTE}",
         ),
         (
-            [_claim(_at(8, 3, 30), "Reading a paper")],
+            [_claim(ledger_at(8, 3, 30), "Reading a paper")],
             f"{DOING_PREFIX} (as of 11 hours ago, at 3:30 am): Reading a paper.{NOTE}",
         ),
         # Over twelve hours it says nothing about now: the line leaves it to my_day.
-        ([_claim(_at(8, 2, 59), "Reading a paper")], None),
-        ([_claim(_at(7, 13), "Reading a paper")], None),
+        ([_claim(ledger_at(8, 2, 59), "Reading a paper")], None),
+        ([_claim(ledger_at(7, 13), "Reading a paper")], None),
         # Nothing saved, or an analysis that covered the day and names no current activity.
         ([], None),
-        ([{"analyzed_at": _at(8, 14).isoformat(), "activities": [{"text": "Wrote tests"}]}], None),
+        (
+            [
+                {
+                    "analyzed_at": ledger_at(8, 14).isoformat(),
+                    "activities": [{"text": "Wrote tests"}],
+                }
+            ],
+            None,
+        ),
     ],
 )
 def test_the_doing_now_line_table(
-    tmp_path: Path, rows: list[dict[str, Any]], expected: str | None,
+    tmp_path: Path,
+    rows: list[dict[str, Any]],
+    expected: str | None,
 ) -> None:
     """Each saved state reads as the line, with its age, or as nothing."""
     assert _doing(tmp_path, rows) == expected
@@ -107,10 +117,12 @@ def test_the_doing_now_line_table(
 
 @pytest.mark.parametrize(
     ("analysed", "tail"),
-    [(_at(8, 14, 30), ""), (_at(8, 11), NOTE)],
+    [(ledger_at(8, 14, 30), ""), (ledger_at(8, 11), NOTE)],
 )
 def test_a_long_claim_is_cut_so_the_line_and_its_warning_fit(
-    tmp_path: Path, analysed: datetime, tail: str,
+    tmp_path: Path,
+    analysed: datetime,
+    tail: str,
 ) -> None:
     """The text gives way: the age and the warning stay whole inside the line cap."""
     line = _doing(tmp_path, [_claim(analysed, LONG)])
@@ -122,7 +134,7 @@ def test_a_long_claim_is_cut_so_the_line_and_its_warning_fit(
 
 
 def _iso(day: int, hour: int, minute: int = 0) -> str:
-    return _at(day, hour, minute).isoformat()
+    return ledger_at(day, hour, minute).isoformat()
 
 
 Row = tuple[str, str, dict[str, Any]]
@@ -212,7 +224,9 @@ def test_what_is_closed_or_cancelled_is_not_next(tmp_path: Path) -> None:
     """Done and cancelled things, and a cancelled date of a week, are left out."""
     log = _ledger(
         _world(tmp_path, []),
-        _go("Gym", _iso(8, 16)), _go("Dentist", _iso(8, 17)), _go("Class", _iso(8, 18)),
+        _go("Gym", _iso(8, 16)),
+        _go("Dentist", _iso(8, 17)),
+        _go("Class", _iso(8, 18)),
         _go("Pottery", _iso(2, 9), weekly_until="2026-10-30"),
     )
     with closing(open_event_log(log)) as conn:
@@ -220,7 +234,11 @@ def test_what_is_closed_or_cancelled_is_not_next(tmp_path: Path) -> None:
         things.close(conn, by_title["Gym"].thing_id, "done", **WRITE)
         things.close(conn, by_title["Dentist"].thing_id, "cancelled", **WRITE)
         things.close(
-            conn, by_title["Pottery"].thing_id, "cancelled", occurrence="2026-10-09", **WRITE,
+            conn,
+            by_title["Pottery"].thing_id,
+            "cancelled",
+            occurrence="2026-10-09",
+            **WRITE,
         )
     assert calendar_line(log, ZONE, _clock) == f'{CALENDAR_PREFIX}: 6:00 pm "Class".'
 
@@ -249,7 +267,7 @@ def test_a_ledger_that_cannot_be_read_leaves_the_line_out(tmp_path: Path) -> Non
 
 def test_the_two_lines_together_stay_near_400_characters(tmp_path: Path) -> None:
     """The worst case: a stale long claim and two long titles."""
-    doing = _doing(tmp_path, [_claim(_at(8, 11), LONG)])
+    doing = _doing(tmp_path, [_claim(ledger_at(8, 11), LONG)])
     calendar = _calendar(tmp_path, _go("t" * 90, _iso(8, 16)), _go("u" * 90, _iso(9, 9)))
     assert doing is not None
     assert calendar is not None
@@ -257,46 +275,54 @@ def test_the_two_lines_together_stay_near_400_characters(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
-    "expected", [(), ("doing",), ("calendar",), ("doing", "calendar")],
+    "expected",
+    [(), ("doing",), ("calendar",), ("doing", "calendar")],
 )
 def test_each_line_is_present_only_when_it_has_content(
-    tmp_path: Path, expected: tuple[str, ...],
+    tmp_path: Path,
+    expected: tuple[str, ...],
 ) -> None:
     """Through ``_live_lines``: the state line and the calendar line come and go separately."""
-    rows = [_claim(_at(8, 14, 30), "Writing the my_day tool tests")] if "doing" in expected else []
+    rows = (
+        [_claim(ledger_at(8, 14, 30), "Writing the my_day tool tests")]
+        if "doing" in expected
+        else []
+    )
     log = _world(tmp_path, rows)
     if "calendar" in expected:
         _ledger(log, _go("Dentist", _iso(8, 15, 30)))
-    lines = _live_lines((
-        lambda: doing_now_line(log, ZONE, _clock),
-        lambda: calendar_line(log, ZONE, _clock),
-    ))
-    kinds = tuple(
-        "doing" if one.startswith(DOING_PREFIX) else "calendar" for one in lines
+    lines = _live_lines(
+        (
+            lambda: doing_now_line(log, ZONE, _clock),
+            lambda: calendar_line(log, ZONE, _clock),
+        )
     )
+    kinds = tuple("doing" if one.startswith(DOING_PREFIX) else "calendar" for one in lines)
     assert kinds == expected
     assert all(len(one) <= LINE_CHARS for one in lines)
 
 
 def _request(tmp_path: Path, lines: tuple[str, ...]) -> tuple[str, list[dict[str, Any]]]:
     (tmp_path / "turn").mkdir(exist_ok=True)
-    return _drive_one_turn(tmp_path / "turn", HISTORY, live_context=lines)
+    return drive_one_turn(tmp_path / "turn", HISTORY, live_context=lines)
 
 
 def test_the_lines_ride_the_end_of_the_block_and_leave_the_cached_prefix_alone(
     tmp_path: Path,
 ) -> None:
     """After the ride and the Dashboard line, ahead of his words; system and history unchanged."""
-    log = _world(tmp_path, [_claim(_at(8, 14, 30), "Writing the my_day tool tests")])
+    log = _world(tmp_path, [_claim(ledger_at(8, 14, 30), "Writing the my_day tool tests")])
     _ledger(log, _go("Dentist", _iso(8, 15, 30)))
     dashboard = "Dashboard: Allen is on the Mail page."
     old = _live_lines((lambda: RIDE, lambda: dashboard))
-    new = _live_lines((
-        lambda: RIDE,
-        lambda: dashboard,
-        lambda: doing_now_line(log, ZONE, _clock),
-        lambda: calendar_line(log, ZONE, _clock),
-    ))
+    new = _live_lines(
+        (
+            lambda: RIDE,
+            lambda: dashboard,
+            lambda: doing_now_line(log, ZONE, _clock),
+            lambda: calendar_line(log, ZONE, _clock),
+        )
+    )
     assert new[:2] == old
     plain_system, plain = _request(tmp_path, old)
     system, messages = _request(tmp_path, new)
@@ -309,21 +335,23 @@ def test_the_lines_ride_the_end_of_the_block_and_leave_the_cached_prefix_alone(
         f"{DOING_PREFIX} (as of 30 minutes ago, at 2:30 pm): Writing the my_day tool tests.\n"
         f'{CALENDAR_PREFIX}: 3:30 pm "Dentist".'
     )
-    assert messages[2]["content"] == f"{STATUS}{block}\n\n后天呢\n\n{LINE}"
+    assert messages[2]["content"] == f"{STATUS}{block}\n\n后天呢\n\n{REPLY_LINE}"
     assert len(new[2]) + len(new[3]) <= 400
 
 
 def test_the_order_is_the_same_whatever_the_ages(tmp_path: Path) -> None:
     """Ages change the words inside a line, never which line comes first."""
     orders = set()
-    for n, analysed in enumerate((_at(8, 14, 59), _at(8, 9))):
+    for n, analysed in enumerate((ledger_at(8, 14, 59), ledger_at(8, 9))):
         (tmp_path / str(n)).mkdir()
         log = _world(tmp_path / str(n), [_claim(analysed, "Reading a paper")])
         _ledger(log, _go("Gym", _iso(8, 16)))
-        lines = _live_lines((
-            lambda: RIDE,
-            partial(doing_now_line, log, ZONE, _clock),
-            partial(calendar_line, log, ZONE, _clock),
-        ))
+        lines = _live_lines(
+            (
+                lambda: RIDE,
+                partial(doing_now_line, log, ZONE, _clock),
+                partial(calendar_line, log, ZONE, _clock),
+            )
+        )
         orders.add(tuple(one.split(" ")[0] for one in lines))
     assert orders == {("Bus", "Doing", "Next")}

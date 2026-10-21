@@ -27,14 +27,14 @@ from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from tests.integration.test_anthropic_adaptation import _preset, _reply
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 - autouse fixture of the spoken-route peer
-    _Peer,
-    _spoken,
-    _spoken_runtime,
+from tests.support.routine import drive_streaming_turn, logged_payloads
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 - autouse fixture of the spoken-route peer
+    spoken_intent,
+    spoken_runtime,
 )
-from tests.integration.test_typed_llm_stream import _SSE
-from tests.integration.test_wire_routine_streaming import _drive, _payloads
+from tests.support.typed_stream import SSEPeer
 from tools import turn_timings
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ _ORDER = (
 
 
 def _timing(runtime: JarvisRuntime) -> dict[str, Any]:
-    (payload,) = _payloads(runtime.conn, "turn.timing")
+    (payload,) = logged_payloads(runtime.conn, "turn.timing")
     return payload
 
 
@@ -67,7 +67,7 @@ def _anthropic_runtime(tmp_path: Path, base_url: str) -> JarvisRuntime:
         "base_url": base_url.removesuffix("/v1"), "api_key_env": "ROUTINE_STREAM_FIXTURE_KEY",
         "timeout_s": 5, "max_retries": 0,
     }
-    runtime = _spoken_runtime(tmp_path, base_url)
+    runtime = spoken_runtime(tmp_path, base_url)
     return replace(
         runtime, llm_client=LLMClient(config), llm_session_factory=LLMSessionFactory(config),
         memory=MemorySettings.from_config({}, runtime_root=tmp_path),
@@ -85,7 +85,7 @@ def test_a_stream_says_when_its_thinking_and_its_text_first_came(
     )
 
     async def run() -> Any:  # noqa: ANN401 - the stream handle
-        peer = _SSE(frames)
+        peer = SSEPeer(frames)
         async with peer.running() as url:
             client = _preset("")
             client._base_url = url.removesuffix("/v1")  # noqa: SLF001 - the peer's address
@@ -113,7 +113,7 @@ def test_an_answered_turn_writes_one_timing_fact_with_ordered_moments_and_usage(
     )
 
     async def run() -> JarvisRuntime:
-        async with _SSE(frames).running() as url:
+        async with SSEPeer(frames).running() as url:
             runtime = _anthropic_runtime(tmp_path, url)
             intent = emit_event(
                 runtime.conn, type="surface.user_intent",
@@ -121,7 +121,7 @@ def test_an_answered_turn_writes_one_timing_fact_with_ordered_moments_and_usage(
                          "channel": "cli_stdin"},
                 correlation={"turn_id": "T-sonnet"},
             )
-            await asyncio.to_thread(_drive, runtime, intent)
+            await asyncio.to_thread(drive_streaming_turn, runtime, intent)
             return runtime
 
     runtime = asyncio.run(run())
@@ -151,7 +151,7 @@ def test_an_answered_turn_writes_one_timing_fact_with_ordered_moments_and_usage(
     assert fact["held_by"] is None
     assert {"memory", "packet", "messages"} <= set(fact["context_parts"])
     # It joins the request's cost row.
-    costs = _payloads(runtime.conn, "cost.recorded")
+    costs = logged_payloads(runtime.conn, "cost.recorded")
     assert [c["llm_request_id"] for c in costs] == [request["llm_request_id"]]
 
 
@@ -159,14 +159,14 @@ def test_a_tool_round_before_the_text_is_flagged_and_each_request_is_listed(
     tmp_path: Path,
 ) -> None:
     """Two requests: the first ends in a call, the second writes the answer."""
-    with _Peer([[("call", "kept")], [("final_answer", _ANSWER)]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+    with SpokenPeer([[("call", "kept")], [("final_answer", _ANSWER)]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
         intent = emit_event(
             runtime.conn, type="surface.user_intent",
             payload={"transcript": "备忘里有什么", "turn_id": "T-tool", "channel": "cli_stdin"},
             correlation={"turn_id": "T-tool"},
         )
-        _drive(runtime, intent)
+        drive_streaming_turn(runtime, intent)
     fact = _timing(runtime)
     first, second = fact["requests"]
     assert (first["tool_call"], second["tool_call"]) == (True, False)
@@ -178,10 +178,10 @@ def test_a_tool_round_before_the_text_is_flagged_and_each_request_is_listed(
 
 def test_a_held_answer_names_the_hold_that_delayed_its_first_chunk(tmp_path: Path) -> None:
     """ADR 0272: the model answers at once, her first sentence leaves 1.5 s after his words."""
-    with _Peer([[("final_answer", _ANSWER)]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
-        heard = _spoken(runtime.conn, "T-held", "我想问一下去学校的公交")
-        _drive(runtime, heard)
+    with SpokenPeer([[("final_answer", _ANSWER)]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
+        heard = spoken_intent(runtime.conn, "T-held", "我想问一下去学校的公交")
+        drive_streaming_turn(runtime, heard)
     fact = _timing(runtime)
     (request,) = fact["requests"]
     assert fact["held_by"] == "answer_hold"

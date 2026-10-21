@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import socket as socket_module
-import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -21,16 +20,12 @@ from websockets.asyncio.client import connect
 
 from jarvis.deployment import inherent_v2_token_matches, rotate_inherent_v2_token
 from jarvis.runtime.inherent_hub import (
-    ACK_STALL_POLL_S,
     SNAPSHOT_ADOPTION_DEADLINE_S,
     InherentClient,
-    InherentHub,
     inherent_v2_sequencer_enabled,
 )
-from jarvis.runtime.inherent_view_sequencer import InherentViewSequencer
 from jarvis.shared.realtime import new_connection_id
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import emit_event, open_event_log, read_log_epoch
 from jarvis.state.inherent_view import (
     INLINE_DOCUMENT_BUDGET_BYTES,
     RECENT_TERMINAL_GROUP_LIMIT,
@@ -44,7 +39,6 @@ from jarvis.surface.inherent_presenter import (
     delta_payload,
 )
 from jarvis.surface.inherent_protocol import (
-    ClientEnvelope,
     ResponseDelivery,
     ResponseGroupSnapshotItem,
     ResponseOpened,
@@ -56,51 +50,22 @@ from jarvis.surface.inherent_protocol import (
     SnapshotPagePayload,
     ViewDeltaPayload,
 )
-from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, V2Session, create_app
+from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
+from tests.support.sequencer import (
+    BOOT_ID,
+    SequencerRig,
+    ack_envelope,
+    chunk_payload,
+    emitted_payload,
+    open_payload,
+    settle,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
 # --- fold helpers -----------------------------------------------------------
-
-
-def _open_payload(response: str, group: str, turn: str, query: str = "q") -> dict[str, Any]:
-    return {
-        "turn_id": turn,
-        "query": query,
-        "kind": "text",
-        "response_id": response,
-        "response_group_id": group,
-        "phase": "final",
-        "channel": "document",
-    }
-
-
-def _chunk_payload(
-    response: str, group: str, turn: str, sequence: int, text: str,
-) -> dict[str, Any]:
-    return {
-        "turn_id": turn,
-        "text": text,
-        "response_id": response,
-        "response_group_id": group,
-        "sequence": sequence,
-        "phase": "final",
-        "channel": "document",
-        "segment_hash": hashlib.sha256(text.encode()).hexdigest(),
-    }
-
-
-def _emitted_payload(response: str, group: str, turn: str, text: str) -> dict[str, Any]:
-    return {
-        "turn_id": turn,
-        "text": text,
-        "response_id": response,
-        "response_group_id": group,
-        "phase": "final",
-        "channel": "document",
-    }
 
 
 class _Rows:
@@ -122,10 +87,10 @@ class _Rows:
 
     def turn(self, index: int, *, close: bool = True, text: str = "hello") -> None:
         response, group, turn = f"RESP{index}", f"RGRP{index}", f"T{index}"
-        self.fold("surface.response_open", _open_payload(response, group, turn))
-        self.fold("surface.response_chunk", _chunk_payload(response, group, turn, 0, text))
+        self.fold("surface.response_open", open_payload(response, group, turn))
+        self.fold("surface.response_chunk", chunk_payload(response, group, turn, 0, text))
         if close:
-            self.fold("surface.response_emitted", _emitted_payload(response, group, turn, text))
+            self.fold("surface.response_emitted", emitted_payload(response, group, turn, text))
 
 
 # --- fold ---------------------------------------------------------------------
@@ -134,10 +99,10 @@ class _Rows:
 def test_fold_maps_each_relevant_row_to_one_transition_at_its_cursor() -> None:
     """Open, chunk and emitted each yield one transition carrying events.id."""
     rows = _Rows()
-    opened = rows.fold("surface.response_open", _open_payload("RESP1", "RGRP1", "T1", "why?"))
+    opened = rows.fold("surface.response_open", open_payload("RESP1", "RGRP1", "T1", "why?"))
     skipped = rows.fold("utterance.received", {"turn_id": "T2", "transcript": "x"})
-    segment = rows.fold("surface.response_chunk", _chunk_payload("RESP1", "RGRP1", "T1", 0, "a"))
-    closed = rows.fold("surface.response_emitted", _emitted_payload("RESP1", "RGRP1", "T1", "a"))
+    segment = rows.fold("surface.response_chunk", chunk_payload("RESP1", "RGRP1", "T1", 0, "a"))
+    closed = rows.fold("surface.response_emitted", emitted_payload("RESP1", "RGRP1", "T1", "a"))
 
     assert skipped is None
     assert rows.view.through_cursor == 4
@@ -160,7 +125,7 @@ def test_fold_rejects_a_regressing_cursor_and_ignores_rows_without_a_response_id
     with pytest.raises(ValueError, match="does not advance"):
         rows.view.fold(
             cursor=1, event_uid="dup", event_type="surface.response_open", ts_epoch_ms=0,
-            payload=_open_payload("RESP1", "RGRP1", "T1"),
+            payload=open_payload("RESP1", "RGRP1", "T1"),
         )
 
 
@@ -188,11 +153,11 @@ def test_a_closed_body_over_the_inline_budget_becomes_a_preview_plus_reference()
     """D16: above 16384 UTF-8 bytes the snapshot carries a bounded prefix and the durable ref."""
     rows = _Rows()
     big = "汉" * 6000  # 18000 bytes of UTF-8 in one segment
-    rows.fold("surface.response_open", _open_payload("RESP1", "RGRP1", "T1"))
-    rows.fold("surface.response_chunk", _chunk_payload("RESP1", "RGRP1", "T1", 0, "lead. "))
-    rows.fold("surface.response_chunk", _chunk_payload("RESP1", "RGRP1", "T1", 1, big))
+    rows.fold("surface.response_open", open_payload("RESP1", "RGRP1", "T1"))
+    rows.fold("surface.response_chunk", chunk_payload("RESP1", "RGRP1", "T1", 0, "lead. "))
+    rows.fold("surface.response_chunk", chunk_payload("RESP1", "RGRP1", "T1", 1, big))
     live = rows.view.checkpoint(through_cursor=rows.cursor).groups[0].responses[0]
-    emitted = _emitted_payload("RESP1", "RGRP1", "T1", big)
+    emitted = emitted_payload("RESP1", "RGRP1", "T1", big)
     rows.fold("surface.response_emitted", emitted, uid="uid-emitted")
 
     closed = rows.view.checkpoint(through_cursor=rows.cursor).groups[0].responses[0]
@@ -210,9 +175,9 @@ def test_a_single_oversized_first_segment_is_cut_on_a_character_boundary() -> No
     """The preview is never empty and never splits a multi-byte character."""
     rows = _Rows()
     big = "汉" * 6000
-    rows.fold("surface.response_open", _open_payload("RESP1", "RGRP1", "T1"))
-    rows.fold("surface.response_chunk", _chunk_payload("RESP1", "RGRP1", "T1", 0, big))
-    rows.fold("surface.response_emitted", _emitted_payload("RESP1", "RGRP1", "T1", big))
+    rows.fold("surface.response_open", open_payload("RESP1", "RGRP1", "T1"))
+    rows.fold("surface.response_chunk", chunk_payload("RESP1", "RGRP1", "T1", 0, big))
+    rows.fold("surface.response_emitted", emitted_payload("RESP1", "RGRP1", "T1", big))
 
     closed = rows.view.checkpoint(through_cursor=rows.cursor).groups[0].responses[0]
 
@@ -256,9 +221,9 @@ def _decode_frames(
 def test_delta_payload_carries_the_source_uid_and_typed_ordered_changes() -> None:
     """The presenter's delta decodes with the D10 DTOs, kinds in fold order."""
     rows = _Rows()
-    opened = rows.fold("surface.response_open", _open_payload("RESP1", "RGRP1", "T1", "why?"))
-    segment = rows.fold("surface.response_chunk", _chunk_payload("RESP1", "RGRP1", "T1", 0, "a"))
-    closed = rows.fold("surface.response_emitted", _emitted_payload("RESP1", "RGRP1", "T1", "a"))
+    opened = rows.fold("surface.response_open", open_payload("RESP1", "RGRP1", "T1", "why?"))
+    segment = rows.fold("surface.response_chunk", chunk_payload("RESP1", "RGRP1", "T1", 0, "a"))
+    closed = rows.fold("surface.response_emitted", emitted_payload("RESP1", "RGRP1", "T1", "a"))
 
     decoded = [ViewDeltaPayload.model_validate(delta_payload(t)) for t in (opened, segment, closed)]
 
@@ -365,7 +330,6 @@ def test_snapshot_item_carries_the_preview_and_reference_for_an_over_budget_body
 
 # --- sequencer + hub -----------------------------------------------------------
 
-_BOOT_ID = "Btest00000000000000000000000001"
 _CAPABILITIES = RuntimeCapabilities(
     text_input=True,
     image_input=False,
@@ -378,162 +342,30 @@ _CAPABILITIES = RuntimeCapabilities(
 )
 
 
-class _Socket:
-    """A fake v2 socket: records every frame the hub sends and any close."""
-
-    def __init__(self) -> None:
-        self.raw: list[str] = []
-        self.frames: list[dict[str, Any]] = []
-        self.closed: tuple[int, str] | None = None
-
-    async def send_text(self, text: str) -> None:
-        self.raw.append(text)
-        self.frames.append(json.loads(text))
-
-    async def close(self, code: int, reason: str) -> None:
-        self.closed = (code, reason)
-
-    def close_state(self) -> tuple[int, str] | None:
-        """Read the close through a call so mypy does not pin it after an assert."""
-        return self.closed
-
-    def of_type(self, message_type: str) -> list[dict[str, Any]]:
-        return [frame for frame in self.frames if frame["message_type"] == message_type]
-
-    def cursors(self) -> list[int]:
-        return [frame["event_cursor"] for frame in self.of_type("view.delta")]
-
-
-class _Rig:
-    """A real Event Log, one sequencer and one hub on the running loop."""
-
-    def __init__(  # noqa: PLR0913 — one keyword per injectable the hub and sequencer take.
-        self,
-        tmp_path: Path,
-        *,
-        recovery_interval_s: float = 0.01,
-        adoption_deadline_s: float = 5.0,
-        bus: CommittedEventBus | None = None,
-        clock: Callable[[], float] = time.time,
-        ack_stall_poll_s: float = ACK_STALL_POLL_S,
-    ) -> None:
-        self.conn = open_event_log(tmp_path / "mac_events.db")
-        self.bus = bus
-        self.epoch = read_log_epoch(self.conn)
-        self.sequencer = InherentViewSequencer(
-            self.conn,
-            log_epoch=self.epoch,
-            boot_id=_BOOT_ID,
-            recovery_interval_s=recovery_interval_s,
-        )
-        self.hub = InherentHub(
-            self.sequencer,
-            log_epoch=self.epoch,
-            boot_id=_BOOT_ID,
-            adoption_deadline_s=adoption_deadline_s,
-            clock=clock,
-            ack_stall_poll_s=ack_stall_poll_s,
-        )
-        self.tasks: tuple[asyncio.Task[None], ...] = ()
-
-    async def start(self) -> None:
-        self.tasks = await self.sequencer.start(bus=self.bus)
-
-    async def stop(self) -> None:
-        for task in self.tasks:
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
-        self.conn.close()
-
-    def emit(self, event_type: str, payload: dict[str, Any]) -> int:
-        event = emit_event(
-            self.conn, type=event_type, payload=payload, committed_event_bus=self.bus,
-        )
-        row = self.conn.execute("SELECT id FROM events WHERE event_uid = ?", (event.event_uid,))
-        return int(row.fetchone()[0])
-
-    def high_water(self) -> int:
-        return int(self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0])
-
-    def turn(self, index: int, *, close: bool = True, text: str = "hello") -> list[int]:
-        response, group, turn = f"RESP{index}", f"RGRP{index}", f"T{index}"
-        ids = [
-            self.emit("surface.response_open", _open_payload(response, group, turn)),
-            self.emit("surface.response_chunk", _chunk_payload(response, group, turn, 0, text)),
-        ]
-        if close:
-            ids.append(
-                self.emit(
-                    "surface.response_emitted", _emitted_payload(response, group, turn, text),
-                ),
-            )
-        return ids
-
-    def noise(self, turn: str = "Tnoise") -> int:
-        payload = {"turn_id": turn, "transcript": "x", "channel": "voice"}
-        return self.emit("utterance.received", payload)
-
-    async def connect(self, connection_id: str = "C1") -> tuple[_Socket, InherentClient]:
-        socket = _Socket()
-        session = V2Session(
-            connection_id=connection_id, send_text=socket.send_text, close=socket.close,
-        )
-        client = await self.hub.attach(session)
-        await _settle()
-        return socket, client
-
-    async def adopt(self, connection_id: str = "C1") -> tuple[_Socket, InherentClient, int]:
-        """Connect, ACK the snapshot, and return the socket, client and H."""
-        socket, client = await self.connect(connection_id)
-        end = socket.of_type("snapshot.end")[0]["payload"]
-        await client.on_frame(_ack(connection_id, end["through_cursor"], end["snapshot_id"]))
-        await _settle()
-        return socket, client, int(end["through_cursor"])
-
-
 def _frontier(client: InherentClient) -> int | None:
     """Read the frontier through a call so mypy does not pin it after an assert."""
     return client.live_frontier
-
-
-async def _settle(seconds: float = 0.05) -> None:
-    await asyncio.sleep(seconds)
-
-
-def _ack(connection_id: str, through_cursor: int, snapshot_id: str | None = None) -> ClientEnvelope:
-    payload: dict[str, Any] = {"through_cursor": through_cursor}
-    if snapshot_id is not None:
-        payload["snapshot_id"] = snapshot_id
-    return ClientEnvelope(
-        protocol_version=2,
-        message_type="transport.ack",
-        message_id=f"Rack{through_cursor}",
-        client_instance_id="Ifixture0001",
-        connection_id=connection_id,
-        sent_at_ms=1_788_200_000_000,
-        payload=payload,
-    )
 
 
 def test_live_deltas_follow_events_id_order_across_interleaved_producers(tmp_path: Path) -> None:
     """D6/D9: one view.delta per relevant row, event_cursor = events.id, ascending."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             socket, _client, high = await rig.adopt()
             a, b = ("RESPa", "RGRPa", "Ta"), ("RESPb", "RGRPb", "Tb")
             ids = [
-                rig.emit("surface.response_open", _open_payload(*a)),
-                rig.emit("surface.response_open", _open_payload(*b)),
-                rig.emit("surface.response_chunk", _chunk_payload(*b, 0, "b0")),
+                rig.emit("surface.response_open", open_payload(*a)),
+                rig.emit("surface.response_open", open_payload(*b)),
+                rig.emit("surface.response_chunk", chunk_payload(*b, 0, "b0")),
                 rig.noise(),
-                rig.emit("surface.response_chunk", _chunk_payload(*a, 0, "a0")),
-                rig.emit("surface.response_emitted", _emitted_payload(*a, "a0")),
-                rig.emit("surface.response_emitted", _emitted_payload(*b, "b0")),
+                rig.emit("surface.response_chunk", chunk_payload(*a, 0, "a0")),
+                rig.emit("surface.response_emitted", emitted_payload(*a, "a0")),
+                rig.emit("surface.response_emitted", emitted_payload(*b, "b0")),
             ]
-            await _settle()
+            await settle()
             deltas = socket.of_type("view.delta")
             assert socket.cursors() == [i for i in ids if i != ids[3]]
             assert all(cursor > high for cursor in socket.cursors())
@@ -560,19 +392,19 @@ def test_a_bus_notification_alone_drains_with_the_recovery_timer_at_sixty_second
 
     async def _body() -> None:
         bus = CommittedEventBus()
-        rig = _Rig(tmp_path, recovery_interval_s=60.0, bus=bus)
+        rig = SequencerRig(tmp_path, recovery_interval_s=60.0, bus=bus)
         await rig.start()
         try:
             socket, _client, _high = await rig.adopt()
             rig.bus = None
-            unseen = rig.emit("surface.response_open", _open_payload("RESPx", "RGRPx", "Tx"))
-            await _settle(0.3)
+            unseen = rig.emit("surface.response_open", open_payload("RESPx", "RGRPx", "Tx"))
+            await settle(0.3)
             assert socket.cursors() == []
             assert rig.sequencer.scan_cursor < unseen
             rig.bus = bus
-            chunk = _chunk_payload("RESPx", "RGRPx", "Tx", 0, "x")
+            chunk = chunk_payload("RESPx", "RGRPx", "Tx", 0, "x")
             seen = rig.emit("surface.response_chunk", chunk)
-            await _settle(0.3)
+            await settle(0.3)
             assert socket.cursors() == [unseen, seen]
             assert rig.sequencer.scan_cursor == seen
         finally:
@@ -585,20 +417,20 @@ def test_a_coalesced_wake_still_advances_the_watermark_across_every_row(tmp_path
     """D9 step 3-4: one wake after seven commits projects all and sets scan_cursor = MAX(id)."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path, recovery_interval_s=60.0)
+        rig = SequencerRig(tmp_path, recovery_interval_s=60.0)
         await rig.start()
         try:
             socket, _client, _high = await rig.adopt()
             rig.noise("T1")
             rig.noise("T2")
-            first = rig.emit("surface.response_open", _open_payload("RESPc", "RGRPc", "Tc"))
+            first = rig.emit("surface.response_open", open_payload("RESPc", "RGRPc", "Tc"))
             rig.noise("T3")
-            chunk = _chunk_payload("RESPc", "RGRPc", "Tc", 0, "c")
+            chunk = chunk_payload("RESPc", "RGRPc", "Tc", 0, "c")
             second = rig.emit("surface.response_chunk", chunk)
             last = rig.noise("T4")
             assert rig.sequencer.scan_cursor < first
             rig.sequencer.wake()
-            await _settle()
+            await settle()
             assert socket.cursors() == [first, second]
             assert rig.sequencer.scan_cursor == last == rig.high_water()
             assert rig.sequencer.wake_pending is False
@@ -612,7 +444,7 @@ def test_no_cursor_beyond_h_before_ack_then_catch_up_replays_exactly_h_to_b(tmp_
     """D8 steps 4-7: nothing > H before ACK; catch-up is (H, B] ascending; later rows follow."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             rig.turn(0)
@@ -631,20 +463,20 @@ def test_no_cursor_beyond_h_before_ack_then_catch_up_replays_exactly_h_to_b(tmp_
             during = rig.turn(2)
             during.append(rig.noise())
             during += rig.turn(3, close=False)
-            await _settle()
+            await settle()
             assert socket.cursors() == []
             assert _frontier(client) is None
 
             end = socket.of_type("snapshot.end")[0]["payload"]
-            await client.on_frame(_ack("C1", high, end["snapshot_id"]))
-            await _settle()
+            await client.on_frame(ack_envelope("C1", high, end["snapshot_id"]))
+            await settle()
             expected = [i for i in during if i != during[3]]
             assert socket.cursors() == expected
             assert client.live_frontier == max(during)
             assert client.last_acked_cursor == high
 
             after = rig.turn(4)
-            await _settle()
+            await settle()
             assert socket.cursors() == expected + after
             assert all(a < b for a, b in zip(socket.cursors(), socket.cursors()[1:], strict=False))
         finally:
@@ -657,38 +489,38 @@ def test_ack_validation_follows_d11_rule_7(tmp_path: Path) -> None:
     """D11 rule 7: exact duplicate ignored; regression, past last sent, wrong id or H rejected."""
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         try:
             socket, client, high = await rig.adopt("C1")
             ids = rig.turn(0)
-            await _settle()
+            await settle()
             assert client.last_sent_cursor == ids[-1]
-            await client.on_frame(_ack("C1", ids[-1]))
+            await client.on_frame(ack_envelope("C1", ids[-1]))
             assert client.last_acked_cursor == ids[-1]
-            await client.on_frame(_ack("C1", ids[-1]))
+            await client.on_frame(ack_envelope("C1", ids[-1]))
             assert client.last_acked_cursor == ids[-1]
             assert socket.close_state() is None
-            await client.on_frame(_ack("C1", ids[0]))
+            await client.on_frame(ack_envelope("C1", ids[0]))
             assert socket.close_state() == (1002, "protocol_error")
             assert client.closed
 
             past_socket, past, _ = await rig.adopt("C4")
             more = rig.turn(1)
-            await _settle()
+            await settle()
             assert past.last_sent_cursor == more[-1]
-            await past.on_frame(_ack("C4", more[-1] + 1))
+            await past.on_frame(ack_envelope("C4", more[-1] + 1))
             assert past_socket.close_state() == (1002, "protocol_error")
             assert past.closed
 
             other_socket, other = await rig.connect("C2")
             end = other_socket.of_type("snapshot.end")[0]["payload"]
-            await other.on_frame(_ack("C2", end["through_cursor"], "Swrong"))
+            await other.on_frame(ack_envelope("C2", end["through_cursor"], "Swrong"))
             assert other_socket.close_state() == (1002, "protocol_error")
 
             third_socket, third = await rig.connect("C3")
             end = third_socket.of_type("snapshot.end")[0]["payload"]
-            await third.on_frame(_ack("C3", end["through_cursor"] - 1, end["snapshot_id"]))
+            await third.on_frame(ack_envelope("C3", end["through_cursor"] - 1, end["snapshot_id"]))
             assert third_socket.close_state() == (1002, "protocol_error")
             assert high < ids[0]
         finally:
@@ -702,12 +534,12 @@ def test_no_ack_within_the_adoption_deadline_closes_with_resync_required(tmp_pat
     assert SNAPSHOT_ADOPTION_DEADLINE_S == 5.0
 
     async def _body() -> None:
-        rig = _Rig(tmp_path, adoption_deadline_s=0.2)
+        rig = SequencerRig(tmp_path, adoption_deadline_s=0.2)
         await rig.start()
         try:
             socket, client = await rig.connect()
             assert socket.close_state() is None
-            await _settle(0.4)
+            await settle(0.4)
             assert socket.close_state() == (1008, "resync_required")
             assert client.closed
             live_socket, _live, _high = await rig.adopt("C2")
@@ -743,7 +575,7 @@ def _free_port() -> int:
 
 
 async def _serve_v2(
-    rig: _Rig, tmp_path: Path,
+    rig: SequencerRig, tmp_path: Path,
 ) -> tuple[str, int, uvicorn.Server, asyncio.Task[None]]:
     """Serve the real app in-process with the rig's hub attached to the v2 route."""
     token = rotate_inherent_v2_token(tmp_path / "inherent-v2.token")
@@ -753,7 +585,7 @@ async def _serve_v2(
         v2=InherentV2Deps(
             token_matches=lambda presented: inherent_v2_token_matches(token, presented),
             mint_connection_id=new_connection_id,
-            boot_id=_BOOT_ID,
+            boot_id=BOOT_ID,
             log_epoch=rig.epoch,
             high_water_cursor=rig.high_water,
             runtime_capabilities=lambda: _CAPABILITIES,
@@ -804,7 +636,7 @@ def test_the_v2_route_serves_snapshot_ack_and_live_delta_and_a_changed_epoch_res
     """
 
     async def _body() -> None:
-        rig = _Rig(tmp_path)
+        rig = SequencerRig(tmp_path)
         await rig.start()
         rig.turn(0)
         token, port, server, serving = await _serve_v2(rig, tmp_path)

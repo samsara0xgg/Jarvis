@@ -15,7 +15,7 @@ import pytest
 from jarvis.decision import decide
 from jarvis.decision.stream_envelope import compose_envelope
 from jarvis.state.event_log import emit_event
-from tests.integration.test_conversational_turn_no_gate_downgrade import _build_ctx
+from tests.support.turn_context import build_decide_context
 
 if TYPE_CHECKING:
     import sqlite3
@@ -54,7 +54,7 @@ def _answered_aloud(conn: sqlite3.Connection) -> None:
 
 
 def _decide(tmp_path: Path, heard: str, *, typed: bool = False) -> tuple[str, int]:
-    ctx, conn, llm = _build_ctx(tmp_path, draft_text="the model's own answer")
+    ctx, conn, llm = build_decide_context(tmp_path, draft_text="the model's own answer")
     try:
         _answered_aloud(conn)
         trigger = emit_event(

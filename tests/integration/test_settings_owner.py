@@ -279,11 +279,11 @@ def test_the_card_rides_the_notice_routes_and_says_when_a_restart_is_needed(
 
 def test_a_real_terminals_hello_reaches_the_brains_drift_over_the_socket(tmp_path: Path) -> None:
     """The settings a terminal client is given ride its hello to the brain's `on_settings`."""
-    from tests.integration.test_terminal_link import _Brain, _wait_for  # noqa: PLC0415
+    from tests.support.terminal import TokenBrain, wait_for  # noqa: PLC0415
 
     token = pair_device(tmp_path, "macbook")
     drift = SettingsDrift(tmp_path, tmp_path / "settings.yaml", CONFIG)
-    with _Brain(tmp_path) as brain:
+    with TokenBrain(tmp_path) as brain:
         brain.hub.on_settings = drift.on_report
         loop = asyncio.new_event_loop()
         task: list[asyncio.Task[None]] = []
@@ -299,7 +299,7 @@ def test_a_real_terminals_hello_reaches_the_brains_drift_over_the_socket(tmp_pat
         thread = threading.Thread(target=lambda: loop.run_until_complete(client()), daemon=True)
         thread.start()
         try:
-            _wait_for(lambda: bool(drift.notices()), "the brain never heard the settings")
+            wait_for(lambda: bool(drift.notices()), "the brain never heard the settings")
         finally:
             loop.call_soon_threadsafe(lambda: task and task[0].cancel())
             thread.join(timeout=10)

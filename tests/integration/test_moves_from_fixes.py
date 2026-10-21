@@ -23,17 +23,9 @@ import pytest
 from jarvis.state.day_line import _without_ridden_moves, day_window, fold_day, parse_day
 from jarvis.state.event_log import open_event_log
 from jarvis.state.plan_facts import facts_at
-from tests.integration.test_day_line import Row, _load, _ms, _stores, motion
-from tests.integration.test_stays_from_fixes import (
-    DAY,
-    ZONE,
-    Seen,
-    _seen,
-    cut,
-    fix,
-    spot,
-    trail,
-)
+from tests.support.day_line import Row, load_rows, make_stores, minutes_ms, motion
+from tests.support.fixes import DAY, Seen, as_seen, cut, fix, spot, trail
+from tests.support.places import ZONE
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -161,15 +153,16 @@ def test_the_fixes_between_stays_fold_into_moves(tmp_path: Path, case: Case) -> 
     """Each case: rows appended in order, the day cut in its zone, folded at its own now."""
     start_ms, end_ms = day_window(parse_day(DAY), ZONE)
     conn = open_event_log(tmp_path / "events.db")
-    _load(conn, case.rows, start_ms)
-    line_ = fold_day(conn, start_ms, end_ms, _ms(start_ms, case.now), _stores(tmp_path, ZONE))
+    load_rows(conn, case.rows, start_ms)
+    now_ms = minutes_ms(start_ms, case.now)
+    line_ = fold_day(conn, start_ms, end_ms, now_ms, make_stores(tmp_path, ZONE))
     conn.close()
 
     items = [i for i in line_.items if i["kind"] in ("stay", "move")]
     for item in items:  # the table's place column carries a move's activity
         if item["kind"] == "move":
             item["place"] = item.get("activity")
-    assert _seen(items, start_ms, case.items) == case.items
+    assert as_seen(items, start_ms, case.items) == case.items
     assert line_.missing == []
 
 
@@ -196,7 +189,7 @@ def test_the_plan_facts_see_a_drive_no_motion_saw_and_an_unnamed_move(tmp_path: 
     """The lesson's first leg is an automotive Move; the walk motion missed is ``moving``."""
     start_ms, _ = day_window(parse_day(DAY), ZONE)
     conn = open_event_log(tmp_path / "events.db")
-    _load(conn, [
+    load_rows(conn, [
         *_home("h", 400, 480),
         *trail("out", 481, 491, 1, spot(200), spot(1300)),
         *trail("back", 492, 502, 1, spot(1190), spot(200)),
@@ -204,7 +197,7 @@ def test_the_plan_facts_see_a_drive_no_motion_saw_and_an_unnamed_move(tmp_path: 
         *trail("d", 600, 614, 0.5, spot(200), PARK),
         fix("p1", 615, PARK), fix("p2", 640, PARK),
     ], start_ms)
-    facts = facts_at(conn, parse_day(DAY), _ms(start_ms, 700), ZONE, [])
+    facts = facts_at(conn, parse_day(DAY), minutes_ms(start_ms, 700), ZONE, [])
     conn.close()
 
     assert [((m.start_ms - start_ms) / 60_000, m.activity) for m in facts.moves] == [

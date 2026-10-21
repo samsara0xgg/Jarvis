@@ -27,19 +27,13 @@ from jarvis.surface import claude_hooks, claude_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.voice_controls import VoiceControls
+from tests.support.claude_hooks import HOOK, SUGGESTION
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     import pytest
 
-HOOK = Path(__file__).resolve().parents[2] / "scripts" / "claude_hook.py"
-SUGGESTION = {
-    "type": "addRules",
-    "rules": [{"toolName": "Bash", "ruleContent": "npm run build:*"}],
-    "behavior": "allow",
-    "destination": "localSettings",
-}
 QUESTIONS = [
     {
         "question": "Which layout?",

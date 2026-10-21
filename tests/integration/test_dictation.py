@@ -26,7 +26,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
-import numpy as np
 import yaml
 from fastapi.testclient import TestClient
 
@@ -43,6 +42,7 @@ from jarvis.surface import voice_asr, voice_audio, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
+from tests.support.voice_input import EnergySession
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -105,15 +105,6 @@ class _Talk(_Lane):
         return _Frame(self.script.popleft() if self.script else QUIET)
 
 
-class _EnergySession:
-    """Silero's ONNX shape; any sound in the frame counts as speech."""
-
-    def run(self, _names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
-        probability = 0.9 if np.any(inputs["x"]) else 0.0
-        speech = np.asarray([[probability]], dtype=np.float32)
-        return [speech, inputs["h"].copy(), inputs["c"].copy()]
-
-
 class _Ingress:
     def __init__(self, lane: type[_Lane] = _Lane) -> None:
         self.lanes: list[_Lane] = []
@@ -173,7 +164,7 @@ def _dictation(
     )
     open_event_log(tmp_path / "events.db").close()
     ingress = _Ingress(lane)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=EnergySession()):
         dictation = Dictation(
             ingress=ingress,  # type: ignore[arg-type]
             vad=voice_audio.SileroVad(mode="record"),

@@ -17,7 +17,7 @@ import pytest
 from jarvis.decision.llm import LLMClient
 from jarvis.state.daily_contract import SCHEMAS
 from jarvis.state.event_log import emit_event
-from tests.integration.test_daily_tools import DailyHarness
+from tests.support.daily_tools import DailyHarness
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING
 
 from jarvis.state.daily_records import search_records
 from jarvis.state.memory_db import SessionSettings, open_memory_db, render_context
-from tests.integration.test_prefix_warm import _assert_prefix_of, _runtime, _wait_for_requests
-from tests.integration.test_spoken_streaming import (
-    _fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
-    _Peer,
-    _spoken,
+from tests.support.prefix_warm import assert_prefix_of, wait_for_requests, warm_runtime
+from tests.support.routine import drive_streaming_turn
+from tests.support.spoken import (
+    SpokenPeer,
+    fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
+    spoken_intent,
 )
-from tests.integration.test_wire_routine_streaming import _drive
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -117,14 +117,14 @@ def test_the_setting_reads_from_the_session_block() -> None:
 def test_the_prefix_warm_and_the_next_turn_see_the_same_window(tmp_path: Path) -> None:
     """Six records and a turn make eight: at N=2 both requests start past six of them."""
     outputs = [[("final_answer", "晴天。")], [("final_answer", "好")], [("final_answer", "也是。")]]
-    with _Peer(outputs) as peer:
-        runtime, _memory = _runtime(tmp_path, peer.url, warm=True)
+    with SpokenPeer(outputs) as peer:
+        runtime, _memory = warm_runtime(tmp_path, peer.url, warm=True)
         runtime = replace(runtime, session=replace(runtime.session, recent_records=2))
-        _drive(runtime, _spoken(runtime.conn, "turn-1", "今天天气怎么样"))
-        _wait_for_requests(peer, 2)
-        _drive(runtime, _spoken(runtime.conn, "turn-2", "明天呢"))
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
+        wait_for_requests(peer, 2)
+        drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "明天呢"))
     _first, warm, second = (body for _path, body in peer.requests)
-    _assert_prefix_of(warm, second)
+    assert_prefix_of(warm, second)
     # The note, then the two records of turn 1: Allen's question and the answer.
     note, answer = warm["input"]
     assert note["content"].startswith("[Earlier conversation · 6 records before ")

@@ -19,12 +19,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import closing
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
-from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
@@ -40,53 +39,25 @@ from jarvis.runtime.rides import Rides
 from jarvis.runtime.whereabouts import ASK_PLACE_LINE, Whereabouts
 from jarvis.shared import CallerPrincipal
 from jarvis.state import places
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import open_memory_db, remember_fact, render_context
 from jarvis.state.memory_page import Conflict
-from jarvis.state.phone_location import VISIT_EVENT
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.integration.test_core_memory import _Consolidator, _days, _schedule
-from tests.integration.test_day_summaries import TODAY as CORE_TODAY
-from tests.integration.test_day_summaries import _day
-from tests.integration.test_flat_tool_dispatch import _Fixture, _request
-from tests.integration.test_ledger import NOW as LEDGER_NOW
-from tests.integration.test_ledger import ZONE as LEDGER_ZONE
-from tests.integration.test_ledger import _world as ledger_world
-from tests.integration.test_transit_tool import FAKE_KEY, _sent, _serve
+from tests.support.core_memory import Consolidator, core_schedule, seed_days
+from tests.support.day_summaries import TODAY as CORE_TODAY
+from tests.support.day_summaries import day_ago
+from tests.support.ledger import NOW as LEDGER_NOW
+from tests.support.ledger import ZONE as LEDGER_ZONE
+from tests.support.ledger import ledger_world
+from tests.support.places import NOW, NOW_MS, TODAY, ZONE, ms_days_ago, stay
+from tests.support.tool_world import ToolWorld, tool_request
+from tests.support.transit import FAKE_KEY, sent_request, serve_routes
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-ZONE = ZoneInfo("America/Vancouver")
-NOW = datetime(2026, 10, 11, 12, 0, tzinfo=ZONE)  # a Sunday
-NOW_MS = int(NOW.timestamp() * 1000)
 MINUTE = 60_000
-TODAY = NOW.date()
-
-
-def at(days_ago: int, hour: int, minute: int = 0) -> int:
-    """Epoch ms of ``hour:minute`` local, ``days_ago`` days before today."""
-    day = datetime.combine(TODAY - timedelta(days=days_ago), time(hour, minute), tzinfo=ZONE)
-    return int(day.timestamp() * 1000)
-
-
-def stay(  # noqa: PLR0913 — a visit row's own fields.
-    conn: sqlite3.Connection, uid: str, lat: float, lng: float, arrived: int,
-    departed: int | None = None, label: str | None = None,
-) -> None:
-    """One ``phone.visit_observed`` row, as the phone reports it."""
-    payload: dict[str, Any] = {
-        "lat": lat, "lng": lng, "accuracy_m": 30.0, "arrived_at_ms": arrived,
-    }
-    if departed is not None:
-        payload["departed_at_ms"] = departed
-    if label is not None:
-        payload["place"] = label
-    emit_event(
-        conn, type=VISIT_EVENT, payload=payload, ts_epoch_ms=departed or arrived,
-        event_uid=uid, ingestion_node="phone",
-    )
 
 
 class Haunt(NamedTuple):
@@ -105,7 +76,7 @@ class Haunt(NamedTuple):
         """``(uid, lat, lng, arrived, departed, label)`` of every stay, oldest first."""
         for index, days_ago in enumerate(sorted(self.days, reverse=True)):
             dlat, dlng = self.wander[index % len(self.wander)]
-            arrived = at(days_ago, self.hour)
+            arrived = ms_days_ago(days_ago, self.hour)
             yield (
                 f"{self.key}-{index}", self.lat + dlat, self.lng + dlng, arrived,
                 arrived + self.minutes * MINUTE, self.labels[index % len(self.labels)],
@@ -193,7 +164,7 @@ class World:
         self.tools = build_default_registry(
             memory_db_path=self.db, local_zone=ZONE,
         ).get_definitions()
-        self.fx = _Fixture(tmp_path, tools=self.tools)
+        self.fx = ToolWorld(tmp_path, tools=self.tools)
         self.conn = self.fx.conn
         self.log = self.fx.paths.event_log
         self.count = 0
@@ -202,7 +173,7 @@ class World:
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Dispatch a tool the way the model's call does and decode what it persisted."""
         self.count += 1
-        result = self.fx.dispatch(_request(name, f"places{self.count}", arguments=args))
+        result = self.fx.dispatch(tool_request(name, f"places{self.count}", arguments=args))
         assert result.slots[0].tool_output is not None
         return dict(json.loads(result.slots[0].tool_output))
 
@@ -262,8 +233,9 @@ def test_a_stay_over_midnight_counts_for_both_days_and_an_open_one_runs_to_now(
 ) -> None:
     """Days are the local days a stay overlaps; a stay with no departure is measured to now."""
     far = (48.0600, -123.0000)
-    stay(world.conn, "night", *far, at(3, 22), at(2, 6), "Friend's Place")  # 22:00 to 06:00
-    stay(world.conn, "open", far[0], far[1] + 0.0001, at(0, 9), None, "Friend's Place")
+    # 22:00 to 06:00
+    stay(world.conn, "night", *far, ms_days_ago(3, 22), ms_days_ago(2, 6), "Friend's Place")
+    stay(world.conn, "open", far[0], far[1] + 0.0001, ms_days_ago(0, 9), None, "Friend's Place")
     (found,) = [s for s in tally(world.conn, []).spots if s.facts.label == "Friend's Place"]
     assert found.facts.days_28 == 3
     assert found.facts.last_visit == TODAY
@@ -280,7 +252,7 @@ def test_the_smallest_circle_wins_and_a_kept_place_leaves_the_spots(world: World
         ("l", 48.0509, -123.0000, 2),  # 10 m from the library, inside the campus too
         ("e", *elsewhere, 3),
     ):
-        stay(world.conn, uid, lat, lng, at(day, 10), at(day, 11), f"Label {uid}")
+        stay(world.conn, uid, lat, lng, ms_days_ago(day, 10), ms_days_ago(day, 11), f"Label {uid}")
     held = [campus, library]
     assert places.containing(held, 48.0509, -123.0000) == library
     assert places.containing(held, 48.0500, -123.0000) == campus
@@ -409,7 +381,7 @@ def test_a_spot_id_keeps_a_place_even_after_a_new_stay_moves_its_centre(world: W
     spot_id = next(
         s["id"] for s in world.call("places", {"query": "莲香"})["spots"]
     )
-    stay(world.conn, "new", 48.0008, -123.0100, at(0, 9), at(0, 10), "莲香小馆")
+    stay(world.conn, "new", 48.0008, -123.0100, ms_days_ago(0, 9), ms_days_ago(0, 10), "莲香小馆")
     moved = tally(world.conn, [])
     assert spot_for(moved, CAFE).id != spot_id  # the spot has no stable id
     kept = world.call(
@@ -853,7 +825,10 @@ def test_the_block_follows_about_the_user_and_leaves_what_is_before_it_alone(
         "school · school · not visited in the last 4 weeks"
     )
     # A visit today, or a place he goes to, moves nothing before the block and not the block.
-    stay(world.conn, "today", 48.0050, -123.0, at(0, 9), at(0, 10), "Iron Works Gym")
+    stay(
+        world.conn, "today", 48.0050, -123.0,
+        ms_days_ago(0, 9), ms_days_ago(0, 10), "Iron Works Gym",
+    )
     assert context(world) == block
     # The next day counts it, and the text before the block is still byte for byte the same.
     tomorrow = context(world, NOW + timedelta(days=1))
@@ -918,9 +893,12 @@ def test_the_day_line_gives_each_stay_the_smallest_kept_circle_that_holds_it(
     library = places.save(
         world.db, name="Library", lat=48.0510, lng=-123.0000, radius_m=80, origin="user",
     ).place
-    stay(world.conn, "t1", 48.0509, -123.0000, at(0, 8), at(0, 9), "Main Library")
-    stay(world.conn, "t2", 48.0500, -123.0001, at(0, 9, 30), at(0, 10), "Quad")
-    stay(world.conn, "t3", 48.0700, -123.0000, at(0, 10, 30), at(0, 11), "Elsewhere")
+    stay(world.conn, "t1", 48.0509, -123.0000, ms_days_ago(0, 8), ms_days_ago(0, 9), "Main Library")
+    stay(world.conn, "t2", 48.0500, -123.0001, ms_days_ago(0, 9, 30), ms_days_ago(0, 10), "Quad")
+    stay(
+        world.conn, "t3", 48.0700, -123.0000,
+        ms_days_ago(0, 10, 30), ms_days_ago(0, 11), "Elsewhere",
+    )
     found = {item["id"]: item for item in day_stays(world)}
     assert found["t1"]["kept_place"] == {"id": library.id, "name": "Library", "role": "other"}
     assert found["t2"]["kept_place"] == {"id": campus.id, "name": "Campus", "role": "other"}
@@ -965,7 +943,7 @@ def test_the_ledger_names_a_stay_by_its_kept_place_and_rebuilds_when_places_chan
 
 def _body(seen: list[Any]) -> dict[str, Any]:
     """The JSON the one routes request carried."""
-    data = _sent(seen)[0].data
+    data = sent_request(seen)[0].data
     assert isinstance(data, bytes)
     return dict(json.loads(data))
 
@@ -995,7 +973,7 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     assert [p.role for p in world.kept()] == ["school"]
     places.save(world.db, name="home", lat=48.0, lng=-123.0, role="home", origin="user")
     # `bus` reads home and school from the table at each call.
-    seen = _serve(monkeypatch)
+    seen = serve_routes(monkeypatch)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     registry = build_default_registry(
         transit_api_key=FAKE_KEY, transit_places=partial(places.home_school, world.db),
@@ -1047,16 +1025,16 @@ def test_the_tables_and_the_nightly_prompt_are_what_the_decision_names(tmp_path:
 def test_the_nightly_consolidator_reads_the_places_he_keeps(tmp_path: Path) -> None:
     """The sentence added to its prompt points at a block its input carries (ADR 0234)."""
     path = tmp_path / "memory.db"
-    _days(path, 2)
-    model = _Consolidator()
-    _schedule(tmp_path, model).write(CORE_TODAY)
-    assert "[Places he keeps]" not in model.inputs[_day(2).isoformat()]  # none kept: no block
+    seed_days(path, 2)
+    model = Consolidator()
+    core_schedule(tmp_path, model).write(CORE_TODAY)
+    assert "[Places he keeps]" not in model.inputs[day_ago(2).isoformat()]  # none kept: no block
 
     places.save(path, name="gym", lat=48.0, lng=-123.0, role="other", origin="model")
     places.save(path, name="home", lat=48.01, lng=-123.0, role="home", origin="settings")
-    _days(path, 1)
-    _schedule(tmp_path, model).write(CORE_TODAY)
-    assert "[Current core memory]\n" in model.inputs[_day(1).isoformat()]
+    seed_days(path, 1)
+    core_schedule(tmp_path, model).write(CORE_TODAY)
+    assert "[Current core memory]\n" in model.inputs[day_ago(1).isoformat()]
     assert "\n\n[Places he keeps]\ngym · other\nhome · home\n\n[Summary of " in (
-        model.inputs[_day(1).isoformat()]
+        model.inputs[day_ago(1).isoformat()]
     )

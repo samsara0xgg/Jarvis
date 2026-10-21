@@ -8,124 +8,37 @@ holds, what was said, and what the routes serve.
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING
 
 import pytest
-from fastapi.testclient import TestClient
 
-from jarvis.deployment import bootstrap_runtime
-from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime.inherent_loop import _notice_deps
+from jarvis.execution.tools import build_default_registry
 from jarvis.runtime.reminders import Reminders
-from jarvis.shared import ActionRequest, CallerPrincipal, lang
-from jarvis.state import reminders as reminder_state
+from jarvis.shared import CallerPrincipal, lang
 from jarvis.state import things
-from jarvis.state.event_log import iter_events_of_types, open_event_log
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.reminders import PRIVATE, ReminderWorld
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-PRIVATE = {"name": "AirPods Pro", "private": True}
 SPEAKERS = {"name": "Speakers", "private": False}
 
 
-class _World:
-    """One runtime root with the real tools, a fake clock and a recording voice."""
-
-    def __init__(self, tmp_path: Path) -> None:
-        self.paths = bootstrap_runtime(tmp_path)
-        self.conn = open_event_log(self.paths.event_log)
-        self.zone = ZoneInfo("America/Los_Angeles")  # his zone, not whatever the machine leaks
-        self.registry = build_default_registry(local_zone=self.zone)
-        self.lifecycle = ActionLifecycle()
-        self.start = datetime.now(UTC).replace(microsecond=0)
-        self.clock = self.start
-        self.said: list[str] = []
-        self.device: dict[str, Any] = dict(PRIVATE)
-        self.hold: str | None = None
-        self.n = 0
-        self.reminders = Reminders(
-            self.paths.event_log,
-            moment=SimpleNamespace(hold=lambda: self.hold),  # type: ignore[arg-type]
-        )
-        self.reminders.now = lambda: self.clock
-        self.reminders.may_speak = lambda: True
-        self.reminders.say = self.said.append
-        self.reminders.output = lambda fresh=False: dict(self.device)  # noqa: ARG005
-
-    def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        self.n += 1
-        action_id = f"A{self.n}"
-        request = ActionRequest(
-            action_id=action_id,
-            tool_name=name,
-            target_entity_ref=None,
-            caller_principal=CallerPrincipal.JARVIS_LLM,
-            risk_level="L1",
-            arguments=args,
-            authorization_lease=None,
-            run_id=None,
-            turn_id=None,
-        )
-        self.lifecycle.register(action_id)
-        self.lifecycle.transition(action_id, "authorized")
-        bundle = self.registry.dispatch(request, self.conn, self.paths, self.lifecycle)
-        out = json.loads(bundle.slots[0].tool_output or "{}")
-        return out if isinstance(out, dict) else {"value": out}
-
-    def set(self, minutes: float, text: str = "和 employer 一对一") -> dict[str, Any]:
-        """Keep a thing at ``minutes`` from now; its ring's id, and the words the ring carries."""
-        when = (self.start + timedelta(minutes=minutes)).astimezone(self.zone)
-        made = self.call(
-            "schedule",
-            {"action": "add", "what": text, "at": when.isoformat(timespec="seconds")},
-        )
-        (ring,) = [
-            r for r in self.waiting() if r["id"].startswith(f"{things.RING_PREFIX}{made['id']}")
-        ]
-        return {**made, "thing": made["id"], "id": ring["id"], "line": f"{when:%H:%M} {text}"}
-
-    def waiting(self) -> list[dict[str, Any]]:
-        """The rings the ledger armed that have not rung."""
-        return [
-            {"id": r.reminder_id, "text": r.text}
-            for r in reminder_state.pending(self.conn)
-            if r.reminder_id.startswith(things.RING_PREFIX)
-        ]
-
-    def fired(self) -> list[dict[str, Any]]:
-        return [dict(e.payload) for e in iter_events_of_types(self.conn, ("reminder.fired",))]
-
-    def app(self, job_mail: object | None = None) -> TestClient:
-        deps = _notice_deps(job_mail, self.reminders, None)  # type: ignore[arg-type]
-        return TestClient(
-            create_app(
-                InherentDeps(
-                    submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(), **deps
-                )
-            )
-        )
-
-
 @pytest.fixture
-def world(tmp_path: Path) -> Iterator[_World]:
+def world(tmp_path: Path) -> Iterator[ReminderWorld]:
     """A fresh world with Chinese fixed text, as the daemon runs."""
     before = lang.language()
     lang.set_language("zh")
-    made = _World(tmp_path)
+    made = ReminderWorld(tmp_path)
     yield made
     made.conn.close()
     lang.set_language(before)
 
 
-def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None:
+def test_set_list_fire_once_with_card_and_one_spoken_line(world: ReminderWorld) -> None:
     """Set -> pending -> not yet due -> due fires once, one line and a silent card."""
     made = world.set(30)
     assert made["id"].startswith(things.RING_PREFIX)
@@ -167,7 +80,7 @@ def test_set_list_fire_once_with_card_and_one_spoken_line(world: _World) -> None
     )
 
 
-def test_cancel_prevents_firing_and_only_an_unknown_id_is_an_error(world: _World) -> None:
+def test_cancel_prevents_firing_and_only_an_unknown_id_is_an_error(world: ReminderWorld) -> None:
     """A cancelled thing's ring never rings; cancelling twice changes nothing."""
     kept, dropped = world.set(10, "keep"), world.set(10, "drop")
     cancelled = world.call("schedule", {"action": "cancel", "id": dropped["thing"]})
@@ -183,7 +96,7 @@ def test_cancel_prevents_firing_and_only_an_unknown_id_is_an_error(world: _World
     assert "schedule() lists what is open" in unknown["error"]
 
 
-def test_schedule_refuses_a_bad_time(world: _World) -> None:
+def test_schedule_refuses_a_bad_time(world: ReminderWorld) -> None:
     """The past, more than a year ahead, not a time, no words: nothing is scheduled."""
     local = world.start.astimezone()
     past = (local - timedelta(minutes=5)).isoformat()
@@ -203,7 +116,7 @@ def test_schedule_refuses_a_bad_time(world: _World) -> None:
     assert world.waiting() == []
 
 
-def test_a_reminder_missed_while_down_fires_late_and_says_so(world: _World) -> None:
+def test_a_reminder_missed_while_down_fires_late_and_says_so(world: ReminderWorld) -> None:
     """The daemon was off or the Mac asleep: the first tick after fires, once, and says how late."""
     first, second = world.set(10), world.set(11, "call mum")
     world.clock = world.start + timedelta(minutes=20)  # nothing ticked meanwhile
@@ -221,7 +134,7 @@ def test_a_reminder_missed_while_down_fires_late_and_says_so(world: _World) -> N
     assert world.reminders.tick() == 0  # the first daemon sees it already fired
 
 
-def test_more_than_twelve_hours_late_is_a_card_only(world: _World) -> None:
+def test_more_than_twelve_hours_late_is_a_card_only(world: ReminderWorld) -> None:
     """It still fires, as a card that says how late, and says nothing aloud."""
     world.set(10)
     world.clock = world.start + timedelta(hours=13)
@@ -233,7 +146,7 @@ def test_more_than_twelve_hours_late_is_a_card_only(world: _World) -> None:
 
 
 def test_quiet_and_hold_do_not_stop_the_card_and_a_call_stops_only_the_voice(
-    world: _World,
+    world: ReminderWorld,
 ) -> None:
     """Job mail at dnd or in a call serves nothing; the reminder card is served all the same."""
     world.set(1)
@@ -255,7 +168,9 @@ def test_quiet_and_hold_do_not_stop_the_card_and_a_call_stops_only_the_voice(
     assert body["hold"] == "call"
 
 
-def test_spoken_on_speakers_too_and_a_card_with_sound_when_not_allowed(world: _World) -> None:
+def test_spoken_on_speakers_too_and_a_card_with_sound_when_not_allowed(
+    world: ReminderWorld,
+) -> None:
     """Speakers still speak; a mute or a live conversation make the reminder a card with sound."""
     world.device = dict(SPEAKERS)
     speakers = world.set(1, "on speakers")
@@ -282,8 +197,13 @@ def test_schedule_is_the_only_reminder_tool_on_the_menu() -> None:
     menu = {t.name for t in registry.for_caller(CallerPrincipal.JARVIS_LLM)}
     router = {t.name for t in registry.for_caller(CallerPrincipal.REGEX_ROUTER)}
     old = {
-        "create_memo", "list_memos", "set_reminder", "list_reminders", "cancel_reminder",
-        "my_schedule", "remember",
+        "create_memo",
+        "list_memos",
+        "set_reminder",
+        "list_reminders",
+        "cancel_reminder",
+        "my_schedule",
+        "remember",
     }
     assert {"schedule", "keep", "kept"} <= menu & router
     assert not (menu | router | {t.name for t in registry.get_definitions()}) & old

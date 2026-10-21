@@ -49,9 +49,9 @@ from jarvis.state.event_log import PHONE_VOICE_CHANNEL, emit_event, open_event_l
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.terminal_voice import RESPONSE_ROW_TYPES
-from tests.integration.test_phone_voice import RATE, _answer, _Host
-from tests.integration.test_previous_answer_line import _next_turn_line
-from tests.integration.test_terminal_voice import _wait_for
+from tests.support.phone import RATE, VoiceHost, answer_rows
+from tests.support.previous_answer import next_turn_line
+from tests.support.terminal import wait_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -99,11 +99,11 @@ def _ends(log: Path, response_id: str) -> list[tuple[str, str | None]]:
         ]
 
 
-def _gone(host: _Host, device: str) -> None:
+def _gone(host: VoiceHost, device: str) -> None:
     """Wait until the host has finished with ``device``'s connection, its voice closed."""
     assert host.hub is not None
     hub = host.hub
-    _wait_for(lambda: not hub.connected(device), f"{device} was never let go")
+    wait_for(lambda: not hub.connected(device), f"{device} was never let go")
 
 
 def _turn_of(phone: FakePhone, utterance_id: str) -> str:
@@ -131,25 +131,25 @@ def test_a_phone_turn_answered_while_its_device_has_no_voice_actor_still_ends(
     tmp_path: Path,
 ) -> None:
     """A phone that never asked for voice, and one that is not connected at all."""
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone(voice=False)
         try:
             assert phone.hello()["voice"] is False
             phone.say("u-1", "what is the weather", spoken=True)
             turn = phone.wait_text("said")["turn_id"]
-            _answer(host.log, turn, "R-novoice", "It is sunny.")
-            _wait_for(lambda: bool(_ends(host.log, "R-novoice")), "the answer never ended")
+            answer_rows(host.log, turn, "R-novoice", "It is sunny.")
+            wait_for(lambda: bool(_ends(host.log, "R-novoice")), "the answer never ended")
         finally:
             phone.close()
         _gone(host, "iphone")
         # the phone is gone now; a turn it spoke earlier is answered after
         _phone_utterance(host.log, "T-away")
-        _answer(host.log, "T-away", "R-away", "You were saying?")
-        _wait_for(lambda: bool(_ends(host.log, "R-away")), "the unattended answer never ended")
+        answer_rows(host.log, "T-away", "R-away", "You were saying?")
+        wait_for(lambda: bool(_ends(host.log, "R-away")), "the unattended answer never ended")
         # the answer streams: opened, chunk after chunk, and emitted
         _phone_utterance(host.log, "T-stream")
-        _answer(host.log, "T-stream", "R-stream", ["One. ", "Two."])
-        _wait_for(lambda: bool(_ends(host.log, "R-stream")), "the streamed answer never ended")
+        answer_rows(host.log, "T-stream", "R-stream", ["One. ", "Two."])
+        wait_for(lambda: bool(_ends(host.log, "R-stream")), "the streamed answer never ended")
         assert _ends(host.log, "R-novoice") == [("surface.speech_dropped", UNPLAYED_NO_ACTOR)]
         assert _ends(host.log, "R-away") == [("surface.speech_dropped", UNPLAYED_NO_ACTOR)]
         assert _ends(host.log, "R-stream") == [("surface.speech_dropped", UNPLAYED_NO_ACTOR)]
@@ -166,14 +166,14 @@ def test_the_next_turn_is_told_an_answer_nobody_could_play_was_never_spoken(
     watcher_conn = _answer_unwatched(log)
     ends = UnplayedAnswers(lambda _device: None)
     _phone_utterance(log, "T-phone")
-    _answer(log, "T-phone", "R-phone", "Goodbye, Dad.")
+    answer_rows(log, "T-phone", "R-phone", "Goodbye, Dad.")
     # the phone's answer, as the watcher meets it
     for row_id, event in inherent_loop._fetch_events_after(  # noqa: SLF001
         watcher_conn, after_id=0,
         event_types=RESPONSE_ROW_TYPES,
     ):
         ends.observe(watcher_conn, row_id, event)
-    line = _next_turn_line(watcher_conn)
+    line = next_turn_line(watcher_conn)
     assert line is not None
     assert "never spoken aloud" in line
     watcher_conn.close()
@@ -188,19 +188,19 @@ def test_a_phone_that_leaves_mid_answer_ends_its_played_and_queued_answers_once(
     """(b): the played answer ends by the actor's terminal, the rest by a drop, none twice."""
     first = "This is the first sentence."
     second = " And this second one goes on for quite a long while yet."
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.hello()
             phone.send_ready()
             phone.say("u-1", "tell me a story", spoken=True)
             turn_1 = _turn_of(phone, "u-1")
-            _answer(host.log, turn_1, "R-playing", [first, second])
+            answer_rows(host.log, turn_1, "R-playing", [first, second])
             phone.wait_until(lambda: phone.played >= RATE, "the answer never began to play")
             # two more turns while it plays: one finished and queued, one still being written
             phone.say("u-2", "and another", spoken=True)
             turn_2 = _turn_of(phone, "u-2")
-            _answer(host.log, turn_2, "R-queued", "Queued behind the first.")
+            answer_rows(host.log, turn_2, "R-queued", "Queued behind the first.")
             phone.say("u-3", "and one more", spoken=True)
             turn_3 = _turn_of(phone, "u-3")
             conn = open_event_log(host.log)
@@ -214,13 +214,13 @@ def test_a_phone_that_leaves_mid_answer_ends_its_played_and_queued_answers_once(
                 "response_group_id": group, "sequence": 0, "phase": "final",
                 "channel": "speech", "segment_hash": "h",
             })
-            _wait_for(
+            wait_for(
                 lambda: "surface.playback_started" in host.playback("R-playing"),
                 "the first answer never started",
             )
         finally:
             phone.close()  # the connection is gone mid-answer
-        _wait_for(
+        wait_for(
             lambda: all(
                 _ends(host.log, r) for r in ("R-playing", "R-queued", "R-buffering")
             ),
@@ -233,7 +233,7 @@ def test_a_phone_that_leaves_mid_answer_ends_its_played_and_queued_answers_once(
             "response_group_id": group, "phase": "final", "channel": "speech",
         })
         conn.close()
-        _wait_for(lambda: len(host.types("surface.response_emitted")) == 3, "emitted row")
+        wait_for(lambda: len(host.types("surface.response_emitted")) == 3, "emitted row")
         time.sleep(0.5)  # one settle for the watcher to see the late row
         # Losing the socket fails the playing answer, which may start the queued one before the
         # close reaches it: that one is then ended by the actor's terminal, else by a drop.
@@ -253,18 +253,18 @@ def test_ending_a_departed_voices_answers_leaves_the_ones_it_does_not_own(
     log = tmp_path / "events.db"
     conn = _answer_unwatched(log)
     _phone_utterance(log, "T-before")
-    _answer(log, "T-before", "R-before", "Said before the actor was built.")
+    answer_rows(log, "T-before", "R-before", "Said before the actor was built.")
     boot = conn.execute("SELECT max(id) FROM events").fetchone()[0]
     _phone_utterance(log, "T-mine")
-    _answer(log, "T-mine", "R-mine", "Mine.")
+    answer_rows(log, "T-mine", "R-mine", "Mine.")
     _phone_utterance(log, "T-ipad", device="ipad")
-    _answer(log, "T-ipad", "R-ipad", "Another phone's.")
+    answer_rows(log, "T-ipad", "R-ipad", "Another phone's.")
     emit_event(
         conn, type="utterance.received",
         payload={"transcript": "hi", "turn_id": "T-mac", "channel": "inherent_wake"},
         correlation={"turn_id": "T-mac"},
     )
-    _answer(log, "T-mac", "R-mac", "The Mac's.")
+    answer_rows(log, "T-mac", "R-mac", "The Mac's.")
     assert end_open_answers(conn, "iphone", after_id=boot, reason=UNPLAYED_LEFT) == 1
     assert end_open_answers(conn, "iphone", after_id=boot, reason=UNPLAYED_LEFT) == 0
     assert [bool(_ends(log, r)) for r in ("R-before", "R-mine", "R-ipad", "R-mac")] == [
@@ -280,7 +280,7 @@ def test_a_phone_turn_cancelled_before_playback_gets_one_end_row_with_or_without
     tmp_path: Path,
 ) -> None:
     """(c): the actor drops the cancelled answer it holds; the watcher drops it when none does."""
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.hello()
@@ -294,7 +294,7 @@ def test_a_phone_turn_cancelled_before_playback_gets_one_end_row_with_or_without
             })
             conn.close()
             _cancelled(host.log, turn, "R-held")
-            _wait_for(lambda: bool(_ends(host.log, "R-held")), "the actor never ended it")
+            wait_for(lambda: bool(_ends(host.log, "R-held")), "the actor never ended it")
         finally:
             phone.close()
         _gone(host, "iphone")
@@ -307,7 +307,7 @@ def test_a_phone_turn_cancelled_before_playback_gets_one_end_row_with_or_without
         })
         conn.close()
         _cancelled(host.log, "T-gone", "R-gone")
-        _wait_for(lambda: bool(_ends(host.log, "R-gone")), "the cancelled answer never ended")
+        wait_for(lambda: bool(_ends(host.log, "R-gone")), "the cancelled answer never ended")
         time.sleep(0.5)  # one settle for the late duplicates this checks for
         assert _ends(host.log, "R-held") == [("surface.speech_dropped", "response_cancelled")]
         assert _ends(host.log, "R-gone") == [("surface.speech_dropped", "response_cancelled")]
@@ -399,7 +399,7 @@ def test_a_phone_turn_never_reaches_the_macs_companion_and_every_other_turn_does
             await wire.broadcast_op("cancelled", turn_id=turn)
         # rows written after the watcher started
         for turn in ("T-phone", "T-phone-typed", "T-terminal", "T-host", "T-sweep"):
-            _answer(log, f"{turn}", f"R2-{turn}", "Again.")
+            answer_rows(log, f"{turn}", f"R2-{turn}", "Again.")
         await asyncio.sleep(0.4)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

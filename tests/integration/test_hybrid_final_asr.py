@@ -20,12 +20,12 @@ import pytest
 
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_audio, voice_pipeline, voice_session
-from tests.integration.test_wave3_single_audio_ingress import (
-    _EnergySession,
-    _FakeBackend,
-    _FakeWakeEngine,
-    _ingress,
-    _wait_until,
+from tests.support.voice_input import (
+    FakeBackend,
+    FakeWakeEngine,
+    StatefulEnergySession,
+    make_ingress,
+    wait_until_true,
 )
 
 if TYPE_CHECKING:
@@ -213,7 +213,7 @@ def test_a_whisper_pass_that_hangs_past_the_bound_leaves_sensevoices_words(
     assert heard.text == _SENSEVOICE_WORDS
     assert heard.asr_engine == "whisper_timeout"
     assert 0.3 <= waited < 0.8, f"waited {waited:.2f} s against a bound of 0.3 s"
-    _wait_until(lambda: ears._worker is None)
+    wait_until_true(lambda: ears._worker is None)
 
 
 @pytest.mark.parametrize(
@@ -257,14 +257,14 @@ def test_an_idle_model_is_read_while_voice_is_in_use_and_not_after() -> None:
         patch.object(voice_asr, "_HYBRID_KEEP_WARM_WINDOW_S", 0.5),
     ):
         ears.prewarm()
-        _wait_until(lambda: zh.touch.call_count >= 1)
-        _wait_until(lambda: ears._keeper is None, timeout_s=3)  # nothing heard for the window
+        wait_until_true(lambda: zh.touch.call_count >= 1)
+        wait_until_true(lambda: ears._keeper is None, timeout_s=3)  # nothing heard for the window
         touched = zh.touch.call_count
         time.sleep(0.3)
         assert zh.touch.call_count == touched  # listening ended: no more touches
         ears.warm()  # Allen speaks again
         assert ears._keeper is not None
-        _wait_until(lambda: zh.touch.call_count > touched)
+        wait_until_true(lambda: zh.touch.call_count > touched)
         busy = zh.touch.call_count
         zh.last_used = en.last_used = time.monotonic() + 1000  # a pass ran meanwhile
         time.sleep(0.3)
@@ -364,7 +364,7 @@ def test_the_worker_hears_one_pass_at_a_time_and_ends_when_idle() -> None:
     for index in range(3):
         assert ears.recognize_prepared(f"U{index}", audio, 2.0).text == f"heard {len(audio)}."
     assert zh.peak == 1
-    _wait_until(lambda: ears._worker is None)
+    wait_until_true(lambda: ears._worker is None)
 
 
 def test_without_a_prepared_pass_run_turn_hears_with_the_speech_the_session_measured(
@@ -435,12 +435,12 @@ def test_the_session_prepares_each_pause_discards_on_speech_and_commits_the_prep
         artifacts_dir=None,
     )
     pipeline.hints = []
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
-            wake_engine=_FakeWakeEngine(detections=set()),
+            wake_engine=FakeWakeEngine(detections=set()),
             vad=voice_audio.SileroVad(mode="record"),
             pipeline=pipeline,
             broadcaster=None,
@@ -475,7 +475,7 @@ def test_the_session_prepares_each_pause_discards_on_speech_and_commits_the_prep
         frames(10_000, 4)  # speech again: discarded
         frames(10_000, 10)
         frames(0, 14)  # the pause that ends it: prepared at the sixth, committed at the twelfth
-        _wait_until(
+        wait_until_true(
             lambda: len(pipeline.hints) == 4 and len(_transcripts(tmp_path)) == 1, timeout_s=5,
         )
     finally:
@@ -506,10 +506,10 @@ def test_each_finished_pass_is_announced_even_when_its_entry_was_dropped_meanwhi
     ears.on_prepared_text(lambda *heard: told.append(heard))
     audio = _audio(2.0)
     ears.prepare("U1", audio, 2.0)
-    _wait_until(lambda: whisper.peak == 1)  # the pass is running
+    wait_until_true(lambda: whisper.peak == 1)  # the pass is running
     ears.discard("U1")  # he spoke again: nobody will collect it
     gate.set()
-    _wait_until(lambda: told == [("U1", len(audio), "你好吗。")])
+    wait_until_true(lambda: told == [("U1", len(audio), "你好吗。")])
 
 
 def test_a_pass_with_no_words_or_a_failing_listener_costs_nothing() -> None:
@@ -553,12 +553,12 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
         broadcaster=None,
         artifacts_dir=None,
     )
-    backend = _FakeBackend()
-    ingress = _ingress(backend)
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySession()):
+    backend = FakeBackend()
+    ingress = make_ingress(backend)
+    with patch.object(voice_audio, "_load_silero_session", return_value=StatefulEnergySession()):
         session = voice_session.DuplexVoiceSession(
             ingress=ingress,
-            wake_engine=_FakeWakeEngine(detections=set()),
+            wake_engine=FakeWakeEngine(detections=set()),
             vad=voice_audio.SileroVad(mode="record"),
             pipeline=pipeline,
             broadcaster=broadcaster,
@@ -596,7 +596,7 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
         frames(10_000, 40)  # 1.3 s of speech: long enough for Whisper
         frames(0, 8)  # a pause: the pass for the audio so far
         if hybrid:
-            _wait_until(
+            wait_until_true(
                 lambda: any(p["settled"] == "whisper words" for p in partials()), timeout_s=5,
             )
         else:
@@ -607,7 +607,7 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
             frames(10_000, 1)
             return "尾" in partials()[-1]["text"]
 
-        _wait_until(more_words_shown, timeout_s=5)
+        wait_until_true(more_words_shown, timeout_s=5)
     finally:
         assert session.close().definitively_closed
 

@@ -13,9 +13,9 @@ import yaml
 from jarvis.execution.tools import Tool, ToolContext
 from jarvis.shared import CallerPrincipal
 from scripts import tool_exam
-from tests.integration.test_flat_tool_dispatch import _chain, _Fixture, _request
-from tests.integration.test_plugin_connections import _service
-from tests.integration.test_plugin_connections import fixture as fixture  # noqa: PLC0414
+from tests.support.plugin_connections import fixture as fixture  # noqa: PLC0414
+from tests.support.plugin_connections import make_service
+from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
     from jarvis.execution.tools import ToolRegistry
@@ -84,21 +84,21 @@ def test_a_tool_off_the_menu_is_still_dispatched_by_name(
     """Background code and a card's button reach a deferred tool through the registry as before."""
     registry, _ = shipped
     tools = tuple(t for t in registry.get_definitions() if t.name in OFF_MENU)
-    fx = _Fixture(tmp_path, tools=tools)
+    fx = ToolWorld(tmp_path, tools=tools)
     try:
         calls = {"record_application": {"company": "Acme"}}
         for number, (name, args) in enumerate(calls.items()):
-            fx.dispatch(_request(name, f"A{number}", arguments=args))
-            assert "error" not in json.loads(_chain(fx, f"A{number}")["tool_output"]), name
+            fx.dispatch(tool_request(name, f"A{number}", arguments=args))
+            assert "error" not in json.loads(tool_chain(fx, f"A{number}")["tool_output"]), name
     finally:
         fx.close()
 
 
 def test_refresh_search_indexes_a_built_in_registered_after_the_last_publish(
-    tmp_path: Path, fixture: _Fixture,
+    tmp_path: Path, fixture: ToolWorld,
 ) -> None:
     """The runtime registers the job and mail tools after the plugins; one refresh finds them."""
-    service = _service(tmp_path, fixture)
+    service = make_service(tmp_path, fixture)
     try:
         late = replace(
             Tool(

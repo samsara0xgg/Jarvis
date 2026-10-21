@@ -22,20 +22,15 @@ reads the card slot.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import json
 import sqlite3
-import threading
 import time
 from contextlib import closing
-from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import InvalidStatus
@@ -53,23 +48,22 @@ from jarvis.state.event_log import (
     turn_origin,
 )
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.surface import voice_media, voice_tts
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, REPLACED_CLOSE_CODE, PhoneHub
-from jarvis.surface.phone_player import PCM16, PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
+from jarvis.surface.phone_player import PCM16
 from jarvis.surface.terminal_events import BrainEvents
-from jarvis.surface.voice_tts import TTSAudioChunk, TTSResponseSegment, TTSSegmentFinished
-from tests.integration.test_mac_alone_listens import _bearer as _bearer_header
-from tests.integration.test_mac_alone_listens import _daemon, _own_private_address
-from tests.integration.test_terminal_voice import (
-    _AsRemote,
-    _FakeProvider,
-    _free_port,
-    _wait_for,
+from tests.support.phone import (
+    CHAR_SAMPLES,
+    RATE,
+    VoiceHost,
+    alone_daemon,
+    answer_rows,
+    own_private_address,
+    voice_log,
 )
-from tests.integration.test_wave2_streaming_media import _CallbackPump
-from tests.integration.test_wave2_streaming_media import _config as _mac_config
+from tests.support.phone import bearer as _bearer_header
+from tests.support.terminal import VoiceSpeechProvider, wait_for
 from tools.phone_fake_client import (
     DEFAULT_CLOCK_OFFSET_NS,
     DISCARD,
@@ -79,30 +73,13 @@ from tools.phone_fake_client import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
-
-RATE = PHONE_SAMPLE_RATE_HZ
-CHAR_SAMPLES = 3_200  # the fake provider speaks 100 ms a character at 32 kHz
 
 
 # --- a fake provider: 100 ms of audio and one word boundary a character, at the phone's rate --
 
 
-def _speak32(segment: TTSResponseSegment) -> list[Any]:
-    samples = CHAR_SAMPLES * len(segment.text)
-    wave = (np.arange(samples) % 200 * 40 - 4000).astype("<i2").tobytes()
-    boundaries = tuple((i + 1, 100.0 * (i + 1)) for i in range(len(segment.text)))
-    return [
-        TTSAudioChunk(segment.sequence, wave, RATE),
-        TTSAudioChunk(
-            segment.sequence, b"", RATE, timing_text=segment.text, word_boundaries=boundaries,
-        ),
-        TTSSegmentFinished(segment.sequence, usage={"usage_characters": len(segment.text)}),
-    ]
-
-
-def _sent_texts(provider: _FakeProvider) -> list[str]:
+def _sent_texts(provider: VoiceSpeechProvider) -> list[str]:
     return [
         call[1].text for session in provider.sessions for call in session.calls
         if call[0] == "send"
@@ -118,210 +95,6 @@ def connect(url: str, *, additional_headers: dict[str, str]) -> Any:  # noqa: AN
 
 
 # --- the host: the real route, the real phone actor, and the Mac's own actor beside it -------
-
-
-def _config32() -> voice_media.StreamingMediaConfig:
-    return replace(
-        _mac_config(), canonical_sample_rate_hz=RATE, ring_seconds=0.5, response_timeout_s=30.0,
-    )
-
-
-def _log(path: Path) -> sqlite3.Connection:
-    open_event_log(path).close()
-    return sqlite3.connect(path, check_same_thread=False)
-
-
-class _Host:
-    """A uvicorn server in this process with the phone route, as the daemon wires it."""
-
-    def __init__(self, root: Path, *, voice: bool = True, remote: bool = True) -> None:
-        self.root = root
-        self.log = root / "events.db"
-        _log(self.log).close()
-        self.token = pair_device(root, "iphone")
-        self.second_token = pair_device(root, "ipad")
-        self.port = _free_port()
-        self.voice = voice
-        self.remote = remote
-        self.phone_provider = _FakeProvider(script=_speak32)
-        self.mac_provider = _FakeProvider()
-        self.barges: list[str] = []
-        self.cancels: list[tuple[str, str]] = []
-        self.voices: list[Any] = []
-        self.hub: PhoneHub | None = None
-        self.server: uvicorn.Server | None = None
-        self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
-
-    def _build_phone_pipeline(
-        self,
-        player: PhoneAudioStreamPlayer,
-        speaks_turn: Callable[[sqlite3.Connection, str], bool],
-        boot: int,
-    ) -> voice_media.StreamingTTSPipeline:
-        return voice_media.StreamingTTSPipeline(
-            provider=cast("Any", self.phone_provider),
-            player=player,
-            conn_factory=lambda: open_event_log(self.log),
-            boot_high_water_id=boot,
-            config=_config32(),
-            start_player=False,
-            speaks_turn=speaks_turn,
-        )
-
-    def _barge(self, device: str) -> str:
-        self.barges.append(device)
-        return "cancelled"
-
-    def _cancel(self, turn: str, reason: str) -> str:
-        self.cancels.append((turn, reason))
-        return "cancelled"
-
-    async def _main(self) -> None:
-        conn = sqlite3.connect(self.log, check_same_thread=False)
-        events = BrainEvents(conn)
-        rows = inherent_loop._PhoneRows(conn)  # noqa: SLF001
-        speech = PhoneSpeech(
-            build=self._build_phone_pipeline, rows=rows, ring_seconds=0.5, event_log=self.log,
-        )
-
-        async def open_voice(device: str, send_binary: Callable[[bytes], bool]) -> Any:  # noqa: ANN401
-            voice = await speech.open(device, send_binary)
-            self.voices.append(voice)
-            return voice
-
-        hub = PhoneHub(
-            events=events,
-            rows=rows,
-            open_voice=open_voice if self.voice else None,
-            barge_in=self._barge,
-            cancel_turn=self._cancel,
-        )
-        self.hub = hub
-        mac_player = voice_tts.AudioStreamPlayer(
-            sample_rate_hz=8_000, ring_seconds=0.5, lazy_open=True, generation_safe=True,
-            estimated_output_latency_s=0.0,
-        )
-        mac = voice_media.StreamingTTSPipeline(
-            provider=cast("Any", self.mac_provider),
-            player=mac_player,
-            conn_factory=lambda: open_event_log(self.log),
-            boot_high_water_id=inherent_loop._latest_id(conn),  # noqa: SLF001
-            config=_mac_config(),
-            start_player=False,
-            silent_intent_channels=inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
-        )
-        watcher = asyncio.create_task(
-            inherent_loop._tts_watcher(conn=conn, pipeline=mac, poll_interval_s=0.01),  # noqa: SLF001
-        )
-        ends = asyncio.create_task(  # ADR 0222: the daemon runs this beside the other watchers
-            inherent_loop._phone_ends_watcher(  # noqa: SLF001
-                conn, speech.owner_boot, poll_interval_s=0.01,
-            ),
-        )
-        app = create_app(
-            InherentDeps(
-                submit_callable=lambda _text: "T1",
-                broadcaster=InherentBroadcaster(),
-                phone=hub,
-                device_name=functools.partial(device_name_for_token, self.root),
-            ),
-        )
-        require_local_key(
-            app,
-            functools.partial(local_key_matches, local_key(self.root)),
-            device_token_matches=functools.partial(device_token_matches, self.root),
-        )
-        self.server = uvicorn.Server(
-            uvicorn.Config(
-                _AsRemote(app) if self.remote else app, host="127.0.0.1", port=self.port,
-                log_level="warning", lifespan="off",
-            ),
-        )
-        with _CallbackPump(mac_player):
-            try:
-                await self.server.serve()
-            finally:
-                watcher.cancel()
-                ends.cancel()
-                await asyncio.gather(watcher, ends, return_exceptions=True)
-                await asyncio.to_thread(mac.close)
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        _wait_for(lambda: bool(self.server and self.server.started), "server never started")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        assert self.server is not None
-        self.server.should_exit = True
-        self.thread.join(timeout=20)
-
-    @property
-    def url(self) -> str:
-        return f"ws://127.0.0.1:{self.port}{PHONE_PATH}"
-
-    def phone(
-        self, *, token: str | None = None, voice: bool = True, speed: float = 1.0,
-        report_overlap: int = 0, ack_delay_s: float = 0.0,
-    ) -> FakePhone:
-        return FakePhone(
-            self.url, token or self.token, voice=voice, speed=speed,
-            report_overlap=report_overlap, ack_delay_s=ack_delay_s,
-        ).start()
-
-    # -- the log
-
-    def types(self, wanted: str) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.log) as raw:
-            return [
-                {**json.loads(row[0]), "_node": row[1], "_uid": row[2]}
-                for row in raw.execute(
-                    "SELECT payload_json, ingestion_node, event_uid FROM events WHERE type = ? "
-                    "ORDER BY id", (wanted,),
-                )
-            ]
-
-    def playback(self, response_id: str) -> list[str]:
-        with sqlite3.connect(self.log) as raw:
-            return [
-                row[0] for row in raw.execute(
-                    "SELECT type FROM events WHERE type LIKE 'surface.playback_%' "
-                    "AND json_extract(payload_json, '$.response_id') = ? ORDER BY id",
-                    (response_id,),
-                )
-            ]
-
-
-def _answer(
-    log: Path, turn_id: str, response_id: str, text: str | list[str],
-    emitted: dict[str, Any] | None = None,
-) -> None:
-    """The decision layer's answer rows for a turn: open, its chunks, emitted.
-
-    One string is a finished text answer; a list is a stream, one speakable segment a chunk.
-    ``emitted`` adds fields to the final ``surface.response_emitted`` row.
-    """
-    chunks = [text] if isinstance(text, str) else text
-    conn = open_event_log(log)
-    try:
-        group = f"G-{response_id}"
-        emit_event(conn, type="surface.response_open", payload={
-            "turn_id": turn_id, "query": "q", "kind": "text" if isinstance(text, str) else "stream",
-            "response_id": response_id, "response_group_id": group, "phase": "final",
-            "channel": "speech",
-        })
-        for sequence, chunk in enumerate(chunks):
-            emit_event(conn, type="surface.response_chunk", payload={
-                "turn_id": turn_id, "text": chunk, "response_id": response_id,
-                "response_group_id": group, "sequence": sequence, "phase": "final",
-                "channel": "speech", "segment_hash": "h",
-            })
-        emit_event(conn, type="surface.response_emitted", payload={
-            "turn_id": turn_id, "text": "".join(chunks), "response_id": response_id,
-            "response_group_id": group, "phase": "final", "channel": "speech", **(emitted or {}),
-        })
-    finally:
-        conn.close()
 
 
 def _mac_utterance(log: Path, turn_id: str, text: str) -> None:
@@ -345,7 +118,7 @@ def test_a_spoken_say_is_one_utterance_answered_in_rows_and_played_by_the_phones
 ) -> None:
     """(a) (b) (c) (d): one row per utterance, rows to the phone, PCM16 to the phone, Mac silent."""
     phone_text, mac_text = "The first sentence.", "Mac only line."
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone()
         try:
             ready = phone.hello()
@@ -381,18 +154,18 @@ def test_a_spoken_say_is_one_utterance_answered_in_rows_and_played_by_the_phones
 
             # a turn heard by the Mac, answered at the same time
             _mac_utterance(host.log, "TMAC", "and the time")
-            _answer(host.log, "TMAC", "R-mac", mac_text)
-            _wait_for(lambda: "surface.playback_completed" in host.playback("R-mac"), "Mac silent")
+            answer_rows(host.log, "TMAC", "R-mac", mac_text)
+            wait_for(lambda: "surface.playback_completed" in host.playback("R-mac"), "Mac silent")
 
             # (b) (c) the phone's answer: rows reach the phone, audio is played, rows are written
-            _answer(host.log, turn, "R-phone", phone_text)
+            answer_rows(host.log, turn, "R-phone", phone_text)
             phone.wait_until(
                 lambda: {r["event_type"] for r in phone.rows()} >= {
                     "surface.response_open", "surface.response_chunk", "surface.response_emitted",
                 },
                 "the answer's rows never reached the phone",
             )
-            _wait_for(
+            wait_for(
                 lambda: "surface.playback_completed" in host.playback("R-phone"),
                 "the phone's actor never completed playback",
                 timeout_s=20,
@@ -438,14 +211,14 @@ def test_a_barge_in_is_a_discard_and_the_heard_prefix_freezes_after_the_phones_a
     """(e): the phone holds, the host sends DISCARD, and settles only on DISCARD_ACK."""
     first = "This is the first sentence."  # 26 characters: 2.6 s, aligned once it is written
     second = " And this second one goes on for quite a long while yet."
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.hello()
             phone.send_ready()
             phone.say("u-barge", "tell me a story", spoken=True)
             turn = phone.wait_text("said")["turn_id"]
-            _answer(host.log, turn, "R-long", [first, second])
+            answer_rows(host.log, turn, "R-long", [first, second])
             phone.wait_until(
                 lambda: phone.played >= 3 * RATE, "the answer never got into its second sentence",
             )
@@ -455,7 +228,7 @@ def test_a_barge_in_is_a_discard_and_the_heard_prefix_freezes_after_the_phones_a
             with phone.lock:
                 held_at = phone.played
             phone.send({"type": "barge"})
-            _wait_for(
+            wait_for(
                 lambda: "surface.playback_interrupted" in host.playback("R-long"),
                 "the host never settled the interruption",
             )
@@ -496,7 +269,7 @@ def test_a_turn_said_over_her_to_a_phone_that_acks_late_stops_her_and_the_next_a
     and the host judged them a turn; the phone's acknowledgement then took longer than a local
     renderer's. The interruption is still recorded, and the next answer reaches the phone.
     """
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone(ack_delay_s=1.0)
         try:
             phone.hello()
@@ -504,7 +277,7 @@ def test_a_turn_said_over_her_to_a_phone_that_acks_late_stops_her_and_the_next_a
             phone.say("u-first", "tell me a story", spoken=True)
             first_turn = phone.wait_text("said")["turn_id"]
             phone.hold_output()  # he speaks again before she is heard
-            _answer(host.log, first_turn, "R-first", ["Once upon a time.", " There was more."])
+            answer_rows(host.log, first_turn, "R-first", ["Once upon a time.", " There was more."])
             phone.wait_until(lambda: bool(phone.pcm_samples), "the first answer was never sent")
 
             with phone.lock:
@@ -513,7 +286,7 @@ def test_a_turn_said_over_her_to_a_phone_that_acks_late_stops_her_and_the_next_a
             said = phone.wait_text("said", after=seen)
             assert said["verdict"] == "turn"
             second_turn = said["turn_id"]
-            _wait_for(
+            wait_for(
                 lambda: "surface.playback_interrupted" in host.playback("R-first"),
                 "the interruption was never settled",
             )
@@ -521,8 +294,8 @@ def test_a_turn_said_over_her_to_a_phone_that_acks_late_stops_her_and_the_next_a
             assert interrupted["reason"] == "barge_in"
             assert interrupted["heard_text"] == ""  # nothing of it was played
 
-            _answer(host.log, second_turn, "R-second", "Tomorrow is clear.")
-            _wait_for(
+            answer_rows(host.log, second_turn, "R-second", "Tomorrow is clear.")
+            wait_for(
                 lambda: "surface.playback_completed" in host.playback("R-second"),
                 "the next answer was never played",
                 timeout_s=20,
@@ -538,7 +311,7 @@ def test_a_turn_said_over_her_to_a_phone_that_acks_late_stops_her_and_the_next_a
 
 def test_a_typed_say_gets_rows_and_no_audio(tmp_path: Path) -> None:
     """(f): a typed turn is a silent-channel intent; its rows reach the phone, nothing plays."""
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.hello()
@@ -550,7 +323,7 @@ def test_a_typed_say_gets_rows_and_no_audio(tmp_path: Path) -> None:
                 "cli_stdin", "iphone", turn,
             )
             assert not host.types("utterance.received")
-            _answer(host.log, turn, "R-typed", "Nothing today.")
+            answer_rows(host.log, turn, "R-typed", "Nothing today.")
             phone.wait_until(
                 lambda: "surface.response_emitted" in {r["event_type"] for r in phone.rows()},
                 "the typed answer's rows never reached the phone",
@@ -568,14 +341,14 @@ def test_a_typed_say_gets_rows_and_no_audio(tmp_path: Path) -> None:
 
 def test_a_phone_without_voice_is_told_so_and_still_gets_rows(tmp_path: Path) -> None:
     """The host cannot speak, or the phone did not ask: ``voice: false``, text and rows only."""
-    with _Host(tmp_path, voice=False) as host:
+    with VoiceHost(tmp_path, voice=False) as host:
         phone = host.phone(voice=True)
         try:
             ready = phone.hello()
             assert ready["voice"] is False
             phone.say("u-1", "hello", spoken=True)
             turn = phone.wait_text("said")["turn_id"]
-            _answer(host.log, turn, "R-text", "Hi.")
+            answer_rows(host.log, turn, "R-text", "Hi.")
             phone.wait_until(
                 lambda: "surface.response_emitted" in {r["event_type"] for r in phone.rows()},
                 "rows never reached the phone",
@@ -590,7 +363,7 @@ def test_only_a_paired_devices_token_opens_the_socket_and_a_newer_connection_rep
     tmp_path: Path,
 ) -> None:
     """(g): no token, a wrong one and the local key are refused; the second connection wins."""
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         key = local_key(tmp_path)
         for bad in (None, "not-a-token", key):
             headers = {} if bad is None else {"Authorization": f"Bearer {bad}"}
@@ -629,7 +402,7 @@ def test_the_route_itself_refuses_the_local_key_from_a_peer_on_loopback(tmp_path
     """The middleware lets the local key through on loopback; the route still wants a device."""
     root = tmp_path
     pair_device(root, "iphone")
-    conn = _log(root / "events.db")
+    conn = voice_log(root / "events.db")
     app = create_app(
         InherentDeps(
             submit_callable=lambda _text: "T1",
@@ -685,7 +458,7 @@ def test_the_speech_builder_needs_a_key_and_the_streaming_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No key or streaming off: ``voice: false``. Otherwise a speech builder."""
-    conn = _log(tmp_path / "events.db")
+    conn = voice_log(tmp_path / "events.db")
     config: dict[str, Any] = {
         "realtime": {"enabled": True, "streaming_output": {"enabled": True}},
     }
@@ -718,10 +491,10 @@ def test_a_daemon_running_alone_serves_the_phone_socket_with_no_terminal_hub(
     """(h): a real `serve` in role all that listens: the phone pairs and talks."""
     import httpx  # noqa: PLC0415
 
-    address = _own_private_address()
+    address = own_private_address()
     if address is None:
         pytest.skip("this machine has no private non-loopback IPv4 address")
-    with _daemon(tmp_path, address) as (root, port):
+    with alone_daemon(tmp_path, address) as (root, port):
         local, remote = f"http://127.0.0.1:{port}", f"http://{address}:{port}"
         owner = _bearer_header(local_key(root))
         minted = httpx.post(
@@ -813,7 +586,7 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
     times = [{"kind": "reminder", "at_ms": 1_791_619_200_000, "label": "mom", "ref": "reminder-1"}]
     places = [{"name": "Cafe", "lat": 48.43, "lng": -123.37, "address": None,
                "place_id": "ChIJcafe", "kind": "place"}]
-    with _Host(tmp_path) as host:
+    with VoiceHost(tmp_path) as host:
         phone = host.phone()
         try:
             phone.hello()
@@ -829,7 +602,7 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
             _card(host.log, typed_turn, "ask-typed")
             _withdraw(host.log, typed_turn, "ask-typed")
             _withdraw(host.log, "TMAC", "offer-mac")
-            _answer(
+            answer_rows(
                 host.log, spoken_turn, "R-card", "Take the 28.",
                 emitted={
                     "voice_text": "Take the 28.", "document_text": "Leave 08:20, Hillside.",
@@ -868,7 +641,7 @@ def test_question_cards_reach_the_phone_for_its_own_turns_and_never_its_speech(
             assert {e.type for _id, e in voice_rows} >= {"surface.response_emitted"}
             assert sum(e.type.startswith("clarification.") for _id, e in all_rows) == 3
             # the card is never spoken: the phone's provider heard the answer's text alone
-            _wait_for(
+            wait_for(
                 lambda: "surface.playback_completed" in host.playback("R-card"),
                 "the answer never finished playing", timeout_s=20,
             )

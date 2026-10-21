@@ -23,7 +23,7 @@ from jarvis.state.memory_db import (
     open_memory_db,
     put_day_experience,
 )
-from tests.integration.test_day_experience import DAY, _log, _noon
+from tests.support.day_experience import DAY, noon_of, write_log
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,14 +35,14 @@ def test_the_nightly_run_backfills_missing_past_days_once_and_never_today(tmp_pa
     """From the first turn to yesterday, a row per date; a second run writes nothing more."""
     log, memory = tmp_path / "events.db", tmp_path / "memory.db"
     today = DAY + timedelta(days=3)
-    _log(log, [
-        ("utterance.received", _noon(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac"),
-        ("surface.playback_started", _noon(DAY, 1), {
+    write_log(log, [
+        ("utterance.received", noon_of(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac"),
+        ("surface.playback_started", noon_of(DAY, 1), {
             "session_id": "s", "response_id": "r", "turn_id": "T1", "playback_generation_id": "g",
             "phase": "final", "channel": "speech", "speech_text_hash": "h"}, "mac"),
-        ("surface.user_intent", _noon(DAY + timedelta(days=2)),
+        ("surface.user_intent", noon_of(DAY + timedelta(days=2)),
          {"transcript": "typed", "turn_id": "T2", "channel": "cli_stdin"}, "phone"),
-        ("utterance.received", _noon(today), {"transcript": "now", "turn_id": "T3"}, "mac"),
+        ("utterance.received", noon_of(today), {"transcript": "now", "turn_id": "T3"}, "mac"),
     ])
     put_day_experience(memory, (DAY + timedelta(days=1)).isoformat(), json.dumps({"kept": True}))
     assert run_day_experience(memory, log, today) == {
@@ -72,7 +72,10 @@ def test_a_day_that_fails_is_left_for_the_next_run_and_the_days_after_it_still_r
 ) -> None:
     """The failure is reported, nothing is stored for the day, and the next date is computed."""
     log, memory = tmp_path / "events.db", tmp_path / "memory.db"
-    _log(log, [("utterance.received", _noon(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac")])
+    write_log(
+        log, [("utterance.received", noon_of(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac")]
+    )
+
     def flaky(conn: sqlite3.Connection, memory_db: Path, day: date) -> dict[str, Any]:
         if day == DAY:
             raise sqlite3.OperationalError
@@ -104,7 +107,7 @@ def test_the_schedule_is_due_once_per_date_after_the_time(tmp_path: Path) -> Non
         settings=DayExperienceSettings(time(4, 0)),
         event_log_path=tmp_path / "events.db",
     )
-    early, late = _noon(DAY).replace(hour=3), _noon(DAY).replace(hour=5)
+    early, late = noon_of(DAY).replace(hour=3), noon_of(DAY).replace(hour=5)
     assert schedule.due(early) is None
     assert schedule.due(late) == DAY
     open_event_log(tmp_path / "events.db").close()
@@ -114,15 +117,24 @@ def test_the_schedule_is_due_once_per_date_after_the_time(tmp_path: Path) -> Non
 
 
 def test_the_report_prints_the_newest_day_and_the_week_read_only(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Plain text from the stored rows; a date with no row is an error, nothing is written."""
     log, memory = tmp_path / "events.db", tmp_path / "memory.db"
-    _log(log, [
-        ("utterance.received", _noon(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac"),
-        ("route.oneshot_read", _noon(DAY, 1), {"turn_id": "T1", "tool_group": "web_search"}, "mac"),
-        ("turn.failed", _noon(DAY, 2), {"turn_id": "T1", "exception_repr": "x"}, "mac"),
-    ])
+    write_log(
+        log,
+        [
+            ("utterance.received", noon_of(DAY), {"transcript": "hi", "turn_id": "T1"}, "mac"),
+            (
+                "route.oneshot_read",
+                noon_of(DAY, 1),
+                {"turn_id": "T1", "tool_group": "web_search"},
+                "mac",
+            ),
+            ("turn.failed", noon_of(DAY, 2), {"turn_id": "T1", "exception_repr": "x"}, "mac"),
+        ],
+    )
     run_day_experience(memory, log, DAY + timedelta(days=1))
     before = memory.read_bytes()
     assert experience_report.main(["--db", str(memory), "--week"]) == 0

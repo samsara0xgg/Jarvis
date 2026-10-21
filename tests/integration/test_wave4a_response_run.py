@@ -14,7 +14,6 @@ terminals, and the dispatched worker still reaches its own terminal.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import sqlite3
 import sys
@@ -23,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
@@ -31,8 +30,6 @@ from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.gates import ResponsePlan
-from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import (
     LLMSessionFactory,
     UnknownRequestPresetError,
@@ -44,9 +41,7 @@ from jarvis.decision.response_run import (
     IllegalResponseTransitionError,
     ResponseCancelledError,
     ResponseCancelRequest,
-    ResponseRun,
     ResponseRunFacts,
-    ResponseRunRegistry,
     ResponseTerminalizer,
     evidence_snapshot_hash,
     legacy_full_text_policy,
@@ -54,10 +49,7 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import (
-    ActionLifecycle,
-    build_default_registry,
     register_live_action,
 )
 from jarvis.runtime import (
@@ -70,7 +62,6 @@ from jarvis.runtime import (
 from jarvis.shared.realtime import (
     AlreadyTerminal,
     TerminalCommitted,
-    Wave1FeatureFlags,
     Wave4ResponseFlags,
     new_response_id,
     stable_legacy_presentation_binding,
@@ -84,18 +75,33 @@ from jarvis.state.response_runs import append_response_started, open_response_ru
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
+from tests.support.response_run import (
+    LLM_CONFIG,
+    PLAN_HASH,
+    PLAN_TEXT,
+    drive_turn_on_own_connection,
+    emit_intent,
+    event_count,
+    final_result,
+    make_runtime,
+    open_run,
+    payloads_of,
+    realtime_config,
+    response_plan,
+    rows_of,
+    script_decide,
+    seed_started,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from jarvis.decision import DecideContext, DecideResult
+    from jarvis.decision import DecideContext
     from jarvis.shared import Event
     from jarvis.shared.realtime import TerminalOutcome
 
 _RESPONSE_TERMINALS = ("response.completed", "response.cancelled", "response.failed")
-_PLAN_TEXT = "已完成。"
-_PLAN_HASH = "hash-fixed"
 
 
 # --- harness ---------------------------------------------------------------
@@ -106,29 +112,6 @@ def _raw_connection(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
-
-
-def _rows(conn: sqlite3.Connection, event_type: str) -> list[tuple[Any, ...]]:
-    """Return ``(payload_json, source_event_id, event_uid)`` rows of a type."""
-    return list(
-        conn.execute(
-            "SELECT payload_json, source_event_id, event_uid FROM events "
-            "WHERE type = ? ORDER BY id ASC",
-            (event_type,),
-        ),
-    )
-
-
-def _event_count(conn: sqlite3.Connection, event_type: str) -> int:
-    """Count rows of one event type."""
-    row = conn.execute("SELECT COUNT(*) FROM events WHERE type = ?", (event_type,)).fetchone()
-    assert row is not None
-    return int(row[0])
-
-
-def _payloads(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
-    """Return the decoded payloads of one event type in append order."""
-    return [json.loads(row[0]) for row in _rows(conn, event_type)]
 
 
 def _publish_sink(sink: list[str]) -> Callable[[Event], None]:
@@ -145,166 +128,6 @@ def _ordered_types(conn: sqlite3.Connection) -> list[str]:
     return [str(row[0]) for row in conn.execute("SELECT type FROM events ORDER BY id ASC")]
 
 
-def _plan(text: str = _PLAN_TEXT, response_hash: str = _PLAN_HASH) -> ResponsePlan:
-    """Build a fixed approved ResponsePlan."""
-    return ResponsePlan(
-        text=text,
-        permission="allow_completion_language",
-        downgrade_required=False,
-        active_claim_levels=(),
-        response_hash=response_hash,
-        output_risk_class="routine",
-        required_gate_mode="full_text",
-    )
-
-
-_LLM_CONFIG: dict[str, Any] = {
-    "provider": "openai",
-    "default_preset": "fast",
-    "presets": {
-        "fast": {
-            "provider": "openai",
-            "model": "gpt-fast",
-            "base_url": "https://example.invalid/fast",
-            "max_tokens": 64,
-        },
-        "deep": {
-            "provider": "openai",
-            "model": "gpt-deep",
-            "base_url": "https://example.invalid/deep",
-            "max_tokens": 128,
-        },
-    },
-}
-
-
-def _realtime_config(
-    *,
-    lifecycle: bool,
-    cancel: bool,
-    wave1: bool = True,
-    enabled: bool = True,
-    cancel_timeout_ms: int = 500,
-) -> dict[str, Any]:
-    """Build a config mapping for the Wave-4A flag graph."""
-    return {
-        "realtime": {
-            "enabled": enabled,
-            "concurrency_safety": {
-                "transactional_event_append": wave1,
-                "lifecycle_terminal_cas": wave1,
-                "confirmation_dispatch_outbox": False,
-                "exactly_once_cost_accounting": False,
-            },
-            "response": {
-                "response_run_lifecycle": lifecycle,
-                "independent_response_cancel": cancel,
-                "cancel_timeout_ms": cancel_timeout_ms,
-            },
-        },
-    }
-
-
-def _make_runtime(
-    tmp_path: Path,
-    *,
-    lifecycle: bool = False,
-    cancel: bool = False,
-    cancel_timeout_ms: int = 500,
-) -> JarvisRuntime:
-    """Assemble a JarvisRuntime wired exactly the way bootstrap wires one."""
-    paths = bootstrap_runtime(tmp_path)
-    conn = open_event_log(paths.event_log)
-    config = _realtime_config(
-        lifecycle=lifecycle,
-        cancel=cancel,
-        cancel_timeout_ms=cancel_timeout_ms,
-    )
-    flags = _wave4_response_flags(config)
-    return JarvisRuntime(
-        config=config,
-        runtime_paths=paths,
-        conn=conn,
-        tool_registry=build_default_registry(),
-        lifecycle=ActionLifecycle(),
-        llm_client=LLMClient(_LLM_CONFIG),
-        system_prompt="",
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
-        response_flags=flags,
-        llm_session_factory=(
-            LLMSessionFactory(_LLM_CONFIG) if flags.response_run_lifecycle else None
-        ),
-        response_runs=(ResponseRunRegistry() if flags.independent_response_cancel else None),
-        committed_event_bus=CommittedEventBus(),
-    )
-
-
-def _drive_turn_on_own_connection(
-    runtime: JarvisRuntime,
-    **kwargs: Any,  # noqa: ANN401 - forwarded verbatim to drive_turn.
-) -> Any:  # noqa: ANN401 - RunTurnResult; the tests only assert on the log.
-    """Run ``drive_turn`` the way the daemon's turn worker thread runs it.
-
-    ``open_event_log`` uses ``check_same_thread=True``, so the connection has
-    to be opened *inside* the worker thread — this mirrors
-    ``inherent_loop._drive_turn_in_worker_thread`` exactly. The registry and
-    the committed-event bus are shared by reference through
-    :func:`dataclasses.replace`, which is what lets the cancelling thread see
-    the run this one registers.
-    """
-    conn = open_event_log(runtime.runtime_paths.event_log)
-    try:
-        return drive_turn(replace(runtime, conn=conn), **kwargs)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-
-
-def _emit_intent(conn: sqlite3.Connection, turn_id: str, transcript: str = "你好") -> Event:
-    """Emit the ``surface.user_intent`` row a turn is driven from."""
-    return emit_event(
-        conn,
-        type="surface.user_intent",
-        payload={
-            "transcript": transcript,
-            "turn_id": turn_id,
-            "channel": "cli_stdin",
-            "language": "zh-CN",
-        },
-        correlation={"turn_id": turn_id},
-    )
-
-
-def _script_decide(
-    monkeypatch: pytest.MonkeyPatch,
-    behavior: Callable[[Event, DecideContext], DecideResult],
-) -> None:
-    """Replace the composition root's ``decide`` with a scripted stub."""
-    monkeypatch.setattr(runtime_module, "decide", behavior)
-
-
-def _final_result(plan: ResponsePlan | None = None) -> Callable[..., Any]:
-    """Return a decide stub that finishes immediately with one plan."""
-
-    def _decide(_trigger: Event, _ctx: DecideContext) -> Any:  # noqa: ANN401
-        return SimpleNamespace(
-            response_plan=plan if plan is not None else _plan(),
-            events_emitted=(),
-            stream_failure=None,
-            written_apart=False,
-            reaction=None,
-            route=None,
-            last_gate_event_uid=None,
-            turn_id=None,
-            attention_channel="voice_notify",
-        )
-
-    return _decide
-
-
 # --- A1: flag-off parity ----------------------------------------------------
 
 
@@ -313,9 +136,9 @@ def test_flag_off_drive_turn_matches_legacy_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Flags off: zero response.* rows and the legacy uuid5 L5 identity."""
-    runtime = _make_runtime(tmp_path)
-    _script_decide(monkeypatch, _final_result())
-    intent = _emit_intent(runtime.conn, "T-fixed")
+    runtime = make_runtime(tmp_path)
+    script_decide(monkeypatch, final_result())
+    intent = emit_intent(runtime.conn, "T-fixed")
 
     result = drive_turn(
         runtime,
@@ -325,7 +148,7 @@ def test_flag_off_drive_turn_matches_legacy_sequence(
     )
 
     for terminal in (*_RESPONSE_TERMINALS, "response.started"):
-        assert _event_count(runtime.conn, terminal) == 0, terminal
+        assert event_count(runtime.conn, terminal) == 0, terminal
     assert _ordered_types(runtime.conn) == [
         "surface.user_intent",
         "surface.response_open",
@@ -333,11 +156,11 @@ def test_flag_off_drive_turn_matches_legacy_sequence(
         "surface.response_emitted",
         "turn.timing",  # ADR 0276
     ]
-    legacy = stable_legacy_presentation_binding(turn_id="T-fixed", response_hash=_PLAN_HASH)
-    opened = _payloads(runtime.conn, "surface.response_open")[0]
+    legacy = stable_legacy_presentation_binding(turn_id="T-fixed", response_hash=PLAN_HASH)
+    opened = payloads_of(runtime.conn, "surface.response_open")[0]
     assert opened["response_id"] == legacy.response_id
     assert opened["response_group_id"] == legacy.response_group_id
-    assert result.response_plan.text == _PLAN_TEXT
+    assert result.response_plan.text == PLAN_TEXT
     # The extraction refactor must not move the group derivation.
     assert stable_response_group_id("T-fixed") == legacy.response_group_id
     assert legacy.response_group_id.startswith("RGRP")
@@ -352,9 +175,9 @@ def test_flag_on_emits_started_then_completed_with_one_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One started, one completed, and the ADR §4.2 causal chain holds."""
-    runtime = _make_runtime(tmp_path, lifecycle=True)
-    _script_decide(monkeypatch, _final_result())
-    intent = _emit_intent(runtime.conn, "T-life")
+    runtime = make_runtime(tmp_path, lifecycle=True)
+    script_decide(monkeypatch, final_result())
+    intent = emit_intent(runtime.conn, "T-life")
 
     drive_turn(
         runtime,
@@ -363,16 +186,16 @@ def test_flag_on_emits_started_then_completed_with_one_terminal(
         streaming_enabled=True,
     )
 
-    started_rows = _rows(runtime.conn, "response.started")
-    completed_rows = _rows(runtime.conn, "response.completed")
+    started_rows = rows_of(runtime.conn, "response.started")
+    completed_rows = rows_of(runtime.conn, "response.completed")
     assert len(started_rows) == 1
     assert len(completed_rows) == 1
-    started = _payloads(runtime.conn, "response.started")[0]
-    completed = _payloads(runtime.conn, "response.completed")[0]
+    started = payloads_of(runtime.conn, "response.started")[0]
+    completed = payloads_of(runtime.conn, "response.completed")[0]
     assert started["response_id"] == completed["response_id"]
     assert started_rows[0][1] == intent.event_uid
     assert completed_rows[0][1] == started_rows[0][2]
-    assert completed["response_hash"] == _PLAN_HASH
+    assert completed["response_hash"] == PLAN_HASH
     for required in (
         "response_id",
         "response_group_id",
@@ -397,9 +220,9 @@ def test_flag_on_l5_events_carry_the_l3_response_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ADR-0014 identity: surface.response_* name the L3 run, not the uuid5."""
-    runtime = _make_runtime(tmp_path, lifecycle=True)
-    _script_decide(monkeypatch, _final_result())
-    intent = _emit_intent(runtime.conn, "T-ident")
+    runtime = make_runtime(tmp_path, lifecycle=True)
+    script_decide(monkeypatch, final_result())
+    intent = emit_intent(runtime.conn, "T-ident")
 
     drive_turn(
         runtime,
@@ -408,14 +231,14 @@ def test_flag_on_l5_events_carry_the_l3_response_id(
         streaming_enabled=True,
     )
 
-    started = _payloads(runtime.conn, "response.started")[0]
-    legacy = stable_legacy_presentation_binding(turn_id="T-ident", response_hash=_PLAN_HASH)
+    started = payloads_of(runtime.conn, "response.started")[0]
+    legacy = stable_legacy_presentation_binding(turn_id="T-ident", response_hash=PLAN_HASH)
     for event_type in (
         "surface.response_open",
         "surface.response_chunk",
         "surface.response_emitted",
     ):
-        payloads = _payloads(runtime.conn, event_type)
+        payloads = payloads_of(runtime.conn, event_type)
         assert payloads, event_type
         for payload in payloads:
             assert payload["response_id"] == started["response_id"], event_type
@@ -436,9 +259,9 @@ def test_response_events_never_go_through_emit_event(
         recorded.append(str(kwargs.get("type")))
         return real_emit(conn, **kwargs)
 
-    runtime = _make_runtime(tmp_path, lifecycle=True)
-    _script_decide(monkeypatch, _final_result())
-    intent = _emit_intent(runtime.conn, "T-spy")
+    runtime = make_runtime(tmp_path, lifecycle=True)
+    script_decide(monkeypatch, final_result())
+    intent = emit_intent(runtime.conn, "T-spy")
     # Every caller does `from jarvis.state.event_log import emit_event`, so the
     # name is bound per module at import time; patching only the defining
     # module would observe nothing at all. Patch each binding instead.
@@ -460,8 +283,8 @@ def test_response_events_never_go_through_emit_event(
 
     assert recorded, "the spy observed no emit_event call at all"
     assert not [name for name in recorded if name.startswith("response.")]
-    assert _event_count(runtime.conn, "response.started") == 1
-    assert _event_count(runtime.conn, "response.completed") == 1
+    assert event_count(runtime.conn, "response.started") == 1
+    assert event_count(runtime.conn, "response.completed") == 1
     runtime.conn.close()
 
 
@@ -489,40 +312,6 @@ def _race_two_connections(
         return tuple(future.result(timeout=10) for future in futures)
 
 
-def _seed_started(path: Path, response_id: str, turn_id: str) -> ResponseRunFacts:
-    """Seed one durable ``response.started`` and return its facts."""
-    conn = open_event_log(path)
-    try:
-        intent = _emit_intent(conn, turn_id)
-        group_id = stable_response_group_id(turn_id)
-        started = append_response_started(
-            conn,
-            payload={
-                "response_id": response_id,
-                "response_group_id": group_id,
-                "turn_id": turn_id,
-                "phase": "final",
-                "channel": "both",
-                "emission_mode": "full_text",
-                "output_risk_class": "unknown",
-                "required_gate_mode": "full_text",
-                "policy_hash": "policy",
-                "active_subject_ref": "unknown",
-                "evidence_snapshot_hash": "evidence",
-            },
-            source_event_id=intent.event_uid,
-            correlation={"turn_id": turn_id},
-        )
-    finally:
-        conn.close()
-    return ResponseRunFacts(
-        response_id=response_id,
-        response_group_id=group_id,
-        turn_id=turn_id,
-        started_event_uid=started.event_uid,
-    )
-
-
 @pytest.mark.parametrize("pair", ["complete_cancel", "cancel_fail"])
 def test_response_terminal_two_connection_race_has_one_winner(
     tmp_path: Path,
@@ -530,7 +319,7 @@ def test_response_terminal_two_connection_race_has_one_winner(
 ) -> None:
     """Two ResponseTerminalizers race; exactly one terminal, one publish."""
     path = tmp_path / f"{pair}.db"
-    facts = _seed_started(path, "RESP-race", "T-race")
+    facts = seed_started(path, "RESP-race", "T-race")
     bus = CommittedEventBus()
     published: list[str] = []
     publish_lock = threading.Lock()
@@ -576,14 +365,14 @@ def test_response_terminal_two_connection_race_has_one_winner(
     assert published == [winners[0].event.event_uid]
 
     observer = _raw_connection(path)
-    total = sum(_event_count(observer, terminal) for terminal in _RESPONSE_TERMINALS)
+    total = sum(event_count(observer, terminal) for terminal in _RESPONSE_TERMINALS)
     assert total == 1
     observer.close()
 
 
 def _assert_terminal_injection_is_atomic(path: Path, stage: str) -> None:
     """Inject one failure stage into the terminal CAS and prove it left nothing."""
-    facts = _seed_started(path, f"RESP-{stage}", f"T-{stage}")
+    facts = seed_started(path, f"RESP-{stage}", f"T-{stage}")
     bus = CommittedEventBus()
     published: list[str] = []
     bus.subscribe(_publish_sink(published))
@@ -603,7 +392,7 @@ def _assert_terminal_injection_is_atomic(path: Path, stage: str) -> None:
         )
         with pytest.raises(RuntimeError, match="injected failure"):
             terminalizer.complete(facts, response_hash="done")
-        assert sum(_event_count(conn, t) for t in _RESPONSE_TERMINALS) == 0
+        assert sum(event_count(conn, t) for t in _RESPONSE_TERMINALS) == 0
         assert published == []
     finally:
         conn.close()
@@ -617,7 +406,7 @@ def test_response_terminal_failure_injection_is_all_or_nothing(tmp_path: Path) -
     # The same all-or-nothing contract holds for the opening append.
     path = tmp_path / "inject-start.db"
     conn = open_event_log(path)
-    intent = _emit_intent(conn, "T-start-inject")
+    intent = emit_intent(conn, "T-start-inject")
     started_published: list[str] = []
     start_bus = CommittedEventBus()
     start_bus.subscribe(_publish_sink(started_published))
@@ -647,7 +436,7 @@ def test_response_terminal_failure_injection_is_all_or_nothing(tmp_path: Path) -
             committed_event_bus=start_bus,
             failure_injector=_boom_start,
         )
-    assert _event_count(conn, "response.started") == 0
+    assert event_count(conn, "response.started") == 0
     assert started_published == []
     conn.close()
 
@@ -660,8 +449,8 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """§9.4 cancellation-before-first-delta: nothing is rendered, no failure."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = _emit_intent(runtime.conn, "T-early")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    intent = emit_intent(runtime.conn, "T-early")
     entered = threading.Event()
     released = threading.Event()
 
@@ -669,7 +458,7 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
         entered.set()
         released.wait(timeout=5)
         return SimpleNamespace(
-            response_plan=_plan(),
+            response_plan=response_plan(),
             events_emitted=(),
             stream_failure=None,
             written_apart=False,
@@ -680,12 +469,12 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
             attention_channel="voice_notify",
         )
 
-    _script_decide(monkeypatch, _blocking_decide)
+    script_decide(monkeypatch, _blocking_decide)
     cancel = make_response_cancel_callable(runtime)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            _drive_turn_on_own_connection,
+            drive_turn_on_own_connection,
             runtime,
             user_intent_event=intent,
             available_surfaces=frozenset(),
@@ -699,18 +488,18 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
         with pytest.raises(ResponseCancelledError):
             future.result(timeout=10)
 
-    cancelled = _payloads(runtime.conn, "response.cancelled")
+    cancelled = payloads_of(runtime.conn, "response.cancelled")
     assert len(cancelled) == 1
     assert cancelled[0]["cancel_scope"] == "generation"
     assert cancelled[0]["reason"] == "user_stop"
-    assert _event_count(runtime.conn, "response.completed") == 0
+    assert event_count(runtime.conn, "response.completed") == 0
     for surface_type in (
         "surface.response_open",
         "surface.response_chunk",
         "surface.response_emitted",
     ):
-        assert _event_count(runtime.conn, surface_type) == 0, surface_type
-    assert _event_count(runtime.conn, "turn.failed") == 0
+        assert event_count(runtime.conn, surface_type) == 0, surface_type
+    assert event_count(runtime.conn, "turn.failed") == 0
     assert runtime.response_runs.get(response_id) is None
     runtime.conn.close()
 
@@ -720,8 +509,8 @@ def test_cancel_during_action_wait_leaves_action_alive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A5 headline: a response cancel never touches the action it is waiting on."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = _emit_intent(runtime.conn, "T-action")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    intent = emit_intent(runtime.conn, "T-action")
     action_id = "A-live"
     waiting = threading.Event()
     worker_done = threading.Event()
@@ -759,7 +548,7 @@ def test_cancel_during_action_wait_leaves_action_alive(
                 attention_channel="queue_review",
             )
         return SimpleNamespace(
-            response_plan=_plan(),
+            response_plan=response_plan(),
             events_emitted=(),
             stream_failure=None,
             written_apart=False,
@@ -770,12 +559,12 @@ def test_cancel_during_action_wait_leaves_action_alive(
             attention_channel="voice_notify",
         )
 
-    _script_decide(monkeypatch, _dispatching_decide)
+    script_decide(monkeypatch, _dispatching_decide)
     cancel = make_response_cancel_callable(runtime)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            _drive_turn_on_own_connection,
+            drive_turn_on_own_connection,
             runtime,
             user_intent_event=intent,
             available_surfaces=frozenset(),
@@ -799,10 +588,10 @@ def test_cancel_during_action_wait_leaves_action_alive(
             future.result(timeout=10)
         assert time.monotonic() - started_at < 2.0
 
-    assert _event_count(runtime.conn, "response.cancelled") == 1
-    assert _event_count(runtime.conn, "action.cancelled") == 0
+    assert event_count(runtime.conn, "response.cancelled") == 1
+    assert event_count(runtime.conn, "action.cancelled") == 0
     assert worker_done.wait(timeout=5)
-    assert _event_count(runtime.conn, "action.failed") == 1
+    assert event_count(runtime.conn, "action.failed") == 1
     assert runtime.response_runs.get(run.response_id) is None
     runtime.conn.close()
 
@@ -812,41 +601,41 @@ def test_cancel_after_completion_keeps_completed_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A6 / D10: after response.completed a cancel writes nothing."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    _script_decide(monkeypatch, _final_result())
-    intent = _emit_intent(runtime.conn, "T-late")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    script_decide(monkeypatch, final_result())
+    intent = emit_intent(runtime.conn, "T-late")
     drive_turn(
         runtime,
         user_intent_event=intent,
         available_surfaces=frozenset(),
         streaming_enabled=True,
     )
-    response_id = _payloads(runtime.conn, "response.started")[0]["response_id"]
+    response_id = payloads_of(runtime.conn, "response.started")[0]["response_id"]
     assert runtime.response_runs is not None
     # drive_turn's finally unregisters, so re-register to reach the terminal path.
     facts = ResponseRunFacts(
         response_id=response_id,
         response_group_id=stable_response_group_id("T-late"),
         turn_id="T-late",
-        started_event_uid=_rows(runtime.conn, "response.started")[0][2],
+        started_event_uid=rows_of(runtime.conn, "response.started")[0][2],
     )
-    snapshot = LLMSessionFactory(_LLM_CONFIG).snapshot(None)
+    snapshot = LLMSessionFactory(LLM_CONFIG).snapshot(None)
     terminalizer = ResponseTerminalizer(lambda: runtime.conn, close_after=False)
     outcome = terminalizer.cancel(facts, reason="user_stop", cancel_scope="generation")
     assert isinstance(outcome, AlreadyTerminal)
     assert outcome.event.type == "response.completed"
-    assert _event_count(runtime.conn, "response.cancelled") == 0
-    assert _event_count(runtime.conn, "surface.response_emitted") == 1
+    assert event_count(runtime.conn, "response.cancelled") == 0
+    assert event_count(runtime.conn, "surface.response_emitted") == 1
     assert snapshot.model == "gpt-fast"
     runtime.conn.close()
 
 
 def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
     """A-21/A-22: a contended CAS gives up, writes nothing, and retries clean."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
-    facts = _seed_started(runtime.runtime_paths.event_log, "RESP-busy", "T-busy")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
+    facts = seed_started(runtime.runtime_paths.event_log, "RESP-busy", "T-busy")
     assert runtime.response_runs is not None
-    factory = LLMSessionFactory(_LLM_CONFIG)
+    factory = LLMSessionFactory(LLM_CONFIG)
     snapshot = factory.snapshot(None)
     client = factory.create(snapshot, response_id=facts.response_id)
     policy = legacy_full_text_policy(
@@ -883,7 +672,7 @@ def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
         started = time.monotonic()
         assert cancel(run.response_id, "generation", "user_stop") == "timeout"
         assert time.monotonic() - started < 0.25
-        assert _event_count(runtime.conn, "response.cancelled") == 0
+        assert event_count(runtime.conn, "response.cancelled") == 0
         # Read into locals: the token is a property, and mypy would narrow a
         # direct `is False` assertion into the later `is True` one.
         cancelled_after_timeout = run.cancellation_token.is_cancelled
@@ -893,7 +682,7 @@ def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
         holder.close()
 
     assert cancel(run.response_id, "generation", "user_stop") == "cancelled"
-    assert _event_count(runtime.conn, "response.cancelled") == 1
+    assert event_count(runtime.conn, "response.cancelled") == 1
     cancelled_after_retry = run.cancellation_token.is_cancelled
     assert cancelled_after_retry is True
     runtime.conn.close()
@@ -904,15 +693,15 @@ def test_completed_without_delivery_when_render_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """§7 accepted gap, pinned: completed with no surface.response_emitted."""
-    runtime = _make_runtime(tmp_path, lifecycle=True)
-    _script_decide(monkeypatch, _final_result())
+    runtime = make_runtime(tmp_path, lifecycle=True)
+    script_decide(monkeypatch, final_result())
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         msg = "render exploded"
         raise RuntimeError(msg)
 
     monkeypatch.setattr(runtime_module, "render_response", _boom)
-    intent = _emit_intent(runtime.conn, "T-render")
+    intent = emit_intent(runtime.conn, "T-render")
 
     with pytest.raises(RuntimeError, match="render exploded"):
         drive_turn(
@@ -922,10 +711,10 @@ def test_completed_without_delivery_when_render_raises(
             streaming_enabled=True,
         )
 
-    assert _event_count(runtime.conn, "response.completed") == 1
-    assert _event_count(runtime.conn, "surface.response_emitted") == 0
+    assert event_count(runtime.conn, "response.completed") == 1
+    assert event_count(runtime.conn, "surface.response_emitted") == 0
     # The completed terminal already won, so the except-arm's fail is a no-op.
-    assert _event_count(runtime.conn, "response.failed") == 0
+    assert event_count(runtime.conn, "response.failed") == 0
     runtime.conn.close()
 
 
@@ -969,7 +758,7 @@ def test_concurrent_response_runs_use_isolated_request_clients(tmp_path: Path) -
     # bare "database is locked". Production never races that way: L6 bootstrap
     # provisions the log long before any worker thread opens one.
     open_event_log(db_path).close()
-    factory = LLMSessionFactory(_LLM_CONFIG)
+    factory = LLMSessionFactory(LLM_CONFIG)
     barrier = threading.Barrier(2)
 
     clients = []
@@ -1011,7 +800,7 @@ def test_concurrent_response_runs_use_isolated_request_clients(tmp_path: Path) -
     }
 
     conn = open_event_log(db_path)
-    cost_rows = _payloads(conn, "cost.recorded")
+    cost_rows = payloads_of(conn, "cost.recorded")
     assert len(cost_rows) == 2
     assert {row["llm_request_id"] for row in cost_rows} == {
         clients[0].last_llm_request_id,
@@ -1055,14 +844,14 @@ def test_provider_failure_records_cost_and_fails_the_response_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """F27: a raised turn yields one response.failed and re-raises unmasked."""
-    runtime = _make_runtime(tmp_path, lifecycle=True)
+    runtime = make_runtime(tmp_path, lifecycle=True)
 
     def _raising_decide(_trigger: Event, _ctx: DecideContext) -> Any:  # noqa: ANN401
         msg = "provider exploded"
         raise RuntimeError(msg)
 
-    _script_decide(monkeypatch, _raising_decide)
-    intent = _emit_intent(runtime.conn, "T-fail")
+    script_decide(monkeypatch, _raising_decide)
+    intent = emit_intent(runtime.conn, "T-fail")
 
     with pytest.raises(RuntimeError, match="provider exploded"):
         drive_turn(
@@ -1072,11 +861,11 @@ def test_provider_failure_records_cost_and_fails_the_response_once(
             streaming_enabled=True,
         )
 
-    failed = _payloads(runtime.conn, "response.failed")
+    failed = payloads_of(runtime.conn, "response.failed")
     assert len(failed) == 1
     assert failed[0]["reason"] == "turn_raised"
     assert failed[0]["retryable"] is False
-    assert _event_count(runtime.conn, "response.completed") == 0
+    assert event_count(runtime.conn, "response.completed") == 0
     runtime.conn.close()
 
 
@@ -1086,8 +875,8 @@ def test_provider_failure_records_cost_and_fails_the_response_once(
 def test_restart_reconciler_closes_open_response_exactly_once(tmp_path: Path) -> None:
     """A7 / F14: one daemon_restart per open run, idempotent across boots."""
     path = tmp_path / "reconcile.db"
-    open_facts = _seed_started(path, "RESP-open", "T-open")
-    closed_facts = _seed_started(path, "RESP-closed", "T-closed")
+    open_facts = seed_started(path, "RESP-open", "T-open")
+    closed_facts = seed_started(path, "RESP-closed", "T-closed")
     conn = open_event_log(path)
     ResponseTerminalizer(lambda: conn, close_after=False).complete(
         closed_facts,
@@ -1102,8 +891,8 @@ def test_restart_reconciler_closes_open_response_exactly_once(tmp_path: Path) ->
 
     second = reconcile_open_responses(conn, ResponseTerminalizer(lambda: conn, close_after=False))
     assert second == ()
-    assert _event_count(conn, "response.failed") == 1
-    assert _event_count(conn, "response.completed") == 1
+    assert event_count(conn, "response.failed") == 1
+    assert event_count(conn, "response.completed") == 1
     assert open_response_runs(conn) == ()
     conn.close()
 
@@ -1114,8 +903,8 @@ def test_restart_reconciler_closes_open_response_exactly_once(tmp_path: Path) ->
 def _fresh_run(tmp_path: Path, response_id: str = "RESP-fsm") -> Any:  # noqa: ANN401
     """Build one live ResponseRun over a throwaway Event Log."""
     conn = open_event_log(tmp_path / f"{response_id}.db")
-    intent = _emit_intent(conn, "T-fsm")
-    factory = LLMSessionFactory(_LLM_CONFIG)
+    intent = emit_intent(conn, "T-fsm")
+    factory = LLMSessionFactory(LLM_CONFIG)
     snapshot = factory.snapshot(None)
     run = start_response_run(
         conn,
@@ -1185,9 +974,9 @@ def test_cancel_winning_the_completion_cas_never_renders(
     ``render_response``'s stand-in's caller — the terminalizer — so no sleep
     or thread interleaving is involved.
     """
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    _script_decide(monkeypatch, _final_result())
-    intent = _emit_intent(runtime.conn, "T-cas-race")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    script_decide(monkeypatch, final_result())
+    intent = emit_intent(runtime.conn, "T-cas-race")
     rendered: list[object] = []
     def _record_render(*_args: object, **kwargs: object) -> None:
         rendered.append(kwargs)
@@ -1216,10 +1005,10 @@ def test_cancel_winning_the_completion_cas_never_renders(
         )
 
     assert rendered == []
-    assert _event_count(runtime.conn, "response.cancelled") == 1
-    assert _event_count(runtime.conn, "response.completed") == 0
-    assert _event_count(runtime.conn, "response.failed") == 0
-    assert _event_count(runtime.conn, "surface.response_open") == 0
+    assert event_count(runtime.conn, "response.cancelled") == 1
+    assert event_count(runtime.conn, "response.completed") == 0
+    assert event_count(runtime.conn, "response.failed") == 0
+    assert event_count(runtime.conn, "surface.response_open") == 0
     runtime.conn.close()
 
 
@@ -1296,37 +1085,6 @@ def test_cancel_endpoint_registered_only_when_wired() -> None:
         assert foreground.json() == {"outcome": "applied"}
 
 
-def _open_run(
-    runtime: JarvisRuntime,
-    *,
-    response_id: str,
-    turn_id: str,
-    confirmed_playback: Literal[
-        "interrupt_expected_playback_generation",
-        "ignore",
-    ] = "interrupt_expected_playback_generation",
-) -> ResponseRun:
-    """Open and register one live ResponseRun with an explicit interrupt policy."""
-    facts = _seed_started(runtime.runtime_paths.event_log, response_id, turn_id)
-    assert runtime.response_runs is not None
-    factory = LLMSessionFactory(_LLM_CONFIG)
-    snapshot = factory.snapshot(None)
-    run = start_response_run(
-        runtime.conn,
-        turn_id=turn_id,
-        trigger_event_uid=facts.started_event_uid,
-        request_client=factory.create(snapshot, response_id=response_id),
-        policy=legacy_full_text_policy(
-            evidence_snapshot_hash="e",
-            preset_snapshot_hash=snapshot.snapshot_hash,
-        ),
-        response_id=response_id,
-        confirmed_playback=confirmed_playback,
-    )
-    runtime.response_runs.register(run)
-    return run
-
-
 def _response_terminals_for(conn: sqlite3.Connection, response_id: str) -> int:
     """Count this response's own committed terminal rows, by type and payload."""
     row = conn.execute(
@@ -1354,14 +1112,14 @@ def _cancel_foreground(runtime: JarvisRuntime, response_id: str) -> CancelOutcom
 
 def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) -> None:
     """H1: ``foreground_output`` clears policy in L3 and writes no terminal."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
     assert runtime.response_runs is not None
 
-    live = _open_run(runtime, response_id="RESP-live", turn_id="T-live")
+    live = open_run(runtime, response_id="RESP-live", turn_id="T-live")
     authorized = _cancel_foreground(runtime, live.response_id)
     assert isinstance(authorized, CancelPlaybackAuthorized)
     assert authorized.response_id == "RESP-live"
-    assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    assert sum(event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
     assert _response_terminals_for(runtime.conn, "RESP-live") == 0
     live_token_after_authorize = live.cancellation_token.is_cancelled
     assert live_token_after_authorize is False
@@ -1372,10 +1130,10 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
     assert runtime.response_runs.get(live.response_id) is None
     unregistered = _cancel_foreground(runtime, live.response_id)
     assert isinstance(unregistered, CancelPlaybackAuthorized)
-    assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    assert sum(event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
     assert _response_terminals_for(runtime.conn, "RESP-live") == 0
 
-    ignoring = _open_run(
+    ignoring = open_run(
         runtime,
         response_id="RESP-ignore",
         turn_id="T-ignore",
@@ -1384,7 +1142,7 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
     refused = _cancel_foreground(runtime, ignoring.response_id)
     assert isinstance(refused, CancelRejected)
     assert refused.reason == "policy_ignore"
-    assert sum(_event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
+    assert sum(event_count(runtime.conn, t) for t in _RESPONSE_TERMINALS) == 0
     assert _response_terminals_for(runtime.conn, "RESP-ignore") == 0
     ignore_token_after_reject = ignoring.cancellation_token.is_cancelled
     assert ignore_token_after_reject is False
@@ -1399,7 +1157,7 @@ def test_response_activation_downgrades_without_wave1_primitives(
 ) -> None:
     """A11: the lifecycle flag needs the Wave-1 primitives it writes through."""
     reset_realtime_trace()
-    config = _realtime_config(lifecycle=True, cancel=True, wave1=False)
+    config = realtime_config(lifecycle=True, cancel=True, wave1=False)
     with caplog.at_level("WARNING", logger="jarvis.runtime"):
         activation = _wave4_response_activation(config)
 
@@ -1418,12 +1176,12 @@ def test_response_activation_downgrades_without_wave1_primitives(
 
 def test_cancel_flag_downgrades_without_lifecycle_flag(tmp_path: Path) -> None:
     """A11: the cancel seam needs a surviving run lifecycle, and stays unrouted."""
-    config = _realtime_config(lifecycle=False, cancel=True)
+    config = realtime_config(lifecycle=False, cancel=True)
     activation = _wave4_response_activation(config)
     assert activation.reason == "lifecycle_flag_disabled"
     assert activation.flags.independent_response_cancel is False
 
-    runtime = _make_runtime(tmp_path, lifecycle=False, cancel=True)
+    runtime = make_runtime(tmp_path, lifecycle=False, cancel=True)
     assert runtime.response_flags.all_disabled
     assert runtime.response_runs is None
     app = create_app(
@@ -1445,7 +1203,7 @@ def test_cancel_flag_downgrades_without_lifecycle_flag(tmp_path: Path) -> None:
 
 def test_realtime_parent_disabled_keeps_both_switches_off() -> None:
     """``realtime.enabled: false`` short-circuits the whole Wave-4A graph."""
-    config = _realtime_config(lifecycle=True, cancel=True, enabled=False)
+    config = realtime_config(lifecycle=True, cancel=True, enabled=False)
     activation = _wave4_response_activation(config)
     assert activation.flags.all_disabled
     assert activation.reason == "realtime_parent_disabled"
@@ -1476,7 +1234,7 @@ def test_run_client_keeps_the_presets_request_body_identity() -> None:
     ``thinking: {type: disabled}`` never reached the wire and a 3 700-character
     reasoning trace consumed the whole ``max_tokens`` budget.
     """
-    config = json.loads(json.dumps(_LLM_CONFIG))
+    config = json.loads(json.dumps(LLM_CONFIG))
     config["presets"]["fast"]["extra_body"] = {"thinking": {"type": "disabled"}}
     config["presets"]["fast"]["reasoning_effort"] = "minimal"
     factory = LLMSessionFactory(config)
@@ -1484,6 +1242,6 @@ def test_run_client_keeps_the_presets_request_body_identity() -> None:
     client = factory.create(fast, response_id=new_response_id())
     assert client._extra_body == {"thinking": {"type": "disabled"}}  # noqa: SLF001 - request identity seam
     assert client._reasoning_effort == "minimal"  # noqa: SLF001 - request identity seam
-    plain = LLMSessionFactory(_LLM_CONFIG).snapshot("fast")
+    plain = LLMSessionFactory(LLM_CONFIG).snapshot("fast")
     assert fast.snapshot_hash != plain.snapshot_hash
     assert factory.create(plain, response_id=new_response_id())._extra_body == {}  # noqa: SLF001

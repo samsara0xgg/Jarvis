@@ -21,22 +21,18 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from datetime import date, datetime, time
+from datetime import datetime, time
 from pathlib import Path
 from time import localtime, strftime
 from typing import TYPE_CHECKING, Any, NamedTuple
-from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
 
 from jarvis.decision.day_prose import DayAnswer, parse_day_answer
-from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.highlight_tool import DESCRIPTION, build_highlight_tool
-from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.execution.tools import build_default_registry
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
-from jarvis.runtime.highlight_marks import HighlightMarks
-from jarvis.runtime.inherent_loop import _read_day
 from jarvis.runtime.ledger import (
     DayDrafts,
     LedgerContext,
@@ -44,13 +40,9 @@ from jarvis.runtime.ledger import (
     ProseSettings,
     run_day_prose,
 )
-from jarvis.shared import ActionRequest, CallerPrincipal
+from jarvis.shared import CallerPrincipal
 from jarvis.state import daily_records
-from jarvis.state import picture_notes as note_records
-from jarvis.state.attachments import AttachmentRef
 from jarvis.state.day_highlights import MAX_HIGHLIGHTS, merge_highlights
-from jarvis.state.day_line import DaySources
-from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.ledger import LedgerSources, notes_stamp, standing_text
 from jarvis.state.memory_db import (
     HighlightMark,
@@ -61,71 +53,37 @@ from jarvis.state.memory_db import (
     open_memory_db,
     prose_days,
 )
-from tests.integration.test_ledger import (
+from tests.support.day_highlights import (
+    DAY_KEY,
+    TODAY,
+    TODAY_KEY,
+    Dispatcher,
+    ids_of,
+    moment_ms,
+    picture_note,
+    served_day,
+    visit_row,
+    work_id,
+)
+from tests.support.ledger import (
     MIDNIGHT,
-    NOW,
     ZONE,
-    _at,
-    _rows,
-    _run,
-    _world,
-    _Writer,
+    ProseWriter,
+    ledger_at,
+    ledger_rows,
+    ledger_world,
+    run_ledger,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-VANCOUVER = ZoneInfo("America/Vancouver")  # UTC-7 until 11-01: the ledger world's own offset
-DAY = date(2026, 10, 7)  # a complete day of the ledger's world: Chrome 13:00-13:45
-TODAY = date(2026, 10, 8)  # NOW is 15:00 of it
-DAY_KEY, TODAY_KEY = DAY.isoformat(), TODAY.isoformat()
-NOW_MS = int(NOW.timestamp()) * 1000
 WRITTEN = datetime(2100, 1, 1, tzinfo=ZONE)  # a notes cut-off after the real clock of any write
 MARK_TOOL_TEXT = (
     "Mark or unmark something on a day's timeline as one of that day's highlights, when he says "
     "it mattered or that it didn't. Name it by the day and a time it covers. His marks override "
     "your own picks."
 )
-
-
-def _ms(moment: datetime) -> int:
-    return int(moment.timestamp()) * 1000
-
-
-def _work(day: int, hour: int, minute: int = 0) -> str:
-    """The id of the work block that starts at this time."""
-    return f"work-{_ms(_at(day, hour, minute))}"
-
-
-def _visit(
-    src: LedgerSources, uid: str, arrived: datetime, departed: datetime | None = None,
-    place: str | None = None,
-) -> None:
-    """A ``phone.visit_observed`` row, which the day line folds into the stay ``uid``."""
-    payload: dict[str, Any] = {
-        "lat": 1.0, "lng": 2.0, "accuracy_m": 30.0, "arrived_at_ms": _ms(arrived),
-    }
-    if departed is not None:
-        payload["departed_at_ms"] = _ms(departed)
-    if place is not None:
-        payload["place"] = place
-    with closing(open_event_log(src.event_log)) as conn:
-        emit_event(
-            conn, type="phone.visit_observed", payload=payload, ts_epoch_ms=_ms(arrived),
-            event_uid=uid, ingestion_node="phone",
-        )
-
-
-def _picture(src: LedgerSources, picture: str, at: datetime, note: str) -> None:
-    """A picture he sent at ``at``, with the note written for it (ADR 0223)."""
-    with closing(open_event_log(src.event_log)) as conn:
-        emit_event(
-            conn, type="surface.user_intent", ts_epoch_ms=_ms(at),
-            correlation={"turn_id": f"T-{picture}"},
-            payload={"transcript": "x", "turn_id": f"T-{picture}", "attachments": [picture]},
-        )
-    ref = AttachmentRef(picture, "image", "IMG_1.png", 1, "image/png")
-    note_records.append(src.memory_db, ref, note)
 
 
 def _night(prose: str, line: str | None, picks: Sequence[tuple[str, str]] = ()) -> str:
@@ -144,11 +102,6 @@ def _draft(line: str | None, picks: Sequence[tuple[str, str]] = ()) -> str:
     })
 
 
-def _served(src: LedgerSources, day: date = DAY, now_ms: int = NOW_MS) -> dict[str, Any]:
-    """``GET /inherent/day`` for ``day``, as the route folds it."""
-    return _read_day(src.event_log, VANCOUVER, src.memory_db, src.timesink, day, now_ms)
-
-
 # --- the night -----------------------------------------------------------------------------------
 
 
@@ -156,23 +109,23 @@ def test_the_night_stores_prose_line_and_highlights_and_the_day_serves_them(
     tmp_path: Path,
 ) -> None:
     """One answer, one row; the writer is given the day's items and the language of the line."""
-    src = _world(tmp_path)
-    _visit(src, "v-cafe", _at(7, 12), _at(7, 12, 40), "Corner Cafe")
-    work = _work(7, 13)
-    writer = _Writer([_night(
+    src = ledger_world(tmp_path)
+    visit_row(src, "v-cafe", ledger_at(7, 12), ledger_at(7, 12, 40), "Corner Cafe")
+    work = work_id(7, 13)
+    writer = ProseWriter([_night(
         "He had coffee and worked on the ledger.",
         "Coffee first, then a good stretch on the ledger.",
         [("v-cafe", "Coffee at the cafe"), (work, "Ledger work")],
     )])
 
-    outcomes = _run(src, writer, 2, [])
+    outcomes = run_ledger(src, writer, 2, [])
 
     assert outcomes == {"2026-10-07": "landed (39 chars)"}
     (asked,) = writer.asked
     assert "v-cafe | stay | 12:00-12:40 | place=Corner Cafe" in asked
     assert f"{work} | work | 13:00-13:45 | active_s=2700; apps=Chrome" in asked
     assert asked.endswith("LINE LANGUAGE: English")  # his last words, 'hi'
-    day = _served(src)
+    day = served_day(src)
     assert day["line"]["text"] == "Coffee first, then a good stretch on the ledger."
     assert day["line"]["draft"] is False
     assert datetime.fromisoformat(day["line"]["written_at"]).tzinfo is not None
@@ -183,7 +136,7 @@ def test_the_night_stores_prose_line_and_highlights_and_the_day_serves_them(
     assert "The day: He had coffee and worked on the ledger." in standing_text(
         src, MIDNIGHT, notes_as_of=WRITTEN,
     )
-    assert _served(src, TODAY)["line"] is None  # another day has none
+    assert served_day(src, TODAY)["line"] is None  # another day has none
 
 
 @pytest.mark.parametrize(("pinned", "named"), [("zh", "Simplified Chinese"), ("en", "English")])
@@ -191,8 +144,8 @@ def test_a_pinned_reply_language_is_the_language_of_the_line(
     tmp_path: Path, pinned: str, named: str,
 ) -> None:
     """The ``reply_language`` setting wins over his last words, as it does for her replies."""
-    src = _world(tmp_path)
-    writer = _Writer([_night("A quiet day.", "Quiet.")])
+    src = ledger_world(tmp_path)
+    writer = ProseWriter([_night("A quiet day.", "Quiet.")])
     settings = ProseSettings("p", "write", 2, 200, None, pinned)
 
     run_day_prose(
@@ -319,29 +272,29 @@ def test_a_bad_highlight_drops_the_line_whole_and_the_prose_is_stored_without_it
     tmp_path: Path, picks: list[tuple[str, str]], why: str,
 ) -> None:
     """The row lands with its prose; the day serves no line and no highlights."""
-    src = _world(tmp_path)
-    _visit(src, "v-cafe", _at(7, 12), _at(7, 12, 40), "Corner Cafe")
-    writer = _Writer([_night("He had coffee.", "Coffee, then work.", picks)])
+    src = ledger_world(tmp_path)
+    visit_row(src, "v-cafe", ledger_at(7, 12), ledger_at(7, 12, 40), "Corner Cafe")
+    writer = ProseWriter([_night("He had coffee.", "Coffee, then work.", picks)])
 
-    outcomes = _run(src, writer, 2, [])
+    outcomes = run_ledger(src, writer, 2, [])
 
     assert outcomes["2026-10-07"].startswith("landed (14 chars; ")
     assert why in outcomes["2026-10-07"]
-    assert _rows(src)["2026-10-07"] == ["He had coffee."]
+    assert ledger_rows(src)["2026-10-07"] == ["He had coffee."]
     with closing(sqlite3.connect(src.memory_db)) as conn:
         assert conn.execute(
             "SELECT line, highlights FROM day_prose WHERE day = '2026-10-07'",
         ).fetchall() == [(None, None)]
-    day = _served(src)
+    day = served_day(src)
     assert (day["line"], day["highlights"]) == (None, [])
 
 
 def test_a_rejected_night_answer_is_asked_once_more_then_stores_nothing(tmp_path: Path) -> None:
     """Bad prose is today's failure: one more ask, then no row, and the next run tries again."""
-    src = _world(tmp_path)
-    writer = _Writer(["not json at all", _night("## heading", "Out.")])
+    src = ledger_world(tmp_path)
+    writer = ProseWriter(["not json at all", _night("## heading", "Out.")])
 
-    outcomes = _run(src, writer, 2, [])
+    outcomes = run_ledger(src, writer, 2, [])
 
     assert outcomes == {"2026-10-07": "rejected (contains markdown headings or bullets)"}
     assert len(writer.asked) == 2
@@ -353,7 +306,7 @@ def test_a_rejected_night_answer_is_asked_once_more_then_stores_nothing(tmp_path
 
 def test_a_draft_is_not_prose_for_the_ledger_or_for_the_nights_to_write(tmp_path: Path) -> None:
     """Drafts do not show in "The day", do not move its cache key and do not stop the night."""
-    src = _world(tmp_path)
+    src = ledger_world(tmp_path)
     before_stamp = notes_stamp(src)
     before_text = standing_text(src, MIDNIGHT, notes_as_of=WRITTEN)
     for day in ("2026-10-05", DAY_KEY):
@@ -367,10 +320,10 @@ def test_a_draft_is_not_prose_for_the_ledger_or_for_the_nights_to_write(tmp_path
     assert standing_text(src, MIDNIGHT, notes_as_of=WRITTEN) == before_text
     assert "A draft line." not in before_text
 
-    writer = _Writer([
+    writer = ProseWriter([
         _night("Gamma wrote back.", "Mail day."), _night("A short Wednesday.", "Wed."),
     ])
-    outcomes = _run(src, writer, 3, [])
+    outcomes = run_ledger(src, writer, 3, [])
 
     assert [outcomes[day].split(" ")[0] for day in sorted(outcomes)] == ["landed", "landed"]
     assert prose_days(src.memory_db) == {"2026-10-05", "2026-10-06", "2026-10-07"}
@@ -381,28 +334,35 @@ def test_the_nights_row_replaces_the_draft_and_a_night_with_no_line_leaves_the_d
     tmp_path: Path,
 ) -> None:
     """The current line is the newest row that has one, whoever wrote it."""
-    src = _world(tmp_path)
-    _visit(src, "v-cafe", _at(7, 12), _at(7, 12, 40), "Corner Cafe")
-    drafted = [{"id": "v-cafe", "label": "Draft coffee", "start_ms": _ms(_at(7, 12))}]
+    src = ledger_world(tmp_path)
+    visit_row(src, "v-cafe", ledger_at(7, 12), ledger_at(7, 12, 40), "Corner Cafe")
+    drafted = [{"id": "v-cafe", "label": "Draft coffee", "start_ms": moment_ms(ledger_at(7, 12))}]
     append_day_draft(
         src.memory_db, day=DAY_KEY, line="Draft line.", highlights=drafted,
         model="m", input_chars=1, output_chars=1,
     )
-    day = _served(src)
+    day = served_day(src)
     assert day["line"]["draft"] is True
     assert day["line"]["text"] == "Draft line."
     assert [h["label"] for h in day["highlights"]] == ["Draft coffee"]
 
     unusable = _night("A short Wednesday.", "Out.", [("nope", "Gone")])
-    assert "line dropped" in _run(src, _Writer([unusable]), 2, [])[DAY_KEY]
-    assert _served(src)["line"]["text"] == "Draft line."  # the draft stands
+    assert "line dropped" in run_ledger(src, ProseWriter([unusable]), 2, [])[DAY_KEY]
+    assert served_day(src)["line"]["text"] == "Draft line."  # the draft stands
 
     append_day_prose(
-        src.memory_db, day=DAY_KEY, text="Night prose.", model="m", input_chars=1,
-        output_chars=1, line="Night line.",
-        highlights=[{"id": "v-cafe", "label": "Night coffee", "start_ms": _ms(_at(7, 12))}],
+        src.memory_db,
+        day=DAY_KEY,
+        text="Night prose.",
+        model="m",
+        input_chars=1,
+        output_chars=1,
+        line="Night line.",
+        highlights=[
+            {"id": "v-cafe", "label": "Night coffee", "start_ms": moment_ms(ledger_at(7, 12))}
+        ],
     )
-    day = _served(src)
+    day = served_day(src)
     assert (day["line"]["text"], day["line"]["draft"]) == ("Night line.", False)
     assert [h["label"] for h in day["highlights"]] == ["Night coffee"]
     with closing(open_memory_db(src.memory_db)) as conn:
@@ -439,7 +399,10 @@ def test_a_day_prose_table_from_before_this_adr_is_migrated_and_its_rows_stay_pr
 
 
 def _schedule(
-    tmp_path: Path, src: LedgerSources, writer: _Writer, draft_prompt: str | None = "draft",
+    tmp_path: Path,
+    src: LedgerSources,
+    writer: ProseWriter,
+    draft_prompt: str | None = "draft",
 ) -> DaySummarySchedule:
     """The nightly schedule over the ledger's world, its prose client the fake ``writer``."""
     prose = ProseSettings("p", "night", 7, 800, draft_prompt)
@@ -465,14 +428,14 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
     tmp_path: Path,
 ) -> None:
     """The cadence on a fake clock: the items (ids, states, ends) and 30 minutes, both."""
-    src = _world(tmp_path)  # today 10-08: work 10:00-11:00, one talk at 14:00
-    work = _work(8, 10)
-    writer = _Writer([])
+    src = ledger_world(tmp_path)  # today 10-08: work 10:00-11:00, one talk at 14:00
+    work = work_id(8, 10)
+    writer = ProseWriter([])
     schedule = _schedule(tmp_path, src, writer)
 
     def tick(hour: int, minute: int, *script: object) -> str:
         writer.script[:] = list(script)
-        return schedule.draft(_at(8, hour, minute))
+        return schedule.draft(ledger_at(8, hour, minute))
 
     # 10:05 - the first draft of the day, from two items
     first = tick(10, 5, _draft("Working since ten.", [(work, "Ledger work")]))
@@ -486,7 +449,7 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
 
     # 10:20 - half an hour has not passed; 10:36 - it has, but nothing changed
     assert tick(10, 20) == "waiting"
-    _visit(src, "v-cafe", _at(8, 10, 10), None, "Corner Cafe")
+    visit_row(src, "v-cafe", ledger_at(8, 10, 10), None, "Corner Cafe")
     assert tick(10, 34) == "waiting"  # changed, but 29 minutes
     assert len(writer.asked) == 1
     assert tick(10, 36, _draft("Working, and at the cafe.", [("v-cafe", "Cafe")])) == (
@@ -514,94 +477,62 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
 
     # tomorrow starts clean: the reminder due at 09:00 on 10-09 is its first item
     writer.script[:] = [_draft("A reminder at nine.")]
-    assert schedule.draft(_at(9, 9, 30)) == "landed (0 highlights)"
+    assert schedule.draft(ledger_at(9, 9, 30)) == "landed (0 highlights)"
     assert _line(src, "2026-10-09") == ("A reminder at nine.", True)
 
 
 def test_a_draft_needs_a_prompt_a_ledger_and_items(tmp_path: Path) -> None:
     """No ``draft_prompt`` or no ledger is off; a day with nothing on its line is not drafted."""
-    src = _world(tmp_path)
-    writer = _Writer([])
-    assert _schedule(tmp_path, src, writer, draft_prompt=None).draft(_at(8, 10, 5)) == "off"
+    src = ledger_world(tmp_path)
+    writer = ProseWriter([])
+    assert _schedule(tmp_path, src, writer, draft_prompt=None).draft(ledger_at(8, 10, 5)) == "off"
     schedule = _schedule(tmp_path, src, writer)
-    assert schedule.draft(_at(4, 10, 5)) == "no items"  # nothing was recorded on 10-04
+    assert schedule.draft(ledger_at(4, 10, 5)) == "no items"  # nothing was recorded on 10-04
     bare = DaySummarySchedule(
         memory=MemorySettings(db_path=src.memory_db, audio_dir=tmp_path / "audio"),
         settings=DaySummarySettings(at=time(5, 0), preset="p", prompt="s"),
-        llm_config={}, event_log_path=src.event_log, pricing_table={},
+        llm_config={},
+        event_log_path=src.event_log,
+        pricing_table={},
     )
-    assert bare.draft(_at(8, 10, 5)) == "off"
+    assert bare.draft(ledger_at(8, 10, 5)) == "off"
     assert writer.asked == []
 
 
 def test_a_restart_keeps_the_half_hour_since_the_last_draft(tmp_path: Path) -> None:
     """The last draft's time is read back from memory.db, so a restart does not draft at once."""
-    src = _world(tmp_path)
+    src = ledger_world(tmp_path)
     with closing(open_memory_db(src.memory_db)) as conn, conn:
         conn.execute(
             "INSERT INTO day_prose (id, day, ts, text, model, input_chars, output_chars, line, "
             "highlights, draft) VALUES ('d1', ?, ?, '', 'm', 1, 1, 'Before the restart.', '[]', 1)",
-            (TODAY_KEY, _at(8, 10).isoformat()),
+            (TODAY_KEY, ledger_at(8, 10).isoformat()),
         )
-    work = _work(8, 10)
-    writer = _Writer([_draft("After the restart.", [(work, "Ledger work")])])
+    work = work_id(8, 10)
+    writer = ProseWriter([_draft("After the restart.", [(work, "Ledger work")])])
     drafts = DayDrafts(
-        src, ProseSettings("p", "night", 7, 800, "draft"), writer,  # type: ignore[arg-type]
-        event_log_path=src.event_log, pricing_table={},
+        src,
+        ProseSettings("p", "night", 7, 800, "draft"),
+        writer,  # type: ignore[arg-type]
+        event_log_path=src.event_log,
+        pricing_table={},
     )
 
-    assert drafts.tick(_at(8, 10, 10)) == "waiting"
-    assert drafts.tick(_at(8, 10, 31)) == "landed (1 highlights)"
+    assert drafts.tick(ledger_at(8, 10, 10)) == "waiting"
+    assert drafts.tick(ledger_at(8, 10, 31)) == "landed (1 highlights)"
     assert _line(src) == ("After the restart.", True)
 
 
 # --- his marks ------------------------------------------------------------------------------------
 
 
-def _marks(src: LedgerSources) -> HighlightMarks:
-    return HighlightMarks(
-        src.event_log, DaySources(ZONE, src.timesink, src.memory_db, None, None),
-        clock=lambda: NOW_MS / 1000,
-    )
-
-
-class Dispatcher:
-    """The real registry, as the model calls it: one tool call, its JSON answer."""
-
-    def __init__(self, tmp_path: Path, src: LedgerSources) -> None:
-        """The registry with the runtime's marker, and a log to dispatch against."""
-        self.registry = build_default_registry(highlight_marker=_marks(src).mark)
-        self.paths = bootstrap_runtime(tmp_path / "runtime")
-        self.conn = open_event_log(self.paths.event_log)
-        self.calls = 0
-
-    def __call__(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Call ``mark_highlight`` with ``args``; the tool's answer or its error."""
-        self.calls += 1
-        request = ActionRequest(
-            action_id=f"A-{self.calls}", tool_name="mark_highlight", target_entity_ref=None,
-            caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L1", arguments=args,
-            authorization_lease=None, run_id=None, turn_id=None,
-        )
-        lifecycle = ActionLifecycle()
-        lifecycle.register(request.action_id)
-        lifecycle.transition(request.action_id, "authorized")
-        bundle = self.registry.dispatch(request, self.conn, self.paths, lifecycle)
-        out = json.loads(bundle.slots[0].tool_output or "{}")
-        return out if isinstance(out, dict) else {"value": out}
-
-
 @pytest.fixture
 def marked_day(tmp_path: Path) -> tuple[LedgerSources, Dispatcher]:
     """10-07: a stay 12:00-13:30 with a picture inside it at 12:30, and the 13:00-13:45 work."""
-    src = _world(tmp_path)
-    _visit(src, "v-cafe", _at(7, 12), _at(7, 13, 30), "Corner Cafe")
-    _picture(src, "a" * 32, _at(7, 12, 30), "A bowl of pho.")
+    src = ledger_world(tmp_path)
+    visit_row(src, "v-cafe", ledger_at(7, 12), ledger_at(7, 13, 30), "Corner Cafe")
+    picture_note(src, "a" * 32, ledger_at(7, 12, 30), "A bowl of pho.")
     return src, Dispatcher(tmp_path, src)
-
-
-def _ids(day: dict[str, Any]) -> list[str]:
-    return [h["id"] for h in day["highlights"]]
 
 
 def test_the_tool_has_the_approved_description_and_is_the_models_alone(
@@ -627,21 +558,27 @@ def test_the_time_he_names_resolves_to_the_shortest_item_that_covers_it(
     src, call = marked_day
     first = call({"day": "2026-10-07", "time": "12:30"})
     assert first == {
-        "status": "marked", "day": DAY_KEY, "kind": "picture", "when": "12:30",
+        "status": "marked",
+        "day": DAY_KEY,
+        "kind": "picture",
+        "when": "12:30",
         "label": "picture 12:30",
     }
     second = call({"day": "yesterday", "time": "12:45", "label": "Long lunch"})
     assert second == {
-        "status": "marked", "day": DAY_KEY, "kind": "stay", "when": "12:00-13:30",
+        "status": "marked",
+        "day": DAY_KEY,
+        "kind": "stay",
+        "when": "12:00-13:30",
         "label": "Long lunch",
     }
     third = call({"day": "2026-10-07", "time": "13:10", "label": "Ledger"})  # the work block
     assert (third["kind"], third["when"]) == ("work", "13:00-13:45")
-    day = _served(src)
+    day = served_day(src)
     assert [(h["id"], h["label"], h["by"]) for h in day["highlights"]] == [
         ("v-cafe", "Long lunch", "him"),
         (f"picture-{'a' * 32}", "picture 12:30", "him"),
-        (_work(7, 13), "Ledger", "him"),
+        (work_id(7, 13), "Ledger", "him"),
     ]
 
 
@@ -660,7 +597,9 @@ def test_the_time_he_names_resolves_to_the_shortest_item_that_covers_it(
     ],
 )
 def test_a_time_nothing_covers_or_a_day_or_time_that_is_not_one_is_a_clear_error(
-    marked_day: tuple[LedgerSources, Dispatcher], args: dict[str, Any], code: str,
+    marked_day: tuple[LedgerSources, Dispatcher],
+    args: dict[str, Any],
+    code: str,
 ) -> None:
     """No mark is kept, and the model is told why."""
     src, call = marked_day
@@ -676,61 +615,80 @@ def test_unmarking_removes_her_pick_and_the_latest_mark_of_an_item_wins(
 ) -> None:
     """His no overrides her pick; his yes after his no brings it back, with his label."""
     src, call = marked_day
-    work = _work(7, 13)
+    work = work_id(7, 13)
     append_day_prose(
-        src.memory_db, day=DAY_KEY, text="Night prose.", model="m", input_chars=1,
-        output_chars=1, line="Night line.", highlights=[
-            {"id": "v-cafe", "label": "Coffee", "start_ms": _ms(_at(7, 12))},
-            {"id": work, "label": "Ledger work", "start_ms": _ms(_at(7, 13))},
+        src.memory_db,
+        day=DAY_KEY,
+        text="Night prose.",
+        model="m",
+        input_chars=1,
+        output_chars=1,
+        line="Night line.",
+        highlights=[
+            {"id": "v-cafe", "label": "Coffee", "start_ms": moment_ms(ledger_at(7, 12))},
+            {"id": work, "label": "Ledger work", "start_ms": moment_ms(ledger_at(7, 13))},
         ],
     )
-    assert _ids(_served(src)) == ["v-cafe", work]
+    assert ids_of(served_day(src)) == ["v-cafe", work]
 
     gone = call({"day": DAY_KEY, "time": "13:10", "on": False})
     assert gone == {"status": "unmarked", "day": DAY_KEY, "kind": "work", "when": "13:00-13:45"}
-    assert _ids(_served(src)) == ["v-cafe"]
-    assert _served(src)["line"]["text"] == "Night line."  # the line is hers and stays
+    assert ids_of(served_day(src)) == ["v-cafe"]
+    assert served_day(src)["line"]["text"] == "Night line."  # the line is hers and stays
 
     back = call({"day": DAY_KEY, "time": "13:10", "label": "Ledger, again"})
     assert back["label"] == "Ledger, again"
-    assert [(h["id"], h["label"], h["by"]) for h in _served(src)["highlights"]] == [
-        ("v-cafe", "Coffee", "her"), (work, "Ledger, again", "him"),
+    assert [(h["id"], h["label"], h["by"]) for h in served_day(src)["highlights"]] == [
+        ("v-cafe", "Coffee", "her"),
+        (work, "Ledger, again", "him"),
     ]
     kept = call({"day": DAY_KEY, "time": "13:10"})  # marked again with no label: hers is kept
     assert kept["label"] == "Ledger work"
     assert call({"day": DAY_KEY, "time": "12:45", "on": False})["status"] == "unmarked"
-    assert _ids(_served(src)) == [work]
+    assert ids_of(served_day(src)) == [work]
 
 
 def test_his_marks_are_never_cut_by_the_cap_and_her_picks_fill_the_slots_left(
     tmp_path: Path,
 ) -> None:
     """Five of hers, then three of his: all three of his and the first two of hers."""
-    src = _world(tmp_path)
+    src = ledger_world(tmp_path)
     for n in range(1, 9):
-        _visit(src, f"v{n}", _at(7, 6 + n), _at(7, 6 + n, 30), f"Place {n}")
-    picks = [{"id": f"v{n}", "label": f"Hers {n}", "start_ms": _ms(_at(7, 6 + n))}
-             for n in range(1, 6)]
+        visit_row(src, f"v{n}", ledger_at(7, 6 + n), ledger_at(7, 6 + n, 30), f"Place {n}")
+    picks = [
+        {"id": f"v{n}", "label": f"Hers {n}", "start_ms": moment_ms(ledger_at(7, 6 + n))}
+        for n in range(1, 6)
+    ]
     append_day_prose(
-        src.memory_db, day=DAY_KEY, text="Night prose.", model="m", input_chars=1,
-        output_chars=1, line="Night line.", highlights=picks,
+        src.memory_db,
+        day=DAY_KEY,
+        text="Night prose.",
+        model="m",
+        input_chars=1,
+        output_chars=1,
+        line="Night line.",
+        highlights=picks,
     )
     call = Dispatcher(tmp_path, src)
-    assert _ids(_served(src)) == ["v1", "v2", "v3", "v4", "v5"]
+    assert ids_of(served_day(src)) == ["v1", "v2", "v3", "v4", "v5"]
 
     for n in (8, 7, 6):
         call({"day": DAY_KEY, "time": f"{6 + n:02d}:10"})
 
-    served = _served(src)["highlights"]
+    served = served_day(src)["highlights"]
     assert [(h["id"], h["by"]) for h in served] == [
-        ("v1", "her"), ("v2", "her"), ("v6", "him"), ("v7", "him"), ("v8", "him"),
+        ("v1", "her"),
+        ("v2", "her"),
+        ("v6", "him"),
+        ("v7", "him"),
+        ("v8", "him"),
     ]
     assert len(served) == MAX_HIGHLIGHTS
     for n in (5, 4):  # and four of his leave one of hers
         call({"day": DAY_KEY, "time": f"{6 + n:02d}:10"})
-    assert [h["id"] for h in _served(src)["highlights"]] == ["v4", "v5", "v6", "v7", "v8"]
+    assert [h["id"] for h in served_day(src)["highlights"]] == ["v4", "v5", "v6", "v7", "v8"]
     call({"day": DAY_KEY, "time": "09:10"})  # a sixth of his is still his
-    assert len(_served(src)["highlights"]) == 6
+    assert len(served_day(src)["highlights"]) == 6
 
 
 class Merge(NamedTuple):
@@ -744,28 +702,68 @@ class Merge(NamedTuple):
 
 
 MERGES: list[Merge] = [
-    Merge("hers alone", [("a", "A", 3), ("b", "B", 1)], [], None,
-          [("b", "B", "her"), ("a", "A", "her")]),
-    Merge("his label over hers", [("a", "A", 1)], [("a", True, "Mine", "stay", 1)], None,
-          [("a", "Mine", "him")]),
-    Merge("her label when he gives none", [("a", "A", 1)], [("a", True, None, "stay", 1)], None,
-          [("a", "A", "him")]),
-    Merge("a plain label when neither gave one", [], [("a", True, None, "stay", 0)], None,
-          [("a", "stay 17:00", "him")]),
-    Merge("unmarked is gone, unmarked and never picked is nothing",
-          [("a", "A", 1), ("b", "B", 2)],
-          [("a", False, None, "stay", 1), ("z", False, None, "x", 9)], None, [("b", "B", "her")]),
-    Merge("an id off the line is skipped, by whomever",
-          [("a", "A", 1), ("b", "B", 2)], [("c", True, "C", "stay", 3)], {"a"},
-          [("a", "A", "her")]),
-    Merge("her stale pick leaves its slot to the next",
-          [("s", "S", 1), ("a", "A", 2), ("b", "B", 3), ("c", "C", 4), ("d", "D", 5)],
-          [("x", True, "X", "k", 0)], {"x", "a", "b", "c", "d"},
-          [("x", "X", "him"), ("a", "A", "her"), ("b", "B", "her"), ("c", "C", "her"),
-           ("d", "D", "her")]),
-    Merge("by start time, then id", [("b", "B", 1), ("a", "A", 1)],
-          [("c", True, "C", "k", 0)], None,
-          [("c", "C", "him"), ("a", "A", "her"), ("b", "B", "her")]),
+    Merge(
+        "hers alone",
+        [("a", "A", 3), ("b", "B", 1)],
+        [],
+        None,
+        [("b", "B", "her"), ("a", "A", "her")],
+    ),
+    Merge(
+        "his label over hers",
+        [("a", "A", 1)],
+        [("a", True, "Mine", "stay", 1)],
+        None,
+        [("a", "Mine", "him")],
+    ),
+    Merge(
+        "her label when he gives none",
+        [("a", "A", 1)],
+        [("a", True, None, "stay", 1)],
+        None,
+        [("a", "A", "him")],
+    ),
+    Merge(
+        "a plain label when neither gave one",
+        [],
+        [("a", True, None, "stay", 0)],
+        None,
+        [("a", "stay 17:00", "him")],
+    ),
+    Merge(
+        "unmarked is gone, unmarked and never picked is nothing",
+        [("a", "A", 1), ("b", "B", 2)],
+        [("a", False, None, "stay", 1), ("z", False, None, "x", 9)],
+        None,
+        [("b", "B", "her")],
+    ),
+    Merge(
+        "an id off the line is skipped, by whomever",
+        [("a", "A", 1), ("b", "B", 2)],
+        [("c", True, "C", "stay", 3)],
+        {"a"},
+        [("a", "A", "her")],
+    ),
+    Merge(
+        "her stale pick leaves its slot to the next",
+        [("s", "S", 1), ("a", "A", 2), ("b", "B", 3), ("c", "C", 4), ("d", "D", 5)],
+        [("x", True, "X", "k", 0)],
+        {"x", "a", "b", "c", "d"},
+        [
+            ("x", "X", "him"),
+            ("a", "A", "her"),
+            ("b", "B", "her"),
+            ("c", "C", "her"),
+            ("d", "D", "her"),
+        ],
+    ),
+    Merge(
+        "by start time, then id",
+        [("b", "B", 1), ("a", "A", 1)],
+        [("c", True, "C", "k", 0)],
+        None,
+        [("c", "C", "him"), ("a", "A", "her"), ("b", "B", "her")],
+    ),
 ]
 
 
@@ -786,10 +784,16 @@ def test_recall_returns_the_line_and_the_merged_highlights_with_the_days_summary
     """Label and time with the summary; a day with neither keeps the old shape."""
     src, call = marked_day
     append_day_prose(
-        src.memory_db, day=DAY_KEY, text="Night prose.", model="m", input_chars=1,
-        output_chars=1, line="Coffee, then work.", highlights=[
-            {"id": "v-cafe", "label": "Coffee", "start_ms": _ms(_at(7, 12))},
-            {"id": _work(7, 13), "label": "Ledger work", "start_ms": _ms(_at(7, 13))},
+        src.memory_db,
+        day=DAY_KEY,
+        text="Night prose.",
+        model="m",
+        input_chars=1,
+        output_chars=1,
+        line="Coffee, then work.",
+        highlights=[
+            {"id": "v-cafe", "label": "Coffee", "start_ms": moment_ms(ledger_at(7, 12))},
+            {"id": work_id(7, 13), "label": "Ledger work", "start_ms": moment_ms(ledger_at(7, 13))},
         ],
     )
     call({"day": DAY_KEY, "time": "12:30", "label": "Pho"})  # his, on the picture
@@ -798,12 +802,15 @@ def test_recall_returns_the_line_and_the_merged_highlights_with_the_days_summary
     recalled = daily_records.recall(src.memory_db, {"from": "2026-10-07", "to": "2026-10-09"})
 
     (told,) = recalled["summaries"]
-    clock = strftime("%H:%M", localtime(_ms(_at(7, 12, 30)) / 1000))  # recall: the machine's
-    coffee = strftime("%H:%M", localtime(_ms(_at(7, 12)) / 1000))
+    clock = strftime(
+        "%H:%M", localtime(moment_ms(ledger_at(7, 12, 30)) / 1000)
+    )  # recall: the machine's
+    coffee = strftime("%H:%M", localtime(moment_ms(ledger_at(7, 12)) / 1000))
     assert told["day"] == DAY_KEY
     assert told["line"] == "Coffee, then work."
     assert told["highlights"] == [
-        {"label": "Coffee", "time": coffee}, {"label": "Pho", "time": clock},
+        {"label": "Coffee", "time": coffee},
+        {"label": "Pho", "time": clock},
     ]
     assert told["summary"].startswith("## 2026-10-07")
     # a day with a summary and nothing from the day line is exactly what it was
@@ -830,8 +837,10 @@ def test_the_shipped_ledger_config_asks_for_json_with_a_line_and_for_drafts() ->
     prose = settings.prose
     assert prose.reply_language == "zh"
     assert prose.draft_prompt is not None
-    for prompt, keys in ((prose.prompt, ('"prose"', '"line"', '"highlights"')),
-                         (prose.draft_prompt, ('"line"', '"highlights"'))):
+    for prompt, keys in (
+        (prose.prompt, ('"prose"', '"line"', '"highlights"')),
+        (prose.draft_prompt, ('"line"', '"highlights"')),
+    ):
         assert "JSON" in prompt
         assert all(key in prompt for key in keys)
         assert "LINE LANGUAGE" in prompt

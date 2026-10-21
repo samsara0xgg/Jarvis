@@ -32,17 +32,17 @@ from jarvis.surface import (
     voice_session,
     voice_tts,
 )
-from tests.integration.test_answer_waits_for_allen import _answer, _played
-from tests.integration.test_settings import DEVICES, YAML
-from tests.integration.test_wave2_streaming_media import (
-    _Behavior,
-    _CallbackPump,
-    _config,
-    _FakeProvider,
-    _player,
-    _submit_response,
+from tests.support.answer_hold import answer_of, played_texts
+from tests.support.media import (
+    Behavior,
+    CallbackPump,
+    FakeProvider,
+    make_player,
+    media_config,
+    submit_response,
 )
-from tests.integration.test_wave3_single_audio_ingress import _wait_until
+from tests.support.settings import DEVICES, YAML
+from tests.support.voice_input import wait_until_true
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -218,42 +218,45 @@ def test_nothing_is_touched_while_the_mac_sleeps(monkeypatch: pytest.MonkeyPatch
 def test_an_answer_arriving_during_the_refresh_plays_after_it(tmp_path: Path) -> None:
     """Parked while held, still parked when Allen's own hold ends, played on release."""
     db_path = tmp_path / "hold.db"
-    provider = _FakeProvider(
+    provider = FakeProvider(
         {
             # A second of audio, so the first answer is still playing when asked.
-            ("R-first", 0): _Behavior("success", final_delay_s=0.3, samples=8_000),
-            ("R-late", 0): _Behavior("success"),
+            ("R-first", 0): Behavior("success", final_delay_s=0.3, samples=8_000),
+            ("R-late", 0): Behavior("success"),
         },
         candidate_count=1,
     )
-    player = _player(ring_seconds=2.0)
+    player = make_player(ring_seconds=2.0)
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=_config(),
+        config=media_config(),
         start_player=False,
     )
     conn = open_event_log(db_path)
     try:
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, _answer(conn, "R-first", "T-first")))
-            _wait_until(lambda: bool(provider.opened))
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, answer_of(conn, "R-first", "T-first")))
+            wait_until_true(lambda: bool(provider.opened))
             # Something is playing: the refresh must not close the player.
             assert pipeline.hold_for_devices(held=True) is False
             pipeline.hold_for_devices(held=False)
-            _wait_until(lambda: _played(tmp_path / "hold.db") == ["R-first"], timeout_s=5.0)
-            _wait_until(lambda: not pipeline.is_output_active())
+            wait_until_true(
+                lambda: played_texts(tmp_path / "hold.db") == ["R-first"], timeout_s=5.0
+            )
+            wait_until_true(lambda: not pipeline.is_output_active())
             assert pipeline.hold_for_devices(held=True) is True
-            asyncio.run(_submit_response(pipeline, _answer(conn, "R-late", "T-late")))
+            asyncio.run(submit_response(pipeline, answer_of(conn, "R-late", "T-late")))
             pipeline.hold_output(held=True)
             pipeline.hold_output(held=False)
             time.sleep(0.3)
             assert [rid for rid, _ in provider.opened] == ["R-first"]
             pipeline.hold_for_devices(held=False)
-            _wait_until(
-                lambda: _played(tmp_path / "hold.db") == ["R-first", "R-late"], timeout_s=5.0,
+            wait_until_true(
+                lambda: played_texts(tmp_path / "hold.db") == ["R-first", "R-late"],
+                timeout_s=5.0,
             )
     finally:
         assert pipeline.close()
@@ -264,7 +267,9 @@ def test_an_answer_arriving_during_the_refresh_plays_after_it(tmp_path: Path) ->
 
 
 def _system(
-    monkeypatch: pytest.MonkeyPatch, inputs: dict[str, int], outputs: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    inputs: dict[str, int],
+    outputs: dict[str, int],
 ) -> dict[str, int]:
     """A fake CoreAudio: the named devices, and the defaults kept under ``in`` / ``out``."""
     defaults = {"in": next(iter(inputs.values())), "out": next(iter(outputs.values()))}
@@ -295,7 +300,8 @@ def test_the_watch_re_reads_only_when_the_device_to_be_on_changes(
         refreshes.append((input_device, output_device))
         # An absent pick opens the default, so the open never fails on it.
         ingress.capability = _capability(
-            voice_audio.InputCapabilityState.AVAILABLE, ingress.capability.version + 1,
+            voice_audio.InputCapabilityState.AVAILABLE,
+            ingress.capability.version + 1,
         )
         return "refreshed speaker=started microphone=started"
 
@@ -371,14 +377,16 @@ def test_an_absent_pick_follows_the_default_and_the_pick_coming_back_switches_to
         await asyncio.sleep(0.1)
         # The mic's own name stays: the backend finds it absent and opens the default.
         assert coordinator.refresh_devices.call_args_list[0].kwargs == {
-            "input_device": "reSpeaker", "output_device": None,
+            "input_device": "reSpeaker",
+            "output_device": None,
         }
         assert coordinator.refresh_devices.call_count == 1
         inputs["reSpeaker"], outputs["Multi-Output Device 2"] = 142, 63  # plugged back in
         await asyncio.sleep(0.1)
         assert coordinator.refresh_devices.call_count == 2
         assert coordinator.refresh_devices.call_args.kwargs == {
-            "input_device": "reSpeaker", "output_device": "Multi-Output Device 2",
+            "input_device": "reSpeaker",
+            "output_device": "Multi-Output Device 2",
         }
         watch.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -418,7 +426,10 @@ def test_the_watch_keeps_trying_a_microphone_that_is_there_but_shut(
     async def _scenario() -> None:
         watch = asyncio.create_task(
             inherent_loop._watch_audio_devices(
-                coordinator, ingress, None, inherent_loop._AudioDeviceChoice(None, None),
+                coordinator,
+                ingress,
+                None,
+                inherent_loop._AudioDeviceChoice(None, None),
             ),
         )
         await _until(lambda: len(refreshes) == 4)
@@ -468,7 +479,10 @@ def test_the_watch_waits_while_gpt_live_talks(monkeypatch: pytest.MonkeyPatch) -
     async def _scenario() -> None:
         watch = asyncio.create_task(
             inherent_loop._watch_audio_devices(
-                coordinator, ingress, live, inherent_loop._AudioDeviceChoice(None, None),
+                coordinator,
+                ingress,
+                live,
+                inherent_loop._AudioDeviceChoice(None, None),
             ),
         )
         await asyncio.sleep(0.05)

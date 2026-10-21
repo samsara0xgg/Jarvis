@@ -11,17 +11,17 @@ import urllib.request
 import webbrowser
 from typing import TYPE_CHECKING
 
-from tests.integration.test_mcp_tools import (
+from tests.support.mcp import (
     oauth_url as oauth_url,  # noqa: PLC0414 — re-export fixture.
 )
-from tests.integration.test_plugin_connections import (
-    _open,
-    _package,
-    _service,
-    _wait,
-)
-from tests.integration.test_plugin_connections import (
+from tests.support.plugin_connections import (
     fixture as fixture,  # noqa: PLC0414 — re-export fixture.
+)
+from tests.support.plugin_connections import (
+    make_service,
+    open_plugin,
+    wait_for_request,
+    write_package,
 )
 
 if TYPE_CHECKING:
@@ -29,23 +29,23 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from tests.integration.test_flat_tool_dispatch import _Fixture
+    from tests.support.tool_world import ToolWorld
 
 
 def test_the_login_link_is_in_the_request_only_while_it_waits_and_the_brain_opens_nothing(
-    tmp_path: Path, fixture: _Fixture, oauth_url: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fixture: ToolWorld, oauth_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A paired device reads the link; no browser opens here; no token or credential is read."""
     opened: list[str] = []
     monkeypatch.setattr(webbrowser, "open", lambda url, *_a, **_k: opened.append(url))
-    _package(tmp_path, "oauth", {"oauth": {"url": oauth_url, "auth": "oauth"}})
-    service = _service(tmp_path, fixture, open_url=None)
+    write_package(tmp_path, "oauth", {"oauth": {"url": oauth_url, "auth": "oauth"}})
+    service = make_service(tmp_path, fixture, open_url=None)
     try:
-        request_id = _open(service, "oauth")
+        request_id = open_plugin(service, "oauth")
         assert "auth_url" not in service.read()["request"]
         assert service.login_waiting() is None  # nothing to log in to yet
         service.action("connect", {"request_id": request_id})
-        waiting = _wait(service, "authorizing")
+        waiting = wait_for_request(service, "authorizing")
         link = waiting["auth_url"]
         # ADR 0232: what the push says waits; a panel-opened request names no device.
         assert service.login_waiting() == (request_id, "oauth", None)
@@ -54,7 +54,7 @@ def test_the_login_link_is_in_the_request_only_while_it_waits_and_the_brain_open
         assert opened == []
         with urllib.request.urlopen(link, timeout=8) as response:  # noqa: S310 — local test authorization server
             assert response.status == 200
-        done = _wait(service, "ready")
+        done = wait_for_request(service, "ready")
         assert "auth_url" not in done
         assert service.login_waiting() is None
         shown = json.dumps(service.read())
@@ -66,15 +66,15 @@ def test_the_login_link_is_in_the_request_only_while_it_waits_and_the_brain_open
 
 
 def test_a_cancelled_login_takes_the_link_away(
-    tmp_path: Path, fixture: _Fixture, oauth_url: str
+    tmp_path: Path, fixture: ToolWorld, oauth_url: str
 ) -> None:
     """After cancel there is no link to open."""
-    _package(tmp_path, "oauth", {"oauth": {"url": oauth_url, "auth": "oauth"}})
-    service = _service(tmp_path, fixture, open_url=None)
+    write_package(tmp_path, "oauth", {"oauth": {"url": oauth_url, "auth": "oauth"}})
+    service = make_service(tmp_path, fixture, open_url=None)
     try:
-        request_id = _open(service, "oauth")
+        request_id = open_plugin(service, "oauth")
         service.action("connect", {"request_id": request_id})
-        _wait(service, "authorizing")
+        wait_for_request(service, "authorizing")
         service.action("cancel", {"request_id": request_id})
         assert "auth_url" not in service.read()["request"]
     finally:

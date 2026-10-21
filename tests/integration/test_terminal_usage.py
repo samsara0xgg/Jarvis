@@ -35,13 +35,14 @@ from jarvis.surface.usage_observer import (
     UsageObserver,
     latest_usage,
 )
-from tests.integration.test_terminal_observers import (
-    _brain_client,
-    _unstamped,
-    _wait_for,
-    rows,
+from tests.support.terminal import (
+    Brain,
+    Terminal,
+    log_rows,
+    observer_brain_client,
+    unstamped,
+    wait_for,
 )
-from tests.integration.test_terminal_reads import _Brain, _Terminal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -143,8 +144,8 @@ def test_a_terminals_usage_events_are_the_one_machine_events_and_hold_no_login(
     assert [(f["payload"]["service"], f["payload"]["status"]) for f in sent] == [
         ("claude", "ok"), ("codex", "ok"), ("claude", "ok"),
     ]
-    assert [(f["event_type"], _unstamped(f["payload"])) for f in sent] == [
-        (kind, _unstamped(payload)) for kind, payload in on_one_machine
+    assert [(f["event_type"], unstamped(f["payload"])) for f in sent] == [
+        (kind, unstamped(payload)) for kind, payload in on_one_machine
     ]
     assert sent[0]["payload"]["data"]["windows"][0]["percent"] == 27.0
     assert sent[2]["payload"]["data"]["windows"][0]["percent"] == 31.0
@@ -218,7 +219,7 @@ def test_the_brains_baseline_carries_the_latest_usage_row_of_each_service(
     tmp_path: Path,
 ) -> None:
     """What the terminal's observer folds its change-baseline from; no other type of row."""
-    _client, hub, log = _brain_client(tmp_path)
+    _client, hub, log = observer_brain_client(tmp_path)
     conn = sqlite3.connect(log)
     for service, percent in (("claude", 10.0), ("codex", 5.0), ("claude", 20.0)):
         emit_event(conn, type="usage.state_observed", payload={
@@ -243,16 +244,16 @@ def test_a_real_terminal_fills_the_brains_usage_page_and_a_restart_repeats_nothi
     open_event_log(log).close()
     reader = sqlite3.connect(log, check_same_thread=False)
     watched = _Watched((), 0.2, None, 0.2, usage_interval_s=0.1)
-    brain = _Brain(
+    brain = Brain(
         tmp_path, log, deps=lambda _hub: {
             "usage_read": functools.partial(latest_usage, reader),
             "usage_refresh": _page(reader),
         },
     )
     with brain:
-        with _Terminal(brain.url, token, store=None, repos=(), watched=watched):
-            _wait_for(
-                lambda: len(rows(log, "usage.state_observed")) >= len(DEVICE_SERVICES),
+        with Terminal(brain.url, token, store=None, repos=(), watched=watched):
+            wait_for(
+                lambda: len(log_rows(log, "usage.state_observed")) >= len(DEVICE_SERVICES),
                 "the first readings never arrived",
             )
         page = httpx.get(
@@ -263,19 +264,19 @@ def test_a_real_terminal_fills_the_brains_usage_page_and_a_restart_repeats_nothi
         }
         assert [w["percent"] for w in page["claude"]["data"]["windows"]] == [27.0, 50.0]
         assert page["codex"]["data"]["plan"]
-        assert {node for _, node, _ in rows(log, "usage.state_observed")} == {"macbook"}
+        assert {node for _, node, _ in log_rows(log, "usage.state_observed")} == {"macbook"}
 
         # A restarted terminal asks the brain what it last heard and re-sends none of it.
-        with _Terminal(brain.url, token, store=None, repos=(), watched=watched):
+        with Terminal(brain.url, token, store=None, repos=(), watched=watched):
             before = len(providers.calls)
-            _wait_for(lambda: len(providers.calls) >= before + 4, "no polls after the restart")
+            wait_for(lambda: len(providers.calls) >= before + 4, "no polls after the restart")
             providers.claude_percent = 33.0
-            _wait_for(
-                lambda: len(rows(log, "usage.state_observed")) == len(DEVICE_SERVICES) + 1,
+            wait_for(
+                lambda: len(log_rows(log, "usage.state_observed")) == len(DEVICE_SERVICES) + 1,
                 "the changed reading never arrived",
             )
             time.sleep(0.5)
-    found = rows(log, "usage.state_observed")
+    found = log_rows(log, "usage.state_observed")
     assert [(p["service"], p["data"]["windows"][0]["percent"]) for _, _, p in found] == [
         ("claude", 27.0), ("codex", 12.0), ("claude", 33.0),
     ]

@@ -72,14 +72,14 @@ from jarvis.surface.cli import parse_response_channels
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _FakeProvider,
-    _player,
-    _submit_response,
-    _terminal_rows,
+from tests.support.media import (
+    CallbackPump,
+    FakeProvider,
+    make_player,
+    submit_response,
+    terminal_rows,
 )
-from tests.integration.test_wave2_streaming_media import _config as _media_config
+from tests.support.media import media_config as _media_config
 
 if TYPE_CHECKING:
     import sqlite3
@@ -1903,9 +1903,9 @@ def _replay(
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """Run the media owner over this log, in its order; return its terminals and drops."""
     reset_realtime_trace()
-    player = _player()
+    player = make_player()
     pipeline = voice_media.StreamingTTSPipeline(
-        provider=_FakeProvider(candidate_count=1),
+        provider=FakeProvider(candidate_count=1),
         player=player,
         conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),
         boot_high_water_id=0,
@@ -1914,12 +1914,12 @@ def _replay(
         start_player=False,
     )
     try:
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, _surface_stream(reader)))
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, _surface_stream(reader)))
             assert pipeline.wait_until_idle(timeout_s=5.0)
     finally:
         assert pipeline.close()
-    terminals = {str(p["response_id"]): kind for kind, p in _terminal_rows(reader)}
+    terminals = {str(p["response_id"]): kind for kind, p in terminal_rows(reader)}
     return terminals, _typed_payloads(reader, "surface.speech_dropped")
 
 
@@ -2169,8 +2169,8 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
 
     # The media owner's own disposition for that exact pair of rows.
     reset_realtime_trace()
-    provider = _FakeProvider(candidate_count=1)
-    player = _player()
+    provider = FakeProvider(candidate_count=1)
+    player = make_player()
     pipeline = voice_media.StreamingTTSPipeline(
         provider=provider,
         player=player,
@@ -2180,8 +2180,8 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
         start_player=False,
     )
     try:
-        with _CallbackPump(player):
-            asyncio.run(_submit_response(pipeline, _surface_stream(reader)))
+        with CallbackPump(player):
+            asyncio.run(submit_response(pipeline, _surface_stream(reader)))
             assert pipeline.wait_until_idle(timeout_s=5.0)
     finally:
         assert pipeline.close()
@@ -2193,7 +2193,7 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
     assert [attributes["phase"] for attributes in enqueued] == ["final"]
     assert [attributes["response_group_id"] for attributes in enqueued] == [group]
     terminals = {
-        str(payload["response_id"]): kind for kind, payload in _terminal_rows(reader)
+        str(payload["response_id"]): kind for kind, payload in terminal_rows(reader)
     }
     assert terminals[str(opens[0]["response_id"])] == "surface.playback_completed"
     assert terminals[str(opens[1]["response_id"])] == "surface.playback_completed"

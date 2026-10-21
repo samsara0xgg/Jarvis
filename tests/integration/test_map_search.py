@@ -37,9 +37,9 @@ from jarvis.execution.tools import (
 )
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.cli import emit_surface_user_intent
-from tests.integration.test_spoken_streaming import _Peer, _spoken_runtime
-from tests.integration.test_transit_tool import HANDBUILT
-from tests.integration.test_wire_routine_streaming import _drive, _payloads
+from tests.support.routine import drive_streaming_turn, logged_payloads
+from tests.support.spoken import SpokenPeer, spoken_runtime
+from tests.support.transit import HANDBUILT
 
 if TYPE_CHECKING:
     import sqlite3
@@ -669,21 +669,30 @@ def test_the_final_row_carries_places_and_leaves_the_key_out_when_there_are_none
     tmp_path: Path,
 ) -> None:
     """Through ``drive_turn``: the answer's ``surface.response_emitted`` is what the phone reads."""
-    with _Peer([[("final_answer", "Two ramen places.")], [("final_answer", "Fine.")]]) as peer:
-        runtime = _spoken_runtime(tmp_path, peer.url)
+    with SpokenPeer([[("final_answer", "Two ramen places.")], [("final_answer", "Fine.")]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
         _tools(runtime.conn)("map_search", {"query": "ramen"}, turn="T-with")
         for turn in ("T-with", "T-without"):
             intent = emit_surface_user_intent(
                 runtime.conn, transcript="ramen near me", turn_id=turn,
                 channel="inherent_ptt", ingestion_node="iphone",
             )
-            _drive(runtime, intent)
+            drive_streaming_turn(runtime, intent)
     with_places, without = (
-        [p for p in _payloads(runtime.conn, "surface.response_emitted") if p["turn_id"] == turn]
+        [
+            p
+            for p in logged_payloads(runtime.conn, "surface.response_emitted")
+            if p["turn_id"] == turn
+        ]
         for turn in ("T-with", "T-without")
     )
     assert [p["name"] for p in with_places[-1]["places"]] == ["Ramen Shop 1", "Ramen Shop 2"]
     assert set(with_places[-1]["places"][0]) == {
-        "name", "lat", "lng", "address", "place_id", "kind",
+        "name",
+        "lat",
+        "lng",
+        "address",
+        "place_id",
+        "kind",
     }
     assert "places" not in without[-1]

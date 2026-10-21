@@ -8,9 +8,9 @@ from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.deployment import load_env_file
 from jarvis.runtime import JarvisRuntime, drive_turn, run_turn
 from jarvis.state.event_log import get_event
-from tests.integration.test_flat_tool_dispatch import _Fixture
-from tests.integration.test_mcp_tools import ECHO
-from tests.integration.test_plugin_connections import _package, _service, _wait
+from tests.support.mcp import ECHO
+from tests.support.plugin_connections import make_service, wait_for_request, write_package
+from tests.support.tool_world import ToolWorld
 
 
 @pytest.mark.live_llm
@@ -20,9 +20,9 @@ def test_conversation_opens_plugin_and_resumes_with_live_tool(
     """Use the production decision loop, cloud model and a real isolated MCP process."""
     monkeypatch.setenv("JARVIS_PLUGIN_CATALOG", str(tmp_path / "catalog"))
     load_env_file(Path.home() / ".jarvis")
-    _package(tmp_path, "echo", ECHO)
-    fx = _Fixture(tmp_path / "runtime", tools=())
-    service = _service(tmp_path, fx)
+    write_package(tmp_path, "echo", ECHO)
+    fx = ToolWorld(tmp_path / "runtime", tools=())
+    service = make_service(tmp_path, fx)
     runtime = JarvisRuntime(
         config={},
         runtime_paths=fx.paths,
@@ -46,7 +46,7 @@ def test_conversation_opens_plugin_and_resumes_with_live_tool(
         assert request["continue_task"] is True
         assert not any(t.name.startswith("mcp__") for t in fx.registry.get_definitions())
         service.action("connect", {"request_id": request["id"]})
-        assert _wait(service, "ready")["resume_status"] == "continued"
+        assert wait_for_request(service, "ready")["resume_status"] == "continued"
         resumed = get_event(fx.conn, f"plugin-resume-{request['id']}")
         assert resumed is not None
         second = drive_turn(runtime, user_intent_event=resumed, max_iterations=8)

@@ -25,19 +25,9 @@ from jarvis.runtime.inherent_loop import _turn_over_or_answering
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.integration.test_incremental_tts import _chunk, _emitted, _open, _pipeline, _rows
-from tests.integration.test_wave2_streaming_media import (
-    _CallbackPump,
-    _FakeProvider,
-    _RecordingBroadcaster,
-    _submit_response,
-)
-from tests.integration.test_wave4a_response_run import (
-    _emit_intent,
-    _make_runtime,
-    _open_run,
-    _script_decide,
-)
+from tests.support.media import CallbackPump, FakeProvider, RecordingBroadcaster, submit_response
+from tests.support.response_run import emit_intent, make_runtime, open_run, script_decide
+from tests.support.tts import append_chunk, append_emitted, append_open, make_pipeline, tts_rows
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,9 +38,9 @@ if TYPE_CHECKING:
 
 def test_a_turn_still_thinking_is_stopped_by_its_turn(tmp_path: Path) -> None:
     """``turn_id`` cancels that turn's open runs whole, and only that turn's."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    thinking = _open_run(runtime, response_id="RESP-think", turn_id="T-think")
-    other = _open_run(runtime, response_id="RESP-other", turn_id="T-other")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    thinking = open_run(runtime, response_id="RESP-think", turn_id="T-think")
+    other = open_run(runtime, response_id="RESP-other", turn_id="T-other")
     app = create_app(
         InherentDeps(
             submit_callable=lambda _text: "T-http",
@@ -84,15 +74,15 @@ def test_a_stop_before_the_run_opens_still_stops_the_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pressed after turn.started but before the run opens: no model, no words."""
-    runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = _emit_intent(runtime.conn, "T-early", "Explain how a transformer works.")
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    intent = emit_intent(runtime.conn, "T-early", "Explain how a transformer works.")
     asked: list[str] = []
 
     def decide_is_never_asked(_trigger: Event, _ctx: DecideContext) -> DecideResult:
         asked.append("decide")
         raise AssertionError
 
-    _script_decide(monkeypatch, decide_is_never_asked)
+    script_decide(monkeypatch, decide_is_never_asked)
     try:
         outcome = make_turn_cancel_callable(runtime)("T-early", "user_stop")
         with pytest.raises(ResponseCancelledError):
@@ -124,26 +114,29 @@ def test_a_stop_drops_an_answer_parked_while_allen_talks(tmp_path: Path) -> None
     db_path = tmp_path / "events.db"
     conn = open_event_log(db_path)
     actions: list[str] = []
-    pipeline, player = _pipeline(
+    pipeline, player = make_pipeline(
         db_path,
-        _FakeProvider(candidate_count=1),
+        FakeProvider(candidate_count=1),
         speak_from_segments=True,
-        broadcaster=_RecordingBroadcaster(actions),
+        broadcaster=RecordingBroadcaster(actions),
     )
     try:
-        with _CallbackPump(player):
-            opened = _open(conn, "RP")
-            asyncio.run(_submit_response(pipeline, [opened]))
+        with CallbackPump(player):
+            opened = append_open(conn, "RP")
+            asyncio.run(submit_response(pipeline, [opened]))
             pipeline.hold_output(held=True)  # Allen coughs as the answer comes
-            rest = [_chunk(conn, "RP", 0, "会议改到三点。"), _emitted(conn, "RP", "会议改到三点。")]
-            asyncio.run(_submit_response(pipeline, rest))
+            rest = [
+                append_chunk(conn, "RP", 0, "会议改到三点。"),
+                append_emitted(conn, "RP", "会议改到三点。"),
+            ]
+            asyncio.run(submit_response(pipeline, rest))
             time.sleep(0.2)
-            parked = _rows(conn, "surface.playback_started", "RP")
+            parked = tts_rows(conn, "surface.playback_started", "RP")
             outcome = pipeline.stop_foreground_output("RP")
             pipeline.hold_output(held=False)  # his cough comes to nothing
             time.sleep(0.2)
             assert pipeline.wait_until_idle(timeout_s=2.0)
-        started = _rows(conn, "surface.playback_started", "RP")
+        started = tts_rows(conn, "surface.playback_started", "RP")
     finally:
         assert pipeline.close()
         conn.close()

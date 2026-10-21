@@ -32,8 +32,6 @@ from jarvis.state.voiceprint import DIMENSIONS, VoiceprintBook
 from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.terminal_events import phone_turn_id
 from jarvis.surface.voice_print import VoiceprintExtractor, load_extractor
-from tests.integration.test_phone_judge import TURN_WORDS, _open, _say
-from tests.integration.test_phone_judge import _Rig as _PhoneRig
 from tests.integration.test_soft_barge_in import LONG
 from tests.integration.test_soft_barge_in import _Rig as _MacRig
 from tests.integration.test_terminal_listen import (
@@ -43,6 +41,8 @@ from tests.integration.test_terminal_listen import (
     _utterance,
     _utterances,
 )
+from tests.support.phone import TURN_WORDS, open_ws, say_words
+from tests.support.phone import JudgeRig as _PhoneRig
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -371,8 +371,8 @@ def test_a_phone_say_that_is_not_his_voice_is_answered_not_owner_like_elsewhere(
     book.seed("iphone", MIC, 300, _axis(0).tolist())
     rig.build(voiceprints=book, elsewhere=lambda *_a: False)
     with rig.connect() as ws:
-        _open(ws)
-        reply = _say(ws, "u1", TURN_WORDS, voiceprint=_wire(0.1), **flags)
+        open_ws(ws)
+        reply = say_words(ws, "u1", TURN_WORDS, voiceprint=_wire(0.1), **flags)
     assert reply == {
         "type": "said", "utterance_id": "u1", "turn_id": None, "verdict": "not_owner",
     }
@@ -391,11 +391,11 @@ def test_a_phone_say_that_is_his_voice_is_a_turn_that_keeps_the_score_and_teache
     book.seed("iphone", MIC, 300, _axis(0).tolist())
     rig.build(voiceprints=book)
     with rig.connect() as ws:
-        _open(ws)
-        first = _say(ws, "u1", TURN_WORDS, voiceprint=_wire(0.7))
-        again = _say(ws, "u1", TURN_WORDS, voiceprint=_wire(0.7))
-        typed = _say(ws, "t1", TURN_WORDS, spoken=False, voiceprint=_wire(0.1))
-        junk = _say(ws, "u2", TURN_WORDS, voiceprint={"embedding": "no", "mic": MIC})
+        open_ws(ws)
+        first = say_words(ws, "u1", TURN_WORDS, voiceprint=_wire(0.7))
+        again = say_words(ws, "u1", TURN_WORDS, voiceprint=_wire(0.7))
+        typed = say_words(ws, "t1", TURN_WORDS, spoken=False, voiceprint=_wire(0.1))
+        junk = say_words(ws, "u2", TURN_WORDS, voiceprint={"embedding": "no", "mic": MIC})
     assert first["turn_id"] == again["turn_id"] == phone_turn_id("iphone", "u1")
     assert (typed["verdict"], junk["verdict"]) == ("turn", "turn")
     with sqlite3.connect(rig.log) as raw:

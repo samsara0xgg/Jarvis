@@ -123,6 +123,13 @@ ignore = [
 "tests/integration/test_night_run.py" = ["RUF001"]
 # Asserts on the Chinese question text and his Chinese words the writer is shown (ADR 0302).
 "tests/integration/test_doing_run.py" = ["RUF001"]
+# Shared test support: fakes and builders that the test files import by name. The name says
+# what each is; a docstring on every method of a fake would only repeat it.
+"tests/support/*.py" = ["D101", "D102", "D103", "D105", "D107"]
+# The helpers moved here from test_daily_report.py, which carries its Chinese strings verbatim.
+"tests/support/daily_report.py" = ["RUF001"]
+# The helpers moved here from test_doing_run.py, which carries its Chinese strings verbatim.
+"tests/support/doing.py" = ["RUF001"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
 # carry magic numbers in assertion targets by design.
 "tests/**/*.py" = [

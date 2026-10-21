@@ -17,9 +17,9 @@ from jarvis.surface import voice_asr
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.voice_controls import VoiceControls
-from tests.integration.test_answer_waits_for_allen import _AcceptingPipeline
-from tests.integration.test_conversation_mode import _Session
-from tests.integration.test_wave3_single_audio_ingress import _wait_until
+from tests.support.answer_hold import AcceptingPipeline
+from tests.support.conversation_mode import ModeSession
+from tests.support.voice_input import wait_until_true
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,15 +54,15 @@ def test_a_phrase_sets_the_level_and_is_no_turn(
     record: list[str] = []
     set_to: list[str] = []
     asked: list[tuple[str, str]] = []
-    rig = _Session(
+    rig = ModeSession(
         monkeypatch, conversation=False, wake=True,
-        pipeline=_AcceptingPipeline(record, said=said),
+        pipeline=AcceptingPipeline(record, said=said),
         set_quiet=set_to.append,
         answer_words=lambda _turn, reason, _text: asked.append((reason, said)),
     )
     try:
         rig.speak()
-        _wait_until(lambda: bool(asked))
+        wait_until_true(lambda: bool(asked))
         assert set_to == [level]
         assert asked == [(voice_asr.QUIET_REASONS[level], said)]
         assert "utterance.received" not in record

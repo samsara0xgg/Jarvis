@@ -42,6 +42,7 @@ from jarvis.state.memory_db import (
     remember_fact,
     render_context,
 )
+from tests.support.runtime_log import RuntimeLog
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -70,13 +71,7 @@ def _o(
     return (day, _ms(start), _ms(end), all_day, state)
 
 
-class _Log:
-    def __init__(self, root: Path) -> None:
-        self.paths = bootstrap_runtime(root)
-        self.conn = open_event_log(self.paths.event_log)
-        self.memory = root / "memory.db"
-        open_memory_db(self.memory).close()
-
+class _Log(RuntimeLog):
     def actors(self, event_type: str) -> list[str]:
         rows = self.conn.execute(
             "SELECT actor FROM events WHERE type = ? ORDER BY id", (event_type,),

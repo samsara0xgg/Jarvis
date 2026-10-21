@@ -32,43 +32,43 @@ from jarvis.execution.tools import (
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import open_event_log
-from tests.integration.test_flat_tool_dispatch import _chain, _Fixture, _request
-from tests.integration.test_mcp_tools import ECHO
-from tests.integration.test_mcp_tools import (
+from tests.support.mcp import ECHO
+from tests.support.mcp import (
     oauth_url as oauth_url,  # noqa: PLC0414 — re-export fixture.
 )
-from tests.integration.test_plugin_connections import (
+from tests.support.plugin_approval import Paths, logged_dicts, press, say
+from tests.support.plugin_connections import (
     PANEL_TOOLS,
-    _open,
-    _package,
-    _service,
-    _tool_request,
-    _wait,
+    make_service,
+    open_plugin,
+    plugin_tool_request,
+    wait_for_request,
+    write_package,
 )
-from tests.integration.test_plugin_connections import (
+from tests.support.plugin_connections import (
     fixture as fixture,  # noqa: PLC0414 — re-export fixture.
 )
-from tests.integration.test_plugin_tool_approval import _Paths, _press, _rows, _say
+from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
 def test_open_plugin_starts_a_credential_free_plugin_and_only_opens_the_panel_for_a_key(
-    tmp_path: Path, fixture: _Fixture
+    tmp_path: Path, fixture: ToolWorld
 ) -> None:
     """The echo plugin connects at once; one that needs a typed key waits for its field."""
-    _package(tmp_path, "echo", ECHO)
-    _package(
+    write_package(tmp_path, "echo", ECHO)
+    write_package(
         tmp_path,
         "private",
         {"private": {"url": "http://127.0.0.1:1/mcp", "bearer_token_env_var": "ADR0202_NO_KEY"}},
     )
-    service = _service(tmp_path, fixture)
+    service = make_service(tmp_path, fixture)
     try:
-        _tool_request(service, fixture, "echo")
+        plugin_tool_request(service, fixture, "echo")
         assert service.read()["request"]["state"] in {"connecting", "ready"}
-        _wait(service, "ready")
+        wait_for_request(service, "ready")
         assert service.connected_apps_line() == "Connected apps: echo"
         again = service.request_from_tool(
             {"plugin_id": "echo", "continue_task": False},
@@ -89,42 +89,42 @@ def test_open_plugin_starts_a_credential_free_plugin_and_only_opens_the_panel_fo
 
 
 def test_a_credential_free_start_keeps_the_task_to_continue(
-    tmp_path: Path, fixture: _Fixture
+    tmp_path: Path, fixture: ToolWorld
 ) -> None:
     """continue_task rides on the immediately started connection exactly as on a click."""
-    _package(tmp_path, "echo", ECHO)
-    service = _service(tmp_path, fixture)
+    write_package(tmp_path, "echo", ECHO)
+    service = make_service(tmp_path, fixture)
     try:
-        _tool_request(service, fixture, "echo", channel="gpt_live")
-        done = _wait(service, "ready")
+        plugin_tool_request(service, fixture, "echo", channel="gpt_live")
+        done = wait_for_request(service, "ready")
         assert done["resume_status"] == "continued"
     finally:
         service.stop()
 
 
 def test_disable_plugin_needs_no_request_id_and_waits_for_a_busy_connection(
-    tmp_path: Path, fixture: _Fixture, oauth_url: str
+    tmp_path: Path, fixture: ToolWorld, oauth_url: str
 ) -> None:
     """Off by name: tools leave and the choice is kept; refused while it is connecting."""
-    _package(tmp_path, "echo", ECHO)
-    _package(tmp_path, "oauth", {"oauth": {"url": oauth_url, "auth": "oauth"}})
-    service = _service(tmp_path, fixture, open_url=None)
+    write_package(tmp_path, "echo", ECHO)
+    write_package(tmp_path, "oauth", {"oauth": {"url": oauth_url, "auth": "oauth"}})
+    service = make_service(tmp_path, fixture, open_url=None)
     try:
-        service.action("connect", {"request_id": _open(service, "echo")})
-        _wait(service, "ready")
+        service.action("connect", {"request_id": open_plugin(service, "echo")})
+        wait_for_request(service, "ready")
         assert any(t.name == "mcp__echo__echo" for t in fixture.registry.get_definitions())
-        fixture.dispatch(_request("disable_plugin", "D1", arguments={"plugin_id": "echo"}))
-        assert json.loads(_chain(fixture, "D1")["tool_output"])["enabled"] is False
+        fixture.dispatch(tool_request("disable_plugin", "D1", arguments={"plugin_id": "echo"}))
+        assert json.loads(tool_chain(fixture, "D1")["tool_output"])["enabled"] is False
         assert {t.name for t in fixture.registry.get_definitions()} == PANEL_TOOLS
         settings = json.loads((fixture.paths.root / "plugin-settings.json").read_text())
         assert settings["echo"]["enabled"] is False
 
-        service.action("connect", {"request_id": _open(service, "oauth")})
-        _wait(service, "authorizing")
-        fixture.dispatch(_request("disable_plugin", "D2", arguments={"plugin_id": "oauth"}))
-        assert _chain(fixture, "D2")["error"] == "plugin"
-        fixture.dispatch(_request("disable_plugin", "D3", arguments={"plugin_id": "nobody"}))
-        assert _chain(fixture, "D3")["error"] == "plugin"
+        service.action("connect", {"request_id": open_plugin(service, "oauth")})
+        wait_for_request(service, "authorizing")
+        fixture.dispatch(tool_request("disable_plugin", "D2", arguments={"plugin_id": "oauth"}))
+        assert tool_chain(fixture, "D2")["error"] == "plugin"
+        fixture.dispatch(tool_request("disable_plugin", "D3", arguments={"plugin_id": "nobody"}))
+        assert tool_chain(fixture, "D3")["error"] == "plugin"
     finally:
         service.stop()
 
@@ -183,9 +183,9 @@ class _Rig:
 def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Rig]:
     """A connected echo plugin with a stored login and credential, behind the real decide loop."""
     monkeypatch.setenv("JARVIS_PLUGIN_CATALOG", str(tmp_path / "empty-catalog"))
-    _package(tmp_path, "echo", ECHO)
+    write_package(tmp_path, "echo", ECHO)
     root = tmp_path / "runtime"
-    paths = _Paths(event_log=root / "events.db", artifacts_root=root / "artifacts")
+    paths = Paths(event_log=root / "events.db", artifacts_root=root / "artifacts")
     paths.artifacts_root.mkdir(parents=True)
     registry = build_default_registry(confirmation_dispatch_outbox=True)
     service = PluginConnections(
@@ -196,8 +196,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Rig]:
         config={"tools": {"mcp": {"timeout_s": 3}}},
     )
     service.initialize()
-    service.action("connect", {"request_id": _open(service, "echo")})
-    _wait(service, "ready")
+    service.action("connect", {"request_id": open_plugin(service, "echo")})
+    wait_for_request(service, "ready")
     token = root / "mcp" / "echo.json"
     token.parent.mkdir(parents=True, exist_ok=True)
     token.write_text(json.dumps({"tokens": {"access_token": "at"}}))
@@ -231,14 +231,14 @@ def test_remove_plugin_asks_first_and_on_yes_deletes_the_login_and_the_credentia
     rig: _Rig,
 ) -> None:
     """The card waits; his button runs it; then the token file and the saved key are gone."""
-    _say(rig.ctx, "把 echo 删掉", "T1")
-    asked = _rows(rig.ctx.conn, "confirmation.requested")
+    say(rig.ctx, "把 echo 删掉", "T1")
+    asked = logged_dicts(rig.ctx.conn, "confirmation.requested")
     assert [r["action_snapshot"]["tool_name"] for r in asked] == ["remove_plugin"]
     assert _stored(rig)
     assert rig.service.read()["plugins"][0]["status"] == "ready"
 
     card = asked[0]["confirmation_id"]
-    _press(rig.ctx, {"confirmation_id": card, "decision": "accept"}, "T2")
+    press(rig.ctx, {"confirmation_id": card, "decision": "accept"}, "T2")
     assert not rig.token.exists()
     assert "echo" not in json.loads((rig.root / "plugin-credentials.json").read_text())
     plugin = rig.service.read()["plugins"][0]
@@ -252,8 +252,8 @@ def test_remove_plugin_asks_first_and_on_yes_deletes_the_login_and_the_credentia
 
 def test_remove_plugin_does_nothing_on_no(rig: _Rig) -> None:
     """A rejected card leaves the login, the key and the connection as they were."""
-    _say(rig.ctx, "把 echo 删掉", "T1")
-    card = _rows(rig.ctx.conn, "confirmation.requested")[0]["confirmation_id"]
-    _press(rig.ctx, {"confirmation_id": card, "decision": "reject"}, "T2")
+    say(rig.ctx, "把 echo 删掉", "T1")
+    card = logged_dicts(rig.ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+    press(rig.ctx, {"confirmation_id": card, "decision": "reject"}, "T2")
     assert _stored(rig)
     assert rig.service.read()["plugins"][0]["status"] == "ready"

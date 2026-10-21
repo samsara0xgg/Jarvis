@@ -19,7 +19,7 @@ from jarvis.decision.stream_sentences import SemanticAssembler
 from jarvis.shared.realtime import TerminalCommitted
 from jarvis.state.event_log import get_event, iter_events, open_event_log
 from jarvis.state.stream_emission import StreamEmissionError, committed_text_prefix
-from tests.integration.test_stream_emission_gate import _context, _Run
+from tests.support.stream_gate import GateRun, risk_context
 
 if TYPE_CHECKING:
     import sqlite3
@@ -55,7 +55,7 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _stream_prefix(run: _Run, stream: tuple[LLMStreamEvent, ...]) -> tuple[str, str]:
+def _stream_prefix(run: GateRun, stream: tuple[LLMStreamEvent, ...]) -> tuple[str, str]:
     """Drive typed deltas through assembler, classifier, gate and surface."""
     assembler = SemanticAssembler()
     classifier = SegmentRiskClassifier()
@@ -73,7 +73,7 @@ def _stream_prefix(run: _Run, stream: tuple[LLMStreamEvent, ...]) -> tuple[str, 
     return prefix, assembler.pending_text
 
 
-def _commit_prefix(run: _Run, segments: tuple[str, ...]) -> str:
+def _commit_prefix(run: GateRun, segments: tuple[str, ...]) -> str:
     """Gate and expose ``segments`` in order; return the text now spoken."""
     prefix = ""
     for sequence, text in enumerate(segments):
@@ -87,7 +87,7 @@ def _commit_prefix(run: _Run, segments: tuple[str, ...]) -> str:
 def test_restart_reconstructs_prefix_from_event_log_equal_to_memory(tmp_path: Path) -> None:
     """After a crash only exposed chunks are prefix; a permit alone never is."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        run = _Run(conn, _context())
+        run = GateRun(conn, risk_context())
         prefix = _commit_prefix(run, _SEGMENTS)
         dangling = run.gate(_TAIL, sequence=len(_SEGMENTS))
         assert dangling.permit is not None
@@ -111,7 +111,7 @@ def test_restart_reconstructs_prefix_from_event_log_equal_to_memory(tmp_path: Pa
 def test_chain_finalizes_byte_for_byte_and_completes_with_returned_hash(tmp_path: Path) -> None:
     """Typed stream -> permits -> chunks -> finalize -> terminal, one text throughout."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        run = _Run(conn, _context())
+        run = GateRun(conn, risk_context())
         prefix, suffix = _stream_prefix(run, _STREAM)
         assert prefix == "".join(_SEGMENTS)
         assert suffix == "所以冰会变成水"
@@ -138,7 +138,7 @@ def test_chain_finalizes_byte_for_byte_and_completes_with_returned_hash(tmp_path
 def test_rejected_suffix_leaves_prefix_and_a_second_suffix_finalizes(tmp_path: Path) -> None:
     """Only the tail is regenerated; the spoken prefix and the log do not move."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        run = _Run(conn, _context())
+        run = GateRun(conn, risk_context())
         prefix = _commit_prefix(run, _SEGMENTS)
         before = tuple(iter_events(conn))
         failure = finalize_stream(
@@ -172,7 +172,7 @@ def test_rejected_suffix_leaves_prefix_and_a_second_suffix_finalizes(tmp_path: P
 def test_policy_hash_differing_from_permits_yields_policy_mismatch(tmp_path: Path) -> None:
     """The permits' pinned policy is the only policy a finalization may claim."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        run = _Run(conn, _context())
+        run = GateRun(conn, risk_context())
         prefix = _commit_prefix(run, _SEGMENTS)
         drifted = replace(run.policy, preset_snapshot_hash="c" * 64)
         assert drifted.policy_hash != run.policy.policy_hash
@@ -202,7 +202,7 @@ def test_policy_hash_differing_from_permits_yields_policy_mismatch(tmp_path: Pat
 def test_invalid_prefix_fails_the_run_and_starts_a_correction_run(tmp_path: Path) -> None:
     """Memory that disagrees with the log is failed, never re-spoken or retried whole."""
     with contextlib.closing(open_event_log(tmp_path / "events.db")) as conn:
-        run = _Run(conn, _context())
+        run = GateRun(conn, risk_context())
         prefix = _commit_prefix(run, _SEGMENTS)
         failure = finalize_stream(
             conn,

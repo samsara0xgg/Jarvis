@@ -40,8 +40,8 @@ from jarvis.surface.inherent_server import (
     create_app,
     require_local_key,
 )
-from tests.integration.test_brain_role import _runtime
-from tests.integration.test_local_key_guard import KEYLESS, _call, _client
+from tests.support.brain_role import brain_runtime
+from tests.support.local_key_guard import KEYLESS, guard_client, status_of
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -130,7 +130,7 @@ def test_pair_and_unpair_refuse_what_cannot_be_done(
 
 
 def _remote(tmp_path: Path, **guard: Any) -> tuple[TestClient, str, list[str]]:  # noqa: ANN401
-    return _client(
+    return guard_client(
         tmp_path,
         peer=REMOTE,
         extra_hosts=("jarvis", REMOTE),
@@ -167,18 +167,23 @@ def test_a_remote_peer_needs_a_device_token_on_every_route(
         for route in routes:
             path = route.split(" ", 1)[1]
             expected = 200 if path in KEYLESS else _refused(route)
-            assert _call(client, route, {**headers, **host}) == expected, (route, sorted(headers))
+            assert status_of(client, route, {**headers, **host}) == expected, (
+                route,
+                sorted(headers),
+            )
 
     good = {"Authorization": f"Bearer {token}", **host}
     for route in routes:
-        assert _call(client, route, good) not in {401, 1008}, route
+        assert status_of(client, route, good) not in {401, 1008}, route
     assert client.get("/inherent/conversation", headers=good).json() == {
-        "since": None, "rows": [],
+        "since": None,
+        "rows": [],
     }
 
 
 def test_a_paired_device_manages_plugins_and_a_wrong_token_does_not(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """ADR 0202: the plugin, language and usage-write routes answer 200 to a device token only."""
     client, key, _ = _remote(tmp_path)
@@ -202,7 +207,8 @@ def test_a_paired_device_manages_plugins_and_a_wrong_token_does_not(
 
 
 def test_revoking_a_device_takes_effect_without_a_restart(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The same running app answers 200, then 401 once the device is unpaired."""
     client, _, _ = _remote(tmp_path)
@@ -214,7 +220,9 @@ def test_revoking_a_device_takes_effect_without_a_restart(
 
 
 def test_every_refusal_is_logged_with_why_and_never_the_token(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A phone that loses its pairing over a 401 can be traced from the brain's log alone."""
     client, key, _ = _remote(tmp_path)
@@ -242,7 +250,8 @@ def test_every_refusal_is_logged_with_why_and_never_the_token(
 
 
 def test_a_remote_peer_is_held_to_the_host_allowlist(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A valid token with a Host the brain was not told to answer to is a 400, on every route."""
     client, _, routes = _remote(tmp_path)
@@ -250,17 +259,18 @@ def test_a_remote_peer_is_held_to_the_host_allowlist(
     for host in ("attacker.example", "attacker.example:8006", "jarvis.attacker.example"):
         headers = {"Authorization": f"Bearer {token}", "Host": host}
         for route in routes:
-            assert _call(client, route, headers) == 400, (host, route)
+            assert status_of(client, route, headers) == 400, (host, route)
     for host in ("jarvis", f"{REMOTE}:8006", "127.0.0.1", "localhost"):
         headers = {"Authorization": f"Bearer {token}", "Host": host}
         assert client.get("/inherent/conversation", headers=headers).status_code == 200, host
 
 
 def test_loopback_is_checked_exactly_as_before(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """On loopback the local key opens everything and a device token opens nothing."""
-    client, key, routes = _client(
+    client, key, routes = guard_client(
         tmp_path,
         peer="127.0.0.1",
         extra_hosts=("jarvis",),
@@ -270,27 +280,36 @@ def test_loopback_is_checked_exactly_as_before(
     for route in routes:
         path = route.split(" ", 1)[1]
         expected = 200 if path in KEYLESS else _refused(route)
-        assert _call(client, route, {}) == expected, route
-        assert _call(client, route, {"Authorization": f"Bearer {token}"}) == expected, route
-        assert _call(client, route, {"Authorization": f"Bearer {key}"}) not in {401, 1008}, route
+        assert status_of(client, route, {}) == expected, route
+        assert status_of(client, route, {"Authorization": f"Bearer {token}"}) == expected, route
+        assert status_of(client, route, {"Authorization": f"Bearer {key}"}) not in {401, 1008}, (
+            route
+        )
 
 
 def test_without_listen_settings_nothing_about_the_guard_changes(tmp_path: Path) -> None:
     """The default guard allows no other Host, and a peer's address changes nothing."""
-    client, key, routes = _client(tmp_path, peer=REMOTE)
+    client, key, routes = guard_client(tmp_path, peer=REMOTE)
     for route in routes:
         path = route.split(" ", 1)[1]
-        assert _call(client, route, {"Host": "jarvis"}) == 400, route
+        assert status_of(client, route, {"Host": "jarvis"}) == 400, route
         expected = 200 if path in KEYLESS else _refused(route)
-        assert _call(client, route, {}) == expected, route
-        assert _call(client, route, {"Authorization": f"Bearer {key}"}) not in {401, 1008}, route
+        assert status_of(client, route, {}) == expected, route
+        assert status_of(client, route, {"Authorization": f"Bearer {key}"}) not in {401, 1008}, (
+            route
+        )
 
 
 # --- the v2 socket and input route -------------------------------------------
 
 _CAPS = RuntimeCapabilities(
-    text_input=True, image_input=False, voice_input=False, response_interrupt=False,
-    action_cancel=False, confirmation_actions=False, natural_barge_in=False,
+    text_input=True,
+    image_input=False,
+    voice_input=False,
+    response_interrupt=False,
+    action_cancel=False,
+    confirmation_actions=False,
+    natural_barge_in=False,
     aec_profile="headphones_only",
 )
 
@@ -313,7 +332,9 @@ def _v2_client(tmp_path: Path, peer: str) -> tuple[TestClient, str]:
     app = create_app(deps)
     matches = functools.partial(local_key_matches, local_key(tmp_path))
     require_local_key(
-        app, matches, extra_hosts=("jarvis",),
+        app,
+        matches,
+        extra_hosts=("jarvis",),
         device_token_matches=functools.partial(device_token_matches, tmp_path),
     )
     return TestClient(app, base_url="http://jarvis:8006", client=(peer, 50000)), boot_token
@@ -331,7 +352,8 @@ def _v2_opens(client: TestClient, token: str | None) -> bool:
 
 
 def test_the_v2_routes_take_the_device_token_from_a_remote_peer_only(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A remote peer cannot read the boot token, so it presents its device token instead."""
     token = _pair(tmp_path, "macbook", capsys)
@@ -345,24 +367,30 @@ def test_the_v2_routes_take_the_device_token_from_a_remote_peer_only(
     assert _v2_opens(loopback, boot)
     assert not _v2_opens(loopback, token)
 
-    body = {"request_id": "R1", "client_instance_id": "I1", "text": "hi",
-            "client_created_at_ms": 1}
+    body = {"request_id": "R1", "client_instance_id": "I1", "text": "hi", "client_created_at_ms": 1}
     submit = "/inherent/submit/v2"
     assert remote.post(submit, json=body).status_code == 401
-    assert remote.post(submit, json=body, headers={"Authorization": f"Bearer {boot}"}
-                       ).status_code == 401
+    assert (
+        remote.post(submit, json=body, headers={"Authorization": f"Bearer {boot}"}).status_code
+        == 401
+    )
     # Past the guard the route answers for itself: this rig wires no input inbox.
-    assert remote.post(submit, json=body, headers={"Authorization": f"Bearer {token}"}
-                       ).status_code == 501
-    assert loopback.post(submit, json=body, headers={"Authorization": f"Bearer {token}"}
-                         ).status_code == 403
+    assert (
+        remote.post(submit, json=body, headers={"Authorization": f"Bearer {token}"}).status_code
+        == 501
+    )
+    assert (
+        loopback.post(submit, json=body, headers={"Authorization": f"Bearer {token}"}).status_code
+        == 403
+    )
 
 
 # --- runtime.listen_* ---------------------------------------------------------
 
 
 def test_listen_settings_are_empty_by_default_and_either_role_may_set_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Default: loopback only. A brain and a Mac running alone (ADR 0207) may listen further.
 
@@ -371,9 +399,9 @@ def test_listen_settings_are_empty_by_default_and_either_role_may_set_them(
     for i in range(3):
         (tmp_path / str(i)).mkdir()
     listen = f"  listen_addresses: ['{REMOTE}']\n  listen_hosts: [jarvis]\n"
-    default = _runtime(tmp_path / "0", "assistant_name: Jarvis\n", monkeypatch)
-    brain = _runtime(tmp_path / "1", f"runtime:\n  role: brain\n{listen}", monkeypatch)
-    alone = _runtime(tmp_path / "2", f"runtime:\n  role: all\n{listen}", monkeypatch)
+    default = brain_runtime(tmp_path / "0", "assistant_name: Jarvis\n", monkeypatch)
+    brain = brain_runtime(tmp_path / "1", f"runtime:\n  role: brain\n{listen}", monkeypatch)
+    alone = brain_runtime(tmp_path / "2", f"runtime:\n  role: all\n{listen}", monkeypatch)
     try:
         assert (default.listen_addresses, default.listen_hosts) == ((), ())
         assert default.phone_events is None
@@ -403,11 +431,14 @@ def test_listen_settings_are_empty_by_default_and_either_role_may_set_them(
     ],
 )
 def test_a_daemon_never_listens_on_a_wildcard_or_public_address(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setting: str, message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    setting: str,
+    message: str,
 ) -> None:
     """The settings cannot open the daemon to the internet."""
     with pytest.raises(RuntimeBootstrapError, match=message):
-        _runtime(tmp_path, f"runtime:\n  role: brain\n  {setting}\n", monkeypatch)
+        brain_runtime(tmp_path, f"runtime:\n  role: brain\n  {setting}\n", monkeypatch)
 
 
 # --- the CLI as a remote client ----------------------------------------------
@@ -428,8 +459,9 @@ class _Server:
         )
         require_local_key(app, functools.partial(local_key_matches, self.key))
         self.server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning",
-                           lifespan="off"),
+            uvicorn.Config(
+                app, host="127.0.0.1", port=self.port, log_level="warning", lifespan="off"
+            ),
         )
         self.loop = asyncio.new_event_loop()
         self.broadcaster.attach_loop(self.loop)
@@ -438,7 +470,10 @@ class _Server:
     def _submit(self, text: str) -> str:
         if self.reply is None:
             self.broadcaster.broadcast_op_sync(
-                "failed", turn_id="T1", reason="missing_key", message="no model key",
+                "failed",
+                turn_id="T1",
+                reason="missing_key",
+                message="no model key",
             )
         else:
             for op, payload in (
@@ -476,32 +511,45 @@ def _token_file(path: Path, value: str, mode: int = 0o600) -> Path:
 
 
 def test_a_failed_turn_exits_nonzero_with_a_reason_and_prints_nothing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """`turn.failed` reaches the CLI as `failed`: exit 5, the reason on stderr, stdout empty."""
     with _Server(tmp_path, reply=None) as brain:
         token = _token_file(tmp_path / "brain-token", brain.key)
         code, out, err = _run(
-            capsys, "--brain", brain.url, "--brain-token-file", str(token), "你好",
+            capsys,
+            "--brain",
+            brain.url,
+            "--brain-token-file",
+            str(token),
+            "你好",
         )
     assert (code, out) == (5, "")
     assert err == "jarvis: the turn failed: no model key (missing_key)\n"
 
 
 def test_the_cli_prints_the_brains_answer_using_the_token_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The default token file is `<runtime root>/brain-token`; the answer is stdout."""
     with _Server(tmp_path, reply="你好 Allen") as brain:
         _token_file(tmp_path / "brain-token", brain.key)
         code, out, err = _run(
-            capsys, "--brain", brain.url + "/", "--runtime-root", str(tmp_path), "你好",
+            capsys,
+            "--brain",
+            brain.url + "/",
+            "--runtime-root",
+            str(tmp_path),
+            "你好",
         )
     assert (code, out, err) == (0, "你好 Allen\n", "")
 
 
 def test_the_cli_refuses_an_unpaired_device_and_a_token_file_others_can_read(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A wrong token is refused by the brain; a loose, missing or empty file never reaches it."""
     with _Server(tmp_path, reply="never sent") as brain:
@@ -518,7 +566,12 @@ def test_the_cli_refuses_an_unpaired_device_and_a_token_file_others_can_read(
             (tmp_path / "missing", "pair this device first"),
         ):
             code, out, err = _run(
-                capsys, "--brain", brain.url, "--brain-token-file", str(token_file), "hi",
+                capsys,
+                "--brain",
+                brain.url,
+                "--brain-token-file",
+                str(token_file),
+                "hi",
             )
             assert (code, out) == (1, "")
             assert reason in err

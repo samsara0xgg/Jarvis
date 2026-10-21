@@ -8,7 +8,6 @@ written answer was English under ``reply_language: en``, and the spoken form was
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -29,6 +28,7 @@ from jarvis.decision.tier0 import load_tier0_table
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -43,12 +43,6 @@ LONG_ENGLISH = (
     "is linked in the event description for anyone who wants to read ahead."
 )
 SPOKEN = "Friday works."
-
-
-@dataclass(frozen=True)
-class _StubRuntimePaths:
-    event_log: Path
-    artifacts_root: Path
 
 
 class _RecordingClient:
@@ -105,7 +99,7 @@ def _spoken_form_system(
     """The system prompts of one turn's requests, and its final plan text."""
     llm = _RecordingClient(answer)
     conn = open_event_log(tmp_path / "events.db")
-    paths = _StubRuntimePaths(
+    paths = StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
     )
     paths.artifacts_root.mkdir(parents=True, exist_ok=True)
@@ -188,7 +182,7 @@ def _tier0_answer(tmp_path: Path, transcript: str, reply_language: str) -> str:
             raise AssertionError(msg)
 
     conn = open_event_log(tmp_path / "events.db")
-    paths = _StubRuntimePaths(
+    paths = StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
     )
     paths.artifacts_root.mkdir(parents=True, exist_ok=True)
