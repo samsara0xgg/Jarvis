@@ -1,0 +1,187 @@
+{
+  "route": "POST /inherent/settings",
+  "direction": "client -> brain",
+  "description": "The Settings page's save (ADR 0052): `changes` holds the settings to change by key, and the brain saves them for the next boot (the microphone, speaker, board look and conversation model take effect at once) and answers the page like `GET`. A device is named as `options` lists it, or `System default`; a voice by name or by id. A change the brain refuses saves none of the others in its body: 400 for a key or a value it does not take, 422 for a body that is not `{changes: {...}}`.",
+  "valid": [
+    {
+      "name": "a voice, by its id",
+      "value": {
+        "changes": {
+          "tts_voice": "Chinese (Mandarin)_Warm_Bestie"
+        }
+      }
+    },
+    {
+      "name": "the volume and the wake threshold",
+      "value": {
+        "changes": {
+          "tts_volume": 0.8,
+          "wake_threshold": 0.9
+        }
+      }
+    },
+    {
+      "name": "the reply language",
+      "value": {
+        "changes": {
+          "reply_language": "en"
+        }
+      }
+    },
+    {
+      "name": "a switch",
+      "value": {
+        "changes": {
+          "keep_audio": true
+        }
+      }
+    },
+    {
+      "name": "how long recordings are kept",
+      "value": {
+        "changes": {
+          "audio_days": 30
+        }
+      }
+    },
+    {
+      "name": "recordings kept for ever",
+      "value": {
+        "changes": {
+          "audio_days": null
+        }
+      }
+    },
+    {
+      "name": "the default speaker",
+      "value": {
+        "changes": {
+          "output_device": "System default"
+        }
+      }
+    },
+    {
+      "name": "the conversation model and its effort",
+      "value": {
+        "changes": {
+          "conversation_model": "opus",
+          "conversation_effort": "high"
+        }
+      }
+    },
+    {
+      "name": "only the effort, for the model it has",
+      "value": {
+        "changes": {
+          "conversation_effort": "low"
+        }
+      }
+    },
+    {
+      "name": "the board's light and a color",
+      "value": {
+        "changes": {
+          "board_light": "solid",
+          "board_color": "#00FF88"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a setting the page cannot change",
+      "value": {
+        "changes": {
+          "assistant_name": "Jarvis"
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a volume out of range",
+      "value": {
+        "changes": {
+          "tts_volume": 2
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a switch that is text",
+      "value": {
+        "changes": {
+          "keep_audio": "yes"
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a voice it does not have",
+      "value": {
+        "changes": {
+          "tts_voice": "Nobody"
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a retention it does not offer",
+      "value": {
+        "changes": {
+          "audio_days": 5
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a speaker that is not there",
+      "value": {
+        "changes": {
+          "output_device": "Nothing Plugged In"
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "an effort the model cannot take",
+      "value": {
+        "changes": {
+          "conversation_model": "opus",
+          "conversation_effort": "none"
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a color that is not a hex color",
+      "value": {
+        "changes": {
+          "board_color": "red"
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "a valid change beside a refused one",
+      "value": {
+        "changes": {
+          "tts_volume": 0.5,
+          "wake_threshold": 2
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "no changes",
+      "value": {},
+      "refusal": "422"
+    },
+    {
+      "name": "changes that are not an object",
+      "value": {
+        "changes": ["tts_volume"]
+      },
+      "refusal": "422"
+    }
+  ]
+}

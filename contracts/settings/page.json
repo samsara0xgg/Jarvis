@@ -1,0 +1,111 @@
+{
+  "route": "GET /inherent/settings",
+  "direction": "brain -> client",
+  "description": "The Settings page. `values` is every setting by key as the page shows it (a device or a voice by name, `System default` for none) with the models the daemon runs in `model_*`; `options` is what a choice may be (`tts_voice`, `output_device` and `input_device` by name, `audio_days` and `screenshot_days` in days with null for forever, `conversation_model` and, per model, `conversation_effort`); `defaults` names what `System default` is now (null when unknown); `restart_pending` is true when a saved value waits for a restart. The POST answers with the same body after saving. A page that is not given a key leaves its row out: a client reads what it knows.",
+  "now_ms": 1791993600000,
+  "exact": ["restart_pending"],
+  "examples": {
+    "fresh": {
+      "values": {
+        "reply_language": "follow",
+        "final_asr_language": "",
+        "wake_threshold": 0.97,
+        "tts_voice": null,
+        "tts_volume": 1.0,
+        "output_device": "System default",
+        "input_device": "System default",
+        "gpt_live": false,
+        "timesink": false,
+        "keep_audio": false,
+        "audio_days": 30,
+        "screenshot_days": 7,
+        "core_memory_max_chars": 40000,
+        "conversation_model": "sonnet",
+        "conversation_effort": "low",
+        "board_light": "direction",
+        "board_brightness": 1.0,
+        "board_speed": 8,
+        "board_color": "#002040",
+        "board_direction_colors": ["#002040", "#00c066"],
+        "board_ring_colors": ["#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040"],
+        "board_headphone": 8,
+        "board_lineout": 8,
+        "repos": [],
+        "model_background": "claude-haiku-5-5",
+        "model_report": "claude-sonnet-5-5",
+        "model_conversation": "claude-sonnet-5-5"
+      },
+      "options": {
+        "tts_voice": ["暖心闺蜜", "Explorative Girl", "甜美女声", "Warm Girl", "Crisp Girl", "Soft Girl", "Intellectual Girl", "Warm Hearted Girl", "Laid Back Girl", "Bashful Girl", "Cute Spirit", "御姐音", "News Anchor", "Wise Women", "HK Flight Attendant", "Kind-hearted Antie", "Warm-Hearted Aunt", "Gentle Senior", "Kind-hearted Elder", "温和青年", "Gentleman", "稳重精英", "Unrestrained Young Man", "Southern Young Man", "Stubborn Friend", "Straightforward Boy", "Pure-hearted Boy", "Sincere Adult", "Lyrical Voice", "Radio Host", "Male Announcer", "Humorous Elder", "明亮女孩", "舒缓女声", "友好男声", "可靠男声"],
+        "conversation_model": ["opus-fast", "opus", "sonnet", "haiku", "luna"],
+        "conversation_effort": {
+          "opus-fast": ["low", "medium", "high"],
+          "opus": ["low", "medium", "high"],
+          "sonnet": ["low", "medium", "high"],
+          "haiku": ["low", "medium", "high"],
+          "luna": ["none", "low", "medium", "high"]
+        },
+        "audio_days": [7, 30, 90, null],
+        "screenshot_days": [7, 30, 90, null],
+        "output_device": ["System default", "MacBook Pro Speakers", "AirPods Pro"],
+        "input_device": ["System default", "MacBook Pro Microphone"]
+      },
+      "defaults": {
+        "output_device": "MacBook Pro Speakers",
+        "input_device": "MacBook Pro Microphone"
+      },
+      "restart_pending": false
+    },
+    "changed": {
+      "values": {
+        "reply_language": "follow",
+        "final_asr_language": "",
+        "wake_threshold": 0.9,
+        "tts_voice": "暖心闺蜜",
+        "tts_volume": 1.0,
+        "output_device": "AirPods Pro",
+        "input_device": "System default",
+        "gpt_live": false,
+        "timesink": false,
+        "keep_audio": false,
+        "audio_days": 30,
+        "screenshot_days": 7,
+        "core_memory_max_chars": 40000,
+        "conversation_model": "opus",
+        "conversation_effort": "low",
+        "board_light": "direction",
+        "board_brightness": 1.0,
+        "board_speed": 8,
+        "board_color": "#002040",
+        "board_direction_colors": ["#002040", "#00c066"],
+        "board_ring_colors": ["#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040", "#002040"],
+        "board_headphone": 8,
+        "board_lineout": 8,
+        "repos": [],
+        "model_background": "claude-haiku-5-5",
+        "model_report": "claude-sonnet-5-5",
+        "model_conversation": "claude-opus-5-5"
+      },
+      "options": {
+        "tts_voice": ["暖心闺蜜", "Explorative Girl", "甜美女声", "Warm Girl", "Crisp Girl", "Soft Girl", "Intellectual Girl", "Warm Hearted Girl", "Laid Back Girl", "Bashful Girl", "Cute Spirit", "御姐音", "News Anchor", "Wise Women", "HK Flight Attendant", "Kind-hearted Antie", "Warm-Hearted Aunt", "Gentle Senior", "Kind-hearted Elder", "温和青年", "Gentleman", "稳重精英", "Unrestrained Young Man", "Southern Young Man", "Stubborn Friend", "Straightforward Boy", "Pure-hearted Boy", "Sincere Adult", "Lyrical Voice", "Radio Host", "Male Announcer", "Humorous Elder", "明亮女孩", "舒缓女声", "友好男声", "可靠男声"],
+        "conversation_model": ["opus-fast", "opus", "sonnet", "haiku", "luna"],
+        "conversation_effort": {
+          "opus-fast": ["low", "medium", "high"],
+          "opus": ["low", "medium", "high"],
+          "sonnet": ["low", "medium", "high"],
+          "haiku": ["low", "medium", "high"],
+          "luna": ["none", "low", "medium", "high"]
+        },
+        "audio_days": [7, 30, 90, null],
+        "screenshot_days": [7, 30, 90, null],
+        "output_device": ["System default", "MacBook Pro Speakers", "AirPods Pro"],
+        "input_device": ["System default", "MacBook Pro Microphone"]
+      },
+      "defaults": {
+        "output_device": "MacBook Pro Speakers",
+        "input_device": "MacBook Pro Microphone"
+      },
+      "restart_pending": true
+    }
+  }
+}
