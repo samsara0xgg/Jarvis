@@ -33,6 +33,7 @@ import datetime as dt
 import fcntl
 import html
 import json
+import logging
 import os
 import pty
 import re
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.shared.device_link import DeviceLink
+
+LOGGER = logging.getLogger(__name__)
 
 RETENTION_MS = 24 * 60 * 60 * 1000
 REFRESH_S = 3.0
@@ -419,9 +422,12 @@ def _phase(agent: dict[str, Any], job: dict[str, Any]) -> str:
 
 
 def _terminals(pids: list[int]) -> dict[int, str]:
-    """Which terminal app (or multiplexer) each interactive session runs in."""
-    if not pids:
-        return {}
+    """Which terminal app (or multiplexer) each interactive session runs in.
+
+    Raises:
+        OSError: there is no ``ps`` to run.
+        subprocess.SubprocessError: it did not answer within its time.
+    """
     ps = subprocess.run(
         ["/bin/ps", "-Ao", "pid=,ppid=,comm="],
         capture_output=True,
@@ -481,6 +487,7 @@ class ClaudeSessions:
         # Claude Desktop's session files: path -> (mtime, CLI session id, title).
         self._desktop: dict[Path, tuple[int, str, str]] = {}
         self._reply_lock = threading.Lock()
+        self._ps_down = False
 
     def read(self) -> dict[str, Any]:
         """Blocking (a subprocess and file reads, or the terminal): call it from a worker thread."""
@@ -643,6 +650,28 @@ class ClaudeSessions:
             return {}
         return state if isinstance(state, dict) else {}
 
+    def _where(self, pids: list[int]) -> dict[int, str]:
+        """The terminal of each interactive session; none while ``ps`` does not answer.
+
+        The label only tells where to find a session, so a ``ps`` that stalls leaves the rows
+        unlabelled for that poll instead of failing the board. The warning is one per outage: a
+        new one is told only after ``ps`` has answered again.
+        """
+        if not pids:
+            return {}
+        try:
+            found = _terminals(pids)
+        except (OSError, subprocess.SubprocessError) as exc:
+            if not self._ps_down:
+                LOGGER.warning(
+                    "claude sessions: ps did not answer (%s); no terminal is named until it does",
+                    type(exc).__name__,
+                )
+            self._ps_down = True
+            return {}
+        self._ps_down = False
+        return found
+
     def _collect(self) -> dict[str, Any]:
         try:
             done = subprocess.run(  # noqa: S603 — fixed argv; the binary is Claude Code's own.
@@ -660,7 +689,7 @@ class ClaudeSessions:
         except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
             return {"sessions": [], "error": f"claude agents --json: {exc}"[:200], "extra": {}}
         now_ms = int(time.time() * 1000)
-        where = _terminals(
+        where = self._where(
             [
                 a["pid"]
                 for a in agents

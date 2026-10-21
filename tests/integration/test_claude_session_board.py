@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
+import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
+from jarvis.surface.claude_sessions import ClaudeSessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
@@ -412,3 +415,58 @@ def test_a_row_says_when_the_session_began(
         "s-unknown": None,
     }
     assert rows["s-resumed"]["title"] == "wire the door"  # the same head read gives the title
+
+
+def test_a_ps_that_does_not_answer_leaves_the_sessions_listed_without_their_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Which terminal a session is in is only a label: its loss costs the label, not the board."""
+    bin_dir = board_home(tmp_path, [
+        {"sessionId": "s-inter", "kind": "interactive", "pid": 4242, "status": "busy",
+         "cwd": "/x/jarvis", "startedAt": NOW_MS},
+        {"sessionId": "s-bg", "id": "job1", "kind": "background", "status": "busy",
+         "cwd": "/x/jarvis", "startedAt": NOW_MS},
+    ])
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    table = (
+        "  4242  4000 /bin/zsh\n"
+        "  4000  3900 /Applications/Ghostty.app/Contents/MacOS/ghostty\n"
+        "  3900     1 /sbin/launchd\n"
+    )
+    answers = iter(["table", "timeout", "missing", "table", "timeout"])
+    real_run = subprocess.run
+
+    def run(argv: list[str], *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 — subprocess.run's.
+        if argv[0] != "/bin/ps":
+            return real_run(argv, *args, **kwargs)
+        match next(answers):
+            case "timeout":
+                raise subprocess.TimeoutExpired(argv, 5)
+            case "missing":
+                raise FileNotFoundError(argv[0])
+            case _:
+                return subprocess.CompletedProcess(argv, 0, stdout=table, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    board = ClaudeSessions()
+
+    def poll() -> dict[str, str]:
+        answer = board.raw()
+        assert answer["error"] is None
+        return {row["session_id"]: row["where"] for row in answer["sessions"]}
+
+    def warnings() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.levelno == logging.WARNING and r.name == (
+            "jarvis.surface.claude_sessions")]
+
+    caplog.set_level(logging.WARNING)
+    found = {"s-inter": "Ghostty", "s-bg": "background"}
+    unnamed = {"s-inter": "terminal", "s-bg": "background"}  # the label of a terminal not known
+    assert poll() == found
+    assert poll() == unnamed  # ps timed out: the row is there, only its terminal is not named
+    assert poll() == unnamed  # and ps gone is the same
+    assert len(warnings()) == 1  # one for the outage, not one per poll
+    assert poll() == found  # ps answered again
+    assert poll() == unnamed
+    assert len(warnings()) == 2  # a new outage is told again
