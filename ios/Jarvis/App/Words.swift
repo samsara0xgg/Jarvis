@@ -35,11 +35,13 @@ final class Words {
         store.set(l.rawValue, forKey: Self.key)
     }
 
-    /// Ask the brain for its language, when this phone is paired. Any failure keeps the language held.
+    #if os(iOS)
+    /// Ask the brain for its language, when this phone is paired. Any failure keeps the language held. (The watch has no brain of its own: the phone tells it the language.)
     func refresh() async {
         guard BrainLink.shared.hasToken else { return }
         if let l = try? await BrainLink.shared.call({ try await BrainClient.language(bases: $0, token: $1) }) { set(l) }
     }
+    #endif
 
     /// the one choice between two wordings: both are always written
     static func pick(zh: String, en: String) -> String { shared.language == .zh ? zh : en }

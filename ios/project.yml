@@ -14,10 +14,13 @@ targets:
     type: application
     platform: iOS
     deploymentTarget: "18.0"
-    sources: [Jarvis]
+    sources:
+      - Jarvis
+      - JarvisWatchShared                   # what the phone and the watch say to each other (ADR on the watch's route)
     dependencies:
       - target: JarvisWidgets
       - target: JarvisShare
+      - target: JarvisWatch                 # embedded: the watch app installs with the phone's
     # the brain answers on plain http over the tailnet (docs/spec.html: `brain` in the pairing answer is http://host:port).
     # Local networking covers IP addresses and bare names; MagicDNS names (*.ts.net) need their own exception. Nothing else is opened.
     info:
@@ -57,11 +60,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Jarvis/Resources/Assets.xcassets: her glass ball under a night sky
         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIconFlat   # the flat one, picked in Settings › 首页 › App 图标
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"          # iPhone and iPad (ADR on the iPad's role: a screen, not a sensor)
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Jarvis
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
         INFOPLIST_KEY_NSCameraUsageDescription: 拍照给 Jarvis 看，或扫大脑上的二维码来配对
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 选照片交给 Jarvis 看
@@ -98,7 +102,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.widgets
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"   # the intents have no recorder here
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
   JarvisShare:
@@ -129,7 +133,56 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.share
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+  JarvisWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "11.0"                # the first watchOS with double tap as a screen's primary action (handGestureShortcut)
+    sources:
+      - JarvisWatch
+      - JarvisWatchShared
+      - Jarvis/App/Words.swift
+      - Jarvis/App/Words+Watch.swift
+    dependencies:
+      - target: JarvisWatchWidgets
+    entitlements:
+      path: Config/JarvisWatch.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.yilunshi.jarvis]    # the day's snapshot, for the complications
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.watchkitapp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Jarvis
+        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: com.yilunshi.jarvis
+        INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp: NO
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: 和 Jarvis 说话时用麦克风
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SKIP_INSTALL: YES
+  JarvisWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    deploymentTarget: "11.0"
+    sources:
+      - JarvisWatchWidgets
+      - JarvisWatchShared
+      - Jarvis/App/Words.swift
+      - Jarvis/App/Words+Watch.swift
+    info:
+      path: JarvisWatchWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Jarvis
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Config/JarvisWatchWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.yilunshi.jarvis]    # the watch app leaves the day's snapshot there for the complications
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.watchkitapp.widgets
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
   JarvisTests:
