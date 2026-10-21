@@ -1,6 +1,6 @@
 # ADR 0267 — History carries a program-written line of what each answer did
 
-**Status:** Accepted
+**Status:** Superseded-by-0319
 **Date:** 2026-10-14
 **Supersedes:** the clause of ADR 0044 that makes the history only the text of each row. The rest of ADR 0044 stands.
 
