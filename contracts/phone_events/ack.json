@@ -1,0 +1,58 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "brain -> client",
+  "description": "The answer to a batch: one ack per frame, in order, with the frame's `event_uid` (null when the frame had none). `ok` is true when the event is stored or was already; false carries a `code`: `bad_event`, `event_type_not_allowed` and `event_too_large` are refused for good, `retry` means the brain could not write it and the phone keeps the frame and sends it again.",
+  "now_ms": 1791993600000,
+  "exact": ["code", "ok", "type"],
+  "examples": {
+    "ok": {
+      "acks": [
+        {
+          "type": "ack",
+          "event_uid": "00000000000000000000000000000001",
+          "ok": true
+        }
+      ]
+    },
+    "bad_event": {
+      "acks": [
+        {
+          "type": "ack",
+          "event_uid": "00000000000000000000000000000002",
+          "ok": false,
+          "code": "bad_event"
+        }
+      ]
+    },
+    "event_type_not_allowed": {
+      "acks": [
+        {
+          "type": "ack",
+          "event_uid": "00000000000000000000000000000003",
+          "ok": false,
+          "code": "event_type_not_allowed"
+        }
+      ]
+    },
+    "event_too_large": {
+      "acks": [
+        {
+          "type": "ack",
+          "event_uid": "00000000000000000000000000000004",
+          "ok": false,
+          "code": "event_too_large"
+        }
+      ]
+    },
+    "retry": {
+      "acks": [
+        {
+          "type": "ack",
+          "event_uid": "00000000000000000000000000000005",
+          "ok": false,
+          "code": "retry"
+        }
+      ]
+    }
+  }
+}

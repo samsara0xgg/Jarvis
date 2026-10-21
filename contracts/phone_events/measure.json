@@ -1,0 +1,439 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "client -> brain",
+  "event_type": "phone.measure_observed",
+  "description": "A reading HealthKit holds at a moment (ADR 0304), or a heartbeat series: its `beats` are [offset ms, preceded by a gap] and `value` counts them. Every metric the brain takes has a valid case here.",
+  "now_ms": 1791993600000,
+  "metrics": ["heart_rate", "resting_heart_rate", "walking_heart_rate_average", "heart_rate_variability_sdnn", "oxygen_saturation", "respiratory_rate", "sleeping_wrist_temperature", "vo2_max", "environmental_audio_exposure", "headphone_audio_exposure", "heartbeat_series"],
+  "valid": [
+    {
+      "name": "the measure heart_rate",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure resting_heart_rate",
+      "value": {
+        "metric": "resting_heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure walking_heart_rate_average",
+      "value": {
+        "metric": "walking_heart_rate_average",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure heart_rate_variability_sdnn",
+      "value": {
+        "metric": "heart_rate_variability_sdnn",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure oxygen_saturation",
+      "value": {
+        "metric": "oxygen_saturation",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure respiratory_rate",
+      "value": {
+        "metric": "respiratory_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure sleeping_wrist_temperature",
+      "value": {
+        "metric": "sleeping_wrist_temperature",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure vo2_max",
+      "value": {
+        "metric": "vo2_max",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure environmental_audio_exposure",
+      "value": {
+        "metric": "environmental_audio_exposure",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "the measure headphone_audio_exposure",
+      "value": {
+        "metric": "headphone_audio_exposure",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "a reading with its source, device and meta",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "source": "Allen's Apple Watch",
+        "device": "Watch7,1",
+        "meta": {
+          "motion_context": "sedentary"
+        }
+      }
+    },
+    {
+      "name": "a temperature below zero",
+      "value": {
+        "metric": "sleeping_wrist_temperature",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": -0.4,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      }
+    },
+    {
+      "name": "a heartbeat series",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 3,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 1],
+          [850, 0],
+          [1710, 0]
+        ],
+        "part": 0
+      }
+    },
+    {
+      "name": "a heartbeat series with no part",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 1,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 0]
+        ]
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an unknown key",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "extra": 1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no unit",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no sample uuid",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no value",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a total is not a measure",
+      "value": {
+        "metric": "steps",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "sleep is not a measure",
+      "value": {
+        "metric": "sleep",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a value as text",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": "64",
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a unit that is null",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": null,
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a sample uuid that is not one",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "not-a-uuid"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a series with no beats",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 3,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a series whose value does not count its beats",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 2,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 1]
+        ]
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a series of no beats",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": []
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a beat with a gap of 2",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 1,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 2]
+        ]
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a beat at a negative offset",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 1,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [-1, 0]
+        ]
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a beat of three numbers",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 1,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 0, 0]
+        ]
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a part of 1000",
+      "value": {
+        "metric": "heartbeat_series",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 1,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 0]
+        ],
+        "part": 1000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "beats on a measure that is no series",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "beats": [
+          [0, 0]
+        ]
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a part on a measure that is no series",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993420000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F",
+        "part": 0
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an end before the start",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791993420000,
+        "end_ms": 1791993419999,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a reading an hour ahead of the brain's clock",
+      "value": {
+        "metric": "heart_rate",
+        "start_ms": 1791997200000,
+        "end_ms": 1791997200000,
+        "value": 64.0,
+        "unit": "count/min",
+        "sample_uuid": "3F2A9C1E-7B3D-4C55-8E21-0A1B2C3D4E5F"
+      },
+      "refusal": "bad_event"
+    }
+  ]
+}

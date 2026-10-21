@@ -1,0 +1,252 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "client -> brain",
+  "event_type": "phone.state_observed",
+  "description": "A signal that changed on the phone (ADR 0197). `value` is a word that fits the `signal`; the battery's is a whole percent in text, its `detail` charging, full or unplugged.",
+  "now_ms": 1791993600000,
+  "signals": ["focus", "alarm", "power", "headphones", "call", "battery"],
+  "valid": [
+    {
+      "name": "focus on, with its name",
+      "value": {
+        "signal": "focus",
+        "value": "on",
+        "detail": "Work"
+      }
+    },
+    {
+      "name": "focus off",
+      "value": {
+        "signal": "focus",
+        "value": "off"
+      }
+    },
+    {
+      "name": "an alarm stopped",
+      "value": {
+        "signal": "alarm",
+        "value": "stopped"
+      }
+    },
+    {
+      "name": "an alarm snoozed",
+      "value": {
+        "signal": "alarm",
+        "value": "snoozed"
+      }
+    },
+    {
+      "name": "power connected",
+      "value": {
+        "signal": "power",
+        "value": "connected"
+      }
+    },
+    {
+      "name": "power disconnected",
+      "value": {
+        "signal": "power",
+        "value": "disconnected"
+      }
+    },
+    {
+      "name": "headphones connected, with their name",
+      "value": {
+        "signal": "headphones",
+        "value": "connected",
+        "detail": "AirPods Pro"
+      }
+    },
+    {
+      "name": "headphones disconnected",
+      "value": {
+        "signal": "headphones",
+        "value": "disconnected"
+      }
+    },
+    {
+      "name": "a call started",
+      "value": {
+        "signal": "call",
+        "value": "started"
+      }
+    },
+    {
+      "name": "a call ended",
+      "value": {
+        "signal": "call",
+        "value": "ended"
+      }
+    },
+    {
+      "name": "a battery at 57 percent, charging",
+      "value": {
+        "signal": "battery",
+        "value": "57",
+        "detail": "charging"
+      }
+    },
+    {
+      "name": "an empty battery",
+      "value": {
+        "signal": "battery",
+        "value": "0"
+      }
+    },
+    {
+      "name": "a full battery",
+      "value": {
+        "signal": "battery",
+        "value": "100",
+        "detail": "full"
+      }
+    },
+    {
+      "name": "a battery unplugged",
+      "value": {
+        "signal": "battery",
+        "value": "9",
+        "detail": "unplugged"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an unknown key",
+      "value": {
+        "signal": "focus",
+        "value": "on",
+        "extra": 1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no signal",
+      "value": {
+        "value": "on"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no value",
+      "value": {
+        "signal": "focus"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a signal outside the list",
+      "value": {
+        "signal": "wifi",
+        "value": "on"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a signal that is a list",
+      "value": {
+        "signal": ["focus"],
+        "value": "on"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a value that is a list",
+      "value": {
+        "signal": "focus",
+        "value": ["on"]
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "focus connected",
+      "value": {
+        "signal": "focus",
+        "value": "connected"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an alarm on",
+      "value": {
+        "signal": "alarm",
+        "value": "on"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "power started",
+      "value": {
+        "signal": "power",
+        "value": "started"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a call connected",
+      "value": {
+        "signal": "call",
+        "value": "connected"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a battery above 100",
+      "value": {
+        "signal": "battery",
+        "value": "101"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a battery below 0",
+      "value": {
+        "signal": "battery",
+        "value": "-1"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a battery with a fraction",
+      "value": {
+        "signal": "battery",
+        "value": "57.5"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a battery with a leading zero",
+      "value": {
+        "signal": "battery",
+        "value": "057"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a battery as a number",
+      "value": {
+        "signal": "battery",
+        "value": 57
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a battery in a state outside the list",
+      "value": {
+        "signal": "battery",
+        "value": "57",
+        "detail": "Work"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a detail of 65 characters",
+      "value": {
+        "signal": "focus",
+        "value": "on",
+        "detail": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "refusal": "bad_event"
+    }
+  ]
+}

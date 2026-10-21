@@ -1,0 +1,207 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "client -> brain",
+  "event_type": "phone.location_observed",
+  "description": "A fix the phone took (ADR 0197), or the answer to a `locate` (ADR 0281) when `request_id` names it. The value is the event's payload.",
+  "now_ms": 1791993600000,
+  "valid": [
+    {
+      "name": "a bare fix",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120
+      }
+    },
+    {
+      "name": "a fix with its street and speed",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "place": "Douglas St, Victoria",
+        "speed_mps": 1.4
+      }
+    },
+    {
+      "name": "a fix that answers a locate",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "request_id": "locate-7f3a_9"
+      }
+    },
+    {
+      "name": "a fix with the picture it took",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "request_id": "r1",
+        "snapshot": "0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "name": "the edges of the globe",
+      "value": {
+        "lat": -90.0,
+        "lng": -180.0,
+        "accuracy_m": 1000000.0
+      }
+    },
+    {
+      "name": "a standing fix",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "speed_mps": 0
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an unknown key",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "extra": 1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no longitude",
+      "value": {
+        "lat": 48.4284,
+        "accuracy_m": 120
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no accuracy",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a latitude past 90",
+      "value": {
+        "lat": 91,
+        "lng": -123.3656,
+        "accuracy_m": 120
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a longitude past 180",
+      "value": {
+        "lat": 48.4284,
+        "lng": 180.5,
+        "accuracy_m": 120
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a negative accuracy",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": -1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a negative speed (CoreLocation's -1 means unknown: leave it out)",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "speed_mps": -1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a coordinate as text",
+      "value": {
+        "lat": "48.4284",
+        "lng": -123.3656,
+        "accuracy_m": 120
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a bool for the speed",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "speed_mps": true
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a place that is a number",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "place": 5
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a place of null",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "place": null
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a place of 201 characters",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "place": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a request id with a space",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "request_id": "locate 7"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a request id of 65 characters",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "request_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a snapshot that is not an attachment id",
+      "value": {
+        "lat": 48.4284,
+        "lng": -123.3656,
+        "accuracy_m": 120,
+        "snapshot": "not-an-id"
+      },
+      "refusal": "bad_event"
+    }
+  ]
+}

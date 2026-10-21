@@ -1,0 +1,232 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "client -> brain",
+  "event_type": "phone.visit_observed",
+  "description": "A place the phone stayed at (ADR 0197). The value is the event's payload; it is the whole payload: a key not listed here is refused.",
+  "now_ms": 1791993600000,
+  "valid": [
+    {
+      "name": "an arrival, still there",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000
+      }
+    },
+    {
+      "name": "a stay with its departure and a place",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "departed_at_ms": 1791990000000,
+        "place": "University of Victoria"
+      }
+    },
+    {
+      "name": "a departure at the moment of arrival",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "departed_at_ms": 1791982800000
+      }
+    },
+    {
+      "name": "the edges of the globe",
+      "value": {
+        "lat": 90,
+        "lng": 180,
+        "accuracy_m": 0,
+        "arrived_at_ms": 1791990000000
+      }
+    },
+    {
+      "name": "an arrival four minutes ahead of the brain's clock",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791993840000
+      }
+    },
+    {
+      "name": "a place of 200 characters",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "place": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an unknown key",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "extra": 1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no accuracy",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "arrived_at_ms": 1791982800000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no arrival",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a latitude past 90",
+      "value": {
+        "lat": 90.0001,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a longitude past -180",
+      "value": {
+        "lat": 48.46,
+        "lng": -181,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a negative accuracy",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": -0.5,
+        "arrived_at_ms": 1791982800000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a coordinate as text",
+      "value": {
+        "lat": "48.46",
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a bool is not a number",
+      "value": {
+        "lat": true,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a time as text",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": "1791982800000"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a time with a fraction",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000.5
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a departure before the arrival",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "departed_at_ms": 1791982799999
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an arrival six minutes ahead of the brain's clock",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791993960000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "CLVisit's distantFuture as the departure",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "departed_at_ms": 64092211200000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a negative time",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": -1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a place of 201 characters",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "place": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a place of null (null is not absent)",
+      "value": {
+        "lat": 48.46,
+        "lng": -123.31,
+        "accuracy_m": 65.0,
+        "arrived_at_ms": 1791982800000,
+        "place": null
+      },
+      "refusal": "bad_event"
+    }
+  ]
+}

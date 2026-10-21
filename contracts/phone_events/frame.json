@@ -1,0 +1,251 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "client -> brain",
+  "description": "One frame of the batch `{\"events\": [...]}` a paired phone posts (ADR 0197): the shape of the /terminal/ws event frame and nothing more. The value is the whole frame; the payload of each phone type has its own contract in this folder. The brain answers each frame with an ack in order (see ack.json).",
+  "now_ms": 1791993600000,
+  "valid": [
+    {
+      "name": "the frame a phone sends",
+      "value": {
+        "event_uid": "00000000000000000000000000000001",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      }
+    },
+    {
+      "name": "a frame that says it is an event",
+      "value": {
+        "event_uid": "00000000000000000000000000000002",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        },
+        "type": "event"
+      }
+    },
+    {
+      "name": "an event from ten days ago (the brain places it by its own clock)",
+      "value": {
+        "event_uid": "00000000000000000000000000000003",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791129600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      }
+    },
+    {
+      "name": "an event from the future (the brain places it by its own clock)",
+      "value": {
+        "event_uid": "00000000000000000000000000000004",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1792857600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a frame that is not an object",
+      "value": "not a frame",
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a uid that is not 32 hex characters",
+      "value": {
+        "event_uid": "NOT-A-UID",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no payload",
+      "value": {
+        "event_uid": "00000000000000000000000000000006",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a payload that is a list",
+      "value": {
+        "event_uid": "00000000000000000000000000000007",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": []
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a time as text",
+      "value": {
+        "event_uid": "00000000000000000000000000000008",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": "now",
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a time with a fraction",
+      "value": {
+        "event_uid": "00000000000000000000000000000009",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000.5,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a link to another row",
+      "value": {
+        "event_uid": "0000000000000000000000000000000a",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        },
+        "source_event_id": "00000000000000000000000000000001"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a correlation",
+      "value": {
+        "event_uid": "0000000000000000000000000000000b",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        },
+        "correlation": {
+          "turn_id": "T"
+        }
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a schema version",
+      "value": {
+        "event_uid": "0000000000000000000000000000000c",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        },
+        "schema_version": 1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a node the phone names itself",
+      "value": {
+        "event_uid": "0000000000000000000000000000000d",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        },
+        "ingestion_node": "macbook"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a type other than event",
+      "value": {
+        "event_uid": "0000000000000000000000000000000e",
+        "event_type": "phone.location_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        },
+        "type": "tts"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a type the phone may not write",
+      "value": {
+        "event_uid": "0000000000000000000000000000000f",
+        "event_type": "repo.state_observed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "repo_path": "/r"
+        }
+      },
+      "refusal": "event_type_not_allowed"
+    },
+    {
+      "name": "a playback row, which is the terminal's",
+      "value": {
+        "event_uid": "00000000000000000000000000000010",
+        "event_type": "surface.playback_completed",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {}
+      },
+      "refusal": "event_type_not_allowed"
+    },
+    {
+      "name": "a phone type that does not exist",
+      "value": {
+        "event_uid": "00000000000000000000000000000011",
+        "event_type": "phone.sleeping",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {}
+      },
+      "refusal": "event_type_not_allowed"
+    },
+    {
+      "name": "no event type",
+      "value": {
+        "event_uid": "00000000000000000000000000000012",
+        "ts_epoch_ms": 1791993600000,
+        "payload": {
+          "lat": 48.4284,
+          "lng": -123.3656,
+          "accuracy_m": 120
+        }
+      },
+      "refusal": "event_type_not_allowed"
+    }
+  ]
+}

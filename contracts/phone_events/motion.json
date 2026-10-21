@@ -1,0 +1,193 @@
+{
+  "route": "POST /inherent/device/events",
+  "direction": "client -> brain",
+  "event_type": "phone.motion_observed",
+  "description": "A stretch of one activity Core Motion reported (ADR 0197). Every activity and confidence the brain takes has a valid case here; a phone sends no other.",
+  "now_ms": 1791993600000,
+  "activities": ["stationary", "walking", "running", "cycling", "automotive", "unknown"],
+  "confidences": ["low", "medium", "high"],
+  "valid": [
+    {
+      "name": "an open stretch",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "a closed stretch",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000,
+        "ended_at_ms": 1791993540000
+      }
+    },
+    {
+      "name": "the activity stationary",
+      "value": {
+        "activity": "stationary",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the activity walking",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the activity running",
+      "value": {
+        "activity": "running",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the activity cycling",
+      "value": {
+        "activity": "cycling",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the activity automotive",
+      "value": {
+        "activity": "automotive",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the activity unknown",
+      "value": {
+        "activity": "unknown",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the confidence low",
+      "value": {
+        "activity": "walking",
+        "confidence": "low",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the confidence medium",
+      "value": {
+        "activity": "walking",
+        "confidence": "medium",
+        "started_at_ms": 1791992700000
+      }
+    },
+    {
+      "name": "the confidence high",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an unknown key",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000,
+        "extra": 1
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no confidence",
+      "value": {
+        "activity": "walking",
+        "started_at_ms": 1791992700000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "no start",
+      "value": {
+        "activity": "walking",
+        "confidence": "high"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an activity outside the list",
+      "value": {
+        "activity": "flying",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an activity in capitals",
+      "value": {
+        "activity": "Walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a confidence outside the list",
+      "value": {
+        "activity": "walking",
+        "confidence": "certain",
+        "started_at_ms": 1791992700000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a confidence as a number",
+      "value": {
+        "activity": "walking",
+        "confidence": 2,
+        "started_at_ms": 1791992700000
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "a start as text",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": "1791993600000"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an end before the start",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000,
+        "ended_at_ms": 1791992699999
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "an end ten minutes ahead of the brain's clock",
+      "value": {
+        "activity": "walking",
+        "confidence": "high",
+        "started_at_ms": 1791992700000,
+        "ended_at_ms": 1791994200000
+      },
+      "refusal": "bad_event"
+    }
+  ]
+}
