@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct JarvisWatchApp: App {
     init() {
-        // WatchLink.shared.start() — the phone link, added by the link's branch
+        WatchLink.shared.start()
         #if DEBUG
         WatchScene.apply()
         #endif
