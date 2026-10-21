@@ -5,12 +5,14 @@ import Foundation
 // Pacing is by distance, so the ground goes by at one pace; every long stay and every stop is a beat; one camera height serves the whole replay.
 
 struct FootprintReplay {
-    enum Scope: Equatable { case day, outing(String) }
+    enum Scope: Hashable { case day, outing(String) }
     /// what a beat says: a long stay with its length on the day, or a numbered stop with its minutes
     enum Beat: Equatable { case stay(id: String, minutes: Int), stop(id: String, number: Int, minutes: Int) }
 
     struct Frame {
         var ms: Int64
+        /// where the playhead stands on the held bar (the trip layout)
+        var x: Double
         var coord: CLLocationCoordinate2D
         /// degrees clockwise from north; kept while he is still
         var heading: Double
@@ -35,7 +37,8 @@ struct FootprintReplay {
         case move(track: FootprintTrack, d0: Double, d1: Double, ms: ClosedRange<Int64>, ahead: Double, hold: Double)
         case beat(Beat, ms: ClosedRange<Int64>, from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, heading: Double, fly: Bool)
     }
-    private struct Slot { var t0: Double, t1: Double; var outing: String?; var part: Part }
+    /// a stretch of the replay with where it lies on the trip bar and in time, so that a finger's x or a curve's time can be turned back into a second
+    private struct Slot { var t0: Double, t1: Double; var x0: Double, x1: Double; var ms: ClosedRange<Int64>; var outing: String?; var part: Part }
     private let slots: [Slot]
 
     // MARK: per activity
@@ -52,7 +55,7 @@ struct FootprintReplay {
     /// Nil when nothing in the scope has a line to follow.
     init?(model: FootprintModel, scope: Scope) {
         self.scope = scope
-        let layout = FootprintBarLayout(model: model), tracks = model.tracks, r = model.reply, dayEnd = min(r.end_ms, r.now_ms)
+        let layout = model.barLayout, tracks = model.tracks, r = model.reply, dayEnd = min(r.end_ms, r.now_ms)
         func line(_ id: String) -> FootprintTrack? { tracks[id].flatMap { $0.coord(atDistance: 0) == nil ? nil : $0 } }
         let items = layout.items.filter {
             switch ($0.kind, scope) {
@@ -91,9 +94,9 @@ struct FootprintReplay {
         // the slots
         func metres(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double { FootprintTrack.metres(a, b).distance }
         var slots: [Slot] = [], t = 0.0, seen = 0
-        func add(_ seconds: Double, _ outing: String?, _ part: Part) {
+        func add(_ seconds: Double, _ outing: String?, x: ClosedRange<Double>, ms: ClosedRange<Int64>, _ part: Part) {
             guard seconds > 0 else { return }
-            slots.append(Slot(t0: t, t1: t + seconds, outing: outing, part: part)); t += seconds
+            slots.append(Slot(t0: t, t1: t + seconds, x0: x.lowerBound, x1: x.upperBound, ms: ms, outing: outing, part: part)); t += seconds
         }
         for it in items {
             switch it.kind {
@@ -104,17 +107,17 @@ struct FootprintReplay {
                 guard let from, let to, let stay = r.stays.first(where: { $0.id == id }) else { continue }
                 let fly = prev != nil && metres(from, to) > Self.flyMetres
                 let minutes = max(0, Int((Double(min(stay.end_ms ?? dayEnd, dayEnd) - max(stay.start_ms, r.start_ms)) / 60_000).rounded()))
-                add(Self.beatSeconds, nil, .beat(.stay(id: id, minutes: minutes), ms: it.ms0...it.ms1, from: from, to: to, heading: (fly || prev == nil ? next?.start : prev?.end) ?? 0, fly: fly))
+                add(Self.beatSeconds, nil, x: it.x0...it.x1, ms: it.ms0...it.ms1, .beat(.stay(id: id, minutes: minutes), ms: it.ms0...it.ms1, from: from, to: to, heading: (fly || prev == nil ? next?.start : prev?.end) ?? 0, fly: fly))
             case let .segment(id):
                 guard let run = runs[id] else { continue }
                 let share = moving.shares[seen], length = run.track.length, runCount = it.pieces.filter { if case .run = $0.kind { true } else { false } }.count
                 for p in it.pieces {
                     switch p.kind {
                     case let .run(d0, d1):
-                        add(length > 0 ? share * (d1 - d0) / length : share / Double(runCount), id, .move(track: run.track, d0: d0, d1: d1, ms: p.ms0...p.ms1, ahead: run.ahead, hold: run.end))
+                        add(length > 0 ? share * (d1 - d0) / length : share / Double(runCount), id, x: p.x0...p.x1, ms: p.ms0...p.ms1, .move(track: run.track, d0: d0, d1: d1, ms: p.ms0...p.ms1, ahead: run.ahead, hold: run.end))
                     case let .notch(stop, number):
                         let d = run.track.distance(atMs: p.ms0), c = run.track.coord(atDistance: d) ?? CLLocationCoordinate2D()
-                        add(Self.beatSeconds, id, .beat(.stop(id: stop, number: number, minutes: Int((Double(p.ms1 - p.ms0) / 60_000).rounded())), ms: p.ms0...p.ms1, from: c, to: c, heading: run.track.heading(atDistance: d, ahead: run.ahead) ?? run.end, fly: false))
+                        add(Self.beatSeconds, id, x: p.x0...p.x1, ms: p.ms0...p.ms1, .beat(.stop(id: stop, number: number, minutes: Int((Double(p.ms1 - p.ms0) / 60_000).rounded())), ms: p.ms0...p.ms1, from: c, to: c, heading: run.track.heading(atDistance: d, ahead: run.ahead) ?? run.end, fly: false))
                     }
                 }
                 seen += 1
@@ -133,12 +136,28 @@ struct FootprintReplay {
         switch s.part {
         case let .move(track, d0, d1, ms, ahead, hold):
             let d = d0 + (d1 - d0) * u
-            return Frame(ms: min(max(track.ms(atDistance: d), ms.lowerBound), ms.upperBound), coord: track.coord(atDistance: d) ?? CLLocationCoordinate2D(), heading: track.heading(atDistance: d, ahead: ahead) ?? hold,
+            return Frame(ms: min(max(track.ms(atDistance: d), ms.lowerBound), ms.upperBound), x: s.x0 + (s.x1 - s.x0) * u, coord: track.coord(atDistance: d) ?? CLLocationCoordinate2D(), heading: track.heading(atDistance: d, ahead: ahead) ?? hold,
                          beat: nil, outingId: s.outing, flying: false)
         case let .beat(beat, ms, from, to, heading, fly):
             let e = u * u * (3 - 2 * u)         // eased at both ends
             let c = fly ? CLLocationCoordinate2D(latitude: from.latitude + (to.latitude - from.latitude) * e, longitude: from.longitude + (to.longitude - from.longitude) * e) : from
-            return Frame(ms: ms.lowerBound + Int64((Double(ms.upperBound - ms.lowerBound) * u).rounded()), coord: c, heading: heading, beat: beat, outingId: s.outing, flying: fly)
+            return Frame(ms: ms.lowerBound + Int64((Double(ms.upperBound - ms.lowerBound) * u).rounded()), x: s.x0 + (s.x1 - s.x0) * u, coord: c, heading: heading, beat: beat, outingId: s.outing, flying: fly)
         }
+    }
+
+    // MARK: and back
+
+    /// The second at which the playhead stands at `x` on the trip bar (the inverse of `Frame.x`); over the spacing between two items the start of the next one.
+    func seconds(atX x: Double) -> Double {
+        let s = slots[min(slots.partitionPoint { $0.x1 >= x }, slots.count - 1)]
+        return s.t0 + (s.x1 > s.x0 ? min(max((x - s.x0) / (s.x1 - s.x0), 0), 1) : 0) * (s.t1 - s.t0)
+    }
+
+    /// The second at which the replay is at a time of the day, for a finger on the outing's curves: along a line by distance, so that it agrees with `frame(at:)`.
+    func seconds(atMs t: Int64) -> Double {
+        let s = slots[min(slots.partitionPoint { $0.ms.upperBound >= t }, slots.count - 1)]
+        var u = s.ms.upperBound > s.ms.lowerBound ? Double(t - s.ms.lowerBound) / Double(s.ms.upperBound - s.ms.lowerBound) : 0
+        if case let .move(track, d0, d1, _, _, _) = s.part, d1 > d0 { u = (track.distance(atMs: t) - d0) / (d1 - d0) }
+        return s.t0 + min(max(u, 0), 1) * (s.t1 - s.t0)
     }
 }

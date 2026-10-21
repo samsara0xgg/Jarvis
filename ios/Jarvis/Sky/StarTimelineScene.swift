@@ -224,14 +224,51 @@ extension TLBrain {
     }
 }
 
+/// What the footprint pages give the scenes to move by themselves: the bar's scrub callback (the one a finger's drag calls), a curve's, and the two ▶ buttons.
+enum FootprintHooks {
+    static var scrub: ((Double?) -> Void)?
+    static var curve: ((Double?) -> Void)?
+    static var play: (() -> Void)?
+    static var outingPlay: (() -> Void)?
+}
+
+/// A hand that moves a finger along a path at the display's rate for a time, for the recordings: `step` gets how far along it is (0...1), then nil when it has lifted.
+final class FootprintScript: NSObject {
+    private var link: CADisplayLink?
+    private var start = 0.0
+    private let seconds: Double, step: (Double?) -> Void
+    private static var running: [FootprintScript] = []
+
+    init(seconds: Double, step: @escaping (Double?) -> Void) { self.seconds = seconds; self.step = step }
+
+    func run(after delay: Double) {
+        Self.running.append(self)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+            let l = CADisplayLink(target: self, selector: #selector(tick))
+            l.add(to: .main, forMode: .common)
+            link = l
+        }
+    }
+
+    @objc private func tick(_ l: CADisplayLink) {
+        if start == 0 { start = l.timestamp }
+        let f = (l.timestamp - start) / seconds
+        if f >= 1 { step(1); step(nil); l.invalidate(); Self.running.removeAll { $0 === self } } else { step(f) }
+    }
+}
+
 extension StarEngine {
     /// `-scene 足迹` opens the footprint's one-day screen on the made-up day (Sky/FootprintFixture.swift); the words after a colon go further: `:拖:1329` the bar held at that time (a fourth word after it lifts the finger again, and the map flies back to the day's whole), `:开:<outing id>`
-    /// (or its number in the day, from 0) that outing's page opened.
+    /// (or its number in the day, from 0) that outing's page opened. For the recordings: `:慢拖` a finger drags slowly along the whole held bar in 20 s, `:放` the day's ▶ replay plays, `:开:0:放` the outing's, `:开:0:曲线拖` a finger drags
+    /// along its speed curve in 15 s; a last word `:稀` takes the day with a fix every 30 s.
     func runFootprintScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
-        let cal = Cal.cur, parts = name.split(separator: ":").map(String.init), mode = parts.count > 1 ? parts[1] : ""
-        let day = FootprintFixture.day(cal.cal), reply = FootprintFixture.footprint(cal.cal)
+        var parts = name.split(separator: ":").map(String.init)
+        let sparse = parts.last == "稀"
+        if sparse { parts.removeLast() }
+        let cal = Cal.cur, mode = parts.count > 1 ? parts[1] : ""
+        let day = FootprintFixture.day(cal.cal, sparse: sparse), reply = FootprintFixture.footprint(cal.cal, sparse: sparse)
         MainActor.assumeIsolated {
             ui.tl.fixture = .init(replies: [0: day], now: TimelineFixture.now)
             FootprintStore.shared.fixture = [cal.iso(ui.tl.today): reply]
@@ -246,10 +283,19 @@ extension StarEngine {
                 ui.footprint.list.hot = FootprintDayContent.hot(at: t, in: content.entries)
             }
             if parts.count > 3 { DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [self] in ui.footprint.minute = nil; ui.footprint.list.hot = nil } }
+        case "慢拖":
+            FootprintScript(seconds: 20) { f in FootprintHooks.scrub?(f.map { $0 * TLLayout.barW }) }.run(after: 2)
+        case "放":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { FootprintHooks.play?() }
         case "开":
             let want = parts.count > 2 ? parts[2] : "0"
             let pick = reply.outings.first { $0.id == want } ?? Int(want).flatMap { reply.outings.indices.contains($0) ? reply.outings[$0] : nil }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.footprint.openOuting = pick?.id }
+            switch parts.count > 3 ? parts[3] : "" {
+            case "放": DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { FootprintHooks.outingPlay?() }
+            case "曲线拖": FootprintScript(seconds: 15) { f in FootprintHooks.curve?(f.map { $0 * FootprintCurves.width }) }.run(after: 2.5)
+            default: break
+            }
         default: break
         }
         wake()

@@ -7,7 +7,7 @@ import Foundation
 /// a walk home, and the evening at home at the timeline fixture's 21:50. Made-up data only: invented places on a plain far from his life, the route and the speeds generated here
 /// from fixed numbers, not recorded.
 enum FootprintFixture {
-    /// `sparse`: the fixes of a recording before the dense track (ADR 0312), one every 30 s instead of every 10 s; the day is the same one
+    /// `sparse`: the fixes of a recording before the dense track (ADR 0312), one every 30 s instead of one a second (thinned to what the line needs within 5 m, as the brain does); the day is the same one
     static func day(_ cal: Calendar, sparse: Bool = false) -> DayReply { decode(Plan(cal, sparse: sparse).day) }
     static func footprint(_ cal: Calendar, sparse: Bool = false) -> FootprintReply { decode(Plan(cal, sparse: sparse).footprint) }
 
@@ -46,7 +46,7 @@ enum FootprintFixture {
             walkAt = clock.ms(minute: 17 * 60)
             drive = Route.drive()
             walk = Plan.walk(from: drive[Plan.driveSeconds])
-            let every = sparse ? 30 : 10
+            let every = sparse ? 30 : 1
             driveFixes = Plan.fixes(drive, within: Plan.reach(drive, out: 500, short: 400), gap: Plan.gapSeconds, every: every)
             walkFixes = Plan.fixes(walk, within: 0...walk.count - 1, gap: nil, every: every)
         }

@@ -285,5 +285,135 @@ final class FootprintReplayTests: XCTestCase {
         }
         XCTAssertFalse(frames.contains { $0.heading.isNaN })
     }
+
+    // MARK: the held bar by distance
+
+    func testAFingerAcrossASegmentMovesTheDotAlongTheDrawnLineAtAnEvenPaceAndTheJoinGlidesThoughItTakesNoTime() throws {
+        for sparse in [false, true] {
+            let m = fixture(sparse: sparse), l = m.barLayout, o = m.reply.outings[0], t = try XCTUnwrap(m.tracks[o.id])
+            let seg = try XCTUnwrap(l.items.first { $0.kind == .segment(outingId: o.id) })
+            let run = try XCTUnwrap(seg.pieces.last), d0 = try { () -> Double in if case let .run(a, _) = run.kind { return a }; throw XCTSkip() }()
+            var last: FootprintMoment?
+            var along = [Double]()
+            for i in 0...200 {
+                let x = run.x0 + (run.x1 - run.x0) * Double(i) / 200, mo = try XCTUnwrap(l.moment(atX: x, model: m))
+                let want = try XCTUnwrap(t.coord(atDistance: d0 + (t.length - d0) * Double(i) / 200))
+                XCTAssertEqual(metres(mo.coord, want), 0, accuracy: 0.01, "on the line at distance, x \(x)")
+                XCTAssertEqual(mo.height, 1200); XCTAssertEqual(mo.outingId, o.id); XCTAssertEqual(mo.x ?? -1, x, accuracy: 1e-9)
+                if let p = last { along.append(metres(p.coord, mo.coord)); XCTAssertGreaterThanOrEqual(mo.ms, p.ms) }
+                last = mo
+            }
+            let tail = t.length - t.distance(atMs: t.endMs - 1)
+            XCTAssertGreaterThan(tail, 300, "the join into the school takes no time")
+            // the join: the finger moves, the dot moves, the time stands
+            let a = try XCTUnwrap(l.moment(atX: seg.x1 - 4, model: m)), b = try XCTUnwrap(l.moment(atX: seg.x1, model: m))
+            XCTAssertEqual(a.ms, b.ms, "no time in the join")
+            XCTAssertGreaterThan(metres(a.coord, b.coord), 1, "and still the dot glides")
+            XCTAssertGreaterThan(along.min() ?? 0, 0, "never stands still inside a run")
+        }
+    }
+
+    func testTheHeadingFollowsTheLineAheadAndHasNoJumpsOnADenseDayAndNoneInABeadOrANotch() throws {
+        let m = fixture(sparse: false), l = m.barLayout, o = m.reply.outings[0]
+        let seg = try XCTUnwrap(l.items.first { $0.kind == .segment(outingId: o.id) })
+        var prev: Double?, worst = 0.0, nils = 0
+        for i in 0...1500 {
+            let x = seg.x0 + (seg.x1 - seg.x0) * Double(i) / 1500, mo = try XCTUnwrap(l.moment(atX: x, model: m))
+            let inNotch = seg.notches.contains { $0.x0 <= x && x <= $0.x1 }
+            if inNotch { XCTAssertNil(mo.heading, "a notch is a stop: the camera keeps its way"); prev = nil; continue }
+            guard let h = mo.heading else { nils += 1; continue }          // under a metre of line ahead, at its very end: the camera keeps its way
+            if let p = prev { worst = max(worst, abs(FootprintCamera.turn(from: p, to: h))) }
+            prev = h
+        }
+        XCTAssertLessThan(nils, 25, "only at the very end of the line")
+        XCTAssertLessThan(worst, 10, "a quarter of a point of finger never turns the camera by more than 10 degrees: \(worst)")
+        // the bead the finger starts on is the stay's own place
+        let bead = try XCTUnwrap(l.items.first)
+        let first = try XCTUnwrap(l.moment(atX: (bead.x0 + bead.x1) / 2, model: m))
+        XCTAssertNil(first.heading); XCTAssertNil(first.outingId)
+        XCTAssertEqual(metres(first.coord, m.reply.stays[0].coord), 0, accuracy: 0.01)
+        XCTAssertEqual(first.height, 1200, "a bead before an outing stands as far out as that outing's")
+    }
+
+    func testTheHeightOfAnOutingNeverChangesInsideItAndTheMomentOnACurveStaysOnTheLine() throws {
+        for sparse in [false, true] {
+            let m = fixture(sparse: sparse), l = m.barLayout
+            for o in m.reply.outings {
+                let seg = try XCTUnwrap(l.items.first { $0.kind == .segment(outingId: o.id) })
+                let heights = Set(try (0...300).map { try XCTUnwrap(l.moment(atX: seg.x0 + (seg.x1 - seg.x0) * Double($0) / 300, model: m)).height })
+                XCTAssertEqual(heights, [FootprintReplay.scrubHeight(o)], o.id)
+                let t = try XCTUnwrap(m.tracks[o.id])
+                for i in 0...300 {
+                    let ms = o.start_ms + (o.end_ms! - o.start_ms) * Int64(i) / 300, mo = try XCTUnwrap(FootprintMoment.on(o, track: t, atMs: ms))
+                    XCTAssertEqual(metres(mo.coord, try XCTUnwrap(t.coord(atDistance: t.distance(atMs: ms)))), 0, accuracy: 0.01)
+                    XCTAssertEqual(mo.heading == nil, FootprintTrack.holds(o).contains { $0.ms.contains(ms) } || t.heading(atDistance: t.distance(atMs: ms), ahead: FootprintReplay.lookAhead(o)) == nil, "no heading exactly while still")
+                }
+            }
+        }
+    }
+
+    func testTheReplaysSecondsAndTheBarsXAgreeBothWays() throws {
+        for sparse in [false, true] {
+            let m = fixture(sparse: sparse), day = try XCTUnwrap(m.replay(.day)), o = m.reply.outings[0], one = try XCTUnwrap(m.replay(.outing(o.id)))
+            var last = -1.0
+            for i in 0...Int(day.duration * 20) {
+                let s = Double(i) / 20, f = day.frame(at: s)
+                XCTAssertGreaterThanOrEqual(f.x, last - 1e-9, "the playhead only goes right"); last = f.x
+                XCTAssertEqual(day.frame(at: day.seconds(atX: f.x)).x, f.x, accuracy: 0.01, "x -> seconds -> x at \(s)")
+            }
+            for i in 0...Int(one.duration * 20) {
+                let f = one.frame(at: Double(i) / 20)
+                XCTAssertEqual(one.frame(at: one.seconds(atMs: f.ms)).ms, f.ms, accuracy: 1500, "ms -> seconds -> ms (the join has no time)")
+            }
+            XCTAssertEqual(day.seconds(atX: -50), 0, accuracy: 1e-9); XCTAssertEqual(day.seconds(atX: 1000), day.duration, accuracy: 1e-9)
+        }
+    }
+
+    // MARK: the player
+
+    func testThePlaybackPlaysPausesOnATouchResumesFromThePlayheadAndGoesBackToRestAtTheEnd() {
+        var p = FootprintPlayback(duration: 10)
+        XCTAssertEqual(p.phase, .rest)
+        XCTAssertFalse(p.tick(1), "nothing runs at rest"); XCTAssertEqual(p.seconds, 0)
+        p.touch(); XCTAssertEqual(p.phase, .rest, "a touch at rest does nothing")
+        p.play(); XCTAssertEqual(p.phase, .playing)
+        XCTAssertFalse(p.tick(4)); XCTAssertEqual(p.seconds, 4)
+        p.touch(); XCTAssertEqual(p.phase, .paused)
+        XCTAssertFalse(p.tick(3), "paused: the playhead stands"); XCTAssertEqual(p.seconds, 4)
+        p.seek(7); XCTAssertEqual(p.seconds, 7, "a finger moves the playhead of a paused replay")
+        p.play(); XCTAssertEqual(p.phase, .playing); XCTAssertEqual(p.seconds, 7, "resumes from the playhead")
+        p.seek(1); XCTAssertEqual(p.seconds, 7, "a finger does not move a playing one")
+        XCTAssertFalse(p.tick(2.5)); XCTAssertEqual(p.seconds, 9.5)
+        XCTAssertTrue(p.tick(1), "the end"); XCTAssertEqual(p.phase, .rest); XCTAssertEqual(p.seconds, 0)
+        p.play(); XCTAssertEqual(p.seconds, 0, "from the start again")
+        p.touch(); p.seek(99); XCTAssertEqual(p.seconds, 10, "the playhead stays on the replay")
+        p.play(); XCTAssertEqual(p.seconds, 0, "▶ with the playhead at the end starts over")
+        p.stop(); XCTAssertEqual(p.phase, .rest)
+    }
+
+    func testThePlayerHandsOutFramesStopsAtATouchGoesOnFromWhereAFingerLeftItAndEndsAtRest() throws {
+        let m = fixture(sparse: false), day = try XCTUnwrap(m.replay(.day)), player = FootprintPlayer()
+        var frames: [FootprintReplay.Frame] = [], ended = 0
+        player.emit = { f, _ in frames.append(f) }
+        player.ended = { ended += 1 }
+        player.play(day)
+        XCTAssertEqual(player.phase, .playing); XCTAssertEqual(frames.count, 1, "the first frame goes out with ▶")
+        for _ in 0..<60 { player.advance(1.0 / 60) }
+        XCTAssertEqual(frames.count, 61); XCTAssertEqual(player.playback.seconds, 1, accuracy: 1e-9)
+        player.touch()
+        XCTAssertEqual(player.phase, .paused)
+        player.advance(1); XCTAssertEqual(frames.count, 61, "paused: no frames")
+        // a finger puts the playhead at the first outing's middle; ▶ goes on from there
+        let seg = try XCTUnwrap(m.barLayout.items.first { if case .segment = $0.kind { true } else { false } }), x = (seg.x0 + seg.x1) / 2
+        player.seek(day.seconds(atX: x))
+        player.play(day)
+        XCTAssertEqual(try XCTUnwrap(frames.last).x, day.frame(at: day.seconds(atX: x)).x, accuracy: 1e-9, "the first frame after ▶ is the playhead's")
+        XCTAssertEqual(player.phase, .playing)
+        var n = 0
+        while player.phase == .playing && n < 100_000 { player.advance(1.0 / 60); n += 1 }
+        XCTAssertEqual(player.phase, .rest); XCTAssertEqual(ended, 1)
+        XCTAssertEqual(try XCTUnwrap(frames.last).ms, day.frame(at: day.duration).ms, "the last frame is the end")
+        XCTAssertLessThan(Double(n) / 60, day.duration - day.seconds(atX: x) + 0.1)
+    }
 }
 #endif

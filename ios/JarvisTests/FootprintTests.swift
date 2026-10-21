@@ -283,19 +283,6 @@ final class FootprintTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(west.heading(atMs: 50_000)), 225, accuracy: 0.01, "south west is 225, not minus 135")
     }
 
-    func testTheCameraTakesWhereHeWasWhichWayHeWentAndHowFarOutToStand() throws {
-        let m = try headingModel()
-        let f = try XCTUnwrap(m.follow(atMs: b + 150_000))
-        XCTAssertEqual(f.coord.latitude, 0.01, accuracy: 1e-9)
-        XCTAssertEqual(f.coord.longitude, 0.005, accuracy: 1e-9)
-        XCTAssertEqual(try XCTUnwrap(f.heading), 90, accuracy: 0.01)
-        XCTAssertEqual(f.height, 500, "no activity: on foot")
-        let still = try XCTUnwrap(m.follow(atMs: b + 50_000))
-        XCTAssertNil(still.heading, "in the stop the map keeps the way it was turned")
-        XCTAssertEqual(still.height, 500)
-        XCTAssertNil(m.follow(atMs: b - 1), "nowhere: no camera")
-    }
-
     func testTheFastestFixIsTheOneWithTheHighestSpeedAndNilWhenNoneHasOne() throws {
         let m = try model()
         XCTAssertEqual(m.reply.outings[0].fastest, FootprintPoint(at_ms: b + 1_500_000, lat: -10.08, lng: 20.08, speed_mps: 30))
@@ -324,14 +311,6 @@ final class FootprintTests: XCTestCase {
         streets.ask([stop.coord])
         await Task.yield()
         XCTAssertEqual(calls.n, 1, "once for a place, however often it is asked for")
-    }
-
-    func testTheCameraStandsFurtherOutTheFasterTheOutingsKindOfTravelIsNeverTheInstantSpeed() {
-        XCTAssertEqual(FootprintMapFollow.height(activity: "walking"), 500)
-        XCTAssertEqual(FootprintMapFollow.height(activity: "running"), 500)
-        XCTAssertEqual(FootprintMapFollow.height(activity: "cycling"), 800)
-        XCTAssertEqual(FootprintMapFollow.height(activity: "automotive"), 1200)
-        XCTAssertEqual(FootprintMapFollow.height(activity: nil), 500)
     }
 
     func testTheStayHeIsInNowIsTodaysOpenOneAndTheDayTotalsAreTheOutingsSummed() throws {

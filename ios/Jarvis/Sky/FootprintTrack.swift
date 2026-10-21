@@ -37,6 +37,8 @@ struct FootprintTrack {
     private let cum: [Double]                       // metres from the start to each vertex
     private let knots: [(ms: Int64, d: Double)]     // time to distance, both rising; a stop is two knots at one distance
     let startMs: Int64, endMs: Int64
+    /// the distances of the first and the last recorded fix: before and after them the line is the join to a stay, drawn dotted like a gap (nil with no fix)
+    let fixes: ClosedRange<Double>?
 
     var length: Double { cum.last ?? 0 }
 
@@ -44,8 +46,10 @@ struct FootprintTrack {
         let r = model.route(o)
         func same(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Bool { a.latitude == b.latitude && a.longitude == b.longitude }
         var v: [(c: CLLocationCoordinate2D, ms: Int64)] = []
+        var firstFix: Int?
         if let first = r.points.first, let last = r.points.last {
             if let g = r.gaps.first(where: { same($0.to, first.coord) && !same($0.from, first.coord) }) { v.append((g.from, g.startMs)) }
+            firstFix = v.count
             v += r.points.map { ($0.coord, $0.ms) }
             if let g = r.gaps.last(where: { same($0.from, last.coord) && !same($0.to, last.coord) }) { v.append((g.to, g.endMs)) }
         } else if let g = r.gaps.first {
@@ -58,6 +62,7 @@ struct FootprintTrack {
         var d = [0.0]
         for i in v.indices.dropFirst() { d.append(d[i - 1] + Self.metres(v[i - 1].c, v[i].c).distance) }
         cum = v.isEmpty ? [] : d
+        fixes = firstFix.map { d[$0]...d[$0 + r.points.count - 1] }
 
         var knots = zip(v.map(\.ms), cum).map { (ms: $0, d: $1) }
         for h in Self.holds(o) where !knots.isEmpty {

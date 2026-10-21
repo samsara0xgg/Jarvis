@@ -14,7 +14,7 @@ struct FootprintModel {
     let reply: FootprintReply
     let day: DayReply?
     let clock: TLClock
-    private let trackBox = TrackBox()
+    private let cache = ModelCache()
 
     init(reply: FootprintReply, day: DayReply?) {
         self.reply = reply
@@ -32,7 +32,16 @@ struct FootprintModel {
     var topSpeedMps: Double? { reply.outings.compactMap(\.max_speed_mps).max() }
 
     /// Every outing's drawn line by outing id, indexed on first use and kept for this reply.
-    var tracks: [String: FootprintTrack] { trackBox.tracks(of: self) }
+    var tracks: [String: FootprintTrack] { cache.tracks(of: self) }
+
+    /// The held bar's trip layout, built once for this reply.
+    var barLayout: FootprintBarLayout { cache.layout(of: self) }
+
+    /// The ▶ replay of a day or an outing, built once for this reply (nil when nothing in it has a line).
+    func replay(_ scope: FootprintReplay.Scope) -> FootprintReplay? { cache.replay(scope, of: self) }
+
+    /// What the held bar draws of its trips (Sky/FootprintTripBar.swift), built once for this reply on the day bar's `span`.
+    func tripArt(span: ClosedRange<Double>) -> FootprintTripArt { cache.art(span: span, of: self) }
 
     /// The long stay he is in now: today's open one. Nil on any other day, and when he is out.
     var nowStay: FootprintStay? {
@@ -116,13 +125,6 @@ struct FootprintModel {
     }
     private static let headingSpanMs: Int64 = 5_000
 
-    /// What the map's first-person camera takes at a time: where he was, the way he was going and how far out to stand, which is by the outing's activity (the nearest outing's in a stay
-    /// between two); nil when he was nowhere.
-    func follow(atMs t: Int64) -> FootprintMapFollow? {
-        let o = outing(atMs: t) ?? reply.outings.min { abs($0.start_ms - t) < abs($1.start_ms - t) }
-        return position(atMs: t).map { FootprintMapFollow(coord: $0, heading: heading(atMs: t), height: FootprintMapFollow.height(activity: o?.activity)) }
-    }
-
     /// His heart rate on an outing at a time, between the watch's readings; nil outside them or when the outing has none.
     func heartBpm(atMs t: Int64) -> Double? {
         guard let s = outing(atMs: t)?.heart_rate?.samples, let lo = s.first?.at_ms, let hi = s.last?.at_ms, lo <= t, t <= hi, case let (a, b, k)? = Self.between(s, t, \.at_ms) else { return nil }
@@ -149,14 +151,39 @@ struct FootprintModel {
     }
 }
 
-/// the tracks of a model, built when first asked for
-private final class TrackBox {
+/// what a model builds from its reply on first use and keeps
+private final class ModelCache {
     private var built: [String: FootprintTrack]?
+    private var layout: FootprintBarLayout?
+    private var replays: [FootprintReplay.Scope: FootprintReplay?] = [:]
+    private var art: FootprintTripArt?
+
     func tracks(of m: FootprintModel) -> [String: FootprintTrack] {
         if let built { return built }
         let b = Dictionary(m.reply.outings.map { ($0.id, FootprintTrack(model: m, outing: $0)) }) { a, _ in a }
         built = b
         return b
+    }
+
+    func layout(of m: FootprintModel) -> FootprintBarLayout {
+        if let layout { return layout }
+        let l = FootprintBarLayout(model: m)
+        layout = l
+        return l
+    }
+
+    func replay(_ scope: FootprintReplay.Scope, of m: FootprintModel) -> FootprintReplay? {
+        if let r = replays[scope] { return r }
+        let r = FootprintReplay(model: m, scope: scope)
+        replays[scope] = .some(r)
+        return r
+    }
+
+    func art(span: ClosedRange<Double>, of m: FootprintModel) -> FootprintTripArt {
+        if let art { return art }
+        let a = FootprintTripArt(model: m, span: span)
+        art = a
+        return a
     }
 }
 
