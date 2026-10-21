@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import pytest
 
 from jarvis.decision.llm import LLMClient
+from jarvis.runtime.weatherkit import ENDPOINT, NOT_SET_UP
 from jarvis.shared.pricing import load_pricing_table
 from scripts import tool_exam_turns as turns
 from scripts.tool_exam_steps import Meter, ScriptedModel, classify, judge_steps
@@ -212,6 +213,31 @@ def test_a_built_case_without_brain_settings_names_the_missing_file(tmp_path: Pa
         None, missing,
     )
     assert line["error"] == f"LookupError: no brain settings at {missing}; pass --brain-settings"
+
+
+def test_a_built_case_has_the_weather_on_though_his_key_file_is_out_of_reach(
+    tmp_path: Path,
+) -> None:
+    """His settings name his WeatherKit key; the replayed turn signs with a throwaway one."""
+    settings = tmp_path / "settings.brain.yaml"
+    settings.write_text(
+        "runtime:\n  role: brain\n"
+        "home:\n  weather:\n    latitude: 37.7749\n    longitude: -122.4194\n"
+        "weather:\n  weatherkit:\n    key_id: KEY0000000\n    service_id: his.service\n"
+        "    key_file: ~/.jarvis/weatherkit/AuthKey.p8\n",
+        encoding="utf-8",
+    )
+    case = {"id": "built-weather", "said": "今天会下雨吗", "at": AT.isoformat(), "zone": "UTC"}
+    script: list[dict[str, Any]] = [
+        {"tool_calls": [{"name": "weather", "arguments": {}}]},
+        {"text": "天气暂时查不到。"},
+    ]
+    line = turns.run_one(
+        case, ScriptedModel(script), "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None, settings,
+    )
+    assert line["error"] is None, line["error"]
+    assert NOT_SET_UP not in line["steps"][0]["calls"][0]["result"]
+    assert any(ENDPOINT in miss for miss in line["built"]["stubbed_providers"])
 
 
 def _every_key_name() -> set[str]:

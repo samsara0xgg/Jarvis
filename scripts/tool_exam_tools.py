@@ -555,15 +555,24 @@ def _ephemeral_weather_key(root: Path) -> dict[str, Any]:
     }
 
 
-def _settings(item: Item, root: Path, recording: Recording | None, real_root: Path | None) -> None:
-    """The sandbox's ``settings.yaml``: a brain on his zone, WeatherKit on, the recorded places."""
+def _settings(
+    item: Item, root: Path, recording: Recording | None, real_root: Path | None, *, live: bool
+) -> None:
+    """The sandbox's ``settings.yaml``: a brain on his zone, WeatherKit on, the recorded places.
+
+    Only a live run signs WeatherKit with the real key; a replayed answer needs none, and the real
+    key file is out of reach under the sandbox's home, which would leave the weather off.
+    """
     zone = str(item.raw.get("zone") or "UTC")
     settings: dict[str, Any] = {}
+    signed = False
     if real_root is not None and (real_root / "settings.yaml").is_file():
         settings = yaml.safe_load((real_root / "settings.yaml").read_text(encoding="utf-8")) or {}
+        signed = live
     else:
         settings.update(recording.settings if recording else {})
-        settings["weather"] = _ephemeral_weather_key(root)
+    if not signed:
+        settings["weather"] = {**(settings.get("weather") or {}), **_ephemeral_weather_key(root)}
     settings["runtime"] = {"role": "brain"}
     settings.setdefault("work_state", {})["timezone"] = zone
     settings.setdefault("observer", {})["claude_sessions"] = {"enabled": False}
@@ -722,7 +731,7 @@ def sandbox(
     moment = datetime.fromisoformat(item.raw["at"])
     try:
         sql, uncut = _copy_state(item, root)
-        _settings(item, root, recording, real_root)
+        _settings(item, root, recording, real_root, live=live)
         if live and real_root is not None and (real_root / "env").is_file():
             shutil.copyfile(real_root / "env", root / "env")
         with (
