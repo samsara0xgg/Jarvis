@@ -47,6 +47,20 @@ final class FootprintTests: XCTestCase {
     }
     private func model(_ text: String? = nil, day: DayReply? = nil) throws -> FootprintModel { FootprintModel(reply: try reply(text ?? json()), day: day) }
 
+    /// a drive from stay-a to stay-b (which starts 30 s before the drive's end) whose fixes begin and end a few hundred metres out of the stays
+    private func joinedJSON(points: Bool = true) -> String {
+        let stop = #"{"id": "stay-s", "start_ms": \#(b + 1_000_000), "end_ms": \#(b + 1_300_000), "lat": -10.05, "lng": 20.05, "place": null, "kept_place": null}"#
+        let gaps = #"{"start_ms": \#(b + 900_000), "end_ms": \#(b + 1_000_000)}, {"start_ms": \#(b + 1_300_000), "end_ms": \#(b + 1_500_000)}"#
+        let rows = "[\(b + 700_000), -10.02, 20.02, 5], [\(b + 900_000), -10.04, 20.04, 5], [\(b + 1_500_000), -10.08, 20.08, 5], [\(b + 2_030_000), -10.098, 20.098, 5]"
+        return #"""
+        {"date": "2026-10-20", "tz": "UTC", "start_ms": \#(b), "end_ms": \#(b + 86_400_000), "now_ms": \#(b + 3_000_000),
+         "stays": [{"id": "stay-a", "start_ms": \#(b), "end_ms": \#(b + 600_000), "lat": -10.0, "lng": 20.0, "place": null, "kept_place": null},
+                   {"id": "stay-b", "start_ms": \#(b + 2_000_000), "end_ms": null, "lat": -10.1, "lng": 20.1, "place": null, "kept_place": null}],
+         "outings": [{"id": "outing-1", "start_ms": \#(b + 600_000), "end_ms": \#(b + 2_030_000), "from_stay": "stay-a", "to_stay": "stay-b", "activity": "automotive",
+           "distance_m": 1, "moving_ms": 1, "stops": [\#(points ? stop : "")], "gaps": [\#(points ? gaps : "")], "heart_rate": null, "points": [\#(points ? rows : "")]}]}
+        """#
+    }
+
     // MARK: decoding
 
     func testTheReplyIsReadWithANullSpeedNoHeartAndOneGarbledPointAndStayLeftOut() throws {
@@ -198,6 +212,38 @@ final class FootprintTests: XCTestCase {
         XCTAssertEqual(m.outing(atMs: b + 9_000_000)?.id, "outing-2", "an outing with no end is still going")
     }
 
+    func testBetweenTheStaysAndTheFixesHeIsStraightAlongTheJoinsTheStopsAndTheGap() throws {
+        func same(_ m: FootprintModel, _ t: Int64, _ lat: Double, _ lng: Double, _ note: String) {
+            guard let p = m.position(atMs: b + t) else { return XCTFail("nowhere: \(note)") }
+            XCTAssertEqual(p.latitude, lat, accuracy: 1e-9, note); XCTAssertEqual(p.longitude, lng, accuracy: 1e-9, note)
+        }
+        let m = try model(joinedJSON())
+        same(m, 650_000, -10.01, 20.01, "half way from the centre of the stay he left to his first fix")
+        same(m, 950_000, -10.045, 20.045, "between a fix and the stop after it")
+        same(m, 1_150_000, -10.05, 20.05, "in the stop")
+        same(m, 1_400_000, -10.065, 20.065, "between the stop and the fix after the gap")
+        same(m, 1_765_000, -10.089, 20.089, "half way between the last two fixes")
+        same(m, 2_500_000, -10.1, 20.1, "in the stay he reached")
+        same(try model(joinedJSON(points: false)), 1_315_000, -10.05, 20.05, "no fixes: straight between the two stays")
+    }
+
+    func testTheRouteIsItsFixesWithTheGapBetweenFixesAndAJoinToEachStayAndPinToPinWithoutFixes() throws {
+        func c(_ lat: Double, _ lng: Double) -> CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+        let m = try model(joinedJSON()), r = m.route(m.reply.outings[0])
+        XCTAssertEqual(r.id, "outing-1")
+        XCTAssertEqual(r.points.map(\.ms), [b + 700_000, b + 900_000, b + 1_500_000, b + 2_030_000])
+        XCTAssertEqual(r.gaps, [
+            FootprintMapGap(from: c(-10.0, 20.0), to: c(-10.02, 20.02), startMs: b + 600_000, endMs: b + 700_000),
+            FootprintMapGap(from: c(-10.04, 20.04), to: c(-10.08, 20.08), startMs: b + 900_000, endMs: b + 1_500_000),
+            FootprintMapGap(from: c(-10.098, 20.098), to: c(-10.1, 20.1), startMs: b + 2_030_000, endMs: b + 2_030_000),
+        ], "the join out of home, the one gap (the stop in it split it in two, drawn once), the join into the stay")
+        let bare = try model(joinedJSON(points: false)), p = bare.route(bare.reply.outings[0])
+        XCTAssertEqual(p.points, [])
+        XCTAssertEqual(p.gaps, [FootprintMapGap(from: c(-10.0, 20.0), to: c(-10.1, 20.1), startMs: b + 600_000, endMs: b + 2_030_000)], "one line from stay to stay")
+        let none = try model(#"{"date": "d", "tz": "UTC", "start_ms": 0, "end_ms": 9, "now_ms": 1, "stays": [], "outings": [{"id": "o", "start_ms": 0, "end_ms": 5, "distance_m": 0, "moving_ms": 0, "points": []}]}"#)
+        XCTAssertEqual(none.route(none.reply.outings[0]).gaps, [], "no stays and no fixes: nothing to draw")
+    }
+
     func testHowFastAndHowHardHisHeartWasIsBetweenTheReadingsAndNilWhenStillOrInTheGap() throws {
         let m = try model()
         XCTAssertNil(m.speedMps(atMs: b + 300_000), "in a stay")
@@ -291,39 +337,46 @@ final class FootprintTests: XCTestCase {
         let drive = fp.outings[0], walk = fp.outings[1]
         XCTAssertEqual([drive.activity, walk.activity], ["automotive", "walking"])
         XCTAssertEqual([drive.from_stay, drive.to_stay, walk.from_stay, walk.to_stay], ["stay-1", "stay-5", "stay-5", "stay-6"])
-        XCTAssertEqual(drive.stops.map { ($0.end_ms! - $0.start_ms) / 60_000 }, [4, 3, 2])
-        XCTAssertEqual(drive.gaps.map { ($0.end_ms - $0.start_ms) / 60_000 }, [5])
-        XCTAssertEqual(drive.end_ms! - drive.start_ms, 70 * 60_000)
-        XCTAssertEqual(drive.moving_ms, 61 * 60_000)
-        XCTAssertEqual(drive.distance_m, 21_000, accuracy: 1_000, "about 21 km")
+        XCTAssertEqual(drive.stops.map { ($0.end_ms! - $0.start_ms) / 60_000 }, [6, 5], "no stop under five minutes")
+        XCTAssertEqual(drive.gaps.map { ($0.end_ms - $0.start_ms) / 60_000 }, [2, 3], "the no-fix stretch without the second stop in it")
+        XCTAssertEqual(drive.end_ms, drive.points.last?.at_ms, "the drive ends at its last fix")
+        XCTAssertTrue((30_000...60_000).contains(drive.end_ms! - fp.stays[1].start_ms), "a little after the school stay was dated")
+        XCTAssertEqual(drive.moving_ms, drive.end_ms! - drive.start_ms - 11 * 60_000)
+        XCTAssertEqual(drive.distance_m, 21_500, accuracy: 1_000, "about 21.5 km, stay to stay")
         XCTAssertEqual(drive.max_speed_mps! * 3.6, 81, accuracy: 1.5)
         XCTAssertEqual(drive.heart_rate?.avg_bpm ?? 0, 88, accuracy: 1)
         XCTAssertEqual(drive.heart_rate?.home_avg_bpm, 68)
         XCTAssertNil(walk.heart_rate)
         XCTAssertEqual(walk.distance_m, 900, accuracy: 300)
 
-        // the points: in time order, every ~10 s where the line bends, none inside the gap, and their length is the distance
+        // the points: in time order within the outing, every ~10 s where the line bends, none inside the gap, and their length from the stay he left to the stay he reached is the distance
+        func xy(_ s: FootprintStay?) -> (Double, Double) { (s!.lat, s!.lng) }
         for o in fp.outings {
             XCTAssertEqual(o.id, "outing-\(o.start_ms)")
             XCTAssertEqual(o.points.map(\.at_ms), o.points.map(\.at_ms).sorted())
-            XCTAssertEqual(o.points.first?.at_ms, o.start_ms); XCTAssertEqual(o.points.last?.at_ms, o.end_ms)
-            let metres = zip(o.points, o.points.dropFirst()).reduce(0.0) { $0 + CLLocation(latitude: $1.0.lat, longitude: $1.0.lng).distance(from: CLLocation(latitude: $1.1.lat, longitude: $1.1.lng)) }
+            XCTAssertEqual(o.points.last?.at_ms, o.end_ms)
+            XCTAssertTrue(o.points.allSatisfy { (o.start_ms...o.end_ms!).contains($0.at_ms) })
+            let line = [xy(fp.stays.first { $0.id == o.from_stay })] + o.points.map { ($0.lat, $0.lng) } + [xy(fp.stays.first { $0.id == o.to_stay })]
+            let metres = zip(line, line.dropFirst()).reduce(0.0) { $0 + CLLocation(latitude: $1.0.0, longitude: $1.0.1).distance(from: CLLocation(latitude: $1.1.0, longitude: $1.1.1)) }
             XCTAssertEqual(metres, o.distance_m, accuracy: o.distance_m * 0.01, o.id)
         }
+        XCTAssertEqual(walk.points.first?.at_ms, walk.start_ms)
+        func away(_ s: FootprintStay, _ p: FootprintPoint) -> Double { CLLocation(latitude: s.lat, longitude: s.lng).distance(from: CLLocation(latitude: p.lat, longitude: p.lng)) }
+        XCTAssertEqual(away(fp.stays[0], drive.points[0]), 500, accuracy: 100, "the phone wakes GPS about 500 m out of home")
+        XCTAssertEqual(away(fp.stays[1], drive.points[drive.points.count - 1]), 400, accuracy: 100, "and loses it about 400 m before the school")
         XCTAssertTrue((30...400).contains(drive.points.count), "\(drive.points.count)")
-        let gap = drive.gaps[0]
-        XCTAssertFalse(drive.points.contains { $0.at_ms > gap.start_ms && $0.at_ms < gap.end_ms })
-        XCTAssertTrue(drive.points.contains { $0.at_ms == gap.start_ms } && drive.points.contains { $0.at_ms == gap.end_ms })
+        let gap = (drive.gaps[0].start_ms, drive.gaps[1].end_ms)
+        XCTAssertFalse(drive.points.contains { $0.at_ms > gap.0 && $0.at_ms < gap.1 })
+        XCTAssertTrue(drive.points.contains { $0.at_ms == gap.0 } && drive.points.contains { $0.at_ms == gap.1 })
         let speeds = drive.points.compactMap(\.speed_mps).map { $0 * 3.6 }
         XCTAssertEqual(speeds.count, drive.points.count)
         XCTAssertLessThan(speeds.min()!, 3); XCTAssertGreaterThan(speeds.max()!, 78)
         XCTAssertTrue(speeds.filter { $0 > 20 }.count > 10 && speeds.filter { $0 < 20 }.count > 10, "varied")
-        XCTAssertEqual(drive.heart_rate!.samples.count, 281)
+        XCTAssertEqual(drive.heart_rate!.samples.count, Int((drive.end_ms! - drive.start_ms) / 15_000) + 1)
 
         // far from his life: the Canterbury plains
         for p in drive.points + walk.points { XCTAssertTrue((-44.0)...(-43.5) ~= p.lat && 171.5...172.5 ~= p.lng, "\(p.lat), \(p.lng)") }
         for s in all { XCTAssertTrue((-44.0)...(-43.5) ~= s.lat && 171.5...172.5 ~= s.lng) }
-        XCTAssertEqual(all.first { $0.id == "stay-1" }.map { [$0.lat, $0.lng] }, [drive.points[0].lat, drive.points[0].lng], "the drive begins at home")
 
         // and the model reads it
         let m = FootprintModel(reply: fp, day: day)

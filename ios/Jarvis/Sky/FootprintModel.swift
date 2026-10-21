@@ -46,11 +46,45 @@ struct FootprintModel {
         reply.outings.first { $0.start_ms <= t && t < ($0.end_ms ?? .max) }
     }
 
-    /// Where he was: the centre of the stay or stop, else along the outing's points by time (straight across a gap, which has none).
+    /// Where he was: the centre of the stay or stop, else between the nearest known positions by time (the outing's points, and the
+    /// centres of its stays and stops at their ends), straight across a gap and across the first and last few hundred metres, which have no fixes.
     func position(atMs t: Int64) -> CLLocationCoordinate2D? {
-        if let s = stay(atMs: t) { return CLLocationCoordinate2D(latitude: s.lat, longitude: s.lng) }
-        guard let o = outing(atMs: t), case let (a, b, k)? = Self.between(o.points, t, \.at_ms) else { return nil }
-        return CLLocationCoordinate2D(latitude: lerp(a.lat, b.lat, k), longitude: lerp(a.lng, b.lng, k))
+        if let s = stay(atMs: t) { return s.coord }
+        guard let o = outing(atMs: t), case let (a, b, k)? = Self.between(anchors(o), t, \.ms) else { return nil }
+        return CLLocationCoordinate2D(latitude: lerp(a.coord.latitude, b.coord.latitude, k), longitude: lerp(a.coord.longitude, b.coord.longitude, k))
+    }
+
+    /// The outing as the map draws it: its points, each gap from the last fix before it to the first after it, and the joins from the
+    /// stay it left to its first fix and from its last fix to the stay it reached (pin to pin when it has no fixes), drawn like a gap.
+    func route(_ o: FootprintOuting) -> FootprintMapRoute {
+        let pts = o.points.map { FootprintMapPoint(coord: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng), ms: $0.at_ms, speedMps: $0.speed_mps) }
+        // a stop inside a gap splits it in two with the same fixes either side: one line
+        var gaps: [FootprintMapGap] = []
+        for g in o.gaps {
+            guard let a = pts.last(where: { $0.ms <= g.start_ms }), let b = pts.first(where: { $0.ms >= g.end_ms }) else { continue }
+            let line = FootprintMapGap(from: a.coord, to: b.coord, startMs: a.ms, endMs: b.ms)
+            if !gaps.contains(line) { gaps.append(line) }
+        }
+        let from = longStay(o.from_stay), to = longStay(o.to_stay)
+        switch (pts.first, pts.last) {
+        case let (first?, last?):
+            if let f = from { gaps.insert(FootprintMapGap(from: f.coord, to: first.coord, startMs: o.start_ms, endMs: first.ms), at: 0) }
+            if let s = to { gaps.append(FootprintMapGap(from: last.coord, to: s.coord, startMs: last.ms, endMs: o.end_ms ?? last.ms)) }
+        default:
+            if let f = from, let s = to { gaps.append(FootprintMapGap(from: f.coord, to: s.coord, startMs: o.start_ms, endMs: o.end_ms ?? o.start_ms)) }
+        }
+        return FootprintMapRoute(id: o.id, points: pts, gaps: gaps)
+    }
+
+    private func longStay(_ id: String?) -> FootprintStay? { id.flatMap { id in reply.stays.first { $0.id == id } } }
+
+    /// The known positions of an outing by time: the stay it left at its start, its points and each stop at both ends, the stay it reached at its end
+    /// (after the last point, which may be a minute past that stay's start).
+    private func anchors(_ o: FootprintOuting) -> [(ms: Int64, coord: CLLocationCoordinate2D)] {
+        var mid = o.points.map { (ms: $0.at_ms, coord: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lng)) }
+        for s in o.stops { mid += [(s.start_ms, s.coord), (s.end_ms ?? s.start_ms, s.coord)] }
+        mid.sort { $0.ms < $1.ms }
+        return (longStay(o.from_stay).map { [(o.start_ms, $0.coord)] } ?? []) + mid + (longStay(o.to_stay).map { [(o.end_ms ?? $0.start_ms, $0.coord)] } ?? [])
     }
 
     /// How fast he moved, nil when still (in a stay or a stop), in a gap, or when the brain could not tell.
@@ -89,4 +123,8 @@ struct FootprintModel {
         let a = xs[i - 1], b = xs[i]
         return (a, b, Double(t - a[keyPath: at]) / Double(b[keyPath: at] - a[keyPath: at]))
     }
+}
+
+extension FootprintStay {
+    var coord: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
 }
