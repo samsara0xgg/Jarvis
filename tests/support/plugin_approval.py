@@ -19,9 +19,6 @@ class Paths:
     event_log: Path
     artifacts_root: Path
 
-    def pending_write_path(self, confirmation_id: str) -> Path:
-        return self.artifacts_root / "pending_writes" / confirmation_id
-
 
 def say(ctx: DecideContext, text: str, turn_id: str) -> str:
     trigger = emit_event(

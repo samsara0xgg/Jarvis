@@ -292,7 +292,7 @@ _CONTENT_METADATA_KEYS = frozenset({"content_sha256", "content_bytes", "content_
 
 
 def _staged(args_meta: Mapping[str, object]) -> bool:
-    """Whether the confirmation staged content (``write_file``); others freeze arguments as is."""
+    """Whether the confirmation staged content (an old row of the deleted file tool)."""
     return "content_artifact" in args_meta
 
 

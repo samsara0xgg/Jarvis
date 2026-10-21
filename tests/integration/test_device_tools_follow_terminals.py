@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 DEVICE_MENU = {
     "open_path", "search_notes", "read_file", "read_clipboard", "open_url", "screen_look",
-    "write_file", "start_night_run", "end_night_run",
+    "start_night_run", "end_night_run",
 }
 
 

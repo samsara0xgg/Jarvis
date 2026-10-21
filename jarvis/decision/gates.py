@@ -190,9 +190,8 @@ def pre_action_gate(
        ``tool_def.requires_entity`` is True, the check FAILS
        (ADR-0011 D3) with reason ``"entity_required: <tool_name>
        demands a resolved target"`` — this is the arm that makes the
-       entity check non-vacuous for tools like ADR-0012's
-       ``write_file``. Tools with ``requires_entity=False`` keep
-       passing on a None ref, and a resolved ref always passes (the
+       entity check non-vacuous for tools like ``read_file``. Tools with
+       ``requires_entity=False`` keep passing on a None ref, and a resolved ref always passes (the
        resolver is the trusted source).
     3. **risk_within_ceiling**: ``risk_level <= autonomy_ceiling``
        per the L0..L4 ladder.

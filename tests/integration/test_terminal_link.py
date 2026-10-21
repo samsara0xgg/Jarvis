@@ -71,9 +71,8 @@ if TYPE_CHECKING:
 
 TERMINAL_WS = "ws://127.0.0.1:8006/terminal/ws"
 PNG = b"\x89PNG\r\n\x1a\n" + b"pixels" * 20
-# The tools a brain keeps on its menu that act on a device (`write_file` has no caller).
-DEVICE = {"open_path", "search_notes", "read_file", "read_clipboard", "open_url", "screen_look",
-          "write_file"}
+# The tools a brain keeps on its menu that act on a device.
+DEVICE = {"open_path", "search_notes", "read_file", "read_clipboard", "open_url", "screen_look"}
 
 
 # `screen_look` is not a proxy: it takes the screenshot from the terminal and describes it here.
@@ -546,7 +545,7 @@ def _terminal_registry(tmp_path: Path, *, vault: bool = False) -> ToolRegistry:
 def test_a_terminal_declares_the_device_tools_it_can_run(tmp_path: Path) -> None:
     """The six it may run, the file-name resolver, the three device reads (ADR 0170) and copy_code.
 
-    Never write_file or a menu tool.
+    Never a menu tool.
     """
     assert _declared(_terminal_registry(tmp_path)) == {
         "open_path", "read_file", "read_clipboard", "open_url", "screen_capture", "resolve_file",
@@ -587,9 +586,9 @@ def test_the_runner_executes_the_real_handlers_and_reports_their_results(
 
 
 def test_the_runner_refuses_what_it_did_not_declare(tmp_path: Path) -> None:
-    """A tool off the declared set (a web tool, write_file) never runs on a terminal."""
+    """A tool off the declared set (a web tool) never runs on a terminal."""
     execute = make_executor(_terminal_registry(tmp_path))
-    for tool in ("web_fetch", "write_file", "keep", "search_notes", "nope"):
+    for tool in ("web_fetch", "keep", "search_notes", "nope"):
         reply = execute(tool, {}, None)
         assert (reply["ok"], reply["code"]) == (False, "unknown_tool")
 

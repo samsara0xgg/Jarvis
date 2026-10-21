@@ -13,7 +13,7 @@ Two handler shapes coexist while the old-shape tools remain:
   every event, moves the lifecycle and serializes the payload.
 - `ToolDefinition` — the handler writes its own `action.result_observed`
   and transitions the lifecycle terminal before returning
-  (`search_notes` / `read_file` / `open_url` / `write_file`).
+  (`search_notes` / `read_file` / `open_url`).
 
 `tool_result` / `tool_error` JSON serializers are adapted verbatim from
 `/Users/alllllenshi/Projects/jarvis-legacy/tools_v2/helpers.py` per
@@ -127,7 +127,7 @@ class RuntimePathsLike(Protocol):
     Surface:
         - ``event_log`` — DB path.
         - ``artifacts_root`` — root artifact dir (`screen_look` saves its
-          screenshots under it; `write_file` stages pending writes there).
+          screenshots under it).
     """
 
     @property
@@ -3304,7 +3304,6 @@ TERMINAL_TOOL_NAMES: Final[frozenset[str]] = frozenset(
 )
 """ADR 0170: the tools a terminal can run for its brain.
 
-`write_file` is not here: no caller may reach it (frozen 2026-09-12), so no terminal declares it.
 """
 
 
@@ -3732,181 +3731,6 @@ def _action_correlation(action_request: ActionRequest) -> dict[str, str]:
     return out
 
 
-# --- write_file (ADR-0012 D1) ------------------------------------------------
-#
-# The only L3 tool: read_only=False, requires_entity=True,
-# requires_confirmation=True. Dispatch reaches this handler only via a
-# gated ActionRequest carrying a valid AuthorizationLease (ADR-0012 D2)
-# — the Pre-action Gate's confirm_required/lease machinery is what makes
-# that true, not anything in this handler.
-
-_WRITE_FILE_ENTITY_PREFIX: Final[str] = "file:"
-
-_WRITE_FILE_MODES: Final[frozenset[str]] = frozenset({"create", "overwrite", "append"})
-
-_WRITE_FILE_MODE_TO_OPEN_MODE: Final[Mapping[str, str]] = {
-    "create": "x",
-    "overwrite": "w",
-    "append": "a",
-}
-
-_WRITE_FILE_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "target": {
-            "type": "string",
-            "description": (
-                "Spoken name, description, or path of the file to write. "
-                "Resolved to a canonical path before writing (never used as "
-                "a raw path). An existing file resolves normally; a "
-                "non-existent file resolves only if its parent directory is "
-                "in scope."
-            ),
-        },
-        "content": {
-            "type": "string",
-            "description": "Text content to write.",
-        },
-        "mode": {
-            "type": "string",
-            "description": (
-                "'create' refuses if the file already exists; 'overwrite' "
-                "and 'append' both require an existing file."
-            ),
-        },
-    },
-    "required": ["target", "content", "mode"],
-}
-
-
-def write_file_handler(  # noqa: PLR0911 — one linear resolve/validate/mode/write pass; each return is a distinct, named failure or the single success exit — splitting it would only relocate the branches, not reduce them.
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
-    """L3 `write_file` — the confirmation flow's acceptance instrument (ADR-0012 D1).
-
-    Writes to the RESOLVED canonical path off
-    `action_request.target_entity_ref` — NEVER `arguments["target"]`,
-    the raw free text the LLM supplied. Same discipline as
-    `read_file_handler`: the Pre-action Gate has already required a
-    trusted `"file:<abs-path>"` ref (ADR-0011 D3 + ADR-0012 D1's
-    write-target resolution extension) by the time this handler runs,
-    so the raw argument is never read here. `target_entity_ref is
-    None` cannot pass the gate for a `requires_entity=True` tool, but
-    this handler checks it anyway — a handler must be safe standing
-    alone, not merely behind a gate that happens to always run first
-    in production.
-
-    Mode semantics: `create` refuses an already-existing file;
-    `overwrite`/`append` both require an existing file. The existence
-    check happens twice by design — once explicitly (for a clear,
-    mode-specific error code) and once implicitly via the `"x"` open
-    mode for `create` (atomic — closes the TOCTOU gap the explicit
-    check alone would leave between check and write).
-
-    Any I/O error (permission denied, disk full, parent directory
-    vanished between resolve and dispatch, ...) becomes an error
-    observation via `_emit_tool_error` and rides the EXISTING
-    Limitation routing — ADR-0012 §4 failure-mode table: "write_file
-    handler I/O error -> error observation -> Limitation routing
-    (existing machinery)". No new error machinery is introduced here.
-
-    Result semantics is `"ack"` (Execution Claim `executed` — the
-    write-was-accepted, not content-verified; ADR-0012 D1 explicitly
-    defers read-back `post_action_check` to a future ADR).
-    """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-    action_id = action_request.action_id
-
-    ref = action_request.target_entity_ref
-    if ref is None or not ref.startswith(_WRITE_FILE_ENTITY_PREFIX):
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="no_resolved_target",
-            message="write_file: no resolved target_entity_ref (the gate should have refused this)",
-        )
-    path = Path(ref[len(_WRITE_FILE_ENTITY_PREFIX) :])
-
-    mode_raw = action_request.arguments.get("mode")
-    mode = mode_raw if isinstance(mode_raw, str) else ""
-    if mode not in _WRITE_FILE_MODES:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="invalid_mode",
-            message=(
-                f"write_file: mode must be one of {sorted(_WRITE_FILE_MODES)!r}, "
-                f"got {mode_raw!r}"
-            ),
-        )
-
-    content_raw = action_request.arguments.get("content")
-    content = content_raw if isinstance(content_raw, str) else None
-    if content is None:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="missing_content",
-            message="write_file: 'content' argument must be a string",
-        )
-
-    exists = path.is_file()
-    if mode == "create" and exists:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="target_exists",
-            message=f"write_file: {path} already exists; mode=create refuses to overwrite it",
-        )
-    if mode in ("overwrite", "append") and not exists:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="target_not_found",
-            message=f"write_file: {path} does not exist; mode={mode!r} requires an existing file",
-        )
-
-    try:
-        with path.open(_WRITE_FILE_MODE_TO_OPEN_MODE[mode], encoding="utf-8") as fh:
-            fh.write(content)
-    except OSError as exc:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="write_failed",
-            message=f"write_file: {exc}",
-        )
-
-    payload: dict[str, Any] = {
-        "path": str(path),
-        "mode": mode,
-        "bytes_written": len(content.encode("utf-8")),
-    }
-    return _emit_tool_observation(
-        conn=conn,
-        lifecycle=lifecycle,
-        action_id=action_id,
-        running_event_uid=running_event_uid,
-        payload=payload,
-        semantics="ack",
-    )
-
-
 # --- Default registry assembly ----------------------------------------------
 
 def _runs_on_terminal(
@@ -4076,7 +3900,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             registers no memory tool.
         device_link: ADR 0170 — the brain's link to its terminal. Every tool that
             acts on the machine it runs on (`open_path`, `search_notes`, `read_file`,
-            `read_clipboard`, `open_url`, `screen_look`, `write_file`, the night-run
+            `read_clipboard`, `open_url`, `screen_look`, the night-run
             tools) is then built, with the same definition, as a proxy that runs the
             call there, and held in the registry's device catalogue; the menu gets the
             ones its terminals declare (ADR 0225, `ToolRegistry.offer_device_tools`).
@@ -4224,28 +4048,6 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         registry.register(screen_look)
     else:
         device_catalogue[screen_look.name] = (screen_look, "screen_capture")  # ADR 0225
-    register_device_tool(
-        ToolDefinition(
-            name="write_file",
-            description=(
-                "Write text content to a file by spoken name, description, "
-                "or path. The target is resolved to a canonical path before "
-                "writing — never pass a raw filesystem path. mode='create' "
-                "refuses an existing file; 'overwrite'/'append' both require "
-                "one. Risk L3 — every dispatch requires the user's explicit "
-                "confirmation."
-            ),
-            # frozen 2026-09-12: engineering is off the LLM menu; no caller may reach this.
-            allowed_callers=frozenset(),
-            risk_level="L3",
-            result_semantics="ack",
-            input_schema=_WRITE_FILE_INPUT_SCHEMA,
-            handler=write_file_handler,
-            read_only=False,
-            requires_entity=True,
-            requires_confirmation=True,
-        )
-    )
     # Local import avoids a cycle: daily adapters use this module's flat Tool type.
     from jarvis.execution.daily_tools import (  # noqa: PLC0415
         build_daily_report_tool,
@@ -4397,5 +4199,4 @@ __all__ = [
     "tool_result",
     "turn_action_ids",
     "validate_egress_url",
-    "write_file_handler",
 ]

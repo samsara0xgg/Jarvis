@@ -396,16 +396,6 @@ class RuntimePathsLike(Protocol):
         """Path to the SQLite Event Log file."""
         ...
 
-    def pending_write_path(self, confirmation_id: str) -> Path:
-        """Return the staging path for a pending write's content.
-
-        ADR-0012 §3 D3/D5: on ``confirm_required``, ``write_file``'s
-        ``content`` argument is staged here — never on the event
-        payload (§3.3.9 bounded payloads) — before
-        ``confirmation.requested`` is emitted.
-        """
-        ...
-
 
 class ToolDefinitionLike(Protocol):
     """Structural view of L4 ``ToolDefinition`` records.
@@ -596,18 +586,6 @@ class DecideContext:
             gate arm — correct fail-closed behavior, not a bug, for
             any context that hasn't wired a resolver (e.g. a context
             with no file-entity tools registered).
-        write_entity_resolver: Injected resolve-on-propose callable for
-            ``write_file`` (ADR-0012 D1 — extends ADR-0011 D4).
-            ``_dispatch_one_tool_call`` uses THIS resolver instead of
-            ``entity_resolver`` when the tool being resolved is
-            ``write_file``, because a write target's resolution rule
-            differs from a read target's: a non-existent path resolves
-            iff its parent directory is in scope, which
-            ``entity_resolver`` (backed by ``path_resolver.resolve``,
-            existing-file-only) cannot do. ``None`` (the default) makes
-            ``write_file`` resolution inert the same way ``None`` on
-            ``entity_resolver`` does for ``read_file`` — fail-closed,
-            not a bug.
         confirmation_ttl_ms: How long a spoken or typed yes/no can answer
             a ``confirmation.requested`` ask (ADR 0062; the card itself
             never expires), in milliseconds.
@@ -633,7 +611,6 @@ class DecideContext:
     max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS
     tier0_table: Tier0Table | None = None
     entity_resolver: EntityResolverLike | None = None
-    write_entity_resolver: EntityResolverLike | None = None
     confirmation_ttl_ms: int = _DEFAULT_CONFIRMATION_TTL_MS
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
@@ -2036,18 +2013,7 @@ _CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = (
     "Waiting for the user's confirmation; it cannot run this turn"
 )
 
-# ADR-0012 §3 D5 — the exact rendered action line (``confirm.ask_write``), appended by the
-# RUNTIME to the draft, never composed by the LLM (§13.4; consent
-# binds machine truth). Rendered ONLY from the frozen action_snapshot
-# (`_stage_and_request_confirmation`) — `canonical_target` is the
-# resolved absolute path, the one thing standing between Allen and a
-# fuzzy-resolved write landing somewhere unintended. Fixed vocabulary,
-# scrub-safe (no 完成/已完成/done/verified), same discipline as the
-# Tier 0 texts above. `{tool_name}`/`{risk_level}` are interpolated
-# rather than hardcoded to "write_file"/"L3" even though that is the
-# only L3 tool today (D1) — byte-identical output for the one case
-# that exists, forward-compatible if a second L3 tool ever lands.
-# ADR 0033 / 0062: every other tool at the threshold gets one spoken line,
+# ADR 0033 / 0062: a tool at the threshold gets one spoken line,
 # rendered from the frozen arguments only; the card shows the arguments.
 
 
@@ -2338,33 +2304,13 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     # below) are `None` in any context that hasn't wired them; the
     # feature is then inert and the `requires_entity` gate arm refuses,
     # which is correct fail-closed behavior, not a bug.
-    # ADR-0012 D1: `write_file`'s write-target resolution differs from
-    # every other `requires_entity=True` tool's (a non-existent target
-    # can still resolve, iff its parent directory is in scope), so it
-    # gets its own injected resolver rather than sharing
-    # `ctx.entity_resolver`.
-    file_entity_resolver = (
-        ctx.write_entity_resolver if name == "write_file" else ctx.entity_resolver
-    )
     target_entity_ref: str | None = None
-    # ADR-0012 §3 D3: the confirmation snapshot's human-readable
-    # `canonical_target` is the resolver's `.canonical` (bare absolute
-    # path), captured here at the source of truth rather than
-    # re-derived later by stripping `target_entity_ref`'s `"file:"`
-    # prefix — that prefix convention belongs to `execution/tools.py`
-    # (L4), which L3 must not import. Stays `None` for any tool other
-    # than `write_file` (or a miss); `confirm_required` is only
-    # reachable once `target_entity_ref` is set, which for `write_file`
-    # only ever happens via this block, so the two are always set
-    # together on the path that reaches confirm_required.
-    write_target_canonical: str | None = None
-    if tool_def.requires_entity and file_entity_resolver is not None:
+    if tool_def.requires_entity and ctx.entity_resolver is not None:
         raw_target = arguments.get("target")
         raw_query = raw_target if isinstance(raw_target, str) else ""
-        resolved = file_entity_resolver(raw_query)
+        resolved = ctx.entity_resolver(raw_query)
         if resolved is not None:
             target_entity_ref = resolved.entity_id
-            write_target_canonical = resolved.canonical
         # A file search on the terminal can take many seconds; a turn cancelled meanwhile
         # proposes nothing.
         _check_response_cancelled(ctx, "after entity resolve")
@@ -2432,11 +2378,9 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     if gate_outcome == "confirm_required" and not _confirmation_already_requested_this_turn(
         scratch,
     ):
-        confirmation_event = _stage_and_request_confirmation(
+        confirmation_event = _request_confirmation(
             ctx,
             action_request=action_request,
-            arguments=arguments,
-            canonical_target=write_target_canonical or "",
             tool_def=tool_def,
             source_event_id=gate_event.event_uid,
             lang=scratch.lang,
@@ -3944,131 +3888,36 @@ def _confirmation_already_requested_this_turn(scratch: _Scratch) -> bool:
     return any(ev.type == "confirmation.requested" for ev in scratch.events)
 
 
-def _stage_and_request_confirmation(  # noqa: PLR0913 — one keyword per D3 snapshot input; each is load-bearing (ADR-0012 §3 D3), splitting would only relocate the arg list.
+def _request_confirmation(
     ctx: DecideContext,
     *,
     action_request: ActionRequest,
-    arguments: Mapping[str, Any],
-    canonical_target: str,
     tool_def: ToolDefinitionLike,
     source_event_id: str,
     lang: Language | None,
 ) -> Event:
-    """Freeze the action snapshot, stage its content, emit the ask.
+    """Freeze the call as proposed and emit the ask (ADR 0033).
 
-    ADR-0012 §3 D3/D5. Three things happen, in order:
-
-    1. ``content`` (never any other argument) is staged to
-       ``ctx.runtime_paths.pending_write_path(confirmation_id)`` and
-       hashed — the content itself never rides the event payload
-       (§3.3.9 bounded payloads); only ``content_sha256`` /
-       ``content_bytes`` / ``content_artifact`` do, folded into
-       ``args_meta`` alongside the tool's other (non-content)
-       arguments.
-    2. The six-key ``action_snapshot`` is assembled: ``tool_name``,
-       ``caller``, ``canonical_target`` (bare path, for the template
-       line), ``target_entity_ref`` (the ``file:<abs-path>`` form —
-       the exact field Step 6 will copy into a minted lease's
-       ``allowed_targets``; see ADR-0012's Step 1 erratum),
-       ``risk_level``, ``args_meta``.
-    3. ``confirmation.requested`` is emitted, carrying the snapshot
-       plus ``template_line`` (rendered from the snapshot, never from
-       LLM text) and ``expires_at_ms`` (``ctx.confirmation_ttl_ms``
-       from now).
-
-    Args:
-        ctx: The current DecideContext (supplies ``runtime_paths`` for
-            staging and ``confirmation_ttl_ms`` for the TTL).
-        action_request: The proposed, not-yet-authorized ActionRequest
-            (already carries ``target_entity_ref`` and ``tool_name``).
-        arguments: The tool call's raw arguments (parsed LLM JSON) —
-            NOT ``action_request.arguments`` specifically so the
-            caller can pass the exact dict it already resolved/parsed.
-        canonical_target: The resolved bare absolute path (empty
-            string if resolution somehow left it unset — defensive
-            only; unreachable in practice, see the call site comment).
-        tool_def: The tool's definition (for ``risk_level`` — Day-1
-            always ``"L3"``, but read off the def rather than
-            hardcoded).
-        source_event_id: The ``gate.evaluated`` event that produced
-            ``confirm_required`` — mirrors every other downstream event
-            in this function chaining off the gate verdict that caused
-            it (e.g. ``action.authorized``).
-        lang: The language the ask line is written in (``_Scratch.lang``).
-
-    Returns:
-        The emitted ``confirmation.requested`` :class:`Event`.
+    The snapshot carries the tool, its caller, its target ref, its risk and its arguments
+    as the model gave them; ``template_line`` is rendered from the snapshot, never from LLM
+    text, and the ask expires ``ctx.confirmation_ttl_ms`` from now.
     """
-    confirmation_id = _new_confirmation_id()
-    expires_at_ms = _now_epoch_ms() + ctx.confirmation_ttl_ms
-
-    if action_request.tool_name != "write_file":
-        # ADR 0033: any other tool at the threshold (an MCP tool that needs
-        # approval) freezes its arguments as proposed; nothing is staged.
-        generic_snapshot: dict[str, Any] = {
-            "tool_name": action_request.tool_name,
-            "caller": action_request.caller_principal.value,
-            "canonical_target": canonical_target,
-            "target_entity_ref": action_request.target_entity_ref,
-            "risk_level": tool_def.risk_level,
-            "args_meta": dict(arguments),
-        }
-        return emit_event(
-            ctx.conn,
-            type="confirmation.requested",
-            payload={
-                "confirmation_id": confirmation_id,
-                "action_snapshot": generic_snapshot,
-                "template_line": _ask_line(action_request.tool_name, arguments, lang),
-                "expires_at_ms": expires_at_ms,
-            },
-            source_event_id=source_event_id,
-            correlation=_action_correlation(action_request),
-        )
-
-    content_raw = arguments.get("content")
-    content_str = content_raw if isinstance(content_raw, str) else ""
-    content_bytes_data = content_str.encode("utf-8")
-    content_sha256 = hashlib.sha256(content_bytes_data).hexdigest()
-    content_byte_count = len(content_bytes_data)
-    artifact_path = ctx.runtime_paths.pending_write_path(confirmation_id)
-    artifact_path.write_text(content_str, encoding="utf-8")
-
-    mode_raw = arguments.get("mode")
-    mode_str = mode_raw if isinstance(mode_raw, str) else str(mode_raw)
-
-    args_meta: dict[str, Any] = {k: v for k, v in arguments.items() if k != "content"}
-    args_meta["content_sha256"] = content_sha256
-    args_meta["content_bytes"] = content_byte_count
-    args_meta["content_artifact"] = str(artifact_path)
-
-    action_snapshot: dict[str, Any] = {
+    snapshot: dict[str, Any] = {
         "tool_name": action_request.tool_name,
         "caller": action_request.caller_principal.value,
-        "canonical_target": canonical_target,
+        "canonical_target": "",
         "target_entity_ref": action_request.target_entity_ref,
         "risk_level": tool_def.risk_level,
-        "args_meta": args_meta,
+        "args_meta": dict(action_request.arguments),
     }
-
-    template_line = t(
-        "confirm.ask_write",
-        lang=lang,
-        tool_name=action_request.tool_name,
-        canonical_target=canonical_target,
-        mode=mode_str,
-        content_bytes=content_byte_count,
-        risk_level=tool_def.risk_level,
-    )
-
     return emit_event(
         ctx.conn,
         type="confirmation.requested",
         payload={
-            "confirmation_id": confirmation_id,
-            "action_snapshot": action_snapshot,
-            "template_line": template_line,
-            "expires_at_ms": expires_at_ms,
+            "confirmation_id": _new_confirmation_id(),
+            "action_snapshot": snapshot,
+            "template_line": _ask_line(action_request.tool_name, action_request.arguments, lang),
+            "expires_at_ms": _now_epoch_ms() + ctx.confirmation_ttl_ms,
         },
         source_event_id=source_event_id,
         correlation=_action_correlation(action_request),
@@ -4086,13 +3935,12 @@ def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments an
 ) -> str | None:
     """Put a card on screen for a call Allen himself started, with no model turn (ADR 0148).
 
-    Freezes ``arguments`` exactly as ``_stage_and_request_confirmation`` does for an MCP tool;
+    Freezes ``arguments`` exactly as ``_request_confirmation`` does;
     his button then runs the usual answer path (lease, gate, dispatch). The confirmation id,
-    or None when the tool is not on the menu or does not ask first. ``write_file`` stages
-    content and is never raised this way.
+    or None when the tool is not on the menu or does not ask first.
     """
     tool_def = _find_tool_def(registry, tool_name)
-    if tool_def is None or not tool_def.requires_confirmation or tool_name == "write_file":
+    if tool_def is None or not tool_def.requires_confirmation:
         return None
     confirmation_id = _new_confirmation_id()
     emit_event(
@@ -4131,18 +3979,11 @@ _LEASE_TTL_MS: Final[int] = 60_000
 the confirmation ask's own minutes-scale TTL)."""
 
 # The confirmation replies live in the language table under ``confirm.*``.
-# ``confirm.content_mismatch`` — ADR-0012 §4 failure-mode table: "content
-# artifact missing/hash mismatch at accept -> abort re-proposal, fixed error
-# line". Scrub-safe (no completion words) by construction, same discipline as
-# every other fixed line in this module.
-#
 # ``confirm.tool_gone`` — defensive-only: the tool named in a frozen snapshot is no longer
 # registered (e.g. the daemon restarted with the tool removed between ask
-# and answer). Unreachable in the Day-1 scenario (write_file is the only L3
-# tool and registries don't shrink mid-process), kept for the same reason
-# `_check_entity_trusted`'s `tool_def is None` arm is kept — a handler must
-# be safe standing alone, not merely behind preconditions that happen to
-# always hold in production.
+# and answer). Kept for the same reason `_check_entity_trusted`'s
+# `tool_def is None` arm is kept — a handler must be safe standing alone,
+# not merely behind preconditions that happen to always hold in production.
 #
 # ``confirm.reproposal_refused`` — ADR-0012 §4: "gate refuses the re-proposal
 # (policy/entity drift since ask) -> fixed line reporting the refusal reason". Interpolates only the
@@ -4150,16 +3991,12 @@ the confirmation ask's own minutes-scale TTL)."""
 # `gate.reasons` strings, which are developer-facing audit text not vetted
 # against the Pre-emit Gate's completion-keyword scrub.
 #
-# ``confirm.dispatch_error`` — ADR-0012 §4: "write_file handler I/O error -> error observation ->
-# Limitation routing (existing machinery)" — `result_interpreter` below
-# already emits the Limitation Claim; this is only the direct-reply text
-# for the turn that was the user's own "yes".
-#
-# ``confirm.write_ran`` — ADR-0012 §3 D6 exact wording: "backed by ack semantics; the wording
-# deliberately stops at 已执行 and must not be strengthened" (no completion or
-# verification words; "ran" is exactly what the ack proves). ``confirm.tool_ran``
-# (ADR 0062) is the tool's own ack-only line from the language table ("已发送"
-# for a send), never the model's words.
+# ``confirm.dispatch_error`` — ADR-0012 §4: a handler error becomes an error
+# observation and the Limitation routing (existing machinery) —
+# `result_interpreter` below already emits the Limitation Claim; this is only
+# the direct-reply text for the turn that was the user's own "yes".
+# ``confirm.tool_ran`` (ADR 0062) is the tool's own ack-only line from the
+# language table ("已发送" for a send), never the model's words.
 
 
 def _new_lease_id() -> str:
@@ -4239,13 +4076,10 @@ def _revise_confirmation(
     """Freeze Allen's edits as a new ask for the same tool and target (ADR 0062).
 
     Only a string argument the ask already had can be replaced, and only by a
-    string; staged content (``write_file``) is never edited here. Returns the
-    new pending slot, or ``slot`` unchanged when nothing differs.
+    string. Returns the new pending slot, or ``slot`` unchanged when nothing differs.
     """
     args_meta_raw = slot.snapshot.get("args_meta")
     args_meta = dict(args_meta_raw) if isinstance(args_meta_raw, Mapping) else {}
-    if "content_artifact" in args_meta:
-        return slot
     changed = {
         key: value
         for key, value in edits.items()
@@ -4310,7 +4144,7 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     return _finalize_response(draft, packet, ctx, scratch)
 
 
-def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915 — one audited accept/gate/dispatch trace with explicit fail-closed exits.
+def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one audited accept/gate/dispatch trace with explicit fail-closed exits.
     slot: PendingConfirmationSlot,
     grammar_hit: ConfirmGrammarHit,
     transcript: str,
@@ -4330,22 +4164,19 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
 
     1. Emit ``confirmation.accepted`` (durable proof of Allen's exact
        words + which grammar rule matched).
-    2. Re-read the staged content artifact and verify it against the
-       frozen ``content_sha256`` — a mismatch aborts here, before any
-       lease is minted or any gate runs (§4 failure mode).
-    3. Mint the lease per D2's nine fields, scoped to exactly this
+    2. Mint the lease per D2's nine fields, scoped to exactly this
        tool + this ``target_entity_ref`` (the entity-REF form — cross-
        step contract #1: ``allowed_targets`` must NOT hold the bare
        ``canonical_target`` path, or every re-proposal would refuse as
        wrong-target).
-    4. Rebuild the ActionRequest from the FROZEN snapshot with a NEW
+    3. Rebuild the ActionRequest from the FROZEN snapshot with a NEW
        ``action_id`` and the lease attached, emit ``action.proposed``.
-    5. Run the FULL ``pre_action_gate`` — no shortcuts. The
+    4. Run the FULL ``pre_action_gate`` — no shortcuts. The
        ``gate.evaluated`` payload always carries ``lease_id`` when a
        lease is attached (cross-step contract #3), regardless of
        outcome, so the audit trail shows what was attempted even on a
        refusal.
-    6. On ``pass``: ``action.authorized`` + lifecycle transition,
+    5. On ``pass``: ``action.authorized`` + lifecycle transition,
        dispatch via the L4 registry, fixed broadcast.
     """
     try:
@@ -4356,31 +4187,12 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     scratch.events.append(accepted_event)
     scratch.confirmation_answered_this_turn = True
 
-    # --- 2. Re-read + verify the staged content artifact -------------------
     snapshot = slot.snapshot
     args_meta_raw = snapshot.get("args_meta")
     args_meta: Mapping[str, Any] = args_meta_raw if isinstance(args_meta_raw, Mapping) else {}
-    content_artifact_raw = args_meta.get("content_artifact")
-    expected_sha256_raw = args_meta.get("content_sha256")
 
     tool_name_raw = snapshot.get("tool_name")
     tool_name = tool_name_raw if isinstance(tool_name_raw, str) else ""
-    # ADR 0033: only write_file stages content; any other tool re-proposes its
-    # frozen arguments unchanged.
-    staged = tool_name == "write_file"
-
-    content_text: str | None = None
-    if staged and isinstance(content_artifact_raw, str) and isinstance(expected_sha256_raw, str):
-        artifact_path = Path(content_artifact_raw)
-        if artifact_path.is_file():
-            content_bytes_data = artifact_path.read_bytes()
-            if hashlib.sha256(content_bytes_data).hexdigest() == expected_sha256_raw:
-                content_text = content_bytes_data.decode("utf-8")
-
-    if staged and content_text is None:
-        return _finalize_response(
-            t("confirm.content_mismatch", lang=scratch.lang), packet, ctx, scratch
-        )
     tool_def = _find_tool_def(ctx.tool_registry, tool_name)
     if tool_def is None:
         return _finalize_response(t("confirm.tool_gone", lang=scratch.lang), packet, ctx, scratch)
@@ -4394,13 +4206,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
     # exact field `_lease_scope_permits` matches byte-equal against
     # `ActionRequest.target_entity_ref`. NOT `canonical_target` (the bare
     # path) — that field exists only for the human-readable template line.
-    reproposal_arguments: dict[str, Any] = {
-        k: v
-        for k, v in args_meta.items()
-        if k not in ("content_sha256", "content_bytes", "content_artifact")
-    }
-    if staged:
-        reproposal_arguments["content"] = content_text
+    reproposal_arguments: dict[str, Any] = dict(args_meta)
 
     identity = stable_authorization_identity(accepted_event.event_uid)
     atomic_dispatch = ctx.wave1_features.confirmation_dispatch_outbox
@@ -4557,17 +4363,7 @@ def _handle_confirmation_accepted(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR
         draft = t("confirm.dispatch_error", lang=scratch.lang, error=primary_result_slot.error)
         return _finalize_response(draft, packet, ctx, scratch)
 
-    if not staged:
-        draft = t("confirm.tool_ran", lang=scratch.lang, done=action(tool_name, scratch.lang)[1])
-        return _finalize_response(draft, packet, ctx, scratch)
-    path_written = primary_result_slot.payload.get("path", "?")
-    bytes_written = primary_result_slot.payload.get("bytes_written", "?")
-    draft = t(
-        "confirm.write_ran",
-        lang=scratch.lang,
-        path=path_written,
-        bytes_written=bytes_written,
-    )
+    draft = t("confirm.tool_ran", lang=scratch.lang, done=action(tool_name, scratch.lang)[1])
     return _finalize_response(draft, packet, ctx, scratch)
 
 

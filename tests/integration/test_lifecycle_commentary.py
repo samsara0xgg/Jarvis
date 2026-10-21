@@ -637,7 +637,7 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         type="confirmation.requested",
         payload={
             "confirmation_id": "CONF-1",
-            "action_snapshot": {"tool_name": "write_file", "risk_level": "high"},
+            "action_snapshot": {"tool_name": "open_path", "risk_level": "high"},
             "template_line": "要写入吗",
             "expires_at_ms": fake_clock(runtime).time_ms() + 600_000,
         },
@@ -1197,7 +1197,7 @@ def test_a_confirmation_pending_at_the_clock_keeps_it_silent(tmp_path: Path) -> 
         type="confirmation.requested",
         payload={
             "confirmation_id": "CONF-clock",
-            "action_snapshot": {"tool_name": "write_file", "risk_level": "high"},
+            "action_snapshot": {"tool_name": "open_path", "risk_level": "high"},
             "template_line": "要写入吗",
             "expires_at_ms": fake_clock(runtime).time_ms() + 600_000,
         },
@@ -1480,7 +1480,7 @@ def test_a_follow_up_keeps_off_a_pending_confirmation(tmp_path: Path) -> None:
             type="confirmation.requested",
             payload={
                 "confirmation_id": "CONF-still",
-                "action_snapshot": {"tool_name": "write_file", "risk_level": "high"},
+                "action_snapshot": {"tool_name": "open_path", "risk_level": "high"},
                 "template_line": "要写入吗",
                 "expires_at_ms": fake_clock(runtime).time_ms() + 600_000,
             },
@@ -1566,7 +1566,7 @@ def test_a_cached_runtime_sees_a_confirmation_requested_after_the_cache_warmed(
         type="confirmation.requested",
         payload={
             "confirmation_id": "CONF-cached",
-            "action_snapshot": {"tool_name": "write_file", "risk_level": "high"},
+            "action_snapshot": {"tool_name": "open_path", "risk_level": "high"},
             "template_line": "要写入吗",
             "expires_at_ms": fake_clock(runtime).time_ms() + 600_000,
         },

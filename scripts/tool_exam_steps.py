@@ -116,7 +116,7 @@ SANDBOX_WRITE = frozenset({
     "show_on_dashboard",  # its push goes to a recorder
 })
 STUB = frozenset({
-    "open_url", "open_path", "read_file", "write_file", "read_clipboard", "screen_look",
+    "open_url", "open_path", "read_file", "read_clipboard", "screen_look",
     "start_night_run", "end_night_run", "refresh_work_state", "daily_work_report", "set_voice",
     "write_mail_draft", "open_plugin", "disable_plugin", "remove_plugin",
     "tidy_day",  # asks the doing lane's model (Opus) and writes a run

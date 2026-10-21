@@ -38,7 +38,7 @@ _TERMINAL_TYPES = ("confirmation.accepted", "confirmation.rejected", "confirmati
 
 def _snapshot() -> dict[str, Any]:
     return {
-        "tool_name": "write_file",
+        "tool_name": "open_path",
         "caller": "jarvis_llm",
         "canonical_target": "/var/folders/expiry.md",
         "target_entity_ref": "file:/var/folders/expiry.md",
@@ -59,7 +59,7 @@ def _request(
         payload={
             "confirmation_id": confirmation_id,
             "action_snapshot": _snapshot(),
-            "template_line": f"pending write_file for {confirmation_id}",
+            "template_line": f"pending open_path for {confirmation_id}",
             "expires_at_ms": expires_at_ms,
         },
         ts_epoch_ms=_REQUESTED_AT_MS,

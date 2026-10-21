@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 DEVICE_TOOLS = {
-    "open_path", "open_url", "read_clipboard", "screen_look", "read_file", "write_file",
+    "open_path", "open_url", "read_clipboard", "screen_look", "read_file",
     "search_notes",
 }
 NIGHT_TOOLS = {"start_night_run", "end_night_run"}

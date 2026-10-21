@@ -71,7 +71,7 @@ def test_authorization_ttl_is_checked_after_sqlite_lock(
             else:
                 outbox.admit_authorized_dispatch(
                     conn, request,
-                    payload={"action_id": request.action_id, "tool_name": "write_file"},
+                    payload={"action_id": request.action_id, "tool_name": "open_path"},
                 )
         finally:
             conn.close()

@@ -178,7 +178,7 @@ class RandomLog:
             self.conn,
             "confirmation.requested",
             confirmation_id=self._id("C") if self.rng.random() < 0.95 else "C1",
-            action_snapshot="bad" if malformed else {"tool_name": "write_file", "args_meta": {}},
+            action_snapshot="bad" if malformed else {"tool_name": "open_path", "args_meta": {}},
             template_line="ok",
             expires_at_ms=10**9,
         )

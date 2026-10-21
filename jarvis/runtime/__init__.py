@@ -150,7 +150,6 @@ from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.path_resolver import (
     FileTargetsConfigError,
     configure_file_targets,
-    resolve_write_target,
 )
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.places_api import turn_places
@@ -576,32 +575,6 @@ def _make_entity_resolver(
             canonical=path,
             confidence="bookmark" if source == "bookmark" else "fuzzy",
             match_basis=source,
-        )
-
-    return _resolve
-
-
-def _make_write_entity_resolver(conn: sqlite3.Connection) -> EntityResolverLike:
-    """Build the `write_file` resolve-on-propose callable (ADR-0012 D1).
-
-    Mirrors :func:`_make_entity_resolver` but calls
-    `path_resolver.resolve_write_target` instead of `path_resolver.resolve`,
-    so a non-existent target whose parent directory is in scope also
-    resolves (D1's extension of ADR-0011 D4 for write targets). Wired
-    into `DecideContext.write_entity_resolver`;
-    `_dispatch_one_tool_call` picks this resolver instead of
-    `entity_resolver` when the tool being resolved is `write_file`.
-    """
-
-    def _resolve(query: str) -> ResolvedEntityLike | None:
-        target = resolve_write_target(query, conn)
-        if target is None:
-            return None
-        return _ResolvedFileEntity(
-            entity_id=f"file:{target.path}",
-            canonical=str(target.path),
-            confidence="bookmark" if target.source == "bookmark" else "fuzzy",
-            match_basis=target.source,
         )
 
     return _resolve
@@ -5189,13 +5162,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # closes over `runtime.conn`, which the JarvisRuntime fields
             # above already carry, so there is nothing to cache.
             entity_resolver=_make_entity_resolver(runtime.conn, runtime.terminal_hub),
-            # ADR-0012 D1 — write-target resolve-on-propose. Same
-            # per-turn-closure rationale as `entity_resolver` above. A brain wires none:
-            # the target would resolve on the wrong disk, and `write_file` is frozen anyway.
-            write_entity_resolver=(
-                None if runtime.terminal_hub is not None
-                else _make_write_entity_resolver(runtime.conn)
-            ),
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
             confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),

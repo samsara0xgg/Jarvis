@@ -81,7 +81,6 @@ _KIND: Final[dict[str, str]] = {
     "schedule": "calendar",
     "search_notes": "records",
     "read_file": "file",
-    "write_file": "file",
     "open_path": "file",
     "open_url": "url",
     "mail": "mail",

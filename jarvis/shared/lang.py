@@ -267,12 +267,6 @@ def spoken_time(moment: datetime, lang: Language | None = None) -> str:
 # they state what the runtime observed and nothing stronger.
 TEXT: Final[dict[str, dict[Language, str]]] = {
     # ADR-0012 / ADR 0033 confirmation asks and answers.
-    "confirm.ask_write": {
-        "zh": "待确认：{tool_name} → `{canonical_target}`（{mode}，{content_bytes} 字节，风险 {risk_level}）。"
-        "回复「可以」执行，「不要」取消。",
-        "en": "To confirm: {tool_name} → `{canonical_target}` ({mode}, {content_bytes} bytes, risk"
-        ' {risk_level}). Say "yes" to run it or "no" to cancel.',
-    },
     # ADR 0062: the ask under a card is one spoken line; the card shows the rest.
     "confirm.ask_tool": {"zh": "要{action}吗？", "en": "Shall I {action}?"},
     "confirm.ask_letter": {
@@ -280,10 +274,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": 'The email to {to} is ready, subject "{subject}". Send it?',
     },
     "confirm.rejected": {"zh": "好，不{action}了。", "en": "OK, I won't {action}."},
-    "confirm.content_mismatch": {
-        "zh": "暂存内容校验失败，写入未执行。",
-        "en": "The staged content failed its check; nothing was written.",
-    },
     "confirm.tool_gone": {
         "zh": "无法执行：工具已不可用，未执行。",
         "en": "Can't run it: the tool is no longer available. Nothing was run.",
@@ -293,10 +283,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "Cancelled: the recheck did not pass ({outcome}). Nothing was run.",
     },
     "confirm.dispatch_error": {"zh": "执行出错：{error}", "en": "It failed: {error}"},
-    "confirm.write_ran": {
-        "zh": "write_file 已执行：`{path}`（{bytes_written} 字节）",
-        "en": "write_file ran: `{path}` ({bytes_written} bytes)",
-    },
     "confirm.tool_ran": {"zh": "{done}。", "en": "{done}."},
     "confirm.stale": {
         "zh": "这张卡已经处理过或被换掉了，没有执行。",

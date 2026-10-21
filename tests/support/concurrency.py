@@ -23,7 +23,7 @@ def seed_accepted_confirmation(
     content_bytes = content.encode("utf-8")
     target = f"file:/tmp/{suffix}.txt"
     snapshot: dict[str, object] = {
-        "tool_name": "write_file",
+        "tool_name": "open_path",
         "caller": "jarvis_llm",
         "canonical_target": f"/tmp/{suffix}.txt",
         "target_entity_ref": target,
@@ -68,7 +68,7 @@ def confirmation_candidate(
     target = cast("str", snapshot["target_entity_ref"])
     request = ActionRequest(
         action_id=f"random-action-{random_suffix}",
-        tool_name="write_file",
+        tool_name="open_path",
         target_entity_ref=target,
         caller_principal=CallerPrincipal.JARVIS_LLM,
         risk_level="L3",
@@ -81,7 +81,7 @@ def confirmation_candidate(
         "lease_id": f"random-lease-{random_suffix}",
         "granted_by": "allen",
         "granted_to": CallerPrincipal.JARVIS_LLM,
-        "allowed_tools": frozenset({"write_file"}),
+        "allowed_tools": frozenset({"open_path"}),
         "allowed_targets": frozenset({target}),
         "expires_at_ms": 2_050_000,
         "max_uses": 1,
