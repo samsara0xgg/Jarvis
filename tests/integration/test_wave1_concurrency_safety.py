@@ -20,7 +20,7 @@ from jarvis.decision import DecideContext, decide
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import VisionCallError, _build_vision_cost_recorder, _LLMVisionClient
+from jarvis.runtime import VisionCallError, _LLMVisionClient
 from jarvis.shared.realtime import (
     AlreadyConsumed,
     AlreadyTerminal,
@@ -892,19 +892,14 @@ def test_flag_on_decide_path_records_one_production_cost_disposition(
     conn.close()
 
 
-def test_vision_cost_guard_flag_on_success_error_and_flag_off_compatibility(
+def test_vision_cost_guard_records_success_and_error_and_no_recorder_records_nothing(
     tmp_path: Path,
 ) -> None:
     """Composition-root vision calls share L3 accounting and redaction."""
     conn = open_event_log(tmp_path / "vision-cost.db")
     image_path = tmp_path / "screen.png"
     image_path.write_bytes(b"not-a-real-png")
-    guarded_recorder = _build_vision_cost_recorder(
-        conn,
-        Wave1FeatureFlags(exactly_once_cost_accounting=True),
-        pricing_path=tmp_path / "missing-pricing.json",
-    )
-    assert guarded_recorder is not None
+    guarded_recorder = CostRecorder(conn)
 
     guarded_success = _LLMVisionClient(
         _openai_client("batch"),
@@ -930,13 +925,7 @@ def test_vision_cost_guard_flag_on_success_error_and_flag_off_compatibility(
     assert {payload["disposition"] for payload in payloads} == {"completed", "error"}
     assert len({payload["llm_request_id"] for payload in payloads}) == 2
 
-    legacy_recorder = _build_vision_cost_recorder(
-        conn,
-        Wave1FeatureFlags(),
-        pricing_path=tmp_path / "missing-pricing.json",
-    )
-    assert legacy_recorder is None
-    legacy = _LLMVisionClient(_openai_client("batch"), cost_recorder=legacy_recorder)
+    legacy = _LLMVisionClient(_openai_client("batch"), cost_recorder=None)
     assert legacy.describe_image(image_path, question=None) == "batch"
     assert _event_count(conn, "cost.recorded") == 2
     assert _table_count(conn, "cost_accounting_dispositions") == 2

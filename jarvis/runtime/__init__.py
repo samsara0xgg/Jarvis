@@ -1459,11 +1459,11 @@ def _about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
 _FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_WORK_STATE_PRESET: Final[str] = "gpt6-luna"
 _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
+"""ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
+(2026-09-12), and a retry after a timeout would resend it all."""
 _OUTPUT_TIMEOUT_S: Final[float] = 5.0
 """How long a brain waits for its terminal to say where sound would come out: its probe takes
 at most 3 s, and a slow answer is a no (ADR 0156)."""
-"""ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
-(2026-09-12), and a retry after a timeout would resend it all."""
 
 
 def _timesink_poll_interval_s(config: Mapping[str, Any]) -> float:
@@ -2898,21 +2898,6 @@ def _build_vision_client(
         vision_llm_config,
         event_log_path=event_log_path if account_cost else None,
         pricing_path=pricing_path,
-    )
-
-
-def _build_vision_cost_recorder(
-    conn: sqlite3.Connection,
-    wave1_features: Wave1FeatureFlags,
-    *,
-    pricing_path: Path,
-) -> CostRecorder | None:
-    """Map the rollout flag to the shared L3 guard at the composition root."""
-    if not wave1_features.exactly_once_cost_accounting:
-        return None
-    return CostRecorder(
-        conn,
-        pricing_table=load_pricing_table(pricing_path),
     )
 
 
