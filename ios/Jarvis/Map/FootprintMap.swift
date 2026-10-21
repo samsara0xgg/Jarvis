@@ -49,22 +49,25 @@ struct FootprintMapDot: Equatable {
 }
 
 /// The first-person camera while a finger holds a time: where he was (the scrub dot, kept at the map's centre), the way he was going in degrees clockwise from north (nil while still: the
-/// map keeps the heading it has) and how fast, which sets how far out the camera stands.
+/// map keeps the heading it has) and how far out the camera stands, in metres, which the caller decides for a whole outing. The camera eases to all of it on one spring of `response` seconds;
+/// `cut` takes it at once (Reduce Motion, the first frame).
 struct FootprintMapFollow: Equatable {
-    var coord: CLLocationCoordinate2D, heading: Double?, speedMps: Double
-    static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.heading == b.heading && a.speedMps == b.speedMps }
+    var coord: CLLocationCoordinate2D, heading: Double?, height: Double, response = TLMotion.mapResponse, cut = false
+    static func == (a: Self, b: Self) -> Bool {
+        a.coord.same(b.coord) && a.heading == b.heading && a.height == b.height && a.response == b.response && a.cut == b.cut
+    }
 
     /// tilted forward as turn-by-turn navigation is
     static let pitch = 60.0
-    /// How far the camera stands from him: 600 m while he stands or walks, out to 2 km from 80 km/h, so that the road ahead can be read at any pace.
-    static func distance(speedMps v: Double) -> Double { 600 + 1400 * min(1, max(0, (v - 2) / 20)) }
+    /// How far out the camera stands on an outing, by what it was: on foot 500 m, awheel 800 m, driving 1.2 km (what the brain does not know is walked).
+    static func height(activity: String?) -> Double {
+        switch activity { case "cycling": 800; case "automotive": 1200; default: 500 }
+    }
 }
 
 extension TLMotion {
-    /// following him: the way he goes, the camera's distance and its tilt are taken up with this time constant in seconds (about the follow spring's response)
-    static let mapTurn = 0.2
-    /// letting go: the camera flies back to the day's whole in this many seconds, easing at both ends; under Reduce Motion it is there at once
-    static let mapReturn = 0.5
+    /// following him, and letting go (the camera goes back to the day's whole): the camera's one spring, the period in seconds of its undamped swing, while a finger scrubs
+    static let mapResponse = 0.25
 }
 
 private extension CLLocationCoordinate2D {
@@ -161,7 +164,6 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
     private var dotNote: FootprintMark.Note?
     private var renderers: [FootprintRouteRenderer] = []
     private weak var map: FootprintMKMapView?
-    private var eye = Eye()
 
     func apply(_ v: FootprintMapView, to m: FootprintMKMapView) {
         let old = view
@@ -206,7 +208,7 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
             m.pendingFit = { [weak m, weak self] in if let m { self?.fit(m, animated: !first) } }
             if !m.bounds.isEmpty { m.setNeedsLayout() }
         }
-        if let f = v.follow { track(f, on: m) } else if eye.on { release(m) }
+        if let f = v.follow { track(f, on: m) } else if cam != nil, !returning { release(m) }
     }
 
     private func fit(_ m: MKMapView, animated: Bool) {
@@ -216,14 +218,12 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
 
     // MARK: first person
 
-    /// Where the camera is while it follows him: the centre is always his, at once; the heading, the tilt and the distance (its log, so that the way in from the whole day is even) go to
-    /// their aims at `TLMotion.mapTurn`. A still him leaves the heading alone.
-    private struct Eye {
-        var on = false, heading = 0.0, pitch = 0.0, logDistance = 0.0
-        var centre = CLLocationCoordinate2D()
-    }
-    private var aim = Eye()
+    /// Where the camera is while it follows him, and on its way back to the day's whole after: one spring for all of it (`FootprintCamera`), stepped by a display link that runs only while
+    /// something moves. `cam` is nil while the map is his own.
+    private var cam: FootprintCamera?
+    private var returning = false
     private var link: CADisplayLink?
+    private var lastTick = 0.0
 
     private func track(_ f: FootprintMapFollow, on m: FootprintMKMapView) {
         guard !m.bounds.isEmpty else {          // no size yet: the camera is taken once the map has one, and the first fit with it
@@ -233,53 +233,52 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
             }
             return
         }
-        if !eye.on {
-            let c = m.camera
-            eye = Eye(on: true, heading: c.heading, pitch: c.pitch, logDistance: log(c.centerCoordinateDistance))
-            aim = eye
+        if cam == nil {
+            let c = m.camera, p = MKMapPoint(c.centerCoordinate)
+            cam = FootprintCamera(x: p.x, y: p.y, heading: c.heading, pitch: c.pitch, height: c.centerCoordinateDistance)
         }
-        eye.centre = f.coord
-        aim.heading = f.heading ?? aim.heading
-        aim.pitch = FootprintMapFollow.pitch
-        aim.logDistance = log(FootprintMapFollow.distance(speedMps: f.speedMps))
-        if TLMotion.reduced { eye.heading = aim.heading; eye.pitch = aim.pitch; eye.logDistance = aim.logDistance }
-        else if link == nil {
+        let p = MKMapPoint(f.coord)
+        returning = false
+        cam?.aim(x: p.x, y: p.y, heading: f.heading, pitch: FootprintMapFollow.pitch, height: f.height, response: f.response)
+        move(m, cut: f.cut)
+    }
+
+    /// the aims are in: taken at once, or the display link carries the camera there
+    private func move(_ m: MKMapView, cut: Bool) {
+        if cut || TLMotion.reduced { cam?.cut(); place(m); if returning { cam = nil; returning = false }; stop() }
+        else if cam?.settled == false, link == nil {
+            lastTick = 0
             link = CADisplayLink(target: self, selector: #selector(step))
             link?.add(to: .main, forMode: .common)
         }
-        place(m)
     }
 
     @objc private func step(_ l: CADisplayLink) {
-        guard let m = map else { return stop() }
-        let k = 1 - exp(-(l.targetTimestamp - l.timestamp) / TLMotion.mapTurn)
-        var turn = (aim.heading - eye.heading).truncatingRemainder(dividingBy: 360)          // the short way round
-        if turn > 180 { turn -= 360 } else if turn < -180 { turn += 360 }
-        eye.heading = (eye.heading + turn * k + 360).truncatingRemainder(dividingBy: 360)
-        eye.pitch += (aim.pitch - eye.pitch) * k
-        eye.logDistance += (aim.logDistance - eye.logDistance) * k
-        if abs(turn) < 0.05, abs(aim.pitch - eye.pitch) < 0.05, abs(aim.logDistance - eye.logDistance) < 0.001 {
-            eye.heading = aim.heading; eye.pitch = aim.pitch; eye.logDistance = aim.logDistance; link?.invalidate(); link = nil
-        }
+        guard let m = map, cam != nil else { return stop() }
+        cam?.step(dt: lastTick == 0 ? l.targetTimestamp - l.timestamp : min(l.timestamp - lastTick, 0.05))
+        lastTick = l.timestamp
+        let done = cam?.settled ?? true
+        if done { cam?.cut() }
         place(m)
+        if done { stop(); if returning { cam = nil; returning = false } }
     }
 
     private func place(_ m: MKMapView) {
-        m.camera = MKMapCamera(lookingAtCenter: eye.centre, fromDistance: exp(eye.logDistance), pitch: eye.pitch, heading: eye.heading)
+        guard let c = cam else { return }
+        m.camera = MKMapCamera(lookingAtCenter: MKMapPoint(x: c.x.value, y: c.y.value).coordinate, fromDistance: c.height, pitch: c.pitch.value, heading: c.headingDegrees)
     }
 
     func stop() { link?.invalidate(); link = nil }
 
-    /// the finger lifted: the camera goes back to the day's whole, north up and flat, from where it stands (the fit is found first on the flat map, then the camera is put back to fly there)
+    /// the finger lifted: the camera goes back to the day's whole, north up and flat, on the same spring (the fit is found first on the flat map, then the camera is put back where it stands)
     private func release(_ m: MKMapView) {
-        stop(); eye.on = false
         let from = m.camera
         m.camera = MKMapCamera(lookingAtCenter: from.centerCoordinate, fromDistance: from.centerCoordinateDistance, pitch: 0, heading: 0)
         fit(m, animated: false)
-        guard !TLMotion.reduced else { return }
-        let to = m.camera
-        m.camera = from
-        UIView.animate(withDuration: TLMotion.mapReturn, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) { m.camera = to }
+        let to = m.camera, p = MKMapPoint(to.centerCoordinate)
+        returning = true
+        cam?.aim(x: p.x, y: p.y, heading: 0, pitch: 0, height: to.centerCoordinateDistance, response: TLMotion.mapResponse)
+        if TLMotion.reduced { move(m, cut: true) } else { place(m); move(m, cut: false) }
     }
 
     /// a stop after the held minute is faint
