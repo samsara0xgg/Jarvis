@@ -88,18 +88,13 @@ from jarvis.decision.turn_guards import (
     ride_stop_in_view,
     unbacked_claim,
 )
-from jarvis.deployment import load_env_file
-from jarvis.execution.conversation_tool import build_conversation_tool
-from jarvis.execution.dashboard_tool import build_dashboard_tool
-from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
-from jarvis.execution.mail_tool import build_mail_tool
-from jarvis.execution.my_day_tool import build_my_day_tool
-from jarvis.execution.plugin_panel import plugin_panel_tools
-from jarvis.execution.tidy_tool import build_tidy_tool
-from jarvis.execution.tool_search import build_tool_search
+from jarvis.deployment import RuntimePaths, load_env_file
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
-from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewState
+from jarvis.runtime import register_catalog
+from jarvis.runtime.dashboard import ViewState
 from jarvis.runtime.plugin_catalog import read_package
+from jarvis.runtime.plugin_connections import PluginConnections, _Active
+from jarvis.runtime.plugins import Plugins
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.ledger import LedgerSources
@@ -150,63 +145,73 @@ def offered_tools(config: Mapping[str, Any], recorded_mcp: Path) -> list[dict[st
     return _menu(_exam_registry(config, recorded_mcp))
 
 
+class _RecordedPlugins(PluginConnections):
+    """The runtime's plugin connections with the recorded MCP definitions as the one live server."""
+
+    def __init__(
+        self, group: list[Tool], sources: dict[str, str], registry: ToolRegistry,
+        config: Mapping[str, Any], root: Path,
+    ) -> None:
+        super().__init__(
+            repo_root=REPO, runtime_root=root, event_log=root / "events.db",
+            registry=registry, config=config,
+        )
+        self._recorded = _Active(MagicMock(), tuple(group), Plugins(sources=sources))
+
+    def initialize(self) -> None:
+        """The panel tools, then the recorded group; nothing is started or authorized."""
+        super().initialize()
+        self._active["recorded"] = self._recorded
+
+
 def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistry:
     """The registry behind that menu.
 
-    The same registry the runtime assembles (``build_default_registry`` with a brain's device
-    tools offered, then ``show_on_dashboard``, the plugin panel, the MCP tools with
-    ``tool_search`` over the deferred ones, the job, mail and schedule readers), every dependency a
-    harmless stand-in, then the decision loop's own filter and projection (``surface_for`` and
-    ``_tool_menu`` over the Collaborate policy). Registration order is the runtime's, since the
-    menu's order is part of the request.
+    The runtime's own ``register_catalog`` (the one place the daemon's registration order lives)
+    with every dependency a harmless stand-in and a brain's device tools all offered; the MCP
+    tools come from the recording. Then ``_menu`` applies the decision loop's own filter.
     """
     tools = config.get("tools") or {}
     always = frozenset((tools.get("mcp") or {}).get("always_loaded") or ())
-    stub: Any = MagicMock()
-    with tempfile.TemporaryDirectory() as tmp:
-        base = Path(tmp)
-        registry = build_default_registry(
-            obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
-            web_deep_search=stub, vision_client=stub, memory_db_path=base / "memory.db",
-            timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
-            voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
-            transit_api_key="x",
-            transit_places=lambda: {"home": "home"}, transit_offers=stub, here_location=dict,
-            here_phone=dict, bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
-            device_link=lambda *_: {},
-        )
-    # A brain's terminals declare every operation here (ADR 0225): offer the whole catalogue.
-    registry.offer_device_tools(frozenset(op for _, op in registry._device_catalogue.values()))  # noqa: SLF001
     group = _mcp_tools(recorded_mcp, always)
     sources = _plugin_sources()
     group.sort(key=lambda one: one.name.split("__")[1] not in sources)  # plugin servers load first
     servers = {one.name.split("__")[1] for one in group}
-    for tool in (
-        *build_dashboard_tool((*PAGES, CLOSE), ViewState().present, SETTINGS_CATEGORIES),
-        *plugin_panel_tools(dict, lambda *_: {}, lambda *_: {}, lambda *_: {}),
-        *build_job_ledger_tool(dict), *build_record_application_tool(lambda _fields: ""),
-        *build_mail_tool(dict, lambda *_: {}, str, UTC),
-        *build_conversation_tool(Path("memory.db"), UTC),
-        *build_tidy_tool(lambda: ""),
-        *build_my_day_tool(LedgerSources(Path("memory.db"), Path("events.db"), None, UTC)),
-    ):
-        registry.register(tool)
-    # The runtime publishes the MCP group and tool_search once every built-in tool is registered
-    # (`PluginConnections.refresh_search`); tool_search also finds the built-ins kept off the menu.
-    taken = registry.superseded()
-    off_menu = tuple(
-        t for t in registry.get_definitions()
-        if isinstance(t, Tool) and t.deferred and t.name not in taken
-    )
-    for tool in (
-        *group,
-        *build_tool_search(
-            (*group, *off_menu), {s: sources.get(s, f"mcp-{s}") for s in servers},
-            registry.superseded,
-        ),
-    ):
-        registry.register(tool)
-    return registry
+    mcp = {**(tools.get("mcp") or {}), "servers": {}}
+    bare = {**config, "tools": {**tools, "plugins": {}, "mcp": mcp}}
+    stub: Any = MagicMock()
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        paths = RuntimePaths(
+            base, base / "events.db", base / "artifacts", base / "registry.json", base / "token",
+        )
+        catalog = register_catalog(
+            build_registry=lambda: build_default_registry(
+                obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
+                web_deep_search=stub, vision_client=stub, memory_db_path=base / "memory.db",
+                timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
+                voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
+                transit_api_key="x", transit_places=lambda: {"home": "home"},
+                transit_offers=stub, here_location=dict, here_phone=dict,
+                bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
+                device_link=lambda *_: {},
+            ),
+            # A brain's terminals declare every operation here (ADR 0225): offer them all.
+            offer_devices=lambda one: one.offer_device_tools(
+                frozenset(op for _, op in one._device_catalogue.values())  # noqa: SLF001
+            ),
+            paths=paths, config=bare, view=ViewState(),
+            make_plugins=lambda one: _RecordedPlugins(
+                group, {s: sources.get(s, f"mcp-{s}") for s in servers}, one, bare, base,
+            ),
+            make_late=lambda _plugins: (
+                MagicMock(ledger=dict, add_application=lambda _fields: ""),
+                MagicMock(mail=dict, gmail=lambda *_: {}),
+            ),
+            memory_db=base / "memory.db", zone=UTC, doing=MagicMock(tidy=lambda: ""),
+            ledger=LedgerSources(base / "memory.db", paths.event_log, None, UTC),
+        )
+    return catalog.registry
 
 
 def _menu(registry: ToolRegistry, *, native: bool = False) -> list[dict[str, Any]]:

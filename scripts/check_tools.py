@@ -1,4 +1,4 @@
-"""Assert the mechanical half of the tool standard (docs/spec.html#tools, ADR 0290).
+"""Assert the mechanical half of the tool standard (docs/spec.html#tools, ADR 0317).
 
 Builds the menu this checkout offers the decision model, as ``scripts.tool_exam`` does, and
 checks every built-in tool on it: a name that is lowercase words joined by underscores, a
@@ -41,6 +41,7 @@ THE_USER_RE = re.compile(r"\bthe user\b", re.IGNORECASE)
 PRE_STANDARD: dict[str, frozenset[str]] = {
     name: frozenset(rules.split())
     for name, rules in {
+        "archive": "long",
         "ask_user": "long the-user",
         "bus": "long",
         "disable_plugin": "the-user undescribed",

@@ -2155,6 +2155,55 @@ def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
         registry.register(tool)
 
 
+@dataclass(frozen=True)
+class Catalog:
+    """What :func:`register_catalog` hands back besides the registry."""
+
+    registry: ToolRegistry
+    workers: Workers | None
+    plugins: PluginConnections
+    job_mail: JobMail | None
+    home: Home
+
+
+def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependencies are the point
+    *,
+    build_registry: Callable[[], ToolRegistry],
+    offer_devices: Callable[[ToolRegistry], None],
+    paths: RuntimePaths,
+    config: Mapping[str, Any],
+    view: ViewState | None,
+    make_plugins: Callable[[ToolRegistry], PluginConnections],
+    make_late: Callable[[PluginConnections], tuple[JobMail | None, Home]],
+    memory_db: Path,
+    zone: tzinfo,
+    doing: DoingSchedule | None,
+    ledger: LedgerSources,
+) -> Catalog:
+    """Every tool the daemon serves, registered in its order from dependencies already built.
+
+    The one place that order lives. The daemon calls it with real dependencies, the tool exam
+    with stand-ins; the menu's order is part of the cached prompt prefix, so it must not differ.
+    ``make_late`` builds what needs the plugin connections initialized: job mail and the home.
+    """
+    registry = build_registry()
+    # ADR 0225: a brain's menu offers what the paired terminals declared, before any is here.
+    offer_devices(registry)
+    workers = _register_workers(registry, paths, config)
+    _register_dashboard_tool(registry, view)
+    plugins = make_plugins(registry)
+    plugins.initialize()
+    job_mail, home = make_late(plugins)
+    _register_job_ledger(registry, job_mail)
+    _register_mail(registry, home, zone)
+    _register_conversation(registry, memory_db, zone, paths.root)
+    _register_archive(registry, memory_db, zone, paths.root)
+    _register_tidy(registry, doing)
+    _register_my_day(registry, ledger)
+    plugins.refresh_search()  # ADR 0247: every built-in tool is registered now
+    return Catalog(registry, workers, plugins, job_mail, home)
+
+
 def _turn_end_asks(
     config: Mapping[str, Any], config_path: Path, log: JevLog | None = None,
 ) -> TurnEndAsks | None:
@@ -3307,7 +3356,37 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     doing = _doing_schedule(
         full_config, memory, paths, device, repo_root / "data" / "pricing.json",
     )
-    registry = build_default_registry(
+    jev_log = _jev_log(full_config, paths.root)
+
+    def make_late(connections: PluginConnections) -> tuple[JobMail | None, Home]:
+        _wire_plan_reader(daily_report, connections)
+        job_mail = _job_mail(
+            full_config, config_path, jev_log, connections, memory.db_path, local_zone,
+            moment, device, paths.event_log,
+        )
+        home = Home(
+            connections,
+            resolve_zone(None, _work_state_timezone(full_config)),
+            _home_weather(full_config),
+            _mail_reply(full_config, config_path, jev_log),
+            mail_view,
+            None if mail_view is None else mail_summarizer(
+                # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
+                build_analyst(
+                    full_config,
+                    _work_state_preset(full_config),
+                    pricing_path=repo_root / "data" / "pricing.json",
+                    account_cost=wave1_features.exactly_once_cost_accounting,
+                    kind="mail_summary",
+                ),
+                paths.event_log,
+            ),
+            weatherkit,
+        )
+        return job_mail, home
+
+    build_registry = partial(
+        build_default_registry,
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
         observed_repos=_observer_repo_paths(full_config),
@@ -3346,16 +3425,28 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         screen_max_width_px=screen_max_width_px,
         device_link=device,
     )
-    # ADR 0225: a brain's menu offers what the paired terminals declared, before any is here.
-    device_tools.follow_terminals(terminal_hub, paths.root, registry)
-    workers = _register_workers(registry, paths, full_config)
-    _register_dashboard_tool(registry, view)
-    plugin_connections = PluginConnections(
-        repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
-        registry=registry, config=full_config,
+    served = register_catalog(
+        build_registry=build_registry,
+        offer_devices=partial(device_tools.follow_terminals, terminal_hub, paths.root),
+        paths=paths,
+        config=full_config,
+        view=view,
+        make_plugins=lambda reg: PluginConnections(
+            repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
+            registry=reg, config=full_config,
+        ),
+        make_late=make_late,
+        memory_db=memory.db_path,
+        zone=local_zone,
+        doing=doing,
+        ledger=LedgerSources(
+            memory.db_path, paths.event_log, _timesink_db_path(full_config), local_zone,
+            None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
+            paths.artifacts_root / ATTACHMENTS_DIRNAME,
+        ),
     )
-    plugin_connections.initialize()
-    _wire_plan_reader(daily_report, plugin_connections)
+    registry, workers, plugin_connections = served.registry, served.workers, served.plugins
+    job_mail, home = served.job_mail, served.home
     lifecycle = ActionLifecycle()
 
     # 3b. Spec §17 Tier 0 whitelist — sits next to jarvis.yaml so Allen
@@ -3455,12 +3546,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         committed_event_bus.publish if committed_event_bus is not None else None
     )
 
-    jev_log = _jev_log(full_config, paths.root)
-    job_mail = _job_mail(
-        full_config, config_path, jev_log, plugin_connections, memory.db_path, local_zone,
-        moment, device, paths.event_log,
-    )
-    _register_job_ledger(registry, job_mail)
     mail_codes = _mail_codes(full_config, config_path, plugin_connections, device)
     commitments = _commitments(
         full_config, config_path, plugin_connections, memory.db_path, paths.event_log,
@@ -3493,38 +3578,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         departures=Departures(paths.event_log, bus_live, transit_offers),
     )
     output = _sound_output(terminal_hub, job_mail, reminders)
-    home = Home(
-        plugin_connections,
-        resolve_zone(None, _work_state_timezone(full_config)),
-        _home_weather(full_config),
-        _mail_reply(full_config, config_path, jev_log),
-        mail_view,
-        None if mail_view is None else mail_summarizer(
-            # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
-            build_analyst(
-                full_config,
-                _work_state_preset(full_config),
-                pricing_path=repo_root / "data" / "pricing.json",
-                account_cost=wave1_features.exactly_once_cost_accounting,
-                kind="mail_summary",
-            ),
-            paths.event_log,
-        ),
-        weatherkit,
-    )
-    _register_mail(registry, home, local_zone)
-    _register_conversation(registry, memory.db_path, local_zone, paths.root)
-    _register_archive(registry, memory.db_path, local_zone, paths.root)
-    _register_tidy(registry, doing)
-    _register_my_day(
-        registry,
-        LedgerSources(
-            memory.db_path, paths.event_log, _timesink_db_path(full_config), local_zone,
-            None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
-            paths.artifacts_root / ATTACHMENTS_DIRNAME,
-        ),
-    )
-    plugin_connections.refresh_search()  # ADR 0247: every built-in tool is registered now
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     picture_files = PictureFiles(attachments, memory_db=memory.db_path)
     set_stale_files_handler(picture_files.stale)  # ADR 0255
