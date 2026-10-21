@@ -28,13 +28,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 AT = datetime.fromisoformat("2026-10-17T20:14:00-07:00")
+HOUR_MS = 3_600_000
 TABLE = load_pricing_table(Path(__file__).resolve().parents[2] / "data" / "pricing.json")
 
 
 def test_the_cut_removes_what_was_made_at_or_after_the_moment_and_keeps_the_rest(
     tmp_path: Path,
 ) -> None:
-    """Events by epoch, stamps in any offset, days from the moment's day; triggers come back."""
+    """Rows by when they were made, in any offset; days only without a stamp; triggers come back."""
     ms = int(AT.timestamp() * 1000)
     events = tmp_path / "mac_events.db"
     db = sqlite3.connect(events)
@@ -53,6 +54,8 @@ def test_the_cut_removes_what_was_made_at_or_after_the_moment_and_keeps_the_rest
     db.executescript(
         "CREATE TABLE records (id TEXT, ts TEXT);"
         "CREATE TABLE day_prose (day TEXT, ts TEXT);"
+        "CREATE TABLE doing_answers (id TEXT, day TEXT, start_ms INTEGER, end_ms INTEGER, ts TEXT);"
+        "CREATE TABLE day_marks (day TEXT);"
         "CREATE TABLE job_mail (id TEXT, received_at TEXT, event_at TEXT);"
         "CREATE TABLE places (id TEXT, created_at TEXT, updated_at TEXT);"
         "CREATE TABLE sent (id TEXT);"
@@ -69,8 +72,16 @@ def test_the_cut_removes_what_was_made_at_or_after_the_moment_and_keeps_the_rest
     )
     db.executemany(
         "INSERT INTO day_prose VALUES (?, ?)",
-        [("2026-10-16", "2026-10-17T05:00:00-07:00"), ("2026-10-17", "2026-10-17T05:00:00-07:00")],
+        [("2026-10-16", "2026-10-17T05:00:00-07:00"), ("2026-10-17", "2026-10-18T04:00:00-07:00")],
     )
+    db.executemany(  # stretches of the moment's day: one written before it, one after
+        "INSERT INTO doing_answers VALUES (?, ?, ?, ?, ?)",
+        [
+            ("morning", "2026-10-17", ms - 9 * HOUR_MS, ms - 8 * HOUR_MS, "2026-10-17T13:00-07:00"),
+            ("evening", "2026-10-17", ms - HOUR_MS, ms + HOUR_MS, "2026-10-17T23:00-07:00"),
+        ],
+    )
+    db.executemany("INSERT INTO day_marks VALUES (?)", [("2026-10-16",), ("2026-10-17",)])
     db.executemany(
         "INSERT INTO job_mail VALUES (?, ?, ?)",
         [("old", "2026-10-17T20:00:00+00:00", "2026-10-30T10:00:00-07:00")],
@@ -93,6 +104,8 @@ def test_the_cut_removes_what_was_made_at_or_after_the_moment_and_keeps_the_rest
     db = sqlite3.connect(memory)
     assert sorted(r[0] for r in db.execute("SELECT id FROM records")) == ["before", "utc-before"]
     assert [r[0] for r in db.execute("SELECT day FROM day_prose")] == ["2026-10-16"]
+    assert [r[0] for r in db.execute("SELECT id FROM doing_answers")] == ["morning"]
+    assert [r[0] for r in db.execute("SELECT day FROM day_marks")] == ["2026-10-16"]
     # a row edited later, and a time that lies ahead, are not rows made after the cut
     assert db.execute("SELECT count(*) FROM job_mail").fetchone()[0] == 1
     assert db.execute("SELECT count(*) FROM places").fetchone()[0] == 1

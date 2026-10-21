@@ -614,6 +614,12 @@ UNCUT: set[str] = set()
 _DAY_COLUMNS = frozenset({"day", "local_date", "upto_day"})
 _KEPT_COLUMNS = frozenset({"updated_at", "event_at"})
 """A row edited later, or about a time ahead (an interview), is not made after the cut."""
+_MADE_COLUMNS = (
+    "ts_epoch_ms", "created_at_ms", "created_at", "ts", "written_at", "computed_at",
+    "recorded_at_ms", "received_at", "shown_at",
+)
+"""Stamps of when a row was made, in order of preference. A table with one is cut by it alone:
+the day, stretch or later time a row is about does not make the row later than it was written."""
 
 
 def _cut_tests(db: sqlite3.Connection, table: str, moment: datetime, zone: str) -> list[str]:
@@ -621,7 +627,9 @@ def _cut_tests(db: sqlite3.Connection, table: str, moment: datetime, zone: str) 
     day = moment.astimezone(ZoneInfo(zone)).date().isoformat()
     utc = moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
     tests = []
-    for _, col, *_rest in db.execute(f'PRAGMA table_info("{table}")').fetchall():
+    columns = [col for _, col, *_rest in db.execute(f'PRAGMA table_info("{table}")').fetchall()]
+    made = next((col for col in _MADE_COLUMNS if col in columns), None)
+    for col in [made] if made else columns:
         if col in _KEPT_COLUMNS:
             continue
         if col.endswith("_ms"):
@@ -636,10 +644,12 @@ def _cut_tests(db: sqlite3.Connection, table: str, moment: datetime, zone: str) 
 def cut_at(path: Path, moment: datetime, zone: str) -> list[str]:
     """Delete from the database copy at ``path`` every row made at or after ``moment``.
 
-    A column counts when it is a millisecond epoch (``*_ms``), a stamp (``ts``, ``*_at``) or a
-    day (``day``, ``local_date``, ``upto_day``; the days on or after ``moment``'s day in ``zone``
-    go). The append-only triggers are dropped for the cut and put back. Returns the non-empty
-    tables with no such column, which the cut left as they were.
+    A table with a stamp of when its rows were made (:data:`_MADE_COLUMNS`) is cut by that stamp
+    alone. Any other table is cut by every column that counts, a row going when one of them is at
+    or after the moment: a millisecond epoch (``*_ms``), a stamp (``ts``, ``*_at``) or a day
+    (``day``, ``local_date``, ``upto_day``; the days on or after ``moment``'s day in ``zone`` go).
+    The append-only triggers are dropped for the cut and put back. Returns the non-empty tables
+    with no such column, which the cut left as they were.
     """
     db = sqlite3.connect(path)
     try:
