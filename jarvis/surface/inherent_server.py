@@ -81,6 +81,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   while he rode, kept in the same archive
 - ``GET /inherent/track?from_ms=&to_ms=`` — ADR 0312; every fix the phones kept in a window
   of at most 12 hours, per device, as rows of :data:`jarvis.state.phone_track.COLUMNS`
+- ``GET /inherent/footprint?date=`` — ADR 0323; his footprint of a day: the long stays and the
+  outings between them, each with its route, stops, distance, speeds and heart rate
 """
 
 from __future__ import annotations
@@ -823,6 +825,10 @@ class InherentDeps:
     # from the log off the loop thread. A ValueError (a window backwards or over 12 hours) is a
     # 400; ``None`` leaves ``GET /inherent/track`` unregistered.
     track_read: Callable[[int, int], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0323: his footprint of one day, folded from the log when asked: the day asked for, or
+    # ``None`` for today in the owner's zone. Off the loop thread. A ValueError is a 400; ``None``
+    # leaves ``GET /inherent/footprint`` unregistered.
+    footprint_read: Callable[[date | None], Awaitable[dict[str, Any]]] | None = None
     # ADR 0296: ``(day, item id, on, label)`` -> the day's highlights after his mark, off the loop
     # thread. LookupError (no such item on that day) is 404, ``HighlightCapReached`` 409, a
     # ValueError 422; ``None`` leaves ``POST /inherent/day/highlight`` unregistered.
@@ -1856,6 +1862,22 @@ def _register_track_route(app: FastAPI, deps: InherentDeps) -> None:
             return await track_read(from_ms, to_ms)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+def _register_footprint_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0323: ``GET /inherent/footprint``, his footprint of a day; open as the day is."""
+    if deps.footprint_read is None:
+        return
+    footprint_read = deps.footprint_read
+
+    @app.get("/inherent/footprint")
+    async def footprint(on: Annotated[str | None, Query(alias="date")] = None) -> dict[str, Any]:
+        """``{date, tz, start_ms, end_ms, now_ms, stays, outings}`` for the day asked, or today."""
+        try:
+            wanted = None if on is None else parse_day(on)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return await _home_call(footprint_read(wanted))
 
 
 _ITEM_ID: Final = r"^[A-Za-z0-9_\-=+/.|:@]{1,256}$"
@@ -3444,6 +3466,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
     _register_turn_timings_route(app, deps)
     _register_day_route(app, deps)
     _register_track_route(app, deps)
+    _register_footprint_route(app, deps)
     _register_highlight_route(app, deps)
     _register_doing_answer_route(app, deps)
     _register_doing_tidy_route(app, deps)

@@ -218,6 +218,7 @@ from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
 from jarvis.shared.steps import StepFold
 from jarvis.state import (
     embedding,
+    footprint,
     meaning,
     phone_track,
     picture_notes,
@@ -7202,6 +7203,45 @@ async def _serve_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[s
     return await asyncio.to_thread(_read_track, event_log_path, from_ms, to_ms)
 
 
+def _read_footprint(
+    event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
+    now_ms: int,
+) -> dict[str, Any]:
+    """``GET /inherent/footprint`` (ADR 0323): his footprint of the day asked for, or today.
+
+    The day is cut in the owner's zone as ``GET /inherent/day`` cuts it, and the places he keeps
+    are read from ``memory_db`` (none without it). The log is read on a connection of its own,
+    so this runs on a worker thread.
+    """
+    zone_name, zone = resolve_zone(None, configured)
+    on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
+    start_ms, end_ms = day_window(on, zone)
+    kept = [] if memory_db is None else places.read_kept(memory_db)
+    conn = open_runtime_event_log(event_log)
+    try:
+        folded = footprint.fold(conn, start_ms, end_ms, now_ms, kept)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return {
+        "date": on.isoformat(),
+        "tz": zone_name,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "now_ms": now_ms,
+        **folded,
+    }
+
+
+async def _serve_footprint(
+    event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
+) -> dict[str, Any]:
+    """:func:`_read_footprint` off the loop thread, at the brain's clock."""
+    return await asyncio.to_thread(
+        _read_footprint, event_log, configured, memory_db, day, int(time.time() * 1000),
+    )
+
+
 async def _serve_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
     """:func:`_read_turn_timings` off the loop thread."""
     return await asyncio.to_thread(_read_turn_timings, event_log_path, since_ms, limit)
@@ -8211,6 +8251,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 _serve_turn_timings, runtime.runtime_paths.event_log,
             ),
             track_read=functools.partial(_serve_track, runtime.runtime_paths.event_log),
+            footprint_read=functools.partial(
+                _serve_footprint,
+                runtime.runtime_paths.event_log,
+                _work_state_timezone(runtime.config),
+                None if runtime.memory is None else runtime.memory.db_path,
+            ),
             card_read=_read_card,
             card_decide=_decide_card,
             question_read=_read_question,
