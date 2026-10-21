@@ -242,8 +242,14 @@ final class LifelogMic: @unchecked Sendable {
     }
 
     /// The voice stopped its engine. True if the recorder keeps the session (it takes the microphone back); false if the caller lets it go.
-    @discardableResult func voiceStopped() -> Bool {
+    /// `otherWaiting`: the voice had taken the session from another app's audio. The recorder leaves the session to that app and waits
+    /// for it to end, as if it had yielded to it, so the caller lets it go.
+    @discardableResult func voiceStopped(otherWaiting: Bool = false) -> Bool {
         flags.withLock { $0.voice = false }
+        if otherWaiting, holdsSession {
+            queue.async { self.yield("the voice took the session from another app: it goes back to that app") }
+            return false
+        }
         kick()
         return holdsSession
     }
@@ -321,7 +327,7 @@ final class LifelogMic: @unchecked Sendable {
                 guard let self, let e, self.engine === e else { return }
                 self.stopOwn()
                 // another app setting up its audio (a call starting) stops this engine; music starting does not
-                if AVAudioSession.sharedInstance().isOtherAudioPlaying { return self.yield("engine configuration changed with another app's audio on") }
+                if let why = OtherAudio.why { return self.yield("engine configuration changed: \(why)") }
                 lifelogNote("engine configuration changed, building again")
                 self.reconcile()
             }
@@ -344,20 +350,20 @@ final class LifelogMic: @unchecked Sendable {
 
     /// Not now (the app was launched in the background, another app holds the microphone): again in 10 s, and when the app comes to the foreground.
     private func retry(_ why: String) {
-        if AVAudioSession.sharedInstance().isOtherAudioPlaying { return yield("could not start (\(why)) with another app's audio on") }
+        if let other = OtherAudio.why { return yield("could not start (\(why)): \(other)") }
         lifelogNote("could not start the microphone (\(why)), trying again in 10 s")
         guard !retrying else { return }
         retrying = true
         queue.asyncAfter(deadline: .now() + 10) { [self] in retrying = false; reconcile() }
     }
 
-    /// Stops, lets the session go without telling anyone, and waits until no other app's audio is on, looking every 10 s (reading a
+    /// Stops, lets the session go (telling an app that was interrupted it may go on), and waits until no other app's audio is on, looking every 10 s (reading a
     /// property, never touching the session) and whenever `kick` runs.
     private func yield(_ why: String) {
         stopOwn()
         if !yielded {
             lifelogNote("yielding to another app's audio: \(why)")
-            try? AVAudioSession.sharedInstance().setActive(false)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             LifelogWriter.shared.close()
         }
         yielded = true
@@ -370,7 +376,7 @@ final class LifelogMic: @unchecked Sendable {
         guard yielded, wanted else { yielded = false; return reconcile() }
         let s = AVAudioSession.sharedInstance()
         let callRoute = s.currentRoute.outputs.contains { $0.portType == .builtInReceiver || $0.portType == .bluetoothHFP }
-        if s.isOtherAudioPlaying || callRoute { return yield("still on") }
+        if OtherAudio.why != nil || callRoute { return yield("still on") }
         lifelogNote("the other app's audio ended: recording again")
         yielded = false
         reconcile()
@@ -441,7 +447,7 @@ final class LifelogRecorder {
             MainActor.assumeIsolated {
                 let r = LifelogRecorder.shared
                 // not while another app's audio is on: that is most likely the call that interrupted it
-                if r.interrupted, !r.calls.inCall, !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                if r.interrupted, OtherAudio.why == nil {
                     lifelogNote("app opened during an interruption, no other audio on: trying again"); r.interrupted = false; r.apply()
                 }
                 else { r.followSwitch() }

@@ -248,10 +248,14 @@ final class VoiceSession {
         return await t.value
     }
 
-    /// Wake-word listening runs while the app is open and idle; otherwise an idle session lets go of the microphone.
+    /// Wake-word listening runs while the app is open and idle and no other app has the sound (its session would interrupt a Discord call
+    /// or music); otherwise an idle session lets go of the microphone.
     private func refreshArming() {
         guard #available(iOS 26, *) else { return }
-        if armed {
+        if armed, let why = OtherAudio.why {
+            VoiceTrace.note("wake word not armed: \(why)")
+            release()
+        } else if armed {
             Task { if await prepare(), armed, rec == nil { startSegment() } }
         } else if state == .idle {
             release()
@@ -588,6 +592,8 @@ final class VoiceSession {
         if !answer.isEmpty { reply = answer }
         if commandSaid == .wait { holdForWait(); return }
         if typedTurn || commandSaid == .stop || commandSaid == .goodnight { goIdle(releasing: false); return }
+        // the talk took the sound from another app (a Discord call): it goes back now, not after a window he did not ask for
+        if audio.tookFrom != nil { goIdle(releasing: true); return }
         // a short window to answer without tapping; its own silence timer ends it
         endTurn()
         enterListening()
@@ -622,7 +628,7 @@ final class VoiceSession {
         inConversation = false
         endTurn()
         dropSegment()
-        if releasing { release() } else { refreshArming() }
+        if releasing || audio.tookFrom != nil { release() } else { refreshArming() }    // a session taken from another app is not kept for the wake word
     }
 
     private func set(_ s: State) {

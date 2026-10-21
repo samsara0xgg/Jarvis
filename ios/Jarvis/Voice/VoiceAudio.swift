@@ -3,7 +3,9 @@ import AVFoundation
 /// The one AVAudioEngine: microphone in and her voice out. Both go through the voice-processing unit so its echo canceller hears
 /// what she plays and he can talk over her. Speaker by default. While it runs it also owns the microphone for the day's recording
 /// (LifelogMic): the recorder's own engine is stopped first and the tap feeds the same piece; when it stops, the recorder takes the
-/// session and the microphone back instead of the session being let go.
+/// session and the microphone back instead of the session being let go. The session is not mixable: starting interrupts another app's
+/// audio (a Discord call), so it is started only for a talk he began and, when it took the sound from another app, given back to that
+/// app the moment it stops.
 final class VoiceAudio {
     private(set) var core: PlayerCore?
     private var source: AVAudioSourceNode?
@@ -12,6 +14,8 @@ final class VoiceAudio {
     private var timer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
     private(set) var running = false
+    /// why another app had the sound when this engine took the session (OtherAudio), while it runs: that app was interrupted and waits
+    private(set) var tookFrom: String?
     /// stopping the engine and handing the session back can block for a second (AirPods leaving the call route), so it runs here, off the main thread
     private let sessionQueue = DispatchQueue(label: "jarvis.voice.session")
     /// mono Float32 microphone buffers and their level 0...1; off the main thread
@@ -38,9 +42,16 @@ final class VoiceAudio {
         await withCheckedContinuation { c in sessionQueue.async { c.resume() } }   // a stop still letting go of the session finishes first
         await LifelogMic.shared.voiceStarting()            // the recorder's own engine stops (its piece stays open) before this one is built
         Sound.shared.suspend()                             // one owner of the session: the UI cues' engine is stopped first
-        var started = false
-        defer { if !started { Sound.shared.resume(); LifelogMic.shared.voiceStopped() } }
         let s = AVAudioSession.sharedInstance()
+        let other = OtherAudio.why
+        if let other { VoiceTrace.note("taking the session from another app: \(other)") }
+        var started = false
+        defer {
+            if !started {
+                Sound.shared.resume()
+                if !LifelogMic.shared.voiceStopped(otherWaiting: other != nil) { try? s.setActive(false, options: .notifyOthersOnDeactivation) }
+            }
+        }
         try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try s.setActive(true)
         if s.category != .playAndRecord {
@@ -93,6 +104,7 @@ final class VoiceAudio {
         engine.prepare()
         try engine.start()
         self.core = core
+        tookFrom = other
         running = true
         started = true
 
@@ -112,15 +124,20 @@ final class VoiceAudio {
         running = false
         timer?.cancel(); timer = nil
         observers.forEach(NotificationCenter.default.removeObserver); observers = []
-        let engine = engine, source = source
+        let engine = engine, source = source, other = tookFrom
         self.source = nil
         core = nil
+        tookFrom = nil
         sessionQueue.async {                                // taps froze for a moment after each talk ended with AirPods on (live 2026-10-10)
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             if let source { engine.detach(source) }
-            // the recorder, if the switch is on, takes the session and the microphone over; otherwise the session is let go
-            if !LifelogMic.shared.voiceStopped() { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+            // the recorder, if the switch is on, takes the session and the microphone over; otherwise the session is let go, and an app
+            // it was taken from is told it may go on (the recorder then waits for that app too)
+            if !LifelogMic.shared.voiceStopped(otherWaiting: other != nil) {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                if other != nil { VoiceTrace.note("session given back to the other app") }
+            }
             Sound.shared.resume()
         }
     }
