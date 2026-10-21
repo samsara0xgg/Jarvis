@@ -85,12 +85,18 @@ if TYPE_CHECKING:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Register the ``--live-llm`` flag (default: off)."""
+    """Register the ``--live-llm`` and ``--update-contracts`` flags (default: off)."""
     parser.addoption(
         "--live-llm",
         action="store_true",
         default=False,
         help="Run scenarios that call the real cloud LLM (real network).",
+    )
+    parser.addoption(
+        "--update-contracts",
+        action="store_true",
+        default=False,
+        help="Rewrite the examples in contracts/ from what the real routes answer.",
     )
 
 
