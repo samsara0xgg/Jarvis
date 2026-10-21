@@ -253,7 +253,9 @@ def test_a_missing_key_never_calls_and_warns_once(
             assert result.response_plan is not None
             assert logged_events(conn, "route.surrogate_decided")[0]["error"] == "no_key"
     assert jev.requests == []
-    assert len(caplog.records) == 1
+    # The route's own warnings: another module's warn-once (pricing a model it does not know) is
+    # logged by the first test of a process that reaches it, and no other.
+    assert [r.name for r in caplog.records].count("jarvis.decision.surrogate_route") == 1
     assert KEY not in caplog.text
 
 
