@@ -13,7 +13,7 @@ import contextlib
 import functools
 import json
 import os
-import time
+import threading
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
@@ -25,7 +25,6 @@ from fastapi.testclient import TestClient
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.runtime import RuntimeBootstrapError, _turn_end_asks
-from jarvis.shared.clock import SystemClock
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
@@ -41,22 +40,31 @@ KEY = "test-key-not-a-secret"
 ASK = "I can wire it either way.\nWhich one do you want: the new queue or the old poll?"
 REPORT = "Fixed the race and added the pin. Let me know if you need anything else."
 SECRET = "the private part of a long answer"  # noqa: S105 — not a credential.
+_GUARD_S = 5.0
+"""How long the endpoint holds an answer for the test before it gives up; not a time it keeps."""
 
 
 class _Jev:
-    """A fake decisions endpoint: records every request, answers by what the text says."""
+    """A fake decisions endpoint: records every request, answers by what the text says.
+
+    Its routes keep time on :attr:`clock`. ``hold`` keeps every answer back until ``release``
+    is set, so a test can let a deadline pass on the clock while Jev is still working.
+    """
 
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.status = 200
-        self.delay_s = 0.0
+        self.clock = FakeClock()
+        self.hold = False
+        self.release = threading.Event()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 outer.requests.append(request)
-                time.sleep(outer.delay_s)
+                if outer.hold:
+                    outer.release.wait(_GUARD_S)
                 text = request["state"]
                 odds = (
                     0.96 if "Which one" in text else 0.949 if "borderline" in text
@@ -81,7 +89,7 @@ class _Jev:
     ) -> TurnEndAsks:
         route = SurrogateRoute(
             model="typesafe/jev-1.13", min_confidence=1.0, timeout_ms=timeout_ms,
-            clock=SystemClock(),  # this endpoint really sleeps through its delay
+            clock=self.clock,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions", log=log,
         )
         return TurnEndAsks(route, at, min(at, 0.8))
@@ -93,6 +101,7 @@ def jev(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Jev]:
     monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
     fake = _Jev()
     yield fake
+    fake.release.set()
     stop_http_server(fake.server)
 
 
@@ -185,11 +194,9 @@ def test_errors_and_late_answers_are_null_and_not_repeated(jev: _Jev) -> None:
     jev.status = 200
     assert _post(client, ASK).json() == {"asks": None}
     assert len(jev.requests) == 1
-    jev.delay_s = 0.6
+    jev.hold = True
     slow = _client(jev.asks(timeout_ms=150))
-    began = time.monotonic()
-    assert _post(slow, ASK, "s9").json() == {"asks": None}
-    assert time.monotonic() - began < 0.5
+    assert jev.clock.pass_deadline_of(0.15, lambda: _post(slow, ASK, "s9").json()) == {"asks": None}
 
 
 def test_the_log_names_the_session_and_never_the_text(
@@ -199,7 +206,6 @@ def test_the_log_names_the_session_and_never_the_text(
     caplog.set_level("INFO", logger="jarvis.decision.turn_end_asks")
     client = _client(jev.asks())
     _post(client, SECRET + ASK, "sess-7")
-    time.sleep(0.2)  # the line is written on the worker that finished the call
     lines = [one.getMessage() for one in caplog.records]
     assert len(lines) == 1
     assert "session sess-7 p=0.960 asks=True, $0.000030" in lines[0]
@@ -215,7 +221,6 @@ def test_each_turn_end_call_is_a_line_in_the_local_dataset(jev: _Jev, tmp_path: 
     assert _post(client, REPORT, "sess-8").json() == {"asks": False}
     jev.status = 500
     assert _post(client, ASK, "sess-9").json() == {"asks": None}
-    time.sleep(0.3)  # the decision line is written on the worker that finished the call
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     calls = {one["ref"]: one for one in lines if one["kind"] == "call"}
     decisions = {one["ref"]: one["asks"] for one in lines if one["kind"] == "decision"}
@@ -268,18 +273,17 @@ def test_the_terminal_board_gets_asks_without_waiting(
     }))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    jev.delay_s = 1.0
+    jev.hold = True
     asks = jev.asks()
     client = TestClient(create_app(InherentDeps(
         submit_callable=noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
         turn_end_peek=asks.peek,
     )))
-    began = time.monotonic()
     rows = {r["session_id"]: r for r in client.get("/inherent/claude-sessions").json()["sessions"]}
-    assert time.monotonic() - began < 0.8  # the board did not wait for Jev
-    assert rows["s-bg"]["asks"] is None
+    assert rows["s-bg"]["asks"] is None  # the board did not wait for Jev, who is still working
     assert rows["s-inter"]["asks"] is None  # working: never asked
-    time.sleep(1.4)
+    jev.release.set()
+    assert asks.asks("s-bg", ASK) is True  # the same call, now answered
     # The board is cached for a few seconds; ask the transcript's row again through a new app.
     client = TestClient(create_app(InherentDeps(
         submit_callable=noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True,
@@ -315,7 +319,6 @@ def test_a_startrail_answer_after_a_scored_finish_is_one_outcome_line(
     assert _post(client, REPORT, "s2").json() == {"asks": False}
     jev.status = 500
     assert _post(client, ASK + " Or the old one?", "s3").json() == {"asks": None}
-    time.sleep(0.3)  # the verdict is kept on the worker that finished the call
     for session_id in ("s1", "s1", "s2", "s3"):
         assert answered(session_id).json() == {"ok": True}
     answers = {one["ref"]: one for one in _outcomes(path)}
@@ -324,12 +327,11 @@ def test_a_startrail_answer_after_a_scored_finish_is_one_outcome_line(
     first = answers["s1"]
     assert set(first) == {"ts", "kind", "use", "ref", "outcome", "after_s", "asks"}
     assert (first["use"], first["outcome"], first["asks"]) == ("turn_end", "answered", True)
-    assert 0.3 <= first["after_s"] < 5
+    assert first["after_s"] >= 0
     assert answers["s2"]["asks"] is False
     # A new finish is a new thing to answer.
     jev.status = 200
     assert _post(client, REPORT + " Done again.", "s1").json() == {"asks": False}
-    time.sleep(0.3)
     answered("s1")
     assert [one["asks"] for one in _outcomes(path) if one["ref"] == "s1"] == [True, False]
     assert SECRET not in path.read_text(encoding="utf-8")
@@ -374,7 +376,7 @@ def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_mess
 
     transcript.write_text(_entry("assistant", ASK) + "\n")
     assert read_board()["s-bg"]["asks"] is None  # asked now, not waited for
-    time.sleep(0.4)
+    assert asks.asks("s-bg", ASK) is True  # the same call, once it is answered
     assert read_board()["s-bg"]["asks"] is True
     assert _outcomes(path) == []  # no message yet
     with transcript.open("a") as handle:
@@ -394,7 +396,7 @@ def test_the_terminal_board_writes_the_outcome_once_and_only_for_allens_own_mess
         "s-bg", "turn_end", "answered", True,
     )
     assert set(line) == {"ts", "kind", "use", "ref", "outcome", "after_s", "asks"}
-    assert 0 < line["after_s"] < 10
+    assert line["after_s"] >= 0
     assert SECRET not in path.read_text(encoding="utf-8")
 
 

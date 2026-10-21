@@ -24,12 +24,14 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import Future, wait
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from jarvis.decision.surrogate_route import await_replies
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from concurrent.futures import Future
 
     from jarvis.decision.surrogate_route import Reply, SurrogateRoute
 
@@ -93,7 +95,7 @@ class TurnEndAsks:
         call = self._call(session_id, text)
         if call is None:
             return None
-        wait([call], timeout=self._route.timeout_ms / 1000)
+        await_replies(self._route.clock, [call], self._route.timeout_ms / 1000)
         return self._verdict(call, text[-TAIL_CHARS:])
 
     def peek(self, session_id: str, text: str, send: bool = True) -> bool | None:  # noqa: FBT001, FBT002 — the board's callable.

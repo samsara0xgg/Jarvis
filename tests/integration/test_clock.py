@@ -298,6 +298,15 @@ def test_another_threads_sleep_moves_the_clock_and_wakes_the_waiter() -> None:
     assert waiter.result() is False
 
 
+def test_pass_deadline_of_runs_the_code_elsewhere_and_moves_the_clock_once_it_waits() -> None:
+    """The test thread is free to move the clock while the code under test is parked on it."""
+    clock = FakeClock()
+    began = clock.monotonic()
+    event = threading.Event()
+    assert clock.pass_deadline_of(2.0, lambda: clock.wait(event, 2.0)) is False
+    assert clock.monotonic() - began == 2.0
+
+
 def test_each_of_several_waiters_ends_at_its_own_deadline() -> None:
     """Two waiters, 5 s and 20 s: the first goes at 5 s and the second stays until 20 s."""
     clock = FakeClock()

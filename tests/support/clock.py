@@ -20,6 +20,7 @@ moving.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -163,6 +164,18 @@ class FakeClock:
         """Tell :meth:`wait_until` that something it may be watching has changed."""
         with self._cond:
             self._cond.notify_all()
+
+    def pass_deadline_of[T](self, seconds: float, call: Callable[[], T]) -> T:
+        """Run ``call`` on another thread; once it waits on this clock, move the clock ``seconds``.
+
+        For code that blocks until a deadline of this clock passes: the test is the one thing that
+        can move the clock while the code under it is parked, so it runs the code elsewhere.
+        """
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            running = pool.submit(call)
+            self.wait_until_parked()
+            self.advance(seconds)
+            return running.result()
 
     async def async_sleep(self, seconds: float) -> None:
         """Stand in for ``asyncio.sleep``: the same, for code that awaits."""

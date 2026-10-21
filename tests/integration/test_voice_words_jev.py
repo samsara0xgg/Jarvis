@@ -17,7 +17,6 @@ import pytest
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute
 from jarvis.decision.voice_words import VoiceWords, words_state
 from jarvis.runtime import RuntimeBootstrapError, _voice_words
-from jarvis.shared.clock import SystemClock
 from jarvis.surface import voice_session
 from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.clock import FakeClock
@@ -197,10 +196,11 @@ def test_without_jev_the_verdicts_are_todays(tmp_path: Path) -> None:
 
 def test_no_answer_in_time_is_a_turn(tmp_path: Path) -> None:
     """No answer within timeout_ms: the line is a turn."""
-    words = _Words(tmp_path, timeout_ms=50, clock=SystemClock())  # 50 ms really pass
+    clock = FakeClock()
+    words = _Words(tmp_path, timeout_ms=50, clock=clock)
     words.route.hang = True
     rig = words.rig(tmp_path, LISTENING)
-    _run(rig)
+    clock.pass_deadline_of(0.05, lambda: _run(rig))
     assert len(words.route.sent) == 1
     assert rig.turns() == [LISTENING]
 

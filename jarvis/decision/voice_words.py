@@ -17,8 +17,9 @@ Layer rules: stdlib + L3 siblings; no wiring.
 from __future__ import annotations
 
 import re
-from concurrent.futures import TimeoutError as FutureTimeout
 from typing import TYPE_CHECKING, Any, Final
+
+from jarvis.decision.surrogate_route import await_reply
 
 if TYPE_CHECKING:
     from jarvis.decision.surrogate_route import SurrogateRoute
@@ -111,9 +112,8 @@ class VoiceWords:
         call = self._route.post(state, _QUESTION, USE, turn_id)
         if call is None:
             return None
-        try:
-            reply = call.result(self._route.timeout_ms / 1000)
-        except FutureTimeout:
+        reply = await_reply(self._route.clock, call, self._route.timeout_ms / 1000)
+        if reply is None:
             self._route.warn_once("timeout", "voice words", "the line stays a turn")
             return None
         if reply.error is not None:

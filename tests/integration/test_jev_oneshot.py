@@ -22,7 +22,6 @@ from jarvis.decision import decide
 from jarvis.decision.jev_oneshot import JevOneShot, oneshot_state
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute, offered
 from jarvis.runtime import RuntimeBootstrapError, _event_emitter, _jev_oneshot
-from jarvis.shared.clock import SystemClock
 from jarvis.state.event_log import (
     EventTypeRegistry,
     emit_event,
@@ -182,12 +181,13 @@ def test_a_line_the_regexes_absorbed_sends_nothing(tmp_path: Path) -> None:
 
 def test_no_answer_in_time_is_a_turn(tmp_path: Path) -> None:
     """The check waits for what is left of words_timeout_ms; none leaves the line a turn."""
-    lines = _Lines(tmp_path, words_timeout_ms=50, clock=SystemClock())  # 50 ms really pass
+    clock = FakeClock()
+    lines = _Lines(tmp_path, words_timeout_ms=50, clock=clock)
     lines.route.hang = True
     rig = BargeInRig(
         tmp_path, LISTENING, ask_words=lines.oneshot.ask, begin_line=lines.oneshot.begin,
     )
-    _run(rig)
+    clock.pass_deadline_of(0.05, lambda: _run(rig))
     assert len(lines.route.sent) == 1
     assert rig.turns() == [LISTENING]
 
