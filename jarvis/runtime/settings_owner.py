@@ -144,11 +144,6 @@ def user_paths(settings_yaml: Path, root: Path) -> dict[str, Any]:
     return {**_flat(_yaml(settings_yaml)), **saved_paths(root)}
 
 
-def leaf_paths(config: Mapping[str, Any]) -> set[str]:
-    """Every leaf of ``config`` as a dotted path (for the coverage test and the brain's reads)."""
-    return set(_flat(dict(config)))
-
-
 def check_own(side: Literal["brain", "terminal"], settings_yaml: Path, root: Path) -> list[str]:
     """Warn once about the keys in this machine's own files that belong to the other side.
 

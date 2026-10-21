@@ -1266,23 +1266,6 @@ def note_audio(path: Path, event_id: str, device: dict[str, Any]) -> None:
         _touch_event(conn, event_id, audio=audio)
 
 
-def list_attention(path: Path, source: str | None = None) -> list[dict[str, Any]]:
-    """Every logged decision, oldest first, with delivery and feedback read back as JSON."""
-    with _db(path) as conn:
-        rows = conn.execute(
-            "SELECT * FROM attention_log WHERE ? IS NULL OR source = ? ORDER BY at, rowid",
-            (source, source),
-        ).fetchall()
-    return [
-        {
-            **dict(row),
-            "delivery": json.loads(row["delivery"]),
-            "feedback": json.loads(row["feedback_json"]),
-        }
-        for row in rows
-    ]
-
-
 # --- the other proactive cards (ADR 0160): a snapshot when shown, one row per reaction ---
 
 CARD_SOURCE: Final[str] = "card:"

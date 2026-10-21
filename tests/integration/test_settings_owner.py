@@ -22,8 +22,8 @@ from jarvis.runtime.settings import PATHS
 from jarvis.runtime.settings_owner import (
     PRESENT,
     SettingsDrift,
+    _flat,
     check_own,
-    leaf_paths,
     owner_of,
     release,
     terminal_report,
@@ -50,17 +50,17 @@ def test_every_setting_has_an_owner() -> None:
     shipped = yaml.safe_load(
         (Path(__file__).parents[2] / "config" / "jarvis.yaml").read_text(encoding="utf-8"),
     )
-    missing = sorted(path for path in leaf_paths(shipped) if owner_of(path) is None)
+    missing = sorted(path for path in _flat(shipped) if owner_of(path) is None)
     missing += sorted(".".join(path) for path in PATHS.values() if owner_of(".".join(path)) is None)
     assert missing == []
 
 
 def test_what_a_brain_forces_off_is_device_owned() -> None:
     """`_BRAIN_OVERRIDES` and the table agree: a brain overrides only what a terminal owns."""
-    forced = leaf_paths({
+    forced = set(_flat({
         group: {key: (0 if value is None else value) for key, value in block.items()}
         for group, block in _BRAIN_OVERRIDES.items()
-    })
+    }))
     # a block replaced by None is named by its own path
     forced |= {f"{group}.{key}" for group, block in _BRAIN_OVERRIDES.items()
                for key, value in block.items() if value is None}

@@ -47,6 +47,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.support import job_mail as job_mail_support
+from tests.support.attention import attention_rows
 from tests.support.audio_output import BT, BUILTIN, audio_profile, default_output
 from tests.support.job_mail import (
     AIRPODS,
@@ -278,7 +279,7 @@ def test_the_speak_line_is_only_for_quiet_off_unmuted_and_no_conversation(
     assert held.spoken == 0
     assert {level for _id, level in held.sql("SELECT id, level FROM job_alert")} == {"speak"}
     # The log says why nothing was said: held by the level, and suppressed.
-    delivery = {r["event_id"]: set(r["delivery"]) for r in job_ledger.list_attention(held.db)}
+    delivery = {r["event_id"]: set(r["delivery"]) for r in attention_rows(held.db)}
     both = {"held", "suppressed", "audio"}
     assert delivery == {"m-interview": both, "m-offer": both}
     # Muted speech or a live conversation: no line either.
@@ -887,7 +888,7 @@ def test_local_rules_keep_linkedin_noise_and_account_notices_off_the_cards(
     }
     # Only the recruiter's interview alerts; the logs say what held the rest.
     assert h.sql("SELECT message_id, level FROM job_alert") == [("m-inmail", "speak")]
-    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    rows = {r["event_id"]: r for r in attention_rows(h.db, "job_mail")}
     assert rows["m-alert"]["reason"] == "LinkedIn job-alert digest: ledger only"
     assert set(rows["m-account"]["delivery"]) == {"ledger_only"}
     rule = h.sql("SELECT judge, verdict FROM job_decision WHERE stage = 'rule'")
@@ -1360,7 +1361,7 @@ def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
     """Each decision is logged with its full pack, delivery states and Allen's reactions."""
     h = job_harness(tmp_path, jev)
     h.job.poll_once()
-    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    rows = {r["event_id"]: r for r in attention_rows(h.db, "job_mail")}
     assert set(rows) == {
         f"m-{one}"
         for one in ("receipt", "interview", "reject", "offer", "digest", "followup", "old")
@@ -1396,7 +1397,7 @@ def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
         f"/inherent/notices/{alert['id']}",
         json={"action": "feedback", "reaction": "right"},
     )
-    (reject,) = [r for r in job_ledger.list_attention(h.db) if r["event_id"] == "m-reject"]
+    (reject,) = [r for r in attention_rows(h.db) if r["event_id"] == "m-reject"]
     assert set(reject["delivery"]) == {"shown"}
     assert [(f["level_shown"], f["reaction"]) for f in reject["feedback"]] == [("card", "right")]
 
@@ -1417,7 +1418,7 @@ def test_the_judge_is_the_one_seam_and_replay_runs_another_over_the_stored_packs
     assert len(h.sql("SELECT id FROM job_alert")) == 7
     assert h.spoken == 0
 
-    rows = job_ledger.list_attention(h.db)
+    rows = attention_rows(h.db)
     assert {r["judge_id"] for r in rows} == {"always_card"}
     # Replay is pure: the rule table over the same packs, and nothing is written.
     before = h.sql("SELECT * FROM attention_log")
@@ -1777,7 +1778,7 @@ def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, j
     assert h.sql("SELECT state FROM job_alert") == [("shown",)]
 
     # ADR 0160: the health card keeps a snapshot, and his answer lands beside it.
-    (snap,) = job_ledger.list_attention(h.db, "job_health")
+    (snap,) = attention_rows(h.db, "job_health")
     assert (snap["event_id"], snap["level"], snap["judge_id"]) == (
         "health",
         "card_sound",
@@ -1786,7 +1787,7 @@ def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, j
     assert ContextPack.from_json(snap["pack_json"]).facts["kind"] == "health"
     assert snap["delivery"].keys() >= {"shown"}
     h.client.post(f"/inherent/notices/{alert_id}", json={"action": "feedback", "reaction": "right"})
-    (snap,) = job_ledger.list_attention(h.db, "job_health")
+    (snap,) = attention_rows(h.db, "job_health")
     assert [f["reaction"] for f in snap["feedback"]] == ["right"]
 
 
@@ -1820,7 +1821,7 @@ def test_on_speakers_sound_levels_are_silent_cards_and_the_log_says_why(
     reply = h.client.get("/inherent/notices").json()
     assert reply["audio_private"] is False
     assert {n["level"] for n in reply["notices"]} == {"card"}
-    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    rows = {r["event_id"]: r for r in attention_rows(h.db, "job_mail")}
     # The judge's own level is kept; delivery says what the guard did and on which device.
     assert rows["m-interview"]["level"] == "speak"
     assert set(rows["m-interview"]["delivery"]) == {"audio", "silenced"}
@@ -1845,7 +1846,7 @@ def test_on_private_output_the_levels_stay_and_the_log_names_the_device(
     reply = h.client.get("/inherent/notices").json()
     assert reply["audio_private"] is True
     assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
-    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    rows = {r["event_id"]: r for r in attention_rows(h.db, "job_mail")}
     assert rows["m-interview"]["delivery"]["audio"] == {"device": "AirPods Pro", "private": True}
     assert rows["m-digest"]["delivery"]["audio"] == {"device": "AirPods Pro", "private": True}
     assert "silenced" not in rows["m-interview"]["delivery"]
@@ -1862,7 +1863,7 @@ def test_a_device_that_flips_to_speakers_before_the_line_is_said_means_no_speech
 
     assert h.spoken == 0
     assert dict(h.sql("SELECT message_id, level FROM job_alert")) == {"m-interview": "speak"}
-    (row,) = job_ledger.list_attention(h.db, "job_mail")
+    (row,) = attention_rows(h.db, "job_mail")
     assert set(row["delivery"]) == {"audio", "suppressed"}
     assert sum(spoken for (spoken,) in h.sql("SELECT spoken FROM job_alert")) == 0
 
@@ -1928,7 +1929,7 @@ def test_a_glow_judgement_is_an_alert_served_as_a_glow(tmp_path: Path, jev: JobJ
     assert h.sql("SELECT message_id, level, state FROM job_alert") == [
         ("m-reject", "glow", "pending")
     ]
-    (row,) = job_ledger.list_attention(h.db, "job_mail")
+    (row,) = attention_rows(h.db, "job_mail")
     assert (row["level"], row["judge_id"], row["reason"]) == (
         "glow",
         "glow_test",
@@ -1959,7 +1960,7 @@ def test_a_glow_never_sounds_never_speaks_and_is_never_folded(
     assert len(h.sql("SELECT id FROM job_alert")) == 7
     assert h.spoken == 0
     assert sum(spoken for (spoken,) in h.sql("SELECT spoken FROM job_alert")) == 0
-    for row in job_ledger.list_attention(h.db, "job_mail"):
+    for row in attention_rows(h.db, "job_mail"):
         assert row["delivery"] == {}, row["event_id"]  # no device noted, no line suppressed
 
     # Seven alerts made together, then all of them waiting: still seven glows, never a digest.
@@ -2029,7 +2030,7 @@ def test_a_glow_made_under_dnd_waits_and_comes_back_as_a_glow(tmp_path: Path, je
     h = job_harness(tmp_path, jev, only_rows("m-reject"), judge=glow_for_rejections)
     h.quiet = "dnd"
     h.job.poll_once()
-    (row,) = job_ledger.list_attention(h.db, "job_mail")
+    (row,) = attention_rows(h.db, "job_mail")
     assert set(row["delivery"]) == {"held"}
     assert h.notices() == []
 
@@ -2043,7 +2044,7 @@ def test_a_glow_made_under_dnd_waits_and_comes_back_as_a_glow(tmp_path: Path, je
         other = job_harness(tmp_path / judge.__name__, jev, only_rows("m-reject"), judge=judge)
         other.quiet = "no-pop"
         other.job.poll_once()
-        (made,) = job_ledger.list_attention(other.db, "job_mail")
+        (made,) = attention_rows(other.db, "job_mail")
         assert set(made["delivery"]) == held
 
 
@@ -2081,7 +2082,7 @@ def test_a_glow_stays_served_until_it_is_seen_or_dismissed(tmp_path: Path, jev: 
         assert gone.sql("SELECT level_shown, reaction FROM job_feedback") == [
             ("glow", body.get("reaction", "dismissed"))
         ]
-        (logged,) = job_ledger.list_attention(gone.db, "job_mail")
+        (logged,) = attention_rows(gone.db, "job_mail")
         assert [f["level_shown"] for f in logged["feedback"]] == ["glow"]
 
 
@@ -3304,7 +3305,7 @@ def test_a_brain_speaks_and_sounds_when_its_terminal_reports_headphones(
     reply = h.client.get("/inherent/notices").json()
     assert reply["audio_private"] is True
     assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
-    rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
+    rows = {r["event_id"]: r for r in attention_rows(h.db, "job_mail")}
     assert rows["m-interview"]["delivery"]["audio"] == {
         "device": "Allen's AirPods Pro",
         "private": True,

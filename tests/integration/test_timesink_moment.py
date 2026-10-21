@@ -28,6 +28,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.support import job_mail as job_mail_support
+from tests.support.attention import attention_rows
 from tests.support.job_mail import (
     JobHarness,
     JobJev,
@@ -416,7 +417,7 @@ def test_a_glow_goes_through_the_hold_and_only_dnd_keeps_it_back(
 
     # Nothing was marked shown by being served, and the log says only the card was held.
     assert {s for (s,) in h.sql("SELECT state FROM job_alert")} == {"pending"}
-    rows = {r["event_id"]: set(r["delivery"]) for r in job_ledger.list_attention(h.db, "job_mail")}
+    rows = {r["event_id"]: set(r["delivery"]) for r in attention_rows(h.db, "job_mail")}
     assert rows["m-reject"] == set()
     assert any(note.startswith("held_") for note in rows["m-offer"])
 
@@ -495,7 +496,7 @@ def test_a_card_snapshot_carries_the_moment_and_no_titles(
     db = tmp_path / "memory.db"
     cards = CardFeedback(db, lambda: "off", moment_for(_secret_store(store), db))
     cards.act("pop-1", {"action": "seen", "kind": "pop", "level": "card", "facts": {"count": 1}})
-    (row,) = job_ledger.list_attention(db, "card:pop")
+    (row,) = attention_rows(db, "card:pop")
     situation = json.loads(row["pack_json"])["situation"]
     assert situation["quiet"] == "off"
     snap = situation["moment"]

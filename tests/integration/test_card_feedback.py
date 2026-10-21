@@ -21,9 +21,9 @@ from jarvis.decision.attention import ContextPack, replay, rule_judge_v1
 from jarvis.runtime.card_feedback import KINDS, CardFeedback
 from jarvis.runtime.inherent_loop import _card_act
 from jarvis.shared import lang
-from jarvis.state import job_ledger
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.attention import attention_rows
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -96,7 +96,7 @@ def test_a_shown_card_is_stored_once_and_its_reaction_is_one_row(tmp_path: Path,
     h.quiet = "quiet"
     assert h.shown(kind) == 200
     assert h.shown(kind) == 200  # a card shown twice (a reminder) is still one snapshot
-    (row,) = job_ledger.list_attention(h.db, f"card:{kind}")
+    (row,) = attention_rows(h.db, f"card:{kind}")
     assert (row["event_id"], row["level"], row["judge_id"], row["judge_version"]) == (
         f"{kind}-1",
         CARDS[kind]["level"],
@@ -125,7 +125,7 @@ def test_a_shown_card_is_stored_once_and_its_reaction_is_one_row(tmp_path: Path,
         "card_rule/1",
     )
     assert json.loads(context) == json.loads(row["pack_json"])
-    (logged,) = job_ledger.list_attention(h.db, f"card:{kind}")
+    (logged,) = attention_rows(h.db, f"card:{kind}")
     assert [f["reaction"] for f in logged["feedback"]] == [f"level:{level}"]
 
     # Right, acted and dismissed are reactions too; dismissed by action or by reaction.
@@ -145,7 +145,7 @@ def test_every_level_a_judge_can_say_is_a_level_a_card_is_rated_at(tmp_path: Pat
     h = _Harness(tmp_path)
     for level in attention.LEVELS:
         assert h.post(f"lvl-{level}", action="seen", kind="pop", level=level, facts={}) == 200
-    stored = {row["level"] for row in job_ledger.list_attention(h.db, "card:pop")}
+    stored = {row["level"] for row in attention_rows(h.db, "card:pop")}
     assert stored == set(attention.LEVELS)
 
 
@@ -177,9 +177,9 @@ def test_a_card_carries_typed_values_and_never_a_body(tmp_path: Path) -> None:
     assert h.post("a", **base, facts={"k" * 41: 1}) == 400
     assert h.post("a", **base, facts={"titles": [f"title {i} " * 20 for i in range(10)]}) == 400
     assert h.post("a", **base, facts={"title": "ok"}, situation={"in_claude": {"a": 1}}) == 400
-    assert job_ledger.list_attention(h.db) == []
+    assert attention_rows(h.db) == []
     assert h.post("a", **base, facts={"title": "ok"}, situation={"in_claude": True}) == 200
-    (row,) = job_ledger.list_attention(h.db)
+    (row,) = attention_rows(h.db)
     assert ContextPack.from_json(row["pack_json"]).situation["in_claude"] is True
 
 
@@ -204,7 +204,7 @@ def test_a_replay_reads_a_card_pack_like_any_other(tmp_path: Path) -> None:
     """The card packs go through the same replay seam; the mail rule table has no rule for them."""
     h = _Harness(tmp_path)
     assert h.shown("req") == 200
-    rows = job_ledger.list_attention(h.db, "card:req")
+    rows = attention_rows(h.db, "card:req")
     (judgement,) = replay(rule_judge_v1, rows)
     assert judgement.level == "ledger"
     assert "no rule for kind" in judgement.reason
