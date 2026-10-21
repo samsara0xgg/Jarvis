@@ -19,8 +19,9 @@ enum TLLayout {
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for now's time (and, under a finger, the time in its chip), 12 pt under it for the hours
     static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch
     static let pillsY = 248.0                          // the row of the pills (the way back, what waits) between the chips and the list
-    /// the list runs on under the glass bar at the foot (Sky/HomeBar.swift) and has faded out by the bar's bottom edge: rows show through the glass, and none under it
-    static let listTop = 272.0, fade = 24.0, fadeTop = 12.0, listBottom = H - HomeBar.foot - fade
+    /// the list runs on into the glass bar at the foot (Sky/HomeBar.swift) and has faded out 12 pt into it, before its rounded ends: rows show through the top of the glass, and
+    /// nothing of them round its ends or under it
+    static let listTop = 272.0, fade = 24.0, fadeTop = 12.0, listBottom = HomeBar.top + 12 - fade
     /// what the list gives up at its foot while the composer is out at rest (the bar has given way to it): its fade ends 8 pt over the field
     static var composerRoom: Double { listBottom + fade - (H - StarUI.restGap - 48 - 8) }
     static var viewport: Double { listBottom - listTop }

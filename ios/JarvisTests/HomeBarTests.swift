@@ -41,8 +41,9 @@ final class HomeBarTests: XCTestCase {
     func testTheBarFloatsOverTheFootWithTheListRunningOnUnderIt() {
         XCTAssertEqual(HomeBar.top + HomeBar.h + HomeBar.foot, H)
         XCTAssertEqual(HomeBar.side * 2 + HomeBar.width, W)
-        XCTAssertEqual(TLLayout.listBottom + TLLayout.fade, HomeBar.top + HomeBar.h, "the list has faded out by the bar's bottom edge: nothing of it shows under the bar")
-        XCTAssertGreaterThan(TLLayout.listBottom, HomeBar.top + HomeBar.h / 2, "and it shows through the glass")
+        let end = TLLayout.listBottom + TLLayout.fade
+        XCTAssertGreaterThan(end, HomeBar.top, "the list shows through the top of the glass")
+        XCTAssertLessThanOrEqual(end - HomeBar.top, 12, "and has faded out before the glass's rounded ends, where it would show round them")
     }
 
     func testWhileTheFieldIsOutTheListEndsOverIt() {

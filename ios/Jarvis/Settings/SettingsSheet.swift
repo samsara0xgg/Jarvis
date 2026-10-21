@@ -34,6 +34,7 @@ struct SettingsSheet: View {
                 }
                 scrollPage(.pair, width: geo.size.width) { SettingsPairPage(isCurrent: page == .pair) { go(.main) } }
                 scrollPage(.log, width: geo.size.width) { SettingsLogPage(model: model) }
+                if asPage { foot }
                 header
             }
         }
@@ -67,6 +68,18 @@ struct SettingsSheet: View {
             .opacity(current ? 1 : (reduceMotion ? 0 : (p == .main ? 0.35 : 1)))
             .allowsHitTesting(current)
             .accessibilityHidden(!current)
+    }
+
+    /// As a page, the list fades into the page colour as it goes into the bar at the foot, as the home's list does (TLLayout.listBottom): no line shows round the glass's ends or under it.
+    private var foot: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            LinearGradient(colors: [SetColor.bg.opacity(0), SetColor.bg], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
+            SetColor.bg.frame(height: H - TLLayout.listBottom - TLLayout.fade)
+        }
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     // MARK: header
