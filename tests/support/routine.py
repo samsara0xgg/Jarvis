@@ -30,7 +30,17 @@ _REPO = Path(__file__).resolve().parents[2]
 _QUERY = "解释冰为什么融化。"
 
 
-def routine_runtime(tmp_path: Path, provider_url: str, *, routine: bool = True) -> JarvisRuntime:
+def routine_runtime(
+    tmp_path: Path,
+    provider_url: str,
+    *,
+    routine: bool = True,
+    answer_hold_s: float | None = None,
+) -> JarvisRuntime:
+    """A runtime on the peer at ``provider_url``; ``answer_hold_s`` sets the hold (ADR 0272).
+
+    Left out, the shipped hold of 1.5 s applies to a spoken turn.
+    """
     paths = bootstrap_runtime(tmp_path)
     config: dict[str, Any] = {
         "realtime": {
@@ -49,6 +59,8 @@ def routine_runtime(tmp_path: Path, provider_url: str, *, routine: bool = True) 
             },
         },
     }
+    if answer_hold_s is not None:
+        config["realtime"]["response"]["answer_hold"] = {"seconds": answer_hold_s}
     llm_config: dict[str, Any] = {
         "provider": "openai",
         "model": "fixture-model",

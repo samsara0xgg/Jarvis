@@ -128,6 +128,9 @@ class SpokenPeer:
         self.url = ""
         self._ready = threading.Event()
         self._stop = threading.Event()
+        self._handlers: set[asyncio.Task[None]] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._released = asyncio.Event()
         self._thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
 
     def __enter__(self) -> Self:
@@ -140,7 +143,17 @@ class SpokenPeer:
         self._stop.set()
         self._thread.join(5)
 
+    def release_delayed(self) -> None:
+        """Let the requests now waiting out ``first_event_delay_s`` go on at once."""
+        assert self._loop is not None
+        self._loop.call_soon_threadsafe(self._pulse)
+
+    def _pulse(self) -> None:
+        self._released.set()
+        self._released.clear()
+
     async def _main(self) -> None:
+        self._loop = asyncio.get_running_loop()
         server = await asyncio.start_server(self._serve, "127.0.0.1", 0)
         self.url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1"
         self._ready.set()
@@ -148,9 +161,16 @@ class SpokenPeer:
             await asyncio.get_running_loop().run_in_executor(None, self._stop.wait)
         finally:
             server.close()
+            # A request still waiting out its delay would hold wait_closed() until it ended.
+            for handler in self._handlers:
+                handler.cancel()
+            await asyncio.gather(*self._handlers, return_exceptions=True)
             await server.wait_closed()
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        handler = asyncio.current_task()
+        assert handler is not None
+        self._handlers.add(handler)
         try:
             header = await reader.readuntil(b"\r\n\r\n")
             lines = header.decode().split("\r\n")
@@ -161,7 +181,8 @@ class SpokenPeer:
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
             )
             answer = ""
-            await asyncio.sleep(self.first_event_delay_s)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._released.wait(), self.first_event_delay_s)
             for frame in response_frames(self.outputs.pop(0)):
                 writer.write(f"event: {frame['type']}\ndata: {json.dumps(frame)}\n\n".encode())
                 await writer.drain()
@@ -176,6 +197,7 @@ class SpokenPeer:
         except (OSError, asyncio.IncompleteReadError):
             pass
         finally:
+            self._handlers.discard(handler)
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
@@ -188,8 +210,11 @@ def fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
 
 
-def spoken_runtime(tmp_path: Path, url: str) -> JarvisRuntime:
-    runtime = routine_runtime(tmp_path, url, routine=False)
+def spoken_runtime(
+    tmp_path: Path, url: str, *, answer_hold_s: float | None = None
+) -> JarvisRuntime:
+    """A runtime for a spoken turn on the peer at ``url``; see ``routine_runtime`` for the hold."""
+    runtime = routine_runtime(tmp_path, url, routine=False, answer_hold_s=answer_hold_s)
     return replace(runtime, response_flags=replace(runtime.response_flags, spoken_streaming=True))
 
 

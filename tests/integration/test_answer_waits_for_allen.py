@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import anthropic  # noqa: F401 - the first request of a process imports the SDKs; not in a timing
+import openai  # noqa: F401
 import pytest
 from fastapi.testclient import TestClient
 
@@ -548,8 +550,11 @@ _FIRST = "我想问一下去学校的公交"
 _SECOND = "现在出发能赶上哪一班"
 
 
-def _merge_rig(tmp_path: Path, peer: Any) -> Any:  # noqa: ANN401 - JarvisRuntime
-    runtime = spoken_runtime(tmp_path, peer.url)
+def _merge_rig(
+    tmp_path: Path, peer: Any, *, hold_s: float | None = 0.0  # noqa: ANN401 - SpokenPeer
+) -> Any:  # noqa: ANN401 - JarvisRuntime
+    """The runtime on ``peer``; no answer hold unless a test is about the hold (None: shipped)."""
+    runtime = spoken_runtime(tmp_path, peer.url, answer_hold_s=hold_s)
     return replace(runtime, memory=MemorySettings.from_config({}, runtime_root=tmp_path))
 
 
@@ -1038,7 +1043,7 @@ def test_a_phone_stop_request_or_repeat_is_not_composed(tmp_path: Path, words: s
             pool.submit(drive_streaming_turn, runtime, rig.heard(first_said["turn_id"]))
             wait_until_true(lambda: len(peer.requests) == 1, timeout_s=15.0)
             second_said = say_words(ws, "ub", words)
-            peer.first_event_delay_s = 0.0
+            peer.release_delayed()  # nothing else asks it; let the pending turn end
     assert rig.taken_over == []
     heard = rig.heard(second_said["turn_id"]).payload
     assert heard["transcript"] == words
@@ -1305,7 +1310,7 @@ def test_a_mac_stop_request_is_never_composed(tmp_path: Path) -> None:
             pool.submit(drive_streaming_turn, runtime, rig.hear("T-1", _FIRST))
             wait_until_true(lambda: len(peer.requests) == 1, timeout_s=15.0)
             stop_heard = rig.hear("T-2", "停")
-            peer.first_event_delay_s = 0.0
+            peer.release_delayed()  # nothing else asks it; let the pending turn end
     assert rig.taken_over == []
     assert stop_heard.payload["transcript"] == "停"
     assert not {"segment", "continues", "folded"} & set(stop_heard.payload)
@@ -1437,7 +1442,7 @@ def test_a_typed_say_never_goes_on_from_a_pending_spoken_turn(tmp_path: Path) ->
             pool.submit(drive_streaming_turn, runtime, rig.heard(first_said["turn_id"]))
             wait_until_true(lambda: len(peer.requests) == 1, timeout_s=15.0)
             typed = say_words(ws, "ub", _SECOND, spoken=False, continues="ua")
-            peer.first_event_delay_s = 0.0
+            peer.release_delayed()  # nothing else asks it; let the pending turn end
     assert typed["verdict"] == "turn"
     assert rig.taken_over == []
     assert not payloads_of(runtime.conn, "response.cancelled")
@@ -1471,7 +1476,7 @@ def test_a_long_spoken_turn_sends_its_request_at_once_and_holds_the_answer(
 ) -> None:
     """The model hears him at once; the first sentence leaves 1.5 s after his speech ended."""
     with SpokenPeer([[("final_answer", "八点二十有一班。")]]) as peer:
-        runtime = _merge_rig(tmp_path, peer)
+        runtime = _merge_rig(tmp_path, peer, hold_s=None)
         heard = _spoken_turn(runtime.conn, "T-1", _FIRST)
         with ThreadPoolExecutor(max_workers=1) as pool:
             turn = pool.submit(drive_streaming_turn, runtime, heard)
@@ -1497,7 +1502,7 @@ def test_a_short_finished_line_and_typed_text_are_answered_with_no_hold(
 ) -> None:
     """Only a spoken turn that may be cut in two waits; these are not."""
     with SpokenPeer([[("final_answer", "八点二十有一班。")]]) as peer:
-        runtime = _merge_rig(tmp_path, peer)
+        runtime = _merge_rig(tmp_path, peer, hold_s=None)
         heard = emit_event(
             runtime.conn,
             type="surface.user_intent",
@@ -1516,7 +1521,7 @@ def test_a_phone_sentence_that_goes_on_inside_the_hold_leaves_nothing_of_the_fir
     """B names A and arrives 1.0 s after A: the model answered A at once, none of it was said."""
     answer = "八点二十有一班。"
     with SpokenPeer([[("final_answer", "先说前半句。")], [("final_answer", answer)]]) as peer:
-        runtime = _merge_rig(tmp_path, peer)
+        runtime = _merge_rig(tmp_path, peer, hold_s=None)
         rig = _PhoneRig(runtime)
         with rig.connect() as ws, ThreadPoolExecutor(max_workers=2) as pool:
             open_ws(ws)
@@ -1550,7 +1555,7 @@ def test_a_second_mac_utterance_inside_the_hold_is_answered_with_the_first_and_n
     """The sweep finds the first answer with no word out, because none was allowed out yet."""
     answer = "八点二十有一班。"
     with SpokenPeer([[("final_answer", "先说前半句。")], [("final_answer", answer)]]) as peer:
-        runtime = _merge_rig(tmp_path, peer)
+        runtime = _merge_rig(tmp_path, peer, hold_s=None)
         first_heard = _spoken_turn(runtime.conn, "T-1", _FIRST)
         with ThreadPoolExecutor(max_workers=2) as pool:
             first = pool.submit(drive_streaming_turn, runtime, first_heard)
@@ -1578,7 +1583,7 @@ def test_a_write_waits_for_the_hold_and_a_read_does_not(tmp_path: Path) -> None:
     """The reading is done when the hold ends; the card taken down is not done before it."""
     script = [[("call", "kept"), ("call", "dismiss_card")], [("final_answer", "好的。")]]
     with SpokenPeer(script) as peer:
-        runtime = _merge_rig(tmp_path, peer)
+        runtime = _merge_rig(tmp_path, peer, hold_s=None)
         heard = _spoken_turn(runtime.conn, "T-1", "看一下备忘录然后把卡片收起来")
         drive_streaming_turn(runtime, heard)
     named = {
@@ -1601,7 +1606,7 @@ def test_the_hold_counts_from_the_end_of_his_speech_when_the_device_says_how_lon
 ) -> None:
     """A Mac that heard him stop 1.0 s before its utterance reached the brain: 0.5 s is left."""
     with SpokenPeer([[("final_answer", "八点二十有一班。")]]) as peer:
-        runtime = _merge_rig(tmp_path, peer)
+        runtime = _merge_rig(tmp_path, peer, hold_s=None)
         uid = BrainEvents(runtime.conn).record_utterance(
             "macbook",
             {
