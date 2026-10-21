@@ -7235,10 +7235,11 @@ def _read_footprint(
 
 async def _serve_footprint(
     event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
+    *, clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
-    """:func:`_read_footprint` off the loop thread, at the brain's clock."""
+    """:func:`_read_footprint` off the loop thread, at the brain's ``clock``."""
     return await asyncio.to_thread(
-        _read_footprint, event_log, configured, memory_db, day, int(time.time() * 1000),
+        _read_footprint, event_log, configured, memory_db, day, int(clock() * 1000),
     )
 
 

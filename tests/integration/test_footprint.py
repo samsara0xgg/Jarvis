@@ -15,7 +15,8 @@ frames go in through ``POST /inherent/device/events`` as they do from his phone,
   stay to stay, speeds as 10 s means with the top speed their highest, and a simplification that
   leaves no dropped fix more than 5 m from the kept points;
 - heart rate against the same day at his kept home, awake;
-- the route itself: no date is today, a bad date is a 400, and the guard is the day's.
+- the route itself: no date is today at the brain's clock in his zone, even when it is
+  already tomorrow in UTC, a bad date is a 400, and the guard is the day's.
 
 Every position is made up, in metres from an origin that is nowhere in particular, and every fix
 lies where the test draws it, so a distance or a speed is plain arithmetic.
@@ -26,7 +27,6 @@ from __future__ import annotations
 import functools
 import json
 import math
-import time
 from bisect import bisect_left
 from contextlib import closing
 from datetime import date, datetime, timedelta
@@ -50,6 +50,7 @@ from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.phone_events import MAX_BATCH_BYTES, MAX_BATCH_FRAMES, PHONE_EVENTS_PATH
 from jarvis.surface.terminal_events import BrainEvents
+from tests.support.clock import FakeClock
 from tests.support.terminal import brain_log
 
 if TYPE_CHECKING:
@@ -69,6 +70,10 @@ HEALTH = "phone.health_observed"
 TRACK = "phone.track_observed"
 FOOTPRINT = "/inherent/footprint"
 DAY = datetime.now(ZONE).date() - timedelta(days=2)  # past, and inside the week a phone is trusted
+AFTERWARDS = datetime(DAY.year, DAY.month, DAY.day, tzinfo=ZONE) + timedelta(days=2)
+"""The brain's clock unless a test sets one: after every day the tests draw."""
+EVENING = datetime(DAY.year, DAY.month, DAY.day, 17, 30, tzinfo=ZONE)
+"""Half past five on ``DAY``: his day still, and already the next one in UTC."""
 OUTING_KEYS = {
     "id", "start_ms", "end_ms", "from_stay", "to_stay", "activity", "distance_m", "moving_ms",
     "max_speed_mps", "stops", "gaps", "heart_rate", "points",
@@ -277,8 +282,15 @@ def assert_kept_within(fixes: list[Fix], points: list[list[Any]], metres_off: fl
 class Brain:
     """One app with the log, the day and the footprint wired, and phones ``iphone`` and ``ipad``."""
 
-    def __init__(self, tmp_path: Path, *, footprint: bool = True) -> None:
-        """A brain over a fresh log and memory.db in ``tmp_path``, with two phones paired."""
+    def __init__(
+        self, tmp_path: Path, *, footprint: bool = True, now: datetime = AFTERWARDS,
+    ) -> None:
+        """A brain over a fresh log and memory.db in ``tmp_path``, two phones paired, at ``now``.
+
+        ``now`` is the footprint's clock, :attr:`clock`; the phones' frames are still taken at
+        the real one, which trusts them within a week.
+        """
+        self.clock = FakeClock(now, zone=ZONE)
         self.log = tmp_path / "events.db"
         self.memory = tmp_path / "memory.db"
         open_memory_db(self.memory).close()
@@ -294,6 +306,7 @@ class Brain:
             footprint_read=(
                 functools.partial(
                     inherent_loop._serve_footprint, self.log, ZONE, self.memory,  # noqa: SLF001
+                    clock=self.clock.time,
                 ) if footprint else None
             ),
         ))
@@ -411,7 +424,7 @@ def test_one_drive_between_two_long_stays_with_three_short_stops_is_one_outing(
     assert set(body) == {"date", "tz", "start_ms", "end_ms", "now_ms", "stays", "outings"}
     assert (body["date"], body["tz"]) == (DAY.isoformat(), VANCOUVER)
     assert (body["start_ms"], body["end_ms"]) == (clock.start, clock.end)
-    assert abs(body["now_ms"] - time.time() * 1000) < 60_000
+    assert body["now_ms"] == brain.clock.time_ms()
     assert [stay["id"] for stay in body["stays"]] == [HOME_AM, HOME_PM]
     assert body["stays"][0] == {
         "id": HOME_AM, "start_ms": clock(6), "end_ms": clock(8), "lat": HOME[0], "lng": HOME[1],
@@ -590,9 +603,9 @@ def test_a_long_stay_alone_has_no_outing(tmp_path: Path) -> None:
 def test_no_date_is_today_and_an_outing_with_no_long_stay_after_it_is_still_going(
     tmp_path: Path,
 ) -> None:
-    """The last long stay has ended, he is moving, and nothing has stopped him yet."""
-    brain = Brain(tmp_path)
-    now = int(time.time() * 1000)
+    """At half past five the last long stay has ended, he is moving, and nothing has stopped him."""
+    brain = Brain(tmp_path, now=EVENING)
+    now = brain.clock.time_ms()
     left = now - 100 * MINUTE
     brain.send("iphone", [
         visit(HOME_AM, now - 5 * HOUR, left, HOME),
@@ -602,9 +615,8 @@ def test_no_date_is_today_and_an_outing_with_no_long_stay_after_it_is_still_goin
 
     body = brain.footprint()
 
-    today = datetime.fromtimestamp(body["now_ms"] / 1000, ZONE).date()
-    assert (body["date"], body["tz"]) == (today.isoformat(), VANCOUVER)
-    assert (body["start_ms"], body["end_ms"]) == day_window(today, ZONE)
+    assert (body["date"], body["tz"], body["now_ms"]) == (DAY.isoformat(), VANCOUVER, now)
+    assert (body["start_ms"], body["end_ms"]) == day_window(DAY, ZONE)
     outing = only(body["outings"])
     assert (outing["start_ms"], outing["end_ms"]) == (left, None)
     assert (outing["from_stay"], outing["to_stay"]) == (HOME_AM, None)
@@ -615,8 +627,8 @@ def test_no_date_is_today_and_an_outing_with_no_long_stay_after_it_is_still_goin
 
 def test_the_stay_he_is_still_at_ends_the_outing_however_short(tmp_path: Path) -> None:
     """Ten minutes after he got somewhere he is there, not still out: the outing ends at it."""
-    brain = Brain(tmp_path)
-    now = int(time.time() * 1000)
+    brain = Brain(tmp_path, now=EVENING)
+    now = brain.clock.time_ms()
     left, came = now - 60 * MINUTE, now - 10 * MINUTE
     here_id, where, name = STOPS[0]
     brain.send("iphone", [
