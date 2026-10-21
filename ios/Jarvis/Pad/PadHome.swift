@@ -209,11 +209,12 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped, `-padScene paste` a picture on the pasteboard pasted into the open field as ⌘V does, `-padScene history` the history's sheet
+    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped, `-padScene paste` a picture on the pasteboard pasted into the open field as ⌘V does, `-padScene history` the history's sheet, `-padScene footprint` the day's footprint
     private func padScene(_ s: String) {
         switch s {
         case "menu": menu.show(holding: false)
         case "history": engine.openPanel()
+        case "footprint": ui.footprintOpen = true
         case "type": ui.text = Words.Pad.field; engine.beginEditing?()
         case "row":             // a tap on the row before the last stretch's: its icon flies to the stage's title
             if let e = builtDay()?.model.entries.filter({ $0.kind == .segment }).dropLast().last { withAnimation(padMotion) { tl.openRow = e.id } }
@@ -505,46 +506,56 @@ private struct AttachScrim: View {
     }
 }
 
-// MARK: - the footprint
+// MARK: - the phone's pages in a sheet
 
-/// The phone's one-day footprint page, in a sheet at the phone's own size (it is laid out in the phone's design points), as the history is. The page's chevron closes it as on the phone.
+/// A page of the phone's, laid out in the phone's design points, in a sheet fitted to the part of it that holds something (`top` to `bottom`): the sheet's corners are the only
+/// ones, and when the screen is too short for it the page is scaled down whole
+private struct PadPhoneSheet<Page: View>: View {
+    let top: Double, bottom: Double
+    @ViewBuilder let page: Page
+
+    var body: some View {
+        let h = bottom - top
+        GeometryReader { g in
+            let k = min(1, g.size.width / W, g.size.height / h)
+            page
+                .frame(width: W, height: H, alignment: .topLeading)
+                .coordinateSpace(name: "design")
+                .offset(y: -top)
+                .frame(width: W, height: h, alignment: .topLeading)
+                .clipped()
+                .scaleEffect(k, anchor: .topLeading)
+                .frame(width: W * k, height: h * k, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(idealWidth: W, idealHeight: h)
+        .background(Color(red: 11 / 255, green: 13 / 255, blue: 26 / 255).ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .presentationSizing(.fitted)
+    }
+}
+
+/// The phone's one-day footprint page, from its head to the end of its list. The page's chevron closes it as on the phone.
 private struct PadFootprint: View {
     let engine: StarEngine
 
     var body: some View {
-        GeometryReader { g in
-            let k = min(g.size.width / W, g.size.height / H)
+        PadPhoneSheet(top: FootprintDayPage.Y.head - 22, bottom: TLLayout.listBottom + 12) {
             FootprintDayPage(engine: engine, ui: engine.ui, back: { engine.ui.footprintOpen = false })
-                .coordinateSpace(name: "design")
-                .scaleEffect(k, anchor: .topLeading)
-                .frame(width: W * k, height: H * k, alignment: .topLeading)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255).ignoresSafeArea())
-        .preferredColorScheme(.dark)
-        .presentationSizing(.page)
     }
 }
 
 // MARK: - the history
 
-/// The phone's history of the talk, in a sheet at the phone's own size (it is laid out in the phone's design points)
+/// The phone's conversation as its own page (`TalkPanel`'s page: no grabber and no panel of its own), from the stream's top to the bar's place
 private struct PadHistory: View {
     let engine: StarEngine
     @State private var pull: Double?
 
     var body: some View {
-        GeometryReader { g in
-            let k = min(g.size.width / W, g.size.height / (H - StarEngine.panelOpen))
-            TalkPanel(engine: engine, ui: engine.ui, pull: $pull)
-                .frame(width: W, height: H)
-                .coordinateSpace(name: "design")
-                .offset(y: -StarEngine.panelOpen)
-                .scaleEffect(k, anchor: .topLeading)
-                .frame(width: W * k, height: (H - StarEngine.panelOpen) * k, alignment: .topLeading)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        PadPhoneSheet(top: TalkPage.top - 12, bottom: HomeBar.top) {
+            TalkPanel(engine: engine, ui: engine.ui, pull: $pull, page: true)
         }
-        .background(Color(red: 11 / 255, green: 13 / 255, blue: 26 / 255).ignoresSafeArea())
-        .preferredColorScheme(.dark)
     }
 }
