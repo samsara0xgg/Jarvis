@@ -6,7 +6,7 @@ import json
 import os
 import re
 import subprocess
-import time as clock
+import threading
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -182,9 +182,12 @@ class CannedReporter:
         self.malformed_once = False
         self.malformed_checks: set[str] = set()
         self.fail_check_titles: set[str] = set()
-        self.check_delay = 0.0
-        self.check_spans: list[tuple[float, float]] = []
-        """(start, end) of each check call, to show whether they overlapped."""
+        self.check_gate: threading.Barrier | None = None
+        """Each check call waits here, so none is answered before all the others are asked."""
+        self.most_checks_at_once = 0
+        """The most check calls that were in flight together, to show that they overlapped."""
+        self._checks_in_flight = 0
+        self._count = threading.Lock()
         self.ask_details: list[str] | None = None
         self.script: list[list[tuple[str, dict[str, Any]]]] = []
         """Tool calls to make on each round before reporting: [[(tool, args), ...], ...]."""
@@ -257,9 +260,15 @@ class CannedReporter:
 
     def _judge(self, content: str) -> ChatResult:
         self.checks.append(content)
-        started = clock.monotonic()
-        clock.sleep(self.check_delay)
-        self.check_spans.append((started, clock.monotonic()))
+        with self._count:
+            self._checks_in_flight += 1
+            self.most_checks_at_once = max(self.most_checks_at_once, self._checks_in_flight)
+        try:
+            if self.check_gate is not None:
+                self.check_gate.wait()
+        finally:
+            with self._count:
+                self._checks_in_flight -= 1
         if self.fail_checks:
             msg = "provider down during the checks"
             raise ConnectionError(msg)

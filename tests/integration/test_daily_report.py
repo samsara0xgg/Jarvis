@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import threading
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, date, datetime, time
@@ -63,6 +64,7 @@ from tests.support.daily_report import (
     report_of_items,
     whole_item,
 )
+from tests.support.hold import HANG_S
 from tests.support.timesink import add_capture, add_span, source
 from tests.support.tool_world import ToolWorld, tool_request
 
@@ -1537,7 +1539,10 @@ def test_an_exhausted_check_budget_leaves_claims_unverified(
 def test_checks_run_together_and_a_failed_call_leaves_the_others(
     tmp_path: Path, source: sqlite3.Connection
 ) -> None:
-    """The item checks overlap in time, within the budget, in item order; a failure is its own."""
+    """The item checks run together, within the budget, in item order; a failure is its own.
+
+    Each call is held until all three are asked, so only calls made together get answered.
+    """
     add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
     rig = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite", check_budget=3)
     for number in range(1, 5):
@@ -1545,21 +1550,19 @@ def test_checks_run_together_and_a_failed_call_leaves_the_others(
     rig.reporter.report = report_of_items(
         *(whole_item(f"事项{n}", "completed", [f"r{n}"]) for n in range(1, 5))
     )
-    rig.reporter.check_delay = 0.3
+    rig.reporter.check_gate = threading.Barrier(3, timeout=HANG_S)
     try:
         result = rig.run()
         assert result["outcome"] == "generated", result.get("error")
         assert result["checks"] == 3, "the budget still caps the calls"
-        spans = rig.reporter.check_spans
-        assert len(spans) == 3
-        latest_start, earliest_end = max(s for s, _ in spans), min(e for _, e in spans)
-        assert latest_start < earliest_end, "the calls overlapped"
+        assert rig.reporter.most_checks_at_once == 3, "the calls overlapped"
         assert sorted(c.partition("\n")[0] for c in rig.reporter.checks) == [
             "Item: 事项1", "Item: 事项2", "Item: 事项3",
         ], "the first items in order get the calls"
         content = rig.saved()
         assert "### 4. 事项4 — 声称完成，未核实（核查预算耗尽）" in content
 
+        rig.reporter.check_gate = None
         rig.reporter.fail_check_titles = {"事项2"}
         failed = rig.run(regenerate=True)
         assert failed["outcome"] == "generated", failed.get("error")
