@@ -50,7 +50,7 @@ TYPES: Final[tuple[str, ...]] = (
 )
 ID_PREFIX: Final[str] = "thing-"
 RING_PREFIX: Final[str] = "reminder-th"
-"""Every ring the ledger arms has this reminder-id prefix; readers of reminders leave them out."""
+"""Every ring the ledger arms has this reminder-id prefix; :func:`ring_owner` names its thing."""
 KINDS: Final[tuple[str, ...]] = ("go", "do")
 STATES: Final[tuple[str, ...]] = ("open", "done", "paid", "cancelled")
 SOURCES: Final[tuple[str, ...]] = ("said", "picture", "mail", "outlook", "todo", "plan")
@@ -996,11 +996,10 @@ def default_rings(kind: str, *, start_at: str, on_day: str, before_min: int) -> 
     return ("-1d@20:00",) if on_day else ()
 
 
-def _wanted(
+def _ring_slots(
     things: Iterable[Thing], zone: tzinfo,
-) -> dict[str, tuple[int, str]]:
-    """``reminder id -> (due ms, words)`` of every ring the open things want, past ones too."""
-    wanted: dict[str, tuple[int, str]] = {}
+) -> Iterator[tuple[str, Thing, _Slot, int]]:
+    """``(reminder id, thing, slot, due ms)`` of every ring the open things want, past ones too."""
     for one in things:
         if one.state != "open" or not one.rings:
             continue
@@ -1009,10 +1008,57 @@ def _wanted(
             if slot.state != "open":
                 continue
             for k, ring in enumerate(rings):
-                due = _ring_due(slot, ring, zone)
                 rid = f"{RING_PREFIX}{_hex12(one.thing_id)}-{slot.anchor_ms}-{k}"
-                wanted[rid] = (due, _ring_line(one, slot, due, zone))
-    return wanted
+                yield rid, one, slot, _ring_due(slot, ring, zone)
+
+
+def _wanted(
+    things: Iterable[Thing], zone: tzinfo,
+) -> dict[str, tuple[int, str]]:
+    """``reminder id -> (due ms, words)`` of every ring the open things want, past ones too."""
+    return {
+        rid: (due, _ring_line(one, slot, due, zone))
+        for rid, one, slot, due in _ring_slots(things, zone)
+    }
+
+
+@dataclass(frozen=True)
+class Ring:
+    """One ring of one time of an open thing: when it goes off, and whether it went off."""
+
+    reminder_id: str
+    thing: Thing
+    start_ms: int  # the time of the thing it rings for: an occurrence's start, or the due
+    all_day: bool
+    due_ms: int
+    rang: bool
+
+
+def ring_times(
+    conn: sqlite3.Connection, start_ms: int, end_ms: int, *, zone: tzinfo,
+) -> list[Ring]:
+    """Every ring the open things want that goes off in ``[start_ms, end_ms)``, soonest first.
+
+    What the ledger holds, not only what is armed now: a ring beyond :data:`RING_HORIZON` is
+    listed though :func:`sync_rings` arms it only when it comes near. ``rang`` says its reminder
+    went off. This is the one account of a thing's rings that every reader shows.
+    """
+    known = reminder_state.fold(conn)
+    found = [
+        Ring(rid, one, slot.start_ms, slot.all_day, due,
+             (held := known.get(rid)) is not None and held.fired_at_ms is not None)
+        for rid, one, slot, due in _ring_slots(fold(conn).values(), zone)
+        if start_ms <= due < end_ms
+    ]
+    return sorted(found, key=lambda r: (r.due_ms, r.thing.thing_id))
+
+
+def ring_owner(reminder_id: str, things: Iterable[Thing]) -> Thing | None:
+    """The thing a ring reminder belongs to, closed ones included; None when it is no ring."""
+    if not reminder_id.startswith(RING_PREFIX):
+        return None
+    hex12 = reminder_id.removeprefix(RING_PREFIX).partition("-")[0]
+    return next((one for one in things if _hex12(one.thing_id) == hex12), None)
 
 
 def _sync(

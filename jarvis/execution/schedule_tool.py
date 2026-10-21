@@ -143,6 +143,7 @@ _CLOSES: Final = {"done": "done", "paid": "paid", "cancel": "cancelled"}
 _SPAN_DAYS: Final = 14
 _FIND_DAYS: Final = 60
 _AHEAD_MS: Final = 366 * 86_400_000
+_RING_READ_MS: Final = _AHEAD_MS + _FIND_DAYS * 86_400_000  # rings of anything a read can show
 _PAGE: Final = 8
 _BUDGET: Final = 4000
 _SOON: Final = timedelta(hours=6)
@@ -781,11 +782,33 @@ class _Schedule:
             end = max(1, (len(rows) - 1) // _PAGE + 1)
             summary = f"There is no page {page} of {window.label}; its items end at page {end}."
             return {"summary": summary, "items": [], "more": False}
+        self._ring_fields(ctx, shown, now)
         answer = {
             "summary": self._summary(window, query, groups, page, shown, now),
             "items": [row.fields for row in shown], "more": page * _PAGE < len(rows),
         }
         return _fit(answer)
+
+    def _ring_fields(self, ctx: ToolContext, shown: list[_Row], now: datetime) -> None:
+        """Give each shown time of a thing its rings, from the ledger's one account of them.
+
+        ``rings`` lists when each goes off, ``(rang)`` once it went off and ``(passed, did not
+        ring)`` for one whose time went by unrung, so a read says what the add said it set.
+        """
+        wanted = {(row.fields["id"], row.at) for row in shown if "id" in row.fields}
+        if not wanted:
+            return
+        by_time: dict[tuple[str, int], list[str]] = {}
+        for ring in things.ring_times(ctx.conn, 0, _ms(now) + _RING_READ_MS, zone=self._zone):
+            key = (things.short_id(ring.thing), ring.start_ms)
+            if key not in wanted:
+                continue
+            at = datetime.fromtimestamp(ring.due_ms / 1000, UTC)
+            state = " (rang)" if ring.rang else " (passed, did not ring)" if at < now else ""
+            by_time.setdefault(key, []).append(speakable.when(at, now, self._zone) + state)
+        for row in shown:
+            if (said := by_time.get((row.fields.get("id", ""), row.at))) is not None:
+                row.fields["rings"] = "; ".join(said)
 
     def _window(self, args: Mapping[str, Any], query: str, now: datetime) -> _Window:
         today = now.astimezone(self._zone).date()

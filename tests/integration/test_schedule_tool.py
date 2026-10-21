@@ -38,7 +38,7 @@ from jarvis.runtime import bootstrap_runtime_app
 from jarvis.shared import ActionRequest, CallerPrincipal, lang, steps
 from jarvis.state import commitments, departures, things
 from jarvis.state import reminders as reminder_state
-from jarvis.state.event_log import iter_events_of_types, open_event_log
+from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from scripts import tool_exam, tool_exam_steps
 
 if TYPE_CHECKING:
@@ -686,7 +686,7 @@ def test_a_weekly_thing_is_closed_moved_and_cancelled_one_date_at_a_time(make: M
     span = world.call(at="2026-10-20", to="2026-10-22")
     assert _rows(span) == [{
         "what": "Seminar", "when": "Wed Oct 21 1:00-2:30 pm", "kind": "go",
-        "occurrence": "2026-10-20",
+        "occurrence": "2026-10-20", "rings": "Wed Oct 21, 12:00 pm",
     }]
     assert world.call(action="cancel", id=key, occurrence="2026-10-27")["summary"] == (
         'Cancelled "Seminar" on 2026-10-27.'
@@ -784,6 +784,47 @@ def test_a_sender_rule_needs_a_mail_and_a_said_thing_is_already_confirmed(make: 
     assert world.thing(key).state == "open"
 
 
+def test_a_read_says_the_rings_the_add_set_and_which_of_them_rang(make: Maker) -> None:
+    """10-19: an add said 12:00 would ring, the read did not say it, and she took it back.
+
+    A read gives each time of a thing the rings the ledger holds for it: still to ring, rang,
+    or passed unrung.
+    """
+    world = make()
+    made = world.call(action="add", what="练车", kind="go", at="2026-10-13 13:00", remind=[60])
+    assert "rings 60 min before" in made["summary"]
+    weekly = world.call(
+        action="add", what="Pottery", kind="go", at="2026-10-13 19:00",
+        weekly_until="2026-10-20", remind=[30],
+    )["id"]
+    week = _rows(world.call(at="2026-10-13", to="2026-10-20"))
+    assert [(row["what"], row.get("rings")) for row in week] == [
+        ("练车", "tomorrow (Tue), 12:00 pm"),
+        ("Pottery", "tomorrow (Tue), 6:30 pm"),
+        ("Pottery", "Tue Oct 20, 6:30 pm"),
+    ]
+    (ring,) = [
+        r for r in reminder_state.pending(world.conn)
+        if r.due_at_local == "2026-10-13T12:00:00-07:00"
+    ]
+    fired = datetime(2026, 10, 13, 12, 0, 5, tzinfo=LOCAL)
+    emit_event(
+        world.conn, type="reminder.fired", ts_epoch_ms=int(fired.timestamp() * 1000),
+        payload={
+            "reminder_id": ring.reminder_id, "fired_at": int(fired.timestamp() * 1000),
+            "late_ms": 5000, "delivered": "speak",
+        },
+    )
+    world.conn.commit()
+    world.now = datetime(2026, 10, 13, 18, 45, tzinfo=LOCAL)  # Pottery's 18:30 ring went by unrung
+    day = _rows(world.call(at="2026-10-13"))
+    assert [(row["what"], row.get("rings")) for row in day] == [
+        ("练车", "today (Tue) 12:00 pm (rang)"),
+        ("Pottery", "today (Tue) 6:30 pm (passed, did not ring)"),
+    ]
+    assert world.thing(weekly).rings == ("-30m",)
+
+
 def test_a_private_thing_is_only_its_time_to_the_read_the_search_and_the_ring(
     make: Maker,
 ) -> None:
@@ -794,9 +835,10 @@ def test_a_private_thing_is_only_its_time_to_the_read_the_search_and_the_ring(
         place="Oak Street clinic", private=True,
     )
     assert world.thing(made["id"]).private
-    assert _rows(world.call(at="2026-10-13")) == [
-        {"what": "something private", "when": "tomorrow (Tue) 6:00 pm", "kind": "go"},
-    ]
+    assert _rows(world.call(at="2026-10-13")) == [{
+        "what": "something private", "when": "tomorrow (Tue) 6:00 pm", "kind": "go",
+        "rings": "tomorrow (Tue), 5:00 pm",
+    }]
     assert world.call(what="therapy")["items"] == []
     assert world.call(what="oak")["items"] == []
     assert _rows(world.call(what="private")) == _rows(world.call(at="2026-10-13"))

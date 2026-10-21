@@ -1540,17 +1540,17 @@ _OVERDUE_SHOWN: Final = 8
 
 
 def _thing_name(one: things.Thing) -> str:
-    """A thing as the block names it: a private one only as such, an unconfirmed one says so."""
+    """A thing by name and id: a private one only as such, an unconfirmed one says so."""
     title = "something private" if one.private else one.title
-    return f'"{title}"' if one.confirmed else f'"{title}" (not confirmed)'
+    named = f'"{title}" [{things.short_id(one)}]'
+    return named if one.confirmed else f"{named} (not confirmed)"
 
 
 def _things_today(src: LedgerSources, day: date) -> list[str]:
     """The day's open things from the ledger of his things (ADR 0299), and the overdue ones.
 
     Today: the timed things on the day, the ones due on it. Overdue: a ``do`` whose time went by
-    before the day began. A thing's ring is a reminder, but the thing stands for it (see
-    :func:`_reminders`).
+    before the day began. Its rings are listed with the reminders (:func:`_reminders`).
     """
     lo, hi = (_ms(datetime.combine(day + timedelta(days=n), time.min, src.zone)) for n in (0, 1))
     with closing(open_runtime_event_log(src.event_log)) as conn:
@@ -1581,33 +1581,56 @@ def _things_today(src: LedgerSources, day: date) -> list[str]:
     return lines
 
 
+def _ring_line(ring: things.Ring, zone: tzinfo) -> str:
+    """A ring of a thing: when it goes off, then the thing by name and id, and its own time."""
+    at = _at(ring.start_ms, zone)
+    when = f"{at:%a %m-%d}" if ring.all_day else f"{at:%a %m-%d %H:%M}"
+    return f"{_thing_name(ring.thing)} at {when}"
+
+
 def _reminders(src: LedgerSources, as_of: datetime, day: date) -> list[str]:
+    """What will ring and what rang today: his own reminders, and the rings of his things.
+
+    A thing's rings are read from the ledger (:func:`things.ring_times`), the same account her
+    schedule tool shows, and named by the thing's id; the reminder store only says which rang.
+    """
+    now_ms = int(as_of.timestamp() * 1000)
     with closing(open_runtime_event_log(src.event_log)) as conn:
-        found = reminders.fold(conn, until_ms=int(as_of.timestamp() * 1000))
-    # A ring stands for its thing, which _things_today lists: not twice.
-    found = {k: r for k, r in found.items() if not k.startswith(things.RING_PREFIX)}
-    pending = sorted((r for r in found.values() if r.pending), key=lambda r: r.due_at_ms)
+        found = reminders.fold(conn, until_ms=now_ms)
+        ahead = things.ring_times(
+            conn, now_ms, now_ms + int(things.RING_HORIZON.total_seconds() * 1000), zone=src.zone,
+        )
+        every_thing = list(things.fold(conn).values())
 
     def due(r: reminders.Reminder) -> datetime:
         return datetime.fromtimestamp(r.due_at_ms / 1000, src.zone)
 
+    own = {k: r for k, r in found.items() if not k.startswith(things.RING_PREFIX)}
+    pending = [
+        (r.due_at_ms, f'{due(r):%a %m-%d %H:%M} "{r.text}"') for r in own.values() if r.pending
+    ] + [
+        (r.due_ms, f"{_at(r.due_ms, src.zone):%a %m-%d %H:%M} for {_ring_line(r, src.zone)}")
+        for r in ahead if not r.rang
+    ]
     # A reminder's words were written for the moment it rings ("Tomorrow at 1 PM: …"), not for now.
     worded = (
-        "; the words after each due time are what she says when it rings, worded for that moment"
+        "; quoted words are what she says when it rings, worded for that moment; a ring for a"
+        " thing names the thing"
         if pending else ""
     )
     lines = [
         f"  Pending reminders ({len(pending)}{worded}): "
-        + ("; ".join(f'{due(r):%a %m-%d %H:%M} "{r.text}"' for r in pending) or "none"),
+        + ("; ".join(text for _, text in sorted(pending)) or "none"),
     ]
-    fired = sorted(
-        (r for r in found.values() if r.fired_at_ms is not None and due(r).date() == day),
-        key=lambda r: r.due_at_ms,
-    )
+    fired = []
+    for r in found.values():
+        if r.fired_at_ms is None or due(r).date() != day:
+            continue
+        owner = things.ring_owner(r.reminder_id, every_thing)
+        named = f"for {_thing_name(owner)}" if owner else r.text
+        fired.append((r.due_at_ms, f"{due(r):%H:%M} {named}"))
     if fired:
-        lines.append(
-            "  Fired earlier today: " + "; ".join(f"{due(r):%H:%M} {r.text}" for r in fired),
-        )
+        lines.append("  Fired earlier today: " + "; ".join(text for _, text in sorted(fired)))
     return lines
 
 

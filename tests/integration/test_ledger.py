@@ -227,8 +227,8 @@ def test_today_and_since_text(tmp_path: Path) -> None:
     assert "Job mail today: 1, 11:30 interview mail (Beta Labs, from Pat Lee)" in today
     assert "Mail screened today: 1" in today
     assert (
-        "Pending reminders (1; the words after each due time are what she says when it rings, "
-        'worded for that moment): Fri 10-09 09:00 "call the dentist"'
+        "Pending reminders (1; quoted words are what she says when it rings, worded for that "
+        'moment; a ring for a thing names the thing): Fri 10-09 09:00 "call the dentist"'
     ) in today
     # He last talked at 14:00, after the 11:30 mail: nothing is new.
     assert "Nothing new: no mail, reminders or commits." in since_text(src, NOW, _at(8, 14))
@@ -238,8 +238,8 @@ def test_today_and_since_text(tmp_path: Path) -> None:
     assert "Nothing new" not in earlier
 
 
-def test_today_lists_his_open_things_the_overdue_ones_and_each_ring_once(tmp_path: Path) -> None:
-    """ADR 0299: the day's open things come from the ledger; a ring stands for its thing."""
+def test_today_lists_his_open_things_the_overdue_ones_and_their_rings(tmp_path: Path) -> None:
+    """ADR 0299: the day's open things come from the ledger with their ids, and their rings too."""
     src = _world(tmp_path)
     write: dict[str, Any] = {"by": "her", "evidence": "said so", "zone": ZONE, "now": _at(8, 7)}
     with closing(open_event_log(src.event_log)) as conn:
@@ -285,18 +285,28 @@ def test_today_lists_his_open_things_the_overdue_ones_and_each_ring_once(tmp_pat
                 },
             )
     today = today_text(src, NOW).splitlines()
+    ids = {title: things.short_id(one) for title, one in held.items()}
     assert (
-        '  Open things today (7): all day "Holiday"; 09:00 "Stand-up"; 16:30 "Dentist"; '
-        'due 17:00 "Send form" (not confirmed); 18:00 "something private"; 19:00 "Pottery"; '
-        'due today "Pay rent"'
+        f'  Open things today (7): all day "Holiday" [{ids["Holiday"]}]; 09:00 "Stand-up" '
+        f'[{ids["Stand-up"]}]; 16:30 "Dentist" [{ids["Dentist"]}]; due 17:00 "Send form" '
+        f'[{ids["Send form"]}] (not confirmed); 18:00 "something private" [{ids["Therapy"]}]; '
+        f'19:00 "Pottery" [{ids["Pottery"]}]; due today "Pay rent" [{ids["Pay rent"]}]'
     ) in today
-    assert '  Overdue things (2): "Old bill" (was Thu 10-01); "Call mum" (was Tue 10-06)' in today
-    # The rings (16:00 for the dentist, 08:30 for the stand-up) are the things' own, listed with
-    # them: only the reminder he set himself is a reminder here, pending or fired.
+    assert (
+        f'  Overdue things (2): "Old bill" [{ids["Old bill"]}] (was Thu 10-01); "Call mum" '
+        f'[{ids["Call mum"]}] (was Tue 10-06)'
+    ) in today
+    # A thing's rings are listed with the reminders, named by the thing and its id: the
+    # dentist's 16:00 ring is still to ring, the stand-up's 08:30 ring rang this morning.
     (pending,) = [line for line in today if line.startswith("  Pending reminders")]
-    assert pending.startswith("  Pending reminders (1;")
-    assert pending.endswith('Fri 10-09 09:00 "call the dentist"')
-    assert "  Fired earlier today: 10:00 stretch" in today
+    assert pending.startswith("  Pending reminders (2;")
+    assert pending.endswith(
+        f'Thu 10-08 16:00 for "Dentist" [{ids["Dentist"]}] at Thu 10-08 16:30; '
+        'Fri 10-09 09:00 "call the dentist"',
+    )
+    assert (
+        f'  Fired earlier today: 08:30 for "Stand-up" [{ids["Stand-up"]}]; 10:00 stretch'
+    ) in today
 
 
 def test_render_context_places_the_blocks_and_dates_the_core_memory(tmp_path: Path) -> None:
