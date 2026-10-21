@@ -88,7 +88,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Sequence
+    from collections.abc import Callable, Collection, Generator, Sequence
     from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
@@ -7406,6 +7406,27 @@ def _submit_asr_v2(  # noqa: PLR0913 — the bound path and pipeline plus the fo
             inner_conn.close()
 
 
+class _Server(uvicorn.Server):
+    """uvicorn whose stop signal ends ``serve`` and leaves the process to ``serve_inherent``.
+
+    uvicorn re-raises the signal once it has shut down: SIGTERM then kills the process and
+    SIGINT cancels the main task, both before the daemon's teardown has run.
+    """
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Generator[None]:
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+        stops = (signal.SIGINT, signal.SIGTERM)
+        before = {sig: signal.signal(sig, self.handle_exit) for sig in stops}
+        try:
+            yield
+        finally:
+            for sig, handler in before.items():
+                signal.signal(sig, handler)
+
+
 def _listen_sockets(host: str, port: int, addresses: tuple[str, ...]) -> list[socket.socket]:
     """Listening sockets for ``host`` and each private address (ADR 0170).
 
@@ -8451,7 +8472,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             log_level="warning",
             lifespan="off",
         )
-        server = uvicorn.Server(config)
+        server = _Server(config)
 
         if runtime.input_flags.intent_pump:
             # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen

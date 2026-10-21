@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+import socket
 import sqlite3
+import subprocess
+import sys
 import threading
 import types
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
 import pytest
-import uvicorn
 
 import jarvis.runtime as runtime_pkg
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
@@ -125,7 +129,7 @@ def test_a_setup_failure_after_the_mic_started_closes_it_and_ends_the_daemon(
     runtime = _runtime(tmp_path, monkeypatch)
     session = _fake_voice(monkeypatch)
     monkeypatch.setattr(inherent_loop, step, failure)
-    monkeypatch.setattr(uvicorn, "Server", _StubServer)
+    monkeypatch.setattr(inherent_loop, "_Server", _StubServer)
 
     async def run() -> list[asyncio.Task[Any]]:
         try:
@@ -176,7 +180,7 @@ def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
             assert await asyncio.to_thread(entered.wait, 30), "the turn never started"
 
     monkeypatch.setattr(inherent_loop, "drive_turn", stuck_turn)
-    monkeypatch.setattr(uvicorn, "Server", _EndsWhenTheTurnIsRunning)
+    monkeypatch.setattr(inherent_loop, "_Server", _EndsWhenTheTurnIsRunning)
 
     async def run() -> None:
         try:
@@ -209,3 +213,64 @@ def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
     left = [p for p in realtime_trace_snapshot() if p.name == "shutdown_deadline"]
     assert len(left) == 1
     assert "intent_worker" in str(left[0].attributes["unfinished"])
+
+
+# `jarvis serve` as the CLI runs it, told when it is serving: uvicorn has bound the port, so
+# its signal handlers are in place. Patched on uvicorn itself, so the daemon's own server
+# class (a subclass) inherits it.
+_SERVE_AND_SAY_SO = """
+import logging, sys
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+import uvicorn
+from jarvis.cli import main
+
+startup = uvicorn.Server.startup
+
+
+async def say_so(self, sockets=None):
+    await startup(self, sockets)
+    print("serving", flush=True)
+
+
+uvicorn.Server.startup = say_so
+sys.exit(main(sys.argv[1:]))
+"""
+
+
+@pytest.mark.parametrize("stop", [signal.SIGTERM, signal.SIGINT])
+def test_a_stop_signal_runs_the_daemons_whole_teardown_and_ends_it_clean(
+    tmp_path: Path, stop: signal.Signals,
+) -> None:
+    """A stop signal ends serve and the teardown runs; the process then leaves cleanly."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "settings.yaml").write_text("runtime:\n  role: brain\n", encoding="utf-8")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.endswith(("_API_KEY", "_ADMIN_KEY")) and name != "JARVIS_RUNTIME_ROOT"
+    }
+    env["HOME"] = str(tmp_path)
+    log = tmp_path / "daemon.log"
+    with log.open("w") as sink:
+        daemon = subprocess.Popen(  # noqa: S603 — sys.executable and a fixed script.
+            [sys.executable, "-c", _SERVE_AND_SAY_SO, "serve", "--runtime-root", str(root),
+             "--port", str(port)],
+            stdout=subprocess.PIPE, stderr=sink, text=True, env=env,
+        )
+        try:
+            assert daemon.stdout is not None
+            assert daemon.stdout.readline() == "serving\n", log.read_text(encoding="utf-8")[-2000:]
+            daemon.send_signal(stop)
+            returncode = daemon.wait(timeout=60)
+        finally:
+            if daemon.poll() is None:
+                daemon.kill()
+                daemon.wait()
+
+    text = log.read_text(encoding="utf-8")
+    assert "serve_inherent: shutdown complete" in text, text[-2000:]
+    assert returncode == 0, text[-2000:]
