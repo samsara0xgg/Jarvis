@@ -227,12 +227,12 @@ try {
     const rows = await a.page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.notch .dt-row[data-key]')].map(r => [r.dataset.key, {
       at: r.querySelector('.dt-at')?.textContent, title: r.querySelector('.dt-ttl b')?.textContent, sub: r.querySelector('.dt-tx em')?.textContent, side: r.querySelector('.dt-tm')?.textContent, value: !!r.querySelector('.dt-tm .is-value'),
       ring: r.querySelector('.dt-ic')?.classList.contains('is-on'), future: r.classList.contains('is-future'), still: r.classList.contains('is-still'), glyph: !!r.querySelector('.dt-ic svg') }])));
-    const want = (at, title, sub, side, extra = {}) => JSON.stringify({ at, title, sub, side, value: false, ring: false, future: false, still: true, glyph: true, ...extra });
+    const want = (at, title, sub, side, extra = {}) => JSON.stringify({ at, title, sub, side, value: false, ring: false, future: false, still: false, glyph: true, ...extra });
     check('a past window\'s row: when it began, 5 小时额度, from and to, and how high it got (用到 15%, 用到 64%)',
       JSON.stringify(rows[ks.w1]) === want('10:30', '5 小时额度', '10:30 – 15:30', '用到 15%') && JSON.stringify(rows[ks.w2]) === want('16:10', '5 小时额度', '16:10 – 21:10', '用到 64%'), JSON.stringify([rows[ks.w1], rows[ks.w2]]));
     check('the running window\'s row says 已用 38% in the value look, its glyph ring is lit', JSON.stringify(rows[ks.w3]) === want('21:10', '5 小时额度', '21:10 – 02:10', '已用 38%', { value: true, ring: true }), JSON.stringify(rows[ks.w3]));
     check('the reset to come: its clock, 重置, "a new window starts", how long is left (4 时 20 分, as the day writes durations), in the future look', JSON.stringify(rows.reset) === want('02:10', '重置', '这 5 小时重新算', '还有 4 时 20 分', { future: true }), JSON.stringify(rows.reset));
-    check('no row is a way into a page: each is still (the page of a window is the Dashboard\'s, wired at integration)', await a.page.locator('.notch .dt-row[data-key]:not(.is-still)').count() === 0);
+    check('every row is a way into a page (the Dashboard\'s usage page): none is still', await a.page.locator('.notch .dt-row[data-key].is-still').count() === 0 && await a.page.locator('.notch .dt-row[data-key]:not(.is-still)').count() === 4);
 
     // ---- the levels on the bar ----
     const lv = await a.levels();
@@ -257,9 +257,14 @@ try {
     await a.press(xAt(g1, T(18, 0)), y); await a.page.waitForTimeout(500);
     const picked = await a.page.evaluate(() => ({ pick: [...document.querySelectorAll('.notch .dt-row.is-pick')].map(e => e.dataset.key), open: !!document.querySelector('.notch .dt-page[data-page]') }));
     check('a click on the bar under a level (18:00) picks that window\'s row and opens nothing', picked.pick.join() === ks.w2 && !picked.open, JSON.stringify(picked));
-    await a.pressOn(`.notch .dt-row[data-key="${ks.w1}"] .dt-tx`); await a.page.waitForTimeout(500);
-    const clicked = await a.page.evaluate(() => ({ pick: [...document.querySelectorAll('.notch .dt-row.is-pick')].map(e => e.dataset.key), open: !!document.querySelector('.notch .dt-page[data-page]'), door: document.querySelector('.notch .dt')?.dataset.door }));
-    check('a click on a window\'s row picks it and opens nothing (a page for it is the Dashboard\'s, wired at integration)', clicked.pick.join() === ks.w1 && !clicked.open && clicked.door === 'quota', JSON.stringify(clicked));
+    await a.pressOn(`.notch .dt-row[data-key="${ks.w1}"] .dt-tx`);
+    await a.until(() => document.querySelector('.notch .dt-page .ad.is-only[data-page="usage"] .pg-head .pg-back'), undefined, 8000); await a.page.waitForTimeout(600);
+    const opened = await a.page.evaluate(() => { const pg = document.querySelector('.notch .dt-stage > .dt-page[data-page]'); return { stage: document.querySelector('.notch .dt-stage')?.className ?? '', ownHead: !!pg?.querySelector('.dt-pin, .dt-ph, .dt-pn'),
+      dial: !!pg?.querySelector('.ad.is-only .dial[aria-valuenow="38"]'), door: document.querySelector('.notch .dt')?.dataset.door }; });
+    check('a click on a window\'s row opens the Dashboard\'s own usage page in the pane, under its own ‹ and with no head of the frame\'s: Claude\'s 5-hour window at 38%, still on 额度, and the frame has not moved',
+      /\bis-tool\b/.test(opened.stage) && !opened.ownHead && opened.dial && opened.door === 'quota' && moved(g1, await a.geo()).length === 0, JSON.stringify(opened));
+    await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(800);
+    check('its ‹ at the page\'s root takes it back to 额度\'s rows, and the frame has not moved', await a.page.locator('.notch .dt-page').count() === 0 && (await a.keys()).join() === [ks.w1, ks.w2, ks.w3, 'reset'].join() && moved(g1, await a.geo()).length === 0, (await a.keys()).join());
 
     // ---- a range of the day cuts the page ----
     const from = xAt(g1, T(17, 30)) + .1, to = xAt(g1, T(19, 0)) + .1;

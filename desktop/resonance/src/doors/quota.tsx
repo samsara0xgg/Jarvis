@@ -9,7 +9,7 @@ import type { BarMark, DoorChip, DoorCtx, DoorPage, DoorRow } from '../doors';
 // 额度: how full Claude's 5-hour limit got, as a page of the day under the bar: a level on the bar for each window (past ones dim, the one that is running lit and carried on dashed), a row each,
 // and after the now line the next reset. What each window did comes from the daemon's history of the poll; the numbers of now (the week, Codex, API spend, balances) from its usage route.
 // The poll writes a reading only when a number changes, so between two readings the level stood where the first left it (a stair, not a slope), and a failed poll is no reading, not 0%.
-// A daemon without the history draws the running window flat at its percent now.
+// A daemon without the history draws the running window flat at its percent now. A row opens the Dashboard's own usage page in the pane (`ctx.tool`), the one place its details live.
 const FIVE_H = 5 * 3_600_000, MIN = 60_000;
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const usd = (n: number) => `${n <= -.005 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
@@ -59,8 +59,10 @@ function levelOf(w: Win, tip: number) {
 const percent = (v: number) => Math.round(v * 100);
 
 export function useQuotaDoor(ctx: DoorCtx): DoorPage | null {
-  const { port, open, t, lang, day } = ctx;
+  const { port, open, t, lang, day, tool } = ctx;
   const usage = useRoute<Usage>(port, '/inherent/usage', open, 60_000);
+  // The renderer is read when the page opens, so a new one each time the companion draws never makes this page a new one.
+  const render = useRef(tool); render.current = tool;
   const path = `/inherent/usage/history?from_ms=${day.start}&to_ms=${day.end}`, hist = useRoute<unknown>(port, path, open && day.end > day.start, 60_000);
   // useRoute keeps its last answer while the path changes (another day): an answer is this day's only if it came for this path.
   const got = useRef({ data: hist.data, path });
@@ -80,11 +82,11 @@ export function useQuotaDoor(ctx: DoorCtx): DoorPage | null {
       const top = percent(Math.max(...w.steps.map(s => s.v))), now = percent(w.steps[w.steps.length - 1].v);
       return { key: `w${w.reset}`, at: w.start, icon: <Gauge size={13} aria-hidden="true"/>, title: t(['5-hour window', '5 小时额度']), sub: `${clock(w.start, day.tz)} – ${clock(w.end, day.tz)}`,
         // the frame's side has no `is-value`, so the running window's number carries the day's own
-        side: w === live ? <span className="dt-tm is-value">{t([`Used ${now}%`, `已用 ${now}%`])}</span> : t([`Up to ${top}%`, `用到 ${top}%`]), tone: w === live ? 'live' : undefined };
+        side: w === live ? <span className="dt-tm is-value">{t([`Used ${now}%`, `已用 ${now}%`])}</span> : t([`Up to ${top}%`, `用到 ${top}%`]), tone: w === live ? 'live' : undefined, opens: !!tool };
     });
     if (live) {
       const left = dur(Math.ceil((live.end - day.now) / MIN), t);
-      rows.push({ key: 'reset', at: live.end, icon: <ArrowCounterClockwise size={13} aria-hidden="true"/>, title: t(['Resets', '重置']), sub: t(['A new window starts', '这 5 小时重新算']), side: t([`in ${left}`, `还有 ${left}`]), tone: 'future' });
+      rows.push({ key: 'reset', at: live.end, icon: <ArrowCounterClockwise size={13} aria-hidden="true"/>, title: t(['Resets', '重置']), sub: t(['A new window starts', '这 5 小时重新算']), side: t([`in ${left}`, `还有 ${left}`]), tone: 'future', opens: !!tool });
     }
 
     // What the page says in numbers. On today: the 5-hour window and the week, Codex, what the API cost today, and what is left in each account that says. On another day: only what that day's windows reached.
@@ -117,6 +119,7 @@ export function useQuotaDoor(ctx: DoorCtx): DoorPage | null {
       count: f !== null ? `${f}%` : null, line, chips, marks: loading ? [] : marks, rows: loading ? [] : rows, nowAt: day.today ? day.now : null,
       empty: !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : !day.today ? hist.missing ? t(["This Jarvis can't give usage history yet", '这台 Jarvis 还不会给额度的历史']) : t(['No usage recorded that day', '这天没有额度记录']) : why,
       loading, failed: day.today ? !usage.data && usage.failed : !answer && hist.failed,
+      detail: (_key, back) => render.current ? { title: t(['Usage', '额度']), body: render.current('usage', back), bare: true } : null,
     };
-  }, [usage.data, usage.missing, usage.failed, answer, hist.missing, hist.failed, port, day.start, day.end, day.today, day.now, day.tz, lang]);
+  }, [usage.data, usage.missing, usage.failed, answer, hist.missing, hist.failed, port, day.start, day.end, day.today, day.now, day.tz, lang, !!tool]);
 }
