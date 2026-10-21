@@ -118,7 +118,9 @@ class WeatherKit:
         self._held: dict[str, tuple[float, dict[str, Any]]] = {}
 
     @classmethod
-    def from_settings(cls, settings: WeatherKitSettings) -> WeatherKit | None:
+    def from_settings(
+        cls, settings: WeatherKitSettings, clock: Callable[[], float] = time.time,
+    ) -> WeatherKit | None:
         """The client for ``weather.weatherkit``, or None; logs exactly one line saying which.
 
         Needs ``key_id``, ``service_id`` and a readable ``key_file`` (mode 0600; ``~`` allowed);
@@ -153,7 +155,7 @@ class WeatherKit:
             LOGGER.warning("weather: off (%s)", why)
             return None
         LOGGER.info("weather: Apple WeatherKit")
-        return cls(token)
+        return cls(token, clock)
 
     def read(  # noqa: PLR0913 - one request: the point, its zone and country, the days.
         self, latitude: float, longitude: float, *, zone: str, country: str | None,

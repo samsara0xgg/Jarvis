@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -24,7 +24,7 @@ from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime.home import weather_lookup
 from jarvis.runtime.weatherkit import NOT_SET_UP, WeatherKit
 from jarvis.shared import CallerPrincipal
-from jarvis.shared.here import HereUnavailable
+from jarvis.shared.here import Coarse, HereUnavailable
 from tests.integration.weatherkit_world import (
     GEOCODED,
     KEY_ID,
@@ -92,6 +92,10 @@ def _day(offset: int) -> str:
     return (NOW.astimezone(ZoneInfo(ZONE)).date() + timedelta(days=offset)).isoformat()
 
 
+def _day_in(zone: str, offset: int) -> str:
+    return (NOW.astimezone(ZoneInfo(zone)).date() + timedelta(days=offset)).isoformat()
+
+
 def _query(url: str) -> dict[str, str]:
     return {k: v[0] for k, v in parse_qs(urlparse(url.split(" ", maxsplit=1)[0]).query).items()}
 
@@ -147,7 +151,7 @@ def test_the_token_has_apples_header_and_claims_and_is_signed_with_the_key(
     net = Net(monkeypatch)
     kit = kit_for(key[0])
     _call(kit)
-    _call(kit, {"start_date": _day(2)})
+    _call(kit, {"when": _day(2)})
     bearers = [h["Authorization"] for h in net.headers]
     assert len(bearers) == 2
     assert bearers[0] == bearers[1]
@@ -307,24 +311,20 @@ def test_days_from_seven_back_to_nine_ahead_are_read_and_others_are_refused_unto
     """A range gets its days; 8 back, past nine ahead, or backwards, is refused clearly."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
-    report = _call(kit, {"start_date": _day(0), "end_date": _day(9)})
+    report = _call(kit, {"when": f"{_day(0)} to {_day(9)}"})
     query = _query(net.asked[0])
     assert query["dailyStart"].endswith(("T07:00:00Z", "T08:00:00Z"))
     assert "today" not in report
     assert [d["date"] for d in report["days"]] == [_day(n) for n in range(10)]
     assert "next_hours" not in report
     assert "next_hour" in report  # the range holds today
-    later = _call(kit, {"start_date": _day(3)})
+    later = _call(kit, {"when": _day(3)})
     assert [d["date"] for d in later["days"]] == [_day(3)]
     assert "next_hour" not in later  # minute rain is for now only
     net.asked.clear()
-    for first, last in ((_day(12), _day(12)), (_day(-8), _day(-8)), (_day(5), _day(2))):
-        with pytest.raises(ToolError, match=r"forecast runs from|end_date is before start_date"):
-            _call(kit, {"start_date": first, "end_date": last})
-    with pytest.raises(ToolError, match="YYYY-MM-DD"):
-        _call(kit, {"start_date": "next friday"})
-    with pytest.raises(ToolError, match="needs a start_date"):
-        _call(kit, {"end_date": _day(2)})
+    for words in (_day(12), _day(-8), f"{_day(5)} to {_day(2)}"):
+        with pytest.raises(ToolError, match=r"forecast runs from|ends before it starts"):
+            _call(kit, {"when": words})
     assert net.asked == []
 
 
@@ -334,11 +334,11 @@ def test_yesterday_and_seven_days_back_are_read_and_eight_back_is_refused_naming
     """The place's own date judges the range and names it in full, at any hour of the UTC day."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
-    assert [d["date"] for d in _call(kit, {"start_date": _day(-1)})["days"]] == [_day(-1)]
-    assert [d["date"] for d in _call(kit, {"start_date": _day(-7)})["days"]] == [_day(-7)]
+    assert [d["date"] for d in _call(kit, {"when": "yesterday"})["days"]] == [_day(-1)]
+    assert [d["date"] for d in _call(kit, {"when": _day(-7)})["days"]] == [_day(-7)]
     net.asked.clear()
     with pytest.raises(ToolError) as caught:
-        _call(kit, {"start_date": _day(-8)})
+        _call(kit, {"when": _day(-8)})
     assert _day(-7) in str(caught.value)
     assert _day(9) in str(caught.value)
     assert net.asked == []
@@ -350,7 +350,7 @@ def test_a_request_of_days_all_past_asks_for_the_daily_forecast_alone_and_answer
     """Past days: one daily-only request, ``days`` and attribution; into today it is whole."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
-    report = _call(kit, {"start_date": _day(-3), "end_date": _day(-1)})
+    report = _call(kit, {"when": f"{_day(-3)} to {_day(-1)}"})
     assert len(net.asked) == 1
     query = _query(net.asked[0])
     assert query["dataSets"] == "forecastDaily"
@@ -359,7 +359,7 @@ def test_a_request_of_days_all_past_asks_for_the_daily_forecast_alone_and_answer
     assert [d["date"] for d in report["days"]] == [_day(-3), _day(-2), _day(-1)]
     assert report["days"][0]["high_c"] == 15.0
     assert report["days"][0]["precip_mm"] == 3.5
-    mixed = _call(kit, {"start_date": _day(-1), "end_date": _day(1)})
+    mixed = _call(kit, {"when": f"{_day(-1)} to {_day(1)}"})
     assert [d["date"] for d in mixed["days"]] == [_day(-1), _day(0), _day(1)]
     assert {"now", "next_hour", "alerts"} <= set(mixed)
     assert "dailyStart" in _query(net.asked[-1])
@@ -372,7 +372,7 @@ def test_hourly_rows_for_a_past_day_are_refused_untouched(
     """Hour rows run from now on: hourly with a day before today is an error, no request made."""
     net = Net(monkeypatch)
     with pytest.raises(ToolError, match="hour-by-hour rows exist from now on"):
-        _call(kit_for(key[0]), {"start_date": _day(-1), "hourly": True})
+        _call(kit_for(key[0]), {"when": "yesterday", "hourly": True})
     assert net.asked == []
 
 
@@ -382,7 +382,7 @@ def test_hourly_rows_cover_the_days_asked_and_air_quality_adds_aqi_rows(
     """hourly: every hour of the day asked; air_quality: now and each day's worst."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
-    report = _call(kit, {"start_date": _day(1), "hourly": True, "air_quality": True})
+    report = _call(kit, {"when": "tomorrow", "hourly": True, "air_quality": True})
     rows = report["hourly"]
     assert len(rows) == 24
     assert {row["at"][:10] for row in rows} == {_day(1)}
@@ -395,7 +395,7 @@ def test_hourly_rows_cover_the_days_asked_and_air_quality_adds_aqi_rows(
     assert "next_hours" not in default
     assert "air_quality" not in default
     with pytest.raises(ToolError, match="at most 3 days"):
-        _call(kit, {"start_date": _day(0), "end_date": _day(3), "hourly": True})
+        _call(kit, {"when": f"{_day(0)} to {_day(3)}", "hourly": True})
 
 
 def test_here_reads_the_location_seam_and_says_where_it_came_from(
@@ -516,6 +516,183 @@ def test_boot_logs_one_line_for_the_source_and_never_the_key(
     assert [r.getMessage() for r in caplog.records] == ["weather: Apple WeatherKit"]
 
 
+@pytest.mark.parametrize(
+    ("words", "dates"),
+    [
+        ("this weekend", ["2026-10-24", "2026-10-25"]),
+        ("这周末", ["2026-10-24", "2026-10-25"]),
+        ("下周五", ["2026-10-30"]),
+        ("Friday", ["2026-10-23"]),
+        ("周五到周日", ["2026-10-23", "2026-10-24", "2026-10-25"]),
+        ("the 25th", ["2026-10-25"]),
+        ("Oct 25", ["2026-10-25"]),
+        ("后天", ["2026-10-23"]),
+        ("yesterday", ["2026-10-20"]),
+    ],
+)
+def test_his_words_for_the_days_are_worked_out_in_code_and_ask_for_those_days(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+    words: str, dates: list[str],
+) -> None:
+    """The model passes what he said; the days read, and asked of Apple, are the right ones."""
+    net = Net(monkeypatch)
+    report = _call(kit_for(key[0]), {"when": words})
+    assert [d["date"] for d in report["days"]] == dates
+    query = _query(net.asked[0])
+    first = datetime.fromisoformat(dates[0]).replace(tzinfo=ZoneInfo(ZONE))
+    last = datetime.fromisoformat(dates[-1]).replace(tzinfo=ZoneInfo(ZONE)) + timedelta(days=1)
+    assert query["dailyStart"] == first.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert query["dailyEnd"] == last.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_his_words_are_read_in_the_places_own_calendar_by_the_runtime_clock(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """It is Wednesday morning in Victoria and already Thursday in Tokyo: today is each one's."""
+    Net(monkeypatch)
+    kit = kit_for(key[0])
+    assert _day_in(ZONE, 0) == "2026-10-21"
+    assert _day_in("Asia/Tokyo", 0) == "2026-10-22"
+    home = _call(kit, {"when": "today"})
+    tokyo = _call(kit, {"place": "35.69,139.69", "when": "today"})
+    assert [d["date"] for d in home["days"]] == ["2026-10-21"]
+    assert [d["date"] for d in tokyo["days"]] == ["2026-10-22"]
+    assert [d["date"] for d in _call(kit, {"place": "35.69,139.69", "when": "tomorrow"})["days"]] \
+        == ["2026-10-23"]
+    assert _call(kit, {"place": "35.69,139.69"})["today"]["date"] == "2026-10-22"
+
+
+def test_words_the_resolver_cannot_read_and_the_old_date_arguments_are_refused_untouched(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """The error lists what is read; start_date and end_date say what replaced them."""
+    net = Net(monkeypatch)
+    kit = kit_for(key[0])
+    with pytest.raises(ToolError) as unread:
+        _call(kit, {"when": "sometime soon"})
+    assert unread.value.code == "invalid_arguments"
+    assert "weather: I read today, tonight, tomorrow" in str(unread.value)
+    assert "not 'sometime soon'" in str(unread.value)
+    for old in ({"start_date": _day(2)}, {"end_date": _day(2)}, {"when": "x", "start_date": "y"}):
+        with pytest.raises(ToolError, match="start_date and end_date are gone; pass when") as gone:
+            _call(kit, old)
+        assert gone.value.code == "invalid_arguments"
+    assert net.asked == []
+
+
+def test_the_geocoder_is_asked_for_ten_matches(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """One lookup per name, for up to ten places."""
+    net = Net(monkeypatch)
+    _call(kit_for(key[0]), {"place": "Richmond"})
+    assert "count=10" in net.asked[0]
+    assert len([one for one in net.asked if "geocoding" in one]) == 1
+
+
+def test_the_place_of_that_name_nearest_him_is_the_one_read_and_the_others_are_listed(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Richmond with home in Victoria is Richmond, BC, though the geocoder lists Virginia first."""
+    net = Net(monkeypatch)
+    kit = kit_for(key[0])
+    report = _call(kit, {"place": "Richmond"})
+    assert report["place"] == "Richmond, British Columbia, Canada"
+    assert urlparse(net.asked[1].split(" ")[0]).path == "/api/v1/weather/en/49.17/-123.14"
+    assert report["same_name_elsewhere"] == [
+        {"place": "Richmond, Virginia, United States", "use_place": "37.55,-77.46"},
+        {"place": "Richmond, California, United States", "use_place": "37.94,-122.35"},
+    ]
+    assert "same_name_left_out" not in report
+
+
+def test_where_he_is_roughly_picks_among_the_places_of_a_name_and_asks_no_fix(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """The coarse read puts him near Virginia, so that Richmond wins; no fix is asked of Here."""
+    Net(monkeypatch)
+    kit = kit_for(key[0])
+    here = FixedHere(coarse=Coarse(37.6, -77.5))
+    report = _call(kit, {"place": "Richmond"}, here=here)
+    assert report["place"] == "Richmond, Virginia, United States"
+    assert [one["place"] for one in report["same_name_elsewhere"]] == [
+        "Richmond, British Columbia, Canada", "Richmond, California, United States",
+    ]
+    assert here.asked == []
+    unknown = FixedHere(coarse=None)
+    assert _call(kit, {"place": "Richmond"}, here=unknown)["place"] == (
+        "Richmond, British Columbia, Canada"  # no report: the home's own point
+    )
+
+
+def test_a_place_none_is_near_takes_the_geocoders_first_match_and_caps_the_others(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Seven Springfields, all far: the first stands, four others are listed, the rest counted."""
+    Net(monkeypatch)
+    report = _call(kit_for(key[0]), {"place": "Springfield"})
+    assert report["place"] == "Springfield, Illinois, United States"
+    assert [one["place"] for one in report["same_name_elsewhere"]] == [
+        f"Springfield, {region}, United States"
+        for region in ("Missouri", "Massachusetts", "Oregon", "Ohio")
+    ]
+    assert report["same_name_left_out"] == 2
+
+
+@pytest.mark.parametrize(
+    ("named", "label"),
+    [
+        ("Vancouver, BC", "Vancouver, British Columbia, Canada"),
+        ("Vancouver, B.C.", "Vancouver, British Columbia, Canada"),
+        ("Vancouver, British Columbia", "Vancouver, British Columbia, Canada"),
+        ("Vancouver\uff0c Canada", "Vancouver, British Columbia, Canada"),
+        ("Vancouver, CA", "Vancouver, British Columbia, Canada"),
+        ("vancouver , bc , canada", "Vancouver, British Columbia, Canada"),
+        ("Vancouver, WA", "Vancouver, Washington, United States"),
+        ("Vancouver, Washington", "Vancouver, Washington, United States"),
+        ("Vancouver, USA", "Vancouver, Washington, United States"),
+        ("Vancouver, US", "Vancouver, Washington, United States"),
+        ("温哥华\uff0c不列颠哥伦比亚", "温哥华, 不列颠哥伦比亚省, 加拿大"),
+    ],
+)
+def test_a_region_or_country_after_a_comma_picks_the_match_by_name_or_short_code(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+    named: str, label: str,
+) -> None:
+    """Matched on the region or the country, in either language, with BC and WA as codes."""
+    net = Net(monkeypatch)
+    here = FixedHere(coarse=Coarse(48.0, -123.0))  # nearer to Vancouver, BC than to Washington
+    report = _call(kit_for(key[0]), {"place": named}, here=here)
+    assert report["place"] == label
+    assert "same_name_elsewhere" not in report  # the other Vancouver was named away
+    assert net.hosts()[0] == "geocoding-api.open-meteo.com"
+
+
+def test_a_region_the_geocoder_has_no_match_in_is_an_error_that_lists_what_it_knows(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Never another place under his name: Richmond, Texas is not read as Richmond, BC."""
+    net = Net(monkeypatch)
+    with pytest.raises(ToolError) as caught:
+        _call(kit_for(key[0]), {"place": "Richmond, Texas"})
+    assert caught.value.code == "not_found"
+    assert "no place named 'Richmond' found in Texas" in str(caught.value)
+    assert "Richmond, Virginia, United States" in str(caught.value)
+    assert net.hosts() == ["geocoding-api.open-meteo.com"]
+
+
+@pytest.mark.parametrize("named", [",", "\uff0c", " , "])
+def test_a_name_that_is_only_a_comma_is_not_found(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey], named: str,
+) -> None:
+    """No place in it: the plain not-found error, no lookup."""
+    net = Net(monkeypatch)
+    with pytest.raises(ToolError) as caught:
+        _call(kit_for(key[0]), {"place": named})
+    assert caught.value.code == "not_found"
+    assert net.asked == []
+
+
 def test_the_key_is_never_in_a_result_or_a_log_line(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
     caplog: pytest.LogCaptureFixture,
@@ -583,7 +760,7 @@ def test_the_description_offers_here_only_where_a_location_can_be_read(
     assert '"here"' not in without.description
     assert '"here"' in with_here.description
     assert set(with_here.input_schema["properties"]) == {
-        "place", "start_date", "end_date", "hourly", "air_quality",
+        "place", "when", "hourly", "air_quality",
     }
     assert with_here.input_schema["required"] == []
 
