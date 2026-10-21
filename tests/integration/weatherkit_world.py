@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from jarvis.runtime.weatherkit import WeatherKit
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,7 +56,7 @@ def config(path: Path) -> dict[str, Any]:
 
 def kit_for(path: Path) -> WeatherKit:
     """The client over the key file, its clock fixed at :data:`NOW`."""
-    kit = WeatherKit.from_config(config(path))
+    kit = WeatherKit.from_settings(runtime_config(config(path)).weatherkit)
     assert kit is not None
     kit.clock = NOW.timestamp
     return kit

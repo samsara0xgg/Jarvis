@@ -39,6 +39,7 @@ from tests.integration.weatherkit_world import (
 )
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere, mac_reading
+from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 
 PLACE = {"latitude": 48.48, "longitude": -123.38, "country_code": "CA"}
@@ -506,12 +507,12 @@ def test_boot_logs_one_line_for_the_source_and_never_the_key(
     for block in cases:
         caplog.clear()
         with caplog.at_level(logging.INFO):
-            assert WeatherKit.from_config(block) is None
+            assert WeatherKit.from_settings(runtime_config(block).weatherkit) is None
         assert [r.getMessage().startswith("weather: off (") for r in caplog.records] == [True]
         assert secret not in caplog.text
     caplog.clear()
     with caplog.at_level(logging.INFO):
-        assert WeatherKit.from_config(config(path)) is not None
+        assert WeatherKit.from_settings(runtime_config(config(path)).weatherkit) is not None
     assert [r.getMessage() for r in caplog.records] == ["weather: Apple WeatherKit"]
 
 

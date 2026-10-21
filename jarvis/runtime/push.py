@@ -34,6 +34,7 @@ import stat
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
@@ -81,9 +82,27 @@ _CLOSERS: Final = {
 }
 
 
-def _pem(block: Mapping[str, Any], root: Path) -> tuple[bytes | None, str]:
+@dataclass(frozen=True)
+class PushSettings:
+    """The ``push:`` block: the APNs key's file and its three ids, each blank where unset."""
+
+    key_file: str
+    key_id: str
+    team_id: str
+    bundle_id: str
+
+    @classmethod
+    def from_config(cls, block: object) -> PushSettings:
+        """The settings of ``block``; a block that is not a mapping is all blank."""
+        block = block if isinstance(block, dict) else {}
+        key_file, key_id, team_id, bundle_id = (
+            str(block.get(name) or "") for name in ("key_file", "key_id", "team_id", "bundle_id")
+        )
+        return cls(key_file=key_file, key_id=key_id, team_id=team_id, bundle_id=bundle_id)
+
+
+def _pem(named: str, root: Path) -> tuple[bytes | None, str]:
     """The ``.p8`` bytes and, when there are none, why (no key configured at all is ``""``)."""
-    named = str(block.get("key_file") or "")
     if not named:
         value = os.environ.get(KEY_ENV, "")
         return (value.replace("\\n", "\n").encode() or None), ""
@@ -131,18 +150,14 @@ class Push:
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="push")
 
     @classmethod
-    def from_config(cls, config: Mapping[str, Any], root: Path, event_log: Path) -> Push:
-        """The sender for the ``push:`` block; with no usable key, a sender that pushes nothing.
+    def from_settings(cls, settings: PushSettings, root: Path, event_log: Path) -> Push:
+        """The sender for the ``push:`` settings; with no usable key, a sender that pushes nothing.
 
         Logs exactly one line saying which. Never raises: a broken key switches pushes off, it
         does not stop the boot.
         """
-        block = config.get("push")
-        block = block if isinstance(block, dict) else {}
-        key_id, team_id, bundle_id = (
-            str(block.get(name) or "") for name in ("key_id", "team_id", "bundle_id")
-        )
-        pem, why = _pem(block, root)
+        key_id, team_id, bundle_id = settings.key_id, settings.team_id, settings.bundle_id
+        pem, why = _pem(settings.key_file, root)
         if pem is None:
             LOGGER.log(
                 logging.WARNING if why else logging.INFO,

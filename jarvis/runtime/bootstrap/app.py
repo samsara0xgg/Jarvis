@@ -223,7 +223,7 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
         things_mirror=intakes.things_mirror,
         turn_things=intakes.turn_things,
         moment=features.moment,
-        push=Push.from_config(config.raw, paths.root, paths.event_log),
+        push=Push.from_settings(config.push, paths.root, paths.event_log),
         whereabouts=Whereabouts(
             paths.root, terminal_hub, features.moment, memory_db=memory.db_path, zone=config.zone,
             around=features.surroundings, here=features.here,

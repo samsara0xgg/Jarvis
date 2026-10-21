@@ -58,8 +58,10 @@ from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S
 from jarvis.runtime.mail_codes import MailCodesSettings
 from jarvis.runtime.moment import MomentSettings
 from jarvis.runtime.night_run import NightSettings, night_settings
+from jarvis.runtime.push import PushSettings
 from jarvis.runtime.settings import SETUP_VOICES, apply_settings
 from jarvis.runtime.turn_things import TurnThingsSettings
+from jarvis.runtime.weatherkit import WeatherKitSettings
 from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -458,6 +460,8 @@ class RuntimeConfig:
     night: NightSettings
     ledger: LedgerSettings | None
     doing: DoingSettings | None
+    push: PushSettings
+    weatherkit: WeatherKitSettings
     raw: Mapping[str, Any]
 
 
@@ -1581,5 +1585,7 @@ def parse_runtime_config(
         night=night_settings(raw),
         ledger=LedgerSettings.from_config(raw.get("ledger"), reply_language),
         doing=DoingSettings.from_config(raw.get("doing")),
+        push=PushSettings.from_config(raw.get("push")),
+        weatherkit=WeatherKitSettings.from_config(raw.get("weather")),
         raw=raw,
     )

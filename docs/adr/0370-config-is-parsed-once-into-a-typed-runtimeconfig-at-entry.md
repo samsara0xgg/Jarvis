@@ -56,13 +56,14 @@ sounds), `confirmation`, `voice`, `llm` tool-iteration bounds, `observer`, `supe
 `tools` (web, screen, vault, workers), Jev's routes (`jev_log`, `realtime.surrogate_route`,
 `realtime.jev_words`, `realtime.jev_oneshot`, `agents.turn_end_asks`), the mail and record intakes
 (`home.mail_reply`, `job_mail`, `mail_codes`, `commitments`, `claude_daily`, `turn_things`) and the
-day's blocks (`moment`, `night`, `ledger`, `doing`). Each keeps the default, the error text and the
-exception type it had: `RuntimeBootstrapError` for a refused value, `TypeError` for the two bool
-switches that always raised it, `ValueError` for the timesink path and the zone name.
+day's blocks (`moment`, `night`, `ledger`, `doing`), plus the key files and ids of `push` and
+`weather.weatherkit`, which stay text on the tree: the key is read where the client is built. Each
+keeps the default, the error text and the exception type it had: `RuntimeBootstrapError` for a
+refused value, `TypeError` for the two bool switches that always raised it, `ValueError` for the
+timesink path and the zone name.
 
-Not moved: `push` and `weatherkit`, which read a key file and build a signing client in the same
-step and never raise, and `projects`, which the terminal tolerates malformed (its own catalog is a
-warning, the brain's is a refusal) where a tree field would stop the terminal from starting.
+Not moved: `projects`, which the terminal tolerates malformed (its own catalog is a warning, the
+brain's is a refusal) where a tree field would stop the terminal from starting.
 
 Secrets are not in the tree: a key is resolved from the environment where the thing that needs it
 is built.

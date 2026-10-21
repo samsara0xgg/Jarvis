@@ -21,6 +21,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from datetime import time as day_start
 from pathlib import Path
@@ -79,6 +80,31 @@ def kind(code: str) -> str:
     return next((one for keys, one in _KINDS if any(k in code for k in keys)), "rain")
 
 
+@dataclass(frozen=True)
+class WeatherKitSettings:
+    """The ``weather.weatherkit`` block: the Apple key's file and its ids, each blank where unset.
+
+    ``team_id`` defaults to the owner's.
+    """
+
+    key_id: str
+    service_id: str
+    team_id: str
+    key_file: str
+
+    @classmethod
+    def from_config(cls, weather: object) -> WeatherKitSettings:
+        """The settings of the ``weather:`` block; one that is not a mapping is all blank."""
+        block = weather.get("weatherkit") if isinstance(weather, dict) else None
+        block = block if isinstance(block, dict) else {}
+        key_id, service_id = (str(block.get(name) or "") for name in ("key_id", "service_id"))
+        return cls(
+            key_id=key_id, service_id=service_id,
+            team_id=str(block.get("team_id") or DEFAULT_TEAM_ID),
+            key_file=str(block.get("key_file") or ""),
+        )
+
+
 class WeatherKit:
     """The signed client; built once at boot, safe to call from any thread."""
 
@@ -92,19 +118,15 @@ class WeatherKit:
         self._held: dict[str, tuple[float, dict[str, Any]]] = {}
 
     @classmethod
-    def from_config(cls, config: Mapping[str, Any]) -> WeatherKit | None:
+    def from_settings(cls, settings: WeatherKitSettings) -> WeatherKit | None:
         """The client for ``weather.weatherkit``, or None; logs exactly one line saying which.
 
         Needs ``key_id``, ``service_id`` and a readable ``key_file`` (mode 0600; ``~`` allowed);
         ``team_id`` defaults to the owner's. Never raises: a missing or broken key leaves the
         weather off (the tool then says so), it does not stop the boot.
         """
-        block = config.get("weather")
-        block = block.get("weatherkit") if isinstance(block, dict) else None
-        block = block if isinstance(block, dict) else {}
-        key_id, service_id = (str(block.get(name) or "") for name in ("key_id", "service_id"))
-        team_id = str(block.get("team_id") or DEFAULT_TEAM_ID)
-        named = str(block.get("key_file") or "")
+        key_id, service_id = settings.key_id, settings.service_id
+        team_id, named = settings.team_id, settings.key_file
         why = ""
         if not (key_id and service_id and named):
             why = "weather.weatherkit needs key_id, service_id and key_file"

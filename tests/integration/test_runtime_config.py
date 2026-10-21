@@ -31,7 +31,9 @@ from jarvis.runtime.config import (
 )
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.mail_codes import MailCodesSettings
+from jarvis.runtime.push import PushSettings
 from jarvis.runtime.turn_things import TurnThingsSettings
+from jarvis.runtime.weatherkit import DEFAULT_TEAM_ID, WeatherKitSettings
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from tests.support.runtime_config import boot_runtime, load_settings, runtime_config
 
@@ -930,3 +932,22 @@ def test_the_ledger_and_doing_blocks_are_read_at_the_load(
     assert bare.doing is None
     assert len(_warnings(caplog, "ledger.prose needs a prompt")) == 1
     assert len(_warnings(caplog, "doing needs a prompt")) == 1
+
+
+def test_the_push_and_weatherkit_blocks_are_read_as_text_and_never_refused(tmp_path: Path) -> None:
+    """ADR 0210, 0285: a key's file and ids are strings; what they point at is read at build."""
+    shipped = load_settings(tmp_path, {})
+    assert shipped.push == PushSettings(key_file="", key_id="", team_id="", bundle_id="")
+    assert shipped.weatherkit.service_id == "com.allen.jarvis.weather"
+    assert shipped.weatherkit.key_file == "~/.jarvis/weatherkit.p8"
+    told = load_settings(tmp_path / "told", {
+        "push": {"key_id": 7, "key_file": None},
+        "weather": {"weatherkit": {"team_id": ""}},
+    })
+    assert (told.push.key_id, told.push.key_file) == ("7", "")
+    assert told.weatherkit.team_id == DEFAULT_TEAM_ID
+    wrong = load_settings(tmp_path / "wrong", {"push": "none", "weather": None})
+    assert wrong.push == PushSettings(key_file="", key_id="", team_id="", bundle_id="")
+    assert wrong.weatherkit == WeatherKitSettings(
+        key_id="", service_id="", team_id=DEFAULT_TEAM_ID, key_file="",
+    )

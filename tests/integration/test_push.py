@@ -63,6 +63,7 @@ from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
 from tests.support.net import free_port
 from tests.support.push import BUNDLE, DEVICE_A, KEY_ID, TEAM_ID, FakeApns, World
+from tests.support.runtime_config import runtime_config
 from tests.support.terminal import AsRemote, wait_for
 from tools.phone_fake_client import FakePhone
 
@@ -825,7 +826,7 @@ def _boot(
 ) -> tuple[Push, list[logging.LogRecord]]:
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger="jarvis.runtime.push"):
-        push = Push.from_config(config, tmp_path, tmp_path / "events.db")
+        push = Push.from_settings(runtime_config(config).push, tmp_path, tmp_path / "events.db")
     return push, [r for r in caplog.records if r.name == "jarvis.runtime.push"]
 
 

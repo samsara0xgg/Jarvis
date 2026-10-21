@@ -196,7 +196,7 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         paths.event_log, clock, locator=locator, mac=_here_location(config.role),
         memory_db=memory.db_path, phone=config.locate.phone, max_age_s=config.locate.max_age_s,
     )
-    weatherkit = WeatherKit.from_config(config.raw)  # ADR 0285: logs which source is used
+    weatherkit = WeatherKit.from_settings(config.weatherkit)  # ADR 0285: logs which source is used
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
         maps_key, config.maps_monthly_usd, memory.db_path, config.zone,
     )
