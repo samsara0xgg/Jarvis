@@ -3,6 +3,7 @@ import { CalendarBlank, CheckCircle, DotsThree, EnvelopeSimple, Gauge, TerminalW
 import type { L, Lang } from './companionSettings';
 import type { DayItem } from './dayView';
 import type { About } from './dayOpen';
+import type { Page as DashboardPage } from './AroundDashboard';
 import { useAgentsDoor } from './doors/agents';
 import { useMailDoor } from './doors/mail';
 import { useMoreDoor } from './doors/more';
@@ -45,8 +46,12 @@ export type DoorPage = {
   empty?: string;               // what an empty page says
   loading?: boolean;
   failed?: boolean;
-  detail?: (key: string) => { title: string; body: ReactNode } | null;
+  // A row's page; `back` closes it, as the frame's ‹ and Esc do. `bare`: the body is a whole page with a ‹ and a title of its own (a Dashboard page from `ctx.tool`), so the frame draws no head for it and gives it the whole
+  // stage; Esc presses that ‹ (the page goes back by its own steps before it closes), and the frame's arrow keys leave it alone.
+  detail?: (key: string, back: () => void) => { title: string; body: ReactNode; bare?: true } | null;
 };
+// One page of the old Dashboard shown alone (AroundDashboard `only`), for a row's detail; `back` is what its ‹ calls at the page's root (Companion.tsx makes it, Notch.tsx and DayTimeline.tsx pass it down).
+export type ToolRenderer = (page: DashboardPage, back: () => void) => ReactNode;
 export type DoorCtx = {
   port: string | null;
   open: boolean;                // poll only while the pane is open
@@ -55,6 +60,7 @@ export type DoorCtx = {
   day: { date: string; tz: string; start: number; end: number; now: number; today: boolean };
   items: DayItem[];             // the shown day's items (the day reply), e.g. `code` sessions
   ask?: (text: string, about?: About) => Promise<void>;
+  tool?: ToolRenderer;          // the Dashboard's own pages for a row's detail (更多, 额度): `body: ctx.tool('settings', back)`
 };
 // One hook per door in src/doors/<key>.tsx: useMailDoor(ctx), useTodoDoor(ctx), useAgentsDoor(ctx),
 // useQuotaDoor(ctx), useMoreDoor(ctx): DoorPage | null. All run while the pane is open (the doors

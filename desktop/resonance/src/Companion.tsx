@@ -19,6 +19,7 @@ import { ActionCard, QuestionCard, type Answer, type Card, type Decide, type Que
 import { Notch, isWing, type Kind as MarkGroup, type NotchNote } from './Notch';
 import type { About } from './dayOpen';
 import type { DayReply } from './dayView';
+import type { ToolRenderer } from './doors';
 import { TripCard, tripLink, useTripNote } from './TripCards';
 import { fitWindow } from './fitWindow';
 import { NightCard, isNightLook, markNightSeen, morningOf, seenNight, type NightAction, type NightSession, type NightState } from './NightCard';
@@ -874,12 +875,19 @@ export function Companion() {
         if (notice.kind !== 'req') return;
         void notices.resolve(notice, text, body).then(ok => { if (ok && body.decision !== 'deny') ball.current?.hop(.14); });
       }}/> };
-  const dashboardContent = <AroundDashboard open={dashboard} port={port} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
-          onMood={dashboardMood} settingFocus={settingsFocus} jobsFocus={jobsFocus} agentsFocus={agentsFocus} marksHover={dashboard ? markHover : null} present={s.present} onHop={height => ball.current?.hop(height)}
-          talk={port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion, trip: busLink,
-            think: { on: deep, secs: deepSecs, words, thoughts } } : undefined}
-          plugins={port ? plugins : undefined} pluginFocus={pluginFocus} marks={wardrobe.marks} onAgents={setAgents} unread={notices.unread}
-          onAnswer={id => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard('an answer'); }} ctl={ctl}/>;
+  // What the Dashboard's panel and its pages in the day pane have in common (they never hang together, ADR 0308). What turns the panel (a mark pressed, her words, a plugin she asks for) and what
+  // listens to it (her agents list, the hand-over to another window) is the panel's alone.
+  const dashboardProps = {
+    port, onMood: dashboardMood, onHop: (height: number) => ball.current?.hop(height),
+    talk: port ? { rows: s.rows, tail, busy: voice === 'thinking', offline: s.phase === 'error', floor, submit: ask, older, card, decide: decideCard, question, answer: answerQuestion, trip: busLink,
+      think: { on: deep, secs: deepSecs, words, thoughts } } : undefined,
+    plugins: port ? plugins : undefined, marks: wardrobe.marks, unread: notices.unread,
+    onAnswer: (id: string) => { if (detached) window.jarvis?.dashboardMessage?.('parent', { type: 'notice', id }); else notices.focus(id); closeDashboard('an answer'); }, ctl,
+  };
+  const dashboardContent = <AroundDashboard {...dashboardProps} open={dashboard} onClose={closeDashboard} viewRef={dashboardView} onView={value => { if (detached && detachedMode.current) window.jarvis?.dashboardMessage?.('parent', { type: 'view', value }); }}
+          settingFocus={settingsFocus} jobsFocus={jobsFocus} agentsFocus={agentsFocus} marksHover={dashboard ? markHover : null} present={s.present} pluginFocus={pluginFocus} onAgents={setAgents}/>;
+  // One page of it alone, for the doors of the day pane (DayTimeline.tsx asks for it with a way back): up while the pane is open, gone with the page.
+  const dashboardPage: ToolRenderer = (page, onClose) => <AroundDashboard key={page} {...dashboardProps} open={timelineOpen} only={page} onClose={onClose}/>;
   if (detached) return <IconContext.Provider value={{ size: 16, weight: 'regular' }}>
     <main ref={root} className="companion companion-detached"><DuskDashboard open={dashboard} top={0} width={360} left={0} islandLeft={0} islandRight={360} lightX={40} detached>{dashboardContent}</DuskDashboard></main>
   </IconContext.Provider>;
@@ -931,7 +939,7 @@ export function Companion() {
       </DuskDashboard>
       <DockingDrop near={docking} width={geo.width} top={placement.topInset} center={geo.center}/>
       <Notch look={wardrobe.marks} wing={wardrobe.wing} agents={frozen.current?.agents ?? (agentsFront ? agents.filter(a => !agentsPresence.ids.includes(a.id)) : agents)} unread={frozen.current?.unread ?? notices.unread} parked={frozen.current?.parked ?? notices.parked} archived={frozen.current?.archived ?? notices.archived} cursor={cursor} wake={notchWake} quiet={agentsFront || dashboard || moving} aside={dashboard ? { hover: setMarkHover, open: group => setAgentsFocus({ group, key: Date.now() }) } : undefined} edge={dashboardJoined ? geo.center + PANEL / 2 : null}
-        pin={{ item: notices.departure, open: busCards.open }} timeline={{ day: frozen.current ? { ...day, data: frozen.current.day } : day, openBy: companion.openBy, onOpenChange: open => { setTimelineOpen(open); if (open) fold('the timeline'); }, ask: port ? askAbout : undefined }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
+        pin={{ item: notices.departure, open: busCards.open }} timeline={{ day: frozen.current ? { ...day, data: frozen.current.day } : day, openBy: companion.openBy, onOpenChange: open => { setTimelineOpen(open); if (open) fold('the timeline'); }, ask: port ? askAbout : undefined, tool: dashboardPage }} glow={{ items: frozen.current?.glows ?? notices.glows, open: g => { if (g.card) notices.focus(g.id); else { showJobs(); notices.leaveGlow(g.id, true); } }, clear: g => { if (g.card) { notices.focus(g.id); notices.dismiss(); } else notices.leaveGlow(g.id, false); } }} onNoteHover={notices.setHover} geo={{ width: geo.width, top: placement.topInset, notchR: geo.wingX, lobeL: geo.lobe.left }} note={note}
         act={{ jump, answer: notices.focus, read: ids => { notices.acted(ids); notices.read(ids); }, back: notices.back, archive: notices.archive, park: notices.park, unpark: notices.unpark }}
         port={port} keys={keysPress} onViewing={setViewing} onJoinedChange={setNotchJoined} onKeys={on => { setKeysOn(on); void window.jarvis?.focus(on); }}/>
       <CompanionBall width={geo.width} height={placement.topInset + 560} lobe={geo.lobe} look={look} handle={ball} skin={worn.current}

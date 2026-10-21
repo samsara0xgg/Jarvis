@@ -30,6 +30,12 @@
 /* a Dashboard component in a row's page (it is styled under .ad): the panel's own padding is not wanted here, the page has its own */
 .notch .dt-pin.is-door .dt-body { padding:6px 4px 12px; }
 .notch .dt-ad { align-self:stretch; padding:0; }
+/* a Dashboard page shown alone in the pane (a `bare` detail: AroundDashboard `only`, the 更多 door): it has its own ‹ and title, so the stage gives it the whole room and the page scrolls inside it;
+   the panel's box (its padding, the home's height) is not wanted here */
+.notch .dt-stage.is-tool { flex:1 1 auto; }
+.notch .dt-stage.is-tool > .dt-page { flex:1 1 auto; }
+.notch .dt-page > .ad.is-only { display:flex; flex:1 1 auto; flex-direction:column; min-height:0; padding:0; }
+.notch .dt-page > .ad.is-only .view { flex:1 1 0; height:auto; min-height:0; }
 
 /* page mode of the bar: what he was doing steps back to .25 (as under a lens), and the page's own moments are lit over it */
 .notch .dt-bar.is-page .dt-seg,.notch .dt-bar.is-page .dt-ground,.notch .dt-bar.is-page .dt-sched,.notch .dt-bar.is-page .dt-bdot { opacity:.25; }

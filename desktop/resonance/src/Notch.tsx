@@ -16,6 +16,7 @@ import { DayTimeline } from './DayTimeline';
 import { wingText, type DayReply } from './dayView';
 import type { Route } from './homeData';
 import type { About } from './dayOpen';
+import type { ToolRenderer } from './doors';
 
 // Beside the notch, after the notch lab (ADR 0069, 0070). Right of the camera, one mark per group with its count:
 // your turn (the beacon), working, finished, parked (the moon). Only working moves; the beacon sends out its rings
@@ -54,8 +55,8 @@ export type NotchPin = { item: Departure | null; open: (d: Departure) => void };
 export type Wing = 'marks' | 'timeline';
 export const isWing = (value: unknown): value is Wing => value === 'marks' || value === 'timeline';
 // With the timeline on the wing: today as the daemon serves it, the companion's way of opening the Dashboard (a rest on the line
-// opens nothing when it is `click`), and what the pane opening or folding tells her (the Dashboard folds; notices wait).
-export type NotchTimeline = { day: Route<DayReply>; openBy: 'both' | 'click' | 'hover'; onOpenChange: (open: boolean) => void; ask?: (text: string, about?: About) => Promise<void> };
+// opens nothing when it is `click`), and what the pane opening or folding tells her (the Dashboard folds; notices wait). `tool`: the Dashboard's pages, one at a time, for the doors' pages (doors.ts).
+export type NotchTimeline = { day: Route<DayReply>; openBy: 'both' | 'click' | 'hover'; onOpenChange: (open: boolean) => void; ask?: (text: string, about?: About) => Promise<void>; tool?: ToolRenderer };
 // A pop names sessions; a card is a needs-you card the companion builds, for session `id` when it has one.
 // A pop carries its 合适吗 row in `rate` (ADR 0160).
 export type NotchNote = { key: string; id?: string; pop?: string[]; card?: ReactNode; rate?: ReactNode; onClose: () => void };
@@ -834,7 +835,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   if (open && panel) lastPanel.current = panel;
   // The drop holds the sessions or the day, never both; the day is mounted afresh when it opens more than a minute after it folded (it starts on
   // today), and within the minute it is the one he left (the same day, scroll and open row).
-  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl} swap={snapTl}/>;
+  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl} swap={snapTl} tool={timeline.tool}/>;
   if (tlOpen) lastDrop.current = 'timeline'; else if (open) lastDrop.current = 'sessions';
   const dropBody = tlOpen ? dayPane : open ? panel : lastDrop.current === 'timeline' ? dayPane : lastPanel.current;
   const shownNote = note ?? lastNote.current;

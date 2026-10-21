@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { CaretLeft, CaretRight, Sparkle, Star } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { postRoute, useRoute, type Route } from './homeData';
@@ -7,7 +7,7 @@ import { answerOf, askOf, hasBody, headOf, openOf, sayOf, type About, type Ask, 
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState, type PageBar } from './DayBar';
 import { DoorDetail, DoorNumbers, DoorRowView, Doors, inRange } from './DayDoors';
-import { useDoors, type DoorKey, type DoorPage, type DoorRow } from './doors';
+import { useDoors, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
 import { DetailPage, EASE, reduced, Unfold, Viewer, type Acts } from './RowOpen';
@@ -241,7 +241,7 @@ type Naming = { key: string; draft: string; role: string | null; state: 'edit' |
 type Docked = { ask: Ask | null; say: Said | null; state: DockState; nonce: number };
 
 // `swap`: said when what the pane shows has just been swapped for other content in one frame (a day, a cut list), so the pane takes the new height with it.
-export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void; swap?: () => void }) {
+export function DayTimeline({ port, feed, open, ask, hold, swap, tool }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void; swap?: () => void; tool?: ToolRenderer }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   // null is today, which the wing already reads; another day is read here.
   const [date, setDate] = useState<string | null>(null);
@@ -313,7 +313,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   // (Notch.tsx remakes it a minute after a fold, on today).
   const [door, setDoor] = useState<DoorKey>('today');
   const pages = useDoors({ port, open, t, lang, ask, items: model?.items ?? NO_ITEMS,
-    day: { date: model?.reply.date ?? '', tz: model?.tz ?? '', start: model?.reply.start_ms ?? 0, end: model?.reply.end_ms ?? 0, now: model?.now ?? now, today: model?.today ?? false } });
+    day: { date: model?.reply.date ?? '', tz: model?.tz ?? '', start: model?.reply.start_ms ?? 0, end: model?.reply.end_ms ?? 0, now: model?.now ?? now, today: model?.today ?? false }, tool });
   const page = door === 'today' ? null : pages[door] ?? BLANK;
   const todayDate = feed.data?.date ?? null, at = date ?? todayDate;
   // What is drawn is not the day asked for: it is on its way, or (`lost`) it did not come and the day that is drawn is not to be left under the new date.
@@ -742,13 +742,20 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     const renaming = rename?.key === key ? { draft: rename.draft, busy: rename.state === 'busy', set: (text: string) => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: (on: boolean) => setLeft(!on) } : null;
     return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={closeRow} prev={key === opened && aside(-1) ? () => turn(-1) : null} next={key === opened && aside(1) ? () => turn(1) : null}/>;
   };
-  // The detail page of a door page's row (its hook makes the title and the body). One that goes while it is up (a letter he has just archived) is kept as it was, to slide out.
-  const last = useRef<{ key: string; node: ReactNode } | null>(null);
-  const doorDetail = (key: string): ReactNode => {
-    const d = page?.detail?.(key);
-    if (d) last.current = { key, node: <DoorDetail key={key} title={d.title} body={d.body} back={closeRow} prev={key === opened && aside(-1) ? () => turn(-1) : null} next={key === opened && aside(1) ? () => turn(1) : null} t={t}/> };
-    return last.current?.key === key ? last.current.node : null;
+  // The rows and their order come before the door's detail, which asks `aside` for its neighbours as this is drawn.
+  const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];
+  const order = door === 'today' ? listed(rows).filter(k => opens.has(k)) : pageRows.filter(r => r.opens).map(r => r.key);
+  // The detail page of a door page's row (its hook makes the title and the body; a `bare` one is the body alone, a page with a head of its own). One that goes while it is up (a letter he has just
+  // archived) is kept as it was, to slide out.
+  const last = useRef<{ key: string; node: ReactNode; bare: boolean } | null>(null);
+  const doorDetail = (key: string) => {
+    const d = page?.detail?.(key, closeRow);
+    if (d) last.current = { key, bare: !!d.bare, node: d.bare ? <Fragment key={key}>{d.body}</Fragment>
+      : <DoorDetail key={key} title={d.title} body={d.body} back={closeRow} prev={key === opened && aside(-1) ? () => turn(-1) : null} next={key === opened && aside(1) ? () => turn(1) : null} t={t}/> };
+    return last.current?.key === key ? last.current : null;
   };
+  // A bare page up: it takes the whole stage, goes back by its own ‹ (below), and the frame's keys are not for it.
+  const shownDoor = page && (opened ?? parting) ? doorDetail((opened ?? parting)!) : null, tooled = !!opened && !!shownDoor?.bare;
   // A door: what was on goes at once (an open page does not slide away, the row the pointer or the keys had, the chip, the day's lens, the range being chosen), and the new page fades in
   // (the effect below). The range the list is cut to stays: the bar is the same day on every door.
   const pickDoor = (next: DoorKey) => {
@@ -771,6 +778,11 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
   // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the open page, the bar's range, lens (or a door's chip) and
   // the list's cut to a range, then a door goes back to today, and then the pane itself (the pane's own Esc listener was added after this one, so this one answers
   // first). A folded pane, which stays mounted, answers nothing.
+  // A bare page goes back by itself: a field it has the cursor in lets go first, then its ‹ is pressed (a category, an item, or the page itself, which calls `closeRow`).
+  const toolBack = () => {
+    const pg = stage.current?.querySelector<HTMLElement>(':scope > .dt-page[data-page]'), at = document.activeElement, back = pg?.querySelector<HTMLElement>('.pg-back');
+    if (at instanceof HTMLElement && pg?.contains(at) && at.matches('input, select, textarea')) at.blur(); else if (back) back.click(); else closeRow();
+  };
   const back = useRef<() => boolean>(() => false);
   back.current = () => {
     if (!open) return false;
@@ -778,7 +790,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
     else if (naming) setNaming(null);
-    else if (opened) closeRow();
+    else if (opened) { if (tooled) toolBack(); else closeRow(); }
     else if (uiRef.current.escape()) { /* one thing of the bar's let go */ }
     else if (door !== 'today') pickDoor('today');
     else return false;
@@ -814,12 +826,12 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     if (top < l.scrollTop + margin) slide(top - margin, 180);
     else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, 180);
   };
-  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn });
-  keys.current = { open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn };
+  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn, tooled });
+  keys.current = { open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn, tooled };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const k = keys.current, target = e.target as Element | null;
-      if (!k.open || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target?.closest?.('input,textarea,select,[contenteditable]')) return;
+      if (!k.open || k.tooled || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target?.closest?.('input,textarea,select,[contenteditable]')) return;
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { if (k.paged) { if (!e.repeat) k.turn(e.key === 'ArrowDown' ? 1 : -1); } else k.walk(e.key === 'ArrowDown' ? 1 : -1); }
       else if ((e.key === 'Enter' || e.key === ' ') && k.pick && !target?.closest?.('button,a')) { if (!e.repeat) k.toggle(k.pick); }
@@ -830,8 +842,6 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
   }, []);
-  const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];
-  const order = door === 'today' ? listed(rows).filter(k => opens.has(k)) : pageRows.filter(r => r.opens).map(r => r.key);
 
   const title = here ? dateTitle(here, t) : model?.title ?? '';
   const say = !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give a day yet", '这台 Jarvis 还不会给出一天']) : slow || route.failed ? t(["Couldn't read this day. Trying again.", '没读到这一天，会再试一次']) : t(['Reading the day…', '读着这一天…']);
@@ -870,10 +880,10 @@ export function DayTimeline({ port, feed, open, ask, hold, swap }: { port: strin
       {model.empty && !page ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
         <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? pick} open={opened} door={barPage} onHot={setHot} onJump={barJump} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
         {barPage && !model.items.length && !model.segs.size && barPage.numbers}
-        {hasList ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}`}>
+        {hasList ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}${tooled ? ' is-tool' : ''}`}>
           <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/>}</div>
           {(opened ?? parting) && <div className="dt-page" data-page={opened ?? undefined} onFocus={e => { if (page && (e.target as Element).matches('input, textarea')) setTyping(true); }} onBlur={e => { if ((e.target as Element).matches('input, textarea')) setTyping(false); }}>
-            {page ? doorDetail((opened ?? parting)!) : detail((opened ?? parting)!)}</div>}
+            {page ? shownDoor?.node : detail((opened ?? parting)!)}</div>}
         </div>
           : page ? <p className="dt-say">{pageSay}</p> : cut && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
