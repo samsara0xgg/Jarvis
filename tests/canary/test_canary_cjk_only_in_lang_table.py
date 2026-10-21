@@ -112,6 +112,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_BOC_PAGE_WORDS", "_BOC_CURRENCY", "_boc_cells"}
     ),
     "jarvis/state/work_state.py": frozenset({"_STOP_WORDS", "_TERM", "_CJK_RUN"}),
+    # A conversation is found by its subject without the reply and forward prefixes Chinese mail
+    # programs put in front of it (ADR 0362).
+    "jarvis/execution/mail_reads.py": frozenset({"_PREFIX"}),
     # A mail is read for the words mail programs write into it in Chinese: a forward's header and
     # subject prefix, and the line that says who wrote the lines quoted below it (ADR 0363).
     "jarvis/state/mail_text.py": frozenset({"_FORWARD_WORDS", "_FORWARD_SUBJECT", "_ATTRIBUTION"}),
