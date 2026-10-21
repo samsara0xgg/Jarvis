@@ -68,10 +68,11 @@ _NOT_LOGIN: Final = re.compile(
     re.IGNORECASE,
 )
 # What a bare "code" or "PIN" is for (ADR 0369): it is a login code only in a sentence that also
-# says signing in, signing up, verifying, confirming or authenticating.
+# says signing in, signing up, verifying, confirming, authenticating or a second factor.
 _LOGIN_WORD: Final = re.compile(
     r"\b(?:sign(?:ing)?[- ]?(?:in(?:to)?|up)|log(?:ging)?[- ]?in(?:to)?)\b"
-    r"|\b(?:verif(?:y|ie[sd]|ying|ication)|confirm|authenticat|two[- ]?step|2[- ]?step)"
+    r"|\b(?:verif(?:y|ie[sd]|ying|ication)|confirm|authenticat|two[- ]?step|2[- ]?step"
+    r"|two[- ]?factor|multi[- ]?factor|2fa\b|mfa\b)"
     r"|登录|登陆|注册|验证|确认",
     re.IGNORECASE,
 )

@@ -241,5 +241,23 @@
   "body": "您的 code 是 308116。请完成登录。",
   "expected": null,
   "why": "a full-width stop ends the sentence: the login word after it does not cover the code"
+ },
+ {
+  "subject": "",
+  "body": "Your 2FA code is 604213.",
+  "expected": "604213",
+  "why": "a second factor says what a bare code is for"
+ },
+ {
+  "subject": "",
+  "body": "Two-factor code: 551180",
+  "expected": "551180",
+  "why": "a second factor says what a bare code is for"
+ },
+ {
+  "subject": "",
+  "body": "Your MFA code is 390127.",
+  "expected": "390127",
+  "why": "a second factor says what a bare code is for"
  }
 ]
