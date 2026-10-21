@@ -1,6 +1,6 @@
 # ADR 0263 — A sent-back answer is never spoken, and the state block backs what it shows
 
-**Status:** Accepted
+**Status:** Superseded-by-0320
 **Date:** 2026-10-14
 **Supersedes:** the clause of ADR 0240 that lets the first answer stay spoken when the spoken route sends it back, and its Consequence that Allen hears a second answer after the first. The rest of ADR 0240 and ADR 0250 stands.
 

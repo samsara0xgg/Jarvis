@@ -1,6 +1,6 @@
 # ADR 0250 — An answer that says it looked something up, in a turn with no call, goes back once
 
-**Status:** Accepted
+**Status:** Superseded-by-0320
 **Date:** 2026-10-12
 **Supersedes:** the clause of ADR 0240 that lists which answers it sends back (a claim that something was saved, set, sent, shown or cancelled, and an announced lookup). Everything else in it stands.
 
