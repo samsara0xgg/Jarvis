@@ -64,18 +64,6 @@ class Wave1FeatureFlags:
             exactly_once_cost_accounting=values.get("exactly_once_cost_accounting") is True,
         )
 
-    @property
-    def all_disabled(self) -> bool:
-        """Return whether the runtime must retain the complete Wave-0 path."""
-        return not any(
-            (
-                self.transactional_event_append,
-                self.lifecycle_terminal_cas,
-                self.confirmation_dispatch_outbox,
-                self.exactly_once_cost_accounting,
-            ),
-        )
-
 
 def _structured(spoken: object) -> bool:
     if not isinstance(spoken, Mapping):
@@ -100,9 +88,9 @@ class Wave4ResponseFlags:
     streams permitted sentences of a pre-routed casual answer while the model
     is still generating. ``spoken_streaming`` (``spoken_streaming.enabled``,
     docs/plans/speak-as-written-proposal.md) streams every request of a turn
-    Allen spoke, tools included, and speaks its answer as it is written. All
-    stay off in the shipped configuration, preserving the complete legacy
-    batch prompt.
+    Allen spoke, tools included, and speaks its answer as it is written. The
+    shipped configuration turns the first two on and the last two off, so a
+    turn takes the batch path with the complete legacy prompt.
     """
 
     response_run_lifecycle: bool = False

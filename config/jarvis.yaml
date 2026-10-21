@@ -78,7 +78,7 @@ llm:
       reasoning_effort: medium
       images: true
     # Claude Haiku 5.5，直连 Anthropic（ADR 0220）。对话预设的另一个选择，出厂不是默认：
-    # 默认仍是 luna，等重放评测定了再换。reasoning_effort 对应 Anthropic 的 effort，都是
+    # 默认是 sonnet，等重放评测定了再换。reasoning_effort 对应 Anthropic 的 effort，都是
     # 自适应思考；none = 关思考（实测反而更慢，还会乱调工具，别用）。2026-10-10 重放：
     # low 和 medium 首 token 一样快，但 low 遇到要查的事常只说“我查一下”就结束（结构化
     # 回复下它的开场白就是整个回答），medium 加下面的 system_note 33 次查了 33 次。
@@ -265,13 +265,6 @@ llm:
       extra_body:
         prompt_cache_key: jarvis-dictation
         prompt_cache_retention: 24h
-
-  # 流式回复的句子切分调优
-  sentence_divider:
-    # 首句遇逗号即切（更早 ship 给 TTS，首字延迟 -50%~)
-    faster_first_response: true
-    # 保护英文缩写不在 Dr./e.g./vs. 等处误切
-    abbreviation_protect: true
 
 # ADR 0211 — 手机随一轮对话或分享发来的图片和文本文件，放在 runtime root 的
 # artifacts/attachments/。和录音、截图一起按文件时间清理（每小时一次）、一起导出和清掉；
@@ -1119,9 +1112,8 @@ tools:
 confirmation:
   ttl_ms: 600000
 
-# ADR-0006/0008 Wave 1 safety primitives.  All adoption switches remain
-# disabled: this wave proves transaction/CAS/accounting behavior without
-# enabling concurrent turns, model streaming, or streaming TTS/player work.
+# ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has all four
+# adoption switches on (transaction, terminal CAS, confirmation outbox, exactly-once cost).
 realtime:
   enabled: true
   # ADR 0151.  Apple SoundAnalysis listens to the mic audio the voice session already

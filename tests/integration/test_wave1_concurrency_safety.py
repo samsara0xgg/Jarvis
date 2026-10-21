@@ -938,7 +938,6 @@ def test_wave1_feature_flags_ship_enabled() -> None:
     realtime = raw["realtime"]
     flags = Wave1FeatureFlags.from_mapping(realtime["concurrency_safety"])
     assert realtime["enabled"] is True
-    assert flags.all_disabled is False
     assert flags.transactional_event_append
     assert flags.lifecycle_terminal_cas
     assert flags.confirmation_dispatch_outbox
