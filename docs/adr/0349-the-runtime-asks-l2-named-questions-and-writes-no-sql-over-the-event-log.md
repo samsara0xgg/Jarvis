@@ -75,8 +75,8 @@ function that says what it answers.
   which the canary cannot tell from the event log's.
 - `row_to_event` and `EVENT_COLUMNS` are public, so any L2 module can select its own rows. That
   every question is named stays a review matter.
-- L5 keeps its own copy of the row decoding (`voice_media._hydrate_event_row`) and its observers'
-  queries; this decision covers the runtime only.
+- L5 keeps its observers' queries, and the media owner its drain of the log by row id (it decodes
+  with `row_to_event`); this decision covers the runtime only.
 - A Live delegation whose wait line is taken back no longer reports failure: it stays running
   until the answer or a failure of the turn's own run lands. When a `turn.failed` carries no
   reason, the Live path still shows its `exception_repr` and `/inherent/ask` its event type.

@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import json
 import logging
 import math
 import re
@@ -31,7 +30,7 @@ import numpy as np
 
 from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.state.event_log import emit_event, turn_intent_channel
+from jarvis.state.event_log import EVENT_COLUMNS, emit_event, row_to_event, turn_intent_channel
 from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import (
@@ -101,40 +100,9 @@ _ANSWERED_GROUPS_LIMIT = 256
 
 _TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log", "badge_card"})
 _SELECT_EVENT_ROWS_THROUGH = (
-    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, payload_json, "
-    "source_event_id, correlation_json FROM events "
+    f"SELECT {EVENT_COLUMNS} FROM events "  # noqa: S608 - the columns are a constant.
     "WHERE id > ? AND id <= ? ORDER BY id ASC LIMIT ?"
 )
-
-
-def _hydrate_event_row(row: tuple[object, ...]) -> tuple[int, Event]:
-    """Hydrate one actor-owned Event Log row while retaining its row id."""
-    (
-        row_id,
-        event_uid,
-        event_type,
-        schema_version,
-        ts_epoch_ms,
-        payload_json,
-        source_event_id,
-        correlation_json,
-    ) = row
-    if not isinstance(payload_json, str):
-        msg = "Event Log payload_json must be text"
-        raise TypeError(msg)
-    payload = json.loads(payload_json)
-    correlation = None
-    if isinstance(correlation_json, str):
-        correlation = json.loads(correlation_json)
-    return int(str(row_id)), Event(
-        event_uid=str(event_uid),
-        type=str(event_type),
-        schema_version=int(str(schema_version)),
-        ts_epoch_ms=int(str(ts_epoch_ms)),
-        payload=payload,
-        source_event_id=(None if source_event_id is None else str(source_event_id)),
-        correlation=correlation,
-    )
 
 
 def _response_id(event: Event) -> str | None:
@@ -2330,7 +2298,9 @@ class StreamingTTSPipeline:
             if not rows:
                 break
             for raw_row in rows:
-                row_id, event = _hydrate_event_row(tuple(raw_row))
+                row = tuple(raw_row)
+                row_id = int(row[0])
+                event = row_to_event(row)
                 self._event_cursor = row_id
                 if event.type not in _RESPONSE_EVENT_TYPES:
                     continue
