@@ -72,19 +72,20 @@ extension TimelineState {
 /// easing in and out, and the bar rests a moment before the next, the band going on past the end for the rest. It goes when the view does (a fade, in the bar).
 struct TLTidySweep: View {
     let scene: TLBarScene
+    let rects: [CGRect]                 // where the bar draws its pieces
+    @Environment(\.tlBarWidth) private var bw
     @State private var going = false
     private let band = 130.0, period = 2.2, sweep = 1.6
 
     var body: some View {
-        let rects = TLGeo.rects(scene.pieces, span: scene.span, width: TLLayout.barW, height: TLLayout.barH)
         let lit = zip(scene.pieces, rects).filter { TLPaint.look($0.0.fill) != nil }.map(\.1)
         LinearGradient(colors: [.clear, Color.white.opacity(0.4), .clear], startPoint: .leading, endPoint: .trailing)
             .frame(width: band, height: TLLayout.barH)
-            .offset(x: going ? -band + (TLLayout.barW + band) * period / sweep : -band)
-            .frame(width: TLLayout.barW, height: TLLayout.barH, alignment: .leading)
+            .offset(x: going ? -band + (bw + band) * period / sweep : -band)
+            .frame(width: bw, height: TLLayout.barH, alignment: .leading)
             .mask {
                 Canvas { ctx, _ in for r in lit { ctx.fill(Path(r), with: .color(.black)) } }
-                    .frame(width: TLLayout.barW, height: TLLayout.barH)
+                    .frame(width: bw, height: TLLayout.barH)
             }
             .onAppear { withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: false)) { going = true } }
             .allowsHitTesting(false).accessibilityHidden(true)

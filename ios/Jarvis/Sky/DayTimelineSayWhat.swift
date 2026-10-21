@@ -1,10 +1,10 @@
 // words: legacy
 import SwiftUI
 
-// What he was doing in a stretch of the day, said in his own words (ADR 0302, `POST /inherent/day/answer`). She fills almost all of the day herself and asks him only where she is unsure, so this
-// entry is the rare one: it is the last thing a stretch's row opens to (and the last of the menu of a long press), and nothing on the bar or in the closed list invites him to it. It opens a
-// sheet with the stretch's hours and one field; the brain writes a span of the doing lane, the days are asked for again, and what he wrote is shown by the words the list already has for
-// what he was doing. The phone keeps no span of its own.
+// What he was doing in a stretch of the day, said in his own words (ADR 0302, `POST /inherent/day/answer`). She fills almost all of the day herself and asks him only where she is unsure: a
+// stretch she asks about takes his answer in the line it opens to (`choose`, by the span's id). Saying it of hours of his own choosing is the rare entry, the last of the menu of a long press,
+// and nothing on the bar or in the closed list invites him to it. It opens a sheet with the stretch's hours and one field; the brain writes a span of the doing lane, the days are asked for
+// again, and what he wrote is shown by the words the list already has for what he was doing. The phone keeps no span of its own.
 
 /// The stretch the sheet is about: the day it is in, and the hours it starts with in whole minutes of that day by the brain's wall clock (`TLClock`).
 struct TLSayWhat: Identifiable {
@@ -86,6 +86,26 @@ extension TimelineState {
                 brain.refetch()
             case .failed:
                 sayNote = Self.sayNote
+                Haptic.notify(.warning)
+            }
+        }
+    }
+
+    /// His answer to what a stretch asks, from the line under its open row: one of the brain's options, or words (his 是 to the words she has for it, or a line of his own; a stretch nothing
+    /// was recorded for is answered the same way, by its id). One at a time. When the brain takes it the line says 记下了 and what he said until the row closes, and the days are asked for
+    /// again; when it will not, the row says so under it.
+    func choose(_ e: TLEntry, choice: String?, text: String?) {
+        guard choosing == nil, (choice == nil) != (text == nil), let r = reply else { return }
+        choosing = e.id
+        Task { @MainActor [self] in
+            defer { choosing = nil }
+            switch await brain.choose(r.date, e.id, choice, text) {
+            case .done:
+                withAnimation(TLMotion.fade(reduce: TLMotion.reduced)) { chosen[e.id] = choice ?? text }
+                Haptic.notify(.success)
+                brain.refetch()
+            case .failed:
+                say(Words.Timeline.notNoted, on: e.id)
                 Haptic.notify(.warning)
             }
         }

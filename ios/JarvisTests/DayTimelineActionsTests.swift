@@ -30,21 +30,22 @@ final class DayTimelineActionsTests: XCTestCase {
         }
     }
 
-    // MARK: ask her, open the talk, sum up the work
+    // MARK: ask her
 
     func testAskHandsTheRowToHerAsTheChipOfTheNextTurnAndTheComposerTakesTheCursor() throws {
         let tl = state(), e = StarEngine()
         var began = 0
         e.beginEditing = { began += 1 }
-        let talk = try entry(tl, "talk-1")
-        let about = try XCTUnwrap(talk.about)
-        tl.perform(.ask, on: talk, engine: e)
+        let paid = try entry(tl, "payment-demo-1")
+        XCTAssertFalse(paid.expands, "a row that does not open where it stands is still handed to her, from its long press")
+        let about = try XCTUnwrap(paid.about)
+        tl.perform(.ask, on: paid, engine: e)
         XCTAssertEqual(e.ui.about, about)
         XCTAssertEqual(began, 1, "the composer opens with the keyboard up")
         // he took that chip off earlier: asking again brings it back
         e.dropAbout()
         XCTAssertNil(e.ui.about)
-        tl.perform(.ask, on: talk, engine: e)
+        tl.perform(.ask, on: paid, engine: e)
         XCTAssertEqual(e.ui.about, about)
         XCTAssertNil(e.aboutDropped)
         XCTAssertEqual(began, 2)
@@ -52,8 +53,8 @@ final class DayTimelineActionsTests: XCTestCase {
 
     func testAChipHeNeverSentGoesWhenThePanelShutsButNotWhileATurnIsOnItsWayOrATalkGoes() throws {
         let tl = state(), e = StarEngine()
-        let talk = try entry(tl, "talk-1")
-        tl.perform(.ask, on: talk, engine: e)
+        let paid = try entry(tl, "payment-demo-1")
+        tl.perform(.ask, on: paid, engine: e)
         e.openPanel(quiet: true)
         XCTAssertNotNil(e.ui.about)
         e.closePanel(quiet: true)
@@ -61,7 +62,7 @@ final class DayTimelineActionsTests: XCTestCase {
         XCTAssertNil(AboutNow.current)
         // the turn is on its way, or the talk has begun: the chip is its own
         for (sending, talking) in [(true, false), (false, true)] {
-            tl.perform(.ask, on: talk, engine: e)
+            tl.perform(.ask, on: paid, engine: e)
             e.openPanel(quiet: true)
             e.sendingToBrain = sending; e.ui.talking = talking
             e.closePanel(quiet: true)
@@ -77,51 +78,14 @@ final class DayTimelineActionsTests: XCTestCase {
         e.deliver = { u, t, i, a in await brain.deliver(u, t, i, a) }
         var began = 0
         e.beginEditing = { began += 1 }
-        let home = try entry(tl, "stay-1"), bare = try entry(tl, "stay-5"), talk = try entry(tl, "talk-1"), sessions = try entry(tl, "code-group-stay-1")
+        let home = try entry(tl, "stay-1"), bare = try entry(tl, "stay-5"), sessions = try entry(tl, "code-group-stay-1")
         tl.perform(.acknowledge, on: home, engine: e)
         XCTAssertTrue(tl.acked.isEmpty, "a place is not a reminder")
-        tl.perform(.openTalk, on: home, engine: e)
-        XCTAssertFalse(e.ui.panelOpen)
         tl.perform(.rename, on: bare, engine: e)
         XCTAssertNil(tl.renaming, "a place he does not keep cannot be renamed")
-        tl.perform(.summarize, on: talk, engine: e)
         tl.perform(.ask, on: sessions, engine: e)
         XCTAssertNil(e.ui.about, "a row for several sessions of Claude Code is no one item a turn can be about")
         XCTAssertEqual(began, 0)
-        XCTAssertTrue(brain.turns.isEmpty)
-    }
-
-    func testOpenTalkBringsUpTheConversationAtThatTalk() throws {
-        let tl = state(), e = StarEngine()
-        XCTAssertFalse(e.ui.panelOpen)
-        tl.perform(.openTalk, on: try entry(tl, "talk-1"), engine: e)
-        XCTAssertTrue(e.ui.panelOpen)
-    }
-
-    func testSumUpSendsOneTurnWithTheWorkItAsWhatItIsAbout() async throws {
-        let tl = state(), e = StarEngine()
-        let brain = Brain()
-        e.deliver = { u, t, i, a in await brain.deliver(u, t, i, a) }
-        let work = try entry(tl, "work-demo-2")
-        XCTAssertTrue(work.actions.contains(.summarize))
-        e.aboutDropped = work.about?.id            // the chip he took off does not keep this from being what the turn is about
-        tl.perform(.summarize, on: work, engine: e)
-        await until("one turn went out") { brain.turns.count == 1 }
-        XCTAssertEqual(brain.turns.first?.text, TimelineState.summarizeWords)
-        XCTAssertEqual(brain.turns.first?.about, work.about)
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(brain.turns.count, 1)
-    }
-
-    func testSumUpWaitsForATurnOnItsWayAndLeavesNoChipForTheNextOne() throws {
-        let tl = state(), e = StarEngine()
-        let brain = Brain()
-        e.deliver = { u, t, i, a in await brain.deliver(u, t, i, a) }
-        let work = try entry(tl, "work-demo-2")
-        e.sendingToBrain = true                         // a turn is on its way: this one would be swallowed
-        tl.perform(.summarize, on: work, engine: e)
-        XCTAssertNil(e.ui.about, "the chip is not put on for a turn that is not sent")
-        XCTAssertEqual(e.brainNote, "上一句还在发，等它发完再点")
         XCTAssertTrue(brain.turns.isEmpty)
     }
 

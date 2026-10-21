@@ -3,6 +3,7 @@ import SwiftUI
 
 // Her sentence, the overview bar under it and the day's numbers under that: the part of the timeline that follows his finger. It is a view of its own because the minute under a finger
 // changes on every frame and whatever reads that minute is drawn again on every frame: kept here, that is this and nothing else of the screen, not the model of the day and not the list.
+// A tap on the bar is not a finger held on it: it opens the row of the block tapped, or frames the block for a moment (`TimelineState.tapBar`).
 // While a talk is on show (`ui.tlTalk`) the three give way to it, the way they give way to the readout of a finger: Sky/DayTimelineTalk.swift draws it in their place. While the brain tidies
 // today, and for a while after it answers with nothing new or fails, what it says of it is in her sentence's place.
 
@@ -14,6 +15,7 @@ struct TLTopView: View {
     let model: DayTimelineModel?
     let scene: TLBarScene                       // the bar of it, made once with the model and not on every frame of a finger
     var loading = false                         // the day is being asked for: its bar is an empty track with a soft light going along it
+    var room = TLLayout.viewport                // how tall the list is under the pinned cards: how far up it can carry a row the bar opens
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
@@ -64,14 +66,15 @@ struct TLTopView: View {
             }
             .animation(TLMotion.dayChange(reduce: reduce), value: model == nil)
             if let m = model {
-                let lens = tl.activeLens(in: m)
+                let lens = tl.activeLens(in: m), axis = TLAxis.fair(scene, width: TLLayout.barW)
                 ZStack(alignment: .topLeading) {
                     TLBarView(scene: scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
                               reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown,
-                              sweeping: tl.tidy == .running && tl.day == tl.today && !reduce, ghost: ghost, ghostGone: ghostGone)
+                              sweeping: tl.tidy == .running && tl.day == tl.today && !reduce, ghost: ghost, ghostGone: ghostGone, fair: true, blink: tl.blink)
+                    TLViewportFrame(tl: tl, axis: axis)
                 }
                 .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
-                .modifier(TLBarScrub(span: m.span, changed: { t, x in scrubbed(t, x, m) }, ended: lifted))
+                .modifier(TLBarScrub(span: m.span, axis: axis, changed: { t, x in scrubbed(t, x, m) }, ended: lifted, tap: { t in tl.tapBar(t, in: m, room: room) }))
                 .accessibilityElement().accessibilityLabel("一天的概览")
                 .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
                 .accessibilityValue(tl.scrub != nil ? said.map(spoken) ?? "" : "")
@@ -80,7 +83,7 @@ struct TLTopView: View {
                 .id(tl.day).transition(barTransition)
                 .offset(x: 30, y: TLLayout.barY)
                 if !m.chips.isEmpty || !m.body.isEmpty {
-                    TLChips(chips: m.chips, health: m.body, active: lens) { l in
+                    TLChips(chips: m.chips, health: m.body, active: lens, whole: true) { l in
                         Haptic.selection()
                         let on = tl.lens != l
                         withAnimation(.easeOut(duration: 0.15)) { tl.lens = on ? l : nil }
@@ -139,20 +142,20 @@ struct TLTopView: View {
         @unknown default: return
         }
         guard let t = scene.step(from: tl.scrub, forward: forward) else { return }
-        tl.follow(t, in: m)
+        tl.follow(t, in: m, inPlace: true)
         tl.holdThenRelease()
     }
 
-    /// the stretch under his finger, else the span of the row he has open, on the bar (`m` is the bar's own view of the day)
+    /// the block of the row open where it stands, on the bar (`m` is the bar's own view of the day)
     private func bracket(_ m: DayTimelineModel) -> ClosedRange<Double>? {
-        if let t = tl.scrub { return m.seg(at: t).map { $0.t0...$0.t1 } }
         guard let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
         return e.t0...max(e.t0, e.t1 ?? e.t0)
     }
 
-    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar it crosses, and a firm tap where it crosses now
+    /// a finger held on the bar: the list follows it, a row open where it stands staying open, with a tick of the phone for each stretch of the bar it crosses, and a firm tap where it
+    /// crosses now
     private func scrubbed(_ t: Double, _ x: Double, _ m: DayTimelineModel) {
-        tl.follow(t, in: m)
+        tl.follow(t, in: m, inPlace: true)
         tl.finger = TLGaze.bar(x: x)
         let side = m.now.map { m.onBar(t) >= $0 }
         if let side, let was = nowSide, side != was { Haptic.impact(.rigid); lastStretch = m.stretch(at: t) }
@@ -171,24 +174,76 @@ struct TLTopView: View {
     private var barTransition: AnyTransition { TLMotion.page(slide: TLMotion.barSlide * Double(tl.slide), reduce: reduce) }
 }
 
-/// A finger on the day bar: the minute under it (the bar is `TLLayout.barW` wide and covers `span`) on every move, and a call when it lifts or is taken away (a call, the app leaving).
-/// The home timeline and the footprint page each give it what they do with the minute.
+/// A finger on the day bar: the minute under it (the bar is `TLLayout.barW` wide and covers `span`, where `axis` draws it) on every move, and a call when it lifts or is taken away (a call,
+/// the app leaving). The home timeline and the footprint page each give it what they do with the minute. Given `tap`, a touch is a finger held on the bar only once it has stayed 180 ms or
+/// moved more than 5 pt: one that lifts before is a tap, at the minute it lifted.
 struct TLBarScrub: ViewModifier {
     let span: ClosedRange<Double>
+    var axis: TLAxis?
     let changed: (_ minute: Double, _ x: Double) -> Void
     let ended: () -> Void
+    var tap: ((_ minute: Double) -> Void)?
     @GestureState private var touching = false
+    @State private var touch = Touch()
     @Environment(\.tlBarWidth) private var width
+
+    static let holdFor = 0.18, slop = 5.0
+
+    /// a touch that may still be a tap: where it began, where it is, whether it has become a finger held on the bar, and the wait that makes it one (kept by the modifier and never drawn
+    /// from, so a reference)
+    final class Touch {
+        var start: Double?
+        var x = 0.0
+        var held = false
+        var wait: Task<Void, Never>?
+    }
 
     /// the minute at `x` points from the left edge of a bar `width` wide, kept on the bar
     static func minute(x: Double, span: ClosedRange<Double>, width: Double = TLLayout.barW) -> Double { span.lowerBound + clamp(x / width, 0, 1) * (span.upperBound - span.lowerBound) }
+    private func minute(_ x: Double) -> Double { axis?.minute(x) ?? Self.minute(x: x, span: span, width: width) }
 
     func body(content: Content) -> some View {
         content
             .gesture(DragGesture(minimumDistance: 0)
                 .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away, which lets the readout go
-                .onChanged { v in changed(Self.minute(x: v.location.x, span: span, width: width), v.location.x) })
-            .onChange(of: touching) { _, on in if !on { ended() } }
+                .onChanged { v in moved(v.location.x, from: v.startLocation.x) }
+                .onEnded { v in lifted(v.location.x) })
+            .onChange(of: touching) { _, on in
+                guard !on else { return }
+                if tap == nil { ended() } else { DispatchQueue.main.async { taken() } }         // after `lifted`, which a touch that lifts has had: one still here was taken away
+            }
+    }
+
+    private func moved(_ x: Double, from x0: Double) {
+        guard tap != nil else { changed(minute(x), x); return }
+        let t = touch
+        t.x = x
+        if t.start == nil {
+            t.start = x0; t.held = false
+            t.wait = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(Self.holdFor * 1e9))
+                guard !Task.isCancelled, t.start != nil, !t.held else { return }
+                t.held = true
+                changed(minute(t.x), t.x)
+            }
+        }
+        if !t.held && abs(x - (t.start ?? x)) > Self.slop { t.wait?.cancel(); t.held = true }
+        if t.held { changed(minute(x), x) }
+    }
+
+    private func lifted(_ x: Double) {
+        guard let tap else { return }
+        let t = touch, held = t.held
+        t.wait?.cancel(); t.wait = nil; t.start = nil; t.held = false
+        if held { ended() } else { tap(minute(x)) }
+    }
+
+    private func taken() {
+        let t = touch
+        guard t.start != nil else { return }
+        let held = t.held
+        t.wait?.cancel(); t.wait = nil; t.start = nil; t.held = false
+        if held { ended() }
     }
 }
 
@@ -234,7 +289,8 @@ struct TLPlainChip: Equatable, Identifiable {
     var id: String { word }
 }
 
-/// The row of the day's numbers under the hours: a chip for each, pressing one brings that kind forward (and pressing it again lets it go). Sideways when there are more than fit.
+/// The row of the day's numbers under the hours: a chip for each, pressing one brings that kind forward (and pressing it again lets it go). Sideways when there are more than fit; `whole`
+/// (the phone's timeline), only those that fit the row, in order, none cut at its edge.
 struct TLChips: View, Equatable {
     let chips: [TLChip]
     let health: [TLBody]                // what Health reported, after them
@@ -242,25 +298,64 @@ struct TLChips: View, Equatable {
     var extra: [TLPlainChip] = []       // a page's own numbers, after the chips and before what Health reported
     var lead: [TLPlainChip] = []        // a page's own, before the chips
     var width = W                       // the row's width: the phone's, or the iPad's top band
+    var whole = false
     let toggle: (TLLens) -> Void
 
-    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra && a.lead == b.lead && a.width == b.width }
+    static func == (a: TLChips, b: TLChips) -> Bool {
+        a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra && a.lead == b.lead && a.width == b.width && a.whole == b.whole
+    }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(lead) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
-                ForEach(chips) { c in chip(c) }
-                ForEach(extra) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
-                if !health.isEmpty { TLBodyValues(values: health).padding(.leading, chips.isEmpty ? 0 : 8) }        // after the numbers, quiet
+        if whole {
+            let n = fit
+            row(Array(lead.prefix(n.lead)), Array(chips.prefix(n.chips)), Array(extra.prefix(n.extra)), Array(health.prefix(n.health)))
+                .padding(.horizontal, 30)
+                .frame(width: width, height: TLLayout.chipsHit, alignment: .leading)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                row(lead, chips, extra, health)
+                    .padding(.horizontal, 30)
+                    .frame(height: TLLayout.chipsHit)
             }
-            .padding(.horizontal, 30)
-            .frame(height: TLLayout.chipsHit)
+            .frame(width: width, height: TLLayout.chipsHit)
+            // a chip going off the side goes softly
+            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / width), .init(color: .black, location: 1 - 24 / width), .init(color: .clear, location: 1)],
+                                 startPoint: .leading, endPoint: .trailing))
         }
-        .frame(width: width, height: TLLayout.chipsHit)
-        // a chip going off the side goes softly
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / width), .init(color: .black, location: 1 - 24 / width), .init(color: .clear, location: 1)],
-                             startPoint: .leading, endPoint: .trailing))
+    }
+
+    private func row(_ lead: [TLPlainChip], _ chips: [TLChip], _ extra: [TLPlainChip], _ health: [TLBody]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(lead) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
+            ForEach(chips) { c in chip(c) }
+            ForEach(extra) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
+            if !health.isEmpty { TLBodyValues(values: health).padding(.leading, chips.isEmpty ? 0 : 8) }        // after the numbers, quiet
+        }
+    }
+
+    /// how many of each fit the row whole, in order: the faces 6 pt apart, then (8 pt on) Health's values 14 pt apart, while every face is in
+    private var fit: (lead: Int, chips: Int, extra: Int, health: Int) {
+        let faces = lead.map { Self.faceWidth($0.word, $0.value) } + chips.map { Self.faceWidth($0.word, $0.value) } + extra.map { Self.faceWidth($0.word, $0.value) }
+        let room = width - 60, n = Self.fitting(faces, room: room, gap: 6)
+        let used = n == 0 ? 0 : faces.prefix(n).reduce(0, +) + 6 * Double(n - 1) + 6 + (chips.isEmpty ? 0 : 8)
+        let h = n < faces.count ? 0 : Self.fitting(health.map(Self.bodyWidth), room: room - used, gap: 14)
+        return (min(n, lead.count), min(max(0, n - lead.count), chips.count), max(0, n - lead.count - chips.count), h)
+    }
+
+    /// how wide a chip's face is: its icon, its word and its value, 9 pt either side
+    static func faceWidth(_ word: String, _ value: String) -> Double {
+        12 + 5 + ceil(tlWidth(word, size: 11.5)) + 5 + ceil(tlWidth(value, size: 11.5, weight: .medium, figures: true)) + 18
+    }
+    /// how wide one of Health's values is
+    static func bodyWidth(_ v: TLBody) -> Double { ceil(tlWidth(v.prefix, size: 11.5)) + ceil(tlWidth(v.value, size: 11.5, mono: true)) + ceil(tlWidth(v.suffix, size: 11.5)) }
+    /// how many of `widths` fit `room` in order, `gap` between them: the first that does not, and every one after it, are left out
+    static func fitting(_ widths: [Double], room: Double, gap: Double) -> Int {
+        var used = -gap
+        for (i, w) in widths.enumerated() {
+            used += gap + w
+            if used > room { return i }
+        }
+        return widths.count
     }
 
     private func chip(_ c: TLChip) -> some View {

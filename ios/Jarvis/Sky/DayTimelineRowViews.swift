@@ -1,15 +1,16 @@
 // words: legacy
 import SwiftUI
 
-// One line of the day's list: the time, the icon in its circle (dashed for what has not happened, a lit star on what mattered), the title with its one muted line, and at the right how long
-// or the value. A place carries a rail in its hue through what happened there, a trip a dashed one through all of its run. The heights are `TLMetrics` (single 44, with a line 56, a place's
-// header 44, 12 between groups), so nothing crowds and every row is a target of at least 44. A stretch of what he was doing is a row like any other, its icon in its category's colour. A tap on a row opens
-// its page over the list (Sky/DayTimelineDetail.swift), which says the title and the line whole and what the row opens to (Sky/DayTimelineOpen.swift).
+// One line of the day's list: the time, the icon in its circle (dashed for what has not happened), the title (a question mark after it where she is not sure) with its one muted line, and
+// at the right how long (warm while it goes on) or the value; on the phone a small arrow at the far right says the row opens where it stands. A place over a group of stretches is a header:
+// its dot on the rail, its name and its hours. A place carries a rail in its hue through its group, a trip a dashed one that reaches out through the blanks either side of it. The heights are
+// `TLMetrics` (46, with a line 60, a header 40, 12 between groups), so every row he can touch is a target of at least 44. Opened, a row on the phone unfolds what it has to say under itself
+// (Sky/DayTimelineOpen.swift); on the iPad it opens on the stage beside the list.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
-private let amber = Color(red: 1, green: 201 / 255, blue: 143 / 255)               // what waits on him, and nothing else
-private let warm = Color(red: 1, green: 240 / 255, blue: 220 / 255)               // now
+private let amber = Color(red: 1, green: 201 / 255, blue: 143 / 255)               // what waits on him, and the question mark of what she is not sure of
+private let warm = Color(red: 1, green: 240 / 255, blue: 220 / 255)               // now, and how long what goes on has gone
 private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
 private let tripRail = Color(red: 196 / 255, green: 208 / 255, blue: 1)
 
@@ -18,35 +19,27 @@ extension TLAction {
     var title: String {
         switch self {
         case .ask: "问她"
-        case .openTalk: "打开对话"
         case .rename: "改名字"
         case .name: "起个名字"
         case .acknowledge: "知道了"
         case .confirm: "是我的"
         case .deny: "不是"
-        case .summarize: "让她总结这段"
-        case .mark: "标为重要"
-        case .unmark: "取消重要"
         case .sayWhat: "这段在干嘛"
         }
     }
     var symbol: String {
         switch self {
         case .ask: "text.bubble"
-        case .openTalk: "bubble.left.and.bubble.right"
         case .rename: "pencil"
         case .name: "mappin.and.ellipse"
         case .acknowledge: "checkmark.circle"
         case .confirm: "checkmark.circle"
         case .deny: "xmark.circle"
-        case .summarize: "sparkles"
-        case .mark: "star"
-        case .unmark: "star.slash"
         case .sayWhat: "pencil.line"
         }
     }
-    /// what the menu of a long press offers, in this order: summing up a stretch of work sends a turn at once, so it is a button he sees and not a line of a menu
-    static let menu: [TLAction] = [.ask, .openTalk, .rename, .name, .acknowledge, .confirm, .deny, .mark, .unmark, .sayWhat]
+    /// what the menu of a long press offers, in this order: asking her first, on every row there is something to put to her about, and 这段在干嘛 last
+    static let menu: [TLAction] = [.ask, .rename, .name, .acknowledge, .confirm, .deny, .sayWhat]
 }
 
 struct TLRowView: View, Equatable {
@@ -57,19 +50,27 @@ struct TLRowView: View, Equatable {
     let tl: TimelineState
     let engine: StarEngine
     let tap: () -> Void
+    var inPlace = false                 // the phone's list: the row opens under itself, and wears the arrow that says so
+    var open = false                    // and it is open
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.padFlight) private var flight          // set on the iPad only
 
     /// Two rows are the same when what they draw is, and where they stand (the closures come from the list and know where): a row that is the same is not drawn again, which is what keeps
-    /// the list cheap while it is scrolled to the minute under a finger. What lights a row is read by the row's own `TLRowHeat`.
+    /// the list cheap while it is scrolled to the minute under a finger. What lights a row is read by the row's own `TLRowHeat`, and what it opened to reads what it shows itself.
     static func == (a: TLRowView, b: TLRowView) -> Bool {
-        a.e == b.e && a.dim == b.dim && a.top == b.top && a.room == b.room
+        a.e == b.e && a.dim == b.dim && a.top == b.top && a.room == b.room && a.inPlace == b.inPlace && a.open == b.open
     }
 
     /// the circle's size: a place's header has a dot, a stop on the way a smaller one
     private var beadSize: Double { e.kind == .stay ? 8 : e.token != nil ? TLStopToken.size : e.kind == .pause ? 7 : TLColumns.bead }
     /// where the title's line begins: the block of a row is centred in its height
     private var titleTop: Double { e.hasLine ? (e.base - 35) / 2 : (e.base - 18) / 2 }
+    /// a tap on it does something: on the phone, open it where it stands or frame its block; on the iPad, open it on the stage
+    private var touchable: Bool { inPlace ? e.touchable : e.opens }
+    /// it opens where it stands, which the arrow at its right says
+    private var arrow: Bool { inPlace && e.expands }
+    /// the column at the right that the arrow keeps clear on the phone
+    private var arrowRoom: Double { inPlace ? TLColumns.arrow : 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -81,10 +82,16 @@ struct TLRowView: View, Equatable {
                 }
                 .background { TLRowHeat(id: e.id, tl: tl) }
                 .contentShape(Rectangle())
-                .modifier(TLRowTap(opens: e.opens, tap: tap))
+                .modifier(TLRowTap(on: touchable, tap: tap))
                 .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(e.opens ? .isButton : [])
-                .modifier(TLMenu(e: e, tl: tl, engine: engine))
+                .accessibilityAddTraits(touchable ? .isButton : [])
+                .accessibilityHint(arrow ? (open ? Words.Timeline.collapse : Words.Timeline.expand) : "")
+                .modifier(TLMenu(e: e, tl: tl, engine: engine, inPlace: inPlace, open: open, room: room))
+            if open && inPlace {
+                TLOpenView(e: e, tl: tl, engine: engine, inPlace: true, mapWidth: TLColumns.words - TLColumns.arrow)
+                    .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { tl.openH = $0 }
+                    .transition(reduce ? .opacity : TLUnfold.transition)
+            }
         }
         .background(alignment: .topLeading) { rails }
         .opacity(dim)
@@ -101,19 +108,19 @@ struct TLRowView: View, Equatable {
         }
     }
 
-    /// the place he stayed in: its colour as a dot on the rail, its name, and at the right its hours and how long
+    /// The place he stayed in, or a place over a group of stretches: its colour as a dot on the rail, its name, and at the right its hours and how long.
     private var stay: some View {
         HStack(spacing: 0) {
             Circle().fill((e.color.map { $0.color } ?? muted).opacity(e.kept ? 1 : 0.45)).frame(width: 8, height: 8)
                 .padding(.leading, TLColumns.centre - 4)
             Text(e.title).font(.system(size: 15.5, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
                 .padding(.leading, TLColumns.text - TLColumns.centre - 4)
-            if e.lit { TLRowStar(hers: e.hers).frame(width: 13, height: 13).padding(.leading, 6).transition(.opacity) }
             Spacer(minLength: 10)
             Text(e.right).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize().layoutPriority(1)
+                .padding(.trailing, arrowRoom)
         }
-        .animation(tlStarFade(reduce: reduce), value: e.lit)
         .frame(height: e.base)
+        .overlay(alignment: .trailing) { if arrow { chevron } }
     }
 
     private var nowLine: some View {
@@ -132,24 +139,32 @@ struct TLRowView: View, Equatable {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(e.title).font(.system(size: 15)).foregroundStyle(e.unknown ? muted : ink).lineLimit(1)
+                    if e.unsure {
+                        Text(Words.Timeline.unsure).font(.system(size: 15, weight: .semibold)).foregroundStyle(amber).padding(.leading, -5).fixedSize()
+                            .accessibilityLabel(Words.Timeline.unsureSaid)
+                    }
                     if e.waiting { badge }
                 }
                 .frame(minHeight: 18, alignment: .leading)
                 .animation(.easeOut(duration: 0.25), value: e.waiting)
-                if e.hasLine {
-                    // a stretch's line: where, then the small icons of what is inside it (they keep their room, and the words give way)
-                    HStack(spacing: 8) {
-                        if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(1) }
-                        TLCountsView(counts: e.counts)
-                    }
-                    .frame(minHeight: 15, alignment: .leading)
-                }
+                if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(1).frame(minHeight: 15, alignment: .leading) }
             }
             .padding(.leading, TLColumns.text - TLColumns.centre - TLColumns.bead / 2).padding(.top, titleTop)
             Spacer(minLength: 8)
-            Text(e.right).font(tlFigures(11.5)).foregroundStyle(e.strongRight ? ink : muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, titleTop)
+            Text(e.right).font(tlFigures(11.5)).foregroundStyle(e.going ? warm : e.strongRight ? ink : muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, titleTop)
+                .padding(.trailing, arrowRoom)
         }
+        .overlay(alignment: .topTrailing) { if arrow { chevron.padding(.top, titleTop + 3) } }
         .opacity(e.later ? 0.62 : 1)
+    }
+
+    /// the arrow of a row that opens where it stands: down, and up while it is open
+    private var chevron: some View {
+        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(RGB(196, 204, 238).color(0.6))
+            .frame(width: 12, height: 12)
+            .rotationEffect(.degrees(open ? 180 : 0))
+            .animation(reduce ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.3), value: open)
+            .accessibilityHidden(true)
     }
 
     /// the amber 等你, which fades when what waited is answered
@@ -158,7 +173,7 @@ struct TLRowView: View, Equatable {
             .background(amber.opacity(0.16), in: Capsule()).fixedSize().transition(.opacity)
     }
 
-    /// the circle (white 0.06, the kind's icon in it; dashed and outlined for what has not happened; a lit star on its corner for what mattered); a stop on the way is a small dot
+    /// the circle (white 0.06, the kind's icon in it; dashed and outlined for what has not happened); a stop on the way is a small dot
     @ViewBuilder private var bead: some View {
         if let n = e.token {
             TLStopToken(number: n).frame(width: TLColumns.bead, height: TLColumns.bead)
@@ -174,60 +189,39 @@ struct TLRowView: View, Equatable {
             }
             .frame(width: TLColumns.bead, height: TLColumns.bead)
             .background { if let flight { Color.clear.onGeometryChange(for: CGRect.self) { $0.frame(in: .named("padHome")) } action: { flight.rects[e.id] = $0 } } }          // the iPad's stage flies this icon to its title
-            .overlay(alignment: .topTrailing) { if e.lit { TLRowStar(hers: e.hers).frame(width: 12, height: 12).offset(x: 3, y: -3).transition(.opacity) } }
-            .animation(tlStarFade(reduce: reduce), value: e.lit)
         }
     }
 
     // MARK: the rail
 
-    /// A place's rail (2 pt in its hue at 0.35) runs from its dot through the rows that happened there, and a trip's (dashed) through all of a run; each piece stops short of the circle it
-    /// passes. A row with no rail in or out has none.
+    /// A place's rail (2 pt in its hue at 0.35) runs from its dot through the rows of its group, through what an open one says too, and a trip's (dashed) through the trip and out through the
+    /// blanks either side of it (`gapRail`); each piece stops short of the circle it passes. A row with no rail in or out has none.
     @ViewBuilder private var rails: some View {
         if e.rail == .gap {          // a stretch with no fixes: dotted through the whole row
             VStack(spacing: 0) {
                 Color.clear.frame(height: e.gap)
-                rail.frame(maxHeight: .infinity)
+                rail(e.rail).frame(maxHeight: .infinity)
             }
             .frame(width: 2).padding(.leading, TLColumns.centre - 1)
-        } else if e.rail != .none, e.railIn || e.railOut {
-            let air = 3.0, above = max(0, (e.base - beadSize) / 2 - air)
+        } else if e.gapRail != .none || (e.rail != .none && (e.railIn || e.railOut)) {
+            let air = 3.0, above = max(0, (e.base - beadSize) / 2 - air), through = e.rail != .none
             VStack(spacing: 0) {
-                Color.clear.frame(height: e.gap)
-                if e.railIn { rail.frame(height: above) } else { Color.clear.frame(height: above) }
+                if e.gapRail != .none { rail(e.gapRail).frame(height: e.gap) } else { Color.clear.frame(height: e.gap) }
+                if through && e.railIn { rail(e.rail).frame(height: above) } else { Color.clear.frame(height: above) }
                 Color.clear.frame(height: beadSize + 2 * air)
-                if e.railOut { rail.frame(maxHeight: .infinity) } else { Spacer(minLength: 0) }
+                if through && e.railOut { rail(e.rail).frame(maxHeight: .infinity) } else { Spacer(minLength: 0) }
             }
             .frame(width: 2).padding(.leading, TLColumns.centre - 1)
         }
     }
 
-    @ViewBuilder private var rail: some View {
-        switch e.rail {
+    @ViewBuilder private func rail(_ r: TLRail) -> some View {
+        switch r {
         case .place(let hue): Rectangle().fill(hue.color(0.35)).frame(width: 2)
         case .trip: DashedRail().stroke(tripRail.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [2, 3])).frame(width: 2)
         case .gap: DashedRail().stroke(FootprintPaint.gap.color(FootprintPaint.gapAlpha), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [0.1, 5])).frame(width: 2)
         case .none: Color.clear
         }
-    }
-}
-
-/// the small icons each followed by its number, under a stretch's title: pictures, payments, calls, messages (only those it has)
-struct TLCountsView: View {
-    let counts: TLCounts
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(counts.shown, id: \.symbol) { c in
-                HStack(spacing: 3) {
-                    Image(systemName: c.symbol).font(.system(size: 10.5))
-                    Text("\(c.n)").font(AT.mono(11))
-                }
-            }
-        }
-        .foregroundStyle(muted).fixedSize().layoutPriority(1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(counts.shown.map { "\($0.word) \($0.n)" }.joined(separator: "，"))
     }
 }
 
@@ -241,14 +235,14 @@ private struct DashedRail: Shape {
 
 // MARK: - the tap on a row
 
-/// A row that opens is a button, so that the row answers the touch itself: a wash of white (0.07, as the finger on the bar lights it) comes on quickly at touch-down and goes more slowly on
-/// lift. The long press that lifts the menu (`TLMenu`) goes on over it. A row that opens to nothing has no tap.
+/// A row a tap does something on is a button, so that the row answers the touch itself: a wash of white (0.07, as the finger on the bar lights it) comes on quickly at touch-down and goes
+/// more slowly on lift. The long press that lifts the menu (`TLMenu`) goes on over it. A row a tap does nothing on has no tap.
 private struct TLRowTap: ViewModifier {
-    let opens: Bool
+    let on: Bool
     let tap: () -> Void
 
     func body(content: Content) -> some View {
-        if opens { Button(action: tap) { content }.buttonStyle(TLRowPress()) } else { content }
+        if on { Button(action: tap) { content }.buttonStyle(TLRowPress()) } else { content }
     }
 }
 
@@ -266,22 +260,31 @@ private struct TLRowPress: ButtonStyle {
 
 // MARK: - the menu of a long press
 
-/// A long press on a row lifts the row opened as its preview and offers 打开 (its page: SwiftUI has no tap on the preview that commits to it), then what the row can do, each only where it
-/// works: 问她, 打开对话, 改名字, 起个名字, 知道了, 是我的, 不是, 标为重要, 取消重要, and on a stretch 这段在干嘛 last. A row that opens to nothing and offers none has no menu.
+/// A long press on a row lifts the row opened as its preview and offers 打开 (where a tap would open it: SwiftUI has no tap on the preview that commits to it), then what the row can do,
+/// each only where it works: 问她 (on every row, a place's header too, that there is something to put to her about, whether it opens or not), 改名字, 起个名字, 知道了, 是我的, 不是, and on
+/// a stretch 这段在干嘛 last. A row that opens to nothing and offers none has no menu.
 private struct TLMenu: ViewModifier {
     let e: TLEntry
     let tl: TimelineState
     let engine: StarEngine
+    let inPlace: Bool
+    let open: Bool
+    let room: Double
 
     private var actions: [TLAction] { TLAction.menu.filter { e.actions.contains($0) } }
+    /// what 打开 does: on the phone the row opens where it stands (not when it is open already), on the iPad on the stage
+    private var opens: Bool { inPlace ? e.expands && !open : e.opens }
 
     func body(content: Content) -> some View {
-        if e.tapOnly || (actions.isEmpty && !e.opens) {
+        if e.tapOnly || (actions.isEmpty && !opens) {
             content
         } else {
             content.contextMenu {
-                if e.opens {
-                    Button { Haptic.selection(); tl.openRow = e.id } label: { Label("打开", systemImage: "arrow.up.left.and.arrow.down.right") }
+                if opens {
+                    Button {
+                        Haptic.selection()
+                        if inPlace, let r = tl.reply { tl.unfold(e, in: tl.model(r), room: room) } else { tl.openRow = e.id }
+                    } label: { Label("打开", systemImage: "arrow.up.left.and.arrow.down.right") }
                 }
                 ForEach(actions, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: { Label(a.title, systemImage: a.symbol) }

@@ -52,11 +52,13 @@ struct TLClock {
 
 /// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view. A row someone can touch is at least 44 high.
 enum TLMetrics {
-    static let row = 44.0, rowDetail = 56.0, stay = 44.0, now = 30.0, note = 44.0
+    static let row = 46.0, rowDetail = 60.0, stay = 44.0, now = 30.0, note = 44.0
+    /// the place over a group of stretches: its dot, its name, its hours (only a long press is on it)
+    static let header = 40.0
     /// a stop on the footprint page's outing, or the stretch with no fixes: a line inside the outing, not a row to touch
     static let sub = 34.0
-    /// between one group (a place, a run of trips) and the next
-    static let gap = 12.0
+    /// between one group (a place, a run of trips) and the next, and above the line for now on a day of stretches
+    static let gap = 12.0, nowGap = 10.0
 }
 
 /// 1 小时 40 分, 2 小时, and under an hour 18 分钟: the length of a span, never with a clock's colon
@@ -92,15 +94,11 @@ func tlInt(_ x: Double) -> Int { x.isFinite ? Int(max(-1e9, min(1e9, x.rounded()
 /// What opening a row offers to do with it. Each exists only where it works today.
 enum TLAction: Hashable {
     case ask                // hand it to her: the row becomes the chip of the next turn, and the composer opens
-    case openTalk           // the conversation, at the time of the talk
     case rename             // a place he keeps, under another name
     case name               // a place he has no name for yet: the first one
     case acknowledge        // a reminder that rang: he knows
     case confirm            // an event his mail made: it is his
     case deny               // an event his mail made: it is not
-    case summarize          // what he did on the Mac, put to her at once
-    case mark               // it mattered: his star on it
-    case unmark             // it did not: the star, his or hers, taken off
     case sayWhat            // a stretch of the day: what he was doing, in his own words (the last of them, and the rare one)
 }
 
@@ -244,16 +242,12 @@ struct TLEntry: Identifiable, Equatable {
     var color: RGB?                 // a stay: the colour of its place
     var kept = false                // a stay in a place he keeps (a stay in none is a neutral haze)
     var strongRight = false         // the mono text at the right is the point of the row (what a payment came to), so it is not muted
-    var lit = false                 // marked as what mattered, by him or by her: a lit star on its icon
-    var hers = false                // lit, and it is her pick and not his mark: the star is outlined
     var later = false               // not yet: after the line for now
     var soon = false                // later, and within two hours: the text at the right is the time left
     var going = false               // today, begun, no end yet: it goes on, and its end is now
     var ride = false                // a trip on a bus
     var waiting = false             // waits on him (a reminder that rang, an event from his mail he has not confirmed): the amber `等你`
     var commitment: String?         // an event his mail made that he has not said is his: its hex, which is what the brain's route takes
-    var talkStart: Int64?           // a talk: when it began, for opening the conversation there
-    var turns: Int?                 // a talk: how many lines it had
     var attachment: String?         // a picture: the brain's name for it
     var about: About?               // the chip it gives a talk while it is the row opened (ADR 0214): only an item of a kind the brain's host knows
     var actions: [TLAction] = []    // what opening it offers
@@ -273,48 +267,56 @@ struct TLEntry: Identifiable, Equatable {
     var sessions: [TLSession] = []  // Claude Code: its session, or, for one row that stands for several, each of them
     var spans: [TLMark] = []        // where it is on the bar when that is not one span
     var cut = false                 // its own words are cut short at the right of the columns (`cutShort`, measured once when the day is built, not whenever a row asks)
-    var unknown = false             // a stretch nobody could say anything of: its title is `不知道在干嘛`, in the muted colour
-    var counts = TLCounts()         // a stretch: what is inside it, as the small icons under its title
+    var unknown = false             // a stretch nobody could say anything of: its title is `没有记录`, in the muted colour
+    var unsure = false              // a stretch she is not sure of: a question mark after its title
+    var ask: TLAsk?                 // a stretch: what it asks him, in one line when it is opened
     var lenses: Set<TLLens> = []    // a stretch: the kinds of the day's numbers that have something inside it (a talk too, which is not drawn)
-    var note: String?               // a stretch: the model's one line about it, the first thing it opens to
-    var lines: [TLLine] = []        // a stretch: what is inside it, a line each, in time order
+    var at: String?                 // a stretch: the place he was at, which its line says when no group under that place's name holds it
+    var note: String?               // a stretch: the model's one line about it, in its line
+    var lines: [TLLine] = []        // a stretch: what it says opened, a line each, in time order
     var knows: String?              // a stretch: how she knows what he was doing, and what she went by
+    var header = false              // a place over a group of stretches (a `stay`): a dot, a name and its hours, and nothing to open
+    var gapRail = TLRail.none       // the rail through the blank above it: a trip's, reaching out to the group before or after it
     var token: Int?                 // a stop of an outing (the footprint page): its number in a ring, in the place of the circle
     var ribbon: [RGB?] = []         // an outing (the footprint page): its speed along it, left to right, the colour of each slice; none where he stood still or nothing was recorded
     var tapOnly = false             // a tap opens a page of the screen's own (an outing), so it opens and the long press offers no menu
 
-    /// It is an item of the brain's day that his mark can go on: not the line for now, not a stop on the way, not the one row that stands for several sessions of Claude Code, and an id
-    /// the brain would take.
-    var starrable: Bool { kind != .now && kind != .pause && kind != .segment && !id.hasPrefix("code-group-") && About.fits(id: id) }
-
     /// the height of the row without the gap above it
     var base: Double {
         switch kind {
-        case .stay: TLMetrics.stay
+        case .stay: header ? TLMetrics.header : TLMetrics.stay
         case .now: TLMetrics.now
         case .pause where token != nil || rail == .gap: TLMetrics.sub
         default: hasLine ? TLMetrics.rowDetail : TLMetrics.row
         }
     }
     var height: Double { base + gap }
-    /// the muted line under the title: its words, or for a stretch the small icons with what is in it
-    var hasLine: Bool { detail != nil || !counts.isEmpty }
+    /// the muted line under the title
+    var hasLine: Bool { detail != nil }
     /// one row that stands for several Claude Code sessions
     var holdsSessions: Bool { kind == .code && sessions.count > 1 }
-    /// a tap on it opens something: what its line does not say, the first exchange of a talk, the picture, a map, what can be done with it, or its own words whole where the row cuts them short
+    /// a tap on it opens something: what its line does not say, the picture, a map, what can be done with it, or its own words whole where the row cuts them short
     var opens: Bool {
         switch kind {
         case .now, .pause: false
-        default: kind == .talk || kind == .picture || kind == .segment || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut || tapOnly
+        default: !header && (kind == .picture || kind == .segment || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut || tapOnly)
         }
     }
-}
-
-/// an item that mattered (a highlight of the day) and when it was
-struct TLStar: Equatable, Identifiable {
-    let id: String
-    let t: Double
-    var hers = false                // her pick, not his mark: outlined
+    /// Opened where it stands (the phone's list), it says at least two things its line does not, or asks him something, or has something to do that needs its buttons: a stretch with two
+    /// lines or more (a run, what happened, what took him off it) or a question; the night's stages; the picture, the map, the Mac's projects, the sessions; what waits on him; words of
+    /// its own cut short. A row that would open to one line or to nothing does not open: a tap frames its time on the bar.
+    var expands: Bool {
+        switch kind {
+        case .now, .pause: return false
+        case .segment: return ask != nil || lines.count >= 2
+        case .sleep: return sleep?.stages.isEmpty == false || more.count >= 2
+        default:
+            let doing: Set<TLAction> = [.rename, .name, .acknowledge, .confirm, .deny]
+            return !header && (tapOnly || kind == .picture || place?.onMap == true || work != nil || holdsSessions || cut || more.count >= 2 || actions.contains { doing.contains($0) })
+        }
+    }
+    /// a tap on it in the phone's list does something: opens it where it stands, or frames its time on the bar
+    var touchable: Bool { kind != .now && kind != .pause && !header }
 }
 
 /// A kind of thing the day's numbers bring forward: pressing its chip dims the rest of the bar and the list.
@@ -432,13 +434,12 @@ struct DayTimelineModel: Equatable {
     var span: ClosedRange<Double>   // what the overview bar covers: from its start (`axisStart`) to 24:00
     var now: Double?                // the minute of now, on today only
     var missing: String?            // "还没读到：Mac 的时间"
-    var stars: [TLStar] = []        // what mattered, in the order of the day: a lit star on the bar for each
     var chips: [TLChip] = []        // the day's numbers, in a fixed order, only the ones that are not nothing
     var body: [TLBody] = []         // what Health reported, after the chips
     var weather: TLWeather?
     var sun: TLSun?
     var waiting: [String] = []      // the rows that wait on him, in the order of the day
-    var told: [TLTold] = []         // what the readout can say of a minute: what each row was doing, a Claude Code session each
+    var told: [TLTold] = []         // what the readout can say of a minute: what each thing of the day was doing, a Claude Code session each
     var lensMarks: [TLLens: [TLMark]] = [:]     // where the things of each kind are on the bar
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
@@ -465,6 +466,25 @@ struct DayTimelineModel: Equatable {
         guard let i = nowIndex else { return 0 }
         let want = offsets[i] + TLMetrics.now / 2 - 0.6 * room
         return max(0, (offsets.min { abs($0 - want) < abs($1 - want) } ?? 0) - 8)
+    }
+
+    /// The part of the day the list shows scrolled to `y` with `room` of it in view, as the bar frames it while he scrolls: from the minute at the top of what shows to the minute at its foot,
+    /// each read off the row there as a part of its hours (a header, a moment and what is still to come are no hours of their own). Once the line for now is in view or above it, what
+    /// shows reaches now and is carried past it by the room under that line. None: nothing of the day shows.
+    func window(y: Double, room: Double) -> ClosedRange<Double>? {
+        let offs = offsets, top = y, foot = y + room
+        var a: Double?, z: Double?
+        for (i, e) in entries.enumerated() where e.kind != .now && !e.later && !e.header {
+            guard let end = e.t1, end > e.t0 else { continue }
+            let y0 = offs[i] + e.gap, y1 = offs[i] + e.height
+            guard y1 > top + 8, y0 < foot - 8 else { continue }
+            let t0 = max(e.t0, span.lowerBound), t1 = max(t0, end)
+            let s = t0 + (t1 - t0) * clamp((top - y0) / max(1, y1 - y0), 0, 1), f = t0 + (t1 - t0) * clamp((foot - y0) / max(1, y1 - y0), 0, 1)
+            a = min(a ?? s, s); z = max(z ?? f, f)
+        }
+        if let n = now, let i = nowIndex, offs[i] < foot { a = min(a ?? n, n); z = max(z ?? n, n + min(130, (foot - offs[i]) / 1.2)) }
+        guard let a, let z, z > a else { return nil }
+        return a...min(z, span.upperBound)
     }
 
     /// the minute `t` as the bar has it: no earlier than its start and no later than 24:00
@@ -507,7 +527,7 @@ struct DayTimelineModel: Equatable {
     /// an event, Claude, a reminder, a bus, the night's stages).
     func readout(at minute: Double) -> TLReadout {
         let t = onBar(minute)
-        var hue: RGB?, strong = true, head: String
+        var hue: RGB?, strong = true, head: String, gist: String?
         let ahead = now.map { t > $0 } ?? false
         if ahead {
             head = "还没到"
@@ -519,6 +539,7 @@ struct DayTimelineModel: Equatable {
             case .doing(let c): hue = c; strong = c != nil
             }
             head = e.head ?? e.title
+            if e.kind == .segment { gist = e.detail }          // a stretch's own line says what else there was, in words
         } else {
             let lo = segs.filter { $0.t1 <= t }.map(\.t1).max() ?? span.lowerBound
             let hi = max(lo, min(segs.filter { $0.t0 > t }.map(\.t0).min() ?? DAY, now ?? DAY))          // a hole ends no earlier than it begins
@@ -530,13 +551,13 @@ struct DayTimelineModel: Equatable {
         let order: [TLEntry.Kind] = [.work, .code, .call, .talk, .workout, .picture, .payment, .event, .claude, .reminder, .departure, .sleep]
         func rank(_ x: TLTold) -> Int { order.firstIndex(of: x.kind) ?? 99 }
         near.sort { (rank($0), gap($0), $0.t0) < (rank($1), gap($1), $1.t0) }
-        return TLReadout(hue: hue, strong: strong, head: head, elsewhere: near.prefix(4).map(\.text), ahead: ahead)
+        return TLReadout(hue: hue, strong: strong, head: head, elsewhere: gist.map { [$0] } ?? near.prefix(4).map(\.text), ahead: ahead)
     }
 
     /// where the things of a lens's kind are on the bar
     func marks(of lens: TLLens) -> [TLMark] { lensMarks[lens] ?? [] }
 
-    /// where the things of each lens's kind are, from the list's entries, or from the day's items when the list is stretches (their things are inside them)
+    /// where the things of each lens's kind are, from the day's items as rows, whether the list has them as rows or not (a talk is none, and a stretch has its things inside it)
     static func lensMarks(_ list: [TLEntry]) -> [TLLens: [TLMark]] {
         var out: [TLLens: [TLMark]] = [:]
         for e in list { if let l = e.lens { out[l, default: []] += e.spans.isEmpty ? [TLMark(t0: e.t0, t1: max(e.t0, e.t1 ?? e.t0))] : e.spans } }
@@ -546,23 +567,14 @@ struct DayTimelineModel: Equatable {
     // MARK: building
 
     /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked`, `renamed` and `done` are what he has just done to a
-    /// reminder, to a place he keeps, to the day's marks, to what his mail made and to a place he named, which the brain's next answer will say too (an event he said is not his is left
-    /// out). An item that cannot be placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know. The
-    /// minutes are those of the brain's day (`TLClock`).
+    /// reminder, to a place he keeps, to what his mail made and to a place he named, which the brain's next answer will say too (an event he said is not his is left out). An item that
+    /// cannot be placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know. The minutes are those of
+    /// the brain's day (`TLClock`).
     static func build(_ r: DayReply, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
                       acked: Set<String> = [], renamed: [String: String] = [:], done: TLDone = TLDone()) -> DayTimelineModel {
         let wall = TLClock(r)
         func m(_ ms: Int64) -> Double { wall.minute(ms: ms) }
-        // what mattered, by item: the label of the owner or hers, or none (the brain writes `kind HH:MM` when nobody did, which says less than the row does)
-        let highlights = done.highlights ?? r.highlights
-        var marks: [String: String] = [:]
-        var hers: Set<String> = []
-        for h in highlights where marks[h.id] == nil {
-            let label = tlText(h.label) ?? ""
-            marks[h.id] = label.range(of: #"^[a-z_]+ \d{1,2}:\d{2}$"#, options: [.regularExpression, .caseInsensitive]) == nil ? label : ""
-            if h.by == "her" { hers.insert(h.id) }
-        }
-        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, marks: marks, hers: hers, acked: acked, renamed: renamed, confirmed: done.confirmed, named: done.named)
+        let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, acked: acked, renamed: renamed, confirmed: done.confirmed, named: done.named)
         // what a day can hold, with a month either side: a time beyond it is not a time of this day's list
         let reach = 30 * DAY, window = 31.0 * 86_400_000
         var taken: Set<String> = ["now"]
@@ -621,16 +633,13 @@ struct DayTimelineModel: Equatable {
         var entries = segmented ? segmentList(doings, items: items, rows: rows, now: now, frame) : arrange(inOrder(rows), now: now)
         if segmented { entries = inOrder(entries) }
         if let now {
-            var line = TLEntry(id: "now", kind: .now, t0: now, title: "现在 " + clock(now))
+            var line = TLEntry(id: "now", kind: .now, t0: now, title: "现在")
             line.time = clock(now)
             entries.insert(line, at: entries.firstIndex { $0.t0 > now } ?? entries.count)
         }
         if segmented {
-            for k in entries.indices where entries[k].kind == .segment {
-                entries[k].railIn = k > 0 && entries[k - 1].kind == .segment
-                entries[k].railOut = entries.indices.contains(k + 1) && entries[k + 1].kind == .segment
-                if let end = entries[k].t1 { seg(entries[k].id, entries[k].t0, end, .doing(entries[k].color)) }
-            }
+            for e in entries where e.kind == .segment { if let end = e.t1 { seg(e.id, e.t0, end, .doing(e.color)) } }
+            entries = grouped(entries, frame)
         } else {
             space(&entries)
         }
@@ -639,11 +648,6 @@ struct DayTimelineModel: Equatable {
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
         let wake = items.compactMap { $0.kind == "sleep" ? $0.end_ms.map(m) : nil }.filter { $0 >= 0 && $0 < DAY }.min()
         let early = segmented ? doings.map(\.t0) : zip(items, rows).filter { axisKinds.contains($0.0.kind) }.map { $0.1.t0 }
-        // what mattered, at the time of each item that did
-        var starred = Set<String>()
-        // (where the list is stretches, an item inside one has its star on the bar too; a talk and a place are not drawn, and so have none)
-        let starred0 = segmented ? entries + rows.filter { $0.kind != .talk && $0.kind != .stay } : entries
-        let stars = highlights.compactMap { h in starred0.first { $0.id == h.id }.flatMap { starred.insert(h.id).inserted ? TLStar(id: h.id, t: $0.t0, hers: hers.contains(h.id)) : nil } }.sorted { $0.t < $1.t }
         var chips: [TLChip] = []
         for l in TLLens.allCases {
             switch l {
@@ -659,20 +663,16 @@ struct DayTimelineModel: Equatable {
                 if n > 0 { chips.append(TLChip(lens: l, value: tlHM(n))) }
             }
         }
-        // what each row was doing, for the readout: a Claude Code row that stands for several says each of them
-        var told: [TLTold] = []
-        for e in (segmented ? rows : entries) where e.kind != .now {
-            if e.holdsSessions { told += e.sessions.map { TLTold(kind: .code, t0: $0.t0, t1: $0.t1, text: $0.told) } }
-            else if let g = e.glance { told.append(TLTold(kind: e.kind, t0: e.t0, t1: max(e.t1 ?? e.t0, e.t0), text: g)) }
-        }
+        // what each thing of the day was doing, for the readout: each item as its own row says it (a talk too, which is no row of the list, and each session of Claude Code)
+        let told = rows.compactMap { e in e.glance.map { TLTold(kind: e.kind, t0: e.t0, t1: max(e.t1 ?? e.t0, e.t0), text: $0) } }
         var model = DayTimelineModel(date: r.date, line: tlText(r.line?.text), entries: entries, segs: segs,
-                                     span: axisStart(wake: wake, early: early, now: now)...DAY, now: now, missing: missingText(r.missing), stars: stars, chips: chips)
+                                     span: axisStart(wake: wake, early: early, now: now)...DAY, now: now, missing: missingText(r.missing), chips: chips)
         model.body = bodyValues(r.summary)
         model.weather = weatherOf(r.weather)
         model.sun = sunOf(r.weather, m)
         model.waiting = entries.filter(\.waiting).map(\.id)
         model.told = told
-        model.lensMarks = lensMarks(segmented ? rows : entries)
+        model.lensMarks = lensMarks(rows)
         return model
     }
 
@@ -703,11 +703,11 @@ struct DayTimelineModel: Equatable {
             guard let s = stays.last(where: { list[$0].t0 <= list[k].t0 && list[k].t0 < (list[$0].going ? .infinity : list[$0].t1 ?? .infinity) }) else { continue }
             holder[k] = s; members[s, default: []].append(k)
         }
-        // the sessions of Claude Code in one place are one row, which opens to them; one that mattered stays a row of its own, with its star
+        // the sessions of Claude Code in one place are one row, which opens to them
         var stands: [Int: TLEntry] = [:]
         var gone: Set<Int> = []
         for s in stays {
-            let codes = (members[s] ?? []).filter { list[$0].kind == .code && !list[$0].lit }
+            let codes = (members[s] ?? []).filter { list[$0].kind == .code }
             guard codes.count > 1 else { continue }
             let sessions = codes.flatMap { list[$0].sessions }
             var g = TLEntry(id: "code-group-" + list[s].id, kind: .code, t0: sessions.map(\.t0).min() ?? list[codes[0]].t0, title: "Claude Code · \(codes.count) 个会话")
@@ -721,12 +721,14 @@ struct DayTimelineModel: Equatable {
             g.right = union >= 1 ? tlDur(tlInt(union)) : ""
             stands[codes[0]] = g; gone.formUnion(codes.dropFirst())
         }
+        // her talks are no rows (the conversation holds them, yilun 10-20): the place a talk began in is lit with them, so their chip brings it forward
         var out: [TLEntry] = []
-        for k in list.indices where holder[k] == nil && !gone.contains(k) {
-            let e = stands[k] ?? list[k]
+        for k in list.indices where holder[k] == nil && !gone.contains(k) && list[k].kind != .talk {
+            var e = stands[k] ?? list[k]
+            if (members[k] ?? []).contains(where: { list[$0].kind == .talk }) { e.lenses.insert(.talk) }
             out.append(e)
             guard e.kind == .stay else { continue }
-            for x in members[k] ?? [] where !gone.contains(x) { var y = stands[x] ?? list[x]; y.group = e.id; out.append(y) }
+            for x in members[k] ?? [] where !gone.contains(x) && list[x].kind != .talk { var y = stands[x] ?? list[x]; y.group = e.id; out.append(y) }
         }
         // what happened while he was on the way belongs to the trip
         let legs = out.filter { $0.kind == .trip || $0.kind == .pause }
@@ -790,17 +792,13 @@ struct DayTimelineModel: Equatable {
     static func actions(of e: TLEntry, now: Double?) -> [TLAction] {
         var a: [TLAction] = []
         switch e.kind {
-        case .talk: if e.talkStart != nil { a.append(.openTalk) }
         case .stay: if e.place?.canRename == true { a.append(.rename) } else if e.place?.canName == true { a.append(.name) }
         case .event: if e.commitment != nil { a += [.confirm, .deny] }
         case .reminder: if e.waiting { a.append(.acknowledge) }
-        case .work: if e.about != nil { a.append(.summarize) }
         default: break
         }
         if e.about != nil { a.append(.ask) }
-        // his star: on a row nobody marked, or that only she picked; off a row with a star, whose it is (a pick of hers can be adopted as well as put away)
-        if e.starrable { a += e.lit ? (e.hers ? [.mark, .unmark] : [.unmark]) : [.mark] }
-        if TLSayWhat.range(of: e, now: now) != nil { a.append(.sayWhat) }
+        if !e.header, TLSayWhat.range(of: e, now: now) != nil { a.append(.sayWhat) }
         return a
     }
 

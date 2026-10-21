@@ -41,7 +41,7 @@ _MARK: Final = re.compile(r"^// words: (legacy|his|sample)\b", re.MULTILINE)
 
 # Files still marked ``// words: legacy``. Lower it in the commit that moves one into the table;
 # it never goes up, since new code words through the table.
-_LEGACY_FILES: Final = 84
+_LEGACY_FILES: Final = 81
 
 
 class _SwiftScanner:

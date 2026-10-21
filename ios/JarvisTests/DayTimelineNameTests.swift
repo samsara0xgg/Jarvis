@@ -40,9 +40,9 @@ final class DayTimelineNameTests: XCTestCase {
         let tl = state(TLStubBrain())
         let bare = try entry(tl, stay), home = try entry(tl, "stay-1")
         XCTAssertEqual(bare.place?.canName, true)
-        XCTAssertEqual(bare.actions, [.name, .ask, .mark, .sayWhat])
+        XCTAssertEqual(bare.actions, [.name, .ask, .sayWhat])
         XCTAssertEqual(home.place?.canName, false, "he keeps a place there")
-        XCTAssertEqual(home.actions, [.rename, .ask, .mark, .sayWhat], "and renames it")
+        XCTAssertEqual(home.actions, [.rename, .ask, .sayWhat], "and renames it")
         // a stay the phone has no coordinates for cannot be kept at a point, whatever its words
         for e in DayTimelineModel.build(TimelineFixture.fragmented(cal), now: nil).entries where e.kind == .stay || e.kind == .pause { XCTAssertFalse(e.actions.contains(.name), e.id) }
         XCTAssertEqual(try build(#""place": "Starbucks, Douglas St""#).actions.contains(.name), false, "words and no point")
@@ -55,7 +55,7 @@ final class DayTimelineNameTests: XCTestCase {
 
     func testTheMenuOfALongPressOffersToNameAndTheButtonSaysIt() throws {
         let e = try entry(state(TLStubBrain()), stay)
-        XCTAssertEqual(TLAction.menu.filter { e.actions.contains($0) }, [.ask, .name, .mark, .sayWhat])
+        XCTAssertEqual(TLAction.menu.filter { e.actions.contains($0) }, [.ask, .name, .sayWhat])
         XCTAssertEqual(TLAction.name.title, "起个名字")
         XCTAssertNotEqual(TLAction.name.symbol, TLAction.rename.symbol)
     }
@@ -147,7 +147,7 @@ final class DayTimelineNameTests: XCTestCase {
             XCTAssertEqual(n.place?.keptId, "p-demo-new")
             XCTAssertEqual(n.place?.keptName, "A&W 汉堡")
             XCTAssertEqual(n.more, ["A&W, Shelbourne St, Victoria", "常去的地方 · A&W 汉堡"])
-            XCTAssertEqual(n.actions, [.rename, .ask, .mark, .sayWhat], "it is a place he keeps now: it is renamed")
+            XCTAssertEqual(n.actions, [.rename, .ask, .sayWhat], "it is a place he keeps now: it is renamed")
             // and the bar shows it: the piece is his place, in its hue
             let piece = try XCTUnwrap(try model(tl).scene.pieces.first { $0.id == stay })
             XCTAssertEqual(piece.fill, .place(PlaceTint.line(role: role.rawValue, id: "p-demo-new"), kept: true), "\(role)")

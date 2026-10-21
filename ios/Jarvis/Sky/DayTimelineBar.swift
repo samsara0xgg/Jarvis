@@ -1,8 +1,10 @@
 import SwiftUI
 
-// The day's bar (Sky/DayTimeline.swift puts it under her sentence): where he was, as pieces of one bar with a hair of ground between them, the night, the places in their
-// colours, the trips hatched, and past now the part that has not happened with what is planned on it. Each piece wears the richest word that fits it. What mattered is a lit
-// star on its top edge, now is a warm line that breathes. The pieces, the labels and the paint are plain values (below), so what is drawn can be tested without a screen.
+// The day's bar (Sky/DayTimeline.swift puts it under her sentence): what he did, as pieces of one bar with a hair of ground between them, the night, the places in their colours, the
+// trips hatched, a stretch nothing speaks to hatched faintly, and past now the part that has not happened with what is planned on it. Each piece wears the richest word that fits it; on
+// the phone every stretch is given room for its icon (`TLAxis.fair`). Now is a warm line that breathes. A frame goes round the block of the row open where it stands, round a time for a
+// moment (`TLBlink`), and round the part of the day the list shows while he scrolls it (`TLViewportFrame`). The pieces, the axis, the labels and the paint are plain values (below), so
+// what is drawn can be tested without a screen.
 
 // MARK: - what the bar is made of
 
@@ -25,23 +27,24 @@ struct TLAhead: Equatable, Identifiable {
     var name: String?, icon: String?
 }
 
-/// a one-off thing that happened (a payment, a picture, a talk), drawn as a small dot on its minute in the colour of its chip
-struct TLDot: Equatable {
-    let lens: TLLens
-    let t: Double
-}
-
 struct TLBarScene: Equatable {
     var span: ClosedRange<Double>
     var now: Double?
     var pieces: [TLPiece]           // in time order, one after the other over the whole span
     var ahead: [TLAhead]
-    var stars: [TLStar]
     var ticks: [Int]                // the hours under the bar
-    var sun: TLSun?                 // when the sun rose and set, in the row of the hours
-    var dots: [TLDot] = []          // the moments of the past
 
-    static let empty = TLBarScene(span: 360...DAY, now: nil, pieces: [], ahead: [], stars: [], ticks: [])
+    static let empty = TLBarScene(span: 360...DAY, now: nil, pieces: [], ahead: [], ticks: [])
+}
+
+/// A time framed on the bar for a moment, `length` seconds: the block of a row with nothing more to say (`row`), a line of the open row (`line`). The frame comes in over the first 12% of
+/// it and goes over the last 30%; `n` tells one from the next, so the same time framed again frames it again.
+struct TLBlink: Equatable {
+    var spans: [ClosedRange<Double>]
+    var length: Double
+    var n: Int
+
+    static let row = 1.3, line = 1.9
 }
 
 extension TLBarScene {
@@ -57,14 +60,6 @@ extension TLBarScene {
 }
 
 extension DayTimelineModel {
-    /// The one-off things of the past that have a lens (a payment he made, a picture, a talk: a moment, not a span), in the order of the day. What is still to come is drawn as it is planned (`ahead`).
-    var dots: [TLDot] {
-        let hi = now ?? span.upperBound
-        return lensMarks.filter { $0.key != .talk }.flatMap { lens, marks in marks.filter {          // talk with her is never on the timeline: her chip alone brings it forward
-             $0.t1 - $0.t0 < 1 && $0.t0 >= span.lowerBound && $0.t0 <= hi }.map { TLDot(lens: lens, t: $0.t0) } }
-            .sorted { ($0.t, TLLens.allCases.firstIndex(of: $0.lens) ?? 0) < ($1.t, TLLens.allCases.firstIndex(of: $1.lens) ?? 0) }
-    }
-
     /// The bar as pieces. The night is on top of a trip and a trip of a stay (`seg(at:)`); where nothing was recorded there is a blank piece, and on today everything after now
     /// is one piece that has not happened. A piece that goes on across a cut (the night under a stay, a long stay split by nothing) is one piece.
     var scene: TLBarScene {
@@ -104,7 +99,70 @@ extension DayTimelineModel {
                 ahead.append(TLAhead(id: e.id, shape: box ? .box : .tick, t0: e.t0, t1: box ? end : e.t0, name: e.barName, icon: e.barIcon))
             }
         }
-        return TLBarScene(span: span, now: now, pieces: pieces, ahead: ahead, stars: stars, ticks: ticks, sun: sun, dots: dots)
+        return TLBarScene(span: span, now: now, pieces: pieces, ahead: ahead, ticks: ticks)
+    }
+}
+
+// MARK: - where a minute is drawn
+
+/// Where each minute of the bar is drawn, and the minute at a point of it. `linear` shares the width by time. `fair` (the phone's timeline) gives every stretch room for its icon first: a
+/// piece its time would draw narrower than `floor` (16 pt and the hair of ground) is drawn that wide, and the rest of the width is shared by the time of the others, again until no other
+/// falls under it. What is still to come and a blank of under five minutes are not lifted, and where the floors would take nine tenths of the width or more the bar is linear. Inside a
+/// piece time runs evenly.
+struct TLAxis: Equatable {
+    let span: ClosedRange<Double>
+    let width: Double
+    private var ts: [Double]            // the minutes where the pieces meet, from the bar's start to its end
+    private var xs: [Double]            // and where they are drawn
+
+    static let floor = 17.0
+    static let shortBlank = 5.0
+
+    static func linear(_ span: ClosedRange<Double>, width: Double) -> TLAxis {
+        TLAxis(span: span, width: width, ts: [span.lowerBound, span.upperBound], xs: [0, width])
+    }
+
+    static func fair(_ scene: TLBarScene, width: Double) -> TLAxis {
+        let lo = scene.span.lowerBound, hi = scene.span.upperBound
+        let ps = scene.pieces.map { (t0: clamp($0.t0, lo, hi), t1: clamp($0.t1, lo, hi), lifts: Self.lifts($0)) }.filter { $0.t1 > $0.t0 }
+        let d = ps.map { $0.t1 - $0.t0 }, floors = ps.map { $0.lifts ? Self.floor : 0 }
+        guard let first = ps.first, d.reduce(0, +) > 0 else { return linear(scene.span, width: width) }
+        var lifted = [Bool](repeating: false, count: ps.count)
+        var k = width / d.reduce(0, +)
+        for _ in 0..<30 {
+            var fixed = 0.0, free = 0.0
+            for i in ps.indices {
+                if lifted[i] || d[i] * k < floors[i] { lifted[i] = true; fixed += floors[i] } else { free += d[i] }
+            }
+            guard fixed < 0.9 * width, free > 0 else { return linear(scene.span, width: width) }
+            let next = (width - fixed) / free
+            if abs(next - k) < 1e-9 { break }
+            k = next
+        }
+        var ts = [first.t0], xs = [0.0]
+        for i in ps.indices {
+            ts.append(ps[i].t1); xs.append(xs[xs.count - 1] + (lifted[i] ? floors[i] : d[i] * k))
+        }
+        let end = xs[xs.count - 1]
+        return TLAxis(span: scene.span, width: width, ts: ts, xs: xs.map { end > 0 ? $0 / end * width : $0 })
+    }
+
+    /// a piece that is given room for its icon: what has happened, but a blank of a few minutes
+    static func lifts(_ p: TLPiece) -> Bool { p.fill != .ahead && !(p.fill == .blank && p.t1 - p.t0 < shortBlank) }
+
+    /// where minute `t` is drawn, a minute off the bar at its start or end
+    func x(_ t: Double) -> Double { Self.along(t, ts, xs) }
+    /// the minute at `x` points from the bar's left edge, a point off the bar at its start or end
+    func minute(_ x: Double) -> Double { Self.along(x, xs, ts) }
+
+    /// `v` on the line through the points (`from`, `to`), both rising, held at their ends
+    private static func along(_ v: Double, _ from: [Double], _ to: [Double]) -> Double {
+        guard let a = from.first, let b = from.last else { return 0 }
+        if v <= a { return to[0] }
+        if v >= b { return to[to.count - 1] }
+        var lo = 0, hi = from.count - 1
+        while hi - lo > 1 { let m = (lo + hi) / 2; if from[m] <= v { lo = m } else { hi = m } }
+        return to[lo] + (to[hi] - to[lo]) * (v - from[lo]) / max(1e-9, from[hi] - from[lo])
     }
 }
 
@@ -113,11 +171,11 @@ extension DayTimelineModel {
 enum TLPaint {
     static let ink = RGB(238, 240, 251)
     static let darkInk = RGB(11, 13, 26)                // the text on a light fill
-    static let warm = RGB(255, 240, 220)                // now, and what mattered
-    static let sunTick = RGB(255, 226, 186)             // the sun where its glyph has no room: a star's glow
+    static let warm = RGB(255, 240, 220)                // now, and the frames round what he opened or tapped
     static let trip = RGB(196, 208, 255)
     static let sleep = RGB(112, 120, 205)
     static let ground = RGB(9, 10, 20)                  // what the bar sits on: the sky under the scrim
+    static let hole = RGB(196, 204, 238)                // the faint hatch of a stretch nothing speaks to
     static let icon = RGB(214, 220, 246)                // the glyph of a button on the glass (the gear, the footprint's map)
 
     /// how much a fill is drawn at, and its colour
@@ -189,18 +247,22 @@ enum TLBarLabel {
         var fit: Fit
         var name: String?, icon: String?
         var dark: Bool                  // dark ink on a light fill
+        var quiet = false               // a stretch nothing speaks to: its question mark at half ink
         var id: String { "\(item)@\(Int(x))" }       // one place on the bar: the same item may stand there twice, never at the same x
     }
 
-    /// what each piece (and each box of an event) wears at this width of bar
-    static func placed(_ scene: TLBarScene, width: Double, measure: (String) -> Double = TLBarLabel.measure) -> [Placed] {
+    /// what each piece (and each box of an event) wears where the axis draws it
+    static func placed(_ scene: TLBarScene, axis: TLAxis, measure: (String) -> Double = TLBarLabel.measure) -> [Placed] {
         var out: [Placed] = []
-        for (p, r) in zip(scene.pieces, TLGeo.rects(scene.pieces, span: scene.span, width: width, height: 1)) {
+        for (p, r) in zip(scene.pieces, TLGeo.rects(scene.pieces, axis: axis, height: 1)) {
             let f = fit(name: p.name, icon: p.icon != nil, width: r.width, measure: measure)
-            if f != .none { out.append(Placed(item: p.id, x: r.midX - labelWidth(f, name: p.name, measure: measure) / 2, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill))) }
+            if f != .none {
+                out.append(Placed(item: p.id, x: r.midX - labelWidth(f, name: p.name, measure: measure) / 2, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill),
+                                  quiet: p.fill == .blank))
+            }
         }
         for a in scene.ahead where a.shape == .box {
-            let x0 = TLGeo.x(a.t0, scene.span, width), x1 = TLGeo.x(a.t1, scene.span, width)
+            let x0 = axis.x(a.t0), x1 = axis.x(a.t1)
             let f = fit(name: a.name, icon: a.icon != nil, width: x1 - x0, measure: measure)
             if f != .none { out.append(Placed(item: a.id, x: (x0 + x1) / 2 - labelWidth(f, name: a.name, measure: measure) / 2, fit: f, name: a.name, icon: a.icon, dark: false)) }
         }
@@ -209,19 +271,10 @@ enum TLBarLabel {
 }
 
 enum TLGeo {
-    static func x(_ t: Double, _ span: ClosedRange<Double>, _ width: Double) -> Double {
-        (clamp(t, span.lowerBound, span.upperBound) - span.lowerBound) / (span.upperBound - span.lowerBound) * width
-    }
-    /// Whether the sun's glyph (12 pt wide, centred under its minute `x`) can be drawn in the row of the hours: it overlaps no hour's label (12 pt wide) and stays on the bar. The hours
-    /// always win; where the glyph does not fit the sun is a tick only. `hours` are the centres of the labels.
-    static func sunGlyphFits(_ x: Double, hours: [Double], width: Double) -> Bool {
-        x >= 6 && x <= width - 6 && hours.allSatisfy { abs($0 - x) >= 12 }
-    }
-
     /// where each piece is drawn: a hair of ground (1 pt) between neighbours, and never narrower than 2 pt, so nothing recorded is lost to the gap
-    static func rects(_ pieces: [TLPiece], span: ClosedRange<Double>, width: Double, height: Double) -> [CGRect] {
+    static func rects(_ pieces: [TLPiece], axis: TLAxis, height: Double) -> [CGRect] {
         pieces.enumerated().map { i, p in
-            let x0 = x(p.t0, span, width), x1 = x(p.t1, span, width)
+            let x0 = axis.x(p.t0), x1 = axis.x(p.t1)
             let l = i == 0 ? x0 : x0 + 0.5, r = i == pieces.count - 1 ? x1 : x1 - 0.5
             let mid = (l + r) / 2, half = max(r - l, 2) / 2
             return CGRect(x: mid - half, y: 0, width: half * 2, height: height)
@@ -264,7 +317,7 @@ struct TLTrack: View {
 
 struct TLBarView: View {
     let scene: TLBarScene
-    var bracket: ClosedRange<Double>?       // the span of the row he has open
+    var bracket: ClosedRange<Double>?       // the block of the row he has open: framed
     var scrub: Double?                      // the minute under his finger
     var lens = false                        // a chip is pressed: the bar goes quiet and the things of that kind stand out in their colour
     var lensColor = RGB(196, 208, 255)
@@ -275,135 +328,100 @@ struct TLBarView: View {
     var sweeping = false                    // the brain is tidying the day: a band of light goes along the pieces (Sky/DayTimelineTidy.swift)
     var ghost: TLBarScene?                  // the drawing the bar had before a tidied day came in, over the new one until it has faded (`ghostGone`)
     var ghostGone = false
+    var fair = false                        // every stretch is given room for its icon (`TLAxis.fair`): the phone's timeline
+    var blink: TLBlink?                     // a time framed for a moment
 
     @Environment(\.tlBarWidth) private var bw
     private let bh = TLLayout.barH
 
     var body: some View {
-        let rects = TLGeo.rects(scene.pieces, span: scene.span, width: bw, height: bh)
+        let axis = self.axis(for: scene)
+        let rects = TLGeo.rects(scene.pieces, axis: axis, height: bh)
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
-                ZStack(alignment: .topLeading) {
-                    TLTrack()
-                    BarCanvas(scene: scene, rects: rects).equatable()
-                    if sweeping { TLTidySweep(scene: scene).transition(.opacity) }
-                    planned
-                    dots
-                    if let b = bracket { bracketView(b).transition(.opacity) }      // under the words, so a line never runs through a symbol
-                    labels
-                    if let g = ghost { ghostLayer(g) }
-                }
-                .animation(.easeOut(duration: 0.12), value: bracket != nil)  // it comes and goes with a fade; moving from one span to the next is as quick as the finger
-                .animation(.easeOut(duration: 0.25), value: sweeping)
-                .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
-                .mask(alignment: .leading) { GrowMask(shown: reduce || reveal) }          // grows in from the left, in the order of time, its leading edge soft
-                .opacity(reduce && !reveal ? 0 : 1)
-                .animation(TLMotion.barGrowth(reduce: reduce), value: reveal)
-                stars.opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: reveal, reduce: reduce), value: reveal)      // once the bar has grown to them
+                TLTrack()
+                BarCanvas(scene: scene, rects: rects).equatable()
+                if sweeping { TLTidySweep(scene: scene, rects: rects).transition(.opacity) }
+                planned(axis)
+                TLBarLabels(scene: scene, axis: axis, reduce: reduce).equatable()
+                if let g = ghost { ghostLayer(g) }
             }
+            .animation(.easeOut(duration: 0.25), value: sweeping)
+            .frame(width: bw, height: bh, alignment: .topLeading)       // its own size: the marker and the hours stand outside the bar and would stretch the track
+            .mask(alignment: .leading) { GrowMask(shown: reduce || reveal) }          // grows in from the left, in the order of time, its leading edge soft
+            .opacity(reduce && !reveal ? 0 : 1)
+            .animation(TLMotion.barGrowth(reduce: reduce), value: reveal)
             .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.15), value: lens)
-            lensLayer
-            lensBracket
-            hours.opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.25, reveal: reveal, reduce: reduce), value: reveal)
-            sunMarks.opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.25, reveal: reveal, reduce: reduce), value: reveal)
-            if let n = scene.now { nowMarker(n).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: reveal, reduce: reduce), value: reveal) }      // when the growth reaches it
-            if let t = scrub { scrubMark(t) }
+            lensLayer(axis)
+            hours(axis).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.25, reveal: reveal, reduce: reduce), value: reveal)
+            if let n = scene.now { nowMarker(axis.x(n)).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: reveal, reduce: reduce), value: reveal) }      // when the growth reaches it
+            ZStack(alignment: .topLeading) {
+                if let b = bracket { TLBarFrame(x0: axis.x(b.lowerBound), x1: axis.x(b.upperBound), color: TLPaint.warm.color(0.9)).transition(.opacity) }
+            }
+            .animation(.easeOut(duration: 0.2), value: bracket != nil)          // it comes and goes with a fade, and moves with the row that opens to the next block
+            TLBlinkFrames(blink: blink, axis: axis)
+            if let t = scrub { scrubMark(axis.x(t), t) }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
         .contentShape(Rectangle().inset(by: -10))
     }
 
-    private func x(_ t: Double) -> Double { TLGeo.x(t, scene.span, bw) }
+    private func axis(for s: TLBarScene) -> TLAxis { fair ? .fair(s, width: bw) : .linear(s.span, width: bw) }
 
     /// the bar as it was, its pieces and its words, over the one that has come in: it fades out to show it (a cross-fade with no dip, which the two fading together would have)
     private func ghostLayer(_ g: TLBarScene) -> some View {
-        ZStack(alignment: .topLeading) {
-            BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, span: g.span, width: bw, height: bh)).equatable()
-            TLBarLabels(scene: g, reduce: reduce, bw: bw).equatable()
+        let axis = self.axis(for: g)
+        return ZStack(alignment: .topLeading) {
+            BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, axis: axis, height: bh)).equatable()
+            TLBarLabels(scene: g, axis: axis, reduce: reduce).equatable()
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
         .opacity(ghostGone ? 0 : 1)
         .allowsHitTesting(false)
     }
 
-    // MARK: words and stars
-
-    private var labels: some View { TLBarLabels(scene: scene, reduce: reduce, bw: bw).equatable() }
+    // MARK: what is planned, the hours, a lens
 
     /// what is planned, on the part of the bar that has not happened: an event is a dashed box over its time, a reminder or a bus a tick. They are views and not paint, so that one he says
     /// is not his goes with a fade.
-    private var planned: some View {
+    private func planned(_ axis: TLAxis) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(scene.ahead) { a in
-                TLAheadMark(a: a, x0: x(a.t0), x1: x(a.t1), height: bh).transition(.opacity)
+                TLAheadMark(a: a, x0: axis.x(a.t0), x1: axis.x(a.t1), height: bh).transition(.opacity)
             }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
-        .animation(tlStarFade(reduce: reduce), value: scene.ahead.map(\.id))
+        .animation(TLMotion.fade(reduce: reduce), value: scene.ahead.map(\.id))
         .allowsHitTesting(false)
     }
 
-    /// the one-off things of the past as dots on their minute, half over the bar's lower edge, each in the colour of its chip and ringed in the ground so that it is seen on any fill
-    private var dots: some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(Array(scene.dots.enumerated()), id: \.offset) { _, d in
-                Circle().fill(d.lens.color.color).overlay(Circle().strokeBorder(TLPaint.ground.color, lineWidth: 1))
-                    .frame(width: 6, height: 6).offset(x: x(d.t) - 3, y: bh - 3)
-            }
-        }
-        .frame(width: bw, height: bh, alignment: .topLeading)
-        .allowsHitTesting(false)
-    }
-
-    /// what mattered: his mark a filled star and her pick an outlined one, standing on the top edge so that it is seen over any fill; one comes and goes with a fade
-    private var stars: some View {
-        ForEach(scene.stars) { s in
-            TLBarStar(hers: s.hers, reduce: reduce)
-                .offset(x: x(s.t) - 3.5, y: -8)
-                .transition(.opacity)
-        }
-        .animation(tlStarFade(reduce: reduce), value: scene.stars)
-        .allowsHitTesting(false)
-    }
-
-    /// the hours under the bar: every three on the phone, every one on a bar wide enough to name them all (the iPad's); the last one ends where the bar ends
+    /// the hours under the bar: every three on the phone, every one on a bar wide enough to name them all (the iPad's); the last one ends where the bar ends. Where the axis gives a stretch
+    /// of hours little room, an hour that would touch the one before it is left out.
     private var ticks: [Int] {
         guard bw >= 600 else { return scene.ticks }
         return Array(Int((scene.span.lowerBound / 60).rounded(.up))...24)
     }
-    private var hours: some View {
-        ForEach(ticks, id: \.self) { h in
-            Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
-                .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: bh + 4)
+    private func hours(_ axis: TLAxis) -> some View {
+        var last = -Double.infinity
+        let shown = ticks.compactMap { h -> (h: Int, x: Double)? in
+            let x = axis.x(Double(h * 60)) - (h == 24 ? 12 : 6)
+            guard x - last >= 16 else { return nil }
+            last = x
+            return (h, x)
         }
-        .allowsHitTesting(false)
-    }
-
-    /// The sun rising and setting, in the row of the hours (no words): where its small glyph overlaps no hour's label, a hair of a tick under the bar at its minute and a sun on the horizon
-    /// under it; where it would, only a warm tick 1 x 4 pt hanging under the bar. The hours always win.
-    private var sunMarks: some View {
-        let centres = ticks.map { x(Double($0 * 60)) - ($0 == 24 ? 6 : 0) }
-        let marks = [scene.sun?.rise.map { ($0, "sunrise.fill") }, scene.sun?.set.map { ($0, "sunset.fill") }].compactMap { $0 }
-            .filter { $0.0 >= scene.span.lowerBound && $0.0 <= scene.span.upperBound }
-        return ZStack(alignment: .topLeading) {
-            ForEach(marks, id: \.1) { t, symbol in
-                if TLGeo.sunGlyphFits(x(t), hours: centres, width: bw) {
-                    Rectangle().fill(TLPaint.ink.color(0.32)).frame(width: 1, height: 3).offset(x: x(t) - 0.5, y: bh + 1)
-                    Image(systemName: symbol).font(.system(size: 9)).foregroundStyle(RGB(196, 204, 238).color(0.55)).frame(width: 12, height: 12).offset(x: x(t) - 6, y: bh + 4)
-                } else {
-                    Rectangle().fill(TLPaint.sunTick.color(0.9)).frame(width: 1, height: 4).offset(x: x(t) - 0.5, y: bh)
-                }
-            }
+        return ForEach(shown, id: \.h) { t in
+            Text(String(format: "%02d", t.h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
+                .offset(x: t.x, y: bh + 4)
         }
         .allowsHitTesting(false)
     }
 
     /// the things of the lens's kind in its colour over the quiet bar: a span as it is, a moment as a tick of 3 pt, the whole height
-    private var lensLayer: some View {
+    private func lensLayer(_ axis: TLAxis) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(Array(lensMarks.enumerated()), id: \.offset) { _, m in
-                let x0 = x(m.t0), x1 = x(m.t1), w = max(x1 - x0, 3)
+                let x0 = axis.x(m.t0), x1 = axis.x(m.t1), w = max(x1 - x0, 3)
                 Rectangle().fill(lensColor.color(0.95)).frame(width: w, height: bh).offset(x: (x0 + x1) / 2 - w / 2)
             }
         }
@@ -413,49 +431,92 @@ struct TLBarView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: the row he has open, now, and his finger
+    // MARK: now, and his finger
 
-    /// with a lens on, the bar under the words is quiet and so is its bracket: this one stands over the lens's spans, whole
-    private var lensBracket: some View {
-        ZStack(alignment: .topLeading) {
-            if lens, let b = bracket { bracketView(b).transition(.opacity) }
-        }
-        .frame(width: bw, height: bh, alignment: .topLeading)
-        .animation(.easeOut(duration: 0.12), value: bracket != nil)
-    }
-
-    /// the span of the open row: its fill lifts and a 1.5 pt line goes round it (a moment is given 5 pt to be seen)
-    private func bracketView(_ b: ClosedRange<Double>) -> some View {
-        let x0 = x(b.lowerBound), x1 = x(b.upperBound), w = max(x1 - x0, 5)
-        return RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.12))
-            .overlay(RoundedRectangle(cornerRadius: 3).inset(by: 0.75).stroke(TLPaint.ink.color, lineWidth: 1.5))
-            .frame(width: w, height: bh).offset(x: (x0 + x1) / 2 - w / 2)
+    /// 2 pt of warm white, 5 pt longer than the bar each way, with a glow that breathes over 2.4 s (`TLNowGlow`)
+    private func nowMarker(_ x: Double) -> some View {
+        TLNowGlow(height: bh + 10, breathe: breathe && !reduce)
+            .frame(width: 2, height: bh + 10).offset(x: x - 1, y: -5)
             .allowsHitTesting(false)
     }
 
-    /// 2 pt of warm white, 5 pt longer than the bar each way, with a glow that breathes over 2.4 s (`TLNowGlow`); its time above it, kept inside the bar's width
-    private func nowMarker(_ n: Double) -> some View {
-        let label = clock(n), lw = 30.0
-        return ZStack(alignment: .topLeading) {
-            TLNowGlow(height: bh + 10, breathe: breathe && !reduce)
-                .frame(width: 2, height: bh + 10).offset(x: x(n) - 1, y: -5)
-            Text(label).font(AT.mono(10)).foregroundStyle(TLPaint.warm.color).frame(width: lw)
-                .offset(x: clamp(x(n) - lw / 2, 0, bw - lw), y: -19)
-                .opacity(scrub == nil ? 1 : 0).animation(.easeOut(duration: 0.12), value: scrub == nil)
-        }
-        .allowsHitTesting(false)
-    }
-
     /// a hairline over the minute and its time over the line, in a chip
-    private func scrubMark(_ t: Double) -> some View {
+    private func scrubMark(_ x: Double, _ t: Double) -> some View {
         ZStack(alignment: .topLeading) {
-            Rectangle().fill(TLPaint.ink.color(0.7)).frame(width: 1, height: bh + 8).offset(x: x(t) - 0.5, y: -4)
+            Rectangle().fill(TLPaint.ink.color(0.7)).frame(width: 1, height: bh + 8).offset(x: x - 0.5, y: -4)
             Text(clock(t)).font(AT.mono(11)).foregroundStyle(TLPaint.ink.color).padding(.horizontal, 8).frame(height: 19)
                 .background(Capsule().fill(Color(red: 28 / 255, green: 31 / 255, blue: 58 / 255)))
                 .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
-                .fixedSize().offset(x: clamp(x(t) - 22, 0, bw - 44), y: -27)
+                .fixedSize().offset(x: clamp(x - 22, 0, bw - 44), y: -27)
         }
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - the frames over it
+
+/// A frame round a time on the bar: 1.5 pt with a radius of 8, 4 pt clear of the bar above and below, `pad` either side of what it frames, which is given `least` points at least.
+struct TLBarFrame: View {
+    let x0: Double, x1: Double
+    let color: Color
+    var glow = false
+    var pad = 2.0
+    var least = 6.0
+
+    var body: some View {
+        let w = max(least, x1 - x0) + 2 * pad
+        RoundedRectangle(cornerRadius: 8).strokeBorder(color, lineWidth: 1.5)
+            .frame(width: w, height: TLLayout.barH + 8)
+            .shadow(color: TLPaint.warm.color(glow ? 0.25 : 0), radius: glow ? 7 : 0)
+            .offset(x: (x0 + x1) / 2 - w / 2, y: -4)
+            .allowsHitTesting(false)
+    }
+}
+
+/// A time framed for a moment (`TLBlink`), with a warm glow: it comes in over the first 12% of its length, stays, and goes over the last 30%. Always in the bar, so that the first time it
+/// is asked for is a change it plays.
+private struct TLBlinkFrames: View {
+    let blink: TLBlink?
+    let axis: TLAxis
+
+    var body: some View {
+        let length = blink?.length ?? TLBlink.row
+        ZStack(alignment: .topLeading) {
+            ForEach(Array((blink?.spans ?? []).enumerated()), id: \.offset) { _, s in
+                TLBarFrame(x0: axis.x(s.lowerBound), x1: axis.x(s.upperBound), color: TLPaint.warm.color(0.9), glow: true)
+            }
+        }
+        .keyframeAnimator(initialValue: 0.0, trigger: blink?.n ?? 0) { content, shown in
+            content.opacity(shown)
+        } keyframes: { _ in
+            KeyframeTrack {
+                LinearKeyframe(1.0, duration: 0.12 * length)
+                LinearKeyframe(1.0, duration: 0.58 * length)
+                LinearKeyframe(0.0, duration: 0.3 * length)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// The part of the day the list shows, framed on the bar while he scrolls it and for a moment after (`TimelineState.scrolling`), never while a row is open where it stands. A view of its own,
+/// over the bar: the list moves it on every frame of a scroll, and nothing else of the top is drawn again for it.
+struct TLViewportFrame: View {
+    let tl: TimelineState
+    let axis: TLAxis
+
+    var body: some View {
+        let on = tl.viewportOn && tl.openRow == nil
+        ZStack(alignment: .topLeading) {
+            if let v = tl.viewport {
+                TLBarFrame(x0: axis.x(v.lowerBound), x1: axis.x(v.upperBound), color: TLPaint.ink.color(0.5), pad: 3, least: 4)
+            }
+        }
+        .frame(width: axis.width, height: TLLayout.barH, alignment: .topLeading)
+        .opacity(on ? 1 : 0)
+        .animation(.easeOut(duration: on ? 0.15 : 0.45), value: on)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -463,12 +524,12 @@ struct TLBarView: View {
 /// of a finger moving over the bar.
 private struct TLBarLabels: View, Equatable {
     let scene: TLBarScene
+    let axis: TLAxis
     let reduce: Bool
-    var bw = TLLayout.barW
 
     var body: some View {
-        let bh = TLLayout.barH
-        let placed = TLBarLabel.placed(scene, width: bw)
+        let bh = TLLayout.barH, bw = axis.width
+        let placed = TLBarLabel.placed(scene, axis: axis)
         return ZStack(alignment: .topLeading) {
             ForEach(placed) { l in
                 HStack(spacing: TLBarLabel.gap) {
@@ -478,13 +539,13 @@ private struct TLBarLabels: View, Equatable {
                     if l.fit != .icon, let name = l.name { Text(name).lineLimit(1) }
                 }
                 .font(.system(size: 11, weight: .semibold)).fixedSize()
-                .foregroundStyle(l.dark ? TLPaint.darkInk.color(0.9) : TLPaint.ink.color)
+                .foregroundStyle(l.dark ? TLPaint.darkInk.color(0.9) : TLPaint.ink.color(l.quiet ? 0.5 : 1))
                 .frame(height: bh).offset(x: l.x)
                 .transition(.opacity)
             }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
-        .animation(tlStarFade(reduce: reduce), value: placed)          // a word goes with what it was on, as that fades
+        .animation(TLMotion.fade(reduce: reduce), value: placed)          // a word goes with what it was on, as that fades
         .allowsHitTesting(false)
     }
 }
@@ -544,7 +605,7 @@ private struct GrowMask: View {
     var body: some View {
         LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: w / (w + edge)), .init(color: .clear, location: 1)],
                        startPoint: .leading, endPoint: .trailing)
-            .frame(width: w + edge, height: TLLayout.barH + 40)          // taller than the bar: the stars and the line for now stand outside it
+            .frame(width: w + edge, height: TLLayout.barH + 40)          // taller than the bar, so its edge is a line down the whole of it
             .offset(x: shown ? 0 : -(w + edge))
     }
 }
@@ -568,7 +629,7 @@ private struct TLAheadMark: View {
     }
 }
 
-/// the pieces and the hatch on the trips
+/// the pieces, the hatch on the trips, and the faint hatch of a stretch nothing speaks to (a blank: where nothing was recorded, or a stretch with no word for what he did)
 private struct BarCanvas: View, Equatable {
     let scene: TLBarScene
     let rects: [CGRect]
@@ -580,17 +641,18 @@ private struct BarCanvas: View, Equatable {
                 // the night is one plain piece like every other (yilun 10-20, as on the Mac): its stages are in the readout and drawn when its row opens
                 if let l = TLPaint.look(p.fill) {
                     ctx.fill(Path(r), with: .color(l.rgb.color(l.alpha)))
-                    if p.fill == .trip { hatch(ctx, r) }
+                    if p.fill == .trip { hatch(ctx, r, TLPaint.ink.color(0.16)) }
                 } else {
-                    ctx.fill(Path(r), with: .color(Color.white.opacity(p.fill == .blank ? 0.06 : 0.035)))
+                    ctx.fill(Path(r), with: .color(Color.white.opacity(0.035)))
+                    if p.fill == .blank { hatch(ctx, r, TLPaint.hole.color(0.13)) }
                 }
             }
         }
         .allowsHitTesting(false)
     }
 
-    /// fine 45-degree lines, 2 pt thick and 5 pt apart, in step across neighbouring trips
-    private func hatch(_ ctx: GraphicsContext, _ r: CGRect) {
+    /// fine 45-degree lines, 2 pt thick and 5 pt apart, in step across neighbouring pieces
+    private func hatch(_ ctx: GraphicsContext, _ r: CGRect, _ color: Color) {
         var c = ctx
         c.clip(to: Path(r))
         let step = 5.0 * 2.0.squareRoot()
@@ -598,7 +660,7 @@ private struct BarCanvas: View, Equatable {
         while x < r.maxX {
             var line = Path()
             line.move(to: CGPoint(x: x, y: r.maxY)); line.addLine(to: CGPoint(x: x + r.height, y: r.minY))
-            c.stroke(line, with: .color(TLPaint.ink.color(0.16)), lineWidth: 2)
+            c.stroke(line, with: .color(color), lineWidth: 2)
             x += step
         }
     }

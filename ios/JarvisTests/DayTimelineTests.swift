@@ -22,13 +22,13 @@ final class DayTimelineTests: XCTestCase {
     func testTheFixtureDayIsSleepGroupsAndTripsInTheOrderOfTheDayWithNowBetween() {
         let m = build(TimelineFixture.today(cal))
         let kinds = m.entries.map(\.kind)
-        XCTAssertEqual(kinds, [.sleep, .stay, .reminder, .code, .talk, .work, .trip, .trip, .stay, .payment, .trip, .stay, .trip, .stay, .event, .picture, .call, .workout, .trip, .stay,
-                               .work, .code, .payment, .claude, .talk, .reminder, .now, .event, .reminder, .departure])
-        XCTAssertEqual(m.entries.map(\.title).prefix(5), ["睡觉", "家", "带伞", "Claude Code · 3 个会话", "明天下午有什么安排？"])
+        XCTAssertEqual(kinds, [.sleep, .stay, .reminder, .code, .work, .trip, .trip, .stay, .payment, .trip, .stay, .trip, .stay, .event, .picture, .call, .workout, .trip, .stay,
+                               .work, .code, .payment, .claude, .reminder, .now, .event, .reminder, .departure], "her two talks are no rows: the conversation holds them (yilun 10-20)")
+        XCTAssertEqual(m.entries.map(\.title).prefix(5), ["睡觉", "家", "带伞", "Claude Code · 3 个会话", "在 Mac 上工作"])
         let t = m.entries.map(\.t0)
         XCTAssertEqual(t, t.sorted(), "the list runs forward in time")
-        XCTAssertEqual(m.nowIndex, 26)
-        XCTAssertEqual(m.entries[26].title, "现在 21:50")
+        XCTAssertEqual(m.nowIndex, 24)
+        XCTAssertEqual(m.entries[24].title, "现在", "the time is the status bar's")
     }
 
     func testWhatIsAfterTheLineForNowIsLaterAndWhatIsBeforeIsNot() {
@@ -119,7 +119,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(b.map(\.title), ["公交", "12 路"], "no route is just a bus")
         XCTAssertEqual(b.map(\.detail), [nil, nil])
         XCTAssertEqual(b.map(\.base), [TLMetrics.row, TLMetrics.row], "no second line, no taller row")
-        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask, .mark, .sayWhat] }, "nothing to say, but she can be asked about it, starred, and told what the stretch was")
+        XCTAssertTrue(b.allSatisfy { $0.more.isEmpty && $0.actions == [.ask, .sayWhat] }, "nothing to say, but she can be asked about it and told what the stretch was")
     }
 
     func testTheNightIsARowWithItsHoursAndHowLongHeSlept() throws {
@@ -132,13 +132,13 @@ final class DayTimelineTests: XCTestCase {
 
     // MARK: the rows in a group
 
-    func testATalkIsNamedForItsTopicElseForWhatItIsAndCountsItsTurns() throws {
+    func testATalkIsNoRowButThePlaceItWasInComesForwardWithItsChipAndTheBarAndTheReadoutStillHaveIt() throws {
         let m = build(TimelineFixture.today(cal))
-        let a = try entry(m, "talk-1"), b = try entry(m, "talk-2")
-        XCTAssertEqual([a.title, b.title], ["明天下午有什么安排？", "和她说话"])
-        XCTAssertEqual([a.detail, b.detail], ["6 句", "14 句"])
-        XCTAssertEqual(a.talkStart, at(612))
-        XCTAssertTrue(a.opens)
+        XCTAssertFalse(m.entries.contains { $0.kind == .talk }, "her talks are in the conversation, not in the day's list (yilun 10-20)")
+        XCTAssertEqual(m.entries.filter { $0.lenses.contains(.talk) }.map(\.id), ["stay-1", "stay-13"], "the places they were in are what 和她 brings forward")
+        XCTAssertEqual(m.marks(of: .talk), [TLMark(t0: 612, t1: 622), TLMark(t0: 1240, t1: 1262)], "and the bar shows when they were")
+        XCTAssertEqual(m.readout(at: 615).elsewhere, ["Claude Code · 接上天气和身体数据", "明天下午有什么安排？"], "a finger on the bar reads the talk by its topic")
+        XCTAssertEqual(m.readout(at: 1245).elsewhere.last, "和她说话 · 14 句", "and one with none by how long it was")
     }
 
     func testAPictureIsOnlyCalledOneAndSaysTheFirstLineOfWhatTheBrainWroteOfIt() throws {
@@ -298,12 +298,13 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(ids(.work), ["code-group-stay-1", "work-demo-1", "work-demo-2", "code-group-stay-13"], "Claude Code is lit with the Mac's work")
         XCTAssertEqual(ids(.workout), ["workout-demo-1"])
         XCTAssertEqual(ids(.call), ["call-demo-1"])
-        XCTAssertEqual(ids(.talk), ["talk-1", "talk-2"])
+        XCTAssertEqual(ids(.talk), [], "a talk is no row")
         XCTAssertEqual(ids(.payment), ["payment-demo-1"])
         XCTAssertEqual(ids(.picture), ["picture-pic-demo-1"])
         XCTAssertTrue(m.entries.filter { [.stay, .pause, .now, .event, .reminder, .departure, .claude].contains($0.kind) }.allSatisfy { $0.lens == nil }, "a place, the line for now, what is planned and a chat with Claude are in no lens")
-        XCTAssertEqual(m.marks(of: .work), [TLMark(t0: 570, t1: 605), TLMark(t0: 612, t1: 650), TLMark(t0: 656, t1: 680), TLMark(t0: 630, t1: 680), TLMark(t0: 1175, t1: 1300),
-                                           TLMark(t0: 1180, t1: 1218), TLMark(t0: 1235, t1: 1268), TLMark(t0: 1276, t1: 1306)], "a row that stands for several sessions marks each of them")
+        XCTAssertEqual(m.marks(of: .work).sorted { ($0.t0, $0.t1) < ($1.t0, $1.t1) },
+                       [TLMark(t0: 570, t1: 605), TLMark(t0: 612, t1: 650), TLMark(t0: 630, t1: 680), TLMark(t0: 656, t1: 680), TLMark(t0: 1175, t1: 1300),
+                        TLMark(t0: 1180, t1: 1218), TLMark(t0: 1235, t1: 1268), TLMark(t0: 1276, t1: 1306)], "a row that stands for several sessions: each of them is marked")
         XCTAssertEqual(m.marks(of: .workout), [TLMark(t0: 1020, t1: 1055)])
         XCTAssertEqual(m.marks(of: .picture), [TLMark(t0: 962, t1: 962)], "a moment: its end is its start")
         XCTAssertEqual(m.marks(of: .payment), [TLMark(t0: 800, t1: 800)])
@@ -314,17 +315,11 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(build(r).entries[0].right, "+$5.00")
     }
 
-    func testWhatMatteredIsNamedByItsLabelAndLit() throws {
-        let m = build(TimelineFixture.today(cal))
-        let c = try entry(m, "call-demo-1")
-        XCTAssertEqual(c.title, "和 Mia 聊了很久")
-        XCTAssertTrue(c.lit)
-        XCTAssertEqual(c.detail, "通话 · FaceTime", "what the row was called before it was marked, in the muted line")
-        XCTAssertFalse(try entry(m, "talk-1").lit)
-        // a place stays its own name even when marked, and wears the star
-        let r = try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(700)), "place": "Cafe, Main"}"#, #", "highlights": [{"id": "s1", "label": "Coffee", "by": "him"}]"#)
-        XCTAssertEqual(build(r).entries[0].title, "Cafe")
-        XCTAssertTrue(build(r).entries[0].lit)
+    func testWhatWasHighlightedIsCalledWhatItWas() throws {
+        let r = try reply(#"{"id": "c1", "lane": "you", "kind": "call", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(620)), "app": "FaceTime"}"#,
+                          #", "highlights": [{"id": "c1", "label": "和 Mia 聊了很久", "by": "her"}]"#)
+        let c = build(r).entries[0]
+        XCTAssertEqual([c.title, c.detail], ["通话 · FaceTime", nil], "her stars are out of the timeline, and so are their names for a row")
     }
 
     func testAKindThisPhoneDoesNotKnowIsLeftOut() throws {
@@ -358,10 +353,10 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(try entry(m, "move-3").height, TLMetrics.row + TLMetrics.gap, "the first leg of a run has the blank above it")
         XCTAssertEqual(try entry(m, "move-4").height, TLMetrics.row, "the next leg of the run does not")
         XCTAssertEqual(try entry(m, "ride-8").base, TLMetrics.rowDetail, "a ride has its stops under it")
-        XCTAssertEqual(try entry(m, "talk-1").height, TLMetrics.rowDetail, "a row with a muted line is taller, and one in a group has no blank above it")
-        XCTAssertEqual(try entry(m, "call-demo-1").height, TLMetrics.rowDetail)
+        XCTAssertEqual(try entry(m, "reminder-demo-3").height, TLMetrics.rowDetail, "a row with a muted line is taller, and one in a group has no blank above it")
+        XCTAssertEqual(try entry(m, "call-demo-1").height, TLMetrics.row)
         XCTAssertEqual(try entry(m, "now").height, TLMetrics.now)
-        XCTAssertEqual(m.top(of: "talk-1"), m.offsets[4])
+        XCTAssertEqual(m.top(of: "work-demo-1"), m.offsets[4])
         XCTAssertTrue(m.entries.allSatisfy { $0.base >= 44 || $0.kind == .now }, "nothing he can touch is lower than 44")
         XCTAssertNil(m.top(of: "nothing"))
     }
@@ -484,21 +479,14 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertTrue(build(r, now: nil).scene.ahead.isEmpty)
     }
 
-    func testWhatMatteredIsAStarAtItsTimeOnTheBarEvenForAStayAndOnlyOnce() throws {
-        XCTAssertEqual(build(TimelineFixture.today(cal)).scene.stars, [TLStar(id: "call-demo-1", t: 1000, hers: true)], "she picked it")
-        let r = try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800)), "place": "Cafe"}, {"id": "t", "lane": "her", "kind": "talk", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(610)), "turns": 2}"#,
-                          #", "highlights": [{"id": "s1", "label": "Coffee", "by": "him"}, {"id": "t", "label": "x", "by": "her"}, {"id": "s1", "label": "again", "by": "her"}, {"id": "gone", "label": "y", "by": "her"}]"#)
-        XCTAssertEqual(build(r, now: nil).scene.stars, [TLStar(id: "t", t: 600, hers: true), TLStar(id: "s1", t: 700)], "in the order of the day, the item that is not there left out; his mark first wins")
-    }
-
     func testTheGapBetweenPiecesIsAHairAndAPieceIsNeverNarrowerThanTwoPoints() {
         let pieces = [TLPiece(id: "a", t0: 360, t1: 720, fill: .sleep), TLPiece(id: "b", t0: 720, t1: 721, fill: .trip), TLPiece(id: "c", t0: 721, t1: DAY, fill: .blank)]
-        let r = TLGeo.rects(pieces, span: 360...DAY, width: 1080, height: 22)
+        let r = TLGeo.rects(pieces, axis: .linear(360...DAY, width: 1080), height: 22)
         XCTAssertEqual([r[0].minX, r[0].maxX], [0, 359.5], "the first begins where the bar does and leaves half a point to the next")
         XCTAssertEqual(r[1].width, 2, "a minute of a 1080-point bar is a point; it is given two")
         XCTAssertEqual(r[2].maxX, 1080, "the last ends where the bar ends")
         XCTAssertEqual(r.map(\.height), [22, 22, 22])
-        XCTAssertEqual(TLGeo.x(DAY + 100, 360...DAY, 380), 380, "nothing is drawn past the bar")
+        XCTAssertEqual(TLAxis.linear(360...DAY, width: 380).x(DAY + 100), 380, "nothing is drawn past the bar")
     }
 
     // MARK: what a piece says
@@ -527,13 +515,13 @@ final class DayTimelineTests: XCTestCase {
 
     func testTheMadeUpDaysPiecesWearWhatFitsThemAtTheBarsWidth() throws {
         let sc = build(TimelineFixture.today(cal)).scene
-        let words = Dictionary(uniqueKeysWithValues: TLBarLabel.placed(sc, width: TLLayout.barW, measure: measure).map { ($0.item, $0) })
+        let words = Dictionary(uniqueKeysWithValues: TLBarLabel.placed(sc, axis: .linear(sc.span, width: TLLayout.barW), measure: measure).map { ($0.item, $0) })
         XCTAssertEqual(words["sleep-0"]?.fit, .icon, "25 points: room for the moon, not for 8:05 too")
         XCTAssertEqual(words["stay-1"]?.fit, .iconName)
         XCTAssertEqual(words["stay-9"]?.fit, .iconName, "UVic")
         XCTAssertEqual(words["stay-13"]?.fit, .iconName)
         for id in ["move-4", "stay-5", "move-6", "ride-8", "ride-12", "event-demo-1"] { XCTAssertNil(words[id], "\(id) is too narrow to say anything") }
-        let night = TLGeo.rects(sc.pieces, span: sc.span, width: TLLayout.barW, height: 1)[0]
+        let night = TLGeo.rects(sc.pieces, axis: .linear(sc.span, width: TLLayout.barW), height: 1)[0]
         XCTAssertEqual(try XCTUnwrap(words["sleep-0"]?.x), night.midX - TLBarLabel.icon / 2, accuracy: 0.001, "the moon in the middle of its piece")
         XCTAssertEqual(words["sleep-0"]?.dark, false, "light text on the night's indigo")
         XCTAssertEqual(words["stay-1"]?.dark, true, "dark ink on the pale hue of home")
@@ -544,8 +532,8 @@ final class DayTimelineTests: XCTestCase {
         let home = TLPiece.Fill.place(RGB(255, 168, 150), kept: true)
         let pieces = [TLPiece(id: "s0", t0: 360, t1: 700, fill: home, name: "Home", icon: "house.fill"), TLPiece(id: "n", t0: 700, t1: 900, fill: .sleep, name: nil, icon: "moon.fill"),
                       TLPiece(id: "s0", t0: 900, t1: 1440, fill: home, name: "Home", icon: "house.fill")]
-        let scene = TLBarScene(span: 360...DAY, now: nil, pieces: pieces, ahead: [], stars: [], ticks: [])
-        let placed = TLBarLabel.placed(scene, width: TLLayout.barW, measure: measure)
+        let scene = TLBarScene(span: 360...DAY, now: nil, pieces: pieces, ahead: [], ticks: [])
+        let placed = TLBarLabel.placed(scene, axis: .linear(scene.span, width: TLLayout.barW), measure: measure)
         XCTAssertEqual(placed.map(\.item), ["s0", "n", "s0"], "a word on each piece of home")
         XCTAssertEqual(Set(placed.map(\.id)).count, 3, "and none under another's id, which the bar's ForEach would take for one view")
     }
@@ -589,7 +577,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertTrue(m.offsets.contains { abs($0 - 8 - y) < 0.001 }, "a whole row begins 8 pt down, so the row above leaves nothing in the fade")
         XCTAssertEqual((m.offsets[m.nowIndex!] + TLMetrics.now / 2 - y) / room, 0.6, accuracy: 0.07, "the line for now stays about 60% of the way down")
         XCTAssertEqual(build(TimelineFixture.yesterday(cal), now: nil).restY(room: room), 0, "another day opens at its top")
-        let short = try reply(#"{"id": "t", "lane": "her", "kind": "talk", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(610)), "turns": 2}"#)
+        let short = try reply(#"{"id": "s", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(700)), "place": "Cafe"}"#)
         XCTAssertEqual(build(short).restY(room: room), 0, "a day that fits does not scroll")
     }
 
@@ -598,7 +586,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.entry(at: 700)?.id, "move-3", "in the drive")
         XCTAssertEqual(m.entry(at: 550)?.id, "stay-1", "at home before anything happened there")
         XCTAssertEqual(m.entry(at: 600)?.id, "code-group-stay-1", "in the first of the sessions")
-        XCTAssertEqual(m.entry(at: 620)?.id, "talk-1")
+        XCTAssertEqual(m.entry(at: 640)?.id, "work-demo-1", "the Mac work begun at 10:30")
         XCTAssertEqual(m.entry(at: 10)?.id, "sleep-0", "before anything: the first")
         XCTAssertEqual(m.entry(at: 1439)?.id, "departure-demo-1")
     }
@@ -663,10 +651,10 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(more.second, "Jarvis · Xcode · Claude · 积分换元的符号问题")
     }
 
-    func testWhatMatteredIsToldByItsLabelAndWhatIsNearButNotOverIsTold() {
+    func testWhatCoversTheMinuteIsToldAndWhatIsNearButNotOverIsTold() {
         let m = build(TimelineFixture.today(cal))
-        XCTAssertEqual(m.readout(at: 1005).second, "和 Mia 聊了很久", "the call that covers 16:45, by the label that was put on it")
-        XCTAssertEqual(m.readout(at: 1015).second, "和 Mia 聊了很久", "still on the call at 16:55")
+        XCTAssertEqual(m.readout(at: 1005).second, "通话 · FaceTime", "the call that covers 16:45")
+        XCTAssertEqual(m.readout(at: 1015).second, "通话 · FaceTime", "still on the call at 16:55")
         XCTAssertEqual(m.readout(at: 1025).second, "跑步 · 3.2 公里", "the run covers 17:05: what covers the minute is told, and the call that ended seven minutes before is not")
         XCTAssertEqual(m.readout(at: 1065).second, "跑步 · 3.2 公里", "ten minutes after the run")
         XCTAssertEqual(m.readout(at: 1070).second, "这段时间没有别的记录", "fifteen minutes after")
@@ -750,10 +738,10 @@ final class DayTimelineTests: XCTestCase {
     func testWithARowsPageOpenAFingerOnTheBarTurnsItToTheRowItRestsOnOrLiftsOnAndTheListStaysWhereItIs() {
         withTimeline { e in
             let m = build(TimelineFixture.today(cal))
-            e.ui.tl.openRow = "talk-1"
+            e.ui.tl.openRow = "stay-1"
             let n = e.ui.tl.request.n
             e.ui.tl.follow(1000, in: m)
-            XCTAssertEqual(e.ui.tl.openRow, "talk-1", "the call covers 16:40, but the page waits while the finger moves: only the bar's bracket follows it")
+            XCTAssertEqual(e.ui.tl.openRow, "stay-1", "the call covers 16:40, but the iPad's stage waits while the finger moves: only the bar's bracket follows it")
             XCTAssertEqual(e.ui.tl.scrub, 1000)
             XCTAssertNil(e.ui.tl.hot, "the list is under the page: nothing in it is lit")
             XCTAssertEqual(e.ui.tl.request.n, n, "and it is not asked to go anywhere: the way back is to the same place")
@@ -772,11 +760,11 @@ final class DayTimelineTests: XCTestCase {
     func testAFingerCrossingRowsWithAPageOpenSwapsNoPageUntilItLiftsAndThenTurnsToTheLastOne() {
         withTimeline { e in
             let m = build(TimelineFixture.today(cal))
-            e.ui.tl.openRow = "talk-1"
+            e.ui.tl.openRow = "stay-1"
             e.ui.tl.follow(700, in: m)
             e.ui.tl.follow(1000, in: m)
             e.ui.tl.follow(1335, in: m)
-            XCTAssertEqual(e.ui.tl.openRow, "talk-1", "three rows crossed within a moment: the page has not been swapped for any of them")
+            XCTAssertEqual(e.ui.tl.openRow, "stay-1", "three rows crossed within a moment: the page has not been swapped for any of them")
             e.ui.tl.follow(nil, in: nil)
             XCTAssertEqual(e.ui.tl.openRow, "event-demo-1", "and the lift turns it to the last, the class planned for 22:00")
             RunLoop.current.run(until: Date().addingTimeInterval(0.4))
@@ -786,6 +774,22 @@ final class DayTimelineTests: XCTestCase {
             e.ui.tl.follow(1000, in: m)
             e.ui.tl.follow(nil, in: nil)
             XCTAssertNil(e.ui.tl.openRow, "a finger on the bar never opens a page that is not open")
+        }
+    }
+
+    func testOnThePhoneAFingerOnTheBarCarriesTheListAndTheRowOpenWhereItStandsStaysOpen() throws {
+        try withTimeline { e in
+            let m = build(TimelineFixture.today(cal))
+            e.ui.tl.openRow = "stay-1"; e.ui.tl.openH = 120
+            e.ui.tl.follow(1000, in: m, inPlace: true)
+            XCTAssertEqual(e.ui.tl.openRow, "stay-1", "it stays open")
+            XCTAssertEqual(e.ui.tl.hot, "call-demo-1")
+            XCTAssertEqual(e.ui.tl.request.y, try XCTUnwrap(m.top(of: "call-demo-1")) + 120, "a row under the open one stands lower by what it opened to")
+            e.ui.tl.follow(500, in: m, inPlace: true)
+            XCTAssertEqual(e.ui.tl.hot, "sleep-0")
+            XCTAssertEqual(e.ui.tl.request.y, 0, "and one over it where it always stands")
+            e.ui.tl.follow(nil, in: nil)
+            XCTAssertEqual(e.ui.tl.openRow, "stay-1", "a finger lifted leaves it open")
         }
     }
 
@@ -846,23 +850,6 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertNil(TimelineState.swipe(dx: 30, dy: 0, predicted: 100), "a slow one is not")
         XCTAssertNil(TimelineState.swipe(dx: 100, dy: 60), "not sideways enough")
         XCTAssertNil(TimelineState.swipe(dx: 10, dy: 200), "the list's own")
-    }
-
-    func testAnEdgeSwipeBackNeedsToGoFarOrFastAndMostlySideways() {
-        XCTAssertTrue(TimelineState.backSwipe(dx: 90, dy: 20, predicted: 120), "far enough")
-        XCTAssertTrue(TimelineState.backSwipe(dx: 40, dy: 5, predicted: 260), "not far, but thrown")
-        XCTAssertFalse(TimelineState.backSwipe(dx: 40, dy: 5, predicted: 120), "neither")
-        XCTAssertFalse(TimelineState.backSwipe(dx: 100, dy: 120, predicted: 300), "mostly up and down: the page's own scroll")
-        XCTAssertFalse(TimelineState.backSwipe(dx: -100, dy: 0, predicted: -300), "to the left is not back")
-    }
-
-    func testASwipeBackIsDecidedAtItsStartAndThePageAndTheListCrossWithADip() {
-        XCTAssertTrue(TimelineState.backSwipeStarts(dx: 10, dy: 3))
-        XCTAssertFalse(TimelineState.backSwipeStarts(dx: 6, dy: 8), "mostly up and down: the page scrolls")
-        XCTAssertFalse(TimelineState.backSwipeStarts(dx: -10, dy: 0))
-        XCTAssertEqual([TLMotion.listShows(0), TLMotion.pageShows(0)], [0, 1], "the page all the way in")
-        XCTAssertEqual([TLMotion.listShows(1), TLMotion.pageShows(1)], [1, 0], "back at the list")
-        XCTAssertLessThan(max(TLMotion.listShows(0.5), TLMotion.pageShows(0.5)), 0.25, "half way, neither is strong")
     }
 
     func testTheHomeScreenShowsTheTimelineUntilHeChoosesTheDialAndKeepsWhatHeChose() {
@@ -926,8 +913,7 @@ final class DayTimelineTests: XCTestCase {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(try entry(m, "event-demo-1").about, About(kind: "event", id: "event-demo-1", title: "陶艺课", startMs: at(1320), mark: .next), "not yet")
         XCTAssertEqual(try entry(m, "reminder-demo-1").about, About(kind: "reminder", id: "reminder-demo-1", title: "给 Mia 回电话", startMs: at(1380), mark: .next))
-        XCTAssertEqual(try entry(m, "talk-1").about, About(kind: "talk", id: "talk-1", title: "明天下午有什么安排？", startMs: at(612), mark: .done), "named for its topic; hers, and over")
-        XCTAssertEqual(try entry(m, "call-demo-1").about, About(kind: "call", id: "call-demo-1", title: "和 Mia 聊了很久", startMs: at(1000), mark: .lit), "named for the label it was given; his, and over")
+        XCTAssertEqual(try entry(m, "call-demo-1").about, About(kind: "call", id: "call-demo-1", title: "通话 · FaceTime", startMs: at(1000), mark: .lit), "named as its row is; his, and over")
         XCTAssertEqual(try entry(m, "stay-1").about?.title, "家")
         XCTAssertEqual(try entry(m, "stay-13").about?.mark, .work, "still on")
         XCTAssertEqual(try entry(m, "sleep-0").about?.kind, "sleep")
@@ -952,14 +938,14 @@ final class DayTimelineTests: XCTestCase {
     }
 
     /// the engine, as it is when he talks with the timeline on: `HomeModule` timeline, the day on show the made-up one
-    private func withTimeline(_ body: (StarEngine) -> Void) {
+    private func withTimeline(_ body: (StarEngine) throws -> Void) rethrows {
         let kept = HomeModule.shared.kind
         HomeModule.shared.kind = .timeline
         defer { HomeModule.shared.kind = kept; MainActor.assumeIsolated { AboutNow.current = nil } }
         let e = StarEngine()
         e.ui.tl.fixture = .init(replies: [0: TimelineFixture.today(cal)], now: TimelineFixture.now)
         e.ui.tl.day = e.ui.tl.today
-        body(e)
+        try body(e)
     }
 
     func testTheRowOpenInTheListIsTheChipWhenATurnGoesOut() {
@@ -971,12 +957,12 @@ final class DayTimelineTests: XCTestCase {
             XCTAssertEqual(e.ui.about, About(kind: "event", id: "event-demo-1", title: "陶艺课", startMs: at(1320), mark: .next))
             MainActor.assumeIsolated { XCTAssertEqual(AboutNow.current?.id, "event-demo-1", "the voice says it too") }
             // another row opened is another item; a row that is no one item (sessions folded together) leaves the chip as it is
-            e.ui.tl.openRow = "talk-1"
+            e.ui.tl.openRow = "stay-1"
             e.captureAbout()
-            XCTAssertEqual(e.ui.about?.id, "talk-1")
+            XCTAssertEqual(e.ui.about?.id, "stay-1")
             e.ui.tl.openRow = "code-group-stay-1"
             e.captureAbout()
-            XCTAssertEqual(e.ui.about?.id, "talk-1")
+            XCTAssertEqual(e.ui.about?.id, "stay-1")
             e.ui.tl.openRow = "ride-8"
             e.captureAbout()
             XCTAssertEqual(e.ui.about?.id, "ride-8", "a bus ride is one the host takes")
@@ -991,9 +977,9 @@ final class DayTimelineTests: XCTestCase {
             XCTAssertNil(e.ui.about)
             e.captureAbout()
             XCTAssertNil(e.ui.about)
-            e.ui.tl.openRow = "talk-1"
+            e.ui.tl.openRow = "stay-1"
             e.captureAbout()
-            XCTAssertEqual(e.ui.about?.id, "talk-1")
+            XCTAssertEqual(e.ui.about?.id, "stay-1")
         }
     }
 

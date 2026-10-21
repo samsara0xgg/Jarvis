@@ -7,7 +7,6 @@ import Foundation
 
 /// What he has just done that the brain's next answer will say too, and the day shows before it does.
 struct TLDone: Equatable {
-    var highlights: [Highlight]?                // the day's highlights as they stand after his mark; none: the brain's own
     var confirmed: Set<String> = []             // the events his mail made that he has said are his (by the item's id)
     var dropped: Set<String> = []               // and those he has said are not: the day has no row for them
     var named: [String: KeptPlace] = [:]        // the stays he has just given a place's first name, by the stay's id
@@ -19,8 +18,6 @@ struct TLFrame {
     let m: (Int64) -> Double                    // epoch milliseconds to minutes from the day's own midnight
     let before: (Int) -> String                 // how a day that many days before this one is said: 昨天, 前天, 10月15日
     let topic: (String) -> String?              // what a talk was about
-    let marks: [String: String]                 // the labels of what mattered, by item (an empty one is a star with no words of its own)
-    var hers: Set<String> = []                  // and which of them are her picks and not his marks
     var acked: Set<String> = []                 // the reminders he has just said he knows, before the brain's next answer says it
     var renamed: [String: String] = [:]         // the places he has just given another name (by their id), likewise
     var confirmed: Set<String> = []             // the events his mail made that he has just said are his
@@ -125,8 +122,6 @@ extension DayTimelineModel {
             if let n = i.turns, n > 0 { e.detail = "\(n) 句" }
             e.glance = said ?? ["和她说话", e.detail].compactMap { $0 }.joined(separator: " · ")
             e.right = dur ?? ""
-            e.talkStart = i.start_ms
-            e.turns = i.turns.flatMap { $0 > 0 ? $0 : nil }
         case "picture":
             e.kind = .picture
             e.title = "照片"
@@ -299,14 +294,6 @@ extension DayTimelineModel {
         case .trip: e.head = [e.title, rangeText(t0, t1, running: running, f), e.right.isEmpty ? nil : e.right].compactMap { $0 }.joined(separator: " · ")
         default: break
         }
-        // what mattered: its label is its name (the brain writes `kind HH:MM` when nobody did, which says less than the row does: a star and no new name)
-        if let label = f.marks[i.id] {
-            e.lit = true; e.hers = f.hers.contains(i.id)
-            if e.kind != .stay, !label.isEmpty {
-                e.detail = [e.title, e.detail].compactMap { $0 }.joined(separator: " · ")
-                e.title = label; e.glance = label
-            }
-        }
         if About.kinds.contains(i.kind), About.fits(id: i.id) {
             e.about = About(kind: i.kind, id: i.id, title: e.title, startMs: i.start_ms, mark: mark(i, later: later))
         }
@@ -425,5 +412,16 @@ extension DayTimelineModel {
     static func clockDay(_ t: Double, _ f: TLFrame) -> String {
         guard t < 0 else { return clock(t) }
         return f.before(Int((-t / DAY).rounded(.up))) + " " + clock(t)
+    }
+}
+
+extension TLEntry {
+    /// the line under a row's title where it is shown on its own (the iPad's stage): the hours it covered (or when it began, while it goes on), how long it was or what it came to, and where
+    /// (a stretch says the place its group says in the list)
+    var pageLine: String {
+        let hours: String
+        if going { hours = time + " 起" } else if let t1, t1 > t0 { hours = time + "–" + tlEnd(t1) } else { hours = time }
+        let words = kind == .segment ? DayTimelineModel.line(self, solo: true) : detail
+        return [hours, right, words ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }

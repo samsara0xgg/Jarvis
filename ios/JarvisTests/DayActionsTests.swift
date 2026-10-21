@@ -39,57 +39,33 @@ final class DayActionsTests: XCTestCase {
 
     private func body(_ i: Int = 0) throws -> [String: Any] { try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(Stub.seen[i].raw.utf8)) as? [String: Any]) }
 
-    // MARK: a mark on an item
+    // MARK: his answer to what she asked of a stretch
 
-    func testAMarkIsAPostOfTheDayTheItemAndAPlainTrueOrFalseAndNothingElse() async throws {
-        Stub.handler = { _ in (200, #"{"ok": true, "highlights": [{"id": "talk-1", "label": "明天的安排", "by": "him"}, {"id": "call-1", "label": "和 Mia 聊了很久", "by": "her"}]}"#) }
-        let on = try await BrainClient.markItem(day: "2026-10-08", id: "talk-1", on: true, bases: [pi], token: "tok")
-        XCTAssertEqual(on, .done([Highlight(id: "talk-1", label: "明天的安排", by: "him"), Highlight(id: "call-1", label: "和 Mia 聊了很久", by: "her")]))
-        _ = try await BrainClient.markItem(day: "2026-10-08", id: "talk-1", on: false, bases: [pi], token: "tok")
+    func testAnAnswerToAStretchIsAPostOfTheDayTheSpanAndEitherTheChoiceOrHisWords() async throws {
+        Stub.handler = { _ in (200, #"{"ok": true}"#) }
+        let a = try await BrainClient.answerSpan(day: "2026-10-08", spanId: "doing-835", choice: "在刷手机", text: nil, bases: [pi], token: "tok")
+        let b = try await BrainClient.answerSpan(day: "2026-10-08", spanId: "doing-835", choice: nil, text: "等车", bases: [pi], token: "tok")
+        XCTAssertEqual([a, b], [.done, .done])
         XCTAssertEqual(Stub.seen.map(\.method), ["POST", "POST"])
-        XCTAssertEqual(Stub.seen.map(\.path), ["/inherent/day/highlight", "/inherent/day/highlight"])
+        XCTAssertEqual(Stub.seen.map(\.path), ["/inherent/day/answer", "/inherent/day/answer"])
         XCTAssertEqual(Stub.seen.map(\.auth), ["Bearer tok", "Bearer tok"])
-        XCTAssertEqual(Set(try body(0).keys), ["day", "id", "on"], "no label: the item keeps the name the brain gives it")
-        XCTAssertEqual(try body(0)["day"] as? String, "2026-10-08")
-        XCTAssertEqual(try body(0)["id"] as? String, "talk-1")
-        XCTAssertTrue(Stub.seen[0].raw.contains(#""on":true"#), "the brain's StrictBool takes true and false, not 1 and 0: \(Stub.seen[0].raw)")
-        XCTAssertTrue(Stub.seen[1].raw.contains(#""on":false"#), Stub.seen[1].raw)
+        XCTAssertEqual(try body(0) as NSDictionary, ["day": "2026-10-08", "span_id": "doing-835", "choice": "在刷手机"] as NSDictionary)
+        XCTAssertEqual(try body(1) as NSDictionary, ["day": "2026-10-08", "span_id": "doing-835", "text": "等车"] as NSDictionary)
     }
 
-    func testAnItemIdGoesWholeInTheBody() async throws {
-        Stub.handler = { _ in (200, #"{"ok": true, "highlights": []}"#) }
-        let id = "commitment-5f2c9d1e4b7a4c3f8a6d2e9b1c0d7a53@2026-10-08"
-        _ = try await BrainClient.markItem(day: "2026-10-08", id: id, on: true, bases: [pi], token: "tok")
-        XCTAssertEqual(try body()["id"] as? String, id)
-    }
-
-    func testTheBrainsAnswerToAMarkByItsStatus() async throws {
-        let list = #"{"ok": true, "highlights": [{"id": "a", "label": "", "by": "him"}, {"id": 5}, {"id": "b", "label": "x"}]}"#
-        let cases: [(Int, String, HighlightAnswer)] = [
-            (200, list, .done([Highlight(id: "a", label: "", by: "him"), Highlight(id: "b", label: "x", by: nil)])),         // one that cannot be read costs only itself
-            (200, #"{"ok": true, "highlights": []}"#, .done([])),
-            (200, #"{"ok": true}"#, .done(nil)),
-            (200, "not json", .done(nil)),
-            (404, #"{"detail": "no item a on 2026-10-08"}"#, .gone),
-            (404, #"{"detail": "Not Found"}"#, .failed),                  // a brain that has no such route
-            (409, #"{"detail": "five of his marks stand"}"#, .full),
-            (422, #"{"detail": "bad"}"#, .failed),
-        ]
-        for (status, text, want) in cases {
+    func testTheBrainsAnswerToAStretchByItsStatus() async throws {
+        for status in [404, 422, 502] {
             Stub.seen = []
-            Stub.handler = { _ in (status, text) }
-            let r = try await BrainClient.markItem(day: "2026-10-08", id: "a", on: true, bases: [pi, mac], token: "tok")
-            XCTAssertEqual(r, want, "\(status) \(text)")
+            Stub.handler = { _ in (status, #"{"detail": "x"}"#) }
+            let r = try await BrainClient.answerSpan(day: "2026-10-08", spanId: "s", choice: "a", text: nil, bases: [pi, mac], token: "tok")
+            XCTAssertEqual(r, .failed, "\(status)")
             XCTAssertEqual(Stub.seen.count, 1, "\(status): the route's own answer, so one try and not one on each address")
         }
-    }
-
-    func testAMarkTheBrainDidNotAnswerMovesOnToTheNextAddressAndThenFails() async {
-        for status in [500, 502, 503] {
+        for status in [500, 503] {
             Stub.seen = []
             Stub.handler = { _ in (status, "") }
             do {
-                _ = try await BrainClient.markItem(day: "2026-10-08", id: "a", on: true, bases: [pi, mac], token: "tok")
+                _ = try await BrainClient.answerSpan(day: "2026-10-08", spanId: "s", choice: "a", text: nil, bases: [pi, mac], token: "tok")
                 XCTFail("\(status) is no answer")
             } catch {
                 XCTAssertEqual(error as? BrainError, .refused, "\(status)")

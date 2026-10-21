@@ -1,49 +1,238 @@
 // words: legacy
 import SwiftUI
 
-// What a row of the day opens to, on its page (Sky/DayTimelineDetail.swift; the menu of a long press shows it as the row's preview): a place's map and words, what a trip, a ride, an event or a payment says that its line does not, the first lines of a talk, the picture,
-// how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, and the buttons of what can be done with it (only those the row offers: `TLEntry.actions`) with the
-// star at their right and, for a stretch, 这段在干嘛 under them. The row's own title and line are not said again: the page's head has them.
+// What a row of the day opens to: on the phone under the row itself, on the row's own columns (Sky/DayTimelineRowViews.swift unfolds it), on the iPad on the stage beside the list, and in
+// the menu of a long press as the row's preview. A stretch says one thing a line in time order: each run of his attention with a dot of its colour, what was on his phone alongside, what
+// happened in it with its icon, and what took him off it; a stretch she is not sure of asks him first, in one line, and 依据 says how she knows. Anything else says what its line does not: a
+// place's map and words, the picture, how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, with what can be done with it as chips under it (only what the
+// row offers: `TLEntry.actions`; 问她 is the long press's, on every row with something to put to her). The row's own title and line are not said again.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let faint = SetColor.faint
+private let warm = RGB(255, 240, 220)
 private let prose = Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.86)
 private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
+private let ground = Color(red: 2 / 255, green: 1 / 255, blue: 6 / 255)            // the black the list sits on: the ring that cuts a rail round a line's dot
+private let beadFill = Color(red: 17 / 255, green: 16 / 255, blue: 22 / 255)
+
+extension TLEntry {
+    /// About how tall what it opens to where it stands is, before it is drawn: how far up the list can carry it, near the list's end.
+    var unfoldGuess: Double {
+        switch kind {
+        case .segment: return (ask != nil ? 40 : 0) + 28 * Double(lines.count) + (knows != nil ? 30 : 0) + 12
+        case .sleep: return 110
+        case .stay: return (place?.onMap == true ? 132 : 0) + 20 * Double(more.count) + 60
+        default: return 60 + 20 * Double(more.count)
+        }
+    }
+}
 
 struct TLOpenView: View {
     let e: TLEntry
     let tl: TimelineState
     let engine: StarEngine
     var interactive = true              // false in the preview of a long press, which has no buttons: the menu has them
+    var inPlace = false                 // under the row, on its columns: what it says comes in a line after another
     var mapWidth = 296.0                // how wide the map of a place is taken: the room it is given
     @State private var session: String? // the session of Claude Code opened to its recap
     @State private var draft = ""
     @FocusState private var typing: Bool
-    @State private var born = Date()    // when this page was made: its field is not given the keyboard while the page is still sliding in
+    @State private var born = Date()    // when this was made: its field is not given the keyboard while it is still coming in
+    @State private var why = false      // 依据 is open
+    @State private var writing = false  // 写一句… has become a field
+    @State private var words = ""       // and what he has written in it
+    @FocusState private var writingFocus: Bool
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        Group {
+            if e.kind == .segment { segment } else { other }
+        }
+        .padding(.bottom, inPlace ? 12 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// on the row's columns, the words begin where the row's do and keep clear of its arrow
+    private func column<V: View>(_ v: V) -> some View {
+        v.padding(.leading, inPlace ? TLColumns.text : 0).padding(.trailing, inPlace ? TLColumns.arrow : 0)
+    }
+
+    // MARK: a stretch of what he was doing
+
+    private enum Part: Identifiable {
+        case ask, said(String), line(TLLine), links, why(String), note(String)
+        var id: String {
+            switch self {
+            case .ask: "ask"
+            case .said: "said"
+            case .line(let l): "line-" + l.id
+            case .links: "links"
+            case .why: "why"
+            case .note: "note"
+            }
+        }
+    }
+
+    /// what a stretch says, in order: what it asks (or his answer, once he has given it), its lines, 依据 and what it opens to, and why what he did did not go
+    private var parts: [Part] {
+        var out: [Part] = []
+        if let said = tl.chosen[e.id] { out.append(.said(said)) } else if e.ask != nil, interactive { out.append(.ask) }
+        out += e.lines.map { Part.line($0) }
+        if let k = e.knows, interactive { out.append(.links); if why { out.append(.why(k)) } }
+        if interactive, let n = tl.notes[e.id] { out.append(.note(n)) }
+        return out
+    }
+
+    private var segment: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(parts.enumerated()), id: \.element.id) { k, p in
+                part(p).modifier(TLRiseIn(rank: k, on: inPlace && interactive, reduce: reduce))
+            }
+        }
+    }
+
+    @ViewBuilder private func part(_ p: Part) -> some View {
+        switch p {
+        case .ask: column(askLine)
+        case .said(let s):
+            column(HStack(spacing: 6) {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(RGB(76, 195, 138).color)
+                Text(Words.Timeline.noted(s)).font(.system(size: 13)).foregroundStyle(ink).lineLimit(1)
+            }
+            .frame(height: 30))
+        case .line(let l): lineRow(l)
+        case .links:
+            column(Button { withAnimation(TLMotion.unfold(open: !why, reduce: reduce)) { why.toggle() } } label: {
+                Text(Words.Timeline.why).font(.system(size: 12, weight: .medium)).foregroundStyle(why ? ink : muted)
+                    .frame(minWidth: 44, minHeight: 30, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain))
+        case .why(let k):
+            column(Text(k).font(.system(size: 12)).lineSpacing(3).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true).padding(.bottom, 6)).transition(.opacity)
+        case .note(let n):
+            column(Text(n).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).padding(.vertical, 4)).transition(.opacity)
+        }
+    }
+
+    /// What she asks of it, in one line that wraps only when it must: the brain's question and its answers as chips, else her words for it and 是, or for a stretch nothing was recorded for 补一句;
+    /// writing a line of his own last, which becomes a field. While his answer is on its way the chips wait.
+    @ViewBuilder private var askLine: some View {
+        if let a = e.ask {
+            let busy = tl.choosing == e.id
+            TLFlow(spacing: 6) {
+                Text(a.text ?? (a.hole ? Words.Timeline.fillIn : Words.Timeline.isIt(a.yes ?? e.title))).font(.system(size: 13.5)).foregroundStyle(ink)
+                    .fixedSize(horizontal: false, vertical: true).frame(minHeight: 26).padding(.trailing, 2)
+                ForEach(a.options, id: \.self) { o in chip(o) { tl.choose(e, choice: o, text: nil) } }
+                if let y = a.yes { chip(Words.Timeline.yes) { tl.choose(e, choice: nil, text: y) } }
+                if writing { field } else { chip(Words.Timeline.writeLine, quiet: true) { writing = true; DispatchQueue.main.async { writingFocus = true } } }
+            }
+            .opacity(busy ? 0.5 : 1).allowsHitTesting(!busy)
+            .animation(.easeOut(duration: 0.15), value: busy)
+            .frame(minHeight: 36, alignment: .leading).padding(.bottom, 4)
+        }
+    }
+
+    private func chip(_ text: String, quiet: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text).font(.system(size: 12.5, weight: .medium)).foregroundStyle(quiet ? muted : ink).lineLimit(1).fixedSize()
+                .padding(.horizontal, 11).frame(height: 26)
+                .background(Color.white.opacity(0.07), in: Capsule())
+                .overlay(Capsule().strokeBorder(ink.opacity(0.14), lineWidth: 1))
+                .contentShape(Capsule().inset(by: -8))
+        }
+        .buttonStyle(PressScale())
+    }
+
+    /// his own line for the stretch, in the place of 写一句…: done sends it
+    private var field: some View {
+        TextField("", text: $words, prompt: Text(Words.Timeline.writeLine).foregroundStyle(faint))
+            .focused($writingFocus).submitLabel(.done)
+            .onSubmit { if let t = TLSayWhat.words(words) { tl.choose(e, choice: nil, text: t) } }
+            .onChange(of: words) { _, now in let kept = TLSayWhat.capped(now); if kept != now { words = kept } }
+            .font(.system(size: 13.5)).foregroundStyle(ink).tint(ink)
+            .padding(.horizontal, 11).frame(width: 190, height: 30)
+            .background(warm.color(0.14), in: Capsule())
+            .overlay(Capsule().strokeBorder(warm.color(0.35), lineWidth: 1))
+    }
+
+    /// One thing inside a stretch, on the row's columns: its time, a dot of its colour for a run of his attention (an empty ring for what took him off it) or its icon in a small circle for
+    /// anything else, its words with what it was made of after them, and at the right how long or what it came to. A tap frames its time on the bar for a moment, and the line lights while
+    /// it is; a picture's opens the picture.
+    private func lineRow(_ l: TLLine) -> some View {
+        let lit = tl.litLine == l.id, quiet = l.mark == .drift
+        let title = Text(said(l)).font(.system(size: quiet ? 12.5 : 13.5)).foregroundStyle(quiet ? muted : ink)
+        let rest = l.detail.map { Text(" · " + $0).font(.system(size: 12.5)).foregroundStyle(muted) } ?? Text("")
+        return HStack(spacing: 0) {
+            Text(l.time ?? "").font(AT.mono(11)).foregroundStyle(muted).lineLimit(1).frame(width: 46, alignment: .leading)
+            mark(l.mark).frame(width: 28, height: 28)
+            (title + rest).lineLimit(1).padding(.leading, 10).frame(maxWidth: .infinity, alignment: .leading)
+            if !l.right.isEmpty {
+                Text(l.right).font(tlFigures(11.5)).foregroundStyle(l.strong ? ink : muted).lineLimit(1).fixedSize().padding(.leading, 10).padding(.trailing, inPlace ? TLColumns.arrow : 0)
+            }
+        }
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: 8).fill(warm.color(lit ? 0.09 : 0)).padding(.horizontal, -8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard interactive else { return }
+            if let a = l.attachment {
+                PictureViewer.present([ViewerPicture(id: a, gone: false, small: PictureStore.shared.peek(id: a, maxPixel: 0))], index: 0)
+            } else if l.span != nil {
+                Haptic.selection()
+                tl.lightLine(l)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(interactive && (l.attachment != nil || l.span != nil) ? .isButton : [])
+    }
+
+    /// the words of a line: its title, or the timeline's own words for what it says
+    private func said(_ l: TLLine) -> String {
+        switch l.said {
+        case .drift(let m, let s): Words.Timeline.drift(minutes: m, switches: s)
+        case .onDevice(let device, let name): Words.Timeline.onDevice(device, name)
+        case .more(let n): Words.Timeline.moreRuns(n)
+        case nil: l.title
+        }
+    }
+
+    @ViewBuilder private func mark(_ m: TLLine.Mark) -> some View {
+        switch m {
+        case .dot(let c):
+            Circle().fill((c ?? RGB(196, 204, 238)).color(c == nil ? 0.45 : 1)).frame(width: 8, height: 8)
+                .background(Circle().fill(ground).frame(width: 14, height: 14))
+        case .icon(let symbol):
+            Image(systemName: symbol).font(.system(size: 10.5)).foregroundStyle(iconColor)
+                .frame(width: 20, height: 20).background(Circle().fill(beadFill))
+                .background(Circle().fill(ground).frame(width: 26, height: 26))
+        case .drift:
+            Circle().strokeBorder(RGB(196, 204, 238).color(0.55), lineWidth: 1.5).background(Circle().fill(ground)).frame(width: 8, height: 8)
+                .background(Circle().fill(ground).frame(width: 14, height: 14))
+        }
+    }
+
+    // MARK: anything else
+
+    private var other: some View {
+        column(VStack(alignment: .leading, spacing: 12) {
             if interactive, tl.renaming == e.id { renameField }         // first, so that it is up under the place's name whatever else the place has to show, clear of the keyboard
             content
             if interactive, tl.renaming != e.id { buttons }
-            if interactive, tl.renaming != e.id, e.actions.contains(.sayWhat) { sayWhatLink }
             if interactive, let note = tl.notes[e.id] { Text(note).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).transition(.opacity) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, inPlace ? 2 : 0))
+        .modifier(TLRiseIn(rank: 0, on: inPlace && interactive, reduce: reduce))
     }
 
     @ViewBuilder private var content: some View {
         switch e.kind {
         case .stay: stay
-        case .talk: talk
         case .picture: picture
         case .work: work
         case .sleep: sleep
         case .code: code
-        case .segment: segment
-        case .now, .pause: EmptyView()
+        case .now, .pause, .segment: EmptyView()
         default: facts(e.more)
         }
     }
@@ -66,61 +255,6 @@ struct TLOpenView: View {
                 PlaceMapCard(places: [AnswerPlace(name: e.title, lat: lat, lng: lng, address: p.text, placeId: nil)], height: 120, radius: 10, named: false, width: mapWidth)
             }
             facts(e.more)
-        }
-    }
-
-    // MARK: a stretch of what he was doing
-
-    /// the model's line about it, what was inside it a line each in time order, and how she knows what he was doing and what she went by (two lines at most)
-    private var segment: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let n = e.note { Text(n).font(.system(size: 13.5)).foregroundStyle(prose).fixedSize(horizontal: false, vertical: true) }
-            if !e.lines.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(e.lines) { insideLine($0) }
-                }
-            }
-            if let k = e.knows { Text(k).font(.system(size: 12)).foregroundStyle(muted).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
-        }
-    }
-
-    /// one thing inside a stretch: its icon, the words its own row has, and at the right how long of it was inside, what it came to, or the time; a picture has its thumbnail under it
-    private func insideLine(_ l: TLLine) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Image(systemName: l.symbol).font(.system(size: 12)).foregroundStyle(iconColor).frame(width: 20)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(l.title).font(.system(size: 13.5)).foregroundStyle(ink).lineLimit(1)
-                    if let d = l.detail { Text(d).font(.system(size: 11.5)).foregroundStyle(muted).lineLimit(1) }
-                }
-                Spacer(minLength: 6)
-                Text(l.right).font(tlFigures(11.5)).foregroundStyle(l.strong ? ink : muted).lineLimit(1).fixedSize()
-            }
-            .frame(minHeight: 36)
-            if let a = l.attachment { TLPicture(attachment: a, tall: 150).padding(.bottom, 4) }
-        }
-    }
-
-    // MARK: a talk
-
-    /// his first words (unless they are what the row is called) and her first reply, when the phone holds them, and how many lines it had; else it says that it has not read them
-    private var talk: some View {
-        let x = TalkTopics.shared.exchange(e.id)
-        let his = x.flatMap { $0.his == e.title ? nil : $0.his }, hers = x.flatMap { $0.hers.isEmpty ? nil : $0.hers }
-        return VStack(alignment: .leading, spacing: 8) {
-            if his != nil || hers != nil {
-                HStack(alignment: .top, spacing: 10) {
-                    Rectangle().fill(ink.opacity(0.18)).frame(width: 2)
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let his { Text(his).font(.system(size: 14)).foregroundStyle(ink.opacity(0.9)).lineLimit(2) }
-                        if let hers { Text(hers).font(.system(size: 14)).foregroundStyle(muted).lineLimit(2) }
-                    }
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            } else if x == nil {
-                Text("这次对话的字还没读到，打开对话可以看全部").font(.system(size: 13)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
-            }
-            if let n = e.turns { Text("共 \(n) 句").font(tlFigures(11.5)).foregroundStyle(muted) }
         }
     }
 
@@ -225,38 +359,28 @@ struct TLOpenView: View {
 
     // MARK: what can be done with it
 
+    /// What can be done with it, as chips: what the row opened is for first, in the light fill. Asking her is the long press's, and 这段在干嘛 is the last line of that menu.
     @ViewBuilder private var buttons: some View {
-        if e.actions.contains(where: { $0 != .sayWhat }) {
-            HStack(spacing: 8) {
-                ForEach(e.actions.filter { $0 != .mark && $0 != .unmark && $0 != .sayWhat }.sorted { rank($0) < rank($1) }, id: \.self) { a in
+        let doing = e.actions.filter { $0 != .ask && $0 != .sayWhat }.sorted { rank($0) < rank($1) }
+        if !doing.isEmpty {
+            TLFlow(spacing: 6) {
+                ForEach(doing, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: {
-                        Text(a.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).fixedSize()
+                        Text(a.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).fixedSize()
                             .foregroundStyle(strong(a) ? AT.navy : ink)
-                            .padding(.horizontal, 16).frame(height: 38)
-                            .background(strong(a) ? AT.pale : Color.white.opacity(0.1), in: Capsule())
-                            .contentShape(Capsule().inset(by: -3))
+                            .padding(.horizontal, 11).frame(height: 26)
+                            .background(strong(a) ? AT.pale : Color.white.opacity(0.07), in: Capsule())
+                            .overlay(Capsule().strokeBorder(ink.opacity(strong(a) ? 0 : 0.14), lineWidth: 1))
+                            .contentShape(Capsule().inset(by: -8))
                     }
                     .buttonStyle(PressScale())
                 }
-                Spacer(minLength: 0)
-                if e.starrable { TLStarButton(on: e.lit && !e.hers, hers: e.hers, pop: tl.pop[e.id] ?? 0, reduce: reduce) { tl.toggleStar(e) } }
             }
             .animation(.easeOut(duration: reduce ? TLMotion.reducedFade : 0.2), value: e.actions)          // 是我的 and 不是 go when one of them is said
         }
     }
-    /// 这段在干嘛, the last and the quietest: a line of its own under the buttons (they have no room left for it beside them) and not a capsule, for a stretch where he goes looking for it
-    private var sayWhatLink: some View {
-        Button { tl.perform(.sayWhat, on: e, engine: engine) } label: {
-            HStack(spacing: 6) {
-                Image(systemName: TLAction.sayWhat.symbol).font(.system(size: 12))
-                Text(TLAction.sayWhat.title).font(.system(size: 13))
-            }
-            .foregroundStyle(muted).frame(minHeight: 38, alignment: .leading).contentShape(Rectangle().inset(by: -4))
-        }
-        .buttonStyle(.plain)
-    }
-    /// what the row opened is for comes first, and in the light fill; asking her is always there and quieter
-    private func strong(_ a: TLAction) -> Bool { a == .acknowledge || a == .openTalk || a == .summarize || a == .confirm }
+    /// what the row opened is for comes first, and in the light fill
+    private func strong(_ a: TLAction) -> Bool { a == .acknowledge || a == .confirm }
     private func rank(_ a: TLAction) -> Int { strong(a) ? 0 : a == .rename || a == .name || a == .deny ? 1 : 2 }
 
     /// the name of a place he keeps, typed in the row (or the first name of one he keeps none at, with the kind of place to choose under it): done sends it, the keyboard's return too; what
@@ -309,6 +433,53 @@ struct TLOpenView: View {
     private func begin() {
         draft = e.place?.canName == true ? e.barName ?? "" : e.place?.keptName ?? e.title
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, 0.35 - Date().timeIntervalSince(born))) { typing = true }
+    }
+}
+
+/// What an open row says comes in a line after another: from 6 pt below, each a little after the one before (`TLMotion.line`); under Reduce Motion a fade. Elsewhere (the stage, the preview of a
+/// long press) it is simply there.
+private struct TLRiseIn: ViewModifier {
+    let rank: Int
+    let on: Bool
+    let reduce: Bool
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(!on || shown ? 1 : 0)
+            .offset(y: !on || shown || reduce ? 0 : TLMotion.lineRise)
+            .onAppear { if on && !shown { withAnimation(TLMotion.line(rank: rank, reduce: reduce)) { shown = true } } }
+    }
+}
+
+/// Views in a row that goes on to the next line when it is full, each given the whole width at most (a question longer than the row wraps in its own lines).
+struct TLFlow: Layout {
+    var spacing = 6.0
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let w = proposal.width ?? .infinity
+        var x = 0.0, y = 0.0, rowH = 0.0, widest = 0.0
+        for s in subviews {
+            let d = s.sizeThatFits(ProposedViewSize(width: w, height: nil))
+            if x > 0 && x + d.width > w { x = 0; y += rowH + spacing; rowH = 0 }
+            x += d.width + spacing; rowH = max(rowH, d.height); widest = max(widest, x - spacing)
+        }
+        return CGSize(width: min(widest, w), height: y + rowH)
+    }
+
+    func placeSubviews(in b: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = b.minX, y = b.minY, rowH = 0.0
+        var row: [(LayoutSubview, CGSize, Double)] = []
+        func flush() {
+            for (s, d, at) in row { s.place(at: CGPoint(x: at, y: y + (rowH - d.height) / 2), proposal: ProposedViewSize(d)) }          // a row's views on its middle
+            row = []
+        }
+        for s in subviews {
+            let d = s.sizeThatFits(ProposedViewSize(width: b.width, height: nil))
+            if x > b.minX && x + d.width > b.maxX { flush(); x = b.minX; y += rowH + spacing; rowH = 0 }
+            row.append((s, d, x)); x += d.width + spacing; rowH = max(rowH, d.height)
+        }
+        flush()
     }
 }
 

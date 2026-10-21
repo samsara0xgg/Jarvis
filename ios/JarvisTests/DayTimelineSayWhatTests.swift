@@ -96,13 +96,13 @@ final class DayTimelineSayWhatTests: XCTestCase {
             let e = try entry(tl, id)
             XCTAssertEqual(e.actions.last, .sayWhat, id)
         }
-        for id in ["talk-1", "talk-2", "reminder-demo-1", "reminder-demo-2", "reminder-demo-3", "picture-pic-demo-1", "payment-demo-1", "payment-demo-2", "event-demo-1", "event-demo-2", "departure-demo-1", "now"] {
-            XCTAssertFalse(try entry(tl, id).actions.contains(.sayWhat), "her rows, a moment, an event, what is planned: \(id)")
+        for id in ["reminder-demo-1", "reminder-demo-2", "reminder-demo-3", "picture-pic-demo-1", "payment-demo-1", "payment-demo-2", "event-demo-1", "event-demo-2", "departure-demo-1", "now"] {
+            XCTAssertFalse(try entry(tl, id).actions.contains(.sayWhat), "her reminders, a moment, an event, what is planned: \(id)")
         }
         XCTAssertEqual(m.entries.filter { $0.actions.contains(.sayWhat) }.count, m.entries.filter { TLSayWhat.range(of: $0, now: now) != nil }.count)
         let stay = try entry(tl, "stay-1")
-        XCTAssertEqual(stay.actions, [.rename, .ask, .mark, .sayWhat])
-        XCTAssertEqual(TLAction.menu.filter { stay.actions.contains($0) }, [.ask, .rename, .mark, .sayWhat])
+        XCTAssertEqual(stay.actions, [.rename, .ask, .sayWhat])
+        XCTAssertEqual(TLAction.menu.filter { stay.actions.contains($0) }, [.ask, .rename, .sayWhat])
         XCTAssertEqual(TLAction.sayWhat.title, "这段在干嘛")
         XCTAssertFalse(Set(TLAction.menu.filter { $0 != .sayWhat }.map(\.symbol)).contains(TLAction.sayWhat.symbol))
         // a stop on the way is a row of the trip and says nothing of itself
@@ -285,8 +285,8 @@ final class DayTimelineSayWhatTests: XCTestCase {
 
     func testPerformingTheActionOpensTheSheetOnTheRowsHoursAndOnlyWhereTheRowOffersIt() throws {
         let tl = state(), engine = StarEngine()
-        tl.perform(.sayWhat, on: try entry(tl, "talk-1"), engine: engine)
-        XCTAssertNil(tl.sayWhat, "her row does not offer it")
+        tl.perform(.sayWhat, on: try entry(tl, "reminder-demo-3"), engine: engine)
+        XCTAssertNil(tl.sayWhat, "her reminder does not offer it")
         tl.perform(.sayWhat, on: try entry(tl, "stay-1"), engine: engine)
         let s = try XCTUnwrap(tl.sayWhat)
         XCTAssertEqual([s.id, "\(s.from)", "\(s.to)"], ["stay-1", "545", "685"])

@@ -77,20 +77,20 @@ final class DayTimelineCommitTests: XCTestCase {
         let tl = state(TLStubBrain())
         let e = try entry(tl, mail)
         XCTAssertEqual(e.commitment, hex)
-        XCTAssertEqual(e.actions, [.confirm, .deny, .ask, .mark], "is mine, is not, ask her, star it")
+        XCTAssertEqual(e.actions, [.confirm, .deny, .ask], "is mine, is not, ask her")
         XCTAssertTrue(e.waiting)
         XCTAssertEqual(try model(tl).waiting, ["reminder-demo-2", mail])
         XCTAssertEqual(e.detail, "邮件 · 还没确认 · Studio 4")
         // the same class under a plain id (the older fixture) has nothing to confirm with
         let plain = DayTimelineModel.build(TimelineFixture.today(cal), now: TimelineFixture.now)
-        XCTAssertEqual(plain.entries.first { $0.id == "event-demo-1" }?.actions, [.ask, .mark])
+        XCTAssertEqual(plain.entries.first { $0.id == "event-demo-1" }?.actions, [.ask])
         XCTAssertEqual(plain.entries.first { $0.id == "event-demo-1" }?.commitment, nil)
     }
 
     func testTheMenuOfALongPressOffersBothAndTheButtonsSayWhatTheyDo() throws {
         let tl = state(TLStubBrain())
         let e = try entry(tl, mail)
-        XCTAssertEqual(TLAction.menu.filter { e.actions.contains($0) }, [.ask, .confirm, .deny, .mark])
+        XCTAssertEqual(TLAction.menu.filter { e.actions.contains($0) }, [.ask, .confirm, .deny])
         XCTAssertEqual([TLAction.confirm.title, TLAction.deny.title], ["是我的", "不是"])
         XCTAssertNotEqual(TLAction.confirm.symbol, TLAction.deny.symbol)
     }
@@ -104,7 +104,7 @@ final class DayTimelineCommitTests: XCTestCase {
         XCTAssertFalse(e.waiting)
         XCTAssertEqual(said.waiting, ["reminder-demo-2"], "the count of what waits goes down")
         XCTAssertEqual(e.detail, "邮件 · 你确认了 · Studio 4", "the line says he did")
-        XCTAssertEqual(e.actions, [.ask, .mark], "nothing left to say of it")
+        XCTAssertEqual(e.actions, [.ask], "nothing left to say of it")
         XCTAssertEqual(said.scene.ahead.map(\.id), [mail, "reminder-demo-1", "departure-demo-1"], "it stays on the bar")
         // not his: no row, no box on the bar, and the count is down by one as well
         let not = DayTimelineModel.build(r, now: TimelineFixture.now, done: TLDone(dropped: [mail]))
@@ -213,7 +213,7 @@ final class DayTimelineCommitTests: XCTestCase {
         let e = try entry(tl, mail)
         XCTAssertTrue(e.waiting, "it waits on him again")
         XCTAssertEqual(e.detail, "邮件 · 还没确认 · Studio 4")
-        XCTAssertEqual(e.actions, [.confirm, .deny, .ask, .mark], "and can be said again")
+        XCTAssertEqual(e.actions, [.confirm, .deny, .ask], "and can be said again")
         XCTAssertEqual(tl.openRow, mail, "the row is opened to say why")
         XCTAssertEqual(stub.refetches, 0, "nothing changed on the brain")
     }
@@ -261,8 +261,8 @@ final class DayTimelineCommitTests: XCTestCase {
     func testNothingIsAskedOfAnEventThatIsNoCommitmentOrOfARowThatIsNotOne() async throws {
         let stub = TLStubBrain()
         let tl = state(stub)
-        let calendar = try entry(tl, "event-demo-2"), talk = try entry(tl, "talk-1")
-        tl.confirm(calendar); tl.deny(talk)
+        let calendar = try entry(tl, "event-demo-2"), paid = try entry(tl, "payment-demo-1")
+        tl.confirm(calendar); tl.deny(paid)
         tl.perform(.confirm, on: calendar, engine: StarEngine())
         tl.perform(.deny, on: calendar, engine: StarEngine())
         try? await Task.sleep(nanoseconds: 80_000_000)

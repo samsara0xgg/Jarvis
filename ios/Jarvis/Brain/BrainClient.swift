@@ -108,9 +108,10 @@ struct DayWeather: Decodable {
 }
 
 /// One span of the doing lane (`spans` of `GET /inherent/day`): what he was doing for a stretch of the day. Only what the phone reads is here. `title` may be nil; `basis` says who wrote it
-/// (`observed` the program, from facts; `inferred` a model; `stated` his own answer); `end_ms` nil is still going. `detail` is the model's one line about the stretch, `place_id` the stay he
-/// was at, `item_ids` the day's items that overlap it (ADR 0307: a lasting item in every stretch it overlaps, a point in the one it falls in), `clues` what the model went by. One that is
-/// not this shape costs only itself.
+/// (`observed` the program, from facts; `inferred` a model; `stated` his own answer); `end_ms` nil is still going. `detail` is the model's one line about the stretch, `place_id` the id of
+/// the place he keeps that the stay he was at is in (none for a place he keeps none at), `item_ids` the day's items that overlap it (ADR 0307: a lasting item in every stretch it overlaps,
+/// a point in the one it falls in), `clues` what the model went by, `question` what it asks him of the stretch, and `attention` where his attention went in it (ADR 0314). One that is not
+/// this shape costs only itself.
 struct DaySpan: Decodable {
     let id: String, lane: String, kind: String
     let start_ms: Int64
@@ -123,11 +124,46 @@ struct DaySpan: Decodable {
     @Soft var place_id: String?
     @SoftList var item_ids: [String]?
     @SoftList var clues: [DayClue]?
+    @Soft var question: DayQuestion?
+    @Soft var attention: DayAttention?
 }
 
 /// one thing the model went by for a stretch of the day; its words
 struct DayClue: Decodable {
     @Soft var text: String?
+}
+
+/// what the model asks him of a stretch: its words and the answers he can pick (`choice` of `POST /inherent/day/answer`)
+struct DayQuestion: Decodable {
+    @Soft var text: String?
+    @SoftList var options: [String]?
+}
+
+/// Where his attention went in a stretch (`attention` of a doing span, ADR 0314), in milliseconds: the threads that held it, most first; the rows of least cost, each led by one thread,
+/// with the time the others took and how often he left the lead; and what his phone or tablet had in front while he was at the Mac.
+struct DayAttention: Decodable {
+    struct Thread: Decodable {
+        let id: String
+        @Soft var name: String?
+        @Soft var category: String?
+        @Soft var `where`: String?          // mac, iPhone or iPad: where it held him most
+        @Soft var ms: Double?
+        @SoftList var keys: [Key]?          // what it was made of (an app with its site, document or window), most first
+        struct Key: Decodable {
+            @Soft var name: String?
+            @Soft var ms: Double?
+        }
+    }
+    struct Row: Decodable {
+        let start_ms: Int64, end_ms: Int64
+        let thread: String
+        @Soft var ms: Double?
+        @Soft var others_ms: Double?
+        @Soft var switches: Int?
+    }
+    @SoftList var threads: [Thread]?
+    @SoftList var rows: [Row]?
+    @SoftList var alongside: [Thread]?
 }
 
 /// How much of his waking time the doing lane explains (`coverage`), in epoch milliseconds

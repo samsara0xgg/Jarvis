@@ -31,7 +31,7 @@ enum TLMotion {
         return .asymmetric(insertion: .opacity.animation(.easeOut(duration: into).delay(out)), removal: .opacity.animation(.easeIn(duration: out)))
     }
 
-    /// what stands beside the bar's stretches (the hours, the sun, the stars, the line for now) comes in as they grow: a fade of 200 ms that begins once the growth has gone `after` of its way
+    /// what stands beside the bar's stretches (the hours, the line for now) comes in as they grow: a fade of 200 ms that begins once the growth has gone `after` of its way
     static func arrival(after: Double, reveal: Bool, reduce: Bool) -> Animation {
         let fade = Animation.easeOut(duration: reduce ? reducedFade : 0.2)
         return reveal && !reduce ? fade.delay(after * barGrow) : fade
@@ -49,22 +49,24 @@ enum TLMotion {
     static func listChange(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: grow) }
     /// the list sent to a place (the way back to now, a row the waiting cards name): longer for a longer way, so that a short one is not slow and a long one is not a blur
     static func scrollTo(distance: Double) -> Animation { .smooth(duration: min(0.8, 0.3 + distance / 4000)) }
-    /// A row's page comes in from the right over the list, which goes a hand's breadth to the left as it fades; going back is the same the other way. A spring of 0.3 s that does not bounce, so
-    /// that a tap or a swipe in the middle of it takes it over where it is; under Reduce Motion a cross-fade.
+    /// A page over the screen (the footprint's day, its outing) comes in from the right and goes back the same way: a spring of 0.3 s that does not bounce, so that a tap or a swipe in the middle
+    /// of it takes it over where it is; under Reduce Motion a cross-fade.
     static func detail(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .spring(response: 0.3, dampingFraction: 1) }
-    static let detailShift = 80.0
-    /// A step to the row before or after: the page's head stays where it is and only its body is pushed, a hand's breadth (`stepShift` pt) up or down, fading; under Reduce Motion a cross-fade
-    static let stepShift = 14.0
-    static func step(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: 0.25) }
     /// the list carried from row to row by a finger on the bar: a short spring that lets the move be seen and takes up the next one where it is
     static let follow = Animation.interactiveSpring(response: 0.2, dampingFraction: 0.9)
-    /// a swipe back let go: the same spring, starting at the finger's speed (`speed`: parts of the way left per second), so the page goes on as it was moving
+    /// a swipe let go: the same spring, starting at the finger's speed (`speed`: parts of the way left per second), so what it moved goes on as it was moving
     static func release(speed: Double) -> Animation { .interpolatingSpring(duration: 0.3, bounce: 0, initialVelocity: speed) }
-    /// how much of the list and of the page shows at `back` (0: the page all the way in, 1: the list) while a swipe back moves them: they cross with a dip, so that their words are never
-    /// both strong in one place
-    static func listShows(_ back: Double) -> Double { eased(clamp((back - 0.3) / 0.7, 0, 1)) }
-    static func pageShows(_ back: Double) -> Double { 1 - eased(clamp(back / 0.7, 0, 1)) }
-    private static func eased(_ t: Double) -> Double { t * t * (3 - 2 * t) }
+    /// something small that comes or goes where it stands (a word on the bar, a badge, a mark): 200 ms, or under Reduce Motion a fade of 120 ms
+    static func fade(reduce: Bool) -> Animation { .easeOut(duration: reduce ? reducedFade : 0.2) }
+
+    /// A row opening where it stands: what it opens to unfolds under it and the list carries the row to the top of the list together, a spring of 0.32 s that does not bounce; closing is
+    /// quicker, 0.28 s. Under Reduce Motion both are a fade of 120 ms.
+    static func unfold(open: Bool, reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .spring(response: open ? 0.32 : 0.28, dampingFraction: 1) }
+    /// what a row opens to comes in a line after another as it unfolds, from 6 pt below: the first 40 ms in, each 25 ms after the one before (the eighth and on together), 220 ms each
+    static let lineRise = 6.0
+    static func line(rank: Int, reduce: Bool) -> Animation {
+        reduce ? .easeOut(duration: reducedFade) : .smooth(duration: 0.22).delay(0.04 + 0.025 * Double(min(rank, 7)))
+    }
 }
 
 // MARK: - what is new grows
@@ -84,6 +86,32 @@ enum TLGrow {
         func body(content: Content) -> some View {
             TLGrownLayout(k: k) { content.opacity(k) }.clipped()
         }
+    }
+}
+
+/// What a row opens to, unfolding where it stands: its height comes and what is in it rises in by itself (`TLMotion.line`); closing, its height and its words go together. It is clipped to
+/// its height and not to its width, so a line lit across the row's whole width keeps its rounded ends.
+enum TLUnfold {
+    static var transition: AnyTransition {
+        .asymmetric(insertion: .modifier(active: Folded(k: 0, fades: false), identity: Folded(k: 1, fades: false)),
+                    removal: .modifier(active: Folded(k: 0, fades: true), identity: Folded(k: 1, fades: true)))
+    }
+
+    struct Folded: ViewModifier, Animatable {
+        var k: Double
+        let fades: Bool
+        var animatableData: Double {
+            get { k }
+            set { k = newValue }
+        }
+        func body(content: Content) -> some View {
+            TLGrownLayout(k: k) { content.opacity(fades ? k : 1) }.clipShape(Band())
+        }
+    }
+
+    /// its own height, and 12 pt beyond either side
+    private struct Band: Shape {
+        func path(in r: CGRect) -> Path { Path(r.insetBy(dx: -12, dy: 0)) }
     }
 }
 

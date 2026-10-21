@@ -1,14 +1,13 @@
 import Foundation
 @testable import Jarvis
 
-/// The brain the timeline asks (`TLBrain`), as far as a test cares: what it was asked of each kind, what it answers, and (with `hold`) when. One stub serves marks, commitments and places.
+/// The brain the timeline asks (`TLBrain`), as far as a test cares: what it was asked of each kind, what it answers, and (with `hold`) when. One stub serves commitments, places and his answers.
 @MainActor
 final class TLStubBrain {
-    var marked: [(day: String, id: String, on: Bool)] = []
     var committed: [(hex: String, action: CommitAction)] = []
     var named: [(name: String, lat: Double, lng: Double, role: String)] = []
     var answered: [(day: String, startMs: Int64, endMs: Int64, text: String)] = []
-    var markAnswer: HighlightAnswer = .done(nil)
+    var chosen: [(day: String, spanId: String, choice: String?, text: String?)] = []
     var commitAnswer: CommitAnswer = .done
     var nameAnswer: PlaceAdd = .done(nil, change: nil)
     var spanAnswer: SpanAnswer = .done
@@ -21,10 +20,10 @@ final class TLStubBrain {
 
     var brain: TLBrain {
         TLBrain(
-            mark: { [self] day, id, on in marked.append((day, id, on)); await pause(); return markAnswer },
             commit: { [self] hex, action in committed.append((hex, action)); await pause(); return commitAnswer },
             name: { [self] name, lat, lng, role in named.append((name, lat, lng, role)); await pause(); return nameAnswer },
             answer: { [self] day, startMs, endMs, text in answered.append((day, startMs, endMs, text)); await pause(); return spanAnswer },
+            choose: { [self] day, spanId, choice, text in chosen.append((day, spanId, choice, text)); await pause(); return spanAnswer },
             tidy: { [self] in tidies += 1; await pause(); return tidyAnswer },
             refetch: { [self] in refetches += 1 })
     }

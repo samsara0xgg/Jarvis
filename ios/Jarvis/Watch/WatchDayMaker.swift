@@ -68,10 +68,10 @@ enum WatchDayMaker {
 
     // MARK: pieces
 
-    /// the stretch he is in: the bar's piece at now, as its row says it
+    /// the stretch he is in: the bar's piece at now, as its row says it (a stretch, where it was: the phone's list says that over its group)
     private static func current(_ m: DayTimelineModel, _ byId: [String: TLEntry], at now: Double) -> WatchDay.Row? {
         guard let s = m.seg(at: now) ?? m.seg(at: now.nextDown), let e = byId[s.id] else { return nil }
-        return WatchDay.Row(id: e.id, symbol: symbol(e), rgb: e.kind == .segment ? e.color.map(hex) : nil, title: e.title, sub: e.detail ?? "", right: e.right)
+        return WatchDay.Row(id: e.id, symbol: symbol(e), rgb: e.kind == .segment ? e.color.map(hex) : nil, title: e.title, sub: (e.kind == .segment ? e.at : e.detail) ?? "", right: e.right)
     }
 
     /// something planned, as the list says it (its dashed circle: the outline of its symbol). What is near says how long it is until it in its grey line (`23:00 · 还有 1 小时 10 分`)
@@ -127,11 +127,11 @@ enum WatchDayMaker {
         return e.later ? s.replacingOccurrences(of: ".fill", with: "") : s
     }
 
-    /// the line under a piece of the ring when it is tapped: where, then its hours and how long (the readout's words)
+    /// the line under a piece of the ring when it is tapped: where (a stretch's place, which the phone's list says over its group), then its hours and how long (the readout's words)
     private static func sub(_ e: TLEntry) -> String {
         let tail = e.head.map { $0.hasPrefix(e.title) ? String($0.dropFirst(e.title.count)) : " · " + $0 } ?? ""
         let rest = tail.hasPrefix(" · ") ? String(tail.dropFirst(3)) : tail
-        return [e.kind == .segment ? e.detail : nil, rest.isEmpty ? nil : rest].compactMap { $0 }.joined(separator: " · ")
+        return [e.kind == .segment ? e.at : nil, rest.isEmpty ? nil : rest].compactMap { $0 }.joined(separator: " · ")
     }
 
     private static func hex(_ c: RGB) -> UInt32 { UInt32(c.r.rounded()) << 16 | UInt32(c.g.rounded()) << 8 | UInt32(c.b.rounded()) }

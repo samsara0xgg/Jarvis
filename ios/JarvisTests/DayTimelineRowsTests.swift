@@ -88,10 +88,9 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(m.entries.count, 11 + 4 + 13, "nothing else on the day")
     }
 
-    func testADayOfTalksAlone() throws {
+    func testADayOfTalksAloneHasNoRowsButStillCountsThemAndTellsThem() throws {
         let m = DayTimelineModel.build(TimelineFixture.talkOnly(cal), now: nil)
-        XCTAssertEqual(m.entries.map(\.kind), [.talk, .talk, .talk])
-        XCTAssertEqual(m.entries.map(\.gap), [0, 0, 0], "no group, no blank")
+        XCTAssertTrue(m.entries.isEmpty, "a talk is no row: the conversation holds it")
         XCTAssertTrue(m.segs.isEmpty)
         XCTAssertEqual(m.chips.map { $0.word + " " + $0.value }, ["和她 3 次"])
         XCTAssertEqual(m.span, 360...DAY, "no night: 06:00")
@@ -120,7 +119,7 @@ final class DayTimelineRowsTests: XCTestCase {
     }
 
     func testWhatHappenedWhileHeWasOnTheWayStandsOnTheTripsRailAndIsNotAPlacesRow() throws {
-        let r = try reply([item("s1", "stay", 500, 600, home), item("r", "ride", 600, 660, #""route": "27""#), item("t", "talk", 620, 630, #""turns": 3"#),
+        let r = try reply([item("s1", "stay", 500, 600, home), item("r", "ride", 600, 660, #""route": "27""#), item("t", "picture", 620, 620),
                            item("s2", "stay", 660, 720, #""place": "School""#), item("p", "payment", 700, 700, #""amount": "3.00", "currency": "CAD", "direction": "out""#)].joined(separator: ","))
         let m = build(r, now: nil)
         XCTAssertEqual(m.entries.map(\.id), ["s1", "r", "t", "s2", "p"])
@@ -160,7 +159,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let done = build(TimelineFixture.today(cal), acked: ["reminder-demo-2"])
         XCTAssertEqual(done.waiting, ["event-demo-1"])
         XCTAssertEqual(try entry(done, "reminder-demo-2").detail, "你知道了")
-        XCTAssertEqual(try entry(done, "reminder-demo-2").actions, [.ask, .mark], "and offers nothing more to answer")
+        XCTAssertEqual(try entry(done, "reminder-demo-2").actions, [.ask], "and offers nothing more to answer")
         // an event: from mail, not confirmed, and not over (an event with no end is over when it began)
         func waits(_ more: String, from: Double = 1320, to: Double? = 1350, now: Double? = TimelineFixture.now) throws -> Bool {
             let r = try reply(item("e", "event", from, to, #""title": "X", "# + more))
@@ -190,27 +189,26 @@ final class DayTimelineRowsTests: XCTestCase {
     func testOpeningARowOffersOnlyWhatWorksToday() throws {
         let m = build(TimelineFixture.today(cal))
         func actions(_ id: String) throws -> [TLAction] { try entry(m, id).actions }
-        XCTAssertEqual(try actions("talk-1"), [.openTalk, .ask, .mark])
-        XCTAssertEqual(try actions("stay-1"), [.rename, .ask, .mark, .sayWhat], "a place he keeps")
-        XCTAssertEqual(try actions("stay-5"), [.name, .ask, .mark, .sayWhat], "a place he does not keep is named, not renamed")
-        XCTAssertEqual(try actions("reminder-demo-2"), [.acknowledge, .ask, .mark], "rang, and not answered")
-        XCTAssertEqual(try actions("reminder-demo-1"), [.ask, .mark], "not yet")
-        XCTAssertEqual(try actions("reminder-demo-3"), [.ask, .mark], "answered")
-        XCTAssertEqual(try actions("work-demo-2"), [.summarize, .ask, .mark, .sayWhat])
-        XCTAssertEqual(try actions("event-demo-1"), [.ask, .mark])
-        XCTAssertEqual(try actions("call-demo-1"), [.ask, .mark, .unmark, .sayWhat], "she picked it: he can make it his or put it away")
-        XCTAssertEqual(try actions("picture-pic-demo-1"), [.ask, .mark])
-        XCTAssertEqual(try actions("sleep-0"), [.ask, .mark, .sayWhat])
-        XCTAssertEqual(try actions("move-3"), [.ask, .mark, .sayWhat])
+        XCTAssertEqual(try actions("stay-1"), [.rename, .ask, .sayWhat], "a place he keeps")
+        XCTAssertEqual(try actions("stay-5"), [.name, .ask, .sayWhat], "a place he does not keep is named, not renamed")
+        XCTAssertEqual(try actions("reminder-demo-2"), [.acknowledge, .ask], "rang, and not answered")
+        XCTAssertEqual(try actions("reminder-demo-1"), [.ask], "not yet")
+        XCTAssertEqual(try actions("reminder-demo-3"), [.ask], "answered")
+        XCTAssertEqual(try actions("work-demo-2"), [.ask, .sayWhat])
+        XCTAssertEqual(try actions("event-demo-1"), [.ask])
+        XCTAssertEqual(try actions("call-demo-1"), [.ask, .sayWhat])
+        XCTAssertEqual(try actions("picture-pic-demo-1"), [.ask])
+        XCTAssertEqual(try actions("sleep-0"), [.ask, .sayWhat])
+        XCTAssertEqual(try actions("move-3"), [.ask, .sayWhat])
         // the host takes a ride, a bus, a payment and a chat with Claude as what a turn is about too
         for id in ["payment-demo-1", "payment-demo-2", "departure-demo-1"] {
-            XCTAssertEqual(try actions(id), [.ask, .mark], id)
+            XCTAssertEqual(try actions(id), [.ask], id)
         }
         for id in ["ride-8", "claude-demo-1"] {
-            XCTAssertEqual(try actions(id), [.ask, .mark, .sayWhat], "and a ride and a chat last, so they are stretches")
+            XCTAssertEqual(try actions(id), [.ask, .sayWhat], "and a ride and a chat last, so they are stretches")
         }
         // and a run, and a session of Claude Code alone; the row for several sessions and the line for now are not items the brain has
-        XCTAssertEqual(try actions("workout-demo-1"), [.ask, .mark, .sayWhat])
+        XCTAssertEqual(try actions("workout-demo-1"), [.ask, .sayWhat])
         let lone = build(try reply(item("code-s1", "code", 610, 640, #""title": "T1", "project": "Jarvis", "session_id": "s1""#)), now: nil)
         XCTAssertEqual(try entry(lone, "code-s1").about?.kind, "code", "one session alone is one item")
         for id in ["code-group-stay-1", "code-group-stay-13"] {
@@ -219,29 +217,30 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try actions("now"), [])
         // a place whose id could not stand in a path is not renamed, though he keeps it
         let odd = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "a/b", "name": "家", "role": "home"}"#))
-        XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask, .mark, .sayWhat])
+        XCTAssertEqual(try entry(build(odd, now: nil), "s").actions, [.ask, .sayWhat])
         let route = try reply(item("s", "stay", 600, 700, #""place": "X", "kept_place": {"id": "undo", "name": "家", "role": "home"}"#))
-        XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask, .mark, .sayWhat], "its id is the brain's own route")
+        XCTAssertEqual(try entry(build(route, now: nil), "s").actions, [.ask, .sayWhat], "its id is the brain's own route")
         // an event from his mail has an @ in its id (`commitment-<hex>@<day>`), which the host takes; it is his to say it is his or is not
         let mail = try reply(item("commitment-ab12@2026-10-08", "event", 1320, 1350, #""title": "X", "source": "mail", "confirmed": false"#))
-        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.confirm, .deny, .ask, .mark])
+        XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").actions, [.confirm, .deny, .ask])
         XCTAssertEqual(try entry(build(mail), "commitment-ab12@2026-10-08").about?.id, "commitment-ab12@2026-10-08")
         XCTAssertTrue(try entry(build(mail), "commitment-ab12@2026-10-08").waiting, "and it waits on him")
     }
 
     func testARowOpensWhenThereIsSomethingToShowAndNeverOtherwise() throws {
         let m = build(TimelineFixture.today(cal))
-        for id in ["stay-1", "move-3", "ride-8", "talk-1", "picture-pic-demo-1", "event-demo-1", "reminder-demo-1", "departure-demo-1", "work-demo-1", "call-demo-1", "payment-demo-1",
+        for id in ["stay-1", "move-3", "ride-8", "picture-pic-demo-1", "event-demo-1", "reminder-demo-1", "departure-demo-1", "work-demo-1", "call-demo-1", "payment-demo-1",
                    "sleep-0", "code-group-stay-1", "code-s1"] {
             if let e = m.entries.first(where: { $0.id == id }) { XCTAssertTrue(e.opens, id) }
         }
         XCTAssertFalse(try entry(m, "now").opens)
-        // a workout says everything in its line, and still opens: to its star, which every item of the brain's day has
+        XCTAssertFalse(try entry(m, "now").touchable)
+        // a workout says everything in its line, and still opens: to her, which every item of the brain's day can be handed to
         XCTAssertTrue(try entry(m, "workout-demo-1").opens)
         XCTAssertTrue(try entry(m, "claude-demo-1").opens)
         let bare = try reply([item("s", "stay", 600, 700), item("pi", "picture", 700, 700, #""id": "x""#), item("c", "call", 710, 720), item("w", "work", 725, 740)].joined(separator: ","))
         let b = build(bare, now: nil)
-        XCTAssertEqual(try entry(b, "s").actions, [.ask, .mark, .sayWhat], "a place with no name, no map and nothing kept has only her to be handed to, and its star")
+        XCTAssertEqual(try entry(b, "s").actions, [.ask, .sayWhat], "a place with no name, no map and nothing kept has only her to be handed to, and what he was doing")
         let bareStay = try entry(b, "s")
         XCTAssertTrue(bareStay.opens)
         XCTAssertTrue(bareStay.more.isEmpty)
@@ -249,6 +248,27 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertTrue(try entry(b, "pi").opens, "a picture opens to the picture")
         XCTAssertTrue(try entry(b, "c").opens, "a call can be handed to her")
         XCTAssertTrue(try entry(b, "w").opens, "so can work")
+    }
+
+    /// On the phone a row opens where it stands only when that shows at least two things its line does not say, or something to do with buttons; any other row a tap frames on the bar.
+    /// Every row he can touch, whether it opens or not, has its long press, and 问她 there when there is something to hand her.
+    func testOnThePhoneARowOpensWhereItStandsOnlyWhenThereIsMoreThanOneThingToShowOrSomethingToDo() throws {
+        let m = build(TimelineFixture.today(cal))
+        func expands(_ id: String) throws -> Bool { try entry(m, id).expands }
+        XCTAssertTrue(try expands("stay-1"), "the map, and a name to change")
+        XCTAssertTrue(try expands("reminder-demo-2"), "it waits on him: 知道了")
+        XCTAssertTrue(try expands("picture-pic-demo-1"), "the picture")
+        XCTAssertTrue(try expands("code-group-stay-1"), "its sessions")
+        XCTAssertTrue(try expands("sleep-0"), "the night's stages")
+        XCTAssertFalse(try expands("reminder-demo-1"), "a reminder still to come says all it is in its line")
+        XCTAssertFalse(try expands("payment-demo-1"))
+        XCTAssertFalse(try expands("now"))
+        XCTAssertEqual(m.entries.filter { !$0.touchable }.map(\.id), ["now"], "every row but the line for now does something under a finger")
+        for e in m.entries { XCTAssertEqual(e.actions.contains(.ask), e.about != nil, "问她 wherever there is something to hand her: \(e.id)") }
+        // an event opened would say its hours and nothing else: one line is no reason to open it
+        let one = try reply(item("pi", "picture", 700, 700, #""note": "a\nb""#) + "," + item("e", "event", 710, 720, #""title": "X""#))
+        XCTAssertTrue(try entry(build(one, now: nil), "pi").expands, "a picture opens to itself")
+        XCTAssertFalse(try entry(build(one, now: nil), "e").expands)
     }
 
     // MARK: what is coming
@@ -283,17 +303,17 @@ final class DayTimelineRowsTests: XCTestCase {
     // MARK: what is handed to her
 
     func testAnAboutIsOnlyForAKindTheHostKnowsAndAnIdItWouldAccept() throws {
-        let kinds = ["reminder", "event", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"]
+        let kinds = ["reminder", "event", "stay", "move", "sleep", "work", "call", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"]
         let r = try reply(kinds.map { item("ok-\($0)", $0, 600, 610, #""text": "x", "title": "x""#) }.joined(separator: ","))
         XCTAssertEqual(Set(build(r, now: nil).entries.compactMap { $0.about?.kind }), Set(kinds))
         // sessions of Claude Code folded into one row: that row is no one item
         let two = try reply([item("s1", "stay", 600, 700, home), item("c1", "code", 610, 620, #""title": "A""#), item("c2", "code", 630, 640, #""title": "B""#)].joined(separator: ","))
         XCTAssertNil(try entry(build(two, now: nil), "code-group-s1").about)
         for id in ["a b", "é", String(repeating: "a", count: 257), "a#b", "a?b"] {
-            XCTAssertNil(try entry(build(try reply(item(id, "talk", 600, 610)), now: nil), id).about, id)
+            XCTAssertNil(try entry(build(try reply(item(id, "event", 600, 610)), now: nil), id).about, id)
         }
         for id in ["a-b_c.d:e=f+g/h|i", "commitment-ab12@2026-10-08", String(repeating: "a", count: 256)] {
-            XCTAssertNotNil(try entry(build(try reply(item(id, "talk", 600, 610)), now: nil), id).about, id)
+            XCTAssertNotNil(try entry(build(try reply(item(id, "event", 600, 610)), now: nil), id).about, id)
         }
     }
 
@@ -370,24 +390,14 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertNil(bare.detail)
     }
 
-    func testASessionThatMatteredStaysARowOfItsOwnWithItsStarWhileTheOthersAreOneRow() throws {
+    func testWhatTheBrainMarkedAsMatteringChangesNothingInTheList() throws {
         func code(_ n: Int, _ from: Double, _ to: Double) -> String {
             item("code-s\(n)", "code", from, to, #""title": "T\#(n)", "project": "Jarvis", "account": "a", "session_id": "s\#(n)""#)
         }
-        let rows = [item("s1", "stay", 600, 700, home), code(1, 610, 640), code(2, 630, 660), code(3, 670, 690), code(4, 680, 695)].joined(separator: ",")
-        let m = build(try reply(rows, #", "highlights": [{"id": "code-s2", "label": "Fixed the bug", "by": "him"}]"#), now: nil)
-        XCTAssertEqual(m.entries.map(\.id), ["s1", "code-group-s1", "code-s2"])
-        XCTAssertEqual(try entry(m, "code-group-s1").sessions.map(\.title), ["T1", "T3", "T4"], "the marked one is not folded into the group")
-        let marked = try entry(m, "code-s2")
-        XCTAssertTrue(marked.lit)
-        XCTAssertEqual(marked.title, "Fixed the bug")
-        XCTAssertFalse(marked.holdsSessions)
-        XCTAssertEqual(marked.group, "s1", "still in its place")
-        XCTAssertEqual(m.stars, [TLStar(id: "code-s2", t: 630)], "and its star is on the bar")
-        // two sessions where one mattered: neither is folded; with none marked they are one row
-        let two = [item("s1", "stay", 600, 700, home), code(1, 610, 640), code(2, 630, 660)].joined(separator: ",")
-        XCTAssertEqual(build(try reply(two, #", "highlights": [{"id": "code-s1", "label": "", "by": "her"}]"#), now: nil).entries.map(\.id), ["s1", "code-s1", "code-s2"])
-        XCTAssertEqual(build(try reply(two), now: nil).entries.map(\.id), ["s1", "code-group-s1"])
+        let rows = [item("s1", "stay", 600, 700, home), code(1, 610, 640), code(2, 630, 660)].joined(separator: ",")
+        let marked = build(try reply(rows, #", "highlights": [{"id": "code-s2", "label": "Fixed the bug", "by": "him"}]"#), now: nil)
+        XCTAssertEqual(marked.entries.map(\.id), ["s1", "code-group-s1"], "the session he marked is folded with the others")
+        XCTAssertEqual(marked.entries, build(try reply(rows), now: nil).entries, "no star, no row of its own, no other title: the list carries no marks")
     }
 
     // MARK: the new data
@@ -413,7 +423,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertNil(build(try reply("")).weather, "a brain that serves none")
     }
 
-    func testTheSunRisesAndSetsOnTheBarWhereThoseTimesAreOnThisDay() throws {
+    func testTheSunRoseAndSetWhereThoseTimesAreOnThisDay() throws {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(m.sun, TLSun(rise: 454, set: 1091))
         let y = DayTimelineModel.build(TimelineFixture.yesterday(cal), now: nil)
@@ -494,13 +504,14 @@ final class DayTimelineRowsTests: XCTestCase {
         let fits = try chat("积分换元的符号问题")
         XCTAssertFalse(fits.cutShort)
         XCTAssertEqual(fits.more, [], "it has nothing to say that its line does not")
-        XCTAssertEqual(fits.actions, [.ask, .mark, .sayWhat], "it opens only to be handed to her and to be starred")
+        XCTAssertEqual(fits.actions, [.ask, .sayWhat], "it is only handed to her, or told what he was doing")
+        XCTAssertFalse(fits.expands, "nothing to open where it stands: a tap frames it on the bar")
         let cut = try chat(String(repeating: "积分换元的符号问题", count: 3))
         XCTAssertTrue(cut.cutShort)
-        XCTAssertTrue(cut.opens, "it opens to say its title whole")
+        XCTAssertTrue(cut.opens && cut.expands, "it opens where it stands to say its title whole")
         XCTAssertEqual(cut.more, [], "and has nothing to add to it")
         // the amber 等你 takes room from the title: what fits alone is cut beside it
-        let edge = String(repeating: "字", count: 17)                       // 255 pt at 15: under the 288 a reminder has, over what is left beside the badge
+        let edge = String(repeating: "字", count: 17)                       // 255 pt at 15: under the 270 a reminder has beside the arrow, over what is left beside the badge
         func reminder(_ more: String) throws -> TLEntry { try entry(build(try reply(item("r", "reminder", 600, nil, #""text": "\#(edge)", "fired": true, "# + more)), now: nil), "r") }
         let known = try reminder(#""acknowledged": true"#), wait = try reminder(#""acknowledged": false"#)
         XCTAssertFalse(known.waiting || known.cutShort)
@@ -585,12 +596,12 @@ final class DayTimelineRowsTests: XCTestCase {
             #"{"id": "no-kind", "lane": "you", "state": "done", "start_ms": \#(at(600))}"#,
             #"{"id": "text-end", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(600)), "end_ms": "later"}"#,
             #"{"id": "", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(610))}"#,
-            item("backwards", "talk", 700, 650, #""turns": 3"#),
+            item("backwards", "call", 700, 650),
             #"{"id": "far", "lane": "you", "kind": "stay", "state": "done", "start_ms": 9007199254740991, "end_ms": null}"#,
             #"{"id": "far-end", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(600)), "end_ms": 9007199254740991}"#,
             #"{"id": "min", "lane": "you", "kind": "stay", "state": "done", "start_ms": -9223372036854775808, "end_ms": null}"#,
-            item("twice", "stay", 800, 810), item("twice", "talk", 820, 830),
-            item("now", "talk", 840, 850),
+            item("twice", "stay", 800, 810), item("twice", "call", 820, 830),
+            item("now", "call", 840, 850),
             item("flight", "flight", 600, 700),
             #"[1, 2]"#, #""text""#, "null", "7",
         ]
@@ -620,13 +631,13 @@ final class DayTimelineRowsTests: XCTestCase {
         for now in [nil, TimelineFixture.now] as [Double?] {
             let m = build(r, now: now)
             let ids = m.entries.filter { $0.kind != .now }.map(\.id).sorted()
-            XCTAssertEqual(ids, (["good", "twice"] + ["odd-stay", "odd-work", "odd-sleep", "odd-pay", "odd-talk", "odd-rem", "odd-workout", "odd-code", "odd-ride", "odd-picture", "odd-event",
+            XCTAssertEqual(ids, (["good", "twice"] + ["odd-stay", "odd-work", "odd-sleep", "odd-pay", "odd-rem", "odd-workout", "odd-code", "odd-ride", "odd-picture", "odd-event",
                                                         "odd-dep", "odd-call", "odd-claude", "odd-day", "odd-huge", "odd-money", "odd-lat"]).sorted(),
-                           "the first of the two with one id stays, and every item that could be read is a row")
+                           "the first of the two with one id stays, and every item that could be read is a row (but the talk, which is never one)")
+            XCTAssertEqual(m.chips.first { $0.lens == .talk }?.value, "1 次", "the talk is still read, and counted")
             XCTAssertNil(m.weather)
             XCTAssertEqual(m.body, [])
             XCTAssertNil(m.line)
-            XCTAssertEqual(m.stars.map(\.id), ["good"], "a mark on an item that is there")
             // none of them is a trap for what reads the model
             for t in stride(from: -50.0, to: 1500.0, by: 7.0) + [.nan, .infinity, -.infinity, 1e300] {
                 _ = m.readout(at: t); _ = m.lit(at: t); _ = m.entry(at: t); _ = m.stretch(at: t)
@@ -636,13 +647,12 @@ final class DayTimelineRowsTests: XCTestCase {
         let m = build(r, now: nil)
         func e(_ id: String) throws -> TLEntry { try entry(m, id) }
         XCTAssertEqual([try e("odd-stay").title, try e("odd-stay").place == nil ? "none" : "some"], ["没名字的地方", "none"])
-        XCTAssertEqual(try e("odd-stay").actions, [.ask, .mark, .sayWhat], "nothing to show of it: only her, and its star")
+        XCTAssertEqual(try e("odd-stay").actions, [.ask, .sayWhat], "nothing to show of it: only her, and what he was doing")
         XCTAssertEqual([try e("odd-work").title, try e("odd-work").detail], ["在 Mac 上工作", "Xcode"])
         XCTAssertEqual(try e("odd-work").work?.apps, [TLTop(name: "Xcode", minutes: 1, share: 0)])
         XCTAssertEqual(try e("odd-sleep").right, "1 小时 30 分", "no minutes: the span")
         XCTAssertEqual(try e("odd-sleep").sleep?.summary, "深睡 20分钟", "of the stages, the one that was one")
         XCTAssertEqual([try e("odd-pay").title, try e("odd-pay").right], ["付款", ""])
-        XCTAssertNil(try e("odd-talk").detail)
         XCTAssertEqual(try e("odd-rem").title, "提醒")
         XCTAssertFalse(try e("odd-rem").waiting)
         XCTAssertEqual([try e("odd-workout").title, try e("odd-workout").detail], ["运动", nil])
@@ -734,7 +744,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(r.items[2].projects?.first?.seconds, 0)
     }
 
-    // MARK: the bar: the night's stages and the sun
+    // MARK: the bar: the night's stages
 
     func testTheNightIsShadedByBlocksThatDoNotOverlapWhereTwoStagesMeetTheHigherRankingOneShowsAndWhatNoStageCoversIsUnspecified() {
         func st(_ k: TLStage.Kind, _ a: Double, _ b: Double) -> TLStage { TLStage(kind: k, t0: a, t1: b) }
@@ -769,35 +779,11 @@ final class DayTimelineRowsTests: XCTestCase {
                                       TLStage(kind: .awake, t0: 935, t1: 945), TLStage(kind: .inBed, t0: 945, t1: 960), TLStage(kind: .rem, t0: 960, t1: 1020), TLStage(kind: .inBed, t0: 1020, t1: 1040)])
     }
 
-    func testTheNightIsOnePlainPieceWithItsMoonAndTheSunComesWithTheScene() throws {
+    func testTheNightIsOnePlainPieceWithItsMoon() throws {
         let m = build(TimelineFixture.today(cal))
         let night = try XCTUnwrap(m.scene.pieces.first { $0.fill == .sleep })
         XCTAssertNil(night.name, "no length on the bar: it is in the readout")
         XCTAssertEqual(night.icon, "moon.fill")
-        XCTAssertEqual(m.scene.sun, TLSun(rise: 454, set: 1091))
-        // a day with no weather has no sun
-        XCTAssertNil(build(try reply(item("n", "sleep", 300, 480)), now: nil).scene.sun)
-    }
-
-    func testTheSunsGlyphIsDrawnOnlyWhereItOverlapsNoHoursLabelAndOtherwiseItIsATick() throws {
-        // the labels of 06 09 12 15 18 21 24 on a bar of 380 pt from 06:00 (to a whole point here): centres 0, 63, 127, 190, 253, 317 and, right-aligned, 374
-        let hours: [Double] = [0, 63, 127, 190, 253, 317, 374]
-        XCTAssertTrue(TLGeo.sunGlyphFits(33, hours: hours, width: 380), "far from every label: its glyph")
-        XCTAssertFalse(TLGeo.sunGlyphFits(257, hours: hours, width: 380), "just after 18: the hours win, a tick only")
-        XCTAssertFalse(TLGeo.sunGlyphFits(250, hours: hours, width: 380), "just before it")
-        XCTAssertFalse(TLGeo.sunGlyphFits(253, hours: hours, width: 380), "on it exactly")
-        XCTAssertTrue(TLGeo.sunGlyphFits(265, hours: hours, width: 380), "12 pt from a label is clear: the glyph and the label touch and do not overlap")
-        XCTAssertFalse(TLGeo.sunGlyphFits(264.9, hours: hours, width: 380), "a hair closer is not")
-        XCTAssertFalse(TLGeo.sunGlyphFits(2, hours: hours, width: 380), "next to the first label, and at the bar's start")
-        XCTAssertFalse(TLGeo.sunGlyphFits(376, hours: hours, width: 380), "at the bar's end the glyph would hang off it")
-        XCTAssertTrue(TLGeo.sunGlyphFits(100, hours: [], width: 380))
-        XCTAssertTrue(TLGeo.sunGlyphFits(6, hours: [], width: 380), "the edge of the bar is the glyph's own edge")
-        XCTAssertFalse(TLGeo.sunGlyphFits(5.9, hours: [], width: 380))
-        // the fixture's sunset is 11 minutes after 18:00, a few points from that label on its bar: a tick only
-        let m = build(TimelineFixture.today(cal))
-        let centres = m.ticks.map { TLGeo.x(Double($0 * 60), m.span, 380) - ($0 == 24 ? 6 : 0) }
-        XCTAssertFalse(TLGeo.sunGlyphFits(TLGeo.x(1091, m.span, 380), hours: centres, width: 380))
-        XCTAssertTrue(TLGeo.sunGlyphFits(TLGeo.x(1000, m.span, 380), hours: centres, width: 380), "16:40 is clear of 15 and 18")
     }
 
     func testATapOnTheWeatherSaysWhenTheSunRoseAndSet() throws {

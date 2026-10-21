@@ -1,9 +1,15 @@
 // words: legacy
 import SwiftUI
 
-// What a row of the day does when it is opened, each only where it works today: hand it to her, open the conversation at its time, rename a place he keeps (and take that back) or name
-// one he keeps none at, say he knows a reminder that rang, have her sum up a stretch of Mac work, star it or take its star off (Sky/DayTimelineMarks.swift), say that an event his mail made
-// is his or is not (Sky/DayTimelineCommit.swift), say what he was doing in a stretch (Sky/DayTimelineSayWhat.swift). The model says which of them a row offers (`TLEntry.actions`); this is what each one does.
+// What a row of the day does when it is opened, each only where it works today: hand it to her, rename a place he keeps (and take that back) or name one he keeps none at, say he knows a
+// reminder that rang, say that an event his mail made is his or is not (Sky/DayTimelineCommit.swift), say what he was doing in a stretch (Sky/DayTimelineSayWhat.swift). The model says which
+// of them a row offers (`TLEntry.actions`); this is what each one does.
+
+/// A value that stands for the brain's own until the brain says the same: until when.
+struct TLHeld<T: Equatable>: Equatable {
+    var value: T
+    var until: Date
+}
 
 /// a rename he can take back for a few seconds
 struct PlaceUndo: Equatable {
@@ -14,8 +20,6 @@ struct PlaceUndo: Equatable {
 }
 
 extension TimelineState {
-    /// the one turn [让她总结这段] sends, with the work item as what it is about
-    static let summarizeWords = "帮我总结一下这段时间我在 Mac 上做了什么"
     /// how long a rename can be taken back, and how long a rename or a reminder he knows shows as his before the brain's own answer has come
     static let undoFor = 5.0, renameHolds = 120.0, ackHolds = 120.0
 
@@ -35,8 +39,6 @@ extension TimelineState {
         case .ask:
             if renaming != nil { cancelRename() }           // its field has the keyboard and keeps the composer away: asking is for the composer
             if let about = e.about { engine.askAbout(about) }
-        case .openTalk:
-            if let start = e.talkStart { engine.showTalk(start) }
         case .rename, .name:
             beginRename(e)
         case .acknowledge:
@@ -45,19 +47,20 @@ extension TimelineState {
             confirm(e)
         case .deny:
             deny(e)
-        case .summarize:
-            guard let about = e.about else { return }
-            // a turn still on its way would take no second one, and the chip put on for this row would be left for whatever he says next: wait for it, and say so
-            guard !engine.sendingToBrain else { engine.trouble("上一句还在发，等它发完再点"); return }
-            engine.aboutDropped = nil
-            engine.setAbout(about)
-            engine.sendToBrain(Self.summarizeWords)
-        case .mark:
-            setMark(e, on: true)
-        case .unmark:
-            setMark(e, on: false)
         case .sayWhat:
             beginSayWhat(e)
+        }
+    }
+
+    /// how long a note under a row stays
+    static let noteFor = 4.0
+
+    /// A line under a row, for a few seconds. The row is opened to show it, if it was not: he may have done this from the menu of a long press.
+    func say(_ text: String, on id: String) {
+        withAnimation(.smooth(duration: 0.26)) { if openRow != id { openRow = id }; notes[id] = text }
+        Task { @MainActor [self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.noteFor * 1e9))
+            if notes[id] == text { withAnimation(.easeOut(duration: 0.2)) { notes[id] = nil } }
         }
     }
 
