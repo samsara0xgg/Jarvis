@@ -15,6 +15,9 @@ import os
 // a piece spans conversations. Each hand-over costs a gap in the audio (the old engine stops before the new one is built): short for
 // the recorder's own engine, up to a second or so while the voice settles its input.
 // At home, while the Mac records him, the writer keeps nothing (LifelogGate, LifelogCoverage.swift, ADR 0292); the engine and the session run as ever.
+// A hand-over, or a rebuild after the hardware changed, keeps the app awake until the recorder's engine runs: iOS freezes a background app
+// with no audio running within seconds, and a frozen app may not start the microphone when it wakes. If the audio stops anyway, he is told
+// (LifelogAlarm, ADR 0375).
 
 enum LifelogClock {
     /// The first 10-minute mark of the local clock (:00, :10, :20 ...) after `ms`, in UTC milliseconds.
@@ -84,7 +87,9 @@ final class LifelogWriter: @unchecked Sendable {
 
     /// Called on the audio thread: copies the buffer and returns; the rest happens on the writer's queue.
     func feed(_ b: AVAudioPCMBuffer) {
-        guard accepting.withLock({ $0 }), !dropping, let src = b.floatChannelData,
+        guard accepting.withLock({ $0 }) else { return }
+        LifelogAlarm.heard()                                // the microphone is alive, whether this audio is kept or not
+        guard !dropping, let src = b.floatChannelData,
               let c = AVAudioPCMBuffer(pcmFormat: b.format, frameCapacity: b.frameLength) else { return }
         c.frameLength = b.frameLength
         for ch in 0..<Int(b.format.channelCount) { c.floatChannelData![ch].update(from: src[ch], count: Int(b.frameLength)) }
@@ -214,12 +219,15 @@ final class LifelogWriter: @unchecked Sendable {
 /// not running and no interruption is on. Everything on `queue`; `flags` are what the rest of the app sets.
 final class LifelogMic: @unchecked Sendable {
     static let shared = LifelogMic()
-    private struct Flags { var on = false, interrupted = false, voice = false }
+    private struct Flags { var on = false, interrupted = false, voice = false, foreground = true }
     private let flags = OSAllocatedUnfairLock(initialState: Flags())
     private let queue = DispatchQueue(label: "jarvis.lifelog.mic")
     private var engine: AVAudioEngine?
     private var observer: NSObjectProtocol?
     private var retrying = false
+    /// starts that failed in a row while the app was in the background; past `backgroundTries` it waits for the app to open or the interruption to end
+    private var backgroundFailures = 0
+    private static let backgroundTries = 3
     /// another app's call has the audio (Discord, WhatsApp ... not all of them go through CallKit): the recorder stays off and leaves the
     /// session alone until no other app's audio is on. Recording beside such a call took his microphone from it (phone, 2026-10-12).
     private var yielded = false
@@ -235,9 +243,16 @@ final class LifelogMic: @unchecked Sendable {
         kick()
     }
 
+    /// The app came to the foreground (true) or went to the background. In the foreground a failed start is tried again as long as it fails.
+    func setForeground(_ fg: Bool) {
+        flags.withLock { $0.foreground = fg }
+        if fg { queue.async { self.backgroundFailures = 0 } }
+    }
+
     /// The voice is about to build its engine: the recorder's is stopped first (the piece stays open, the session stays active).
     func voiceStarting() async {
         flags.withLock { $0.voice = true }
+        if holdsSession { lifelogNote("the voice takes the microphone") }
         await withCheckedContinuation { c in queue.async { self.reconcile(); c.resume() } }
     }
 
@@ -246,6 +261,7 @@ final class LifelogMic: @unchecked Sendable {
     /// for it to end, as if it had yielded to it, so the caller lets it go.
     @discardableResult func voiceStopped(otherWaiting: Bool = false) -> Bool {
         flags.withLock { $0.voice = false }
+        if holdsSession { lifelogNote("the voice gave the microphone back\(otherWaiting ? " (it had taken it from another app)" : "")") }
         if otherWaiting, holdsSession {
             queue.async { self.yield("the voice took the session from another app: it goes back to that app") }
             return false
@@ -256,7 +272,12 @@ final class LifelogMic: @unchecked Sendable {
 
     /// Brings the engine in line with the flags; `restart` builds it anew (the media services were reset).
     func kick(restart: Bool = false) {
-        queue.async { if restart { self.stopOwn() }; if self.yielded { self.checkYield() } else { self.reconcile() } }
+        let awake = Awake("lifelog: the microphone")
+        queue.async {
+            if restart { self.stopOwn() }
+            if self.yielded { self.checkYield() } else { self.reconcile() }
+            awake.end()
+        }
     }
 
     /// A cue through the recorder's engine. False if the recorder does not hold the session (the caller plays it itself); true otherwise,
@@ -320,10 +341,13 @@ final class LifelogMic: @unchecked Sendable {
             return retry("engine: \(error.localizedDescription)")
         }
         engine = e
+        backgroundFailures = 0
         Self.cue.withLock { $0 = (e, player) }
         // the hardware changed and the engine stopped itself: built again (a changed input format is the converter's business)
         observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: nil) { [weak self, weak e] _ in
+            let awake = Awake("lifelog: rebuilding the engine")
             self?.queue.async {
+                defer { awake.end() }
                 guard let self, let e, self.engine === e else { return }
                 self.stopOwn()
                 // another app setting up its audio (a call starting) stops this engine; music starting does not
@@ -349,8 +373,18 @@ final class LifelogMic: @unchecked Sendable {
     }
 
     /// Not now (the app was launched in the background, another app holds the microphone): again in 10 s, and when the app comes to the foreground.
+    /// In the background iOS refuses a new start for as long as the app stays there ('!int', phone 2026-10-20 and 21: 47 tries in a row), so after
+    /// a few tries it waits for the app to open or the interruption to end, and he is told.
     private func retry(_ why: String) {
         if let other = OtherAudio.why { return yield("could not start (\(why)): \(other)") }
+        if !flags.withLock({ $0.foreground }) {
+            backgroundFailures += 1
+            if backgroundFailures >= Self.backgroundTries {
+                lifelogNote("could not start the microphone in the background (\(why)), \(backgroundFailures) times: waiting for the app to open or the interruption to end")
+                Task { @MainActor in LifelogAlarm.shared.stopped(.background) }
+                return
+            }
+        }
         lifelogNote("could not start the microphone (\(why)), trying again in 10 s")
         guard !retrying else { return }
         retrying = true
@@ -365,6 +399,7 @@ final class LifelogMic: @unchecked Sendable {
             lifelogNote("yielding to another app's audio: \(why)")
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             LifelogWriter.shared.close()
+            Task { @MainActor in LifelogAlarm.shared.yield(true) }
         }
         yielded = true
         guard !retrying else { return }
@@ -373,13 +408,18 @@ final class LifelogMic: @unchecked Sendable {
     }
 
     private func checkYield() {
-        guard yielded, wanted else { yielded = false; return reconcile() }
+        guard yielded, wanted else { endYield(); return reconcile() }
         let s = AVAudioSession.sharedInstance()
         let callRoute = s.currentRoute.outputs.contains { $0.portType == .builtInReceiver || $0.portType == .bluetoothHFP }
         if OtherAudio.why != nil || callRoute { return yield("still on") }
         lifelogNote("the other app's audio ended: recording again")
-        yielded = false
+        endYield()
         reconcile()
+    }
+
+    private func endYield() {
+        if yielded { Task { @MainActor in LifelogAlarm.shared.yield(false) } }
+        yielded = false
     }
 
     /// The built-in microphone, its data source that does stereo, held as in a portrait phone. Only when the built-in microphone is
@@ -426,7 +466,13 @@ final class LifelogRecorder {
             let began = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
             lifelogNote("interruption \(began ? "began" : "ended") \(n.userInfo ?? [:])")
             // resumes whether or not the system says it should: he wants the day recorded
-            MainActor.assumeIsolated { LifelogRecorder.shared.interrupted = began; LifelogRecorder.shared.apply() }
+            MainActor.assumeIsolated {
+                let r = LifelogRecorder.shared
+                r.interrupted = began
+                r.apply()
+                // an interruption whose end never comes (10:13 on 2026-10-21) leaves it off until he opens the app; a call is a pause he knows of
+                if began, !r.calls.inCall { LifelogAlarm.shared.stopped(.interrupted, after: 60) }
+            }
         }
         // A call (the phone, or an app's through CallKit, as Discord's voice) pauses the recording, its microphone and session left alone;
         // its end resumes it even if no interruption-ended notice comes.
@@ -435,6 +481,7 @@ final class LifelogRecorder {
             LifelogRecorder.shared.apply()
         }
         nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { _ in
+            lifelogNote("media services were reset: building the engine again")
             LifelogWriter.shared.close()
             LifelogMic.shared.kick(restart: true)
         }
@@ -450,9 +497,15 @@ final class LifelogRecorder {
                 if r.interrupted, OtherAudio.why == nil {
                     lifelogNote("app opened during an interruption, no other audio on: trying again"); r.interrupted = false; r.apply()
                 }
+                // an engine that runs but gives nothing is built anew (what the stop notice promises when he taps it)
+                else if r.recording, LifelogAlarm.silentFor > 5 {
+                    lifelogNote("app opened, no audio for \(Int(min(LifelogAlarm.silentFor, 1e6))) s: building the engine again"); LifelogMic.shared.kick(restart: true)
+                }
                 else { r.followSwitch() }
             }
         }
+        nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in LifelogMic.shared.setForeground(true) }
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in LifelogMic.shared.setForeground(false) }
         nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: nil) { _ in LifelogWriter.shared.closeSync() }
     }
 
@@ -486,6 +539,7 @@ final class LifelogRecorder {
         if CommandLine.arguments.contains("-lifelogTest") { LifelogStore.isOn = true }
         #endif
         if LifelogStore.isOn, AVAudioApplication.shared.recordPermission == .denied { LifelogStore.isOn = false }
+        LifelogMic.shared.setForeground(UIApplication.shared.applicationState != .background)
         apply()
     }
 
@@ -496,6 +550,7 @@ final class LifelogRecorder {
         LifelogWriter.shared.setAccepting(live)
         if !live { LifelogWriter.shared.close() }
         LifelogMic.shared.set(on: on, interrupted: paused)
+        LifelogAlarm.shared.expect(on && !calls.inCall)
         LifelogGate.shared.run(on)
         let changed = live != recording
         recording = live
@@ -505,6 +560,21 @@ final class LifelogRecorder {
 
 /// Library/Caches/lifelog.log, with the uploader's lines
 func lifelogNote(_ s: String) { StallLog.append("lifelog: \(s)", to: "lifelog.log") }
+
+/// Keeps the app from being frozen in the background until `end` (at most 30 s), from any thread. A hand-over of the microphone leaves a
+/// moment with no audio running, and iOS froze the app in that moment: the wake word let the microphone go as he locked the phone, and the
+/// recorder's start ran only when the app woke minutes later, in the background, where iOS refused it (phone, 2026-10-20 and 21).
+final class Awake: @unchecked Sendable {
+    private let done = DispatchSemaphore(value: 0)
+
+    init(_ reason: String) {
+        ProcessInfo.processInfo.performExpiringActivity(withReason: reason) { [done] expired in
+            if expired { done.signal() } else { _ = done.wait(timeout: .now() + 30) }
+        }
+    }
+
+    func end() { done.signal() }
+}
 
 /// Whether a call is up (the phone, FaceTime, or an app's call through CallKit); `onChange` on the main thread.
 private final class CallWatch: NSObject, CXCallObserverDelegate {

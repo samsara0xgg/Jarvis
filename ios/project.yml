@@ -51,6 +51,7 @@ targets:
         com.apple.developer.healthkit: true
         com.apple.developer.healthkit.background-delivery: true
         aps-environment: development
+        com.apple.developer.usernotifications.time-sensitive: true   # the day's recording stopped: the notice gets through a driving Focus (ADR 0375)
         # the pairing is shared with the share extension: the token in this Keychain group (first, so it is where items are written; the app's own group second, so a token
         # saved before the group existed can still be read and moved), the brain's addresses in the App Group's defaults
         keychain-access-groups: ["$(AppIdentifierPrefix)com.yilunshi.jarvis.shared", "$(AppIdentifierPrefix)com.yilunshi.jarvis"]

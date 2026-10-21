@@ -128,7 +128,10 @@ final class VoiceAudio {
         self.source = nil
         core = nil
         tookFrom = nil
+        // the recorder takes the microphone over: the app stays awake until it has (in the background iOS would freeze it in between)
+        let awake = LifelogMic.shared.holdsSession ? Awake("voice: handing the microphone to the recorder") : nil
         sessionQueue.async {                                // taps froze for a moment after each talk ended with AirPods on (live 2026-10-10)
+            defer { awake?.end() }
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             if let source { engine.detach(source) }
