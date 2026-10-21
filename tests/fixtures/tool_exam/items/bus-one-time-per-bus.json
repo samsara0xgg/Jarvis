@@ -1,0 +1,22 @@
+{
+  "id": "bus-one-time-per-bus",
+  "tool": "bus",
+  "said": "pin the first one",
+  "at": "2026-10-15T09:40:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.4284, "lng": -123.3656, "age_s": 30},
+  "state": null,
+  "setup": [{"tool": "bus", "args": {"to": "48.4634,-123.3117"}}],
+  "args": {"pin": [1]},
+  "recording": "bus-one-time-per-bus.recording.json",
+  "expect": {
+    "summary_must": ["bus at 9:52 am"],
+    "result_must_not_mention": ["9:53"],
+    "state_after": [
+      {"db": "events", "sql": "SELECT json_extract(json_extract(payload_json, '$.tool_output'), '$.options[0].legs[0].departs') || ' ' || json_extract(json_extract(payload_json, '$.tool_output'), '$.options[0].legs[0].source') FROM events WHERE type = 'action.result_observed' ORDER BY id LIMIT 1", "answer": "9:52 am live"},
+      {"db": "events", "sql": "SELECT json_extract(payload_json, '$.trip.options[0].departs'), json_extract(payload_json, '$.trip.options[0].departs_ms') FROM events WHERE type = 'clarification.requested'", "answer": [["09:52", 1792083120000]]},
+      {"db": "events", "sql": "SELECT json_extract(payload_json, '$.trips[0].departs_at_ms'), json_extract(payload_json, '$.trips[0].bus_trip_id') FROM events WHERE type = 'departure.pinned'", "answer": [[1792083120000, "T14-0953"]]}
+    ],
+    "checker": "bus_one_time_per_bus"
+  }
+}

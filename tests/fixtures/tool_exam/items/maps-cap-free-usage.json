@@ -1,0 +1,36 @@
+{
+  "id": "maps-cap-free-usage",
+  "tool": "map_search",
+  "said": "any ramen near me",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {
+    "lat": 48.4284,
+    "lng": -123.3656,
+    "age_s": 60
+  },
+  "state": "maps-cap-free-usage.state",
+  "args": {
+    "query": "ramen"
+  },
+  "recording": "maps-cap-free-usage.recording.json",
+  "expect": {
+    "error_kind": "impossible",
+    "summary_must": [
+      "^Map lookups are paused: this month Google has billed about \\$7\\.00 of the \\$7\\.70 monthly limit"
+    ],
+    "receipt": {
+      "status": "failed",
+      "failure": "impossible"
+    },
+    "events_after": {
+      "must": [
+        "action.result_observed"
+      ],
+      "must_not": [
+        "maps.spend_recorded",
+        "map.places_found"
+      ]
+    }
+  }
+}

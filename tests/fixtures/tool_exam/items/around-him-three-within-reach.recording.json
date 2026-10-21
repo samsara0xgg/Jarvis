@@ -1,0 +1,25 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "GET",
+   "url": "https://maps.googleapis.com/maps/api/geocode/json?latlng=48.428400,-123.365600&result_type=street_address%7Cintersection",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"status\": \"OK\", \"results\": [{\"types\": [\"intersection\"], \"formatted_address\": \"Government St & Fort St, Victoria, BC\"}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchNearby",
+   "request": "{\"maxResultCount\": 20, \"languageCode\": \"en\", \"rankPreference\": \"DISTANCE\", \"locationRestriction\": {\"circle\": {\"center\": {\"latitude\": 48.4284, \"longitude\": -123.3656}, \"radius\": 300}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamMunroBooks00012\", \"displayName\": {\"text\": \"Munro's Books\", \"languageCode\": \"en\"}, \"formattedAddress\": \"1108 Government St, Victoria, BC V8W 1Y2, Canada\", \"location\": {\"latitude\": 48.4285, \"longitude\": -123.36555}, \"googleMapsUri\": \"https://maps.google.com/?cid=0012\", \"primaryTypeDisplayName\": {\"text\": \"Book store\"}, \"currentOpeningHours\": {\"openNow\": true}}, {\"id\": \"ChIJexamBayCentreCafe13\", \"displayName\": {\"text\": \"Bay Centre Cafe\", \"languageCode\": \"en\"}, \"formattedAddress\": \"1150 Douglas St, Victoria, BC V8W 3M9, Canada\", \"location\": {\"latitude\": 48.4287, \"longitude\": -123.3658}, \"googleMapsUri\": \"https://maps.google.com/?cid=fe13\", \"primaryTypeDisplayName\": {\"text\": \"Cafe\"}, \"currentOpeningHours\": {\"openNow\": true}}, {\"id\": \"ChIJexamFortStNoodle014\", \"displayName\": {\"text\": \"Fort Street Noodle\", \"languageCode\": \"en\"}, \"formattedAddress\": \"1012 Fort St, Victoria, BC V8V 3K4, Canada\", \"location\": {\"latitude\": 48.4282, \"longitude\": -123.3655}, \"googleMapsUri\": \"https://maps.google.com/?cid=e014\", \"primaryTypeDisplayName\": {\"text\": \"Ramen restaurant\"}, \"currentOpeningHours\": {\"openNow\": false}}, {\"id\": \"ChIJexamTrounceAlley015\", \"displayName\": {\"text\": \"Trounce Alley Bar\", \"languageCode\": \"en\"}, \"formattedAddress\": \"616 Trounce Alley, Victoria, BC V8W 1K3, Canada\", \"location\": {\"latitude\": 48.429, \"longitude\": -123.3656}, \"googleMapsUri\": \"https://maps.google.com/?cid=y015\", \"primaryTypeDisplayName\": {\"text\": \"Bar\"}, \"currentOpeningHours\": {\"openNow\": true}}, {\"id\": \"ChIJexamCourtneyDeli016\", \"displayName\": {\"text\": \"Courtney Deli\", \"languageCode\": \"en\"}, \"formattedAddress\": \"700 Courtney St, Victoria, BC V8W 1C1, Canada\", \"location\": {\"latitude\": 48.4273, \"longitude\": -123.3656}, \"googleMapsUri\": \"https://maps.google.com/?cid=i016\", \"primaryTypeDisplayName\": {\"text\": \"Deli\"}}]}"
+  }
+ ],
+ "mcp": []
+}

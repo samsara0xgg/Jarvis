@@ -1,0 +1,46 @@
+{
+  "id": "around-him-three-within-reach",
+  "tool": "where_am_i",
+  "said": "where am I",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {
+    "lat": 48.4284,
+    "lng": -123.3656,
+    "age_s": 0,
+    "accuracy_m": 15.0
+  },
+  "state": "around-him-three-within-reach.state",
+  "args": {},
+  "recording": "around-him-three-within-reach.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "around.intersection",
+        "op": "eq",
+        "value": "Government St & Fort St"
+      },
+      {
+        "path": "around.kept_place",
+        "op": "absent"
+      }
+    ],
+    "state_after": [
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.sku'), json_extract(payload_json, '$.requests') FROM events WHERE type = 'maps.spend_recorded' ORDER BY id",
+        "answer": [
+          [
+            "geocoding.reverse",
+            1
+          ],
+          [
+            "places.nearby_search.enterprise",
+            1
+          ]
+        ]
+      }
+    ],
+    "checker": "around_candidates_within_reach"
+  }
+}

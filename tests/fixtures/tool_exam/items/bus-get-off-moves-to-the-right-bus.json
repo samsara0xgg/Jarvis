@@ -1,0 +1,27 @@
+{
+  "id": "bus-get-off-moves-to-the-right-bus",
+  "tool": "bus",
+  "said": "I get off at Cedar Ave",
+  "at": "2026-10-18T17:10:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.5040, "lng": -123.4000, "age_s": 10},
+  "state": null,
+  "setup": [{"tool": "bus", "args": {"ride": "start", "route": "14", "vehicle_id": "v1"}}],
+  "args": {"ride": "get_off", "stop": "Cedar Ave"},
+  "recording": "bus-get-off-moves-to-the-right-bus.recording.json",
+  "expect": {
+    "summary_must": ["wrong bus", "toward Harbour, not the one toward Hillside", "gets off at Cedar Ave"],
+    "result": [
+      {"path": "headsign", "op": "eq", "value": "Harbour"},
+      {"path": "alight_stop", "op": "eq", "value": "Cedar Ave"}
+    ],
+    "receipt": {"status": "done", "reads_only": false},
+    "events_after": {
+      "must": [
+        {"type": "ride.moved", "payload_matches": "\"trip_id\": ?\"T14-a\""},
+        {"type": "ride.alight_set", "payload_matches": "\"alight_stop_id\": ?\"K2\""}
+      ]
+    },
+    "checker": "ride_moved_to_the_bus_near_him"
+  }
+}

@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"675 Belleville St, Victoria\", \"maxResultCount\": 1, \"languageCode\": \"en\", \"rankPreference\": \"DISTANCE\", \"locationBias\": {\"circle\": {\"center\": {\"latitude\": 48.4284, \"longitude\": -123.3656}, \"radius\": 50000.0}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamRoyalBCMuseum11\", \"displayName\": {\"text\": \"Royal BC Museum\"}, \"formattedAddress\": \"675 Belleville St, Victoria, BC V8W 9W2, Canada\", \"location\": {\"latitude\": 48.4196, \"longitude\": -123.3676}, \"viewport\": {\"low\": {\"latitude\": 48.4183, \"longitude\": -123.3689}, \"high\": {\"latitude\": 48.4209, \"longitude\": -123.3663}}}]}"
+  }
+ ],
+ "mcp": []
+}

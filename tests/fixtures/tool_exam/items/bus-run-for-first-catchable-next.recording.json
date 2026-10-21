@@ -1,0 +1,48 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"TRANSIT\", \"computeAlternativeRoutes\": true, \"departureTime\": \"2026-10-14T16:19:00Z\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"240s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"900s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Larch St at Wren Ave\", \"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.364}}}, \"arrivalStop\": {\"name\": \"Quill Ave at Tamarack Rd\", \"location\": {\"latLng\": {\"latitude\": 48.462, \"longitude\": -123.313}}}, \"departureTime\": \"2026-10-14T16:31:00Z\", \"arrivalTime\": \"2026-10-14T16:45:00Z\"}, \"headsign\": \"Wrenfield\", \"transitLine\": {\"nameShort\": \"22\", \"name\": \"Wrenfield\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"180s\"}], \"endLocation\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}}]}, {\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"240s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"900s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Larch St at Wren Ave\", \"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.364}}}, \"arrivalStop\": {\"name\": \"Quill Ave at Tamarack Rd\", \"location\": {\"latLng\": {\"latitude\": 48.462, \"longitude\": -123.313}}}, \"departureTime\": \"2026-10-14T16:51:00Z\", \"arrivalTime\": \"2026-10-14T17:05:00Z\"}, \"headsign\": \"Wrenfield\", \"transitLine\": {\"nameShort\": \"22\", \"name\": \"Wrenfield\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"180s\"}], \"endLocation\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}}]}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"DRIVE\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"780s\", \"distanceMeters\": 6100}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"WALK\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"4500s\", \"distanceMeters\": 5800}]}"
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48",
+   "status": 200,
+   "content_type": "application/x-protobuf",
+   "body_b64": "CgUKAzIuMA=="
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48",
+   "status": 200,
+   "content_type": "application/zip",
+   "body_b64": "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"
+  }
+ ],
+ "mcp": []
+}
