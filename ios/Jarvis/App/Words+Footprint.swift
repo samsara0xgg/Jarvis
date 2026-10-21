@@ -13,7 +13,7 @@ extension Words {
         static var backToToday: String { pick(zh: "回到今天", en: "Back to today") }
         static var back: String { pick(zh: "返回", en: "Back") }
 
-        // summary of the day; `past` is a day before today
+        // summary of the day; `past` is a day before today. A name stands in a Chinese sentence with no space round it, in an English one with its spaces.
         static func summaryOne(title: String, distance: String, speed: String) -> String {
             pick(zh: "\(title)，\(distance)，最快 \(speed)。", en: "\(title), \(distance), fastest \(speed).")
         }
@@ -22,10 +22,10 @@ extension Words {
                  en: "\(past ? "That day" : "Today"): \(count) outings, \(distance) in all.")
         }
         static func summaryNone(past: Bool) -> String { pick(zh: past ? "这天没出门。" : "今天没出门。", en: past ? "No outings that day." : "No outings today.") }
-        static func nowAt(place: String) -> String { pick(zh: "现在在 \(place)。", en: "Now at \(place).") }
+        static func nowAt(place: String) -> String { pick(zh: "现在在\(place)。", en: "Now at \(place).") }
 
         // outing titles
-        static func outingTo(_ destination: String) -> String { pick(zh: "去 \(destination)", en: "To \(destination)") }
+        static func outingTo(_ destination: String) -> String { pick(zh: "去\(destination)", en: "To \(destination)") }
         static var onTheWay: String { pick(zh: "在路上", en: "On the way") }
         static var outing: String { pick(zh: "出门", en: "Outing") }
 
