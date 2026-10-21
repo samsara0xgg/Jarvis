@@ -67,7 +67,6 @@ struct FootprintDayPage: View {
     let engine: StarEngine
     let ui: StarUI
     let back: () -> Void
-    @AppStorage("timeline.barByPlace") private var byPlace = false          // the bar drawn as home draws it
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var tl: TimelineState { ui.tl }
@@ -98,9 +97,9 @@ struct FootprintDayPage: View {
                 FootprintDayPicker(ui: ui).offset(x: W - 30 - 36, y: Y.head + 4)          // 36 pt, centred on the head's row
                     .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
                 Group {
-                    FootprintDayLine(ui: ui, summary: content.summary, bar: built?.bar(places: byPlace), model: model).offset(x: 30, y: Y.line)
+                    FootprintDayLine(ui: ui, summary: content.summary, bar: built?.model, model: model).offset(x: 30, y: Y.line)
                     if let built {
-                        FootprintDayBar(ui: ui, built: built, byPlace: byPlace, extra: content.chips, lead: content.place, tripSymbol: content.tripSymbol, entries: content.entries)
+                        FootprintDayBar(ui: ui, built: built, extra: content.chips, lead: content.place, tripSymbol: content.tripSymbol, entries: content.entries)
                     }
                     FootprintDayList(ui: ui, engine: engine, entries: content.entries) { e in open(e) }
                         .offset(y: Y.list)

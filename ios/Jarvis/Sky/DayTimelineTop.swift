@@ -11,9 +11,7 @@ private let muted = SetColor.muted
 struct TLTopView: View {
     let ui: StarUI
     let model: DayTimelineModel?
-    let bar: DayTimelineModel?                  // what the bar, its readout and its bracket read (the model, or its other drawing from where he was), made once with the model and not on every frame of a finger
-    let scene: TLBarScene                       // and the bar of it
-    @Binding var byPlace: Bool                  // the bar is drawn from where he was and not from what he was doing: the switch at its right end
+    let scene: TLBarScene                       // the bar of it, made once with the model and not on every frame of a finger
     var loading = false                         // the day is being asked for: its bar is an empty track with a soft light going along it
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
@@ -27,7 +25,7 @@ struct TLTopView: View {
 
     var body: some View {
         let holding = tl.scrub != nil, talk = ui.tlTalk
-        let said = bar.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
+        let said = model.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
         return ZStack(alignment: .topLeading) {
             // her sentence, and in its place while a finger is on the bar the readout of the minute under it: they cross, blurred (`fadeThrough`), so the two are never readable together
             Group {          // each animation below is on what it moves, not on the whole of the header
@@ -52,16 +50,15 @@ struct TLTopView: View {
                 }
             }
             .animation(TLMotion.dayChange(reduce: reduce), value: model == nil)
-            if let m = model, let bar {
+            if let m = model {
                 let lens = tl.activeLens(in: m)
                 ZStack(alignment: .topLeading) {
-                    TLBarView(scene: scene, bracket: bracket(bar), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
+                    TLBarView(scene: scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? lastLens).color, lensMarks: m.marks(of: lens ?? lastLens),
                               reveal: tl.reveal, reduce: reduce, breathe: ui.tlHeaderShown,
                               sweeping: tl.tidy == .running && tl.day == tl.today && !reduce, ghost: ghost, ghostGone: ghostGone)
-                        .id(byPlace).transition(barSwap)          // the other drawing of the day comes in over the one that goes
                 }
                 .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
-                .modifier(TLBarScrub(span: m.span, changed: { t, x in scrubbed(t, x, m, bar) }, ended: lifted))
+                .modifier(TLBarScrub(span: m.span, changed: { t, x in scrubbed(t, x, m) }, ended: lifted))
                 .accessibilityElement().accessibilityLabel("一天的概览")
                 .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
                 .accessibilityValue(tl.scrub != nil ? said.map(spoken) ?? "" : "")
@@ -69,13 +66,6 @@ struct TLTopView: View {
                 .fadeThrough(on: !talk, reduce: reduce).allowsHitTesting(!talk).accessibilityHidden(talk)
                 .id(tl.day).transition(barTransition)
                 .offset(x: 30, y: TLLayout.barY)
-                if m.hasPlaces {
-                    TLBarMode(byPlace: $byPlace, reduce: reduce)
-                        .opacity(tl.reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: tl.reveal, reduce: reduce), value: tl.reveal)          // with the bar's growth
-                        .fadeThrough(on: !talk && !holding, reduce: reduce).allowsHitTesting(!talk)
-                        .id(tl.day).transition(barTransition)
-                        .offset(x: 30 + TLLayout.barW + 3, y: TLLayout.barY + (TLLayout.barH - TLBarMode.height) / 2)
-                }
                 if !m.chips.isEmpty || !m.body.isEmpty {
                     TLChips(chips: m.chips, health: m.body, active: lens) { l in
                         Haptic.selection()
@@ -145,11 +135,11 @@ struct TLTopView: View {
         return e.t0...max(e.t0, e.t1 ?? e.t0)
     }
 
-    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar (`bar`, the day as the bar draws it) it crosses
-    private func scrubbed(_ t: Double, _ x: Double, _ m: DayTimelineModel, _ bar: DayTimelineModel) {
+    /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar it crosses
+    private func scrubbed(_ t: Double, _ x: Double, _ m: DayTimelineModel) {
         tl.follow(t, in: m)
         tl.finger = TLGaze.bar(x: x)
-        let s = bar.stretch(at: t)
+        let s = m.stretch(at: t)
         if lastStretch != s { lastStretch = s; Haptic.selection() }
     }
 
@@ -157,12 +147,6 @@ struct TLTopView: View {
     private func lifted() {
         lastStretch = nil
         withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
-    }
-
-    /// The other drawing of the bar arrives faster than the one it replaces leaves (140 ms, 280 ms), so that the two never both stand half faded and the bar dips in between: the new one is
-    /// whole while the old one still goes behind it. Under Reduce Motion a plain cross-fade.
-    private var barSwap: AnyTransition {
-        reduce ? .opacity : .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.14)), removal: .opacity.animation(.easeOut(duration: 0.28)))
     }
 
     /// another day's bar comes in from the way time goes, a hair, as the list does
@@ -210,80 +194,6 @@ struct TLReadoutLines: View {
         }
         .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
         .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
-    }
-}
-
-/// 在干嘛 | 在哪: what the day bar is drawn from, a small switch in the margin at the bar's right end. 干嘛 is the bar of what he was doing (the default), 在哪 the bar of the places he stayed
-/// in and the trips between them; the list under it is the same either way.
-struct TLBarMode: View {
-    @Binding var byPlace: Bool
-    var reduce = false
-    @State private var held: Double?            // where a finger has the glass, 0 (干嘛) to 1 (在哪), while it holds it
-
-    static let width = 24.0, cell = 26.0, height = 2 * cell + 4
-
-    /// A switch the way iOS draws one now: a drop of glass over the side that is on. A finger can take the glass and slide it up and down (it swells a little while held); the bar
-    /// changes the moment it crosses the middle, with a tick, and on release it settles on the nearer side with a spring. A tap on a side sends the glass there.
-    var body: some View {
-        let at = held ?? (byPlace ? 1 : 0)
-        ZStack(alignment: .top) {
-            drop.scaleEffect(held == nil || reduce ? 1 : 1.12).offset(y: 2 + at * Self.cell)
-            VStack(spacing: 0) {
-                word("干嘛", on: at < 0.5)
-                word("在哪", on: at >= 0.5)
-            }
-            .padding(2)
-            .allowsHitTesting(false)
-        }
-        .frame(width: Self.width, height: Self.height, alignment: .top)
-        .background(Capsule().fill(Color.white.opacity(0.06)))
-        .contentShape(Capsule().inset(by: -6))
-        .gesture(slide)
-        .accessibilityElement()
-        .accessibilityLabel("总条按")
-        .accessibilityValue(byPlace ? "在哪" : "在干嘛")
-        .accessibilityAdjustableAction { d in set(d == .increment) }
-        .accessibilityAddTraits(.isButton)
-    }
-
-    /// the glass: Liquid Glass where the system has it, a frosted pill before it
-    @ViewBuilder private var drop: some View {
-        let size = CGSize(width: Self.width - 4, height: Self.cell)
-        if #available(iOS 26.0, *) {
-            Color.clear.frame(width: size.width, height: size.height).glassEffect(.regular.interactive(), in: Capsule())
-        } else {
-            Capsule().fill(.ultraThinMaterial).overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)).frame(width: size.width, height: size.height)
-        }
-    }
-
-    private func word(_ w: String, on: Bool) -> some View {
-        Text(w).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(on ? ink : muted).lineLimit(1).fixedSize()
-            .frame(width: Self.width - 4, height: Self.cell)
-    }
-
-    /// a drag of no length is a tap: the side under it; a longer one carries the glass
-    private var slide: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { v in
-                guard abs(v.translation.height) > 3 || held != nil else { return }
-                let f = Self.place(v.location.y)
-                if (f >= 0.5) != byPlace { set(f >= 0.5) }          // crossing the middle is the change
-                withAnimation(.interactiveSpring(response: 0.18, dampingFraction: 0.86)) { held = f }
-            }
-            .onEnded { v in
-                let side = held == nil ? Self.place(v.location.y) >= 0.5 : Self.place(v.location.y + (v.predictedEndLocation.y - v.location.y) * 0.3) >= 0.5
-                set(side)
-                withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .spring(response: 0.34, dampingFraction: 0.72)) { held = nil }
-            }
-    }
-
-    /// where on the switch a finger at `y` (in its own points) holds the glass, 0 to 1
-    static func place(_ y: Double) -> Double { clamp((y - 2 - cell / 2) / cell, 0, 1) }
-
-    private func set(_ place: Bool) {
-        guard place != byPlace else { return }
-        Haptic.selection()
-        withAnimation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .bouncy(duration: 0.35, extraBounce: 0)) { byPlace = place }          // the glass goes as it does when a finger lets it go
     }
 }
 

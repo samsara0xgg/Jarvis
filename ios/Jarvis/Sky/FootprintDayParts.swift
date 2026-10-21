@@ -98,7 +98,6 @@ struct FootprintDayLegend: View {
 struct FootprintDayBar: View {
     let ui: StarUI
     let built: TLBuilt
-    let byPlace: Bool
     let extra: [TLPlainChip]
     let lead: [TLPlainChip]
     let tripSymbol: String?
@@ -106,11 +105,11 @@ struct FootprintDayBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
-        let m = built.model, bar = built.bar(places: byPlace), state = ui.footprint
+        let m = built.model, state = ui.footprint
         let lens = state.lens.flatMap { l in m.chips.contains { $0.lens == l } ? l : nil }
         ZStack(alignment: .topLeading) {
-            TLBarView(scene: built.scene(places: byPlace), scrub: state.minute, lens: lens != nil, lensColor: (lens ?? .trip).color, lensMarks: m.marks(of: lens ?? .trip), reduce: reduce)
-                .modifier(TLBarScrub(span: m.span, changed: { t, _ in held(t, bar) }, ended: lifted))
+            TLBarView(scene: built.scene, scrub: state.minute, lens: lens != nil, lensColor: (lens ?? .trip).color, lensMarks: m.marks(of: lens ?? .trip), reduce: reduce)
+                .modifier(TLBarScrub(span: m.span, changed: { t, _ in held(t, m) }, ended: lifted))
                 .offset(x: 30, y: FootprintDayPage.Y.bar)
             if !m.chips.isEmpty || !m.body.isEmpty || !extra.isEmpty || !lead.isEmpty {
                 TLChips(chips: m.chips.map { c in var c = c; if c.lens == .trip { c.symbol = tripSymbol }; return c }, health: m.body, active: lens, extra: extra, lead: lead) { l in

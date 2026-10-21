@@ -65,9 +65,6 @@ extension DayTimelineModel {
             .sorted { ($0.t, TLLens.allCases.firstIndex(of: $0.lens) ?? 0) < ($1.t, TLLens.allCases.firstIndex(of: $1.lens) ?? 0) }
     }
 
-    /// the bar as the switch at its right end has it: drawn from what he was doing (the day's own), or from where he was
-    func scene(places: Bool) -> TLBarScene { places ? byPlace.scene : scene }
-
     /// The bar as pieces. The night is on top of a trip and a trip of a stay (`seg(at:)`); where nothing was recorded there is a blank piece, and on today everything after now
     /// is one piece that has not happened. A piece that goes on across a cut (the night under a stay, a long stay split by nothing) is one piece.
     var scene: TLBarScene {

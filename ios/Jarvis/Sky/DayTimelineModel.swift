@@ -445,8 +445,6 @@ struct DayTimelineModel: Equatable {
     var waiting: [String] = []      // the rows that wait on him, in the order of the day
     var told: [TLTold] = []         // what the readout can say of a minute: what each row was doing, a Claude Code session each
     var lensMarks: [TLLens: [TLMark]] = [:]     // where the things of each kind are on the bar
-    var placeSegs: [TLSeg] = []     // a day of stretches: the night, the stays and the trips as the bar draws them when it is drawn from where he was (a day of records has them in `segs`)
-    var placeRows: [TLEntry] = []   // and the stays and trips they are of, for their names, symbols and heads: the list does not have them
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
     var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
@@ -472,18 +470,6 @@ struct DayTimelineModel: Equatable {
         guard let i = nowIndex else { return 0 }
         let want = offsets[i] + TLMetrics.now / 2 - 0.6 * room
         return max(0, (offsets.min { abs($0 - want) < abs($1 - want) } ?? 0) - 8)
-    }
-
-    /// there is a bar to draw from where he was that is not the one drawn from what he was doing
-    var hasPlaces: Bool { !placeRows.isEmpty }
-    /// The same day with the bar drawn from where he was, the stays and the trips in their place colours (the bar of a day of records): the bar, its words and the readout of a finger read this;
-    /// the list, which a finger on the bar is looked up in, is the model's own.
-    var byPlace: DayTimelineModel {
-        guard hasPlaces else { return self }
-        var m = self
-        m.segs = placeSegs
-        m.entries = entries + placeRows
-        return m
     }
 
     /// the minute `t` as the bar has it: no earlier than its start and no later than 24:00
@@ -594,11 +580,10 @@ struct DayTimelineModel: Equatable {
         var segs: [TLSeg] = []
         var minutes: [TLLens: Double] = [:], counts: [TLLens: Int] = [:]
         var spent: [String: (cents: Int, n: Int)] = [:]                              // money out, by currency
-        var placeSegs: [TLSeg] = []                                                  // on a day of stretches, the places and the trips: the bar's other drawing
-        func seg(_ id: String, _ a: Double, _ b: Double, _ kind: TLSeg.Kind, place: Bool = false) {
+        func seg(_ id: String, _ a: Double, _ b: Double, _ kind: TLSeg.Kind) {
             let lo = max(0, a), hi = min(DAY, b)
             guard hi > lo else { return }
-            if place { placeSegs.append(TLSeg(id: id, t0: lo, t1: hi, kind: kind)) } else { segs.append(TLSeg(id: id, t0: lo, t1: hi, kind: kind)) }
+            segs.append(TLSeg(id: id, t0: lo, t1: hi, kind: kind))
         }
         func length(_ x: Double) -> Double { x.isFinite ? max(0, min(x, 3 * DAY)) : 0 }
         for k in rows.indices {
@@ -609,11 +594,11 @@ struct DayTimelineModel: Equatable {
                 rows[k].lens = .sleep; minutes[.sleep, default: 0] += length(i.minutes ?? span)
                 if let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .sleep) }
             case .stay:
-                // on another day a stay with no end goes on to that day's midnight
-                if let hue = rows[k].color, let end = rows[k].t1 ?? (now == nil ? DAY : nil) { seg(rows[k].id, rows[k].t0, end, .place(hue, kept: rows[k].kept), place: segmented) }
+                // on another day a stay with no end goes on to that day's midnight; a day of stretches has the bar drawn from what he was doing, and its places in the list only
+                if !segmented, let hue = rows[k].color, let end = rows[k].t1 ?? (now == nil ? DAY : nil) { seg(rows[k].id, rows[k].t0, end, .place(hue, kept: rows[k].kept)) }
             case .trip:
                 rows[k].lens = .trip; minutes[.trip, default: 0] += length(span)
-                if let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .move, place: segmented) }
+                if !segmented, let end = rows[k].t1 { seg(rows[k].id, rows[k].t0, end, .move) }
             case .work: rows[k].lens = .work; minutes[.work, default: 0] += length(i.active_s.map { $0 / 60 } ?? span)      // the time he was at it, not the whole stretch
             case .code: rows[k].lens = .work                                                                                // lit with the Mac's work, not added to it
             case .call: rows[k].lens = .call; minutes[.call, default: 0] += length(span)
@@ -685,10 +670,6 @@ struct DayTimelineModel: Equatable {
         model.waiting = entries.filter(\.waiting).map(\.id)
         model.told = told
         model.lensMarks = lensMarks(segmented ? rows : entries)
-        if segmented {
-            model.placeSegs = placeSegs + segs.filter { $0.kind == .sleep }
-            model.placeRows = rows.filter { $0.kind == .stay || $0.kind == .trip }
-        }
         return model
     }
 

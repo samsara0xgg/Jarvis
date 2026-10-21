@@ -275,19 +275,12 @@ final class TimelineState {
     }
 }
 
-/// A day as the screen draws it: its model, and the bar's two drawings of it (from what he was doing, and from where he was) with their scenes, which the body of the screen asks for on every run
+/// A day as the screen draws it: its model, and the bar's drawing of it (from what he was doing), which the body of the screen asks for on every run
 struct TLBuilt {
     let model: DayTimelineModel
-    private let place: DayTimelineModel
-    private let scenes: [TLBarScene]            // from what he was doing, and from where he was
+    let scene: TLBarScene
 
-    init(_ m: DayTimelineModel) {
-        model = m; place = m.byPlace
-        scenes = [m.scene, m.hasPlaces ? place.scene : m.scene]
-    }
-    /// what the bar, its readout and its bracket read; the list is the model's own
-    func bar(places: Bool) -> DayTimelineModel { places ? place : model }
-    func scene(places: Bool) -> TLBarScene { scenes[places ? 1 : 0] }
+    init(_ m: DayTimelineModel) { model = m; scene = m.scene }
 }
 
 // MARK: - the screen
@@ -304,7 +297,6 @@ struct DayTimelineView: View {
     @Binding var pull: Double?
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var nowInView = true
-    @AppStorage("timeline.barByPlace") private var byPlace = false          // the bar drawn from where he was and not from what he was doing
 
     private var tl: TimelineState { ui.tl }
 
@@ -315,11 +307,11 @@ struct DayTimelineView: View {
         return TimelineView(.everyMinute) { context in
             let shown = shownNow()
             let built: TLBuilt? = { if case .model(let b) = shown { return b } else { return nil } }()
-            let model = built?.model, bar = built?.bar(places: byPlace)          // the day as the list has it, and as the bar draws it
+            let model = built?.model
             ZStack(alignment: .topLeading) {
                 scrim()
                 ZStack(alignment: .topLeading) {
-                    TLTopView(ui: ui, model: model, bar: bar, scene: built?.scene(places: byPlace) ?? .empty, byPlace: $byPlace, loading: !isReady(shown))
+                    TLTopView(ui: ui, model: model, scene: built?.scene ?? .empty, loading: !isReady(shown))
                     TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
                 }
                 .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
