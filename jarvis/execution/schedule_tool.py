@@ -488,12 +488,10 @@ class _Schedule:
         return tuple(dict.fromkeys(f"-{n}m" for n in raw))
 
     def _default_rings(self, kind: str, when: _Time) -> tuple[str, ...]:
-        """What rings when ``remind`` is left out: by the kind of thing and the kind of time."""
-        if kind == "do":
-            return ("-0m",) if when.start_at else ()
-        if when.start_at:
-            return (f"-{self._before_min}m",)
-        return (_EVENING,) if when.on_day else ()
+        """What rings when ``remind`` is left out: the ledger's rule for every writer."""
+        return things.default_rings(
+            kind, start_at=when.start_at, on_day=when.on_day, before_min=self._before_min,
+        )
 
     def _at_words(self, when: _Time, now: datetime) -> str:
         """`` for tomorrow (Tue) 9:00 am``, `` for Thu Oct 22``, ``, due Fri Oct 16``, or none."""

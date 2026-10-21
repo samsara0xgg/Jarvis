@@ -58,8 +58,6 @@ _CATCH_UP_S: Final[float] = 5.0
 # A mail this young that the job ledger has not seen yet is left for the next cycle: job mail may
 # be about to call it an interview, and that has its own reminders.
 _JOB_FIRST: Final[timedelta] = timedelta(minutes=30)
-# The ring of an all-day thing is the evening before; a timed one rings ``remind_before_min`` ahead.
-_ALL_DAY_RING: Final[str] = "-1d@20:00"
 _LOG_WAIT_S: Final[float] = 5.0
 
 
@@ -284,15 +282,18 @@ class CommitmentIntake:
     ) -> things.Thing:
         """The ``go`` thing a ``new`` action says; a whole day is its ``on_day``."""
         whole = bool(fields.get("all_day"))
+        start_at = "" if whole else fields["start_at"]
+        on_day = datetime.fromisoformat(fields["start_at"]).date().isoformat() if whole else ""
         return things.Thing(
-            things.new_id(), fields["title"], "go",
-            start_at="" if whole else fields["start_at"],
-            end_at=fields.get("end_at", ""),
-            on_day=datetime.fromisoformat(fields["start_at"]).date().isoformat() if whole else "",
+            things.new_id(), fields["title"], "go", start_at=start_at,
+            end_at=fields.get("end_at", ""), on_day=on_day,
             weekly_until=fields.get("weekly_until", ""),
             skip_dates=tuple(fields.get("skip_dates", ())),
             place=fields.get("place", ""), link=fields.get("link", ""),
-            rings=(_ALL_DAY_RING,) if whole else (f"-{self._settings.remind_before_min}m",),
+            rings=things.default_rings(
+                "go", start_at=start_at, on_day=on_day,
+                before_min=self._settings.remind_before_min,
+            ),
             private=fields.get("private", False), confirmed=always, source="mail",
             source_ref=message_id, sender=mail.sender_domain,
         )
@@ -316,9 +317,10 @@ class CommitmentIntake:
         if fields.get("private") and not old.private:  # a mail can make it private, never public
             changed["private"] = True
         if moved and bool(moved["on_day"]) != bool(old.on_day):  # a day became an hour, or back
-            changed["rings"] = [
-                _ALL_DAY_RING if moved["on_day"] else f"-{self._settings.remind_before_min}m",
-            ]
+            changed["rings"] = list(things.default_rings(
+                "go", start_at=moved["start_at"], on_day=moved["on_day"],
+                before_min=self._settings.remind_before_min,
+            ))
         # A last date before the first day reads back only once the series has moved.
         change_first = (
             not moved or "weekly_until" not in changed

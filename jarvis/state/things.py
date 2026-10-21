@@ -983,6 +983,19 @@ def _ring_line(one: Thing, slot: _Slot, due: int, zone: tzinfo) -> str:
     return lang.t(f"thing.rem.{key}", date=day, time=at, title=title, place=place)
 
 
+def default_rings(kind: str, *, start_at: str, on_day: str, before_min: int) -> tuple[str, ...]:
+    """The rings a new thing gets when nobody named any, whoever writes it.
+
+    A thing he goes to rings ``before_min`` before its hour, or the evening before its day; a
+    thing he does rings at its hour; a thing with only a due date, or no time, does not ring.
+    """
+    if kind == "do":
+        return ("-0m",) if start_at else ()
+    if start_at:
+        return (f"-{before_min}m",)
+    return ("-1d@20:00",) if on_day else ()
+
+
 def _wanted(
     things: Iterable[Thing], zone: tzinfo,
 ) -> dict[str, tuple[int, str]]:
