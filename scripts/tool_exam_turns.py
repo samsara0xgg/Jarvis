@@ -18,18 +18,23 @@ read from a log.
 Providers answer from the case's ``recording`` where it holds the call; a call it lacks fails inside
 the tool as a provider error (the network is closed), and the result line lists those calls as
 ``stubbed_providers``. Tools are classed as in ``tool_exam_steps`` (``live_read``,
-``sandbox_write``, ``stub``); ``web_search`` with ``depth`` ``deep`` is a nested paid request and is
-always stubbed. A call that needs his confirmation never runs; the record names it.
+``sandbox_write``, ``stub``, ``recorded``); ``web_search`` with ``depth`` ``deep`` is a nested paid
+request and is always stubbed. A call that needs his confirmation never runs; the record names it.
+
+An MCP server whose tools are listed in the ``mcp-tools.json`` beside the cases is the brain's own
+entry for it (a plugin, or ``tools.mcp.servers``) with the process left out: it connects without
+starting, lists the recorded tools, and the runtime wraps them as it wraps a live server's, so the
+menu, ``tool_search`` and which calls need his confirmation are the brain's. Its calls are
+answered from the case's recording; its credentials are placeholders.
 
 Configuration is the shipped ``config/jarvis.yaml`` with the brain's ``settings.yaml``
 (``--brain-settings``, by default the copy in ``~/.jarvis/backups/cutover-prep``) over it, minus
 what would reach out or is not about the turn:
-no plugin or MCP server (Notion, Gmail, Hue, Linear, Microsoft), no project list, no log of model
-input and output, no listen addresses, no spoken streaming (the answer is made whole).
+no plugin or MCP server whose tools are not listed, no project list, no log of model input and
+output, no listen addresses, no spoken streaming (the answer is made whole).
 The network is closed to every tool; only the exam's model request goes out.
-Still unlike the Pi: the plugin tools are absent unless an
-``mcp-tools.json`` stands beside the cases, there are no phone, no real-time session and no
-background lanes, and ``--presets`` picks the model (the Pi's default is the Settings choice).
+Still unlike the Pi: there are no phone, no real-time session and no background lanes, and
+``--presets`` picks the model (the Pi's default is the Settings choice).
 
 The result line is a ``run-steps`` line plus ``built``: the case's moment, the tables the cut could
 not handle, the provider calls that were stubbed, and the first 300 characters of the state block
@@ -39,6 +44,7 @@ in the model's first request (the clock and the place are the case's).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import signal
 import sys
@@ -54,14 +60,15 @@ import yaml
 
 from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.execution.tools import Tool
-from jarvis.runtime import drive_turn
+from jarvis.runtime import _all_mcp_servers, _plugins, drive_turn
+from jarvis.runtime.plugin_catalog import credential_fields, read_package
 from jarvis.surface.cli import emit_surface_user_intent
 from scripts.replay_decision import _client
 from scripts.tool_exam_steps import (
+    REPO,
     Meter,
     ScriptedModel,
     SpendCap,
-    _add_microsoft,
     _apply_stubs,
     _events_after,
     _record,
@@ -73,28 +80,40 @@ from scripts.tool_exam_tools import (
     Item,
     Recording,
     _Transport,
+    load_listing,
     sandbox,
 )
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     from jarvis.execution.tools import FlatHandler, ToolContext
     from jarvis.runtime import JarvisRuntime
 
 BRAIN_SETTINGS = Path("~/.jarvis/backups/cutover-prep/settings.brain.yaml").expanduser()
 _NOT_IN_A_TURN = ("projects", "runtime", "diagnostics", "dashboard", "job_mail", "realtime")
-_NO_OUTSIDE_SERVERS = ("mcp", "plugins")
+LISTING = "mcp-tools.json"
+_PLACEHOLDER = "exam-placeholder-key"
 STATE_BLOCK_CHARS = 300
 _STATE_MARKS = ("[State when this was said", "[Current state")
 """The block's two headers: as sent when the session replays sent messages, and live otherwise."""
 _STUB_DEEP = {"stubbed": True, "note": "sandbox: a deep web_search is a nested paid request"}
 
 
-def brain_settings(directory: Path, source: Path = BRAIN_SETTINGS) -> Path:
+def _listed_plugin(plugin_id: str, servers: Collection[str]) -> bool:
+    """Whether the repo's plugin ``plugin_id`` serves MCP servers, all of them listed."""
+    directory = REPO / "plugins" / plugin_id
+    served = set(read_package(directory).servers) if directory.is_dir() else set()
+    return bool(served) and served <= set(servers)
+
+
+def brain_settings(
+    directory: Path, source: Path = BRAIN_SETTINGS, servers: Collection[str] = (),
+) -> Path:
     """Write the brain's settings from ``source``, reduced as the module says, to ``directory``.
 
+    ``servers`` are the MCP servers whose tools are listed: their plugins and entries stay.
     Returns ``directory``.
     """
     if not source.is_file():
@@ -103,10 +122,28 @@ def brain_settings(directory: Path, source: Path = BRAIN_SETTINGS) -> Path:
     data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     for key in _NOT_IN_A_TURN:
         data.pop(key, None)
-    for key in _NO_OUTSIDE_SERVERS:
-        (data.get("tools") or {}).pop(key, None)
+    tools = data.get("tools") or {}
+    tools["plugins"] = {
+        name: entry
+        for name, entry in (tools.get("plugins") or {}).items()
+        if _listed_plugin(name, servers)
+    }
+    mcp = tools.get("mcp") or {}
+    mcp["servers"] = {n: entry for n, entry in (mcp.get("servers") or {}).items() if n in servers}
     (directory / "settings.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
     return directory
+
+
+def placeholders(directory: Path, servers: Collection[str]) -> dict[str, str]:
+    """A placeholder for each credential a listed server's entry names: no process gets it."""
+    settings = yaml.safe_load((directory / "settings.yaml").read_text(encoding="utf-8")) or {}
+    specs = _all_mcp_servers(settings, _plugins(settings, REPO))
+    return {
+        name: _PLACEHOLDER
+        for server, spec in specs.items()
+        if server in servers
+        for name in credential_fields(spec)
+    }
 
 
 class _Direct:
@@ -181,7 +218,10 @@ def run_one(  # noqa: PLR0913, PLR0915 - the case, its model and what meters and
     """One built case through ``drive_turn``; the result line."""
     rec_name = case.get("recording")
     recording = Recording.load(base / rec_name) if rec_name else Recording()
-    transport = _Transport(recording, live=False)
+    listing = base / LISTING
+    transport = _Transport(
+        recording, live=False, listed=load_listing(listing) if listing.is_file() else None
+    )
     inner = _as_model(inner, transport)
     item = Item(dict(case), base / f"{case['id']}.json")
     scratch = Path(tempfile.mkdtemp(prefix="tool-exam-brain-"))
@@ -200,14 +240,16 @@ def run_one(  # noqa: PLR0913, PLR0915 - the case, its model and what meters and
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.alarm(ITEM_TIMEOUT_S * 5)
     try:
-        real_root = brain_settings(scratch, settings)
-        with transport, sandbox(item, recording, real_root=real_root) as box:
+        real_root = brain_settings(scratch, settings, transport.listed)
+        with (
+            patch.dict(os.environ, placeholders(real_root, transport.listed)),
+            transport,
+            sandbox(item, recording, real_root=real_root) as box,
+        ):
             runtime = box.runtime
             if runtime.view is not None:
                 runtime.view.push = pushes.append
-            if (base / "mcp-tools.json").is_file():
-                _add_microsoft(runtime, base / "mcp-tools.json")
-            classes = classify(runtime.tool_registry)
+            classes = classify(runtime.tool_registry, transport.listed)
             _apply_stubs(runtime.tool_registry, classes)
             _stub_deep_search(runtime)
             if preset and runtime.llm_session_factory is not None:

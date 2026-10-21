@@ -197,7 +197,7 @@ def test_an_mcp_call_is_answered_from_the_recording_or_fails_the_item() -> None:
         )
         with pytest.raises(exam.RecordingMiss):
             servers.call("microsoft", "list-todo-tasks", {"list": "b"})
-    assert replay.misses == ["mcp microsoft.list-todo-tasks"]
+    assert replay.misses == ['mcp microsoft.list-todo-tasks {"list": "b"}']
 
 
 def _weather(**changes: Any) -> dict[str, Any]:  # noqa: ANN401

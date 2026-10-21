@@ -81,6 +81,7 @@ from zoneinfo import ZoneInfo
 
 import time_machine
 import yaml
+from mcp import types as mcp_types
 
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
@@ -321,17 +322,53 @@ def _scrub(text: str, secrets: Mapping[str, str]) -> str:
     return text
 
 
+def load_listing(path: Path) -> dict[str, list[mcp_types.Tool]]:
+    """Each MCP server's tools as the server lists them, from an ``mcp-tools.json``.
+
+    The file maps ``mcp__<server>__<tool>`` to ``{description, input_schema, annotations?}``; a
+    tool without ``annotations`` is listed with none, as a server that gives none lists it.
+    """
+    listed: dict[str, list[mcp_types.Tool]] = {}
+    for key, one in json.loads(path.read_text(encoding="utf-8")).items():
+        _, server, tool = key.split("__", 2)
+        listed.setdefault(server, []).append(
+            mcp_types.Tool.model_validate({
+                "name": tool,
+                "description": one.get("description"),
+                "inputSchema": one["input_schema"],
+                "annotations": one.get("annotations"),
+            })
+        )
+    return listed
+
+
+@dataclass(frozen=True)
+class _Listed:
+    """The client of a server whose listing is recorded: no process or connection behind it."""
+
+    server: str
+
+
 class _Transport:
-    """Patches the provider boundaries: ``urlopen`` and the MCP client's tool call.
+    """Patches the provider boundaries: ``urlopen`` and the MCP client's listing and tool call.
 
     ``replay`` answers from the recording and fails any call it lacks; ``record`` makes the call
     and stores the answer. Everything else that opens a socket is refused while replaying, except
-    the exam's own model request inside :meth:`model_call`.
+    the exam's own model request inside :meth:`model_call`. While replaying, an MCP server in
+    ``listed`` connects as if logged in, lists the recorded tools and never starts; any other
+    server is refused.
     """
 
-    def __init__(self, recording: Recording, *, live: bool) -> None:
+    def __init__(
+        self,
+        recording: Recording,
+        *,
+        live: bool,
+        listed: Mapping[str, Sequence[mcp_types.Tool]] | None = None,
+    ) -> None:
         self.recording = recording
         self.live = live
+        self.listed = dict(listed or {})
         self.misses: list[str] = []
         self.secrets: dict[str, str] = secret_values()
         self._real_urlopen = urllib.request.urlopen
@@ -351,10 +388,24 @@ class _Transport:
         ) -> dict[str, Any]:
             return self._mcp(server, tool, args, lambda: real_direct(srv, server, tool, args))
 
+        def opened(_srv: McpServers, server: str, _spec: Mapping[str, Any]) -> _Listed:
+            if server not in self.listed:
+                _refuse()
+            return _Listed(server)
+
+        async def listing(_srv: McpServers, client: _Listed) -> list[mcp_types.Tool]:
+            return list(self.listed[client.server])
+
+        def logged_in(_srv: McpServers, server: str) -> bool:
+            return server in self.listed
+
         self._stack.enter_context(patch.object(urllib.request, "urlopen", self._urlopen))
         self._stack.enter_context(patch.object(McpServers, "_call", call))
         if not self.live:  # a call outside a model turn skips the "connected" check when replayed
             self._stack.enter_context(patch.object(McpServers, "call", direct))
+            self._stack.enter_context(patch.object(McpServers, "_open", opened))
+            self._stack.enter_context(patch.object(McpServers, "_list", listing))
+            self._stack.enter_context(patch.object(McpServers, "has_login", logged_in))
             for owner, name in ((socket.socket, "connect"), (socket, "getaddrinfo")):
                 self._stack.enter_context(
                     patch.object(owner, name, self._gate(getattr(owner, name)))
@@ -489,7 +540,8 @@ class _Transport:
             return made
         entry = self.recording.mcp(server, tool, args)
         if entry is None:
-            self.misses.append(f"mcp {server}.{tool}")
+            shown = json.dumps(args, sort_keys=True, ensure_ascii=False)[:400]
+            self.misses.append(f"mcp {server}.{tool} {shown}")
             msg = f"the recording has no answer for mcp {server}.{tool}"
             raise RecordingMiss(msg)
         result: dict[str, Any] = entry["result"]

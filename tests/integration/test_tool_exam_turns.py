@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
+import yaml
 
 from jarvis.decision.llm import LLMClient
 from jarvis.runtime.weatherkit import ENDPOINT, NOT_SET_UP
@@ -237,6 +238,75 @@ def test_a_built_case_has_the_weather_on_though_his_key_file_is_out_of_reach(
     assert line["error"] is None, line["error"]
     assert NOT_SET_UP not in line["steps"][0]["calls"][0]["result"]
     assert any(ENDPOINT in miss for miss in line["built"]["stubbed_providers"])
+
+
+_HUE_LISTING = {
+    "mcp__hue__list_lights": {
+        "description": "List every light on the bridge.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    "mcp__hue__set_light": {
+        "description": "Update one light.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"light_id": {"type": "string"}, "on": {"type": "boolean"}},
+            "required": ["light_id"],
+        },
+    },
+}
+
+
+def test_only_the_plugins_and_servers_whose_tools_are_listed_stay_in_a_built_case(
+    tmp_path: Path,
+) -> None:
+    """A listed server keeps the brain's entry; every other plugin and server is dropped."""
+    source = tmp_path / "settings.brain.yaml"
+    source.write_text(
+        "tools:\n  plugins:\n    hue: {enabled: true}\n    notion: {enabled: true}\n"
+        "  mcp:\n    always_loaded: [mcp__hue__set_light]\n"
+        "    servers:\n      linear: {url: https://mcp.linear.invalid}\n",
+        encoding="utf-8",
+    )
+    turns.brain_settings(tmp_path, source, {"hue"})
+    kept = yaml.safe_load((tmp_path / "settings.yaml").read_text(encoding="utf-8"))
+    assert kept["tools"]["plugins"] == {"hue": {"enabled": True}}
+    assert kept["tools"]["mcp"] == {"always_loaded": ["mcp__hue__set_light"], "servers": {}}
+    assert turns.placeholders(tmp_path, {"hue"}) == {
+        "HUE_BRIDGE_HOST": "exam-placeholder-key",
+        "HUE_APPLICATION_KEY": "exam-placeholder-key",
+    }
+
+
+def test_a_listed_plugin_is_offered_as_the_brain_offers_it_and_answers_from_the_recording(
+    tmp_path: Path,
+) -> None:
+    """Hue listed beside the cases: its read answers from the recording, a change asks first."""
+    (tmp_path / "mcp-tools.json").write_text(json.dumps(_HUE_LISTING), encoding="utf-8")
+    lights = {"lights": [{"id": "lamp-1", "name": "Desk lamp", "on": True}]}
+    recorded = {"mcp": [{"server": "hue", "tool": "list_lights", "args": {}, "result": lights}]}
+    (tmp_path / "lights.recording.json").write_text(json.dumps(recorded), encoding="utf-8")
+    settings = tmp_path / "settings.brain.yaml"
+    settings.write_text(
+        "runtime:\n  role: brain\ntools:\n  plugins:\n    hue: {enabled: true}\n",
+        encoding="utf-8",
+    )
+    case = {
+        "id": "lights", "said": "要出门了灯关了", "at": AT.isoformat(), "zone": "UTC",
+        "recording": "lights.recording.json",
+    }
+    model = ScriptedModel(  # the card ends the turn: no third request is made
+        Reply(calls=(Call("mcp__hue__list_lights", {}, "list"),)),
+        Reply(calls=(Call("mcp__hue__set_light", {"light_id": "lamp-1", "on": False}, "set"),)),
+    )
+    line = turns.run_one(
+        case, model, "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None, settings,
+    )
+    assert line["error"] is None, line["error"]
+    listed = line["steps"][0]["calls"][0]
+    assert listed["class"] == "recorded"
+    assert json.loads(listed["result"]) == lights
+    assert [c["tool"] for c in line["confirmations"]] == ["mcp__hue__set_light"]
+    assert line["built"]["stubbed_providers"] == []
 
 
 def _every_key_name() -> set[str]:

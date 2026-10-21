@@ -82,7 +82,7 @@ from scripts.tool_exam import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Collection, Iterator, Mapping, Sequence
 
     from jarvis.decision.llm import LLMClient
     from jarvis.execution.mcp_tools import McpServers
@@ -125,12 +125,19 @@ _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}
 
 
-def classify(registry: ToolRegistry) -> dict[str, str]:
-    """Every registered (or offerable) tool's class; ``SystemExit`` naming any unclassified one."""
+def classify(registry: ToolRegistry, recorded: Collection[str] = ()) -> dict[str, str]:
+    """Every registered (or offerable) tool's class; ``SystemExit`` naming any unclassified one.
+
+    A tool of a ``recorded`` MCP server (its listing stands beside the cases) is ``recorded``: the
+    runtime's own wrapper runs, and the case's recording answers the call.
+    """
     classes, unknown = {}, []
+    servers = tuple(f"mcp__{server}__" for server in recorded)
     for tool in (*registry.get_definitions(), *registry.device_catalogue()):
         name = tool.name
-        if name in LIVE_READ:
+        if servers and name.startswith(servers):
+            classes[name] = "recorded"
+        elif name in LIVE_READ:
             classes[name] = "live_read"
         elif name in SANDBOX_WRITE:
             classes[name] = "sandbox_write"
