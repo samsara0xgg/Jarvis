@@ -19,7 +19,7 @@ import pytest
 
 from jarvis.cli import main as cli_main
 from jarvis.state import event_log
-from tests.integration.test_cli_check_log import _Clock, _make_root
+from tests.support.check_log import LogClock, make_log_root
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "pi_brain_backup.sh"
 
@@ -69,7 +69,7 @@ class _Pi:
 @pytest.fixture
 def pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Pi:
     """A Mac home, a Pi home with an event log, memory.db, env and a log, and the shims."""
-    clock = _Clock()
+    clock = LogClock()
     monkeypatch.setattr(event_log, "_now_epoch_ms", lambda: clock.now)
     shims = tmp_path / "bin"
     shims.mkdir()
@@ -79,7 +79,7 @@ def pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Pi:
     host = _Pi(tmp_path / "mac", tmp_path / "pi", shims)
     host.mac_home.mkdir()
     (host.pi_root / "logs").mkdir(parents=True)
-    _make_root(host.pi_root, clock, spoiled=False)
+    make_log_root(host.pi_root, clock, spoiled=False)
     import sqlite3  # noqa: PLC0415 - a plain database beside the event log, as the Pi has.
 
     with sqlite3.connect(host.pi_root / "memory.db") as conn:

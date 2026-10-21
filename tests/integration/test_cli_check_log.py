@@ -11,61 +11,32 @@ import json
 import os
 import subprocess
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from jarvis.cli import main as cli_main
 from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.state import event_log
-from jarvis.state.event_log import emit_event, open_event_log
-from tests.integration.test_log_invariants import MIN, NOW, SECRET_SAMPLES
+from jarvis.state.event_log import open_event_log
+from tests.support.check_log import (
+    MARKER,
+    SECRET,
+    LogClock,
+    make_log_root,
+    say_to_log,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-MARKER = "PRIVATE-WORDS-OF-THE-OWNER"
-SECRET = SECRET_SAMPLES["github_token"]
-WEIRD_TYPE = f"weird type {MARKER}"
-
-
-class _Clock:
-    now = NOW - 30 * MIN
-
 
 @pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+def clock(monkeypatch: pytest.MonkeyPatch) -> LogClock:
     """The event log's clock, a past constant: the check anchors at the log's head."""
-    clock = _Clock()
+    clock = LogClock()
     monkeypatch.setattr(event_log, "_now_epoch_ms", lambda: clock.now)
     return clock
-
-
-def _say(conn: Any, clock: _Clock, words: str) -> None:  # noqa: ANN401 - a sqlite3 connection.
-    clock.now += MIN
-    emit_event(
-        conn, type="surface.conversation_words",
-        payload={"turn_id": "T", "reason": "r", "transcript": words},
-    )
-
-
-def _make_root(root: Path, clock: _Clock, *, spoiled: bool) -> None:
-    """A closed WAL log (its WAL checkpointed away on close), clean or with three faults."""
-    (root / "memory" / "audio").mkdir(parents=True)
-    conn = open_event_log(root / "mac_events.db")
-    try:
-        for _ in range(3):
-            _say(conn, clock, "nothing private")
-        if spoiled:
-            _say(conn, clock, f"{MARKER} {SECRET}")
-            conn.execute(
-                "INSERT INTO events (event_uid, type, schema_version, ts_epoch_ms, payload_json, "
-                "actor, ingestion_node) VALUES ('w', ?, 1, ?, ?, 'x', 'mac')",
-                (WEIRD_TYPE, clock.now, json.dumps({"transcript": MARKER})),
-            )
-            conn.commit()
-    finally:
-        conn.close()
 
 
 def _run(*args: str, capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
@@ -86,10 +57,10 @@ def _snapshot(root: Path) -> dict[str, tuple[int, int, bytes]]:
 
 
 def test_a_clean_log_exits_zero(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Exit 0 and a clean result line for a log that holds."""
-    _make_root(tmp_path, clock, spoiled=False)
+    make_log_root(tmp_path, clock, spoiled=False)
     code, out, err = _run("--runtime-root", str(tmp_path), capsys=capsys)
     assert (code, err) == (0, "")
     assert "result: clean" in out
@@ -97,10 +68,10 @@ def test_a_clean_log_exits_zero(
 
 
 def test_a_violated_log_exits_one_and_names_the_invariants_and_their_events(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Exit 1, each violated invariant with its count and a shape name."""
-    _make_root(tmp_path, clock, spoiled=True)
+    make_log_root(tmp_path, clock, spoiled=True)
     code, out, err = _run("--runtime-root", str(tmp_path), capsys=capsys)
     assert (code, err) == (1, "")
     assert "VIOLATED  event.type_registered: 1 violation(s)" in out
@@ -110,10 +81,10 @@ def test_a_violated_log_exits_one_and_names_the_invariants_and_their_events(
 
 
 def test_the_json_report_has_the_documented_shape(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The keys the nightly report and any reader of it rely on."""
-    _make_root(tmp_path, clock, spoiled=True)
+    make_log_root(tmp_path, clock, spoiled=True)
     args = ("--runtime-root", str(tmp_path), "--json", "--examples", "1")
     code, out, _err = _run(*args, capsys=capsys)
     report = json.loads(out)
@@ -159,10 +130,10 @@ def test_a_window_that_is_no_number_of_days_is_a_usage_error(
 
 
 def test_it_changes_nothing_on_a_log_nobody_has_open(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Names, sizes, mtimes and bytes of every file are the same afterwards."""
-    _make_root(tmp_path, clock, spoiled=True)
+    make_log_root(tmp_path, clock, spoiled=True)
     before = _snapshot(tmp_path)
     assert not any(name.endswith(("-wal", "-shm")) for name in before)
     _run("--runtime-root", str(tmp_path), capsys=capsys)
@@ -171,14 +142,14 @@ def test_it_changes_nothing_on_a_log_nobody_has_open(
 
 
 def test_it_sees_a_live_writers_rows_and_changes_neither_the_log_nor_its_wal(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Rows still in the WAL are read; the log and the WAL are untouched."""
     (tmp_path / "memory" / "audio").mkdir(parents=True)
     writer = open_event_log(tmp_path / "mac_events.db")
     try:
         for _ in range(4):
-            _say(writer, clock, "still being written")
+            say_to_log(writer, clock, "still being written")
         assert (tmp_path / "mac_events.db-wal").stat().st_size > 0  # the rows live in the WAL
         log = tmp_path / "mac_events.db"
         wal = tmp_path / "mac_events.db-wal"
@@ -191,16 +162,16 @@ def test_it_sees_a_live_writers_rows_and_changes_neither_the_log_nor_its_wal(
         after = (log.read_bytes(), log.stat().st_mtime_ns, wal.read_bytes(), wal.stat().st_mtime_ns)
         assert after == before
         # The writer was not disturbed: it still appends.
-        _say(writer, clock, "after the check")
+        say_to_log(writer, clock, "after the check")
     finally:
         writer.close()
 
 
 def test_it_runs_while_the_daemon_holds_its_lock_and_leaves_the_lock_alone(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """No lock is taken or refused, and the lock file is not touched."""
-    _make_root(tmp_path, clock, spoiled=False)
+    make_log_root(tmp_path, clock, spoiled=False)
     lock = tmp_path / "daemon.lock"
     with acquire_exclusive(lock):
         before = (lock.read_bytes(), lock.stat().st_mtime_ns)
@@ -213,10 +184,10 @@ def test_it_runs_while_the_daemon_holds_its_lock_and_leaves_the_lock_alone(
 
 @pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
 def test_nothing_the_owner_said_reaches_the_output(
-    tmp_path: Path, clock: _Clock, capsys: pytest.CaptureFixture[str], *, as_json: bool,
+    tmp_path: Path, clock: LogClock, capsys: pytest.CaptureFixture[str], *, as_json: bool,
 ) -> None:
     """Text and JSON, stdout and stderr: no words, no secret, no odd type name."""
-    _make_root(tmp_path, clock, spoiled=True)
+    make_log_root(tmp_path, clock, spoiled=True)
     args = ["--runtime-root", str(tmp_path), "--examples", "20"]
     code, out, err = _run(*args, *(["--json"] if as_json else []), capsys=capsys)
     assert code == 1
@@ -228,10 +199,10 @@ def test_nothing_the_owner_said_reaches_the_output(
 
 
 def test_the_command_is_wired_through_python_dash_m_jarvis(
-    tmp_path: Path, clock: _Clock,
+    tmp_path: Path, clock: LogClock,
 ) -> None:
     """What the nightly unit runs: ``python -m jarvis check-log --json`` and its exit code."""
-    _make_root(tmp_path, clock, spoiled=True)
+    make_log_root(tmp_path, clock, spoiled=True)
     env = {
         key: value for key, value in os.environ.items()
         if key not in {"JARVIS_RUNTIME_ROOT", "JARVIS_LOG_LEVEL"}

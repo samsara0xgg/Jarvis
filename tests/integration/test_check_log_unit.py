@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from jarvis.state import event_log
-from tests.integration.test_cli_check_log import MARKER, _Clock, _make_root
+from tests.support.check_log import MARKER, LogClock, make_log_root
 
 UNITS = Path(__file__).resolve().parents[2] / "jarvis" / "deployment" / "systemd"
 SERVICE = UNITS / "jarvis-check-log.service"
@@ -80,7 +80,7 @@ def _run(line: str, home: Path) -> subprocess.CompletedProcess[str]:
 @dataclass
 class _Host:
     home: Path
-    clock: _Clock
+    clock: LogClock
 
     @property
     def root(self) -> Path:
@@ -96,7 +96,7 @@ class _Host:
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     """A home as the unit expects it: the repo's virtualenv beside ``.jarvis``."""
-    clock = _Clock()
+    clock = LogClock()
     monkeypatch.setattr(event_log, "_now_epoch_ms", lambda: clock.now)
     shim = tmp_path / "jarvis-brain" / ".venv" / "bin" / "python"
     shim.parent.mkdir(parents=True)
@@ -108,7 +108,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
 
 def test_a_clean_log_leaves_a_dated_report_and_the_unit_succeeds(host: _Host) -> None:
     """Exit 0, one check-log-<date>.json, mode 0600, ok true."""
-    _make_root(host.root, host.clock, spoiled=False)
+    make_log_root(host.root, host.clock, spoiled=False)
     done = host.run(_lines(SERVICE, "ExecStart")[0])
     assert (done.returncode, done.stderr) == (0, "")
     (report,) = host.reports()
@@ -119,7 +119,7 @@ def test_a_clean_log_leaves_a_dated_report_and_the_unit_succeeds(host: _Host) ->
 
 def test_a_violated_log_fails_the_unit_but_still_leaves_the_report(host: _Host) -> None:
     """Exit 1 (the unit fails) and the report that says why."""
-    _make_root(host.root, host.clock, spoiled=True)
+    make_log_root(host.root, host.clock, spoiled=True)
     done = host.run(_lines(SERVICE, "ExecStart")[0])
     assert done.returncode == 1
     (report,) = host.reports()
@@ -141,7 +141,7 @@ def test_a_report_is_renamed_into_place_so_the_backup_never_sees_half_of_one(hos
     line = _lines(SERVICE, "ExecStart")[0]
     assert '> "$$out.tmp"' in line
     assert 'mv "$$out.tmp" "$$out"' in line
-    _make_root(host.root, host.clock, spoiled=False)
+    make_log_root(host.root, host.clock, spoiled=False)
     host.run(line)
     assert [one.suffix for one in host.reports()] == [".json"]
 

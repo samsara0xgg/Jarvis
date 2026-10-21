@@ -68,10 +68,6 @@ KNOWN: frozenset[tuple[str, str]] = frozenset(
         ("test_terminal_device_views", "test_projects"),
         ("test_terminal_device_views", "test_timesink_moment"),
         ("test_work_state_live", "test_work_state"),
-        # The check-log tests came after the list was drawn: their builder moves with them.
-        ("test_check_log_unit", "test_cli_check_log"),
-        ("test_cli_check_log", "test_log_invariants"),
-        ("test_pi_backup_check_log", "test_cli_check_log"),
     }
 )
 

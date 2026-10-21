@@ -43,15 +43,13 @@ from jarvis.state.log_invariants import (
 )
 from jarvis.state.response_runs import append_response_started
 from jarvis.surface import playback_recovery
+from tests.support.check_log import MIN, NOW, SEC, SECRET_SAMPLES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.shared import Event
 
-NOW = 1_780_000_000_000  # 2026-05-28T20:26:40Z, the instant the check "runs".
-SEC = 1000
-MIN = 60 * SEC
 HOUR = 60 * MIN
 DAY = 24 * HOUR
 REPO = Path(__file__).resolve().parents[2]
@@ -380,18 +378,6 @@ BREAKS: dict[str, _Break] = {
             ),
         ],
     ),
-}
-
-# One sample per shape, built from pieces so this file holds no key-looking literal.
-SECRET_SAMPLES: dict[str, str] = {
-    "pem_private_key": "-----BEGIN " + "RSA PRIVATE KEY-----",
-    "sk_api_key": "sk-" + "Ab1" * 10,
-    "aws_access_key_id": "AKIA" + "0123456789ABCDEF",
-    "github_token": "ghp_" + "a1" * 20,
-    "slack_token": "xoxb-" + "1234567890-abcdef",
-    "google_api_key": "AIza" + "Sy" + "0123456789abcdefghijklmnopqrstuvw",
-    "jwt": "eyJ" + "hbGciOiJIUzI1NiJ9" + ".eyJ" + "zdWIiOiIxMjM0In0" + ".sig" + "nature12345",
-    "bearer_token": "Authorization: Bearer " + "abcdefghij0123456789klmnop",
 }
 
 
