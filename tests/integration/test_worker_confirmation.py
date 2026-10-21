@@ -23,15 +23,17 @@ from jarvis.decision import (
     decide,
 )
 from jarvis.decision.confirm_grammar import load_confirm_grammar
-from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import _register_workers
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.model import ScriptedModel, tool_call
 
 if TYPE_CHECKING:
     import sqlite3
+
+    from jarvis.decision.llm import LLMClient
 
 REPO = Path(__file__).resolve().parents[2]
 ASK = "要派这个后台任务吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
@@ -59,38 +61,10 @@ class _Spawns:
         return "W1"
 
 
-class _ScriptedClient:
+def _model(cwd: Path) -> ScriptedModel:
     """Asks for one worker in ``cwd``, then only talks."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    model = "stub-model"
-    last_input_tokens = 0
-    last_output_tokens = 0
-    last_finish_reason = "stop"
-
-    def __init__(self, cwd: Path) -> None:
-        self.cwd = cwd
-        self.calls = 0
-
-    def chat(self, **_: Any) -> ChatResult:  # noqa: ANN401 — the decide() loop's keyword call.
-        self.calls += 1
-        args = {"message": "fix the typo in README", "cwd": str(self.cwd)}
-        call = (
-            ToolCall(call_id="c1", name="spawn_worker", arguments_json=json.dumps(args))
-            if self.calls == 1
-            else None
-        )
-        return ChatResult(
-            text=None if call else "好的。",
-            tool_calls=(call,) if call else (),
-            finish_reason="tool_calls" if call else "stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
+    args = {"message": "fix the typo in README", "cwd": str(cwd)}
+    return ScriptedModel(tool_call("spawn_worker", args, call_id="c1"), otherwise="好的。")
 
 
 def _context(tmp_path: Path, cwd: Path, spawns: _Spawns) -> DecideContext:
@@ -106,7 +80,7 @@ def _context(tmp_path: Path, cwd: Path, spawns: _Spawns) -> DecideContext:
         runtime_paths=cast("RuntimePathsLike", paths),
         tool_registry=cast("ToolRegistryLike", registry),
         lifecycle=cast("LifecycleLike", ActionLifecycle()),
-        llm_client=cast("LLMClient", _ScriptedClient(cwd)),
+        llm_client=cast("LLMClient", _model(cwd)),
         system_prompt="stub system prompt",
         confirm_grammar_table=load_confirm_grammar(REPO / "config" / "confirm_grammar.yaml"),
         wave1_features=Wave1FeatureFlags(

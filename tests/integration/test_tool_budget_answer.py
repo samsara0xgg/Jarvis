@@ -9,23 +9,16 @@ without tools. Asserts on the spoken text and on the persisted ``cost.recorded``
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis.decision import (
-    DecideContext,
-    LifecycleLike,
-    RuntimePathsLike,
-    ToolRegistryLike,
-    decide,
-)
-from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
+from jarvis.decision import decide
 from jarvis.decision.stream_envelope import split_envelope
-from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import _max_tool_iterations
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.support.runtime_paths import StubRuntimePaths
+from tests.support.model import Failure, ScriptedModel, tool_call
+from tests.support.turn_guards import guard_context
 
 if TYPE_CHECKING:
     import sqlite3
@@ -35,87 +28,21 @@ ANSWER = "查到了：今天没有网易云音乐的前台记录；微信聊天�
 BUDGET = 3
 
 
-class _ToolHungryClient:
-    """Proposes kept on every request that offers tools; answers otherwise."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    def __init__(self, *, answer: str | None, fail_without_tools: bool = False) -> None:
-        self._answer = answer
-        self._fail = fail_without_tools
-        self.calls: list[dict[str, Any]] = []
-        self.model = "stub-model"
-
-    @property
-    def last_input_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_output_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_finish_reason(self) -> str | None:
-        return "stop"
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,  # noqa: ARG002
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = "auto",
-    ) -> ChatResult:
-        self.calls.append({"tools": tools, "tool_choice": tool_choice, "last": messages[-1]})
-        if tools:
-            # Different arguments each time: an identical repeat is not run (ADR 0240).
-            call = ToolCall(
-                call_id=f"call{len(self.calls)}",
-                name="kept",
-                arguments_json=json.dumps({"page": len(self.calls)}),
-            )
-            return self._result(None, (call,))
-        if self._fail:
-            msg = "provider down"
-            raise RuntimeError(msg)
-        return self._result(self._answer, ())
-
-    @staticmethod
-    def _result(text: str | None, calls: tuple[ToolCall, ...]) -> ChatResult:
-        return ChatResult(
-            text=text,
-            tool_calls=calls,
-            finish_reason="tool_calls" if calls else "stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
+def _tool_hungry(answer: str | Failure) -> ScriptedModel:
+    """Kept on every budgeted request, other arguments each time (ADR 0240); then ``answer``."""
+    rounds = [tool_call("kept", {"page": page}) for page in range(1, BUDGET + 1)]
+    return ScriptedModel(*rounds, answer)
 
 
-def _run(tmp_path: Path, llm: _ToolHungryClient) -> tuple[str, sqlite3.Connection]:
+def _run(tmp_path: Path, llm: ScriptedModel) -> tuple[str, sqlite3.Connection]:
     conn = open_event_log(tmp_path / "events.db")
-    paths = StubRuntimePaths(
-        event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
-    )
-    paths.artifacts_root.mkdir(parents=True, exist_ok=True)
-    ctx = DecideContext(
-        conn=conn,
-        runtime_paths=cast("RuntimePathsLike", paths),
-        tool_registry=cast("ToolRegistryLike", build_default_registry()),
-        lifecycle=cast("LifecycleLike", ActionLifecycle()),
-        llm_client=cast("LLMClient", llm),
-        system_prompt="stub system prompt",
-        max_tool_iterations=BUDGET,
-    )
     trigger = emit_event(
         conn,
         type="surface.user_intent",
         payload={"transcript": "我今天微信和谁聊过天", "turn_id": "T_budget"},
         correlation={"turn_id": "T_budget"},
     )
-    result = decide(trigger, ctx)
+    result = decide(trigger, guard_context(conn, tmp_path, llm, BUDGET))
     assert result.response_plan is not None
     return result.response_plan.text, conn
 
@@ -128,20 +55,20 @@ def _count(conn: sqlite3.Connection, event_type: str) -> int:
 
 def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) -> None:
     """Every budgeted request proposed a tool; the answer comes from one extra request."""
-    llm = _ToolHungryClient(answer=ANSWER)
+    llm = _tool_hungry(ANSWER)
     text, conn = _run(tmp_path, llm)
     try:
         # The answer is plain and within the spoken form's own 60-character
         # limit, so ADR 0045 speaks it as written: no spoken-form request.
         assert split_envelope(text)[:2] == (ANSWER, ANSWER)
-        assert len(llm.calls) == BUDGET + 1
-        assert all(call["tools"] for call in llm.calls[:BUDGET])
-        final = llm.calls[BUDGET]
-        assert final["tools"] is None
-        assert final["tool_choice"] is None
-        assert final["last"]["role"] == "user"
-        assert "no more tools can be called" in final["last"]["content"]
-        assert "not the user's words" in final["last"]["content"]
+        assert len(llm.requests) == BUDGET + 1
+        assert all(request.tools for request in llm.requests[:BUDGET])
+        final = llm.requests[BUDGET]
+        assert final.tools is None
+        assert final.tool_choice is None
+        assert final.messages[-1]["role"] == "user"
+        assert "no more tools can be called" in final.messages[-1]["content"]
+        assert "not the user's words" in final.messages[-1]["content"]
         # Every tool the model asked for ran and left its observation before the answer.
         assert _count(conn, "action.result_observed") == BUDGET
         results = conn.execute(
@@ -157,12 +84,12 @@ def test_spent_budget_gets_one_no_tool_request_for_the_answer(tmp_path: Path) ->
 
 def test_failed_answer_request_falls_back_to_a_chinese_limitation(tmp_path: Path) -> None:
     """A provider failure on the answer request ends the turn with fixed Chinese text."""
-    llm = _ToolHungryClient(answer=None, fail_without_tools=True)
+    llm = _tool_hungry(Failure(RuntimeError("provider down")))
     text, conn = _run(tmp_path, llm)
     try:
         assert text == "这一轮工具调用次数用完了，还没整理出答案。请把问题拆小一点再问一次。"  # noqa: RUF001 — fullwidth punctuation, the fixed Chinese limitation.
         assert "exhausted" not in text
-        assert len(llm.calls) == BUDGET + 1
+        assert len(llm.requests) == BUDGET + 1
         assert _count(conn, "cost.recorded") == BUDGET
         assert _count(conn, "turn.ended") == 1
     finally:
@@ -171,7 +98,7 @@ def test_failed_answer_request_falls_back_to_a_chinese_limitation(tmp_path: Path
 
 def test_empty_answer_falls_back_too(tmp_path: Path) -> None:
     """An empty reply is not an answer; the same limitation is spoken."""
-    llm = _ToolHungryClient(answer="  ")
+    llm = _tool_hungry("  ")
     text, conn = _run(tmp_path, llm)
     try:
         assert text.startswith("这一轮工具调用次数用完了")

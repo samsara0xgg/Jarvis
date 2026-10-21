@@ -26,17 +26,19 @@ from jarvis.decision import (
     request_confirmation,
 )
 from jarvis.decision.confirm_grammar import load_confirm_grammar
-from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.model import Reply, ScriptedModel, tool_call
 from tests.support.plugin_approval import Paths, logged_dicts, press, say
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
+
+    from jarvis.decision.llm import LLMClient
 
 HERE = Path(__file__).parent
 REPO = HERE.parent.parent
@@ -45,57 +47,38 @@ ASK = "要执行 echo add吗？"  # noqa: RUF001 — the fixed Chinese ask under
 LETTER = {"to": "allen@example.com", "subject": "周六见", "body": "周六早上八点停车场见。"}
 
 
-class _ScriptedClient:
-    """Searches for a tool, calls it, then only talks; records what it was offered."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
+TALK = "现在是下午三点。要我顺便把明天的日程也念一下吗？"  # noqa: RUF001
+WITHDRAW = tool_call("dismiss_card", call_id="w")
 
-    model = "stub-model"
-    last_input_tokens = 0
-    last_output_tokens = 0
-    last_finish_reason = "stop"
 
-    def __init__(
-        self,
-        query: str = "add two integers",
-        call: tuple[str, object] = ("add", {"a": 17, "b": 25}),
-    ) -> None:
-        self.offered: list[list[str]] = []
-        self.seen: list[str] = []
-        self.query, self.call = query, call
+def _model(
+    query: str = "add two integers",
+    call: tuple[str, Mapping[str, Any]] = ("add", {"a": 17, "b": 25}),
+    *,
+    withdraws: bool = False,
+) -> ScriptedModel:
+    """Searches for a tool, calls it, then only talks.
 
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,  # noqa: ARG002
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = "auto",  # noqa: ARG002
-    ) -> ChatResult:
-        self.offered.append([t["name"] for t in tools or []])
-        self.seen.append(json.dumps(messages, ensure_ascii=False))
-        name, arguments = self.call
-        calls = {
-            1: ToolCall(
-                call_id="c1", name="tool_search", arguments_json=json.dumps({"query": self.query})
-            ),
-            2: ToolCall(
-                call_id="c2",
-                name=f"mcp__echo__{name}",
-                arguments_json=json.dumps(arguments, ensure_ascii=False),
-            ),
-        }
-        call = calls.get(len(self.offered))
-        return ChatResult(
-            text=None if call else "现在是下午三点。要我顺便把明天的日程也念一下吗？",  # noqa: RUF001
-            tool_calls=(call,) if call else (),
-            finish_reason="tool_calls" if call else "stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
+    With ``withdraws``, the first call of each later turn (T2 and T4) takes the card down.
+    """
+    name, arguments = call
+    steps: list[Reply | str] = [
+        tool_call("tool_search", {"query": query}, call_id="c1"),
+        tool_call(f"mcp__echo__{name}", arguments, call_id="c2"),
+    ]
+    if withdraws:
+        steps += [WITHDRAW, TALK, WITHDRAW]
+    return ScriptedModel(*steps, otherwise=TALK)
+
+
+def _offered(model: ScriptedModel) -> list[list[str]]:
+    """The tool names each request offered the model."""
+    return [[t["name"] for t in request.tools or []] for request in model.requests]
+
+
+def _seen(model: ScriptedModel) -> list[str]:
+    """What each request showed the model, as one JSON text."""
+    return [json.dumps(request.messages, ensure_ascii=False) for request in model.requests]
 
 
 @pytest.fixture
@@ -106,7 +89,7 @@ def servers() -> Iterator[McpServers]:
     mcp.stop()
 
 
-def _context(tmp_path: Path, servers: McpServers, llm: _ScriptedClient) -> DecideContext:
+def _context(tmp_path: Path, servers: McpServers, llm: ScriptedModel) -> DecideContext:
     registry = build_default_registry(confirmation_dispatch_outbox=True)
     mcp_tools = servers.connect(ECHO)
     for one in (*mcp_tools, *build_tool_search(mcp_tools, {"echo": "Echo test server"})):
@@ -131,12 +114,12 @@ def _context(tmp_path: Path, servers: McpServers, llm: _ScriptedClient) -> Decid
 
 def _ask(
     tmp_path: Path, servers: McpServers, **context: Any,  # noqa: ANN401 — DecideContext fields
-) -> tuple[DecideContext, _ScriptedClient]:
+) -> tuple[DecideContext, ScriptedModel]:
     """Turn 1: the adder is not offered until searched, and calling it asks instead of running."""
-    llm = _ScriptedClient()
+    llm = _model()
     ctx = dataclasses.replace(_context(tmp_path, servers, llm), **context)
     assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
-    first, second = llm.offered
+    first, second = _offered(llm)
     assert "tool_search" in first
     assert not [name for name in first if name.startswith("mcp__")]
     assert "mcp__echo__add" in second
@@ -153,7 +136,7 @@ def test_searched_plugin_tool_asks_then_runs_on_yes(tmp_path: Path, servers: Mcp
     ctx, llm = _ask(tmp_path, servers)
     try:
         assert say(ctx, "可以", "T2") == "已执行 echo add。"
-        assert len(llm.offered) == 2  # the yes is matched by grammar, never by the model
+        assert len(llm.requests) == 2  # the yes is matched by grammar, never by the model
         assert len(logged_dicts(ctx.conn, "confirmation.accepted")) == 1
         added = [
             r
@@ -180,7 +163,7 @@ def test_the_ask_and_its_answer_follow_the_words_not_the_system_language(
 ) -> None:
     """System language en: the consent question and the line after the yes follow his words."""
     lang.set_language("en")
-    ctx = _context(tmp_path, servers, _ScriptedClient())
+    ctx = _context(tmp_path, servers, _model())
     try:
         assert say(ctx, words[0], "T1") == ask
         assert logged_dicts(ctx.conn, "confirmation.requested")[0]["template_line"] == ask
@@ -207,16 +190,16 @@ def test_an_unrelated_turn_leaves_the_card_to_its_button(
     ctx, llm = _ask(tmp_path, servers)
     try:
         say(ctx, "现在几点", "T2")
-        assert "A card is waiting for the user's button: mcp__echo__add" in llm.seen[-1]
+        assert "A card is waiting for the user's button: mcp__echo__add" in _seen(llm)[-1]
         assert logged_dicts(ctx.conn, "confirmation.rejected") == []  # the card still waits
         say(ctx, "好", "T3")
-        assert len(llm.offered) == 4  # the 好 reached the model, not the grammar
+        assert len(llm.requests) == 4  # the 好 reached the model, not the grammar
         assert logged_dicts(ctx.conn, "confirmation.accepted") == []
         assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1  # still only the search
         card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
         pressed = press(ctx, {"confirmation_id": card, "decision": "accept"}, "T4")
         assert pressed == "已执行 echo add。"
-        assert len(llm.offered) == 4  # the button never reaches the model
+        assert len(llm.requests) == 4  # the button never reaches the model
         assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.accepted")] == [
             "card_button"
         ]
@@ -249,14 +232,14 @@ def test_a_card_pressed_after_its_words_window_still_sends(
         assert json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "sum": 42
         }
-        assert len(llm.offered) == 3  # only the yes reached the model; the button never does
+        assert len(llm.requests) == 3  # only the yes reached the model; the button never does
     finally:
         ctx.conn.close()
 
 
 def test_a_letter_card_sends_what_allen_edited(tmp_path: Path, servers: McpServers) -> None:
     """ADR 0062: the ask names the letter; send with an edited body re-freezes it, then runs it."""
-    llm = _ScriptedClient(query="send a letter", call=("send", LETTER))
+    llm = _model(query="send a letter", call=("send", LETTER))
     ctx = _context(tmp_path, servers, llm)
     try:
         ask = say(ctx, "给我自己发一封信", "T1")
@@ -300,22 +283,6 @@ def test_the_cards_x_dismisses_it(tmp_path: Path, servers: McpServers) -> None:
         ctx.conn.close()
 
 
-class _WithdrawingClient(_ScriptedClient):
-    """Turn 1 asks as ``_ScriptedClient`` does; the first call of each later turn withdraws."""
-
-    def chat(self, **kwargs: Any) -> ChatResult:  # noqa: ANN401 - forwards the stub's keywords
-        result = super().chat(**kwargs)
-        if len(self.offered) in {3, 5}:  # the first model call of turns T2 and T4
-            call = ToolCall(call_id="w", name="dismiss_card", arguments_json="{}")
-            return dataclasses.replace(
-                result,
-                text=None,
-                tool_calls=(call,),
-                finish_reason="tool_calls",
-            )
-        return result
-
-
 def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
     tmp_path: Path, servers: McpServers
 ) -> None:
@@ -323,13 +290,13 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
 
     Asked again with no card waiting, the result says nothing was taken down and is no error.
     """
-    llm = _WithdrawingClient()
+    llm = _model(withdraws=True)
     ctx = _context(tmp_path, servers, llm)
     try:
         assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
         card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
         say(ctx, "OK撤销吧，不发了。", "T2")  # noqa: RUF001 — Allen's words, 2026-09-26 23:33
-        assert "To take it down without running it, call dismiss_card." in llm.seen[2]
+        assert "To take it down without running it, call dismiss_card." in _seen(llm)[2]
         rejected = logged_dicts(ctx.conn, "confirmation.rejected")
         assert [(r["confirmation_id"], r["grammar_rule_id"]) for r in rejected] == [
             (card, "card_withdrawn"),
@@ -348,7 +315,7 @@ def test_the_model_takes_the_card_down_when_allen_says_not_to_send(
             "summary": "No card is waiting; nothing to do.",
             "dismissed": [],
         }
-        assert "A card is waiting" not in llm.seen[-1]
+        assert "A card is waiting" not in _seen(llm)[-1]
         proposed = logged_dicts(ctx.conn, "action.proposed")
         assert [r["tool_name"] for r in proposed].count("mcp__echo__add") == 1  # never run
     finally:
@@ -359,7 +326,7 @@ def test_dismiss_card_takes_down_a_confirmation_and_a_question_card_together(
     tmp_path: Path, servers: McpServers
 ) -> None:
     """ADR 0247: with both cards up one call takes both down, and neither action runs."""
-    ctx = _context(tmp_path, servers, _WithdrawingClient())
+    ctx = _context(tmp_path, servers, _model(withdraws=True))
     try:
         assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
         emit_event(
@@ -390,7 +357,7 @@ def test_a_card_raised_without_a_turn_sends_on_his_button(
     tmp_path: Path, servers: McpServers
 ) -> None:
     """ADR 0147: the Dashboard's Send raises the letter card itself; only his button runs it."""
-    llm = _ScriptedClient()
+    llm = _model()
     ctx = _context(tmp_path, servers, llm)
     try:
         for no_card in ("mcp__echo__echo", "mcp__echo__nothing"):  # read-only, unknown
@@ -411,7 +378,7 @@ def test_a_card_raised_without_a_turn_sends_on_his_button(
         assert press(ctx, {"confirmation_id": asked, "decision": "accept"}, "T1") == (
             "已执行 echo send。"
         )
-        assert llm.offered == []
+        assert llm.requests == []
         assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1
     finally:
         ctx.conn.close()

@@ -1,33 +1,29 @@
 """ADR 0045 + ADR 0052: the ``reply_language`` setting pins the spoken form's language.
 
-Drives the real ``decide()`` with a stub model that records each request's system prompt.
+Drives the real ``decide()`` on a scripted model whose requests record each system prompt.
 Real case (2026-10-01): a Chinese option tapped on an ask card ran as Allen's words, the
 written answer was English under ``reply_language: en``, and the spoken form was Chinese.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
 from jarvis.decision import (
     _SPOKEN_FORM_PROMPT_EN,
     _SPOKEN_FORM_PROMPT_ZH,
-    DecideContext,
-    LifecycleLike,
-    RuntimePathsLike,
-    ToolRegistryLike,
+    DEFAULT_MAX_TOOL_ITERATIONS,
     decide,
 )
-from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.decision.stream_envelope import split_envelope
 from jarvis.decision.tier0 import load_tier0_table
-from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.support.runtime_paths import StubRuntimePaths
+from tests.support.model import ScriptedModel
+from tests.support.turn_guards import guard_context
 
 TIER0_TABLE = Path(__file__).parents[2] / "config" / "tier0_patterns.yaml"
 
@@ -41,67 +37,17 @@ LONG_ENGLISH = (
 SPOKEN = "Friday works."
 
 
-class _RecordingClient:
-    """Answers the first request with ``answer``, the spoken-form request with a short line."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    def __init__(self, answer: str) -> None:
-        self._answer = answer
-        self.systems: list[str] = []
-        self.model = "stub-model"
-
-    @property
-    def last_input_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_output_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_finish_reason(self) -> str | None:
-        return "stop"
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],  # noqa: ARG002
-        system: str,
-        tools: list[dict[str, Any]] | None = None,  # noqa: ARG002
-        tool_choice: str | None = "auto",  # noqa: ARG002
-    ) -> ChatResult:
-        self.systems.append(system)
-        text = self._answer if len(self.systems) == 1 else SPOKEN
-        return ChatResult(
-            text=text,
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
-
-
 def _spoken_form_system(
     tmp_path: Path, reply_language: str, *, answer: str = LONG_ENGLISH, channel: str | None = None
 ) -> tuple[list[str], str]:
-    """The system prompts of one turn's requests, and its final plan text."""
-    llm = _RecordingClient(answer)
+    """The system prompts of one turn's requests, and its final plan text.
+
+    The first request is answered with ``answer``, the spoken-form request with a short line.
+    """
+    llm = ScriptedModel(answer, otherwise=SPOKEN)
     conn = open_event_log(tmp_path / "events.db")
-    paths = StubRuntimePaths(
-        event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
-    )
-    paths.artifacts_root.mkdir(parents=True, exist_ok=True)
-    ctx = DecideContext(
-        conn=conn,
-        runtime_paths=cast("RuntimePathsLike", paths),
-        tool_registry=cast("ToolRegistryLike", build_default_registry()),
-        lifecycle=cast("LifecycleLike", ActionLifecycle()),
-        llm_client=cast("LLMClient", llm),
-        system_prompt="stub system prompt",
+    ctx = replace(
+        guard_context(conn, tmp_path, llm, DEFAULT_MAX_TOOL_ITERATIONS),
         reply_language=reply_language,
     )
     trigger = emit_event(
@@ -113,7 +59,7 @@ def _spoken_form_system(
     )
     result = decide(trigger, ctx)
     assert result.response_plan is not None
-    return llm.systems, result.response_plan.text
+    return [request.system for request in llm.requests], result.response_plan.text
 
 
 @pytest.mark.parametrize(
@@ -166,25 +112,10 @@ def _tier0_answer(tmp_path: Path, transcript: str, reply_language: str) -> str:
     """One real Tier 0 turn (no model call) with the system language English."""
     lang.set_language("en")
 
-    class _NoModel:
-        model = "stub-model"
-
-        def chat(self, **_: object) -> ChatResult:
-            msg = "Tier 0 never asks the model"
-            raise AssertionError(msg)
-
+    llm = ScriptedModel()
     conn = open_event_log(tmp_path / "events.db")
-    paths = StubRuntimePaths(
-        event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
-    )
-    paths.artifacts_root.mkdir(parents=True, exist_ok=True)
-    ctx = DecideContext(
-        conn=conn,
-        runtime_paths=cast("RuntimePathsLike", paths),
-        tool_registry=cast("ToolRegistryLike", build_default_registry()),
-        lifecycle=cast("LifecycleLike", ActionLifecycle()),
-        llm_client=cast("LLMClient", _NoModel()),
-        system_prompt="stub system prompt",
+    ctx = replace(
+        guard_context(conn, tmp_path, llm, DEFAULT_MAX_TOOL_ITERATIONS),
         tier0_table=load_tier0_table(TIER0_TABLE),
         reply_language=reply_language,
     )
@@ -196,6 +127,7 @@ def _tier0_answer(tmp_path: Path, transcript: str, reply_language: str) -> str:
     )
     result = decide(trigger, ctx)
     assert result.response_plan is not None
+    assert llm.requests == [], "Tier 0 never asks the model"
     return split_envelope(result.response_plan.text)[0] or result.response_plan.text
 
 

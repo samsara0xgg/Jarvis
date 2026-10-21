@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -22,7 +22,6 @@ from jarvis.decision import (
     ToolRegistryLike,
 )
 from jarvis.decision.confirm_grammar import load_confirm_grammar
-from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
 from jarvis.execution.tools import (
     ActionLifecycle,
     ToolContext,
@@ -36,6 +35,7 @@ from tests.support.mcp import ECHO
 from tests.support.mcp import (
     oauth_url as oauth_url,  # noqa: PLC0414 — re-export fixture.
 )
+from tests.support.model import ScriptedModel, tool_call
 from tests.support.plugin_approval import Paths, logged_dicts, press, say
 from tests.support.plugin_connections import (
     PANEL_TOOLS,
@@ -52,6 +52,8 @@ from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from jarvis.decision.llm import LLMClient
 
 
 def test_open_plugin_starts_a_credential_free_plugin_and_only_opens_the_panel_for_a_key(
@@ -129,40 +131,10 @@ def test_disable_plugin_needs_no_request_id_and_waits_for_a_busy_connection(
         service.stop()
 
 
-class _RemovingClient:
+def _removing_model() -> ScriptedModel:
     """Calls remove_plugin on the first model call, then only talks."""
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    model = "stub-model"
-    last_input_tokens = 0
-    last_output_tokens = 0
-    last_finish_reason = "stop"
-
-    def __init__(self) -> None:
-        self.offered: list[list[str]] = []
-
-    def chat(self, *, tools: list[dict[str, Any]] | None = None, **_kw: Any) -> ChatResult:  # noqa: ANN401
-        self.offered.append([t["name"] for t in tools or []])
-        call = (
-            ToolCall(
-                call_id="c1",
-                name="remove_plugin",
-                arguments_json=json.dumps({"plugin_id": "echo"}),
-            )
-            if len(self.offered) == 1
-            else None
-        )
-        return ChatResult(
-            text=None if call else "好的。",
-            tool_calls=(call,) if call else (),
-            finish_reason="tool_calls" if call else "stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
+    call = tool_call("remove_plugin", {"plugin_id": "echo"}, call_id="c1")
+    return ScriptedModel(call, otherwise="好的。")
 
 
 @dataclass
@@ -203,7 +175,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Rig]:
         runtime_paths=cast("RuntimePathsLike", paths),
         tool_registry=cast("ToolRegistryLike", registry),
         lifecycle=cast("LifecycleLike", ActionLifecycle()),
-        llm_client=cast("LLMClient", _RemovingClient()),
+        llm_client=cast("LLMClient", _removing_model()),
         system_prompt="stub system prompt",
         confirm_grammar_table=load_confirm_grammar(repo / "config" / "confirm_grammar.yaml"),
         wave1_features=Wave1FeatureFlags(

@@ -1,6 +1,6 @@
 """ADR 0135: the live message and the request after tool results end with the language line.
 
-Drives the real ``decide()`` with a stub model that records the messages it was sent.
+Drives the real ``decide()`` on a scripted model whose requests record the messages it was sent.
 Real case (2026-10-02): with ``reply_language: follow`` the model answered in the other
 language on 7% of turns; one line after his words fixed 10 of 28 such samples to 0.
 After English tool results the same line at the end of the request kept a Chinese ask
@@ -9,21 +9,15 @@ answered in Chinese (offline replay: 5 of 5 English without it, 0 of 5 with it).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis.decision import (
-    DecideContext,
-    LifecycleLike,
-    RuntimePathsLike,
-    ToolRegistryLike,
-    decide,
-)
-from jarvis.decision.llm import ChatResult, LLMClient, ToolCall
-from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.decision import DEFAULT_MAX_TOOL_ITERATIONS, decide
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.support.runtime_paths import StubRuntimePaths
+from tests.support.model import ScriptedModel, tool_call
+from tests.support.turn_guards import guard_context
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,68 +26,20 @@ ENGLISH_LINE = "[Reply language for this turn: English]"
 CHINESE_LINE = "[Reply language for this turn: Chinese]"
 
 
-class _RecordingClient:
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-    def __init__(self, *, call_a_tool: bool = False) -> None:
-        self.live: list[str] = []
-        self.call_a_tool = call_a_tool
-        self.model = "stub-model"
-
-    @property
-    def last_input_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_output_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_finish_reason(self) -> str | None:
-        return "stop"
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,  # noqa: ARG002
-        tools: list[dict[str, Any]] | None = None,  # noqa: ARG002
-        tool_choice: str | None = "auto",  # noqa: ARG002
-    ) -> ChatResult:
-        first = not self.live
-        self.live.append(str(messages[-1]["content"]))
-        calls = (ToolCall(call_id="call1", name="kept", arguments_json="{}"),)
-        use_tool = self.call_a_tool and first
-        return ChatResult(
-            text=None if use_tool else "Okay.",
-            tool_calls=calls if use_tool else (),
-            finish_reason="tool_calls" if use_tool else "stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
+def _live(model: ScriptedModel) -> list[str]:
+    """The last message of each request the model was sent."""
+    return [str(request.messages[-1]["content"]) for request in model.requests]
 
 
 def _run(
     tmp_path: Path, transcript: str, reply_language: str, *, call_a_tool: bool = False
-) -> tuple[_RecordingClient, list[str]]:
-    """Drive one turn; the stub model, and what ``record_sent_message`` kept."""
-    llm = _RecordingClient(call_a_tool=call_a_tool)
+) -> tuple[ScriptedModel, list[str]]:
+    """Drive one turn; the scripted model, and what ``record_sent_message`` kept."""
+    llm = ScriptedModel(*([tool_call("kept")] if call_a_tool else []), otherwise="Okay.")
     kept: list[str] = []
     conn = open_event_log(tmp_path / "events.db")
-    paths = StubRuntimePaths(
-        event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
-    )
-    paths.artifacts_root.mkdir(parents=True, exist_ok=True)
-    ctx = DecideContext(
-        conn=conn,
-        runtime_paths=cast("RuntimePathsLike", paths),
-        tool_registry=cast("ToolRegistryLike", build_default_registry()),
-        lifecycle=cast("LifecycleLike", ActionLifecycle()),
-        llm_client=cast("LLMClient", llm),
-        system_prompt="stub system prompt",
+    ctx = replace(
+        guard_context(conn, tmp_path, llm, DEFAULT_MAX_TOOL_ITERATIONS),
         reply_language=reply_language,
         record_sent_message=kept.append,
     )
@@ -110,7 +56,7 @@ def _run(
 def _live_message(tmp_path: Path, transcript: str, reply_language: str) -> tuple[str, list[str]]:
     """The first request's last message, and what ``record_sent_message`` kept."""
     llm, kept = _run(tmp_path, transcript, reply_language)
-    return llm.live[0], kept
+    return _live(llm)[0], kept
 
 
 @pytest.mark.parametrize(
@@ -166,9 +112,9 @@ def test_request_after_tool_results_ends_with_the_line(
     """
     llm, kept = _run(tmp_path, transcript, "follow", call_a_tool=True)
     # the second request; a third is the answer check
-    assert llm.live[1] == f'[Not new words from the user: still answering "{transcript}"]\n{line}'
+    assert _live(llm)[1] == f'[Not new words from the user: still answering "{transcript}"]\n{line}'
 
-    assert kept == [llm.live[0]]  # the stored message is still the live one, line once
+    assert kept == [_live(llm)[0]]  # the stored message is still the live one, line once
 
 
 @pytest.mark.parametrize("transcript", ["明日の会議は何時ですか", "   "])
@@ -177,4 +123,4 @@ def test_request_after_tool_results_has_no_line_when_there_is_none(
 ) -> None:
     """Kana words and no words name no language, after tool results as before them."""
     llm, _ = _run(tmp_path, transcript, "follow", call_a_tool=True)
-    assert "Reply language" not in llm.live[1]
+    assert "Reply language" not in _live(llm)[1]
