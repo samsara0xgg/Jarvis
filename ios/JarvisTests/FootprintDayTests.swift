@@ -39,8 +39,8 @@ final class FootprintDayTests: XCTestCase {
         XCTAssertEqual(subs.compactMap(\.token), Array(1...subs.compactMap(\.token).count))
         XCTAssertEqual(subs.map(\.t0), subs.map(\.t0).sorted())
         let gap = subs.filter { $0.rail == .gap }
-        XCTAssertEqual(gap.count, 1)
-        XCTAssertTrue(gap[0].unknown)
+        XCTAssertFalse(gap.isEmpty, "the stretch with no fixes, in as many pieces as the stop in it leaves")
+        XCTAssertTrue(gap.allSatisfy(\.unknown))
         XCTAssertTrue(subs.allSatisfy { $0.height == TLMetrics.sub })
         // and the walk has none
         XCTAssertEqual(rows.filter { $0.kind == .pause }.count, subs.count)
@@ -69,7 +69,7 @@ final class FootprintDayTests: XCTestCase {
     @MainActor func testTheHeldLineAndTheDotKnowSpeedOnTheRoadAndNothingBeforeTheDay() {
         let (c, m) = made()
         let drive = c.entries.first { $0.kind == .trip }!
-        let driving = (drive.t0 + drive.t1!) / 2 - 12            // clear of the stops
+        let driving = drive.t0 + 20            // clear of the stops
         XCTAssertNotNil(FootprintDayContent.dot(m, minute: driving))
         XCTAssertNil(FootprintDayContent.dot(m, minute: 23 * 60), "he was not anywhere yet")
         XCTAssertEqual(FootprintDayContent.heldLine(m, minute: 23 * 60, elsewhere: "x"), "x")

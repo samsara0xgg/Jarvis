@@ -212,17 +212,3 @@ struct FootprintDayContent: Equatable {
         return FootprintMapDot(coord: at, ms: ms, rgb: FootprintPaint.speed(mps: v), label: speedText(v))
     }
 }
-
-// TEMPORARY, delete at integration: the backend thread's `FootprintModel.route(_:)` (dotted joins to the stays on either side, gaps re-anchored to the fixes around them) replaces this one,
-// which only maps the points and the gaps. Both have this signature, so the build fails on the duplicate until this extension is gone.
-extension FootprintModel {
-    func route(_ o: FootprintOuting) -> FootprintMapRoute {
-        func coord(_ lat: Double, _ lng: Double) -> CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
-        let pts = o.points.map { FootprintMapPoint(coord: coord($0.lat, $0.lng), ms: $0.at_ms, speedMps: $0.speed_mps) }
-        let gaps = o.gaps.compactMap { g -> FootprintMapGap? in
-            guard let a = o.points.last(where: { $0.at_ms <= g.start_ms }), let b = o.points.first(where: { $0.at_ms >= g.end_ms }) else { return nil }
-            return FootprintMapGap(from: coord(a.lat, a.lng), to: coord(b.lat, b.lng), startMs: a.at_ms, endMs: b.at_ms)
-        }
-        return FootprintMapRoute(id: o.id, points: pts, gaps: gaps)
-    }
-}
