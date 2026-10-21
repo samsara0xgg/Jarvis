@@ -21,8 +21,8 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.runtime import drive_turn, make_response_cancel_callable, make_turn_cancel_callable
-from jarvis.runtime.inherent_loop import _turn_over_or_answering
 from jarvis.state.event_log import open_event_log
+from jarvis.state.turn_facts import turn_over_or_answering
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.support.media import CallbackPump, FakeProvider, RecordingBroadcaster, submit_response
@@ -86,7 +86,7 @@ def test_a_stop_before_the_run_opens_still_stops_the_turn(tmp_path: Path) -> Non
             "WHERE type IN ('response.cancelled', 'response.completed', 'turn.ended', "
             "'surface.response_chunk', 'surface.playback_started')",
         ).fetchall()
-        wait_line_owed = not _turn_over_or_answering(runtime.conn, "T-early")
+        wait_line_owed = not turn_over_or_answering(runtime.conn, "T-early")
         assert runtime.response_runs is not None
         leaked = runtime.response_runs.open_runs()
         again = make_turn_cancel_callable(runtime)("T-early", "user_stop")

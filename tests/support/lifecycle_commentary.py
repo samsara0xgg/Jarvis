@@ -17,7 +17,7 @@ from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_activation, inherent_loop
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import fetch_events_after, open_event_log
 from jarvis.surface.cli import parse_response_channels
 from tests.support.clock import FakeClock
 from tests.support.model import ScriptedModel, ScriptedSessions
@@ -209,7 +209,7 @@ class CommentaryObserver:
                 conn.close()
 
     def _counting_fetch(self) -> Callable[..., list[tuple[int, Event]]]:
-        fetch = inherent_loop._fetch_events_after  # noqa: SLF001
+        fetch = fetch_events_after
 
         def counting(conn: sqlite3.Connection, **kwargs: Any) -> list[tuple[int, Event]]:  # noqa: ANN401
             if conn is self._watcher_conn:
@@ -222,7 +222,7 @@ class CommentaryObserver:
 
     def __enter__(self) -> Self:
         """Start the watcher and wait for its first poll, which is after it took its anchor."""
-        self._patch.setattr(inherent_loop, "_fetch_events_after", self._counting_fetch())
+        self._patch.setattr(inherent_loop, "fetch_events_after", self._counting_fetch())
         self._thread.start()
         assert self._ready.wait(timeout=self._GUARD_S)
         self._wait_for_polls(1)

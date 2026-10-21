@@ -22,6 +22,7 @@ import unicodedata
 from typing import TYPE_CHECKING, Final
 
 from jarvis.state.event_log import MAC_NODE, open_runtime_event_log, turn_origin
+from jarvis.state.turn_facts import turn_is_over
 from jarvis.surface import voice_asr
 
 if TYPE_CHECKING:
@@ -166,18 +167,6 @@ def repeat_of(  # noqa: PLR0913 - the turn, its words, and the three facts only 
 COMPOSE_BOUND_S: Final = 120.0
 """ADR 0278: a safety bound for an earlier turn that never ended, not a heuristic about how
 long a pause may be. Within it, what matters is whether her answer to that turn is over."""
-TURN_OVER_SQL: Final = (
-    "SELECT 1 FROM events WHERE (type IN ('turn.ended', 'turn.failed') "
-    "AND json_extract(correlation_json, '$.turn_id') = ?1) "
-    "OR (type IN ('response.completed', 'response.cancelled', 'response.failed') "
-    "AND json_extract(payload_json, '$.turn_id') = ?1 "
-    "AND json_extract(payload_json, '$.response_id') IN ("
-    "SELECT json_extract(payload_json, '$.response_id') FROM events "
-    "WHERE type = 'response.started' AND json_extract(payload_json, '$.turn_id') = ?1 "
-    "AND json_extract(payload_json, '$.phase') = 'final')) LIMIT 1"
-)
-"""Whether a turn is over: it ended or failed, or its final answer completed, was cancelled
-or failed. A completed answer is a record that cannot be taken back (ADR 0053)."""
 _CANCELLED_SUPERSEDED = (
     "SELECT 1 FROM events WHERE type = 'response.cancelled' "
     "AND json_extract(payload_json, '$.turn_id') = ? "
@@ -218,10 +207,7 @@ def compose_target(
                 continue
             if superseded(earlier) or conn.execute(_CANCELLED_SUPERSEDED, (earlier,)).fetchone():
                 continue  # a later sentence took its place; the one that did is the latest
-            if (
-                now_ms - ts_ms > COMPOSE_BOUND_S * 1000
-                or conn.execute(TURN_OVER_SQL, (earlier,)).fetchone() is not None
-            ):
+            if now_ms - ts_ms > COMPOSE_BOUND_S * 1000 or turn_is_over(conn, earlier):
                 return None
             return None if words is not None and repeats(words, text) else earlier
     return None

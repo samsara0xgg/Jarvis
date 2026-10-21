@@ -250,6 +250,7 @@ from jarvis.shared.system_prompt import SplitSystem
 from jarvis.state import device_reads, embedding, imports, reactions
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places as place_state
+from jarvis.state.action_facts import action_result
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments, marker
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -260,7 +261,9 @@ from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import (
     emit_event,
+    fetch_events_after,
     iter_events_for_turn,
+    latest_id,
     open_event_log,
     open_runtime_event_log,
 )
@@ -278,9 +281,20 @@ from jarvis.state.memory_db import (
     render_context,
 )
 from jarvis.state.projects import parse_catalog
+from jarvis.state.reminders import scheduled_by_actions
 from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX, shares_line
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.trigger_consumption import mark_trigger_consumed
+from jarvis.state.turn_facts import (
+    card_requested_by_turn,
+    clarifications_asked_in_turn,
+    turn_dispatched_action,
+    turn_has_run,
+    turn_is_over,
+    turns_closed_since,
+    turns_dispatching_since,
+    turns_of_his_words_since,
+)
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
 from jarvis.state.turn_steps import answer_receipts
 from jarvis.state.voice_settings import VoiceSettings
@@ -3953,11 +3967,7 @@ def make_foreground_decision_callable(
 def _turn_has_run(event_log_path: Path, turn_id: str) -> bool:
     """Whether the turn already opened a response run (its answer is out or over)."""
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
-        return conn.execute(
-            "SELECT 1 FROM events WHERE type = 'response.started' "
-            "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1",
-            (turn_id,),
-        ).fetchone() is not None
+        return turn_has_run(conn, turn_id)
 
 
 def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
@@ -4111,33 +4121,17 @@ def make_supersede_unspoken_callable(
         with contextlib.closing(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
         ) as conn:
-            recent = {
-                str(row[0])
-                for row in conn.execute(
-                    "SELECT json_extract(payload_json, '$.turn_id') FROM events "
-                    "WHERE ts_epoch_ms >= ? AND (type = 'utterance.received' "
-                    "OR (type = 'surface.user_intent' "
-                    "AND json_extract(payload_json, '$.channel') = 'clarify'))",
-                    (since_ms,),
-                )
-            }
+            recent = turns_of_his_words_since(conn, since_ms=since_ms)
             if only_turns is not None:
                 recent = {recent_turn for recent_turn in recent if only_turns(recent_turn)}
             if kept is not None:
                 recent.discard(kept)
             working: set[str] = set()
             if runtime.response_flags.slow_results:
-                # The action names its turn in `correlation_json` (L4 stamps it
+                # The action names its turn in its correlation (L4 stamps it
                 # from the ActionRequest), so this is a durable read, and it is
                 # after `since_ms` because the turn's utterance was.
-                working = {
-                    str(row[0])
-                    for row in conn.execute(
-                        "SELECT json_extract(correlation_json, '$.turn_id') FROM events "
-                        "WHERE ts_epoch_ms >= ? AND type = 'action.dispatched'",
-                        (since_ms,),
-                    )
-                }
+                working = turns_dispatching_since(conn, since_ms=since_ms)
                 runs = [run for run in runs if run.turn_id not in working]
             # A line accepted within ~0.5 s of the one before it is swept before
             # that line's run opens (its request is built after its words): mark
@@ -4145,15 +4139,7 @@ def make_supersede_unspoken_callable(
             registry.mark_turns_superseded(
                 recent - {turn_id} - working
                 - {run.turn_id for run in registry.open_runs()}
-                - {
-                    str(row[0])
-                    for row in conn.execute(
-                        "SELECT json_extract(correlation_json, '$.turn_id') FROM events "
-                        "WHERE ts_epoch_ms >= ? AND type IN "
-                        "('turn.ended', 'turn.failed', 'response.cancelled')",
-                        (since_ms,),
-                    )
-                },
+                - turns_closed_since(conn, since_ms=since_ms),
                 for_s=_SUPERSEDE_WINDOW_S,
                 by_turn=turn_id,
             )
@@ -4214,12 +4200,7 @@ def make_relation_supersede_callable(
         with contextlib.closing(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
         ) as conn:
-            working = conn.execute(
-                "SELECT 1 FROM events WHERE type = 'action.dispatched' "
-                "AND json_extract(correlation_json, '$.turn_id') = ? LIMIT 1",
-                (earlier,),
-            ).fetchone()
-            if working is not None:
+            if turn_dispatched_action(conn, earlier):
                 return "working"
             unspoken = earlier in drop_unspoken(frozenset({earlier}))
             if not unspoken:
@@ -4290,7 +4271,7 @@ def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], s
         with contextlib.closing(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
         ) as conn:
-            if conn.execute(device_voice.TURN_OVER_SQL, (earlier,)).fetchone() is not None:
+            if turn_is_over(conn, earlier):
                 return "over"
             registry.mark_turns_superseded(
                 [earlier], for_s=_SUPERSEDE_WINDOW_S, by_turn=turn_id,
@@ -4316,15 +4297,9 @@ def _withdraw_card(conn: sqlite3.Connection, dropped_turn_id: str, turn_id: str)
     Through the one-answer-per-ask primitive, so a button press racing this
     either lands first (and this finds the card answered) or finds it gone.
     """
-    rows = conn.execute(
-        "SELECT json_extract(payload_json, '$.confirmation_id') FROM events "
-        "WHERE type = 'confirmation.requested' "
-        "AND json_extract(correlation_json, '$.turn_id') = ? ORDER BY id DESC LIMIT 1",
-        (dropped_turn_id,),
-    ).fetchall()
-    if not rows:
+    confirmation_id = card_requested_by_turn(conn, dropped_turn_id)
+    if confirmation_id is None:
         return
-    confirmation_id = str(rows[0][0])
     try:
         answer_confirmation_once(
             conn,
@@ -4345,60 +4320,6 @@ def _withdraw_card(conn: sqlite3.Connection, dropped_turn_id: str, turn_id: str)
 def _new_turn_id() -> str:
     """Mint a fresh turn id (``"T" + 8-hex``)."""
     return "T" + uuid.uuid4().hex[:8]
-
-
-def _latest_row_id(conn: sqlite3.Connection) -> int:
-    """Return the current MAX(events.id) or 0 if the table is empty."""
-    cursor = conn.execute("SELECT IFNULL(MAX(id), 0) FROM events")
-    row = cursor.fetchone()
-    if row is None:
-        return 0
-    return int(row[0])
-
-
-# Candidate rows for the in-turn waiter. NOT ``LIMIT 1``: since
-# ADR-0009 D4 the waiter also filters by action_id (see
-# :func:`_wait_for_next_trigger`), so a foreign orphan's terminal row
-# sitting at the head of the cursor must be skipped over rather than
-# blocking every later row this turn actually owns.
-_SELECT_NEXT_TRIGGER_SQL = (  # noqa: S608 — placeholders interpolation is over a hard-coded type tuple, not user input.
-    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
-    "payload_json, source_event_id, correlation_json "
-    "FROM events WHERE id > ? AND type IN ({placeholders}) "
-    "ORDER BY id ASC"
-).format(placeholders=",".join("?" for _ in _RUNTIME_TRIGGER_TYPES))
-
-
-def _hydrate_event_row(row: tuple[Any, ...]) -> Event:
-    """Re-hydrate an events-table row into a frozen :class:`Event`.
-
-    Mirrors ``jarvis.state.event_log._row_to_event`` (which is module-private
-    by L2 design). The runtime composition root may legitimately read
-    rows back out of the log when waiting for cross-thread triggers.
-    """
-    (
-        _id,
-        event_uid,
-        type_,
-        schema_version,
-        ts_epoch_ms,
-        payload_json,
-        source_event_id,
-        correlation_json,
-    ) = row
-    payload: dict[str, Any] = json.loads(payload_json)
-    correlation: dict[str, str] | None = (
-        None if correlation_json is None else json.loads(correlation_json)
-    )
-    return Event(
-        event_uid=event_uid,
-        type=type_,
-        schema_version=schema_version,
-        ts_epoch_ms=ts_epoch_ms,
-        payload=payload,
-        source_event_id=source_event_id,
-        correlation=correlation,
-    )
 
 
 def _absorbed_inline(lifecycle: ActionLifecycle, action_id: str | None) -> bool:
@@ -4523,13 +4444,10 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
     deadline = time.monotonic() + timeout
     cursor_id = after_id
     while True:
-        rows = conn.execute(
-            _SELECT_NEXT_TRIGGER_SQL,
-            (cursor_id, *_RUNTIME_TRIGGER_TYPES),
-        ).fetchall()
-        for row in rows:
-            cursor_id = int(row[0])
-            event = _hydrate_event_row(row)
+        for row_id, event in fetch_events_after(
+            conn, after_id=cursor_id, event_types=_RUNTIME_TRIGGER_TYPES,
+        ):
+            cursor_id = row_id
             if _event_action_id(event) in action_ids:
                 if event.type == "action.result_observed" and _absorbed_inline(
                     lifecycle, _event_action_id(event),
@@ -4733,14 +4651,14 @@ def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | N
     ]
     if len({_read_mail_id(get) for get in gets}) != 1:
         return None
-    row = conn.execute(
-        "SELECT event_uid, payload_json FROM events WHERE type = 'action.result_observed' "
-        "AND json_extract(payload_json, '$.action_id') = ?",
-        (gets[-1].get("action_id"),),
-    ).fetchone()
+    action_id = gets[-1].get("action_id")
+    found = action_result(conn, action_id) if isinstance(action_id, str) else None
+    if found is None:
+        return None  # no answer yet: the call has no message to show
+    _row_id, result = found
     message: Any
     try:
-        output = json.loads(json.loads(row[1])["tool_output"]) if row else {}
+        output = json.loads(result.payload["tool_output"])
         if gets[-1].get("tool_name") == _MAIL:
             # `mail` has cleaned the body; the card reads gmail_get's field names.
             message = {**output, "date": output.get("at"), "threadId": output.get("thread_id")}
@@ -4760,7 +4678,7 @@ def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | N
         )
         if isinstance(message.get(key), str) and message[key]
     ]
-    return str(row[0]), "\n".join(headers) + "\n\n" + body
+    return result.event_uid, "\n".join(headers) + "\n\n" + body
 
 
 _CALENDAR_WRITES: Final[frozenset[str]] = frozenset(
@@ -4788,18 +4706,16 @@ def _calendar_time(
     conn: sqlite3.Connection, action: Mapping[str, Any],
 ) -> tuple[int, dict[str, Any]] | None:
     """``(result row id, time entry)`` of one Outlook write that went through; else None."""
-    row = conn.execute(
-        "SELECT id, payload_json FROM events WHERE type = 'action.result_observed' "
-        "AND json_extract(payload_json, '$.action_id') = ?",
-        (action.get("action_id"),),
-    ).fetchone()
+    action_id = action.get("action_id")
+    found = action_result(conn, action_id) if isinstance(action_id, str) else None
     arguments = action.get("arguments")
     arguments = arguments if isinstance(arguments, dict) else {}
     body = arguments.get("body")
     at_ms = _event_start_ms(body)
-    if row is None or at_ms is None:
+    if found is None or at_ms is None:
         return None
-    result = json.loads(row[1])
+    row_id, result_event = found
+    result = result_event.payload
     if result.get("semantics") == "error" or result.get("error"):
         return None
     event_id = arguments.get("eventId")
@@ -4809,7 +4725,7 @@ def _calendar_time(
             event_id = answer.get("id")
         except (ValueError, AttributeError, TypeError):
             event_id = None
-    return int(row[0]), {
+    return row_id, {
         "kind": "event", "at_ms": at_ms,
         "label": str(body.get("subject", ""))[:_TIME_LABEL_CHARS] if isinstance(body, dict) else "",
         "ref": str(event_id or action.get("action_id", "")),
@@ -4853,34 +4769,25 @@ def _read_turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, A
         event.payload for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
     ]
     ids = [str(one["action_id"]) for one in actions if one.get("action_id")]
-    for row in conn.execute(
-        "SELECT id, payload_json FROM events WHERE type = 'reminder.scheduled' "
-        "AND json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?)) "
-        "ORDER BY id",
-        (json.dumps(ids),),
-    ):
-        one = json.loads(row[1])
-        found.append((int(row[0]), {
-            "kind": "reminder", "at_ms": int(one["due_at_epoch_ms"]),
-            "label": str(one["text"])[:_TIME_LABEL_CHARS], "ref": str(one["reminder_id"]),
+    for row_id, reminder in scheduled_by_actions(conn, ids):
+        found.append((row_id, {
+            "kind": "reminder", "at_ms": reminder.due_at_ms,
+            "label": reminder.text[:_TIME_LABEL_CHARS], "ref": reminder.reminder_id,
         }))
     found.extend(
         done for action in actions
         if action.get("tool_name") in _CALENDAR_WRITES and (done := _calendar_time(conn, action))
     )
-    for row in conn.execute(
-        "SELECT id, payload_json FROM events WHERE type = 'clarification.requested' "
-        "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id",
-        (turn_id,),
-    ):
-        card = json.loads(row[1])
-        trip = card.get("trip")
-        leave_ms = first_leave_ms(trip) if isinstance(trip, dict) else None
+    for row_id, card in clarifications_asked_in_turn(conn, turn_id):
+        trip = card.payload.get("trip")
+        if not isinstance(trip, dict):
+            continue
+        leave_ms = first_leave_ms(trip)
         if leave_ms is not None:
-            found.append((int(row[0]), {
+            found.append((row_id, {
                 "kind": "departure", "at_ms": leave_ms,
                 "label": str(trip.get("to", ""))[:_TIME_LABEL_CHARS],
-                "ref": str(card.get("clarification_id", "")),
+                "ref": str(card.payload.get("clarification_id", "")),
             }))
     return [entry for _id, entry in sorted(found, key=lambda one: one[0])[:_TIMES_MAX]]
 
@@ -5240,7 +5147,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # SQLite row id of the surface.user_intent event — used as the
         # "after_id" anchor for the trigger poll loop.
         last_seen_id = (
-            continuation.after_id if continuation is not None else _latest_row_id(runtime.conn)
+            continuation.after_id if continuation is not None else latest_id(runtime.conn)
         )
 
         collected_events: list[Event] = list(continuation.events) if continuation else []

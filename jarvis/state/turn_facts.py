@@ -111,7 +111,8 @@ def commentary_runs_opened(conn: sqlite3.Connection, turn_id: str) -> int:
 
     ``response.started`` is written first, before the Pre-emit Gate and the surface rows, so it
     is the earliest durable mark of a line said and the only one that beats a second row racing
-    in on the next poll.
+    in on the next poll. Counting rows rather than watcher memory is what makes a cap on lines
+    survive a restart and hold when two rows of one turn open on different worker threads.
     """
     row = conn.execute(
         "SELECT COUNT(*) FROM events WHERE type = 'response.started' "

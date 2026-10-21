@@ -55,7 +55,7 @@ from jarvis.shared.realtime import (
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state import projections
 from jarvis.state.conversation import fold_conversation_history
-from jarvis.state.event_log import emit_event, iter_events, open_event_log
+from jarvis.state.event_log import emit_event, fetch_events_after, iter_events, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.cli import parse_response_channels
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -1775,7 +1775,7 @@ def _drive_final(runtime: JarvisRuntime, intent: Event) -> None:
 
 def _surface_stream(conn: sqlite3.Connection) -> list[tuple[int, Event]]:
     """Return the whole `surface.response_*` stream as the TTS watcher sees it."""
-    return inherent_loop._fetch_events_after(  # noqa: SLF001
+    return fetch_events_after(
         conn,
         after_id=0,
         event_types=(

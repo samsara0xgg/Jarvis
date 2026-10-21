@@ -110,7 +110,7 @@ _TERMINAL_ACTION_EVENT_TYPES_ORDERED: Final[tuple[str, ...]] = tuple(
 # than ``iter_events`` over the whole log: the supervisor sweep runs this
 # every ``supervisor.sweep_interval_s`` forever, on a log this same ADR
 # makes grow per minute (repo observer). Same IN-list shape as the
-# runtime's ``_SELECT_NEXT_TRIGGER_SQL`` watcher query.
+# L2's ``fetch_events_after`` query, which the runtime's trigger waiter uses.
 _OPEN_ACTION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "action.dispatched",
     "action.running",

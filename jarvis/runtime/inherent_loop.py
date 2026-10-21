@@ -261,6 +261,7 @@ from jarvis.state import (
     quiet_mode,
     reactions,
 )
+from jarvis.state.action_facts import proposed_call
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources, day_window
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
@@ -269,7 +270,6 @@ from jarvis.state.event_log import (
     confirmation_device,
     emit_event,
     fetch_events_after,
-    get_event,
     iter_events_of_types,
     latest_id,
     open_event_log,
@@ -301,6 +301,17 @@ from jarvis.state.projections import (
     rebuild_projections,
 )
 from jarvis.state.push_tokens import register_body
+from jarvis.state.turn_facts import (
+    answer_started,
+    clarification_asked_at,
+    commentary_runs_opened,
+    heard_as_barge_pause,
+    input_channels,
+    recent_turn_timings,
+    spoken_since,
+    turn_over_or_answering,
+    turn_trigger,
+)
 from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.state.turn_steps import finished_call_ms
 from jarvis.surface import (
@@ -340,13 +351,6 @@ from jarvis.surface.usage_observer import (
 )
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
-
-# The commentary path (``_open_commentary_in_worker_thread``, ``_commentary_watcher``) is split
-# by its own owner and still spells the two L2 cursor helpers by their old names; its tests patch
-# ``_fetch_events_after`` as the poll seam. Drop both lines with that split.
-_latest_id = latest_id
-_fetch_events_after = fetch_events_after
-
 
 # How long serve_inherent's teardown may take from the moment serving ends. launchd kills
 # a daemon 20 s after its stop (ExitTimeOut's default; the agent's plist sets none), so the
@@ -408,17 +412,12 @@ def _visible_ask_card(conn: sqlite3.Connection, now_ms: int) -> PendingClarifica
     slot = PendingClarification.from_events(iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES))
     if slot is None or not slot.waiting:
         return None
-    asked = conn.execute(
-        "SELECT ts_epoch_ms FROM events WHERE type = 'clarification.requested' "
-        "AND json_extract(payload_json, '$.clarification_id') = ?",
-        (slot.clarification_id,),
-    ).fetchone()
-    if asked is not None and now_ms - int(asked[0]) < _FRAGMENT_CARD_HOLD_MS and conn.execute(
-        "SELECT 1 FROM events WHERE type = 'utterance.received' "
-        "AND json_extract(correlation_json, '$.turn_id') = ? "
-        "AND json_extract(payload_json, '$.endpoint_reason') = 'barge_pause' LIMIT 1",
-        (slot.asked_turn_id,),
-    ).fetchone() is not None:
+    asked_at = clarification_asked_at(conn, slot.clarification_id)
+    if (
+        asked_at is not None
+        and now_ms - asked_at < _FRAGMENT_CARD_HOLD_MS
+        and heard_as_barge_pause(conn, slot.asked_turn_id)
+    ):
         return None
     return slot
 
@@ -612,13 +611,6 @@ def _emit_pre_emit_verdict(
     )
 
 
-# The trigger a turn was claimed from: the first `turn.started` naming the turn, undecoded.
-_SELECT_TURN_CLAIM_TRIGGER_SQL: Final[str] = (
-    "SELECT source_event_id FROM events WHERE type = 'turn.started' "
-    "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id ASC LIMIT 1"
-)
-
-
 def _commentary_turn(
     conn: sqlite3.Connection, event: Event,
 ) -> tuple[str, str, int] | None:
@@ -633,21 +625,12 @@ def _commentary_turn(
     turn_id = (event.correlation or {}).get("turn_id")
     if not isinstance(turn_id, str) or not turn_id:
         return None
-    started = conn.execute(_SELECT_TURN_CLAIM_TRIGGER_SQL, (turn_id,)).fetchone()
-    if started is None or started[0] is None:
-        return None
-    trigger = get_event(conn, started[0])
+    trigger = turn_trigger(conn, turn_id)
     if trigger is None or trigger.type != _COMMENTARY_ORIGIN_TRIGGER_TYPE:
         return None
     transcript = trigger.payload.get("transcript")
     return turn_id, transcript if isinstance(transcript, str) else "", trigger.ts_epoch_ms
 
-
-_SELECT_ACTION_TOOL_NAME_SQL = (
-    "SELECT id, json_extract(payload_json, '$.tool_name'), "
-    "json_extract(payload_json, '$.arguments') FROM events "
-    "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
-)
 
 _LEAD_IN_MIN_CALLS: Final = 5
 """A tool with fewer finished calls in the log than this has no measured time: it says nothing."""
@@ -660,62 +643,6 @@ def _lead_in_ms(config: Mapping[str, Any]) -> int:
     voice = config.get("voice")
     value = voice.get("lead_in_ms") if isinstance(voice, Mapping) else None
     return value if isinstance(value, int) and not isinstance(value, bool) else _LEAD_IN_DEFAULT_MS
-
-
-_SELECT_TURN_ENDED_SQL = (
-    "SELECT 1 FROM events WHERE type IN ('turn.ended', 'turn.failed') "
-    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
-)
-
-# His next words, his barge-in or the stop button cancel this turn's answer: it will
-# never come, so no wait line is owed. (answer_started only ever cancels a wait line.)
-_SELECT_TURN_SUPERSEDED_SQL = (
-    "SELECT 1 FROM events WHERE type = 'response.cancelled' "
-    "AND json_extract(payload_json, '$.reason') IN ('superseded', 'barge_in', 'user_stop') "
-    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
-)
-
-# The answer is `phase="final"` (or any phase but commentary): its first segment
-# commits `surface.response_open` together with `surface.response_chunk` in a
-# spoken_streaming turn, and the whole answer does at once in any other turn;
-# `surface.playback_started` is the answer reaching the speaker. Any of the three
-# counts. `response.started` does not: it opens the run before the model is asked.
-_SELECT_ANSWER_STARTED_SQL = (
-    "SELECT 1 FROM events WHERE type IN "
-    "('surface.response_open', 'surface.response_chunk', 'surface.playback_started') "
-    "AND json_extract(payload_json, '$.turn_id') = ? "
-    "AND json_extract(payload_json, '$.phase') IS NOT 'commentary' LIMIT 1"
-)
-
-_SELECT_COMMENTARY_COUNT_SQL = (
-    "SELECT COUNT(*) FROM events WHERE type = 'response.started' "
-    "AND json_extract(payload_json, '$.phase') = 'commentary' "
-    "AND json_extract(payload_json, '$.turn_id') = ?"
-)
-
-
-def _turn_commentary_count(conn: sqlite3.Connection, turn_id: str) -> int:
-    """Return how many commentary runs this turn has opened.
-
-    ``start_response_run`` writes ``response.started`` first, before the
-    Pre-emit Gate and the three surface rows, so it is the earliest durable
-    mark of "this turn already spoke" and the only one that beats a second
-    row racing in on the next 10 ms poll. Reading the log rather than
-    in-memory observer state is what makes the cap survive a restart, and
-    what makes it hold when two rows of the same turn open on different
-    worker threads.
-    """
-    row = conn.execute(_SELECT_COMMENTARY_COUNT_SQL, (turn_id,)).fetchone()
-    return int(row[0]) if row is not None else 0
-
-
-def _turn_over_or_answering(conn: sqlite3.Connection, turn_id: str) -> bool:
-    """Return whether the turn has ended, been superseded or its answer has started."""
-    return (
-        conn.execute(_SELECT_TURN_ENDED_SQL, (turn_id,)).fetchone() is not None
-        or conn.execute(_SELECT_TURN_SUPERSEDED_SQL, (turn_id,)).fetchone() is not None
-        or conn.execute(_SELECT_ANSWER_STARTED_SQL, (turn_id,)).fetchone() is not None
-    )
 
 
 def _cancel_unheard_commentary(
@@ -853,7 +780,7 @@ def _commentary_turn_is_over(runtime: JarvisRuntime, trigger_event: Event) -> bo
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
         turn = _commentary_turn(conn, trigger_event)
-        return turn is None or _turn_over_or_answering(conn, turn[0])
+        return turn is None or turn_over_or_answering(conn, turn[0])
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
@@ -873,16 +800,16 @@ def _slow_tool_line(
     ``voice.lead_in_ms``, with at least :data:`_LEAD_IN_MIN_CALLS` of them (ADR 0320). The line is
     in his language (that of his words), without a detail.
     """
-    row = conn.execute(
-        _SELECT_ACTION_TOOL_NAME_SQL, (dispatched.payload.get("action_id"),),
-    ).fetchone()
-    if row is None:
+    action_id = dispatched.payload.get("action_id")
+    call = proposed_call(conn, action_id) if isinstance(action_id, str) else None
+    if call is None:
         return None
-    tool = str(row[1] or "")
-    waits = finished_call_ms(conn, tool)
+    waits = finished_call_ms(conn, call.tool_name)
     if len(waits) < _LEAD_IN_MIN_CALLS or statistics.median(waits) < _lead_in_ms(runtime.config):
         return None
-    return steps.line(tool, row[2], language="en" if is_english(user_text) else "zh")
+    return steps.line(
+        call.tool_name, call.arguments, language="en" if is_english(user_text) else "zh",
+    )
 
 
 def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per suppression rule
@@ -947,7 +874,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
         ):
             return None
         with _COMMENTARY_LOCK:
-            if _turn_commentary_count(conn, turn_id) >= (_COMMENTARY_MAX_LINES if still else 1):
+            if commentary_runs_opened(conn, turn_id) >= (_COMMENTARY_MAX_LINES if still else 1):
                 # The turn's lines are said. Checked after the origin filter and
                 # before every write, so that a suppression path below never
                 # consumes a slot, and under the lock, because the dispatch and
@@ -967,7 +894,7 @@ def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per s
                 # calls carry no `action_id`, so this is enforced
                 # at the only granularity the fold supports.
                 return None
-            if _turn_over_or_answering(conn, turn_id) or (
+            if turn_over_or_answering(conn, turn_id) or (
                 runtime.response_runs is not None
                 and (
                     runtime.response_runs.turn_stopped(turn_id)
@@ -1023,7 +950,7 @@ async def _commentary_watcher(  # noqa: C901, PLR0915 - the row handlers share t
     ``_tts_watcher``'s is: commentary is a courtesy, and a failure to produce
     it must never stall the watcher or the turn it is commenting on.
     """
-    after_id = _latest_id(runtime.conn)
+    after_id = latest_id(runtime.conn)
     open_by_subject: dict[str, _OpenCommentary] = {}  # by response id
     spoken: set[tuple[str, str]] = set()
     tasks: set[asyncio.Task[None]] = set()
@@ -1092,7 +1019,7 @@ async def _commentary_watcher(  # noqa: C901, PLR0915 - the row handlers share t
     LOGGER.info("commentary_watcher started (after_id=%d)", after_id)
     try:
         while True:
-            new_events = _fetch_events_after(
+            new_events = fetch_events_after(
                 runtime.conn,
                 after_id=after_id,
                 event_types=(
@@ -1201,15 +1128,7 @@ def _make_cancel_voice_runs(
     event_log_path = runtime.runtime_paths.event_log
 
     def _from_his_words(conn: sqlite3.Connection, turn_id: str) -> bool:
-        channels = [
-            row[0]
-            for row in conn.execute(
-                "SELECT json_extract(payload_json, '$.channel') FROM events "
-                "WHERE type IN ('utterance.received', 'surface.user_intent') "
-                "AND json_extract(payload_json, '$.turn_id') = ?",
-                (turn_id,),
-            )
-        ]
+        channels = input_channels(conn, turn_id)
         return bool(channels) and not any(channel in _TTS_SILENT_CHANNELS for channel in channels)
 
     def _cancel_voice_runs() -> None:
@@ -1232,7 +1151,7 @@ def _make_cancel_voice_runs(
                 run.turn_id
                 for run in runs
                 if run.phase == "final"
-                and conn.execute(_SELECT_ANSWER_STARTED_SQL, (run.turn_id,)).fetchone() is None
+                and not answer_started(conn, run.turn_id)
             }
         for turn_id in unanswered:
             registry.mark_turn_text_only(turn_id)
@@ -1503,14 +1422,9 @@ def _local_listen_ports(
             runtime.runtime_paths.event_log, deadline=time.monotonic() + 0.25,
         )
         try:
-            rows = conn.execute(
-                "SELECT coalesce(json_extract(payload_json, '$.voice_text'), "
-                "json_extract(payload_json, '$.text')) FROM events "
-                "WHERE type IN ('surface.response_chunk', 'surface.response_emitted') "
-                "AND ts_epoch_ms >= ? ORDER BY id",
-                (int(time.time() * 1000) - _RECENT_SPEECH_WINDOW_MS,),
+            return " ".join(
+                spoken_since(conn, since_ms=int(time.time() * 1000) - _RECENT_SPEECH_WINDOW_MS),
             )
-            return " ".join(text for (text,) in rows if text)
         finally:
             conn.close()
 
@@ -2152,17 +2066,13 @@ def _read_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[
     """
     conn = open_runtime_event_log(event_log_path)
     try:
-        rows = conn.execute(
-            "SELECT event_uid, ts_epoch_ms, payload_json FROM events "
-            "WHERE type = 'turn.timing' AND ts_epoch_ms >= ? ORDER BY id DESC LIMIT ?",
-            (since_ms, limit),
-        ).fetchall()
+        timings = recent_turn_timings(conn, since_ms=since_ms, limit=limit)
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     turns = [
-        {"event_uid": uid, "ts_epoch_ms": ts, **json.loads(payload)}
-        for uid, ts, payload in reversed(rows)
+        {"event_uid": event.event_uid, "ts_epoch_ms": event.ts_epoch_ms, **event.payload}
+        for event in timings
     ]
     return {"now_ms": int(time.time() * 1000), "turns": turns}
 

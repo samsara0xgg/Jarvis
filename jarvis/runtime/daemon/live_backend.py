@@ -16,6 +16,7 @@ from jarvis.state.event_log import (
 )
 from jarvis.state.input_submission_inbox import SubmissionKey, submit_text_once
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, brief_note
+from jarvis.state.turn_outcome import Answered, Failed, turn_outcome
 from jarvis.surface import voice_live
 from jarvis.surface.inherent_server import AskOutcome
 
@@ -42,14 +43,6 @@ LIVE_TERMINAL_TYPES: Final[frozenset[str]] = frozenset(
 the only row ``lookup_result`` takes as an answer, so a wake on the terminal alone
 left the bridge to its 5 s safety poll (measured 5.06 s and 5.9 s, 2026-09-12).
 """
-
-_LIVE_OUTCOME_TYPES: Final[tuple[str, ...]] = (
-    "surface.response_emitted",
-    "response.failed",
-    "response.cancelled",
-    "turn.failed",
-)
-
 
 # ADR 0026: a new session is told at most this many finished delegations no
 # session was told, none older than this; the rest stay in memory.db and the UI.
@@ -110,7 +103,7 @@ class LiveBackend:
         """The turn's final answer, its failure, or None while it is still running (D4, D5)."""
         conn = open_runtime_event_log(self._event_log_path)
         try:
-            return _turn_outcome(conn, turn_id)
+            return _delegation_result(conn, turn_id)
         finally:
             with contextlib.suppress(sqlite3.Error):
                 conn.close()
@@ -134,7 +127,7 @@ class LiveBackend:
                     iter_events_for_turn(conn, turn_id, ("live.result_delivered",)),
                 ):
                     continue
-                outcome = _turn_outcome(conn, turn_id)
+                outcome = _delegation_result(conn, turn_id)
                 if outcome is None:
                     continue  # still running: no outcome yet; the next start looks again
                 found.append(
@@ -195,79 +188,40 @@ class LiveBackend:
                 conn.close()
 
 
-def _turn_outcome(conn: sqlite3.Connection, turn_id: str) -> voice_live.DelegationResult | None:
-    """The turn's final answer, its failure, or None while it is still running.
-
-    Only the ``phase == "final"`` emission counts: the ADR-0008 D6 lifecycle
-    commentary renders under the same ``turn_id`` with ``phase == "commentary"``.
-    """
-    events = list(iter_events_for_turn(conn, turn_id, _LIVE_OUTCOME_TYPES))
-    for event in events:
-        if (
-            event.type == "surface.response_emitted"
-            and event.payload.get("phase", "final") == "final"
-        ):
-            voice_text = event.payload.get("voice_text")
-            return voice_live.DelegationResult(
-                status="answered",
-                text=str(event.payload.get("text", "")),
-                voice_text=voice_text if isinstance(voice_text, str) and voice_text else None,
-            )
-    for event in events:
-        if event.type in ("response.failed", "response.cancelled", "turn.failed"):
-            reason = event.payload.get("reason") or event.payload.get("exception_repr")
-            return voice_live.DelegationResult(
-                status="failed", reason=str(reason or event.type),
-            )
+def _delegation_result(
+    conn: sqlite3.Connection, turn_id: str,
+) -> voice_live.DelegationResult | None:
+    """The turn's final answer, its failure, or None while it is still running (ADR 0349)."""
+    outcome = turn_outcome(conn, turn_id)
+    if isinstance(outcome, Answered):
+        return voice_live.DelegationResult(
+            status="answered", text=outcome.text, voice_text=outcome.voice_text,
+        )
+    if isinstance(outcome, Failed):
+        return voice_live.DelegationResult(
+            status="failed", reason=outcome.reason or outcome.detail or outcome.event_type,
+        )
     return None
-
-
-_ASK_OUTCOME_TYPES: Final[tuple[str, ...]] = (
-    "response.started",
-    "surface.response_emitted",
-    "response.failed",
-    "response.cancelled",
-    "turn.failed",
-)
 
 
 def ask_outcome(event_log_path: Path, turn_id: str) -> AskOutcome | None:
     """How the turn behind ``POST /inherent/ask`` ended, or None while it is still running.
 
-    The answer is the turn's final ``surface.response_emitted``: ``spoken`` its ``voice_text``
-    (the ``text`` of an answer with no channels) and ``written`` its ``document_text`` when
-    that is what the voice leaves out (``written_apart``, ADR 0114), as the ``done`` envelope
-    carries them. A wait line (a ``commentary`` run, ADR 0116) is not the answer and neither
-    is its end, nor the end of a streamed run another run has taken over (ADR-0008 D3).
+    The answer is the turn's final one: ``spoken`` its voice text (the document text, else the
+    text, of an answer with no channels) and ``written`` its document text when that is what
+    the voice leaves out (``written_apart``, ADR 0114), as the ``done`` envelope carries them.
     """
     conn = open_runtime_event_log(event_log_path)
     try:
-        events = list(iter_events_for_turn(conn, turn_id, _ASK_OUTCOME_TYPES))
+        outcome = turn_outcome(conn, turn_id)
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
-    not_the_turn = {
-        str(event.payload.get("response_id"))
-        for event in events
-        if event.type == "response.started" and event.payload.get("phase") == "commentary"
-    } | {
-        str(event.payload["corrects_response_id"])
-        for event in events
-        if event.type == "response.started" and event.payload.get("corrects_response_id")
-    }
-    for event in events:
-        final = event.payload.get("phase", "final") == "final"
-        if event.type == "surface.response_emitted" and final:
-            voice, document = event.payload.get("voice_text"), event.payload.get("document_text")
-            apart = event.payload.get("written_apart") is True
-            spoken = voice if isinstance(voice, str) and voice else None
-            return AskOutcome(
-                spoken=spoken or str(document or event.payload.get("text") or ""),
-                written=document if apart and isinstance(document, str) else "",
-            )
-    for event in events:
-        if event.type in {"response.failed", "response.cancelled", "turn.failed"} and (
-            str(event.payload.get("response_id")) not in not_the_turn
-        ):
-            return AskOutcome(failure=str(event.payload.get("reason") or event.type))
+    if isinstance(outcome, Answered):
+        return AskOutcome(
+            spoken=outcome.voice_text or outcome.document_text or outcome.text,
+            written=(outcome.document_text or "") if outcome.written_apart else "",
+        )
+    if isinstance(outcome, Failed):
+        return AskOutcome(failure=outcome.reason or outcome.event_type)
     return None
