@@ -15,7 +15,12 @@ from pathlib import Path
 import pytest
 
 from jarvis.cli import main
-from jarvis.runtime.config import DiagnosticsSettings, RuntimeBootstrapError, load_runtime_config
+from jarvis.runtime.config import (
+    DiagnosticsSettings,
+    RuntimeBootstrapError,
+    WorkersSettings,
+    load_runtime_config,
+)
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from tests.support.runtime_config import boot_runtime, load_settings, runtime_config
 
@@ -432,3 +437,72 @@ def test_the_plan_day_ends_at_a_clock_time_else_the_default() -> None:
     """ADR 0302: ``day_plan.day_ends`` is HH:MM."""
     assert runtime_config({"day_plan": {"day_ends": "21:15"}}).plan_day_ends == time(21, 15)
     assert runtime_config({"day_plan": {"day_ends": "late"}}).plan_day_ends == time(23, 30)
+
+
+def test_the_tools_web_bounds_are_positive_numbers_else_the_shipped_defaults() -> None:
+    """ADR-0011 D7: UX knobs, so a malformed value is the default and never stops the boot."""
+    shipped = runtime_config({}).tools.web
+    told = runtime_config({"tools": {"web": {
+        "search_max_results": 3, "fetch_max_bytes": 5000, "fetch_max_text_bytes": 900,
+        "timeout_s": 2.5,
+    }}}).tools.web
+    assert (told.search_max_results, told.fetch_max_bytes, told.fetch_max_text_bytes,
+            told.timeout_s) == (3, 5000, 900, 2.5)
+    for bad in (0, -1, True, "9", None):
+        broken = runtime_config({"tools": {"web": {
+            "search_max_results": bad, "fetch_max_bytes": bad, "fetch_max_text_bytes": bad,
+            "timeout_s": bad,
+        }}}).tools.web
+        assert broken == shipped
+    assert runtime_config({"tools": {"web": 5}}).tools.web == shipped
+
+
+def test_the_search_provider_and_its_key_variable_are_stripped_names_never_a_key() -> None:
+    """The key is read from the environment at boot, by the name this holds; it is not stored."""
+    web = runtime_config({"tools": {"web": {
+        "search_provider": " tavily ", "search_api_key_env": " MY_KEY ",
+    }}}).tools.web
+    assert (web.search_provider, web.search_api_key_env) == ("tavily", "MY_KEY")
+    blank = runtime_config({"tools": {"web": {"search_provider": 3, "search_api_key_env": " "}}})
+    assert (blank.tools.web.search_provider, blank.tools.web.search_api_key_env) == ("", "")
+
+
+def test_the_screen_and_vault_settings_read_a_name_a_width_and_a_folder() -> None:
+    """`screen_look`'s vision preset and width; `search_notes`' vault, ``~`` expanded."""
+    shipped = runtime_config({}).tools
+    assert (shipped.vision_preset, shipped.obsidian_vault_root) == ("vision", None)
+    told = runtime_config({"tools": {
+        "screen": {"vision_preset": "eyes", "max_width_px": 800},
+        "obsidian": {"vault_root": "~/Notes"},
+    }}).tools
+    assert (told.vision_preset, told.screen_max_width_px) == ("eyes", 800)
+    assert told.obsidian_vault_root == Path("~/Notes").expanduser()
+    for bad in ("", "  ", -3, True, 0):
+        broken = runtime_config({"tools": {
+            "screen": {"vision_preset": bad, "max_width_px": bad},
+            "obsidian": {"vault_root": bad},
+        }}).tools
+        assert (broken.vision_preset, broken.screen_max_width_px, broken.obsidian_vault_root) == (
+            shipped.vision_preset, shipped.screen_max_width_px, None,
+        )
+
+
+def test_workers_are_on_only_when_true_and_a_brain_forces_them_off(tmp_path: Path) -> None:
+    """ADR 0019: roots are ``~`` expanded and resolved; a brain has no folders of its own."""
+    assert runtime_config({}).tools.workers == WorkersSettings(enabled=False, roots=())
+    on = runtime_config({"tools": {"workers": {"enabled": True, "roots": [str(tmp_path), "~"]}}})
+    assert on.tools.workers.enabled is True
+    assert on.tools.workers.roots == (tmp_path.resolve(), Path("~").expanduser().resolve())
+    assert runtime_config({"tools": {"workers": {"enabled": "yes"}}}).tools.workers.enabled is False
+    brain = runtime_config({
+        "runtime": {"role": "brain"}, "tools": {"workers": {"enabled": True, "roots": ["~"]}},
+    })
+    assert brain.tools.workers == WorkersSettings(enabled=False, roots=())
+
+
+def test_a_brain_has_no_vault_and_no_bookmarks_of_its_own() -> None:
+    """ADR 0225: the vault and the open_path bookmarks are the terminal's alone."""
+    brain = runtime_config({"runtime": {"role": "brain"}, "tools": {
+        "obsidian": {"vault_root": "~/Notes"}, "open_path": {"aliases": {"a": "/x"}},
+    }}).tools
+    assert (brain.obsidian_vault_root, dict(brain.open_path)) == (None, {})

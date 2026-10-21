@@ -29,11 +29,13 @@ from jarvis.runtime import _register_workers
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.model import ScriptedModel, tool_call
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     import sqlite3
 
     from jarvis.decision.llm import LLMClient
+    from jarvis.runtime.config import WorkersSettings
 
 REPO = Path(__file__).resolve().parents[2]
 ASK = "里派一个后台任务：fix the typo in README。要派吗？"  # noqa: RUF001 — the tail of the card's Chinese ask, which names the folder and the task (ADR 0321).
@@ -107,16 +109,21 @@ def _rows(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
     ]
 
 
+def _workers(block: dict[str, Any]) -> WorkersSettings:
+    """``tools.workers`` as the loaded config reads it."""
+    return runtime_config({"tools": {"workers": block}}).tools.workers
+
+
 @pytest.mark.usefixtures("codex_on_path")
 def test_workers_are_off_unless_enabled(tmp_path: Path) -> None:
     """The shipped config registers no worker tool; the user's settings turn them on."""
     shipped = build_default_registry()
     paths = cast("Any", _Paths(tmp_path, tmp_path / "events.db", tmp_path / "artifacts"))
-    assert _register_workers(shipped, paths, {"tools": {"workers": {"enabled": False}}}) is None
-    assert _register_workers(shipped, paths, {}) is None
+    assert _register_workers(shipped, paths, _workers({"enabled": False})) is None
+    assert _register_workers(shipped, paths, _workers({})) is None
     assert "spawn_worker" not in {t.name for t in shipped.get_definitions()}
     enabled = build_default_registry()
-    workers = _register_workers(enabled, paths, {"tools": {"workers": {"enabled": True}}})
+    workers = _register_workers(enabled, paths, _workers({"enabled": True}))
     assert workers is not None
     spawn = next(t for t in enabled.get_definitions() if t.name == "spawn_worker")
     assert (spawn.risk_level, spawn.requires_confirmation) == ("L3", True)
@@ -132,7 +139,7 @@ def test_workers_stay_off_on_a_machine_without_codex(
     monkeypatch.setenv("PATH", str(tmp_path / "bin"))
     registry = build_default_registry()
     paths = cast("Any", _Paths(tmp_path, tmp_path / "events.db", tmp_path / "artifacts"))
-    assert _register_workers(registry, paths, {"tools": {"workers": {"enabled": True}}}) is None
+    assert _register_workers(registry, paths, _workers({"enabled": True})) is None
     assert "spawn_worker" not in {t.name for t in registry.get_definitions()}
 
 

@@ -357,9 +357,8 @@ def test_codex_workers_coexist_with_local_activity_tools(
     """The runtime registers Codex workers alongside daily tools without starting a worker."""
     add_span(source, "2026-09-19 09:00:00.000", "2026-09-19 09:10:00.000")
     h = DailyHarness(tmp_path, timesink_path=tmp_path / "timesink.sqlite")
-    workers = _register_workers(
-        h.fx.registry, h.fx.paths, {"tools": {"workers": {"enabled": True, "roots": [tmp_path]}}}
-    )
+    config = runtime_config({"tools": {"workers": {"enabled": True, "roots": [tmp_path]}}})
+    workers = _register_workers(h.fx.registry, h.fx.paths, config.tools.workers)
     assert workers is not None
     try:
         names = [tool.name for tool in h.fx.registry.get_definitions()]

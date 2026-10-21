@@ -37,6 +37,13 @@ from jarvis.deployment.models import (
     default_voiceprint_model_path,
 )
 from jarvis.execution import maps_spend
+from jarvis.execution.tools import (
+    DEFAULT_SCREEN_MAX_WIDTH_PX,
+    DEFAULT_WEB_FETCH_MAX_BYTES,
+    DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
+    DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    DEFAULT_WEB_TIMEOUT_S,
+)
 from jarvis.runtime.day_plan import day_ends_of
 from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S
 from jarvis.runtime.settings import SETUP_VOICES, apply_settings
@@ -254,6 +261,52 @@ class DiagnosticsSettings:
 
 
 @dataclass(frozen=True)
+class WebToolsSettings:
+    """``tools.web`` (ADR-0011 D7): the bounds `web_search` and `web_fetch` share.
+
+    ``search_provider`` is the named provider, stripped; empty picks by which key the
+    environment holds. ``search_api_key_env`` names the variable the key is read from, empty to
+    derive it from the provider. The key itself is never in the config.
+    """
+
+    search_max_results: int
+    fetch_max_bytes: int
+    fetch_max_text_bytes: int
+    timeout_s: float
+    search_provider: str
+    search_api_key_env: str
+
+
+@dataclass(frozen=True)
+class WorkersSettings:
+    """``tools.workers`` (ADR 0019): Codex workers, off unless enabled.
+
+    ``roots`` are the folders a worker may be started in, ``~`` expanded and resolved.
+    """
+
+    enabled: bool
+    roots: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class ToolsSettings:
+    """The ``tools`` block's built-in tools.
+
+    ``obsidian_vault_root`` is `search_notes`' vault, ``~`` expanded (none registers no
+    `search_notes`); ``vision_preset`` and ``screen_max_width_px`` are `screen_look`'s
+    (ADR-0011 D7). ``open_path`` is the bookmarks mapping L4's resolver parses whole (a malformed
+    one fails the boot there). The `mcp` and `plugins` blocks stay in ``raw`` for their owners.
+    """
+
+    obsidian_vault_root: Path | None
+    web: WebToolsSettings
+    vision_preset: str
+    screen_max_width_px: int
+    workers: WorkersSettings
+    open_path: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Everything the runtime reads from its config, parsed once.
 
@@ -291,6 +344,7 @@ class RuntimeConfig:
     maps_monthly_usd: float
     dashboard: DashboardSettings
     diagnostics: DiagnosticsSettings
+    tools: ToolsSettings
     voiceprint_gate: bool
     remind_before_min: int
     plan_day_ends: time
@@ -714,6 +768,67 @@ def _diagnostics(raw: Mapping[str, Any]) -> DiagnosticsSettings:
     )
 
 
+_FALLBACK_VISION_PRESET: Final = "vision"
+
+
+def _positive_number(value: object, fallback: float) -> float:
+    """``value`` when it is a number above 0; else ``fallback``."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return fallback
+    return value
+
+
+def _web_tools(tools: Mapping[str, Any]) -> WebToolsSettings:
+    """``tools.web.*``: UX knobs, so a malformed value is the shipped default, not a refusal."""
+    block = _block(tools, "web")
+
+    def count(key: str, fallback: int) -> int:
+        value = block.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return fallback
+
+    provider, key_env = block.get("search_provider"), block.get("search_api_key_env")
+    return WebToolsSettings(
+        search_max_results=count("search_max_results", DEFAULT_WEB_SEARCH_MAX_RESULTS),
+        fetch_max_bytes=count("fetch_max_bytes", DEFAULT_WEB_FETCH_MAX_BYTES),
+        fetch_max_text_bytes=count("fetch_max_text_bytes", DEFAULT_WEB_FETCH_MAX_TEXT_BYTES),
+        timeout_s=float(_positive_number(block.get("timeout_s"), DEFAULT_WEB_TIMEOUT_S)),
+        search_provider=provider.strip() if isinstance(provider, str) else "",
+        search_api_key_env=key_env.strip() if isinstance(key_env, str) else "",
+    )
+
+
+def _workers(tools: Mapping[str, Any]) -> WorkersSettings:
+    """``tools.workers.enabled`` (exactly ``true``) and ``tools.workers.roots``."""
+    block = _block(tools, "workers")
+    enabled = block.get("enabled") is True
+    return WorkersSettings(
+        enabled=enabled,
+        roots=tuple(Path(str(r)).expanduser().resolve() for r in block.get("roots") or ())
+        if enabled else (),
+    )
+
+
+def _tools(raw: Mapping[str, Any]) -> ToolsSettings:
+    """The ``tools`` block's built-in tools (ADR-0011 D7)."""
+    tools = _block(raw, "tools")
+    vault = _block(tools, "obsidian").get("vault_root")
+    screen = _block(tools, "screen")
+    preset, width = screen.get("vision_preset"), screen.get("max_width_px")
+    return ToolsSettings(
+        obsidian_vault_root=Path(vault).expanduser() if isinstance(vault, str) and vault.strip()
+        else None,
+        web=_web_tools(tools),
+        vision_preset=preset if isinstance(preset, str) and preset.strip()
+        else _FALLBACK_VISION_PRESET,
+        screen_max_width_px=width if isinstance(width, int) and not isinstance(width, bool)
+        and width > 0 else DEFAULT_SCREEN_MAX_WIDTH_PX,
+        workers=_workers(tools),
+        open_path=_block(tools, "open_path"),
+    )
+
+
 def _remind_before_min(raw: Mapping[str, Any]) -> int:
     """``commitments.remind_before_min``, how long before it a thing he goes to rings; else 60."""
     before = _block(raw, "commitments").get("remind_before_min")
@@ -938,6 +1053,7 @@ def parse_runtime_config(
         maps_monthly_usd=_maps_monthly_usd(raw),
         dashboard=_dashboard(raw),
         diagnostics=_diagnostics(raw),
+        tools=_tools(raw),
         voiceprint_gate=_switch(_block(raw, "voiceprint"), "gate", where="voiceprint"),
         remind_before_min=_remind_before_min(raw),
         plan_day_ends=day_ends_of(raw.get("day_plan")),

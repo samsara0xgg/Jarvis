@@ -145,11 +145,6 @@ from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.places_api import turn_places
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.execution.tools import (
-    DEFAULT_SCREEN_MAX_WIDTH_PX,
-    DEFAULT_WEB_FETCH_MAX_BYTES,
-    DEFAULT_WEB_FETCH_MAX_TEXT_BYTES,
-    DEFAULT_WEB_SEARCH_MAX_RESULTS,
-    DEFAULT_WEB_TIMEOUT_S,
     ActionLifecycle,
     ReadOnlyToolRegistry,
     Tool,
@@ -174,6 +169,8 @@ from jarvis.runtime.config import (
     Role,
     RuntimeBootstrapError,
     RuntimeConfig,
+    WebToolsSettings,
+    WorkersSettings,
 )
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
@@ -353,22 +350,6 @@ _DEFAULT_MAX_ITERATIONS: int = 50
 # a stuck ordinary turn cannot pin one of ``max_concurrent_turns`` for
 # long — see :func:`_trigger_wait_budget`.
 _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
-
-# Fallback for a runtime whose config carries no ``observer:`` block
-# (hand-assembled test runtimes). ``config/jarvis.yaml`` is the real
-# source; mirroring the shipped default here means a missing block reads
-# the same cadence the daemon would actually poll at.
-
-# Fallback for a runtime whose config carries no ``confirmation:`` block.
-# Mirrors ``jarvis.decision._DEFAULT_CONFIRMATION_TTL_MS`` (private in
-# that module — not imported here, same as
-# ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above keeps its own mirror
-# rather than importing ``packet.DEFAULT_OBSERVER_POLL_INTERVAL_S``).
-
-# Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
-# key `screen_look` reads for its one vision call when the config's
-# `tools.screen` block doesn't override it.
-_DEFAULT_VISION_PRESET_NAME: str = "vision"
 
 # System prompt for the injected vision client (`_LLMVisionClient` below).
 # Asking for the user's language means `screen_look`'s text observation
@@ -1516,7 +1497,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     build_registry: Callable[[], ToolRegistry],
     offer_devices: Callable[[ToolRegistry], None],
     paths: RuntimePaths,
-    config: Mapping[str, Any],
+    workers: WorkersSettings,
     view: ViewState | None,
     make_plugins: Callable[[ToolRegistry], PluginConnections],
     make_late: Callable[[PluginConnections], tuple[JobMail | None, Home]],
@@ -1533,7 +1514,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     registry = build_registry()
     # ADR 0225: a brain's menu offers what the paired terminals declared, before any is here.
     offer_devices(registry)
-    workers = _register_workers(registry, paths, config)
+    started = _register_workers(registry, paths, workers)
     _register_dashboard_tool(registry, view)
     plugins = make_plugins(registry)
     plugins.initialize()
@@ -1545,7 +1526,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     _register_tidy(registry, doing)
     _register_my_day(registry, ledger)
     plugins.refresh_search()  # ADR 0247: every built-in tool is registered now
-    return Catalog(registry, workers, plugins, job_mail, home)
+    return Catalog(registry, started, plugins, job_mail, home)
 
 
 def _turn_end_asks(
@@ -1750,37 +1731,17 @@ def _work_state_tool_refresh(
     return refresh
 
 
-def _obsidian_vault_root(config: Mapping[str, Any]) -> Path | None:
-    """Return `tools.obsidian.vault_root`, `~`-expanded (ADR-0011 D7); blank is None.
-
-    Threaded into `build_default_registry`'s `search_notes` closure at
-    registry-build time — L4 handlers do not load YAML themselves. None
-    registers no `search_notes`, so a user who named no vault never has a
-    folder such as `~/Documents` touched on their behalf.
-    """
-    block = config.get("tools")
-    if isinstance(block, Mapping):
-        obsidian_block = block.get("obsidian")
-        if isinstance(obsidian_block, Mapping):
-            raw = obsidian_block.get("vault_root")
-            if isinstance(raw, str) and raw.strip():
-                return Path(raw).expanduser()
-    return None
-
-
-def _install_open_path(config: Mapping[str, Any]) -> None:
+def _install_open_path(block: Mapping[str, Any]) -> None:
     """Hand `tools.open_path` to L4's resolver; malformed bookmarks fail the boot."""
-    block = config.get("tools")
-    raw = block.get("open_path") if isinstance(block, Mapping) else None
     try:
-        configure_file_targets(raw if isinstance(raw, Mapping) else {})
+        configure_file_targets(block)
     except FileTargetsConfigError as exc:
         msg = f"runtime: tools.open_path invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
 
-def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
-    """Return `(search_provider, api_key)` from `tools.web.*`.
+def _web_search_credentials(web: WebToolsSettings) -> tuple[str | None, str | None]:
+    """Return `(search_provider, api_key)` for `tools.web.*`.
 
     A blank `search_provider` picks by which key the environment holds,
     `TAVILY_API_KEY` first, then `EXA_API_KEY`; with neither it returns
@@ -1804,16 +1765,7 @@ def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str | None, 
     unknown provider name, or an unset variable all degrade inside
     `_resolve_search_backend` rather than failing boot.
     """
-    provider = ""
-    raw_key_env: object = None
-    block = config.get("tools")
-    if isinstance(block, Mapping):
-        web_block = block.get("web")
-        if isinstance(web_block, Mapping):
-            raw_provider = web_block.get("search_provider")
-            if isinstance(raw_provider, str):
-                provider = raw_provider.strip()
-            raw_key_env = web_block.get("search_api_key_env")
+    provider = web.search_provider
     if not provider:
         for name in ("tavily", "exa"):
             found = os.environ.get(f"{name.upper()}_API_KEY", "").strip()
@@ -1821,9 +1773,9 @@ def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str | None, 
                 return name, found
         return None, None
 
-    key_env = f"{provider.strip().upper()}_API_KEY"
-    if isinstance(raw_key_env, str) and raw_key_env.strip():
-        key_env = raw_key_env.strip()
+    key_env = f"{provider.upper()}_API_KEY"
+    if web.search_api_key_env:
+        key_env = web.search_api_key_env
         if not _key_env_matches_provider(key_env, provider):
             LOGGER.error(
                 "tools.web.search_api_key_env=%r does not belong to "
@@ -1853,80 +1805,6 @@ def _key_env_matches_provider(key_env: str, provider: str) -> bool:
     upper = key_env.upper()
     mentioned = [name for name in known if name.upper() in upper]
     return not mentioned or selected in mentioned
-
-
-def _web_tools_config(config: Mapping[str, Any]) -> tuple[int, int, int, float]:
-    """Return `(search_max_results, fetch_max_bytes, fetch_max_text_bytes, timeout_s)`.
-
-    Read from `tools.web.*`.
-
-    ADR-0011 D7. Same best-effort posture as `_obsidian_vault_root` — a
-    missing/malformed `tools.web` block degrades to the shipped
-    defaults rather than failing boot; these are UX knobs, not trust
-    sources.
-
-    D7's schema ships ONE `timeout_s` shared by `web_search` and
-    `web_fetch`, though D5's prose separately gives the two tools
-    different timeouts (15s / 20s) — see `jarvis.execution.tools`'s
-    `DEFAULT_WEB_TIMEOUT_S` docstring for the full reconciliation
-    (ADR-0011 §12 errata candidate). The single configured value is
-    applied to both tools here.
-    """
-    search_max_results = DEFAULT_WEB_SEARCH_MAX_RESULTS
-    fetch_max_bytes = DEFAULT_WEB_FETCH_MAX_BYTES
-    fetch_max_text_bytes = DEFAULT_WEB_FETCH_MAX_TEXT_BYTES
-    timeout_s = DEFAULT_WEB_TIMEOUT_S
-    block = config.get("tools")
-    if isinstance(block, Mapping):
-        web_block = block.get("web")
-        if isinstance(web_block, Mapping):
-            raw_results = web_block.get("search_max_results")
-            if (
-                isinstance(raw_results, int)
-                and not isinstance(raw_results, bool)
-                and raw_results > 0
-            ):
-                search_max_results = raw_results
-            raw_bytes = web_block.get("fetch_max_bytes")
-            if isinstance(raw_bytes, int) and not isinstance(raw_bytes, bool) and raw_bytes > 0:
-                fetch_max_bytes = raw_bytes
-            raw_text_bytes = web_block.get("fetch_max_text_bytes")
-            if (
-                isinstance(raw_text_bytes, int)
-                and not isinstance(raw_text_bytes, bool)
-                and raw_text_bytes > 0
-            ):
-                fetch_max_text_bytes = raw_text_bytes
-            raw_timeout = web_block.get("timeout_s")
-            if (
-                isinstance(raw_timeout, (int, float))
-                and not isinstance(raw_timeout, bool)
-                and raw_timeout > 0
-            ):
-                timeout_s = float(raw_timeout)
-    return search_max_results, fetch_max_bytes, fetch_max_text_bytes, timeout_s
-
-
-def _screen_tools_config(config: Mapping[str, Any]) -> tuple[str, int]:
-    """Return `(vision_preset_name, max_width_px)` from `tools.screen.*` (ADR-0011 D7).
-
-    Same best-effort posture as `_web_tools_config` — a missing/malformed
-    `tools.screen` block degrades to the shipped defaults rather than
-    failing boot; these are UX/cost knobs, not trust sources.
-    """
-    preset_name = _DEFAULT_VISION_PRESET_NAME
-    max_width_px = DEFAULT_SCREEN_MAX_WIDTH_PX
-    block = config.get("tools")
-    if isinstance(block, Mapping):
-        screen_block = block.get("screen")
-        if isinstance(screen_block, Mapping):
-            raw_preset = screen_block.get("vision_preset")
-            if isinstance(raw_preset, str) and raw_preset.strip():
-                preset_name = raw_preset
-            raw_width = screen_block.get("max_width_px")
-            if isinstance(raw_width, int) and not isinstance(raw_width, bool) and raw_width > 0:
-                max_width_px = raw_width
-    return preset_name, max_width_px
 
 
 _VISION_CALL_TIMEOUT_S: Final[float] = 20.0
@@ -2167,7 +2045,7 @@ def load_runtime_env_and_trace(paths: RuntimePaths) -> None:
 
 
 def _register_workers(
-    registry: ToolRegistry, paths: RuntimePaths, config: Mapping[str, Any]
+    registry: ToolRegistry, paths: RuntimePaths, settings: WorkersSettings,
 ) -> Workers | None:
     """ADR 0019: workers are threads on one ``codex app-server``.
 
@@ -2176,17 +2054,14 @@ def _register_workers(
     The server starts lazily on the first spawn, so a one-shot CLI turn
     pays nothing; the daemon stops it at shutdown.
     """
-    tools_block = config.get("tools")
-    block = tools_block.get("workers") if isinstance(tools_block, Mapping) else None
-    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+    if not settings.enabled:
         return None
     codex = shutil.which("codex")
     if codex is None:
         LOGGER.warning("tools.workers is on but codex is not on PATH; no workers this boot")
         return None
-    roots = tuple(Path(str(r)).expanduser().resolve() for r in block.get("roots") or ())
     workers = Workers(paths.root / "codex.sock", paths.event_log, codex_bin=codex)
-    for worker_tool in make_worker_tools(workers, roots):
+    for worker_tool in make_worker_tools(workers, settings.roots):
         registry.register(worker_tool)
     return workers
 
@@ -2396,15 +2271,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     log_llm_io = config.diagnostics.log_llm_io
     llm_io_log.configure(logs_dir(paths.root) / "llm-io.jsonl" if log_llm_io else None)
     wave1_features = config.realtime.wave1
-    (
-        web_search_max_results,
-        web_fetch_max_bytes,
-        web_fetch_max_text_bytes,
-        web_timeout_s,
-    ) = _web_tools_config(config.raw)
-    web_search_provider, web_search_api_key = _web_search_provider_config(config.raw)
-    _install_open_path(config.raw)
-    vision_preset_name, screen_max_width_px = _screen_tools_config(config.raw)
+    tools = config.tools
+    web_search_provider, web_search_api_key = _web_search_credentials(tools.web)
+    _install_open_path(tools.open_path)
     memory = config.memory
     voiceprint_gate = config.voiceprint_gate  # ADR 0286, read once at boot
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
@@ -2499,7 +2368,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     transit_offers = TransitOffers()  # the list `bus` keeps, and its chat card rows (ADR 0205)
     vision_client = _build_vision_client(
         config.raw,
-        vision_preset_name,
+        tools.vision_preset,
         event_log_path=paths.event_log,
         pricing_path=config.pricing_path,
     )
@@ -2577,23 +2446,23 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         plan_day_ends=config.plan_day_ends,
         ring_before_min=config.remind_before_min,
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
-        obsidian_vault_root=_obsidian_vault_root(config.raw),
-        web_search_max_results=web_search_max_results,
+        obsidian_vault_root=tools.obsidian_vault_root,
+        web_search_max_results=tools.web.search_max_results,
         web_search_provider=web_search_provider,
         web_search_api_key=web_search_api_key,
-        web_fetch_max_bytes=web_fetch_max_bytes,
-        web_fetch_max_text_bytes=web_fetch_max_text_bytes,
-        web_timeout_s=web_timeout_s,
+        web_fetch_max_bytes=tools.web.fetch_max_bytes,
+        web_fetch_max_text_bytes=tools.web.fetch_max_text_bytes,
+        web_timeout_s=tools.web.timeout_s,
         web_deep_search=deep_search,
         vision_client=vision_client,
-        screen_max_width_px=screen_max_width_px,
+        screen_max_width_px=tools.screen_max_width_px,
         device_link=device,
     )
     served = register_catalog(
         build_registry=build_registry,
         offer_devices=partial(device_tools.follow_terminals, terminal_hub, paths.root),
         paths=paths,
-        config=config.raw,
+        workers=tools.workers,
         view=view,
         make_plugins=lambda reg: PluginConnections(
             repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,

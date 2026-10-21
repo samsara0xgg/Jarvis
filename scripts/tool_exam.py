@@ -87,6 +87,7 @@ from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call
 from jarvis.deployment import RuntimePaths, load_env_file
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
 from jarvis.runtime import register_catalog
+from jarvis.runtime.config import WorkersSettings
 from jarvis.runtime.dashboard import ViewState
 from jarvis.runtime.plugin_catalog import read_package
 from jarvis.runtime.plugin_connections import PluginConnections, _Active
@@ -195,7 +196,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
             offer_devices=lambda one: one.offer_device_tools(
                 frozenset(op for _, op in one._device_catalogue.values())  # noqa: SLF001
             ),
-            paths=paths, config=bare, view=ViewState(),
+            paths=paths, workers=WorkersSettings(enabled=False, roots=()), view=ViewState(),
             make_plugins=lambda one: _RecordedPlugins(
                 group, {s: sources.get(s, f"mcp-{s}") for s in servers}, one, bare, base,
             ),
