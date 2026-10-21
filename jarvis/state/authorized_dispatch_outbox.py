@@ -15,6 +15,7 @@ from jarvis.shared.realtime import (
     AlreadyConsumed,
     AuthorizedDispatch,
     ConfirmationConsumptionOutcome,
+    split_authorization_source,
     stable_authorization_identity,
 )
 from jarvis.state.event_log import (
@@ -22,7 +23,7 @@ from jarvis.state.event_log import (
     get_event,
     iter_events_of_types,
 )
-from jarvis.state.projections import PendingConfirmations
+from jarvis.state.projections import PendingConfirmations, requested_calls
 
 if TYPE_CHECKING:
     import sqlite3
@@ -199,14 +200,16 @@ def admit_authorized_dispatch(  # noqa: C901, PLR0912, PLR0915 - atomic fail-clo
         if action_request.action_id != identity.action_id or lease["lease_id"] != identity.lease_id:
             message = "dispatch identity differs from authorization"
             raise ConfirmationRevalidationError(message)  # noqa: TRY301 - atomic transaction owns rollback
-        accepted = get_event(conn, identity.source_confirmation_event_id)
+        accepted_uid, call_index = split_authorization_source(identity.source_confirmation_event_id)
+        accepted = get_event(conn, accepted_uid)
         requested = None if accepted is None or accepted.source_event_id is None else get_event(
             conn, accepted.source_event_id,
         )
-        if requested is None:
+        calls = () if requested is None else requested_calls(requested.payload)
+        if requested is None or call_index >= len(calls):
             message = "confirmation request disappeared"
             raise AuthorizedDispatchCorruptionError(message)  # noqa: TRY301 - atomic transaction owns rollback
-        snapshot = cast("Mapping[str, object]", requested.payload["action_snapshot"])
+        snapshot = cast("Mapping[str, object]", calls[call_index])
         actual = _canonical_request_payload(
             action_request, stable_action_id=identity.action_id, frozen_snapshot=snapshot,
         )
@@ -439,7 +442,8 @@ def _load_frozen_snapshot(
     source_confirmation_event_id: str,
     confirmation_id: str,
 ) -> dict[str, object]:
-    accepted_event = get_event(conn, source_confirmation_event_id)
+    accepted_uid, call_index = split_authorization_source(source_confirmation_event_id)
+    accepted_event = get_event(conn, accepted_uid)
     if accepted_event is None or accepted_event.type != "confirmation.accepted":
         msg = "authorized-dispatch source is not confirmation.accepted"
         raise AuthorizedDispatchCorruptionError(msg)
@@ -457,11 +461,11 @@ def _load_frozen_snapshot(
     if requested_event.payload.get("confirmation_id") != confirmation_id:
         msg = "authorized-dispatch confirmation_id differs from its request"
         raise AuthorizedDispatchCorruptionError(msg)
-    snapshot = requested_event.payload.get("action_snapshot")
-    if not isinstance(snapshot, dict):
+    calls = requested_calls(requested_event.payload)
+    if call_index >= len(calls):
         msg = "authorized-dispatch request has no frozen action snapshot"
         raise AuthorizedDispatchCorruptionError(msg)
-    return snapshot
+    return cast("dict[str, object]", calls[call_index])
 
 
 def _load_valid_gate(
@@ -477,7 +481,7 @@ def _load_valid_gate(
     if gate_event.type != "gate.evaluated":
         msg = "authorized-dispatch debt does not reference gate.evaluated"
         raise AuthorizedDispatchCorruptionError(msg)
-    if gate_event.source_event_id != source_confirmation_event_id:
+    if gate_event.source_event_id != split_authorization_source(source_confirmation_event_id)[0]:
         msg = "authorized-dispatch gate is not sourced by its canonical acceptance"
         raise AuthorizedDispatchCorruptionError(msg)
     expected_payload = {
@@ -595,7 +599,8 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
     lease: AuthorizationLease,
     now_ms: int,
 ) -> tuple[str, Event, Mapping[str, object]]:
-    accepted_event = get_event(conn, source_confirmation_event_id)
+    accepted_uid, call_index = split_authorization_source(source_confirmation_event_id)
+    accepted_event = get_event(conn, accepted_uid)
     if accepted_event is None or accepted_event.type != "confirmation.accepted":
         msg = "source_confirmation_event_id is not a canonical acceptance"
         raise ConfirmationRevalidationError(msg)
@@ -632,7 +637,7 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
         slot is None
         or slot.confirmation_id != confirmation_id
         or slot.state != "accepted_unconsumed"
-        or slot.accepted_event_uid != source_confirmation_event_id
+        or not slot.holds_lease_source(source_confirmation_event_id)
     ):
         msg = "accepted confirmation is stale, superseded, rejected, or already consumed"
         raise ConfirmationRevalidationError(msg)
@@ -690,7 +695,7 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
         msg = "authorization lease does not permit the requested target"
         raise ConfirmationRevalidationError(msg)
 
-    snapshot = slot.snapshot
+    snapshot = slot.calls[call_index]
     if snapshot.get("tool_name") != action_request.tool_name:
         msg = "ActionRequest tool differs from the frozen confirmation snapshot"
         raise ConfirmationRevalidationError(msg)
@@ -781,7 +786,7 @@ def authorize_confirmation_dispatch(  # noqa: PLR0913 - transaction inputs mirro
         raise ConfirmationRevalidationError(msg)
     if (
         gate_source_event_id is not None
-        and gate_source_event_id != source_confirmation_event_id
+        and gate_source_event_id != split_authorization_source(source_confirmation_event_id)[0]
     ):
         msg = "passing gate source must be the canonical acceptance Event UID"
         raise ConfirmationRevalidationError(msg)

@@ -24,13 +24,17 @@
     {
       "said": "yes",
       "after_s": 30,
-      "script": []
+      "script": [
+        {
+          "text": "The exam plugin is removed."
+        }
+      ]
     }
   ],
   "expect": {
     "model_requests": [
       1,
-      0
+      1
     ],
     "events_after": {
       "must": [
@@ -40,6 +44,9 @@
       "must_not": [
         "confirmation.rejected"
       ]
-    }
+    },
+    "text_must": [
+      "removed"
+    ]
   }
 }

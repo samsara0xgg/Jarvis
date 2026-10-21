@@ -296,6 +296,7 @@ from jarvis.state.projections import (
     CLARIFICATION_EVENT_TYPES,
     PendingClarification,
     PendingConfirmations,
+    PendingConfirmationSlot,
     rebuild_projections,
 )
 from jarvis.state.push_tokens import register_body
@@ -364,6 +365,31 @@ _DEFAULT_PORT: int = 8006
 # ADR 0144: how long an ask card from a barge-pause fragment stays off the screen, so a
 # continuation that folds the fragment in (ADR 0074) arrives before it ever shows.
 _FRAGMENT_CARD_HOLD_MS: Final[int] = 1_500
+
+
+def confirmation_card(slot: PendingConfirmationSlot, device: str | None) -> dict[str, Any]:
+    """The waiting confirmation as the phone and the Mac read it (ADR 0062, 0321).
+
+    A card of several calls keeps this shape: its question text is the calls' lines one to a
+    line, and it has no single tool or arguments to show.
+    """
+    first = slot.calls[0]
+    tool = str(first.get("tool_name", ""))
+    args_raw = first.get("args_meta")
+    args = dict(args_raw) if isinstance(args_raw, Mapping) else {}
+    parts = tool.split("__")
+    several = len(slot.calls) > 1
+    return {
+        "id": slot.confirmation_id,
+        "tool": tool,
+        "action": slot.template_line if several else lang.action(tool)[0],
+        "source": parts[1] if len(parts) == 3 and parts[0] == "mcp" else "",  # noqa: PLR2004
+        "letter": not several and lang.letter_to(args) is not None,
+        "args": {} if several else args,
+        "device": device,
+    }
+
+
 _CARD_EVENT_TYPES: Final[tuple[str, ...]] = (
     "confirmation.requested", "confirmation.accepted", "confirmation.rejected", "gate.evaluated",
 )
@@ -929,7 +955,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
             if slot is not None and slot.is_live(int(runtime.clock.time() * 1000)):
                 # ADR-0014: new commentary never overwrites an unresolved
                 # confirmation. The slot is globally unique and its
-                # `action_snapshot` carries no `action_id`, so this is enforced
+                # calls carry no `action_id`, so this is enforced
                 # at the only granularity the fold supports.
                 return None
             if _turn_over_or_answering(conn, turn_id) or (
@@ -2929,19 +2955,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     conn.close()
             if slot is None or not slot.is_live(int(time.time() * 1000)):
                 return {"card": None}
-            tool = str(slot.snapshot.get("tool_name", ""))
-            args_raw = slot.snapshot.get("args_meta")
-            args = dict(args_raw) if isinstance(args_raw, Mapping) else {}
-            parts = tool.split("__")
-            return {"card": {
-                "id": slot.confirmation_id,
-                "tool": tool,
-                "action": lang.action(tool)[0],
-                "source": parts[1] if len(parts) == 3 and parts[0] == "mcp" else "",  # noqa: PLR2004
-                "letter": lang.letter_to(args) is not None,
-                "args": args,
-                "device": device,
-            }}
+            return {"card": confirmation_card(slot, device)}
 
         def _decide_card(
             confirmation_id: str, decision: str, edits: dict[str, str], device: str,

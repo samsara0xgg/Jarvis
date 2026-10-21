@@ -31,6 +31,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Literal
 
+from jarvis.shared.realtime import authorization_source, split_authorization_source
 from jarvis.state.conversation import (
     ConversationFold,
     ConversationHistory,
@@ -354,11 +355,12 @@ class PendingConfirmationSlot:
             hook (Step 6) binds "是"/"不要" to this id; an
             accepted/rejected event naming a different id does not
             move this slot (see :func:`_fold_pending_confirmations`).
-        snapshot: The `action_snapshot` payload dict, stored verbatim —
-            no transformation. It already excludes the write content
-            (staged to an artifact per §3 D3; `args_meta` carries
-            `content_artifact`, the staged path), so there is nothing
-            left to strip.
+        calls: The frozen calls of the card, stored verbatim from the
+            `confirmation.requested` payload (ADR 0321): each is the
+            six-key snapshot of ADR-0012 §3 D3 plus its own `question`.
+            An event written before one card could hold several calls
+            has the one `action_snapshot` instead, read here as a card
+            of one call.
         template_line: The exact rendered action line from
             `confirmation.requested.payload["template_line"]` — durable
             so consent binds to recorded machine truth (§3 D3).
@@ -373,26 +375,41 @@ class PendingConfirmationSlot:
             event that moved this slot to `accepted_unconsumed`, or
             `None` if it never has been. This is the join key D2.4's
             first half needs: a minted `AuthorizationLease`'s
-            `source_confirmation_event_id` is set (D6) to exactly this
-            uid, and Step 6's gate check matches the lease against this
-            field to confirm "references a confirmation this
-            projection shows as accepted" — a distinct check from
-            `consumed_lease_ids`, which only prevents replaying an
-            already-spent `lease_id` and has no way to validate that a
-            lease's `source_confirmation_event_id` was ever a real
-            acceptance in the first place.
+            `source_confirmation_event_id` is set (D6) to this uid, or,
+            for the card's later calls, to `uid#<index>`
+            (:func:`jarvis.shared.realtime.authorization_source`), and
+            Step 6's gate check matches the lease against
+            :meth:`holds_lease_source` to confirm "references a
+            confirmation this projection shows as accepted" — a distinct
+            check from `consumed_lease_ids`, which only prevents
+            replaying an already-spent `lease_id` and has no way to
+            validate that a lease's `source_confirmation_event_id` was
+            ever a real acceptance in the first place.
+        leases_spent: How many passing leased gates the log holds since
+            the acceptance. The slot is `consumed` when every call's
+            lease is spent.
         utterances_since: How many user utterances (`surface.user_intent`
             / `utterance.received`) the log holds after the ask. The one
             being handled is already appended, so the first answer sees 1.
     """
 
     confirmation_id: str
-    snapshot: Mapping[str, Any]
+    calls: tuple[Mapping[str, Any], ...]
     template_line: str
     expires_at_ms: int
     state: PendingConfirmationState
     accepted_event_uid: str | None = None
     utterances_since: int = 0
+    leases_spent: int = 0
+
+    def holds_lease_source(self, source: str) -> bool:
+        """Whether ``source`` keys one call of this slot's acceptance (ADR 0321)."""
+        if self.accepted_event_uid is None:
+            return False
+        uid, index = split_authorization_source(source)
+        return uid == self.accepted_event_uid and index < len(self.calls) and (
+            authorization_source(uid, index) == source
+        )
 
     def is_live(self, now_ms: int) -> bool:  # noqa: ARG002 — callers pass their clock; ADR 0062 dropped the deadline here.
         """True iff this slot is a still-pending ask: its card waits (ADR 0062).
@@ -445,18 +462,31 @@ class PendingConfirmations:
         return _fold_pending_confirmations(events)
 
 
+def requested_calls(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """The frozen calls of a `confirmation.requested` payload; none when it is malformed.
+
+    ADR 0321: `calls`, each with its own `question`. A row written before that holds the one
+    `action_snapshot`, which is a card of one call.
+    """
+    calls = payload.get("calls")
+    if isinstance(calls, list):
+        return tuple(calls) if calls and all(isinstance(one, dict) for one in calls) else ()
+    snapshot = payload.get("action_snapshot")
+    return (snapshot,) if isinstance(snapshot, dict) else ()
+
+
 def _pending_slot_from_requested(event: Event) -> PendingConfirmationSlot | None:
     payload = event.payload
-    identity, snapshot = payload.get("confirmation_id"), payload.get("action_snapshot")
+    identity, calls = payload.get("confirmation_id"), requested_calls(payload)
     template, expiry = payload.get("template_line"), payload.get("expires_at_ms")
     if (
         not isinstance(identity, str) or not identity
-        or not isinstance(snapshot, dict) or not isinstance(template, str)
+        or not calls or not isinstance(template, str)
         or type(expiry) is not int
     ):
         return None  # A malformed successor cannot leave an older ask executable.
     return PendingConfirmationSlot(
-        confirmation_id=identity, snapshot=snapshot, template_line=template,
+        confirmation_id=identity, calls=calls, template_line=template,
         expires_at_ms=expiry, state="pending", accepted_event_uid=None,
     )
 
@@ -503,9 +533,10 @@ def _fold_pending_confirmations(  # noqa: C901, PLR0912 - a flat one-branch-per-
       (every passing leased gate evaluation is a real consumption, not
       just ones tied to the current slot), AND, only when the current
       slot is `accepted_unconsumed`, moves it to `consumed`
-      (`accepted_event_uid` is left untouched by this transition — it
-      still and forever names the event that authorized the now-spent
-      slot).
+      once every call of the card has spent its lease (ADR 0321: one
+      lease per call) (`accepted_event_uid` is left untouched by this
+      transition — it still and forever names the event that
+      authorized the now-spent slot).
     A non-`"pass"` outcome never consumes, even carrying a `lease_id` —
     a refused gate did not spend the lease.
     """
@@ -544,7 +575,11 @@ def _fold_pending_confirmations(  # noqa: C901, PLR0912 - a flat one-branch-per-
             if isinstance(lease_id, str) and lease_id:
                 consumed_lease_ids.add(lease_id)
                 if slot is not None and slot.state == "accepted_unconsumed":
-                    slot = replace(slot, state="consumed")
+                    spent = slot.leases_spent + 1
+                    slot = replace(
+                        slot, leases_spent=spent,
+                        state="consumed" if spent >= len(slot.calls) else slot.state,
+                    )
 
     return PendingConfirmations(slot=slot, consumed_lease_ids=frozenset(consumed_lease_ids))
 
@@ -780,4 +815,5 @@ __all__ = [
     "RepoObservation",
     "StatusBoard",
     "rebuild_projections",
+    "requested_calls",
 ]

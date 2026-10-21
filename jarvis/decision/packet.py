@@ -180,16 +180,16 @@ def format_pending_confirmation_note(
     if slot is None or not slot.is_live(resolved_now_ms):
         return None
 
-    tool_name = slot.snapshot.get("tool_name", "?")
-    arguments = json.dumps(slot.snapshot.get("args_meta", {}), ensure_ascii=False)
-    if len(arguments) > _NOTE_ARGUMENTS_CHARS:
-        arguments = f"{arguments[:_NOTE_ARGUMENTS_CHARS]}…"
+    calls = []
+    for call in slot.calls:
+        arguments = json.dumps(call.get("args_meta", {}), ensure_ascii=False)
+        if len(arguments) > _NOTE_ARGUMENTS_CHARS:
+            arguments = f"{arguments[:_NOTE_ARGUMENTS_CHARS]}…"
+        calls.append(f"{call.get('tool_name', '?')} {arguments}")
     return (
-        f"A card is waiting for the user's button: {tool_name} {arguments}. "
+        f"A card is waiting for the user's button: {'; '.join(calls)}. "
         "You cannot run or authorize it yourself; only the user's button or direct answer "
-        "counts. To change it, or when the user asks you to go ahead with it, call the same "
-        "tool again with the arguments it should have: that replaces the card and asks once more. "
-        "To take it down without running it, call dismiss_card."
+        "counts. To take it down without running it, call dismiss_card."
     )
 
 

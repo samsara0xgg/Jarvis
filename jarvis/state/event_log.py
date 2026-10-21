@@ -1150,28 +1150,29 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # (`_handle_utterance`'s pre-tier_0 grammar hook) live in
     # `jarvis/decision/__init__.py`.
     EventTypeSchema(
-        # `action_snapshot` is a frozen dict; the registry only
-        # validates top-level payload keys, so its inner shape is
-        # documented here for Step 5 (the ask path, which freezes it)
-        # and Step 6 (the answer path, which re-reads it to rebuild the
-        # ActionRequest). Per ADR-0012 §3 D3 the snapshot carries six
-        # keys: tool_name (the proposed tool's name); caller (the
-        # caller_principal value); canonical_target (the resolved
-        # path/target); target_entity_ref (the resolved entity ref, or
-        # null); risk_level (one of L0 through L4); and args_meta, the
-        # proposed arguments, unchanged (ADR 0033). Rows written before the
-        # file-writing tool was deleted may carry content_sha256, content_bytes
+        # ADR 0321: `calls` is a list of frozen dicts, one per call the card asks for; the
+        # registry only validates top-level payload keys, so the inner shape is documented
+        # here for the ask path (which freezes it) and the answer path (which re-reads it to
+        # rebuild each ActionRequest). Per ADR-0012 §3 D3 each call carries six keys:
+        # tool_name (the proposed tool's name); caller (the caller_principal value);
+        # canonical_target (the resolved path/target); target_entity_ref (the resolved entity
+        # ref, or null); risk_level (one of L0 through L4); and args_meta, the proposed
+        # arguments, unchanged (ADR 0033); and a seventh, `question`, that call's own line of
+        # the card. `template_line` is the whole card's text, the questions one to a line.
+        # A row written before ADR 0321 holds the one call as `action_snapshot` (without
+        # `question`) instead of `calls`, and still folds as a card of one call; a row with
+        # neither asks for nothing and the fold ignores it. Rows written
+        # before the file-writing tool was deleted may carry content_sha256, content_bytes
         # and content_artifact in place of its `content` argument.
         event_type="confirmation.requested",
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=(
             "confirmation_id",
-            "action_snapshot",
             "template_line",
             "expires_at_ms",
         ),
-        optional_payload=(),
+        optional_payload=("calls", "action_snapshot"),
         schema_version=1,
     ),
     EventTypeSchema(

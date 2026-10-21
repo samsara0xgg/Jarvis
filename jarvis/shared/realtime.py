@@ -331,6 +331,21 @@ class StableAuthorizationIdentity:
     dispatch_id: str
 
 
+def authorization_source(accepted_event_uid: str, call_index: int) -> str:
+    """The key one call of an accepted card is authorized under (ADR 0321).
+
+    A card with several calls has one ``confirmation.accepted`` and one lease per call: the
+    first call keeps the acceptance's own uid, so a card of one call is keyed as it always was.
+    """
+    return accepted_event_uid if call_index == 0 else f"{accepted_event_uid}#{call_index}"
+
+
+def split_authorization_source(source: str) -> tuple[str, int]:
+    """``authorization_source``'s inverse: the acceptance's uid and the call's index."""
+    uid, _, index = source.partition("#")
+    return uid, int(index) if index else 0
+
+
 def stable_authorization_identity(
     source_confirmation_event_id: str,
 ) -> StableAuthorizationIdentity:
@@ -443,8 +458,10 @@ __all__ = [
     "TerminalOutcome",
     "Wave1FeatureFlags",
     "Wave4ResponseFlags",
+    "authorization_source",
     "new_log_epoch",
     "new_response_id",
+    "split_authorization_source",
     "stable_authorization_identity",
     "stable_legacy_presentation_binding",
     "stable_response_group_id",

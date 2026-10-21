@@ -69,6 +69,7 @@ from jarvis.shared import CallerPrincipal
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.decision_snapshot import read_decision_snapshot
 from jarvis.state.event_log import emit_event
+from jarvis.state.projections import requested_calls
 from scripts.replay_decision import _client, history_of
 from scripts.tool_exam import (
     _SECRET,
@@ -570,12 +571,14 @@ def _events_after(runtime: JarvisRuntime, after: int) -> list[dict[str, Any]]:
         "SELECT payload_json FROM events WHERE id > ? AND type = 'confirmation.requested' "
         "ORDER BY id", (after,),
     ).fetchall()
-    out = []
+    out: list[dict[str, Any]] = []
     for (raw,) in rows:
         payload = json.loads(raw)
-        snap = payload.get("action_snapshot") or {}
-        out.append({"tool": snap.get("tool_name"), "args": snap.get("args_meta"),
-                    "line": payload.get("template_line")})
+        out.extend(
+            {"tool": snap.get("tool_name"), "args": snap.get("args_meta"),
+             "line": payload.get("template_line")}
+            for snap in requested_calls(payload)
+        )
     return out
 
 

@@ -25,11 +25,13 @@ Layer rules: stdlib only.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Final, Literal, get_args
+from string import Formatter
+from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 
 from jarvis.shared.text import is_english
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from datetime import date, datetime
 
 Language = Literal["zh", "en"]
@@ -186,6 +188,52 @@ def action(tool_name: str, lang: Language | None = None) -> tuple[str, str]:
     return (f"执行 {spoken}", f"已执行 {spoken}") if lang == "zh" else (f"run {spoken}", f"Ran {spoken}")
 
 
+def _fields(template: str) -> set[str]:
+    """The names a ``str.format`` template asks for."""
+    return {name for _, name, _, _ in Formatter().parse(template) if name}
+
+
+_ARGS_SHOWN: Final = 6
+_VALUE_CHARS: Final = 200
+_ARGS_VALUE_CHARS: Final = 60
+
+
+def _in_words(value: object, lang: Language, limit: int = _VALUE_CHARS) -> str:
+    """One argument value as a person would say it, cut at ``limit`` characters."""
+    if isinstance(value, bool):
+        return ("是" if value else "否") if lang == "zh" else ("yes" if value else "no")
+    if isinstance(value, list):
+        return ("、" if lang == "zh" else ", ").join(_in_words(one, lang, limit) for one in value)
+    flat = " ".join(str(value).split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None = None) -> str:
+    """The question a confirmation card puts for one call (ADR 0321).
+
+    A letter says to whom and about what; a tool with a card template (``confirm.ask.<tool>``)
+    fills it from the arguments; any other names its arguments in words, and a call with none
+    only names what it does.
+    """
+    lang = lang or _current
+    to = letter_to(dict(arguments))
+    if to is not None:
+        return t("confirm.ask_letter", lang=lang, to=to, subject=arguments["subject"])
+    shown = {key: _in_words(value, lang) for key, value in arguments.items()}
+    key = f"confirm.ask.{tool_name}"
+    if key in TEXT and _fields(TEXT[key][lang]) <= shown.keys():
+        return t(key, lang=lang, **shown)
+    named = action(tool_name, lang)[0]
+    if not shown:
+        return t("confirm.ask_tool", lang=lang, action=named)
+    pairs = [
+        f"{name}{'：' if lang == 'zh' else ': '}{_in_words(value, lang, _ARGS_VALUE_CHARS)}"
+        for name, value in arguments.items()
+    ]
+    cut = pairs[:_ARGS_SHOWN] + (["…"] if len(pairs) > _ARGS_SHOWN else [])
+    return t("confirm.ask_args", lang=lang, action=named, args=("，" if lang == "zh" else ", ").join(cut))
+
+
 def letter_to(arguments: object) -> str | None:
     """The recipients when a tool call's arguments are a letter (to, subject, body), else None."""
     if not isinstance(arguments, dict):
@@ -269,11 +317,23 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     # ADR-0012 / ADR 0033 confirmation asks and answers.
     # ADR 0062: the ask under a card is one spoken line; the card shows the rest.
     "confirm.ask_tool": {"zh": "要{action}吗？", "en": "Shall I {action}?"},
+    # ADR 0321: a tool with no card template of its own names its arguments in words.
+    "confirm.ask_args": {"zh": "要{action}（{args}）吗？", "en": "Shall I {action} ({args})?"},
+    # ADR 0321: a card template per tool, ``confirm.ask.<tool>``, filled from the call's arguments.
+    "confirm.ask.spawn_worker": {
+        "zh": "在 {cwd} 里派一个后台任务：{message}。要派吗？",
+        "en": "Start a background task in {cwd}: {message}. Go ahead?",
+    },
+    "confirm.ask.remove_plugin": {
+        "zh": "删掉插件 {plugin_id} 的登录和保存的 key。要删吗？",
+        "en": "Remove the plugin {plugin_id} and delete its login and saved keys. Go ahead?",
+    },
     "confirm.ask_letter": {
         "zh": "信写好了，发给 {to}，主题「{subject}」。要发吗？",
         "en": 'The email to {to} is ready, subject "{subject}". Send it?',
     },
     "confirm.rejected": {"zh": "好，不{action}了。", "en": "OK, I won't {action}."},
+    "confirm.rejected_all": {"zh": "好，这几件都不做了。", "en": "OK, I won't do any of these."},
     "confirm.tool_gone": {
         "zh": "无法执行：工具已不可用，未执行。",
         "en": "Can't run it: the tool is no longer available. Nothing was run.",
@@ -282,8 +342,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "已取消：重新检查未通过（{outcome}），未执行。",
         "en": "Cancelled: the recheck did not pass ({outcome}). Nothing was run.",
     },
-    "confirm.dispatch_error": {"zh": "执行出错：{error}", "en": "It failed: {error}"},
-    "confirm.tool_ran": {"zh": "{done}。", "en": "{done}."},
     "confirm.stale": {
         "zh": "这张卡已经处理过或被换掉了，没有执行。",
         "en": "That card was already handled or replaced; nothing ran.",

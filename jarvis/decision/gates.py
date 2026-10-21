@@ -547,8 +547,8 @@ def _lease_single_use_ok(
 
     slot = pending_confirmations.slot
     confirmation_id = slot.confirmation_id if slot is not None else None
-    accepted_match = (
-        slot is not None and slot.accepted_event_uid == lease["source_confirmation_event_id"]
+    accepted_match = slot is not None and slot.holds_lease_source(
+        lease["source_confirmation_event_id"],
     )
     already_consumed = lease["lease_id"] in pending_confirmations.consumed_lease_ids
 

@@ -838,7 +838,8 @@ def dismiss_card(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
                 grammar_rule_id="card_withdrawn",
                 correlation={"turn_id": turn_id} if turn_id else None,
             )
-            down.append(f"the {slot.snapshot.get('tool_name', '')} confirmation card (not run)")
+            names = ", ".join(str(call.get("tool_name", "")) for call in slot.calls)
+            down.append(f"the {names} confirmation card (not run)")
         except ConfirmationRevalidationError:
             late = True
     question = PendingClarification.from_events(

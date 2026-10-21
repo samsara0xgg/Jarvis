@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from jarvis.decision.llm import LLMClient
 
 REPO = Path(__file__).resolve().parents[2]
-ASK = "要派这个后台任务吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
+ASK = "里派一个后台任务：fix the typo in README。要派吗？"  # noqa: RUF001 — the tail of the card's Chinese ask, which names the folder and the task (ADR 0321).
 
 
 @dataclass(frozen=True)

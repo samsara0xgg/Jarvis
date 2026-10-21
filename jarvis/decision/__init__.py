@@ -124,9 +124,14 @@ from jarvis.shared import (
 )
 from jarvis.shared.about import clean_about, prompt_title
 from jarvis.shared.html_tags import HtmlTagFilter, strip_html
-from jarvis.shared.lang import action, is_filler, letter_to, reply_language, t
+from jarvis.shared.lang import action, ask_line, is_filler, reply_language, t
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
-from jarvis.shared.realtime import AlreadyConsumed, Wave1FeatureFlags, stable_authorization_identity
+from jarvis.shared.realtime import (
+    AlreadyConsumed,
+    Wave1FeatureFlags,
+    authorization_source,
+    stable_authorization_identity,
+)
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
 from jarvis.shared.receipts import only_reads, said
 from jarvis.shared.text import is_english, truncate_utf8
@@ -728,6 +733,18 @@ class DecideResult:
 # --- Internal scratch state for one decide() invocation --------------------
 
 
+@dataclass(frozen=True)
+class _FrozenCall:
+    """One call that needs consent, frozen as proposed (ADR 0321).
+
+    ``snapshot`` is the six keys of ADR-0012 §3 D3 plus the call's own ``question`` line.
+    """
+
+    snapshot: dict[str, Any]
+    gate_event_uid: str
+    correlation: Mapping[str, str]
+
+
 @dataclass
 class _Scratch:
     """Per-call mutable accumulator used to keep ``decide()`` readable.
@@ -745,6 +762,9 @@ class _Scratch:
     # on scratch (not a local in either function) because the value is
     # produced deep in the tool-dispatch loop and consumed one frame up.
     pending_confirmation_template_line: str | None = None
+    # ADR 0321: the calls of this turn's response that need a card, frozen as proposed; the
+    # one card that lists them is asked for when the response's calls have all been handled.
+    frozen_calls: list[_FrozenCall] = field(default_factory=list)
     # ADR-0012 D6: True once `_handle_confirmation_accepted` /
     # `_handle_confirmation_rejected` has run this turn (any outcome —
     # success, hash-mismatch abort, gate-refuse abort, dispatch error,
@@ -1886,7 +1906,9 @@ def _run_tool_use_loop(
                 # per D4 "further L3 proposals in the same turn get the
                 # synthetic refuse result").
 
-            turn_ending_draft = _turn_ending_draft(scratch, _reply_text(chat_result.text, scratch))
+            turn_ending_draft = _turn_ending_draft(
+                ctx, scratch, _reply_text(chat_result.text, scratch),
+            )
             if turn_ending_draft is not None:
                 return _finalize_response(turn_ending_draft, packet, ctx, scratch)
 
@@ -1998,17 +2020,21 @@ def _answer_after_tool_budget(
     return clean.strip() or t("tool_budget.exhausted", lang=scratch.lang)
 
 
-def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
+def _turn_ending_draft(
+    ctx: DecideContext, scratch: _Scratch, llm_text: str | None,
+) -> str | None:
     """The draft that ends the tool loop this turn, or None to keep looping.
 
-    ADR-0012 D5: the first ``confirm_required`` ends the tool loop here —
+    ADR-0012 D5, ADR 0321: a response whose calls froze a card ends the tool loop here —
     no more LLM calls this turn, regardless of which tool_call in the
-    batch (or which loop iteration) triggered it. The draft is THIS
+    batch (or which loop iteration) triggered it. The card is asked for first (one card for
+    all the response's frozen calls). The draft is THIS
     response's own LLM text (optional 铺垫, if any — goes through the
     normal Pre-emit Gate scrub like any other draft) plus the
-    runtime-rendered template line frozen at staging time
-    (`_stage_and_request_confirmation`), never composed by the LLM.
+    runtime-rendered template line frozen at staging time, never composed by the LLM.
     """
+    if scratch.frozen_calls:
+        _ask_for_frozen_calls(ctx, scratch)
     if _confirmation_already_requested_this_turn(scratch):
         llm_preamble = (llm_text or "").strip()
         template_line = scratch.pending_confirmation_template_line or ""
@@ -2031,18 +2057,6 @@ def _turn_ending_draft(scratch: _Scratch, llm_text: str | None) -> str | None:
 _CONFIRM_REQUIRED_TOOL_RESULT_TEXT: Final[str] = (
     "Waiting for the user's confirmation; it cannot run this turn"
 )
-
-# ADR 0033 / 0062: a tool at the threshold gets one spoken line,
-# rendered from the frozen arguments only; the card shows the arguments.
-
-
-def _ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None) -> str:
-    """``confirm.ask_letter`` for a letter (to, subject, body), else ``confirm.ask_tool``."""
-    to = letter_to(dict(arguments))
-    if to is not None:
-        return t("confirm.ask_letter", lang=lang, to=to, subject=arguments["subject"])
-    return t("confirm.ask_tool", lang=lang, action=action(tool_name, lang)[0])
-
 
 _TIER0_SPOKEN_PREVIEW_MAX_BYTES: Final[int] = 200
 """MUST-FIX 2b (ADR-0011 §12): a Tier 0 template's tool-payload values
@@ -2386,28 +2400,12 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     )
     scratch.events.append(gate_event)
 
-    # ADR-0012 D5/D4: the FIRST `confirm_required` this turn freezes an
-    # ask and ends the tool loop. Checked before the generic
-    # `!= "pass"` handling below, which a second-or-later
-    # `confirm_required` in the same turn falls through to (D4: "只有
-    # 第一个 confirm_required 变成 ask, 之后的 L3 proposal 得到 synthetic
-    # refuse result") — that generic refuse is exactly what already
-    # happens for `gate_outcome == "confirm_required"` there, so no
-    # separate refuse text is needed for the second+ case.
-    if gate_outcome == "confirm_required" and not _confirmation_already_requested_this_turn(
-        scratch,
-    ):
-        confirmation_event = _request_confirmation(
-            ctx,
-            action_request=action_request,
-            tool_def=tool_def,
-            source_event_id=gate_event.event_uid,
-            lang=scratch.lang,
-        )
-        scratch.events.append(confirmation_event)
-        scratch.pending_confirmation_template_line = str(
-            confirmation_event.payload["template_line"],
-        )
+    # ADR 0321: every `confirm_required` call of this response is frozen as proposed; the one
+    # card that lists them is asked for once the response's calls have all been handled
+    # (`_turn_ending_draft`), and the tool loop ends there. The model is told the same thing
+    # for each, and a call it makes twice in one response is frozen once.
+    if gate_outcome == "confirm_required":
+        _freeze_call(action_request, tool_def, gate_event, scratch)
         messages.append(
             _tool_result_message(
                 call_id=call_id,
@@ -3341,7 +3339,7 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
                     lead_in=line,
                 )
             line = None
-            ending = _turn_ending_draft(scratch, reply.text)
+            ending = _turn_ending_draft(ctx, scratch, reply.text)
             if ending is not None:
                 return _finish_spoken(packet, ctx, route, speaker, scratch, draft=ending)
             packet = assemble_packet(packet.trigger_event, ctx.conn, ctx.read_snapshot)
@@ -3886,52 +3884,91 @@ def _action_correlation(action_request: ActionRequest) -> Mapping[str, str]:
 
 
 def _confirmation_already_requested_this_turn(scratch: _Scratch) -> bool:
-    """True iff a ``confirmation.requested`` already rides ``scratch.events``.
+    """True iff this turn asked for a card, or left the one already waiting as it was.
 
-    ADR-0012 D4: only the FIRST ``confirm_required`` this turn becomes
-    an ask; every later one falls through to the generic gate-refuse
-    handling instead. Mirrors ``_finalize_response``'s
-    ``limitation_emitted`` scan — a turn-scoped event-log scan, not a
-    persisted flag, so it is naturally correct across the tool-use
-    loop's iterations without any extra bookkeeping.
+    ADR 0321: the card line is stamped on the scratch when the ask is made; a re-ask of the
+    same calls emits no event but ends the turn the same way.
     """
-    return any(ev.type == "confirmation.requested" for ev in scratch.events)
+    return scratch.pending_confirmation_template_line is not None
 
 
-def _request_confirmation(
-    ctx: DecideContext,
-    *,
-    action_request: ActionRequest,
-    tool_def: ToolLike,
-    source_event_id: str,
-    lang: Language | None,
-) -> Event:
-    """Freeze the call as proposed and emit the ask (ADR 0033).
+def _frozen_snapshot(
+    action_request: ActionRequest, tool_def: ToolLike, lang: Language | None,
+) -> dict[str, Any]:
+    """One call frozen as proposed (ADR 0033, 0321).
 
-    The snapshot carries the tool, its caller, its target ref, its risk and its arguments
-    as the model gave them; ``template_line`` is rendered from the snapshot, never from LLM
-    text, and the ask expires ``ctx.confirmation_ttl_ms`` from now.
+    The snapshot carries the tool, its caller, its target ref, its risk and its arguments as
+    the model gave them, and the call's own question line, rendered from them and never from
+    LLM text.
     """
-    snapshot: dict[str, Any] = {
+    return {
         "tool_name": action_request.tool_name,
         "caller": action_request.caller_principal.value,
         "canonical_target": "",
         "target_entity_ref": action_request.target_entity_ref,
         "risk_level": tool_def.risk_level,
         "args_meta": dict(action_request.arguments),
+        "question": ask_line(action_request.tool_name, action_request.arguments, lang),
     }
-    return emit_event(
+
+
+def _freeze_call(
+    action_request: ActionRequest, tool_def: ToolLike, gate_event: Event, scratch: _Scratch,
+) -> None:
+    """Add the call to this response's frozen calls, once however often the model repeats it."""
+    snapshot = _frozen_snapshot(action_request, tool_def, scratch.lang)
+    if all(
+        _call_identity(snapshot) != _call_identity(frozen.snapshot)
+        for frozen in scratch.frozen_calls
+    ):
+        scratch.frozen_calls.append(
+            _FrozenCall(snapshot, gate_event.event_uid, _action_correlation(action_request)),
+        )
+
+
+def _call_identity(call: Mapping[str, Any]) -> tuple[str, str]:
+    """A call as a card compares it: its tool and its arguments in canonical form."""
+    arguments = json.dumps(
+        call.get("args_meta", {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    return str(call.get("tool_name", "")), arguments
+
+
+def _card_line(calls: Sequence[Mapping[str, Any]]) -> str:
+    """The one line of a card: each call's question on its own line."""
+    return "\n".join(str(call["question"]) for call in calls)
+
+
+def _ask_for_frozen_calls(ctx: DecideContext, scratch: _Scratch) -> None:
+    """Put this response's frozen calls on one card, unless the waiting card already is that.
+
+    ADR 0321: a later ask replaces the waiting card only if its set of calls differs. The same
+    calls again leave the card, its line and its TTL as they are, and the model is told the
+    same thing. The card's TTL bounds only his words (ADR 0062).
+    """
+    snapshots = [frozen.snapshot for frozen in scratch.frozen_calls]
+    slot = _current_state(ctx).projections.pending_confirmations.slot
+    if slot is not None and slot.is_live(_now_epoch_ms()) and sorted(
+        map(_call_identity, slot.calls),
+    ) == sorted(map(_call_identity, snapshots)):
+        scratch.pending_confirmation_template_line = slot.template_line
+        return
+    first = scratch.frozen_calls[0]
+    line = _card_line(snapshots)
+    event = emit_event(
         ctx.conn,
         type="confirmation.requested",
         payload={
             "confirmation_id": _new_confirmation_id(),
-            "action_snapshot": snapshot,
-            "template_line": _ask_line(action_request.tool_name, action_request.arguments, lang),
+            "calls": snapshots,
+            "template_line": line,
             "expires_at_ms": _now_epoch_ms() + ctx.confirmation_ttl_ms,
         },
-        source_event_id=source_event_id,
-        correlation=_action_correlation(action_request),
+        source_event_id=first.gate_event_uid,
+        correlation=first.correlation,
     )
+    scratch.events.append(event)
+    scratch.pending_confirmation_template_line = line
 
 
 def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments and the card's two settings.
@@ -3945,7 +3982,7 @@ def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments an
 ) -> str | None:
     """Put a card on screen for a call Allen himself started, with no model turn (ADR 0148).
 
-    Freezes ``arguments`` exactly as ``_request_confirmation`` does;
+    Freezes ``arguments`` exactly as ``_ask_for_frozen_calls`` does;
     his button then runs the usual answer path (lease, gate, dispatch). The confirmation id,
     or None when the tool is not on the menu or does not ask first.
     """
@@ -3953,20 +3990,22 @@ def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments an
     if tool_def is None or not tool_def.requires_confirmation:
         return None
     confirmation_id = _new_confirmation_id()
+    call = {
+        "tool_name": tool_name,
+        "caller": CallerPrincipal.JARVIS_LLM.value,
+        "canonical_target": "",
+        "target_entity_ref": None,
+        "risk_level": tool_def.risk_level,
+        "args_meta": dict(arguments),
+        "question": ask_line(tool_name, arguments, lang),
+    }
     emit_event(
         conn,
         type="confirmation.requested",
         payload={
             "confirmation_id": confirmation_id,
-            "action_snapshot": {
-                "tool_name": tool_name,
-                "caller": CallerPrincipal.JARVIS_LLM.value,
-                "canonical_target": "",
-                "target_entity_ref": None,
-                "risk_level": tool_def.risk_level,
-                "args_meta": dict(arguments),
-            },
-            "template_line": _ask_line(tool_name, arguments, lang),
+            "calls": [call],
+            "template_line": call["question"],
             "expires_at_ms": _now_epoch_ms() + ttl_ms,
         },
     )
@@ -4086,9 +4125,13 @@ def _revise_confirmation(
     """Freeze Allen's edits as a new ask for the same tool and target (ADR 0062).
 
     Only a string argument the ask already had can be replaced, and only by a
-    string. Returns the new pending slot, or ``slot`` unchanged when nothing differs.
+    string; a card of several calls takes no edits. Returns the new pending slot, or
+    ``slot`` unchanged when nothing differs.
     """
-    args_meta_raw = slot.snapshot.get("args_meta")
+    if len(slot.calls) != 1:
+        return slot
+    (call,) = slot.calls
+    args_meta_raw = call.get("args_meta")
     args_meta = dict(args_meta_raw) if isinstance(args_meta_raw, Mapping) else {}
     changed = {
         key: value
@@ -4100,15 +4143,16 @@ def _revise_confirmation(
     if not changed:
         return slot
     arguments = {**args_meta, **changed}
-    tool_name = str(slot.snapshot.get("tool_name", ""))
+    tool_name = str(call.get("tool_name", ""))
+    question = ask_line(tool_name, arguments, scratch.lang)
     correlation = {"turn_id": scratch.turn_id} if scratch.turn_id else None
     emit_event(
         ctx.conn,
         type="confirmation.requested",
         payload={
             "confirmation_id": _new_confirmation_id(),
-            "action_snapshot": {**slot.snapshot, "args_meta": arguments},
-            "template_line": _ask_line(tool_name, arguments, scratch.lang),
+            "calls": [{**call, "args_meta": arguments, "question": question}],
+            "template_line": question,
             "expires_at_ms": _now_epoch_ms() + ctx.confirmation_ttl_ms,
         },
         source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
@@ -4136,7 +4180,7 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     — :meth:`PendingConfirmationSlot.is_live` is false for any
     non-``"pending"`` state, so this exact slot can never be answered
     again (a later 「可以」 either hits a NEWER slot or, with none
-    pending, is an ordinary utterance).
+    pending, is an ordinary utterance). A card of several calls is rejected whole.
     """
     try:
         rejected_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
@@ -4146,15 +4190,42 @@ def _handle_confirmation_rejected(  # noqa: PLR0913 — one keyword per D6 answe
     scratch.events.append(rejected_event)
     scratch.confirmation_answered_this_turn = True
 
-    draft = t(
-        "confirm.rejected",
-        lang=scratch.lang,
-        action=action(str(slot.snapshot.get("tool_name", "")), scratch.lang)[0],
-    )
+    if len(slot.calls) == 1:
+        draft = t(
+            "confirm.rejected",
+            lang=scratch.lang,
+            action=action(str(slot.calls[0].get("tool_name", "")), scratch.lang)[0],
+        )
+    else:
+        draft = t("confirm.rejected_all", lang=scratch.lang)
     return _finalize_response(draft, packet, ctx, scratch)
 
 
-def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one audited accept/gate/dispatch trace with explicit fail-closed exits.
+@dataclass(frozen=True)
+class _AcceptedCall:
+    """One call of an accepted card: what ran, or why nothing did (ADR 0321).
+
+    ``result`` is the dispatcher's, ``None`` when the call never reached dispatch; ``fixed`` is
+    then the language-table line for the user and ``why`` the English reason the model reads.
+    """
+
+    call: Mapping[str, Any]
+    arguments: Mapping[str, Any]
+    result: RawResult | None = None
+    fixed: str | None = None
+    why: str = ""
+
+
+_WHY_GONE: Final[str] = "not run: the tool is no longer available"
+_WHY_REFUSED: Final[str] = "not run: the check before running did not pass"
+_WHY_HANDLED: Final[str] = "not run again: this authorization was already used"
+_CARD_BUTTON_NOTE: Final[str] = (
+    "[Runtime note, not the user's words] The user pressed the button on your confirmation "
+    "card, and the calls on it ran. Their results follow."
+)
+
+
+def _handle_confirmation_accepted(  # noqa: PLR0913 — one keyword per D6 answer-path input; each is load-bearing.
     slot: PendingConfirmationSlot,
     grammar_hit: ConfirmGrammarHit,
     transcript: str,
@@ -4163,31 +4234,12 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
     ctx: DecideContext,
     scratch: _Scratch,
 ) -> DecideResult:
-    """ADR-0012 D6 yes-branch: accept -> mint lease -> re-propose -> gate -> dispatch.
+    """ADR-0012 D6 yes-branch: accept -> mint a lease per call -> re-propose -> gate -> dispatch.
 
-    This is the ONE function in L3 that constructs an
-    ``AuthorizationLease`` (see the section banner above this
-    function). Steps, each mirroring the equivalent stage of the
-    ordinary LLM-driven dispatch in ``_dispatch_one_tool_call`` (steps
-    3-7b) so the audit chain reads the same way regardless of which
-    path produced it:
-
-    1. Emit ``confirmation.accepted`` (durable proof of Allen's exact
-       words + which grammar rule matched).
-    2. Mint the lease per D2's nine fields, scoped to exactly this
-       tool + this ``target_entity_ref`` (the entity-REF form — cross-
-       step contract #1: ``allowed_targets`` must NOT hold the bare
-       ``canonical_target`` path, or every re-proposal would refuse as
-       wrong-target).
-    3. Rebuild the ActionRequest from the FROZEN snapshot with a NEW
-       ``action_id`` and the lease attached, emit ``action.proposed``.
-    4. Run the FULL ``pre_action_gate`` — no shortcuts. The
-       ``gate.evaluated`` payload always carries ``lease_id`` when a
-       lease is attached (cross-step contract #3), regardless of
-       outcome, so the audit trail shows what was attempted even on a
-       refusal.
-    5. On ``pass``: ``action.authorized`` + lifecycle transition,
-       dispatch via the L4 registry, fixed broadcast.
+    ``confirmation.accepted`` is Allen's one answer (durable proof of his exact words and the
+    rule that matched); the card's calls then run in order, each through
+    :func:`_run_accepted_call`. When any ran, their real results go back to the model for one
+    more request, and its reply is the answer (ADR 0321). When none did, a fixed line says why.
     """
     try:
         accepted_event = _record_confirmation_answer(slot, grammar_hit, transcript, ctx, scratch)
@@ -4197,28 +4249,58 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
     scratch.events.append(accepted_event)
     scratch.confirmation_answered_this_turn = True
 
-    snapshot = slot.snapshot
-    args_meta_raw = snapshot.get("args_meta")
-    args_meta: Mapping[str, Any] = args_meta_raw if isinstance(args_meta_raw, Mapping) else {}
+    outcomes = [
+        _run_accepted_call(index, call, slot, accepted_event, policy, ctx, scratch)
+        for index, call in enumerate(slot.calls)
+    ]
+    if all(one.result is None for one in outcomes):
+        return _finalize_response(str(outcomes[0].fixed), packet, ctx, scratch)
+    return _answer_after_card(outcomes, transcript, packet, policy, ctx, scratch)
 
-    tool_name_raw = snapshot.get("tool_name")
+
+def _run_accepted_call(  # noqa: PLR0913 — one keyword per answer-path input.
+    index: int,
+    call: Mapping[str, Any],
+    slot: PendingConfirmationSlot,
+    accepted_event: Event,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> _AcceptedCall:
+    """Mint the lease for call ``index``, re-propose it, gate it and dispatch it.
+
+    This is the ONE function in L3 that constructs an ``AuthorizationLease`` (see the section
+    banner above). Steps, each mirroring the equivalent stage of the ordinary LLM-driven
+    dispatch in ``_dispatch_one_tool_call`` (steps 3-7b) so the audit chain reads the same
+    way regardless of which path produced it:
+
+    1. Mint the lease per D2's nine fields, scoped to exactly this tool + this
+       ``target_entity_ref`` (the entity-REF form — cross-step contract #1: ``allowed_targets``
+       must NOT hold the bare ``canonical_target`` path, or every re-proposal would refuse as
+       wrong-target). Its source is the acceptance's key for this call
+       (:func:`jarvis.shared.realtime.authorization_source`).
+    2. Rebuild the ActionRequest from the FROZEN call with a NEW ``action_id`` and the lease
+       attached, emit ``action.proposed``.
+    3. Run the FULL ``pre_action_gate`` — no shortcuts. The ``gate.evaluated`` payload always
+       carries ``lease_id`` when a lease is attached (cross-step contract #3), regardless of
+       outcome, so the audit trail shows what was attempted even on a refusal.
+    4. On ``pass``: ``action.authorized`` + lifecycle transition, dispatch via the L4 registry.
+    """
+    args_meta_raw = call.get("args_meta")
+    arguments: dict[str, Any] = dict(args_meta_raw) if isinstance(args_meta_raw, Mapping) else {}
+    tool_name_raw = call.get("tool_name")
     tool_name = tool_name_raw if isinstance(tool_name_raw, str) else ""
     tool_def = _find_tool_def(ctx.tool_registry, tool_name)
     if tool_def is None:
-        return _finalize_response(t("confirm.tool_gone", lang=scratch.lang), packet, ctx, scratch)
+        return _AcceptedCall(
+            call, arguments, fixed=t("confirm.tool_gone", lang=scratch.lang), why=_WHY_GONE,
+        )
 
-    target_entity_ref_raw = snapshot.get("target_entity_ref")
+    target_entity_ref_raw = call.get("target_entity_ref")
     target_entity_ref = target_entity_ref_raw if isinstance(target_entity_ref_raw, str) else None
 
-    # --- 3. Mint the lease (D2 nine fields) ---------------------------------
-    # Cross-step contract #1 (Step 1 erratum): `allowed_targets` holds the
-    # entity-ref form (`target_entity_ref`, e.g. "file:/abs/path") — the
-    # exact field `_lease_scope_permits` matches byte-equal against
-    # `ActionRequest.target_entity_ref`. NOT `canonical_target` (the bare
-    # path) — that field exists only for the human-readable template line.
-    reproposal_arguments: dict[str, Any] = dict(args_meta)
-
-    identity = stable_authorization_identity(accepted_event.event_uid)
+    source = authorization_source(accepted_event.event_uid, index)
+    identity = stable_authorization_identity(source)
     atomic_dispatch = ctx.wave1_features.confirmation_dispatch_outbox
     lease: AuthorizationLease = {
         "lease_id": identity.lease_id if atomic_dispatch else _new_lease_id(),
@@ -4231,10 +4313,9 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         "expires_at_ms": _now_epoch_ms() + _LEASE_TTL_MS,
         "max_uses": 1,
         "reason": slot.template_line,
-        "source_confirmation_event_id": accepted_event.event_uid,
+        "source_confirmation_event_id": source,
     }
 
-    # --- 4. Deterministic re-proposal ---------------------------------------
     action_id = identity.action_id if atomic_dispatch else _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
@@ -4242,7 +4323,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         target_entity_ref=target_entity_ref,
         caller_principal=CallerPrincipal.JARVIS_LLM,
         risk_level=tool_def.risk_level,
-        arguments=reproposal_arguments,
+        arguments=arguments,
         authorization_lease=lease,
         run_id=None,
         turn_id=scratch.turn_id,
@@ -4257,21 +4338,18 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
             "risk_level": tool_def.risk_level,
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
-            "arguments": dict(reproposal_arguments),
+            "arguments": dict(arguments),
         },
         source_event_id=accepted_event.event_uid,
         correlation=_action_correlation(action_request),
     )
     scratch.events.append(proposed_event)
 
-    # --- 5. FULL Pre-action Gate — no shortcuts -----------------------------
-    # `packet.pending_confirmation` is STALE here: it was folded at the top
-    # of `_handle_utterance`, BEFORE `confirmation.accepted` (step 1 above)
-    # was durably appended — its slot's `accepted_event_uid` is still None.
-    # D2.4's single-use check joins on exactly that field (cross-step
-    # contract #2), so the gate needs a projection that has already seen
-    # THIS turn's acceptance. Re-fold fresh off the log — the event is
-    # already durable; only the caller's cached VIEW of it needs a refresh.
+    # `packet.pending_confirmation` is STALE here: it was folded at the top of
+    # `_handle_utterance`, BEFORE `confirmation.accepted` was durably appended. D2.4's
+    # single-use check joins on the slot's accepted uid (cross-step contract #2), so the gate
+    # needs a projection that has already seen THIS turn's acceptance, and every earlier
+    # call's spent lease. Re-fold fresh off the log.
     pending_confirmations = _current_state(ctx).projections.pending_confirmations
     gate = pre_action_gate(
         action_request,
@@ -4285,29 +4363,30 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         "reasons": list(gate.reasons),
         "check_results": dict(gate.check_results),
         "action_id": action_id,
-        # Cross-step contract #3: MUST be present whenever a lease is
-        # attached, on every outcome — the D2.4 consumption fold
-        # (`jarvis.state.projections._fold_pending_confirmations`) only
-        # ever closes on a `pass` carrying this key, and C5's replay
-        # scenario needs it on a `refuse` too for the audit trail.
+        # Cross-step contract #3: MUST be present whenever a lease is attached, on every
+        # outcome — the D2.4 consumption fold only ever closes on a `pass` carrying this key,
+        # and C5's replay scenario needs it on a `refuse` too for the audit trail.
         "lease_id": lease["lease_id"],
     }
+    handled = _AcceptedCall(
+        call, arguments, fixed=t("confirm.accepted", lang=scratch.lang), why=_WHY_HANDLED,
+    )
     if atomic_dispatch and gate.outcome == "pass":
         try:
             authorization = authorize_confirmation_dispatch(
                 ctx.conn,
-                source_confirmation_event_id=accepted_event.event_uid,
+                source_confirmation_event_id=source,
                 action_request=action_request,
                 lease=lease,
                 gate_payload=gate_payload,
                 correlation=_action_correlation(action_request),
             )
         except ConfirmationRevalidationError:
-            return _finalize_response(t("confirm.stale", lang=scratch.lang), packet, ctx, scratch)
-        if isinstance(authorization, AlreadyConsumed):
-            return _finalize_response(
-                t("confirm.accepted", lang=scratch.lang), packet, ctx, scratch
+            return _AcceptedCall(
+                call, arguments, fixed=t("confirm.stale", lang=scratch.lang), why=_WHY_REFUSED,
             )
+        if isinstance(authorization, AlreadyConsumed):
+            return handled
         gate_event = authorization.gate_event
     else:
         gate_event = emit_event(
@@ -4320,10 +4399,13 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
     scratch.events.append(gate_event)
 
     if gate.outcome != "pass":
-        draft = t("confirm.reproposal_refused", lang=scratch.lang, outcome=gate.outcome)
-        return _finalize_response(draft, packet, ctx, scratch)
+        return _AcceptedCall(
+            call,
+            arguments,
+            fixed=t("confirm.reproposal_refused", lang=scratch.lang, outcome=gate.outcome),
+            why=_WHY_REFUSED,
+        )
 
-    # --- 6. action.authorized + lifecycle, dispatch, interpret -------------
     authorized_event = emit_event(
         ctx.conn,
         type="action.authorized",
@@ -4350,9 +4432,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
             ctx.lifecycle,
         )
     except AuthorizedDispatchAlreadyStarted:
-        return _finalize_response(
-            t("confirm.accepted", lang=scratch.lang), packet, ctx, scratch
-        )
+        return handled
     record_realtime_trace(
         "action_dispatch_returned",
         turn_id=scratch.turn_id,
@@ -4366,13 +4446,99 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         tool_name=tool_name,
         result_source="synchronous_confirmation_dispatch_return",
     )
+    cost_event = _emit_cost_recorded_from_metadata(ctx, result, turn_id=scratch.turn_id)
+    if cost_event is not None:
+        scratch.events.append(cost_event)
+    return _AcceptedCall(call, arguments, result=result)
 
-    if result.error is not None:
-        draft = t("confirm.dispatch_error", lang=scratch.lang, error=result.error)
-        return _finalize_response(draft, packet, ctx, scratch)
 
-    draft = t("confirm.tool_ran", lang=scratch.lang, done=action(tool_name, scratch.lang)[1])
-    return _finalize_response(draft, packet, ctx, scratch)
+def _answer_after_card(  # noqa: PLR0913 — one keyword per answer-path input.
+    outcomes: Sequence[_AcceptedCall],
+    transcript: str,
+    packet: SituationPacket,
+    policy: EffectivePolicy,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> DecideResult:
+    """One more request: the card's calls with their real results, and her reply is the answer.
+
+    ADR 0321. The request carries the history and this turn's message (his words, or a note
+    that he pressed the button), then the frozen calls as the assistant's own tool calls, each
+    with what came back: an issue number, a link, an error. It sends the turn's own menu, with
+    the card's tools loaded, under ``tool_choice`` ``none``: a history that holds tool calls
+    names its tools, the cached tools and system stay the same, and she calls nothing more. A
+    failed or empty request says only that the answer was accepted; the receipts hold what ran.
+    """
+    fresh = assemble_packet(packet.trigger_event, ctx.conn, ctx.read_snapshot)
+    messages = build_llm_messages(
+        fresh, utterance=None if transcript.strip() else _CARD_BUTTON_NOTE,
+    )
+    language_line = _insert_system_notes(messages, fresh, ctx, scratch.lang)
+    ids = [f"card_{index}" for index in range(len(outcomes))]
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(one.call.get("tool_name", "")),
+                        "arguments": json.dumps(dict(one.arguments), ensure_ascii=False),
+                    },
+                }
+                for call_id, one in zip(ids, outcomes, strict=True)
+            ],
+        },
+    )
+    for call_id, one in zip(ids, outcomes, strict=True):
+        if one.result is None:
+            messages.append(
+                _tool_result_message(
+                    call_id=call_id, content=json.dumps({"error": one.why}), is_error=True,
+                ),
+            )
+            continue
+        receipt = one.result.receipt
+        messages.append(
+            _tool_result_message(
+                call_id=call_id,
+                content=_render_result_for_llm(one.result),
+                is_error=receipt is not None and receipt.status == "failed",
+            ),
+        )
+    _add_reply_language_note(messages, language_line)
+    names = {str(one.call.get("tool_name", "")) for one in outcomes}
+    surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
+    tools = [
+        {k: v for k, v in tool.items() if k != "defer_loading"} if tool.get("name") in names
+        else tool
+        for tool in _tool_menu(surface, names, native=ctx.llm_client.native_tool_search)
+    ]
+    fallback = t("confirm.accepted", lang=scratch.lang)
+    try:
+        with realtime_trace_context(turn_id=scratch.turn_id, request_kind="decision", iteration=1):
+            chat_result = _run_llm_chat_with_cost_guard(
+                ctx,
+                messages=messages,
+                system=ctx.system_prompt,
+                tools=tools,
+                tool_choice="none",
+                kind="decision",
+                turn_id=scratch.turn_id,
+            )
+    except ResponseCancelledError:
+        raise
+    except Exception:
+        LOGGER.exception("decide(): the answer request after an accepted card failed")
+        return _finalize_response(fallback, packet, ctx, scratch)
+    scratch.events.append(
+        _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
+    )
+    _check_response_cancelled(ctx, "after provider response")
+    answer = _reply_text(chat_result.text, scratch).strip()
+    return _finalize_response(answer or fallback, packet, ctx, scratch, model_answer=bool(answer))
 
 
 def _find_tool_def(

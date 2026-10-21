@@ -198,7 +198,7 @@ def test_remove_plugin_asks_first_and_on_yes_deletes_the_login_and_the_credentia
     """The card waits; his button runs it; then the token file and the saved key are gone."""
     say(rig.ctx, "把 echo 删掉", "T1")
     asked = logged_dicts(rig.ctx.conn, "confirmation.requested")
-    assert [r["action_snapshot"]["tool_name"] for r in asked] == ["remove_plugin"]
+    assert [r["calls"][0]["tool_name"] for r in asked] == ["remove_plugin"]
     assert _stored(rig)
     assert rig.service.read()["plugins"][0]["status"] == "ready"
 

@@ -43,7 +43,8 @@ if TYPE_CHECKING:
 HERE = Path(__file__).parent
 REPO = HERE.parent.parent
 ECHO = {"echo": {"command": sys.executable, "args": [str(HERE / "mcp_echo_server.py")]}}
-ASK = "要执行 echo add吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
+ASK = "要执行 echo add（a：17，b：25）吗？"  # noqa: RUF001 — the Chinese ask under the card names its arguments (ADR 0321).
+ANSWER = "算好了，和是 42。"  # noqa: RUF001 — her words after the card ran, from its real result.
 LETTER = {"to": "allen@example.com", "subject": "周六见", "body": "周六早上八点停车场见。"}
 
 
@@ -56,8 +57,9 @@ def _model(
     call: tuple[str, Mapping[str, Any]] = ("add", {"a": 17, "b": 25}),
     *,
     withdraws: bool = False,
+    then: tuple[str, ...] = (),
 ) -> ScriptedModel:
-    """Searches for a tool, calls it, then only talks.
+    """Searches for a tool, calls it, then answers each later request with the ``then`` texts.
 
     With ``withdraws``, the first call of each later turn (T2 and T4) takes the card down.
     """
@@ -68,7 +70,7 @@ def _model(
     ]
     if withdraws:
         steps += [WITHDRAW, TALK, WITHDRAW]
-    return ScriptedModel(*steps, otherwise=TALK)
+    return ScriptedModel(*steps, *then, otherwise=TALK)
 
 
 def _offered(model: ScriptedModel) -> list[list[str]]:
@@ -111,10 +113,13 @@ def _context(tmp_path: Path, servers: McpServers, llm: ScriptedModel) -> DecideC
 
 
 def _ask(
-    tmp_path: Path, servers: McpServers, **context: Any,  # noqa: ANN401 — DecideContext fields
+    tmp_path: Path,
+    servers: McpServers,
+    then: tuple[str, ...] = (),
+    **context: Any,  # noqa: ANN401 — DecideContext fields
 ) -> tuple[DecideContext, ScriptedModel]:
     """Turn 1: the adder is not offered until searched, and calling it asks instead of running."""
-    llm = _model()
+    llm = _model(then=then)
     ctx = dataclasses.replace(_context(tmp_path, servers, llm), **context)
     assert say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
     first, second = _offered(llm)
@@ -130,11 +135,19 @@ def _ask(
 
 
 def test_searched_plugin_tool_asks_then_runs_on_yes(tmp_path: Path, servers: McpServers) -> None:
-    """Allen's 可以 re-proposes the frozen arguments through the outbox and the adder runs once."""
-    ctx, llm = _ask(tmp_path, servers)
+    """Allen's 可以 re-proposes the frozen arguments through the outbox and the adder runs once.
+
+    The yes is matched by grammar; the one request after it carries the real result, and her
+    reply to it is the answer (ADR 0321).
+    """
+    ctx, llm = _ask(tmp_path, servers, then=(ANSWER,))
     try:
-        assert say(ctx, "可以", "T2") == "已执行 echo add。"
-        assert len(llm.requests) == 2  # the yes is matched by grammar, never by the model
+        assert say(ctx, "可以", "T2") == ANSWER
+        assert len(llm.requests) == 3  # search, the call, and the answer after the result
+        # The searched adder is on that request's menu, and she may call nothing more.
+        assert llm.requests[2].tool_choice == "none"
+        assert "mcp__echo__add" in [d["name"] for d in llm.requests[2].tools or ()]
+        assert '\\"sum\\": 42' in _seen(llm)[2]
         assert len(logged_dicts(ctx.conn, "confirmation.accepted")) == 1
         added = [
             r
@@ -150,22 +163,26 @@ def test_searched_plugin_tool_asks_then_runs_on_yes(tmp_path: Path, servers: Mcp
 
 
 @pytest.mark.parametrize(
-    ("words", "ask", "ran"),
+    ("words", "ask", "answer"),
     [
-        (("用 add 工具算 17 加 25", "可以"), ASK, "已执行 echo add。"),
-        (("use the add tool to add 17 and 25", "yes"), "Shall I run echo add?", "Ran echo add."),
+        (("用 add 工具算 17 加 25", "可以"), ASK, ANSWER),
+        (
+            ("use the add tool to add 17 and 25", "yes"),
+            "Shall I run echo add (a: 17, b: 25)?",
+            "The sum is 42.",
+        ),
     ],
 )
-def test_the_ask_and_its_answer_follow_the_words_not_the_system_language(
-    tmp_path: Path, servers: McpServers, words: tuple[str, str], ask: str, ran: str
+def test_the_ask_follows_the_words_not_the_system_language(
+    tmp_path: Path, servers: McpServers, words: tuple[str, str], ask: str, answer: str
 ) -> None:
-    """System language en: the consent question and the line after the yes follow his words."""
+    """System language en: the consent question names the arguments in the language of his words."""
     lang.set_language("en")
-    ctx = _context(tmp_path, servers, _model())
+    ctx = _context(tmp_path, servers, _model(then=(answer,)))
     try:
         assert say(ctx, words[0], "T1") == ask
         assert logged_dicts(ctx.conn, "confirmation.requested")[0]["template_line"] == ask
-        assert say(ctx, words[1], "T2") == ran
+        assert say(ctx, words[1], "T2") == answer
     finally:
         ctx.conn.close()
 
@@ -185,7 +202,7 @@ def test_an_unrelated_turn_leaves_the_card_to_its_button(
     tmp_path: Path, servers: McpServers
 ) -> None:
     """ADR 0062: a 好 meant for the model's own question never fires the card; its button does."""
-    ctx, llm = _ask(tmp_path, servers)
+    ctx, llm = _ask(tmp_path, servers, then=(TALK, TALK, ANSWER))
     try:
         say(ctx, "现在几点", "T2")
         assert "A card is waiting for the user's button: mcp__echo__add" in _seen(llm)[-1]
@@ -196,8 +213,8 @@ def test_an_unrelated_turn_leaves_the_card_to_its_button(
         assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1  # still only the search
         card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
         pressed = press(ctx, {"confirmation_id": card, "decision": "accept"}, "T4")
-        assert pressed == "已执行 echo add。"
-        assert len(llm.requests) == 4  # the button never reaches the model
+        assert pressed == ANSWER
+        assert len(llm.requests) == 5  # the button's only request is the answer after the result
         assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.accepted")] == [
             "card_button"
         ]
@@ -217,27 +234,29 @@ def test_a_card_pressed_after_its_words_window_still_sends(
     tmp_path: Path, servers: McpServers
 ) -> None:
     """ADR 0062: ``confirmation.ttl_ms`` bounds only a spoken yes; a card's button never expires."""
-    ctx, llm = _ask(tmp_path, servers, confirmation_ttl_ms=0)  # the words window is shut at the ask
+    ctx, llm = _ask(  # the words window is shut at the ask
+        tmp_path, servers, then=(TALK, ANSWER), confirmation_ttl_ms=0,
+    )
     try:
         card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
-        assert say(ctx, "可以", "T2") != "已执行 echo add。"  # the yes is not a button
+        assert say(ctx, "可以", "T2") == TALK  # the yes is not a button
         assert logged_dicts(ctx.conn, "confirmation.accepted") == []
         pressed = press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3")
-        assert pressed == "已执行 echo add。"
+        assert pressed == ANSWER
         assert [r["grammar_rule_id"] for r in logged_dicts(ctx.conn, "confirmation.accepted")] == [
             "card_button"
         ]
         assert json.loads(logged_dicts(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
             "sum": 42
         }
-        assert len(llm.requests) == 3  # only the yes reached the model; the button never does
+        assert len(llm.requests) == 4  # the yes reached the model; the button's is the answer
     finally:
         ctx.conn.close()
 
 
 def test_a_letter_card_sends_what_allen_edited(tmp_path: Path, servers: McpServers) -> None:
     """ADR 0062: the ask names the letter; send with an edited body re-freezes it, then runs it."""
-    llm = _model(query="send a letter", call=("send", LETTER))
+    llm = _model(query="send a letter", call=("send", LETTER), then=(ANSWER,))
     ctx = _context(tmp_path, servers, llm)
     try:
         ask = say(ctx, "给我自己发一封信", "T1")
@@ -245,11 +264,11 @@ def test_a_letter_card_sends_what_allen_edited(tmp_path: Path, servers: McpServe
         card = logged_dicts(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
         edits = {"body": "周六早上九点停车场见。", "to": 42, "cc": "someone@else"}
         pressed = press(ctx, {"confirmation_id": card, "decision": "accept", "edits": edits}, "T2")
-        assert pressed == "已执行 echo send。"
+        assert pressed == ANSWER
         edited = {**LETTER, "body": "周六早上九点停车场见。"}
         # Only the existing string field changed; the new snapshot is exactly what ran.
         asked = logged_dicts(ctx.conn, "confirmation.requested")
-        assert [r["action_snapshot"]["args_meta"] for r in asked] == [LETTER, edited]
+        assert [r["calls"][0]["args_meta"] for r in asked] == [LETTER, edited]
         assert (
             logged_dicts(ctx.conn, "confirmation.accepted")[0]["confirmation_id"]
             == asked[1]["confirmation_id"]
@@ -355,7 +374,7 @@ def test_a_card_raised_without_a_turn_sends_on_his_button(
     tmp_path: Path, servers: McpServers
 ) -> None:
     """ADR 0147: the Dashboard's Send raises the letter card itself; only his button runs it."""
-    llm = _model()
+    llm = ScriptedModel(ANSWER)
     ctx = _context(tmp_path, servers, llm)
     try:
         for no_card in ("mcp__echo__echo", "mcp__echo__nothing"):  # read-only, unknown
@@ -373,10 +392,8 @@ def test_a_card_raised_without_a_turn_sends_on_his_button(
             "信写好了，发给 allen@example.com，主题「周六见」。要发吗？"  # noqa: RUF001
         )
         assert logged_dicts(ctx.conn, "action.proposed") == []  # nothing ran, no model asked
-        assert press(ctx, {"confirmation_id": asked, "decision": "accept"}, "T1") == (
-            "已执行 echo send。"
-        )
-        assert llm.requests == []
+        assert press(ctx, {"confirmation_id": asked, "decision": "accept"}, "T1") == ANSWER
+        assert len(llm.requests) == 1  # only the answer after the result
         assert len(logged_dicts(ctx.conn, "action.result_observed")) == 1
     finally:
         ctx.conn.close()

@@ -69,8 +69,9 @@ def test_his_per_tool_prompt_mode_still_makes_a_card(tmp_path: Path, servers: Mc
     """ADR 0033: his setting overrides what the manifest declares."""
     tools = consent.hue_manifest_tools()
     tools["set_light"] = {**tools["set_light"], "approval_mode": "prompt"}
-    _, ctx = _turn(tmp_path, servers, tools, "set_light", OFF)
+    answer, ctx = _turn(tmp_path, servers, tools, "set_light", OFF)
     try:
+        assert "light：living room，on：否" in answer  # noqa: RUF001 — the Chinese ask names its arguments.
         assert len(logged_dicts(ctx.conn, "confirmation.requested")) == 1
         assert logged_dicts(ctx.conn, "action.result_observed") == []
     finally:
