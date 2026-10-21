@@ -19,7 +19,8 @@ did. :func:`gather` reads them, each tagged with one of :data:`jarvis.state.doin
   the stay radius of a place he stayed at (ADR 0302).
 
 A source that cannot be read leaves its clues out, logged. Nothing is stored and nothing is
-guessed: a clue is what the source holds, cut short. ``photo`` has no source yet, so none is read.
+guessed: a clue is what the source holds, cut short, except what he and she said, which is whole
+(ADR 0332). ``photo`` has no source yet, so none is read.
 
 Layer rules: ``jarvis.state`` and ``jarvis.shared`` only (L2).
 """
@@ -54,11 +55,9 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 CLUE_TEXT_MAX_CHARS: Final = 140
-"""The most characters of a clue's text; a longer one is cut and ends in an ellipsis."""
-MAX_WORDS_CLUES: Final = 80
-"""The most clues of his and her words in a day; more are thinned evenly through the day."""
+"""The most characters of a clue's text but words; a longer one is cut and ends in an ellipsis."""
 MAX_CLUES_PER_KIND: Final = 40
-"""The most clues of any other kind in a day, thinned the same way."""
+"""The most clues of any kind but words in a day; more are thinned evenly through the day."""
 NEAR_ANSWERS_PER_PLACE: Final = 3
 """The newest earlier answers kept for each place he stayed at."""
 
@@ -172,8 +171,9 @@ def _from_item(item: Mapping[str, Any], zone: tzinfo) -> list[Clue]:
 
 
 def _words(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[Clue]:
+    """Each thing he or she said in the window, whole, on one line."""
     return [
-        Clue("words", at, _short(f"{_SPEAKER[source]}{words}"))
+        Clue("words", at, " ".join(f"{_SPEAKER[source]}{words}".split()))
         for at, source, words in spoken_between(conn, start_ms, end_ms)
     ]
 
@@ -276,8 +276,8 @@ def gather(  # noqa: PLR0913 — the stores, the day, its items, its window and 
     ``items`` are the day line's items, which already hold what he sent, what he has to go to,
     the plan, his payments, his Claude chats and sessions; the rest is read from ``event_log``
     (the work state's screen) and ``memory_db`` (what was said, interview mail, his answers).
-    Each clue's text is cut to :data:`CLUE_TEXT_MAX_CHARS`; his and her words are thinned to
-    :data:`MAX_WORDS_CLUES` and every other kind to :data:`MAX_CLUES_PER_KIND`.
+    Every word he and she said is a clue, whole. Each other clue's text is cut to
+    :data:`CLUE_TEXT_MAX_CHARS`, and each other kind is thinned to :data:`MAX_CLUES_PER_KIND`.
     """
     start, end = window
     found: list[Clue] = []
@@ -296,7 +296,7 @@ def gather(  # noqa: PLR0913 — the stores, the day, its items, its window and 
     kept = [
         clue
         for kind, clues in by_kind.items()
-        for clue in _thinned(clues, MAX_WORDS_CLUES if kind == "words" else MAX_CLUES_PER_KIND)
+        for clue in (clues if kind == "words" else _thinned(clues, MAX_CLUES_PER_KIND))
     ]
     return sorted(kept, key=lambda c: (c.at_ms, c.kind, c.text))
 
@@ -305,7 +305,6 @@ __all__ = [
     "CLUE_TEXT_MAX_CHARS",
     "HIS_WORDS",
     "MAX_CLUES_PER_KIND",
-    "MAX_WORDS_CLUES",
     "NEAR_ANSWERS_PER_PLACE",
     "Clue",
     "gather",
