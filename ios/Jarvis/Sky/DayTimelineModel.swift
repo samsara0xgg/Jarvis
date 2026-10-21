@@ -18,8 +18,26 @@ struct TLClock {
         cal = c
         origin = c.startOfDay(for: Date(timeIntervalSince1970: Double(r.start_ms) / 1000))
     }
+    /// the day of a reply that has no `DayReply` (the footprint's): its zone and the instant its day begins or any instant in it
+    init(tz: String, startMs: Int64) {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: tz) ?? Cal.cur.cal.timeZone
+        cal = c
+        origin = c.startOfDay(for: Date(timeIntervalSince1970: Double(startMs) / 1000))
+    }
     func minute(_ at: Date) -> Double { Cal.wall(at, in: cal, from: origin) }
     func minute(ms: Int64) -> Double { minute(Date(timeIntervalSince1970: Double(ms) / 1000)) }
+
+    /// The instant (epoch ms) the wall clock shows `minute` minutes after this day's midnight: the inverse of `minute(ms:)`, so 09:00 is minute 540 on a day with a clock change as on any
+    /// other. A minute the clock skips has no instant of its own; the one it repeats is its first.
+    func ms(minute: Double) -> Int64 {
+        let days = Int((minute / DAY).rounded(.down)), rest = minute - Double(days) * DAY, whole = Int(rest.rounded(.down))
+        let midnight = cal.date(byAdding: .day, value: days, to: origin) ?? origin
+        var c = cal.dateComponents([.year, .month, .day], from: midnight)
+        c.hour = whole / 60; c.minute = whole % 60
+        let at = (cal.date(from: c) ?? midnight).addingTimeInterval((rest - Double(whole)) * 60)
+        return Int64((at.timeIntervalSince1970 * 1000).rounded())
+    }
 
     /// How a day `n` days before this one is said: 昨天, 前天, then by its date (`10月15日`).
     func before(_ n: Int) -> String {
