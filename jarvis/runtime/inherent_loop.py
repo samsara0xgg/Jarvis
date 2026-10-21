@@ -145,11 +145,9 @@ from jarvis.runtime import (
     _timesink_db_path,
     _work_state_timezone,
     device_voice,
-    diagnostics_flag,
     make_barge_in_interrupt_callable,
     make_compose_callable,
     make_continuation_callable,
-    make_foreground_decision_callable,
     make_relation_supersede_callable,
     make_response_cancel_callable,
     make_supersede_unspoken_callable,
@@ -176,7 +174,6 @@ from jarvis.runtime.daemon.observers import start_timesink_observer as _start_ti
 from jarvis.runtime.daemon.observers import start_usage_observer as _start_usage_observer
 from jarvis.runtime.daemon.output_watchers import TTS_SILENT_CHANNELS as _TTS_SILENT_CHANNELS
 from jarvis.runtime.daemon.output_watchers import PhoneRows as _PhoneRows
-from jarvis.runtime.daemon.output_watchers import SpokenRows as _SpokenRows
 from jarvis.runtime.daemon.output_watchers import add_places as _add_places
 from jarvis.runtime.daemon.output_watchers import add_reactions as _add_reactions
 from jarvis.runtime.daemon.output_watchers import add_steps as _add_steps
@@ -186,6 +183,10 @@ from jarvis.runtime.daemon.output_watchers import response_watcher as _response_
 from jarvis.runtime.daemon.output_watchers import tool_status_watcher as _tool_status_watcher
 from jarvis.runtime.daemon.output_watchers import tts_watcher as _tts_watcher
 from jarvis.runtime.daemon.output_watchers import turn_devices as _turn_devices
+from jarvis.runtime.daemon.phone_brain import build_brain_voice as _build_brain_voice
+from jarvis.runtime.daemon.phone_brain import build_phone_speech as _build_phone_speech
+from jarvis.runtime.daemon.phone_brain import per_device as _per_device
+from jarvis.runtime.daemon.phone_brain import phone_barge_in as _phone_barge_in
 from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S as _DEFAULT_POLL_INTERVAL_S
 from jarvis.runtime.daemon.restart import fetch_models_then_restart as _fetch_models_then_restart
 from jarvis.runtime.daemon.restart import restart_soon as _restart_soon
@@ -211,11 +212,9 @@ from jarvis.runtime.daemon.voice_wiring import build_voice_pipeline as _build_vo
 from jarvis.runtime.daemon.voice_wiring import (
     build_voice_pipeline_callable as _build_voice_pipeline_callable,
 )
-from jarvis.runtime.daemon.voice_wiring import minimax_client as _minimax_client
 from jarvis.runtime.daemon.voice_wiring import (
     single_ingress_activation as _single_ingress_activation,
 )
-from jarvis.runtime.daemon.voice_wiring import tts_volume_kwargs as _tts_volume_kwargs
 from jarvis.runtime.daemon.voice_wiring import voice_knobs as _voice_knobs
 from jarvis.runtime.daemon.voice_wiring import voice_models_preflight as _voice_models_preflight
 from jarvis.runtime.day_experience import DayExperienceSchedule, DayExperienceSettings
@@ -232,7 +231,6 @@ from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
-from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.runtime.plan_run import Hooks, build_watch, leg_session, make_route_legs
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.setup import Setup
@@ -303,9 +301,7 @@ from jarvis.state.turn_overlap import any_turn_in_flight
 from jarvis.surface import (
     respeaker_board,
     terminal_listen,
-    terminal_voice,
     voice_aec,
-    voice_artifact_store,
     voice_audio,
     voice_backend,
     voice_controls,
@@ -330,7 +326,6 @@ from jarvis.surface.inherent_server import (
     require_local_key,
 )
 from jarvis.surface.phone_link import PhoneHub
-from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.terminal_events import BrainEvents, phone_turn_id
 from jarvis.surface.terminal_link import SETTINGS_NOTICE
@@ -1286,112 +1281,6 @@ def _say_conversation_line(
         LOGGER.warning("conversation line failed (%s) turn_id=%s", reason, turn_id, exc_info=True)
 
 
-def _build_brain_voice(
-    runtime: JarvisRuntime, knobs: _VoiceKnobs,
-) -> terminal_voice.BrainVoice | None:
-    """What lets a brain speak to a voice terminal: the key, and the answer's rows (ADR 0172).
-
-    ``None`` without ``MINIMAX_API_KEY``: as on one machine, no key is no speech, and the
-    terminal is told so when it connects.
-    """
-    api_key = os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
-        LOGGER.warning("MINIMAX_API_KEY unset; a voice terminal will not be spoken to.")
-        return None
-    realtime_raw = runtime.config.get("realtime")
-    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
-    recorder = (
-        voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
-        if diagnostics_flag(runtime.config, "record_tts_audio") and runtime.memory is not None
-        else None
-    )
-    client = _minimax_client(
-        knobs, api_key, _tts_volume_kwargs(realtime),
-        recorder=recorder,
-        voice_settings=runtime.voice_settings,
-    )
-    return terminal_voice.BrainVoice(
-        client,
-        _SpokenRows(
-            runtime.conn,
-            None if runtime.response_runs is None else runtime.response_runs.turn_text_only,
-        ),
-    )
-
-
-def _phone_barge_in(runtime: JarvisRuntime, device: str) -> str:
-    """The local barge-in's generation interrupt, aimed at ``device``'s open answer alone."""
-    only_turns = device_voice.device_turns(runtime.runtime_paths.event_log, device)
-    return make_barge_in_interrupt_callable(runtime, only_turns=only_turns)("phone_barge")
-
-
-def _build_phone_speech(
-    runtime: JarvisRuntime, knobs: _VoiceKnobs, rows: _PhoneRows,
-) -> PhoneSpeech | None:
-    """What gives a voice phone its own media actor: the key and the streaming speech config.
-
-    ``None`` without ``MINIMAX_API_KEY`` or without the streaming pipeline's own preconditions
-    (``_build_tts_pipeline``'s): the phone is then told ``voice: false`` and gets rows only.
-    The actor runs at the phone's 32 kHz so nothing is resampled, and without the Mac's
-    fallbacks: ``say`` would speak on this machine's speaker, and a cut-off line is the
-    Mac's to prefetch.
-    """
-    api_key = os.environ.get("MINIMAX_API_KEY")
-    if not api_key:
-        LOGGER.warning("MINIMAX_API_KEY unset; a phone will not be spoken to.")
-        return None
-    realtime_raw = runtime.config.get("realtime")
-    realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
-    streaming_raw = realtime.get("streaming_output")
-    streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
-    try:
-        base = voice_media.streaming_media_config_from_mapping(streaming)
-    except ValueError as exc:
-        LOGGER.warning("realtime.streaming_output config invalid (%s); a phone gets no voice.", exc)
-        return None
-    if realtime.get("enabled") is not True:
-        LOGGER.warning("streaming speech is off; a phone gets no voice.")
-        return None
-    config = dataclasses.replace(
-        base,
-        canonical_sample_rate_hz=PHONE_SAMPLE_RATE_HZ,
-        enable_macos_say_fallback=False,
-        prefetch_network_lost_line=False,
-    )
-    volume_kwargs = _tts_volume_kwargs(realtime)
-    event_log_path = runtime.runtime_paths.event_log
-
-    def build(
-        player: PhoneAudioStreamPlayer,
-        speaks_turn: Callable[[sqlite3.Connection, str], bool],
-        boot_high_water_id: int,
-    ) -> voice_media.StreamingTTSPipeline | None:
-        provider = _minimax_client(
-            knobs, api_key, volume_kwargs,
-            recorder=None, voice_settings=runtime.voice_settings,
-        )
-        try:
-            return voice_media.StreamingTTSPipeline(
-                provider=provider,
-                player=player,
-                conn_factory=lambda: open_runtime_event_log(event_log_path),
-                boot_high_water_id=boot_high_water_id,
-                config=config,
-                foreground_decision_callable=make_foreground_decision_callable(
-                    wait_for_lane=runtime.response_flags.slow_results,
-                ),
-                start_player=False,
-                speaks_turn=speaks_turn,
-            )
-        except Exception:
-            LOGGER.exception("a phone's media actor could not start")
-            return None
-
-    return PhoneSpeech(
-        build=build, rows=rows, ring_seconds=config.ring_seconds, event_log=event_log_path,
-    )
-
-
 def _build_phone_hub(
     runtime: JarvisRuntime, knobs: _VoiceKnobs, *, set_quiet: Callable[[str], None] | None,
 ) -> tuple[PhoneHub, Callable[[str], int | None]] | None:
@@ -1433,18 +1322,6 @@ def _build_phone_hub(
         ),
     )
     return hub, (lambda _device: None) if speech is None else speech.owner_boot
-
-
-def _per_device[T](make: Callable[[str], T]) -> Callable[[str], T]:
-    """``make`` for a device, built on first use and kept: a terminal's hooks are asked often."""
-    made: dict[str, T] = {}
-
-    def get(device: str) -> T:
-        if device not in made:
-            made[device] = make(device)
-        return made[device]
-
-    return get
 
 
 def _build_brain_listening(

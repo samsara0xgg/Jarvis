@@ -36,8 +36,7 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect as _ws_connect
 
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import output_watchers, voice_wiring
+from jarvis.runtime.daemon import output_watchers, phone_brain, voice_wiring
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -472,13 +471,13 @@ def test_the_speech_builder_needs_a_key_and_realtime_on(
     runtime = cast("Any", host)
 
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-    assert inherent_loop._build_phone_speech(runtime, knobs, rows) is None  # noqa: SLF001
+    assert phone_brain.build_phone_speech(runtime, knobs, rows) is None
     monkeypatch.setenv("MINIMAX_API_KEY", "a-test-value-not-a-key")
     assert isinstance(
-        inherent_loop._build_phone_speech(runtime, knobs, rows), PhoneSpeech,  # noqa: SLF001
+        phone_brain.build_phone_speech(runtime, knobs, rows), PhoneSpeech,
     )
     config["realtime"]["enabled"] = False
-    assert inherent_loop._build_phone_speech(runtime, knobs, rows) is None  # noqa: SLF001
+    assert phone_brain.build_phone_speech(runtime, knobs, rows) is None
 
 
 def test_a_daemon_running_alone_serves_the_phone_socket_with_no_terminal_hub(
