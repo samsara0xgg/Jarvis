@@ -91,6 +91,8 @@ if TYPE_CHECKING:
     from jarvis.state.decision_snapshot import DecisionFoldState
 
 REPO = Path(__file__).resolve().parent.parent
+LISTING = "mcp-tools.json"
+"""The MCP servers' tool listing beside the cases."""
 _DBS = ("mac_events.db", "memory.db")
 _RESULT_CHARS = 2000
 
@@ -673,9 +675,16 @@ def _for_preset(
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
-    """The cases of ``path``: a JSON list, or a directory of one case per ``*.json`` file."""
+    """The cases of ``path``: a JSON list, or a directory of one case per ``*.json`` file.
+
+    In a directory, the listing and the recordings beside the cases are not cases.
+    """
     if path.is_dir():
-        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(path.glob("*.json"))]
+        return [
+            json.loads(p.read_text(encoding="utf-8"))
+            for p in sorted(path.glob("*.json"))
+            if p.name != LISTING and not p.name.endswith(".recording.json")
+        ]
     return list(json.loads(path.read_text(encoding="utf-8")))
 
 
@@ -741,7 +750,7 @@ def _run_logged(  # noqa: PLR0913 - boot once on the snapshot, run each logged c
     runtime, done = None, 0
     try:
         shutil.copytree(pristine, work, dirs_exist_ok=True)
-        runtime = _boot(work, cases_dir / "mcp-tools.json", pushes)
+        runtime = _boot(work, cases_dir / LISTING, pushes)
         classes = classify(runtime.tool_registry)
         baseline = work / "baseline"
         baseline.mkdir()

@@ -309,6 +309,17 @@ def test_a_listed_plugin_is_offered_as_the_brain_offers_it_and_answers_from_the_
     assert line["built"]["stubbed_providers"] == []
 
 
+def test_the_listing_and_the_recordings_beside_directory_cases_are_not_cases(
+    tmp_path: Path,
+) -> None:
+    """A cases directory holds the MCP listing and each case's recording next to the cases."""
+    case = {"id": "lights", "said": "x", "at": AT.isoformat(), "zone": "UTC"}
+    (tmp_path / "lights.json").write_text(json.dumps(case), encoding="utf-8")
+    (tmp_path / "lights.recording.json").write_text(json.dumps({"mcp": []}), encoding="utf-8")
+    (tmp_path / "mcp-tools.json").write_text(json.dumps(_HUE_LISTING), encoding="utf-8")
+    assert steps.load_cases(tmp_path) == [case]
+
+
 def _every_key_name() -> set[str]:
     """Every provider key the code or the shipped config names: a tool may need any of them."""
     texts = [p.read_text(encoding="utf-8") for p in (REPO / "jarvis").rglob("*.py")]

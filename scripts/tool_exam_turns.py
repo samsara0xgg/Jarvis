@@ -65,6 +65,7 @@ from jarvis.runtime.plugin_catalog import credential_fields, read_package
 from jarvis.surface.cli import emit_surface_user_intent
 from scripts.replay_decision import _client
 from scripts.tool_exam_steps import (
+    LISTING,
     REPO,
     Meter,
     ScriptedModel,
@@ -93,7 +94,6 @@ if TYPE_CHECKING:
 
 BRAIN_SETTINGS = Path("~/.jarvis/backups/cutover-prep/settings.brain.yaml").expanduser()
 _NOT_IN_A_TURN = ("projects", "runtime", "diagnostics", "dashboard", "job_mail", "realtime")
-LISTING = "mcp-tools.json"
 _PLACEHOLDER = "exam-placeholder-key"
 STATE_BLOCK_CHARS = 300
 _STATE_MARKS = ("[State when this was said", "[Current state")
