@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -27,6 +28,8 @@ from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
 from jarvis.surface.inherent_server.guards import require_local_key
 from tests.support.claude_hooks import SUGGESTION
+from tests.support.clock import FakeClock
+from tests.support.hold import HANG_S
 from tests.support.reminders import ReminderWorld
 
 if TYPE_CHECKING:
@@ -115,7 +118,7 @@ class _Claude:
 
 def _until[T](read: Callable[[], T], found: Callable[[T], bool]) -> T:
     """Poll `read()` until `found(result)`; the last result either way."""
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + HANG_S
     while True:
         result = read()
         if found(result) or time.monotonic() > deadline:
@@ -202,7 +205,7 @@ def test_one_read_holds_every_card_and_the_answers_stay_on_their_own_routes(
             json={"decision": "allow"},
         )
         assert answered.json() == {"ok": True}
-        hook.join(timeout=5)
+        hook.join(timeout=HANG_S)
         assert claude.decisions[0]["hookSpecificOutput"]["decision"] == {"behavior": "allow"}
         assert phone.get("/inherent/waiting").json()["claude_requests"] == []
 
@@ -258,9 +261,19 @@ def test_reading_waiting_is_listening_so_a_phone_with_the_app_open_keeps_prompts
     world: tuple[ReminderWorld, _Claude],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Held while `/waiting` keeps being read; let go back to Claude Code's dialog once it stops."""
+    """Held while `/waiting` keeps being read; let go back to Claude Code's dialog once it stops.
+
+    The listener window is measured on the test's clock, so how long a request takes on a busy
+    machine never decides whether the app "kept reading". The hold loop looks at the window once
+    a second of real time, so the test lets real time pass only to give it looks to make.
+    """
     _, claude = world
+    clock = FakeClock()
     monkeypatch.setattr(claude_hooks, "LISTENER_S", 0.6)
+    # Only the monotonic reads move: the wall-clock stamps meet the board's own, which are real.
+    monkeypatch.setattr(
+        claude_hooks, "time", SimpleNamespace(time=time.time, monotonic=clock.monotonic)
+    )
     app = create_app(
         InherentDeps(
             submit_callable=_noop,
@@ -271,18 +284,20 @@ def test_reading_waiting_is_listening_so_a_phone_with_the_app_open_keeps_prompts
     _guard(app)
     with _phone(app) as phone:
         # Nobody has read anything: the prompt is left to Claude Code at once.
-        claude.prompt(phone).join(timeout=5)
+        claude.prompt(phone).join(timeout=HANG_S)
         assert claude.decisions == [{}]
 
         phone.get("/inherent/waiting")
         hook = claude.prompt(phone)
         for _ in range(8):  # the app is open and polling: well past one listener window
-            time.sleep(0.2)
+            time.sleep(0.2)  # the hold loop's own looks come on real time
+            clock.advance(0.2)
             assert phone.get("/inherent/waiting").json()["claude_requests"]
             assert hook.is_alive()
 
-        # The app closes: nobody reads, and the hook is given back within a poll or two.
-        hook.join(timeout=5)
+        # The app closes: nobody reads, and the hook is given back at its next look.
+        clock.advance(0.7)
+        hook.join(timeout=HANG_S)
         assert not hook.is_alive()
         assert claude.decisions == [{}, {}]
         assert phone.get("/inherent/claude-sessions").json()["sessions"][0]["request"] is None
