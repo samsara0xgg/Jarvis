@@ -258,7 +258,7 @@ def test_the_cap_stops_the_background_call_before_any_request(
 def test_a_time_gone_a_far_day_or_a_muddled_ask_is_a_clear_error_before_any_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ask: dict[str, str],
 ) -> None:
-    """Each is ToolError invalid_argument, raised before Google is asked."""
+    """Each is ToolError invalid_arguments, raised before Google is asked."""
     world = _world(tmp_path, monkeypatch, BUSES)
     plan = transit_tool.build_planner(
         KEY, lambda: SAVED, None, phone_here=None, offers=transit_tool.TransitOffers(),
@@ -267,7 +267,7 @@ def test_a_time_gone_a_far_day_or_a_muddled_ask_is_a_clear_error_before_any_requ
     assert plan is not None
     with pytest.raises(ToolError) as caught:
         plan({"origin": "home", "destination": "school", **ask}, world.ctx())
-    assert caught.value.code == "invalid_argument"
+    assert caught.value.code == "invalid_arguments"
     assert world.bodies == []
 
 

@@ -424,7 +424,7 @@ def test_spoken_requests_reach_the_run_through_tier0_and_the_tools(tmp_path: Pat
     assert render_tier0_response(hit, started) == started["spoken"]
     assert "8" in started["spoken"]
     assert dispatch("start_night_run", "act-again", {"hours": 5})["status"] == "already"
-    assert dispatch("start_night_run", "act-bad", {"hours": 30}) == {"error": "invalid_argument"}
+    assert dispatch("start_night_run", "act-bad", {"hours": 30}) == {"error": "invalid_arguments"}
     assert dispatch("end_night_run", "act-end", {})["status"] == "cancelled"
     assert dispatch("end_night_run", "act-none", {})["status"] == "none"
     correlation = fx.conn.execute(

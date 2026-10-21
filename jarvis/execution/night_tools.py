@@ -72,7 +72,7 @@ def _clock(value: object) -> time | None:
     match = _CLOCK.match(str(value).strip())
     if match is None:
         msg = "start_night_run: until must be a local time HH:MM, e.g. 07:30, or left out"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return time(int(match.group(1)), int(match.group(2)))
 
 
@@ -89,7 +89,7 @@ def _hours(value: object) -> float | None:
             f"start_night_run: hours must be between {MIN_HOURS} and {MAX_HOURS:g}, "
             "or left out for the default length"
         )
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return hours
 
 

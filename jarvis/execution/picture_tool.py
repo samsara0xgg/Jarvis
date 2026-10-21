@@ -66,7 +66,7 @@ def build_picture_tool(
                 'look_at_picture: picture (the id in its "[Picture note ... id XXXXXXXX]" line, '
                 'or "latest") and question are both required'
             )
-            raise ToolError(msg, code="bad_arguments")
+            raise ToolError(msg, code="invalid_arguments")
         store = Attachments(ctx.runtime_paths.artifacts_root / ATTACHMENTS_DIRNAME)
         ref = store.find(wanted)
         if ref is None or ref.kind != "image" or (path := store.path(ref.id)) is None:

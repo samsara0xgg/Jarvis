@@ -65,7 +65,7 @@ def _pick(args: Mapping[str, Any], key: str, table: Mapping[str, Any]) -> Any:  
         return None
     if word not in table:
         msg = f"set_voice: {key} must be one of: {', '.join(table)} (got {word!r})"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return table[word]
 
 

@@ -574,7 +574,7 @@ def _ask_text(value: object, name: str, limit: int, fix: str) -> str:
     text = value.strip() if isinstance(value, str) else ""
     if not text or len(text) > limit:
         msg = f"ask_user: {name} must be 1-{limit} characters; {fix}"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return text
 
 
@@ -582,7 +582,7 @@ def _ask_field(raw: object) -> dict[str, Any]:
     """One card field as the companion draws it: label, choices, pre-filled value, remember."""
     if not isinstance(raw, Mapping):
         msg = 'ask_user: each entry in fields must be an object, e.g. {"label": "delivery address"}'
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     field: dict[str, Any] = {
         "label": _ask_text(
             raw.get("label"), "label", _ASK_LABEL_MAX_CHARS,
@@ -594,7 +594,7 @@ def _ask_field(raw: object) -> dict[str, Any]:
     if choices:
         if not isinstance(choices, list) or len(choices) not in _ASK_CHOICES:
             msg = "ask_user: choices must list 2-6 options; leave choices out for a typed answer"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         field["choices"] = [
             _ask_text(c, "a choice", _ASK_LABEL_MAX_CHARS, "shorten the option")
             for c in choices
@@ -695,7 +695,7 @@ def ask_user(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
             f"ask_user: fields must list 1-{_ASK_MAX_FIELDS} details; ask for the rest in words "
             "after he has answered"
         )
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     fields = [_ask_field(raw) for raw in raw_fields]
     if _ASK_SECRET_RE.search(" ".join([question, *(f["label"] for f in fields)])):
         msg = (
@@ -814,8 +814,8 @@ def _parse_open_path_args(arguments: Mapping[str, Any]) -> _OpenPathArgs:
     Raises (`KeyError` for the missing required `query`, `TypeError` for a
     wrong type, an empty/whitespace-only query, or an out-of-enum value)
     rather than returning a sentinel — the caller, `open_path_handler`,
-    catches both and turns them into a `tool_error(code="invalid_argument")`
-    RawResult (see `list_tasks_handler`'s `invalid_argument` shape for the
+    catches both and turns them into a `tool_error(code="invalid_arguments")`
+    RawResult (see `list_tasks_handler`'s `invalid_arguments` shape for the
     convention this mirrors). The schema's `enum`/`required` should catch
     most of this first for `jarvis_llm` callers, but Tier 0's literal-string
     `args` (spec §17) — and a Tier 0 capture group that strips to an empty
@@ -913,14 +913,14 @@ def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     "打开 X" / "用 VS Code 打开 X" — the query is resolved via
     :func:`jarvis.execution.path_resolver.resolve` (pure, no events; see
     that module for the bookmark / Spotlight / one-level-scan strategy),
-    then handed to macOS `open`. Errors: ``invalid_argument`` (bad
+    then handed to macOS `open`. Errors: ``invalid_arguments`` (bad
     query / target_kind / app), ``target_not_found``, ``open_failed``.
     """
     try:
         parsed = _parse_open_path_args(args)
     except TypeError as exc:
         msg = f"open_path: {exc}"
-        raise ToolError(msg, code="invalid_argument") from exc
+        raise ToolError(msg, code="invalid_arguments") from exc
 
     target = resolve_path_target(parsed.query, parsed.target_kind, ctx.conn)
     if target is None:
@@ -1107,7 +1107,7 @@ def _make_search_notes(vault_root: Path) -> Tool:  # noqa: C901 — one linear v
                 "search_notes: query must be the words to look for in his notes "
                 f"(got {query!r})"
             )
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
 
         max_results = _SEARCH_NOTES_DEFAULT_MAX_RESULTS
         max_results_arg = args.get("max_results")
@@ -1972,7 +1972,7 @@ def _make_web_search(
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             msg = f"web_search: query must be the words to search for (got {query!r})"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         deep = args.get("depth") == "deep"
         if deep and deep_search is not None:
             return _deep_web_search(deep_search, query)
@@ -2591,7 +2591,7 @@ def _make_web_fetch(
         url = args.get("url")
         if not isinstance(url, str) or not url.strip():
             msg = f"web_fetch: url must be the page address, http or https (got {url!r})"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         allowed, reason = validate_egress_url(url)
         if not allowed:
             msg = (
@@ -2668,7 +2668,7 @@ def open_url(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     url = args.get("url")
     if not isinstance(url, str) or not url.strip():
         msg = f"open_url: url must be the page address, http or https (got {url!r})"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
 
     allowed, reason = validate_egress_url(url)
     if not allowed:

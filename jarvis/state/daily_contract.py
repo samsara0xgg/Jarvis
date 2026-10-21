@@ -27,7 +27,7 @@ DETAIL_CHARS = 3500
 class DailyError(Exception):
     """An expected input, reference or revision failure."""
 
-    def __init__(self, message: str, code: str = "invalid_argument") -> None:
+    def __init__(self, message: str, code: str = "invalid_arguments") -> None:
         """Carry a stable tool-facing error code."""
         self.code = code
         super().__init__(message)

@@ -42,7 +42,7 @@ _CAP = 300
 def failing_tool(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     """The error path: nothing is returned, the dispatcher serializes the raise."""
     msg = f"bad {args['x']}"
-    raise ToolError(msg, code="invalid_argument")
+    raise ToolError(msg, code="invalid_arguments")
 
 
 @tool(
@@ -93,12 +93,12 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
         assert observed == {
             "action_id": "A2",
             "semantics": "error",
-            "tool_output": '{"error": "bad 7", "code": "invalid_argument"}',
-            "error": "invalid_argument",
+            "tool_output": '{"error": "bad 7", "code": "invalid_arguments"}',
+            "error": "invalid_arguments",
         }
         slot = bundle
-        assert slot.error == "invalid_argument"
-        assert slot.payload == {"error": "invalid_argument"}
+        assert slot.error == "invalid_arguments"
+        assert slot.payload == {"error": "invalid_arguments"}
         assert slot.tool_output == observed["tool_output"]
 
         bundle = fx.dispatch(tool_request("crashing_tool", "A3", arguments={"x": 5000}))

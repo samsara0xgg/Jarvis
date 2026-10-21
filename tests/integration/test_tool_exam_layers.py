@@ -52,7 +52,7 @@ RESULTS = [
     ('{"summary": "' + "x" * 4100 + '"}', ["over about 4000"]),
     ('{"summary": "line one\\nline two"}', ["not one speakable line"]),
     ('{"error": "No stop by that name. Try another name.", "code": "retry_other_args"}', []),
-    ('{"error": "bad", "code": "invalid_argument"}', ["not one of the four kinds"]),
+    ('{"error": "bad", "code": "invalid_arguments"}', ["not one of the four kinds"]),
     ('{"error": "", "code": "impossible"}', ["error text is empty"]),
 ]
 

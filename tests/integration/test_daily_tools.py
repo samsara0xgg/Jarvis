@@ -165,7 +165,7 @@ def test_recall_lists_a_day_compactly_in_order(daily: DailyHarness) -> None:
     assert (page["count"], page["total"], page["next_cursor"]) == (3, 3, None)
     empty = daily.call("recall", {"from": "2026-01-01T00:00:00+00:00"})
     assert (empty["lines"], empty["total"]) == ([], 0)
-    assert daily.call("recall", {"from": "2026-13-45"})["code"] == "invalid_argument"
+    assert daily.call("recall", {"from": "2026-13-45"})["code"] == "invalid_arguments"
 
 
 def test_recall_pages_lose_and_repeat_nothing(daily: DailyHarness) -> None:
@@ -413,7 +413,7 @@ def test_invalid_inputs_are_terminal_tool_errors(
     daily: DailyHarness, name: str, args: dict[str, Any]
 ) -> None:
     """Bad input never strands an action or writes a revision."""
-    assert daily.call(name, args)["code"] == "invalid_argument"
+    assert daily.call(name, args)["code"] == "invalid_arguments"
     assert (
         daily.fx.conn.execute("SELECT count(*) FROM events WHERE type LIKE '%.revised'").fetchone()[
             0

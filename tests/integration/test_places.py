@@ -411,20 +411,20 @@ def test_rename_forget_and_the_refusals(world: World) -> None:
     )
     # Here is inside the circle he already keeps: it names the place and how to rename it.
     inside = world.call("save_place", {"name": "Other Name", "where": "here"})
-    assert inside["code"] == "invalid_argument"
+    assert inside["code"] == "invalid_arguments"
     assert "Iron Works" in inside["error"]
     assert gym.id in inside["error"]
     # A name kept elsewhere, a radius out of range and a role that is not one.
     stay(world.conn, "far", 48.0200, -123.0000, NOW_MS - 2 * MINUTE)
     other = world.call("save_place", {"name": "iron works", "where": "here"})
-    assert other["code"] == "invalid_argument"
+    assert other["code"] == "invalid_arguments"
     assert world.call("save_place", {"name": "Dojo", "where": "here", "radius_m": 10})[
         "code"
-    ] == "invalid_argument"
+    ] == "invalid_arguments"
     assert world.call("save_place", {"name": "Dojo", "where": "here", "role": "castle"})[
         "code"
-    ] == "invalid_argument"
-    assert world.call("save_place", {"name": "", "where": "here"})["code"] == "invalid_argument"
+    ] == "invalid_arguments"
+    assert world.call("save_place", {"name": "", "where": "here"})["code"] == "invalid_arguments"
     assert world.call("save_place", {"name": "Dojo", "where": "place:nope"})["code"] == "not_found"
     assert len(world.rows("place_changes")) == 2
     # Forget: the place goes, the change keeps what it was, the visits are spots again.

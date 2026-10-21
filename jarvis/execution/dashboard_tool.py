@@ -81,7 +81,7 @@ def _position(value: object) -> int | None:
         value = int(value)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         msg = "show_on_dashboard: item must be a whole number from 1, e.g. item=2 for the second"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return value
 
 
@@ -142,7 +142,7 @@ def build_dashboard_tool(
             )
         except ValueError as exc:
             msg = f"show_on_dashboard: {exc}"
-            raise ToolError(msg, code="invalid_argument") from exc
+            raise ToolError(msg, code="invalid_arguments") from exc
         page, item = sent.get("page"), sent.get("item_id")
         shown: dict[str, Any] = {
             "summary": _summary(page, item, asked=bool(item_id) or position is not None),

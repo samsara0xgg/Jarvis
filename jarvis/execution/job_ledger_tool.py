@@ -119,7 +119,7 @@ def build_record_application_tool(
             return {"recorded": True, "id": add(fields)}
         except ValueError as exc:
             msg = f"record_application: {exc}"
-            raise ToolError(msg, code="invalid_argument") from exc
+            raise ToolError(msg, code="invalid_arguments") from exc
 
     return (
         Tool(

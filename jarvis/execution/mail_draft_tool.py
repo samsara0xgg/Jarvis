@@ -44,7 +44,7 @@ def build_mail_draft_tool(drafts: DraftStore | None) -> tuple[Tool, ...]:
             revision = drafts.write(str(args.get("letter_id", "")), str(args.get("text", "")))
         except ValueError as exc:
             msg = f"write_mail_draft: {exc}"
-            raise ToolError(msg, code="invalid_argument") from exc
+            raise ToolError(msg, code="invalid_arguments") from exc
         return {"drafted": True, "revision": revision}
 
     return (

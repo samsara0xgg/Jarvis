@@ -395,7 +395,7 @@ def test_show_on_dashboard_opens_an_item_by_its_number_on_the_page_he_sees(
     if isinstance(wants, str):
         with pytest.raises(ToolError, match=re.escape(wants)) as caught:
             _show(tool, **args)
-        assert caught.value.code == "invalid_argument"
+        assert caught.value.code == "invalid_arguments"
         assert sent == []
         if "shows 5 items" in wants:
             assert "pass an exact id from a tool result as item_id" in str(caught.value)

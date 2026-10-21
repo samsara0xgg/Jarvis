@@ -351,7 +351,7 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
             f" (it covers {DAYS_BACK} days before today, {today.isoformat()}, to {DAYS_AHEAD}"
             " days after it); use web_search for other dates"
         )
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     current = body.get("currentWeather") or {}
     past = last < today
     out: dict[str, Any] = {"place": label, "timezone": zone_name}

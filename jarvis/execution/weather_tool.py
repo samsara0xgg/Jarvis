@@ -80,7 +80,7 @@ def _day(args: Mapping[str, Any], key: str) -> date | None:
         return date.fromisoformat(str(value).strip())
     except ValueError as exc:
         msg = f"weather: {key} must be a date as YYYY-MM-DD (got {value!r})"
-        raise ToolError(msg, code="invalid_argument") from exc
+        raise ToolError(msg, code="invalid_arguments") from exc
 
 
 def _dates(args: Mapping[str, Any], *, hourly: bool) -> tuple[date | None, date | None]:
@@ -88,17 +88,17 @@ def _dates(args: Mapping[str, Any], *, hourly: bool) -> tuple[date | None, date 
     if start is None:
         if end is not None:
             msg = "weather: end_date needs a start_date"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         return None, None
     end = end or start
     # How far back and ahead is the lookup's to judge: only it knows the place's zone, and it reads
     # the runtime's clock (ADR 0322), so the range it names is the place's own.
     if end < start:
         msg = "weather: end_date is before start_date; give the first day, then the last"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     if hourly and (end - start).days >= HOURLY_MAX_DAYS:
         msg = f"weather: hourly rows are for at most {HOURLY_MAX_DAYS} days; ask for fewer days"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return start, end
 
 

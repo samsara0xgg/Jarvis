@@ -161,36 +161,36 @@ class _When(NamedTuple):
 def _when(args: Mapping[str, Any], now: datetime) -> _When:
     """``day`` with ``depart_at`` or ``arrive_by`` (HH:MM local on that day); ADR 0288.
 
-    ToolError ``invalid_argument`` for both times, a day not ISO, past or over 30 days ahead, an
+    ToolError ``invalid_arguments`` for both times, a day not ISO, past or over 30 days ahead, an
     arrive-by time that has passed, or a day other than today with neither time. A ``depart_at``
     earlier than now is an error only when ``day`` is given; without it the older behavior stands.
     """
     depart, arrive = args.get("depart_at"), args.get("arrive_by")
     if depart and arrive:
         msg = "give at= or arrive_by=, not both"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     today = now.date()
     try:
         day = date.fromisoformat(str(args["day"]).strip()) if args.get("day") else today
     except ValueError as exc:
         msg = f"day must be a date as YYYY-MM-DD, not {args['day']!r}; leave it out for today"
-        raise ToolError(msg, code="invalid_argument") from exc
+        raise ToolError(msg, code="invalid_arguments") from exc
     if day < today or day > today + timedelta(days=_MAX_DAYS_AHEAD):
         msg = (
             f"day {day} is past or more than {_MAX_DAYS_AHEAD} days ahead; times can be read"
             " from today up to then"
         )
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     given, name = (arrive, "arrive_by") if arrive else (depart, "at")
     if not given:
         if day != today:
             msg = f"day={day} needs at=HH:MM or arrive_by=HH:MM"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         return _When(day, None, None)
     at = _today(given, name, day)
     if at < now.replace(second=0, microsecond=0) and (arrive or args.get("day")):
         msg = f"{name}={given} on {day} has already passed"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return _When(day, "arrivalTime" if arrive else "departureTime", _utc(at))
 
 
@@ -528,7 +528,7 @@ def _today(value: object, field: str, day: date | None = None) -> datetime:
         at = time.fromisoformat(str(value).strip())
     except ValueError as exc:
         msg = f"{field} must be a local time as HH:MM, not {value!r}"
-        raise ToolError(msg, code="invalid_argument") from exc
+        raise ToolError(msg, code="invalid_arguments") from exc
     return datetime.combine(
         day or _now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE,
     )
@@ -717,7 +717,7 @@ def trip_of(  # noqa: PLR0913 — one keyword per trip field.
         raise ToolError(msg, code="time_in_past")
     if departs < leave:
         msg = "departs is before leave_at; copy both from the same option"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return departures.Trip(
         tid,
         route,
@@ -813,7 +813,7 @@ def pin_trips(
     """Pin these trips as a new set and schedule its ring (ADR 0200, 0204); a newer set replaces."""
     if not 1 <= len(trips) <= departures.MAX_TRIPS:
         msg = f"pin between 1 and {departures.MAX_TRIPS} trips"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     # One pin at a time: the older pin's reminder must not ring for a dropped set.
     _cancel_ring(conn, departures.current(conn), action_id, source_event_id)
     reminder_id, ring_tid = ring(
@@ -1004,7 +1004,7 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
         origin, destination = str(args.get("origin", "")), str(args.get("destination", ""))
         if not origin.strip() or not destination.strip():
             msg = "origin and destination are both required"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         saved = places()
         start, start_label, old_start = _waypoint(origin, saved, here, phone_here, ctx, kept)
         place_id = str(args.get("place_id") or "").strip()
@@ -1072,7 +1072,7 @@ def build_leg_planner(  # noqa: PLR0913 - the key, places, the context, kept, ca
     no offer; "here" is not available. The answer is :func:`build_planner`'s plus ``chosen`` and
     ``backup`` (or None): for ``arrive_by`` the latest bus that arrives in time and the one
     before it; for ``depart_at`` the first he can still catch and the one after it. ToolError
-    ``spend_cap`` when the month's cap is reached, ``invalid_argument`` for a time that has
+    ``spend_cap`` when the month's cap is reached, ``invalid_arguments`` for a time that has
     passed or a day over 30 days ahead, ``not_found`` for no bus route.
     """
     plan = build_planner(
@@ -1088,7 +1088,7 @@ def build_leg_planner(  # noqa: PLR0913 - the key, places, the context, kept, ca
     ) -> dict[str, Any]:
         if bool(arrive_by) == bool(depart_at):
             msg = "give exactly one of arrive_by and depart_at"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         args: dict[str, Any] = {"origin": origin, "destination": destination, "day": day}
         args |= {"arrive_by": arrive_by} if arrive_by else {"depart_at": depart_at}
         raw = plan(args, ctx)

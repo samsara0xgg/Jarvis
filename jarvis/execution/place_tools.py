@@ -60,13 +60,13 @@ def _integer(args: Mapping[str, Any], key: str) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int | float) or value != int(value):
         msg = f"save_place: {key} must be a whole number of metres (got {value!r})"
-        raise ToolError(msg, code="invalid_argument")
+        raise ToolError(msg, code="invalid_arguments")
     return int(value)
 
 
 def _refused(exc: Exception, tool: str) -> ToolError:
     """A refused write as the model reads it."""
-    code = "not_found" if isinstance(exc, LookupError) else "invalid_argument"
+    code = "not_found" if isinstance(exc, LookupError) else "invalid_arguments"
     msg = f"{tool}: {exc}"
     return ToolError(msg, code=code)
 
@@ -122,7 +122,7 @@ class _PlaceTools:
                 "save_place: name (what he calls the place) and where ('here', or a spot or "
                 "place id from places) are both required"
             )
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         radius = _integer(args, "radius_m")
         kind = None if role is None else str(role)
         try:
@@ -147,7 +147,7 @@ class _PlaceTools:
         which = str(args.get("place", "")).strip()
         if not which:
             msg = "forget_place: place is required; pass a kept place's id or name from places"
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         found = next(
             (
                 p for p in places.read_kept(self._db)

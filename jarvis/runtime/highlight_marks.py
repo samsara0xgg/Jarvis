@@ -67,7 +67,7 @@ class HighlightMarks:
             start_ms, end_ms = day_window(on_day, sources.zone)
         except ValueError as exc:
             msg = f"mark_highlight: {exc}"
-            raise ToolError(msg, code="invalid_argument") from None
+            raise ToolError(msg, code="invalid_arguments") from None
         with closing(open_runtime_event_log(self._event_log)) as conn:
             items = fold_day(conn, start_ms, end_ms, now_ms, sources).items
         item = covering(items, int(moment.timestamp()) * 1000, now_ms)

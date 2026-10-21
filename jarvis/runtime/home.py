@@ -350,13 +350,13 @@ def weather_lookup(
                 f" ({oldest.isoformat()}) to {DAYS_AHEAD} days ahead ({newest.isoformat()});"
                 " earlier or later days are not available (use web_search)"
             )
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         if request.hourly and first < today:
             msg = (
                 f"weather: hour-by-hour rows exist from now on, not for {first.isoformat()};"
                 " ask for today or later, or drop hourly for the daily figures"
             )
-            raise ToolError(msg, code="invalid_argument")
+            raise ToolError(msg, code="invalid_arguments")
         body = kit.read(
             spot.latitude, spot.longitude, zone=str(zone_name), country=spot.country,
             first=first, last=last,

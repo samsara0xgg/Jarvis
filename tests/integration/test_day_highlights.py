@@ -594,12 +594,12 @@ def test_the_time_he_names_resolves_to_the_shortest_item_that_covers_it(
         ({"day": "2026-10-07", "time": "03:00"}, "no_item"),
         ({"day": "2026-10-07", "time": "13:46"}, "no_item"),
         ({"day": "today", "time": "12:00"}, "no_item"),
-        ({"day": "tomorrow", "time": "12:00"}, "invalid_argument"),
-        ({"day": "2026-10-07", "time": "25:00"}, "invalid_argument"),
-        ({"day": "2026-10-07", "time": "noon"}, "invalid_argument"),
-        ({"day": "2026-10-07", "time": "12:30", "label": "l" * 25}, "invalid_argument"),
-        ({"day": "2026-10-07", "time": "12:30", "on": "yes"}, "invalid_argument"),
-        ({"day": "2026-10-07"}, "invalid_argument"),
+        ({"day": "tomorrow", "time": "12:00"}, "invalid_arguments"),
+        ({"day": "2026-10-07", "time": "25:00"}, "invalid_arguments"),
+        ({"day": "2026-10-07", "time": "noon"}, "invalid_arguments"),
+        ({"day": "2026-10-07", "time": "12:30", "label": "l" * 25}, "invalid_arguments"),
+        ({"day": "2026-10-07", "time": "12:30", "on": "yes"}, "invalid_arguments"),
+        ({"day": "2026-10-07"}, "invalid_arguments"),
     ],
 )
 def test_a_time_nothing_covers_or_a_day_or_time_that_is_not_one_is_a_clear_error(
