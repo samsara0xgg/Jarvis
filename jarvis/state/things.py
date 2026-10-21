@@ -52,7 +52,6 @@ ID_PREFIX: Final[str] = "thing-"
 RING_PREFIX: Final[str] = "reminder-th"
 """Every ring the ledger arms has this reminder-id prefix; :func:`ring_owner` names its thing."""
 KINDS: Final[tuple[str, ...]] = ("go", "do")
-STATES: Final[tuple[str, ...]] = ("open", "done", "paid", "cancelled")
 SOURCES: Final[tuple[str, ...]] = ("said", "picture", "mail", "outlook", "todo", "plan")
 BY: Final[tuple[str, ...]] = ("her", "pass", "mail", "mirror", "plan", "review", "him", "carry_in")
 CHANGEABLE: Final[tuple[str, ...]] = (
