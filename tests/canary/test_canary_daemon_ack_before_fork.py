@@ -74,7 +74,7 @@ def _call_name(call: ast.Call) -> str | None:
     Bare names return their id; attribute calls return the attribute
     name. We match on the suffix so ``fork_detach()`` matches whether
     the source spells it ``fork_detach(...)`` or
-    ``jarvis.runtime.daemon.fork_detach(...)`` (Day-2 uses the former
+    ``jarvis.runtime.daemon.detach.fork_detach(...)`` (Day-2 uses the former
     via a local lazy import).
     """
     func = call.func

@@ -4,7 +4,7 @@ Day-2 rewrite per ADR-0002 § Daemon / CLI contract (lines 1046-1098):
 
 - Parent process runs a cheap, LLM-free regex classifier on the utterance.
 - Long-run match: print the ack BEFORE the fork, ``sys.stdout.flush()``,
-  then :func:`jarvis.runtime.daemon.fork_detach`; parent ``os._exit(0)``
+  then :func:`jarvis.runtime.daemon.detach.fork_detach`; parent ``os._exit(0)``
   and the child re-bootstraps the runtime, installs the macOS power
   observer, runs the turn, and delivers the surface.
 - Non-long-run match: synchronous Day-1 path (bootstrap → run_turn →
@@ -517,7 +517,7 @@ def main_with_detach(
     Long-run path (classifier matched, ``no_detach`` false):
 
     1. Print :func:`_quick_ack_phrase`, flush stdout.
-    2. Call :func:`jarvis.runtime.daemon.fork_detach`.
+    2. Call :func:`jarvis.runtime.daemon.detach.fork_detach`.
     3. Parent: ``os._exit(0)`` immediately (no SQLite to close — none
        was opened).
     4. Child: re-bootstrap runtime via :func:`bootstrap_runtime_app`
@@ -569,7 +569,7 @@ def main_with_detach(
         # Fork-detach. Lazy import keeps the classifier import path
         # (and therefore unit-test imports) free of POSIX-fork wiring
         # on non-darwin runners.
-        from jarvis.runtime.daemon import fork_detach  # noqa: PLC0415 — see docstring above.
+        from jarvis.runtime.daemon.detach import fork_detach  # noqa: PLC0415 — see docstring above.
 
         if fork_detach() == "parent":
             # No SQLite to close — parent never opened it.
