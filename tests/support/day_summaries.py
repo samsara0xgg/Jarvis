@@ -6,9 +6,11 @@ import re
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from jarvis.decision.day_summary import REQUIRED_HEADINGS
 from jarvis.runtime.day_summary import VERBATIM_UNDER_CHARS
+from jarvis.shared.clock import system_zone, zone_key
 from jarvis.state.memory_db import open_memory_db
 from tests.support.model import Failure, Reply, ScriptedModel
 
@@ -19,9 +21,16 @@ if TYPE_CHECKING:
     from tests.support.model import Request
 
 TODAY = datetime.now().astimezone().date()
+LOCAL_ZONE = ZoneInfo(zone_key(system_zone()) or "UTC")
+"""The machine's zone, which the records' stamps are written in."""
 
 
 GOOD = "\n".join(f"{heading}\nnone" for heading in REQUIRED_HEADINGS)
+
+
+def today_at(hour: int, minute: int = 0, *, days: int = 0) -> datetime:
+    """``hour``:``minute`` on :data:`TODAY` (``days`` later) in the machine's zone."""
+    return datetime.combine(TODAY + timedelta(days=days), time(hour, minute), LOCAL_ZONE)
 
 
 def day_ago(ago: int) -> date:

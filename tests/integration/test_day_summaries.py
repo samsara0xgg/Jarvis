@@ -7,9 +7,12 @@ which answers per day and records what it was asked.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import closing
-from datetime import datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -29,6 +32,7 @@ from tests.support.clock import FakeClock
 from tests.support.daily_tools import DailyHarness
 from tests.support.day_summaries import (
     GOOD,
+    LOCAL_ZONE,
     TODAY,
     asked_days,
     day_ago,
@@ -36,6 +40,7 @@ from tests.support.day_summaries import (
     insert_records,
     record_id,
     stamp_ago,
+    today_at,
 )
 
 if TYPE_CHECKING:
@@ -54,7 +59,12 @@ def _stored(path: Path) -> dict[str, list[str]]:
 
 
 def _schedule(
-    tmp_path: Path, summariser: ScriptedModel, at: time = time(5, 0),
+    tmp_path: Path,
+    summariser: ScriptedModel,
+    at: time = time(5, 0),
+    *,
+    clock: FakeClock | None = None,
+    poll_s: float = 60.0,
 ) -> DaySummarySchedule:
     log = tmp_path / "events.db"
     open_event_log(log).close()
@@ -64,7 +74,8 @@ def _schedule(
         llm_config={},
         event_log_path=log,
         pricing_table={},
-        clock=FakeClock(),
+        clock=FakeClock(zone=LOCAL_ZONE) if clock is None else clock,
+        poll_s=poll_s,
         client=summariser.as_llm_client(),
     )
 
@@ -115,8 +126,8 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
     summariser = day_summariser(replies)
     schedule = _schedule(tmp_path, summariser)
 
-    assert _run_once(schedule, datetime.now().astimezone().replace(hour=4, minute=59)) is None
-    outcomes = _run_once(schedule, datetime.now().astimezone().replace(hour=5, minute=0))
+    assert _run_once(schedule, today_at(4, 59)) is None
+    outcomes = _run_once(schedule, today_at(5, 0))
     assert outcomes is not None
     # A rejected answer is asked once more in the same run.
     d5, d3, d1 = (day_ago(i).isoformat() for i in (5, 3, 1))
@@ -131,15 +142,75 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
     assert stored[day_ago(4).isoformat()] == ["old"]
     assert stored[day_ago(3).isoformat()] == [f"## {d3}\n{GOOD}"]  # the scripted model's answer
     # Once per local date: no second run today, even though two days are still open.
-    assert _run_once(schedule, datetime.now().astimezone().replace(hour=23)) is None
+    assert _run_once(schedule, today_at(23)) is None
 
     # The next day's run retries what was rejected and leaves the landed day alone.
     replies.clear()
-    tomorrow = datetime.now().astimezone() + timedelta(days=1)
-    assert schedule.due(tomorrow.replace(hour=5, minute=1)) == TODAY + timedelta(days=1)
+    assert schedule.due(today_at(5, 1, days=1)) == TODAY + timedelta(days=1)
     schedule.write(TODAY + timedelta(days=1))
     assert asked_days(summariser)[len(first_run) :] == [d5, d1, TODAY.isoformat()]
     assert set(_stored(path)) == {day_ago(i).isoformat() for i in (5, 4, 3, 1, 0)}
+
+
+def test_the_day_is_cut_in_his_zone_not_the_machines(tmp_path: Path) -> None:
+    """``at`` is 05:00 where he is: 04:59 there is 11:59 UTC and not yet, 05:00 there is due."""
+    vancouver = FakeClock(zone=ZoneInfo("America/Vancouver"))
+    schedule = _schedule(tmp_path, day_summariser(), clock=vancouver)
+    assert schedule.due(datetime(2026, 10, 14, 11, 59, tzinfo=UTC)) is None
+    assert schedule.due(datetime(2026, 10, 14, 12, 0, tzinfo=UTC)) == date(2026, 10, 14)
+    # The same instant is the next day's 05:00 for a Mac in Tokyo, and 04:59 the day before is not.
+    (tmp_path / "tokyo").mkdir()
+    in_tokyo = FakeClock(zone=ZoneInfo("Asia/Tokyo"))
+    tokyo = _schedule(tmp_path / "tokyo", day_summariser(), clock=in_tokyo)
+    assert tokyo.due(datetime(2026, 10, 13, 19, 59, tzinfo=UTC)) is None
+    assert tokyo.due(datetime(2026, 10, 13, 20, 0, tzinfo=UTC)) == date(2026, 10, 14)
+
+
+def test_a_mac_asleep_at_five_writes_on_its_first_check_after_waking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The polling loop reads the clock: nothing before ``at``, a run once the clock is past it."""
+    path = tmp_path / "memory.db"
+    insert_records(path, [(record_id(2, 1), stamp_ago(2, 9), "allen", "第二天")], pad=True)
+    summariser = day_summariser()
+    clock = FakeClock(today_at(4, 59), zone=LOCAL_ZONE)
+    schedule = _schedule(tmp_path, summariser, clock=clock, poll_s=0.0)
+
+    async def run() -> None:
+        loop = asyncio.get_running_loop()
+        checked, written = asyncio.Event(), asyncio.Event()
+        checks = 0
+        draft, write = schedule.draft, schedule.write
+
+        def counting_draft(now: datetime) -> str:
+            nonlocal checks
+            checks += 1
+            if checks == 3:  # three whole passes of the loop have found nothing to write
+                loop.call_soon_threadsafe(checked.set)
+            return draft(now)
+
+        def signalling_write(today: date) -> dict[str, str]:
+            try:
+                return write(today)
+            finally:
+                loop.call_soon_threadsafe(written.set)
+
+        monkeypatch.setattr(schedule, "draft", counting_draft)
+        monkeypatch.setattr(schedule, "write", signalling_write)
+        running = asyncio.create_task(schedule.run())
+        try:
+            await asyncio.wait_for(checked.wait(), 5)
+            assert asked_days(summariser) == []
+            clock.set(today_at(5, 0))
+            await asyncio.wait_for(written.wait(), 5)
+        finally:
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await running
+
+    asyncio.run(run())
+    assert asked_days(summariser) == [day_ago(2).isoformat()]
+    assert set(_stored(path)) == {day_ago(2).isoformat()}
 
 
 def test_a_failing_call_does_not_stop_the_days_after_it(tmp_path: Path) -> None:
@@ -243,8 +314,8 @@ def test_a_restart_does_not_ask_again_for_a_day_already_tried(tmp_path: Path) ->
     insert_records(path, [(record_id(2, 1), stamp_ago(2, 9), "allen", "第二天")], pad=True)
     rejected = f"## x\n{GOOD}\n[record_id={'f' * 32}]"
     summariser = day_summariser({day_ago(2).isoformat(): rejected})
-    # The log stamps its rows with the real clock, so the run happens now, after a midnight ``at``.
-    now = datetime.now().astimezone()
+    # The log stamps its rows with the real clock, so the run is today, after a midnight ``at``.
+    now = today_at(12)
     assert _run_once(_schedule(tmp_path, summariser, time.min), now) is not None
     assert asked_days(summariser) == [day_ago(2).isoformat()] * 2
     restarted = _schedule(tmp_path, summariser, time.min)

@@ -34,7 +34,6 @@ from jarvis.state.memory_db import (
     MemorySettings,
     append_day_summary,
     day_records,
-    local_now,
     pending_days,
 )
 
@@ -229,14 +228,14 @@ class DaySummarySchedule:
         self._last: date | None = None
 
     def due(self, now: datetime) -> date | None:
-        """Today (this Mac's zone) once ``at`` has passed and today was not tried yet.
+        """Today (his zone, the clock's) once ``at`` has passed and today was not tried yet.
 
         A start learns whether today was tried from the log: a summary call recorded since
         ``at`` today means it was, so a day that was rejected is not asked again on every
         restart (the brain restarted eleven times on 2026-10-19, each one paying for the same
         rejected day twice).
         """
-        local = now.astimezone()
+        local = now.astimezone(self._clock.zone)
         if local.time() < self._settings.at or local.date() == self._last:
             return None
         since = datetime.combine(local.date(), self._settings.at, local.tzinfo)
@@ -347,7 +346,7 @@ class DaySummarySchedule:
         """A Mac asleep at ``at`` writes on its first check after waking or after a start."""
         while True:
             await asyncio.sleep(self._poll_s)
-            today = self.due(local_now())
+            today = self.due(self._clock.now())
             if today is not None:
                 try:
                     outcomes = await asyncio.to_thread(self.write, today)
@@ -356,7 +355,7 @@ class DaySummarySchedule:
                 else:
                     LOGGER.info("day_summary: scheduled %s -> %s", today, outcomes)
             try:
-                drafted = await asyncio.to_thread(self.draft, local_now())
+                drafted = await asyncio.to_thread(self.draft, self._clock.now())
             except Exception:
                 LOGGER.exception("day_draft: the check failed")
             else:
