@@ -19,6 +19,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.state.event_log import emit_event, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
+from tests.support.clock import FakeClock
 from tests.support.daily_tools import DailyHarness
 from tests.support.tool_world import ToolWorld, tool_request
 
@@ -86,7 +87,7 @@ def test_revisions_retry_conflict_and_survive_restart(tmp_path: Path) -> None:
             assert count == 3
             tool = next(t for t in h.tools if t.name == "search_knowledge")
             assert isinstance(tool, Tool)
-            items = tool.handler({}, ToolContext(fresh, h.fx.paths, "read"))["items"]
+            items = tool.handler({}, ToolContext(fresh, h.fx.paths, "read", FakeClock()))["items"]
             assert items[0]["version"] == 3
     finally:
         h.fx.close()
@@ -440,7 +441,7 @@ def test_concurrent_revision_only_one_wins(daily: DailyHarness) -> None:
                         "status": "deprecated",
                         "request_id": request_id,
                     },
-                    ToolContext(conn, daily.fx.paths, request_id),
+                    ToolContext(conn, daily.fx.paths, request_id, FakeClock()),
                 )
             except ToolError as exc:
                 return exc.code

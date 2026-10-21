@@ -7,21 +7,20 @@ do (a memo, a reminder, an appointment) is the ledger's, and its tool is ``sched
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.state.core_memory import SECTIONS
-from jarvis.state.daily_report import resolve_zone
 from jarvis.state.memory_db import current_core_memory, keep_fact
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from datetime import tzinfo
+    from collections.abc import Mapping
     from pathlib import Path
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
 
 _KEEP_DESCRIPTION: Final = (
     "Use when he states a lasting fact about himself or asks you to remember one: a birthday, a"
@@ -70,10 +69,6 @@ _SAID_CHARS: Final = 60
 _PAGE: Final = 8
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 def _cut(text: str, limit: int) -> str:
     """One line of at most ``limit`` characters."""
     line = " ".join(text.split())
@@ -111,12 +106,10 @@ def _since(day: object, today: date) -> str:
 class _Keeper:
     """The handlers: ``keep`` writes core memory, ``kept`` reads it."""
 
-    def __init__(
-        self, memory_db: Path | None, zone: tzinfo, clock: Callable[[], datetime],
-    ) -> None:
+    def __init__(self, memory_db: Path | None, clock: Clock) -> None:
         self._memory_db = memory_db
-        self._zone = zone
-        self._clock = clock
+        self._zone = clock.zone
+        self._clock = clock.now
 
     def keep(self, args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         """Save the fact the arguments say; the result says whether it was new."""
@@ -141,7 +134,9 @@ class _Keeper:
             raise ToolError(msg, code="invalid_arguments")
         stored = f"{topic}: {text}" if topic else text
         try:
-            kept = keep_fact(self._memory_db, text, topic or None, section or None)
+            kept = keep_fact(
+                self._memory_db, text, topic or None, section or None, self._clock(),
+            )
         except ValueError as exc:
             msg = f"keep: {exc}"
             raise ToolError(msg, code="invalid_arguments") from exc
@@ -203,18 +198,22 @@ class _Keeper:
 
 def build_keep_tools(
     memory_db: Path | None,
-    zone: tzinfo | None,
-    clock: Callable[[], datetime] = _now,
 ) -> tuple[Tool, ...]:
-    """``keep`` and ``kept`` over ``memory_db`` (None: no facts) and his zone."""
-    keeper = _Keeper(memory_db, resolve_zone(None, zone)[1], clock)
+    """``keep`` and ``kept`` over ``memory_db`` (None: no facts), days cut in the context's zone."""
+
+    def keep(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _Keeper(memory_db, ctx.clock).keep(args, ctx)
+
+    def kept(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _Keeper(memory_db, ctx.clock).kept(args, ctx)
+
     both = frozenset({CallerPrincipal.REGEX_ROUTER, CallerPrincipal.JARVIS_LLM})
     return (
         Tool(
             name="keep",
             description=_KEEP_DESCRIPTION,
             input_schema=_KEEP_SCHEMA,
-            handler=keeper.keep,
+            handler=keep,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
@@ -225,7 +224,7 @@ def build_keep_tools(
             name="kept",
             description=_KEPT_DESCRIPTION,
             input_schema=_KEPT_SCHEMA,
-            handler=keeper.kept,
+            handler=kept,
             allowed_callers=both,
             risk_level="L0",
             read_only=True,

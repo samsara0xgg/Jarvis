@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.here import HereSource
 
 DAYS_AHEAD: Final = 9
 DAYS_BACK: Final = 7
@@ -103,14 +104,11 @@ def _dates(args: Mapping[str, Any], *, hourly: bool) -> tuple[date | None, date 
 
 
 def build_weather_tool(
-    lookup: Callable[[WeatherRequest], Mapping[str, Any]] | None,
-    mac: Callable[[], Mapping[str, Any]] | None = None,
-    phone: Callable[[], Mapping[str, Any]] | None = None,
+    lookup: Callable[[WeatherRequest], Mapping[str, Any]] | None, here: HereSource | None = None,
 ) -> tuple[Tool, ...]:
     """``weather`` over ``lookup``; none when the home has no location.
 
-    ``mac`` and ``phone`` are the location readers ``where_am_i`` has (ADR 0194, 0198); either
-    one gives the tool its ``place: "here"``.
+    ``here`` says the runtime has a Here (ADR 0322), which gives the tool its ``place: "here"``.
     """
     if lookup is None:
         return ()
@@ -119,14 +117,14 @@ def build_weather_tool(
         place = str(args.get("place") or "").strip() or None
         hourly = args.get("hourly") is True
         start, end = _dates(args, hourly=hourly)
-        here = None
+        at = None
         said = ""
         if place is not None and place.casefold() == "here":
-            fix = read_here(mac, phone, ctx)
-            here = (fix["lat"], fix["lng"], fix["place"] or "where he is now")
+            fix = read_here(ctx)
+            at = (fix.lat, fix.lng, fix.place or "where he is now")
             said, place = said_where(fix), None
         request = WeatherRequest(
-            place, here, start, end, hourly,
+            place, at, start, end, hourly,
             args.get("air_quality") is True,
         )
         try:
@@ -146,7 +144,7 @@ def build_weather_tool(
             "type": "string",
             "description": (
                 "The place as he names it; leave out for his home."
-                + (' "here" for where he is now.' if mac is not None or phone is not None else "")
+                + (' "here" for where he is now.' if here is not None else "")
             ),
         },
         "start_date": {
@@ -165,7 +163,7 @@ def build_weather_tool(
         Tool(
             name="weather",
             description=_DESCRIPTION.format(
-                here=_HERE if mac is not None or phone is not None else ""
+                here=_HERE if here is not None else ""
             ),
             input_schema={"type": "object", "properties": properties, "required": []},
             handler=weather,

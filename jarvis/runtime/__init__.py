@@ -133,7 +133,7 @@ from jarvis.deployment.models import (
     default_voiceprint_model_path,
 )
 from jarvis.deployment.night_power import MacPower
-from jarvis.execution import maps_spend, speakable
+from jarvis.execution import maps_spend
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.around import Surroundings
 from jarvis.execution.conversation_tool import build_conversation_tool
@@ -205,7 +205,7 @@ from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, wea
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
-from jarvis.runtime.locate import PUSH_WAIT_S, SOCKET_WAIT_S, Locator
+from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S, HerePolicy, Locator
 from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -277,7 +277,6 @@ from jarvis.state.memory_db import (
     record_sent,
     render_context,
 )
-from jarvis.state.phone_location import read_phone_here
 from jarvis.state.projects import parse_catalog
 from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX, shares_line
 from jarvis.state.stream_emission import committed_text_prefix
@@ -1468,23 +1467,11 @@ def _home_weather(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return place if isinstance(place, Mapping) else None
 
 
-def _phone_here(event_log_path: Path) -> dict[str, Any]:
-    """The phone's last location report, read from the log at each call (ADR 0198).
-
-    Opens its own connection: a tool runs on a worker thread, and the runtime's connection
-    belongs to the loop's.
-    """
-    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
-        return read_phone_here(conn)
-
-
 _MAX_LOCATE_WAIT_S = 30
 
 
-def _locator(
-    config: Mapping[str, Any], event_log: Path, waits: LocateWaits, memory_db: Path,
-) -> Locator:
-    """``locate`` — how long ``where_am_i`` waits for his phone's fresh fix (ADR 0281)."""
+def _locator(config: Mapping[str, Any], waits: LocateWaits, clock: Clock) -> Locator:
+    """``locate`` — how long Here waits for his phone's fresh fix (ADR 0281)."""
     block = config.get("locate")
     block = block if isinstance(block, Mapping) else {}
     waits_s = []
@@ -1497,9 +1484,21 @@ def _locator(
             msg = f"locate: locate.{key} is seconds, above 0 and up to {_MAX_LOCATE_WAIT_S}"
             raise RuntimeBootstrapError(msg)
         waits_s.append(float(value))
-    return Locator(
-        event_log, waits, socket_wait_s=waits_s[0], push_wait_s=waits_s[1], memory_db=memory_db,
-    )
+    return Locator(waits, clock, socket_wait_s=waits_s[0], push_wait_s=waits_s[1])
+
+
+def _here_settings(config: Mapping[str, Any]) -> dict[str, Any]:
+    """``locate.phone`` (the phone he carries) and ``locate.max_age_s`` (a report's age limit)."""
+    block = config.get("locate")
+    block = block if isinstance(block, Mapping) else {}
+    phone, max_age = block.get("phone", ""), block.get("max_age_s", MAX_AGE_S)
+    if not isinstance(phone, str):
+        msg = "locate: locate.phone is the name of a paired device, or empty"
+        raise RuntimeBootstrapError(msg)
+    if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age <= 0:
+        msg = "locate: locate.max_age_s is a whole number of seconds above 0"
+        raise RuntimeBootstrapError(msg)
+    return {"phone": phone.strip(), "max_age_s": max_age}
 
 
 def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], int | None]:
@@ -1670,12 +1669,12 @@ def _places_block(
         return ""
 
 
-def _whereabouts_lines(runtime: JarvisRuntime) -> tuple[str, ...]:
+def _whereabouts_lines(runtime: JarvisRuntime, turn_id: str | None) -> tuple[str, ...]:
     """ADR 0217: the devices there are and the phone's place; never fails the turn."""
     if runtime.whereabouts is None:
         return ()
     try:
-        return runtime.whereabouts.lines(runtime.conn)
+        return runtime.whereabouts.lines(runtime.conn, turn_id)
     except Exception:  # a producer must never fail a turn.
         LOGGER.exception("live context: the whereabouts lines failed, skipped")
         return ()
@@ -2054,30 +2053,26 @@ def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> No
         registry.register(tool)
 
 
-def _register_mail(registry: ToolRegistry, home: Home, zone: tzinfo) -> None:
+def _register_mail(registry: ToolRegistry, home: Home) -> None:
     """``mail`` (ADR 0242): the overview ``GET /inherent/mail`` serves, a search, one message."""
-    for tool in build_mail_tool(home.mail, home.gmail, mail_text, zone):
+    for tool in build_mail_tool(home.mail, home.gmail, mail_text):
         registry.register(tool)
 
 
-def _register_conversation(
-    registry: ToolRegistry, memory_db: Path, zone: tzinfo, runtime_root: Path,
-) -> None:
+def _register_conversation(registry: ToolRegistry, memory_db: Path, runtime_root: Path) -> None:
     """``conversation`` (ADR 0243): his words and hers, searched, summarized by day, opened.
 
     ADR 0260: the search also goes by meaning, with the model under the runtime root.
     """
     embedder = embedding.shared(default_meaning_dir(runtime_root))
-    for tool in build_conversation_tool(memory_db, zone, embedder=embedder):
+    for tool in build_conversation_tool(memory_db, embedder=embedder):
         registry.register(tool)
 
 
-def _register_archive(
-    registry: ToolRegistry, memory_db: Path, zone: tzinfo, runtime_root: Path,
-) -> None:
+def _register_archive(registry: ToolRegistry, memory_db: Path, runtime_root: Path) -> None:
     """``archive`` (ADR 0259): the payments and Claude conversations he handed over."""
     embedder = embedding.shared(default_meaning_dir(runtime_root))
-    for tool in build_archive_tool(memory_db, zone, embedder=embedder):
+    for tool in build_archive_tool(memory_db, embedder=embedder):
         registry.register(tool)
 
 
@@ -2114,7 +2109,6 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     make_plugins: Callable[[ToolRegistry], PluginConnections],
     make_late: Callable[[PluginConnections], tuple[JobMail | None, Home]],
     memory_db: Path,
-    zone: tzinfo,
     doing: DoingSchedule | None,
     ledger: LedgerSources,
 ) -> Catalog:
@@ -2133,9 +2127,9 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     plugins.initialize()
     job_mail, home = make_late(plugins)
     _register_job_ledger(registry, job_mail)
-    _register_mail(registry, home, zone)
-    _register_conversation(registry, memory_db, zone, paths.root)
-    _register_archive(registry, memory_db, zone, paths.root)
+    _register_mail(registry, home)
+    _register_conversation(registry, memory_db, paths.root)
+    _register_archive(registry, memory_db, paths.root)
     _register_tidy(registry, doing)
     _register_my_day(registry, ledger)
     plugins.refresh_search()  # ADR 0247: every built-in tool is registered now
@@ -3255,8 +3249,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
-        None if phone_events is None
-        else _locator(full_config, paths.event_log, locate_waits, memory.db_path)
+        None if phone_events is None else _locator(full_config, locate_waits, system_clock)
+    )
+    here = HerePolicy(  # ADR 0322: the one Here every tool call reads where he is from
+        paths.event_log, system_clock, locator=locator, mac=_here_location(role),
+        memory_db=memory.db_path, **_here_settings(full_config),
     )
     weatherkit = WeatherKit.from_config(full_config)  # ADR 0285: logs which source is used
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
@@ -3312,13 +3309,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         surroundings=surroundings,
         transit_places=kept_places,
         transit_offers=transit_offers,
-        here_location=_here_location(role),
-        here_phone=partial(_phone_here, paths.event_log),
-        locate_phone=locator,
+        clock=system_clock,
+        here=here,
         bus_live=_live_departure(bus_live),
         ride_control=rides.control(),
         highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
-        local_zone=local_zone,
         plan_day_ends=day_ends_of(full_config.get("day_plan")),
         ring_before_min=_remind_before_min(full_config),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
@@ -3346,7 +3341,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         make_late=make_late,
         memory_db=memory.db_path,
-        zone=local_zone,
         doing=doing,
         ledger=LedgerSources(
             memory.db_path, paths.event_log, _timesink_db_path(full_config), local_zone,
@@ -3567,11 +3561,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             partial(_shares_line, paths.event_log),
             # ADR 0249: what he is doing now, with its age, then his next things, read from the
             # ledger of his things (ADR 0299).
-            partial(doing_now_line, paths.event_log, local_zone, speakable.now),
-            partial(calendar_line, paths.event_log, local_zone, speakable.now),
+            partial(doing_now_line, paths.event_log, local_zone, system_clock.now),
+            partial(calendar_line, paths.event_log, local_zone, system_clock.now),
             # ADR 0291: today's plan, settled or not, with its next item.
             partial(
-                plan_line, paths.event_log, local_zone, speakable.now,
+                plan_line, paths.event_log, local_zone, system_clock.now,
                 day_ends_of(full_config.get("day_plan")),
             ),
         ),
@@ -3588,7 +3582,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         push=Push.from_config(full_config, paths.root, paths.event_log),
         whereabouts=Whereabouts(
             paths.root, terminal_hub, moment, memory_db=memory.db_path, zone=local_zone,
-            around=surroundings,
+            around=surroundings, here=here,
         ),
         about_items=_about_items(full_config, memory, paths),
         reminders=reminders,
@@ -5216,7 +5210,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             about_record=_about_record(runtime, user_intent_event),
             live_context=(
                 *_live_lines(runtime.live_context),
-                *_whereabouts_lines(runtime),
+                *_whereabouts_lines(runtime, effective_turn_id),
             ),
             record_sent_message=record_sent_message,
             cancellation_checkpoint=run.check_cancelled if run is not None else None,

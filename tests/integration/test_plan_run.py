@@ -36,6 +36,7 @@ from jarvis.state import memory_db, plan, things
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
+from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -589,11 +590,11 @@ def test_the_settings_read_the_watch_keys() -> None:
 
 
 def _tool(rig: Rig) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    (tool,) = build_plan_tool(ZONE, lambda: _at("09:30"))
+    (tool,) = build_plan_tool()
 
     def call(args: dict[str, Any]) -> dict[str, Any]:
         with closing(rig.conn()) as conn:
-            ctx = ToolContext(conn, SimpleNamespace(), "a1")
+            ctx = ToolContext(conn, SimpleNamespace(), "a1", FakeClock(_at("09:30")))
             return dict(tool.handler(args, ctx))
 
     return call

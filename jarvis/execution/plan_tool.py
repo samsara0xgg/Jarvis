@@ -8,20 +8,19 @@ checks are :mod:`jarvis.state.plan`; this module only reads his arguments and wo
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import date, time
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.state import plan
-from jarvis.state.daily_report import resolve_zone
 from jarvis.state.plan_budget import DAY_ENDS, budget
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from datetime import tzinfo
+    from collections.abc import Mapping
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
 
 _DESCRIPTION: Final = (
     "Use when he asks to add, move, drop or change something in a day's plan, asks what is in"
@@ -66,10 +65,6 @@ _WHY_CHARS: Final = 200
 _ROUTE: Final = ("from", "leave_at", "line", "board", "arrive_at")
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 def _row(item: plan.PlanItem) -> dict[str, Any]:
     """An item as a few words of JSON: only what it says."""
     row: dict[str, Any] = {
@@ -83,9 +78,9 @@ def _row(item: plan.PlanItem) -> dict[str, Any]:
 
 
 class _Planner:
-    def __init__(self, zone: tzinfo, clock: Callable[[], datetime], day_ends: time) -> None:
-        self._zone = zone
-        self._clock = clock
+    def __init__(self, clock: Clock, day_ends: time) -> None:
+        self._zone = clock.zone
+        self._clock = clock.now
         self._day_ends = day_ends
 
     def handle(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -158,17 +153,18 @@ class _Planner:
         }
 
 
-def build_plan_tool(
-    zone: tzinfo | None, clock: Callable[[], datetime] = _now, day_ends: time | None = None,
-) -> tuple[Tool, ...]:
-    """The ``plan`` tool over the event log and his zone; ``day_ends`` bounds the time left."""
-    planner = _Planner(resolve_zone(None, zone)[1], clock, day_ends or DAY_ENDS)
+def build_plan_tool(day_ends: time | None = None) -> tuple[Tool, ...]:
+    """The ``plan`` tool over the event log; ``day_ends`` bounds the time left."""
+
+    def handle(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _Planner(ctx.clock, day_ends or DAY_ENDS).handle(args, ctx)
+
     return (
         Tool(
             name="plan",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=planner.handle,
+            handler=handle,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,

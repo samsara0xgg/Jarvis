@@ -190,7 +190,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
                 voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
                 transit_api_key="x", transit_places=lambda: {"home": "home"},
-                transit_offers=stub, here_location=dict, here_phone=dict,
+                transit_offers=stub, here=stub,
                 bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
                 device_link=lambda *_: {},
             ),
@@ -206,7 +206,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 MagicMock(ledger=dict, add_application=lambda _fields: ""),
                 MagicMock(mail=dict, gmail=lambda *_: {}),
             ),
-            memory_db=base / "memory.db", zone=UTC, doing=MagicMock(tidy=lambda: ""),
+            memory_db=base / "memory.db", doing=MagicMock(tidy=lambda: ""),
             ledger=LedgerSources(base / "memory.db", paths.event_log, None, UTC),
         )
     return catalog.registry

@@ -17,6 +17,7 @@ from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import Tool
 from jarvis.shared import CallerPrincipal
 from tests.support import consent
+from tests.support.clock import FakeClock
 from tests.support.model import ScriptedModel, tool_call
 from tests.support.plugin_approval import logged_dicts, say
 from tests.support.tool_world import ToolWorld, tool_chain, tool_request
@@ -112,17 +113,14 @@ def test_a_tool_the_manifest_declares_nothing_for_still_asks(
         ctx.conn.close()
 
 
-def test_l4_refuses_a_call_to_a_confirm_required_tool_that_carries_no_lease(
-    tmp_path: Path,
-) -> None:
-    """I7 at dispatch: without a valid lease the handler never runs and the receipt is failed."""
-    ran: list[str] = []
+def _send_it(ran: list[str]) -> Tool:
+    """A confirm-required fixture tool that notes each run in ``ran``."""
 
     def handler(_args: Any, _ctx: Any) -> dict[str, Any]:  # noqa: ANN401
         ran.append("ran")
         return {}
 
-    tool = Tool(
+    return Tool(
         name="send_it",
         description="Sends it.",
         input_schema={"type": "object", "properties": {}},
@@ -132,7 +130,14 @@ def test_l4_refuses_a_call_to_a_confirm_required_tool_that_carries_no_lease(
         read_only=False,
         requires_confirmation=True,
     )
-    fx = ToolWorld(tmp_path, tools=(tool,))
+
+
+def test_l4_refuses_a_call_to_a_confirm_required_tool_that_carries_no_lease(
+    tmp_path: Path,
+) -> None:
+    """I7 at dispatch: without a valid lease the handler never runs and the receipt is failed."""
+    ran: list[str] = []
+    fx = ToolWorld(tmp_path, tools=(_send_it(ran),))
     try:
         fx.dispatch(tool_request("send_it", "A1"))
         refused = tool_chain(fx, "A1")
@@ -142,6 +147,24 @@ def test_l4_refuses_a_call_to_a_confirm_required_tool_that_carries_no_lease(
         assert ran == []
         fx.dispatch(tool_request("send_it", "A2", lease=True))
         assert tool_chain(fx, "A2")["receipt"]["status"] == "done"
+        assert ran == ["ran"]
+    finally:
+        fx.close()
+
+
+def test_l4_ends_a_lease_at_its_expiry_on_the_dispatcher_s_clock(tmp_path: Path) -> None:
+    """A lease runs its call until its expiry on the dispatcher's clock, never the wall clock's."""
+    ran: list[str] = []
+    clock = FakeClock()  # far from the wall clock, so a wall-clock read answers differently
+    ends = clock.time_ms() + 60_000
+    fx = ToolWorld(tmp_path, tools=(_send_it(ran),), clock=clock)
+    try:
+        fx.dispatch(tool_request("send_it", "A1", lease=True, lease_expires_at_ms=ends))
+        assert tool_chain(fx, "A1")["receipt"]["status"] == "done"
+        clock.advance(61)
+        fx.dispatch(tool_request("send_it", "A2", lease=True, lease_expires_at_ms=ends))
+        late = tool_chain(fx, "A2")
+        assert json.loads(late["tool_output"])["code"] == "no_lease"
         assert ran == ["ran"]
     finally:
         fx.close()

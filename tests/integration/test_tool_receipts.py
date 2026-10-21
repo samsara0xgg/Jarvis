@@ -147,7 +147,7 @@ def test_a_list_over_its_cap_is_cut_at_whole_items_and_says_how_many(tmp_path: P
 
 def test_bus_and_schedule_say_per_call_whether_they_only_read() -> None:
     bus = build_bus_tool("key", dict)[0]
-    schedule = build_schedule_tool(None, 30)[0]
+    schedule = build_schedule_tool(30)[0]
     assert only_reads(bus, {"to": "campus"})
     assert not only_reads(bus, {"get_off": "Main St"})
     assert only_reads(schedule, {"action": "read"})

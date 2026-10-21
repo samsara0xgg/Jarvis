@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from jarvis.execution.transit_tool import TransitOffers
     from jarvis.runtime.bus_live import BusLive
     from jarvis.runtime.push import Push
+    from jarvis.shared.here import HereReading
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,7 +85,6 @@ PAIR_GAP_MS: Final = 2 * _MIN_MS
 """The two fixes are no farther apart than this (the phone sends one every 30 s on the move)."""
 SAID_QUIET_MS: Final = 5 * _MIN_MS
 """After he says he boarded, even a ride that did not start gets no notification for this long."""
-SAID_FIX_MS: Final = 10 * _MIN_MS
 SAID_RADIUS_M: Final = 300.0
 """The bus nearest his last fix counts when it is no farther; a fix is up to a minute old."""
 AMBIGUOUS_GAP_M: Final = 100.0
@@ -322,15 +322,21 @@ class Rides:
 
     def start(
         self, route: str | None, destination: str | None, vehicle_id: str | None,
+        here: HereReading | None,
     ) -> dict[str, Any]:
-        """``bus(ride="start")``: he boarded; find the bus and begin, or return the candidates."""
+        """``bus(ride="start")``: he boarded; find the bus and begin, or return the candidates.
+
+        ``here`` is where Here puts him now (ADR 0322); ``None`` when it has no position to give.
+        """
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
             self._said_ms = now
             current = folded.active(conn, now)
             if current is not None:
                 return {"started": False, "already_riding": True, **self._describe(current)}
-            fix = next(iter(reversed(fixes_since(conn, now - SAID_FIX_MS))), None)
+            fix = None if here is None else Fix(
+                now - here.age_s * 1000, here.lat, here.lng, here.accuracy_m, here.device,
+            )
             pin = self._pin_for(conn, route, now)
             wanted = route or (pin.first_route if pin else None)
             vehicles = self._poll()

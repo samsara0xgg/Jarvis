@@ -1,65 +1,34 @@
-"""ADR 0194, 0198, 0212, 0281: where the user is, from this Mac or from his phone."""
+"""ADR 0194, 0198, 0212, 0281, 0322: where the user is, from the one Here a call carries."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution.tools import Tool, ToolError, _turn_of
+from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.here import HereReading, HereUnavailable
 from jarvis.state.attachments import short_id
-from jarvis.state.phone_location import NoPhoneReport, turn_from_phone
+from jarvis.state.event_log import MAC_NODE
+from jarvis.state.phone_location import NoPhoneReport
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
     from jarvis.execution.around import Surroundings
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.here import HereSource
 
 _DESCRIPTION: Final = (
-    "The user's current location, read from this Mac (he carries it): a place name (street"
-    " and area), latitude, longitude and accuracy in metres. Never say you do not know where he"
-    " is without calling it. Call it only when his question depends on where he is right now:"
-    " 'where am I', what he is doing or just did away from the computer, what is nearby,"
-    " places, food or shops near him, how far something is from here. For bus trips use"
-    " bus instead (it starts from here). If it returns an error, say so and ask him where he"
-    " is."
-)
-
-PHONE_REPORT_RULE: Final = (
-    "The phone reports when he moves about 500 m or arrives at or leaves a place, so an old"
-    " report means he has not moved far since."
-)
-"""What the model is told about the age of a phone's report (ADR 0198)."""
-
-_FRESH_RULE: Final = (
-    "It asks his phone for a fresh fix, which can take up to ten seconds; `fresh` says whether"
-    " the phone answered, and if not this is its last report."
-)
-
-_PHONE_DESCRIPTION: Final = (
-    "The user's location, from his phone (the phone is with him): a place name when known,"
-    " latitude, longitude, accuracy in metres and age_s, how many seconds old the position is."
-    " " + _FRESH_RULE + " " + PHONE_REPORT_RULE + " Tell him how old the position is when that"
-    " matters. Never say you do not know where he is without calling"
-    " it. Call it only when his question depends on where he is right now: 'where am I', what"
-    " he is doing or just did away from the computer, what is nearby, places, food or shops"
-    " near him, how far"
-    " something is from here. For bus trips use bus instead (it starts from here). If it"
-    " returns an error, no phone has reported a location: say so and ask him where he is."
-)
-
-_BOTH_DESCRIPTION: Final = (
-    "The user's current location: a place name when known, latitude, longitude and accuracy in"
-    " metres. When he is talking from his phone it is the phone's position (the phone is"
-    " with him), which also carries age_s, how many seconds old the position is. "
-    + _FRESH_RULE + " " + PHONE_REPORT_RULE + " Tell him how old the position is when that"
-    " matters. Otherwise it is"
-    " read fresh from this Mac, which he carries. Never say you do not know where he is without"
-    " calling it. Call it only when his question depends on where he is right now: 'where am"
-    " I', what he is doing or just did away from the computer, what is nearby, places, food or"
-    " shops near him, how"
-    " far something is from here. For bus trips use bus instead (it starts from here). If it"
-    " returns an error, say so and ask him where he is."
+    "The user's location right now: a place name when known, latitude, longitude, accuracy in"
+    " metres and age_s, how many seconds old the position is. It comes from the device he is"
+    " talking from when that reports locations, else from his phone, and it asks for a fresh fix,"
+    " which can take up to ten seconds; `fresh` says whether the device answered, and if not"
+    " this is its last report. Tell him how old the position is when that matters. Never say you"
+    " do not know where he is without calling it. Call it only when his question depends on"
+    " where he is right now: 'where am I', what he is doing or just did away from the computer,"
+    " what is nearby, places, food or shops near him, how far something is from here. For bus"
+    " trips use bus instead (it starts from here). If it returns an error, no device has"
+    " reported a location: say so and ask him where he is."
 )
 
 _AROUND_RULE: Final = (
@@ -87,131 +56,97 @@ def describe_age(age_s: int) -> str:
     return f"{days} d {hours} h" if hours else f"{days} d"
 
 
-def _read(
-    reader: Callable[[], Mapping[str, Any]] | None, *, phone: bool = False,
-) -> dict[str, Any]:
-    """One reading from ``reader``, or a tool error that tells the model to ask.
+def read_here(ctx: ToolContext, *, fresh: bool = False) -> HereReading:
+    """Where he is for this call (ADR 0322), or a tool error that tells the model to ask.
 
-    ``phone``: the reader is the phone (ADR 0198, 0281), whose reading also carries ``age_s``
-    and ``device``, and ``fresh`` (with ``not_fresh`` and ``snapshot``) when it asked the phone
-    for a fix; either way the result names its ``source``.
+    ``fresh`` always asks for a new fix (``where_am_i``); otherwise a report recent enough is used
+    as it is. A reading that carries ``why`` is the last report, with no fix behind it.
     """
     try:
-        if reader is None:
+        if ctx.here is None:
             msg = "no location reader on this machine"
-            raise RuntimeError(msg)  # noqa: TRY301 - one exit for every way it can fail
-        fix = reader()
-        here: dict[str, Any] = {
-            "lat": float(fix["lat"]),
-            "lng": float(fix["lng"]),
-            "accuracy_m": float(fix["accuracy_m"]),
-            "place": str(fix["place"]) if fix.get("place") else None,
-            "source": "phone" if phone else "this Mac",
-        }
-        if phone:
-            here |= {"age_s": int(fix["age_s"]), "device": str(fix["device"])}
-            here |= {key: fix[key] for key in ("fresh", "not_fresh", "snapshot") if key in fix}
-    except Exception as exc:  # denied, timeout, helper failure, no report: all one short reason.
-        if not phone:
-            msg = f"this Mac's location could not be read ({exc}); {_ASK}"
-        elif isinstance(exc, NoPhoneReport):
-            msg = f"{exc}; {_ASK}"
-        else:
-            msg = f"the phone's last location report could not be read ({exc}); {_ASK}"
+            raise HereUnavailable(msg)  # noqa: TRY301 - one exit for every way it can fail
+        return ctx.here.fresh() if fresh else ctx.here.read()
+    except (NoPhoneReport, HereUnavailable) as exc:
+        msg = f"{exc}; {_ASK}"
+    except Exception as exc:  # a log that cannot be read, a helper failure: one short reason.
+        msg = f"his location could not be read ({exc}); {_ASK}"
         raise ToolError(msg, code="location_unavailable") from exc
-    return here
+    raise ToolError(msg, code="location_unavailable")
 
 
-def read_here(
-    mac: Callable[[], Mapping[str, Any]] | None,
-    phone: Callable[[], Mapping[str, Any]] | None,
-    ctx: ToolContext,
-) -> dict[str, Any]:
-    """Where he is for this call: the phone's last report, or this Mac's fresh fix (ADR 0212).
+def phone_report(fix: HereReading) -> str:
+    """``the phone's last report 12 min ago`` for a reading from a phone."""
+    return f"the phone's last report {describe_age(fix.age_s)} ago"
 
-    ``phone`` answers a turn a paired phone opened (its opening row is under the device's name),
-    and every turn where there is no ``mac`` to read, as on a brain. A turn of the Mac's own
-    gets ``mac``. A phone turn when no phone has reported yet falls back to ``mac``, with
-    ``phone_unreported`` set so the result can say so; with no ``mac`` it is a tool error.
+
+def said_where(fix: HereReading) -> str:
+    """Whose reading ``fix`` is, in words: this Mac, or the phone's report with its age.
+
+    A report no fresh fix could confirm says so, since he may have moved.
     """
-    if phone is None:
-        return _read(mac)
-    if mac is not None and not turn_from_phone(ctx.conn, _turn_of(ctx.action_id)):
-        return _read(mac)
-    try:
-        return _read(phone, phone=True)
-    except ToolError as exc:
-        if mac is None or not isinstance(exc.__cause__, NoPhoneReport):
-            raise
-    return {**_read(mac), "phone_unreported": True}
+    if fix.device == MAC_NODE:
+        return "this Mac, no phone has reported yet" if fix.why else "this Mac"
+    said = phone_report(fix)
+    return f"{said}, no fresh fix came" if fix.why else said
 
 
-def phone_report(fix: Mapping[str, Any]) -> str:
-    """``the phone's last report 12 min ago`` for a reading from the phone."""
-    return f"the phone's last report {describe_age(fix['age_s'])} ago"
-
-
-def said_where(fix: Mapping[str, Any]) -> str:
-    """Whose reading ``fix`` is, in words: the phone's report with its age, or this Mac."""
-    if fix["source"] == "phone":
-        return phone_report(fix)
-    return "this Mac, no phone has reported yet" if fix.get("phone_unreported") else "this Mac"
-
-
-def _phone_note(fix: Mapping[str, Any]) -> str:
-    """What the model is told about a phone's position: how fresh, how accurate, what it holds."""
-    accuracy = f"accurate to about {round(fix['accuracy_m'])} m"
-    if fix.get("fresh"):
-        age = f"{fix['age_s']} s" if fix["age_s"] < 60 else describe_age(fix["age_s"])  # noqa: PLR2004
+def _note(fix: HereReading) -> str:
+    """What the model is told about a position: how fresh, how accurate, what it holds."""
+    accuracy = f"accurate to about {round(fix.accuracy_m)} m"
+    if fix.fresh:
+        age = f"{fix.age_s} s" if fix.age_s < 60 else describe_age(fix.age_s)  # noqa: PLR2004
         note = f"a fix his phone just took, {age} old, {accuracy}."
-        if "snapshot" in fix:
+        if fix.snapshot is not None:
             note += (
                 " The phone also sent a picture of where he is: look at it with look_at_picture,"
-                f" picture {short_id(fix['snapshot'])}, if what he asks needs it."
+                f" picture {short_id(fix.snapshot)}, if what he asks needs it."
             )
         return note
-    note = f"{phone_report(fix)}, {accuracy}. {PHONE_REPORT_RULE}"
-    if "not_fresh" in fix:
-        note += f" A fresh fix was asked for and did not come ({fix['not_fresh']})."
+    note = f"{phone_report(fix)}, {accuracy}."
+    if fix.why:
+        note += (
+            f" A fresh fix was asked for and did not come ({fix.why}), so he may not be"
+            " where this says now."
+        )
     return note
 
 
 def build_where_tool(
-    mac: Callable[[], Mapping[str, Any]] | None,
-    phone: Callable[[], Mapping[str, Any]] | None = None,
-    around: Surroundings | None = None,
+    here: HereSource | None, around: Surroundings | None = None,
 ) -> tuple[Tool, ...]:
-    """``where_am_i`` over ``mac`` and ``phone``; none when this machine has neither.
+    """``where_am_i`` over the context's Here; none without a source (``here`` is ``None``).
 
     With ``around`` the result also carries what is around the fix (ADR 0284).
-
-    ``mac`` is this Mac's fresh fix (ADR 0194), ``phone`` the phone's last report (ADR 0198).
-    With both, :func:`read_here` picks by where the turn came from (ADR 0212) and the
-    description says both; with only ``phone``, as on a brain, it is always the phone's.
     """
-    if mac is None and phone is None:
+    if here is None:
         return ()
 
     def where_am_i(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        fix = read_here(mac, phone, ctx)
-        if fix["source"] == "phone":
-            here = {**fix, "note": _phone_note(fix)}
-        elif fix.pop("phone_unreported", False):
-            note = "no phone has reported a location yet, so this is this Mac's, which may not be"
-            here = {**fix, "note": note + " where he is."}
-        else:
-            here = fix
-        return here if around is None else {**here, "around": around.lookup(ctx, fix)}
+        fix = read_here(ctx, fresh=True)
+        mac = fix.device == MAC_NODE
+        out: dict[str, Any] = {
+            "lat": fix.lat, "lng": fix.lng, "accuracy_m": fix.accuracy_m,
+            "place": fix.place, "source": "this Mac" if mac else "phone",
+        }
+        if mac and fix.why:
+            out["note"] = (
+                "no phone has reported a location yet, so this is this Mac's, which may not be"
+                " where he is."
+            )
+        elif not mac:
+            out |= {"age_s": fix.age_s, "device": fix.device, "fresh": fix.fresh}
+            if fix.why:
+                out["not_fresh"] = fix.why
+            if fix.snapshot is not None:
+                out["snapshot"] = fix.snapshot
+            out["note"] = _note(fix)
+        return out if around is None else {**out, "around": around.lookup(ctx, fix)}
 
-    description = (
-        _BOTH_DESCRIPTION if mac is not None and phone is not None
-        else _PHONE_DESCRIPTION if phone is not None
-        else _DESCRIPTION
-    ) + ("" if around is None else _AROUND_RULE)
     return (
         Tool(
             name="where_am_i",
-            description=description,
+            description=_DESCRIPTION + ("" if around is None else _AROUND_RULE),
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=where_am_i,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
@@ -222,7 +157,6 @@ def build_where_tool(
 
 
 __all__ = [
-    "PHONE_REPORT_RULE",
     "build_where_tool",
     "describe_age",
     "phone_report",

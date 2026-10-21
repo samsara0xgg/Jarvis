@@ -37,11 +37,13 @@ from jarvis.state.shipments import (
 from jarvis.surface import claude_code_day
 from jarvis.surface.mac_ship_core import Report, State
 from jarvis.surface.mac_ship_days import QUIET_MS, ship
+from tests.support.clock import FakeClock
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from jarvis.execution.tools import Tool, ToolContext
+    from jarvis.execution.tools import Tool
 
 VANCOUVER = ZoneInfo("America/Vancouver")
 MARKER = claude_code_day.MARKER
@@ -351,8 +353,8 @@ def test_the_brain_reads_a_shipped_report_into_entries_and_the_newest_stands(tmp
     assert item()["text"] == "Jarvis day report; Yana build"  # the rewrite stands for the day
     assert len(entries("daily")) == 2
 
-    tool: Tool = build_archive_tool(db, VANCOUVER, lambda: datetime(2026, 10, 20, 9, 0, tzinfo=UTC))[0]
-    found = cast("dict[str, Any]", tool.handler({"source": "claude_code_daily", "query": ["material command"]}, cast("ToolContext", None)))
+    tool: Tool = build_archive_tool(db)[0]
+    found = cast("dict[str, Any]", tool.handler({"source": "claude_code_daily", "query": ["material command"]}, tool_context(clock=FakeClock(datetime(2026, 10, 20, 9, 0, tzinfo=UTC), zone=VANCOUVER))))
     assert found["entries"] and all(e["source"] == "claude_code_daily" for e in found["entries"])
 
 
@@ -408,10 +410,10 @@ def test_the_brain_reads_the_kept_dialogue_per_session_and_searches_it(tmp_path:
     conn.close()
     assert [i for i in line.items if i["kind"] == "claude_day"] == []
 
-    tool: Tool = build_archive_tool(db, VANCOUVER, lambda: datetime(2026, 10, 20, 9, 0, tzinfo=UTC))[0]
+    tool: Tool = build_archive_tool(db)[0]
 
     def call(**args: object) -> dict[str, Any]:
-        return cast("dict[str, Any]", tool.handler(args, cast("ToolContext", None)))
+        return cast("dict[str, Any]", tool.handler(args, tool_context(clock=FakeClock(datetime(2026, 10, 20, 9, 0, tzinfo=UTC), zone=VANCOUVER))))
 
     found = call(source="claude_code_dialogue", query=["kiln schedule"])
     (hit,) = found["entries"]  # only the session that holds the words

@@ -8,7 +8,6 @@ tools (ADR 0242's successors) declare theirs the same way.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC
 from typing import Any, cast
 
 from jarvis.execution.mail_tool import build_mail_tool
@@ -44,7 +43,7 @@ def _gmail() -> list[Tool]:
 
 
 def _mail() -> Tool:
-    (mail,) = build_mail_tool(dict, lambda *_: {}, str, UTC)
+    (mail,) = build_mail_tool(dict, lambda *_: {}, str)
     return mail
 
 

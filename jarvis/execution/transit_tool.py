@@ -12,9 +12,8 @@ import urllib.error
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
-from zoneinfo import ZoneInfo
 
 from jarvis.execution import maps_spend, places_api
 from jarvis.execution.location_tool import describe_age, read_here, said_where
@@ -22,7 +21,7 @@ from jarvis.execution.tools import ToolError, _get_running_event_uid, _turn_of
 from jarvis.shared import lang
 from jarvis.state import departures, reminders
 from jarvis.state import places as place_state
-from jarvis.state.event_log import emit_event
+from jarvis.state.event_log import MAC_NODE, emit_event
 
 if TYPE_CHECKING:
     import sqlite3
@@ -32,7 +31,6 @@ if TYPE_CHECKING:
 
 _URL: Final = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _TIMEOUT_S: Final = 5.0
-_ZONE: Final = ZoneInfo("America/Vancouver")
 _MAX_OPTIONS: Final = 3
 # A far-fetched option (ADR 0203): it arrives this long after the earliest, or rides this much
 # longer.
@@ -44,8 +42,6 @@ _SLOWER: Final = 1.5
 _LOOKBACK_MIN: Final = 10
 # A bus this many minutes short of a normal walk is gone for good: no run makes it up.
 _RUN_MIN: Final = 5
-# A phone report older than this is not where he is now; the result says so.
-_OLD_START_S: Final = 30 * 60
 _LIVE_TIMEOUT_S: Final = 4.0
 # spare_min: at or above this he has room (easy); at or below its negative the bus is gone.
 _EASY_SPARE_MIN: Final = 2
@@ -72,35 +68,27 @@ _POSTAL = re.compile(r"\s*[A-Z]\d[A-Z]\s?\d[A-Z]\d\s*$")
 _LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 
 def _here(
-    mac: Callable[[], Mapping[str, Any]] | None,
-    phone: Callable[[], Mapping[str, Any]] | None,
-    ctx: ToolContext,
-    kept: Callable[[], list[place_state.Place]] | None = None,
+    ctx: ToolContext, kept: Callable[[], list[place_state.Place]] | None = None,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
     """The user's location as a waypoint, how to say it in the result, and a warning if it is old.
 
-    A fix inside a kept place's circle is said as that place, not as the street the phone named;
-    an old phone report there means he has stayed (the phone reports only when he moves). The
-    warning is ``{}`` unless the fix is a phone report over half an hour old outside every kept
-    place; then it holds ``from_age_min`` and the ``warning`` line the model must act on before
-    giving any times.
+    A fix inside a kept place's circle is said as that place, not as the street the phone named.
+    The warning is ``{}`` unless Here could not confirm the report with a fresh fix (the report is
+    past its age limit); then it holds ``from_age_min`` and the ``warning`` line the model must
+    act on before giving any times.
     """
-    fix = read_here(mac, phone, ctx)
-    inside = place_state.containing(kept(), fix["lat"], fix["lng"]) if kept else None
-    aged = fix["source"] == "phone" and fix["age_s"] > _OLD_START_S
-    if inside is not None:
-        near = f"at {inside.name}{', still there since then' if aged else ''}, "
-    else:
-        near = f"{fix['place']}, " if fix["place"] else ""
-    label = f"here ({said_where(fix)}, {near}±{round(fix['accuracy_m'])} m)"
-    latlng = {"latitude": fix["lat"], "longitude": fix["lng"]}
+    fix = read_here(ctx)
+    inside = place_state.containing(kept(), fix.lat, fix.lng) if kept else None
+    near = f"at {inside.name}, " if inside is not None else f"{fix.place}, " if fix.place else ""
+    label = f"here ({said_where(fix)}, {near}±{round(fix.accuracy_m)} m)"
+    latlng = {"latitude": fix.lat, "longitude": fix.lng}
     old: dict[str, Any] = {}
-    if aged and inside is None:
-        where = fix["place"] or "no place name"
+    if fix.why and fix.device != MAC_NODE:
+        where = fix.place or "no place name"
         old = {
-            "from_age_min": fix["age_s"] // 60,
+            "from_age_min": fix.age_s // 60,
             "warning": (
-                f"The starting point is his phone's report from {describe_age(fix['age_s'])} ago"
+                f"The starting point is his phone's report from {describe_age(fix.age_s)} ago"
                 f" ({where}); he may have moved. Say that first, or ask where he is, before"
                 " giving times from it."
             ),
@@ -108,11 +96,9 @@ def _here(
     return {"location": {"latLng": latlng}}, label, old
 
 
-def _waypoint(  # noqa: PLR0913 - the word, saved places, three readers and the context.
+def _waypoint(
     place: str,
     saved: Mapping[str, str],
-    mac: Callable[[], Mapping[str, Any]] | None,
-    phone: Callable[[], Mapping[str, Any]] | None,
     ctx: ToolContext,
     kept: Callable[[], list[place_state.Place]] | None = None,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
@@ -120,7 +106,7 @@ def _waypoint(  # noqa: PLR0913 - the word, saved places, three readers and the 
     if word in _SCHOOL_NAMES:
         word = "school"
     if word == "here":
-        return _here(mac, phone, ctx, kept)
+        return _here(ctx, kept)
     text = saved.get(word, "") if word in ("home", "school") else place.strip()
     if word not in ("home", "school") and (one := _kept_named(word, kept)):
         text = f"{one.lat},{one.lng}" if one.lat is not None and one.lng is not None else (
@@ -187,7 +173,7 @@ def _when(args: Mapping[str, Any], now: datetime) -> _When:
             msg = f"day={day} needs at=HH:MM or arrive_by=HH:MM"
             raise ToolError(msg, code="invalid_arguments")
         return _When(day, None, None)
-    at = _today(given, name, day)
+    at = _today(given, name, now, day)
     if at < now.replace(second=0, microsecond=0) and (arrive or args.get("day")):
         msg = f"{name}={given} on {day} has already passed"
         raise ToolError(msg, code="invalid_arguments")
@@ -198,19 +184,21 @@ def _utc(when: datetime) -> str:
     return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _now() -> datetime:
-    return datetime.now(_ZONE)
+def _zone(now: datetime) -> tzinfo:
+    """The zone of an aware ``now``: the clock's, in which his times are said."""
+    return now.tzinfo or UTC
 
 
-def _clock(stamp: str) -> datetime:
-    return datetime.fromisoformat(stamp).astimezone(_ZONE)
+def _clock(stamp: str, zone: tzinfo) -> datetime:
+    """Google's absolute ``stamp`` as a time in his ``zone``."""
+    return datetime.fromisoformat(stamp).astimezone(zone)
 
 
 def _seconds(step: Mapping[str, Any]) -> float:
     return float(str(step.get("staticDuration", "0s")).removesuffix("s"))
 
 
-def _option(route: Mapping[str, Any]) -> dict[str, Any] | None:
+def _option(route: Mapping[str, Any], zone: tzinfo) -> dict[str, Any] | None:
     """One route in plain words, or None when it has no bus ride in it."""
     steps = [s for leg in route.get("legs", ()) for s in leg.get("steps", ())]
     rides = [s for s in steps if s.get("transitDetails")]
@@ -229,13 +217,13 @@ def _option(route: Mapping[str, Any]) -> dict[str, Any] | None:
                 "route": line.get("nameShort") or line.get("name", "?"),
                 "headsign": detail.get("headsign", ""),
                 "board_stop": stops["departureStop"]["name"],
-                "departs": _clock(stops["departureTime"]).strftime("%H:%M"),
+                "departs": _clock(stops["departureTime"], zone).strftime("%H:%M"),
                 "alight_stop": stops["arrivalStop"]["name"],
-                "arrives": _clock(stops["arrivalTime"]).strftime("%H:%M"),
+                "arrives": _clock(stops["arrivalTime"], zone).strftime("%H:%M"),
             }
         )
-    leave = _clock(rides[0]["transitDetails"]["stopDetails"]["departureTime"]) - walk_to
-    arrive = _clock(rides[-1]["transitDetails"]["stopDetails"]["arrivalTime"]) + walk_from
+    leave = _clock(rides[0]["transitDetails"]["stopDetails"]["departureTime"], zone) - walk_to
+    arrive = _clock(rides[-1]["transitDetails"]["stopDetails"]["arrivalTime"], zone) + walk_from
     return {
         "leave_at": leave.strftime("%H:%M"),
         "walk_to_first_stop_min": round(walk_to.total_seconds() / 60),
@@ -265,9 +253,9 @@ def _pairs(
 
     ``day`` is the day the answer is for (default today): the options' ``HH:MM`` are on it.
     """
-    pairs = [(o, r) for r in answer.get("routes", ()) if (o := _option(r))]
+    pairs = [(o, r) for r in answer.get("routes", ()) if (o := _option(r, _zone(now)))]
     for o, _ in pairs:
-        at = _today(o["legs"][0]["departs"], "departs", day)
+        at = _today(o["legs"][0]["departs"], "departs", now, day)
         o["spare_min"] = _spare(at, o["walk_to_first_stop_min"], now)
         o["verdict"] = _verdict(o["spare_min"])
     return pairs
@@ -281,7 +269,7 @@ def _ahead(
     mine = [
         p for p in pairs
         if p[0]["legs"][0]["route"].casefold() == wanted.casefold()
-        and _today(p[0]["legs"][0]["departs"], "departs", day) >= floor
+        and _today(p[0]["legs"][0]["departs"], "departs", now, day) >= floor
     ]
     return sorted(mine, key=lambda p: p[0]["legs"][0]["departs"])  # ponytail: one day, no midnight
 
@@ -317,12 +305,12 @@ def _named_route(
         return {"route": wanted, "verdict": "none", "note": f"no route {wanted} bus found then"}
     option, raw = hits[0]
     leg = option["legs"][0]
-    at, fresh = _today(leg["departs"], "departs", day), False
+    at, fresh = _today(leg["departs"], "departs", now, day), False
     stop = _first_board(raw)
     if live is not None and stop is not None and (day or now.date()) == now.date():
         ms = _live_ms(live, leg["route"], stop[1], int(at.timestamp() * 1000))
         if ms:
-            at, fresh = datetime.fromtimestamp(ms / 1000, _ZONE), True
+            at, fresh = datetime.fromtimestamp(ms / 1000, _zone(now)), True
     walk = option["walk_to_first_stop_min"]
     spare = _spare(at, walk, now)
     named: dict[str, Any] = {
@@ -522,7 +510,7 @@ def _first_alight(
     return None
 
 
-def _today(value: object, field: str, day: date | None = None) -> datetime:
+def _today(value: object, field: str, now: datetime, day: date | None = None) -> datetime:
     """``HH:MM`` as a local time on ``day`` (default today), or a tool error naming the field."""
     try:
         at = time.fromisoformat(str(value).strip())
@@ -530,7 +518,7 @@ def _today(value: object, field: str, day: date | None = None) -> datetime:
         msg = f"{field} must be a local time as HH:MM, not {value!r}"
         raise ToolError(msg, code="invalid_arguments") from exc
     return datetime.combine(
-        day or _now().date(), at.replace(second=0, microsecond=0), tzinfo=_ZONE,
+        day or now.date(), at.replace(second=0, microsecond=0), tzinfo=_zone(now),
     )
 
 
@@ -594,7 +582,7 @@ class TransitOffers:
             raise ToolError(msg, code="not_found")
         return self._listed[number - 1]
 
-    def put(self, options: list[dict[str, Any]], to: str) -> dict[str, Any]:
+    def put(self, options: list[dict[str, Any]], to: str, now: datetime) -> dict[str, Any]:
         """Take a fresh answer's options as the offer; ``to`` is the destination as asked.
 
         Returns the card's trip: ``{offer_id, to, options}``, one row per option.
@@ -602,7 +590,7 @@ class TransitOffers:
         self._id = "offer-" + uuid.uuid4().hex[:8]
         self.to = to
         self._rows = self._table(options, to)
-        made_at = _now().isoformat(timespec="minutes")
+        made_at = now.isoformat(timespec="minutes")
         return {"offer_id": self._id, "to": to, "options": self._rows, "made_at": made_at}
 
     def row(self, offer_id: str, index: int) -> dict[str, Any]:
@@ -636,15 +624,15 @@ class TransitOffers:
         return next((where for (num, _), where in self.alights.items() if num == route), None)
 
     def later(
-        self, route: str, board_stop: str, after: datetime,
+        self, route: str, board_stop: str, after: datetime, now: datetime,
     ) -> tuple[datetime, datetime, str] | None:
         """``(leave, departs, arrive_at)`` of the earliest option on that route and stop."""
         found = [
-            (_today(r["departs"], ""), _today(r["leave_at"], ""), r["arrive_at"])
+            (_today(r["departs"], "", now), _today(r["leave_at"], "", now), r["arrive_at"])
             for r in self._rows
             if r["route"].split("→")[0].strip() == route and r["board_stop"] == board_stop
         ]
-        later = sorted(f for f in found if f[0] > after and f[1] >= _now() - _PIN_PAST_GRACE)
+        later = sorted(f for f in found if f[0] > after and f[1] >= now - _PIN_PAST_GRACE)
         return (later[0][1], later[0][0], later[0][2]) if later else None
 
 
@@ -653,18 +641,18 @@ def _leaves(made_at: datetime, row: Mapping[str, Any]) -> datetime:
 
     The next day when that is more than an hour before the moment it was made.
     """
-    at = datetime.combine(made_at.date(), time.fromisoformat(str(row["leave_at"])), _ZONE)
+    at = datetime.combine(made_at.date(), time.fromisoformat(str(row["leave_at"])), made_at.tzinfo)
     return at + timedelta(days=1) if at < made_at - timedelta(hours=1) else at
 
 
-def live_card(trip: Mapping[str, Any]) -> dict[str, Any] | None:
+def live_card(trip: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
     """The card's trip as served now: no row whose leave time has passed; None if none is left.
 
     A row's ``HH:MM`` is on the day the answer was made (the next day when it is more than an hour
     before that moment), so a card does not come back after midnight.
     """
     made_at = datetime.fromisoformat(str(trip["made_at"]))
-    floor = _now().replace(second=0, microsecond=0)
+    floor = now.replace(second=0, microsecond=0)
     rows = [r for r in trip["options"] if _leaves(made_at, r) >= floor]
     return {**trip, "options": rows} if rows else None
 
@@ -709,10 +697,11 @@ def trip_of(  # noqa: PLR0913 — one keyword per trip field.
     arrive_at: str,
     to: str,
     stop: tuple[float, float] | None,
+    now: datetime,
     alight: tuple[str, float, float] | None = None,
 ) -> departures.Trip:
     """A trip to pin, checked: its leave time not past (a minute's grace), its bus after it."""
-    if leave < _now() - _PIN_PAST_GRACE:
+    if leave < now - _PIN_PAST_GRACE:
         msg = f"leave_at {leave:%H:%M} has already passed; look the bus up again"
         raise ToolError(msg, code="time_in_past")
     if departs < leave:
@@ -734,12 +723,8 @@ def trip_of(  # noqa: PLR0913 — one keyword per trip field.
     )
 
 
-def _hhmm(ms: int) -> str:
-    return f"{datetime.fromtimestamp(ms / 1000, _ZONE):%H:%M}"
-
-
-def _now_ms() -> int:
-    return int(_now().timestamp() * 1000)
+def _hhmm(ms: int, zone: tzinfo) -> str:
+    return f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
 
 
 def ring(  # noqa: PLR0913 — the older ring, the set, the clock and who is asking.
@@ -747,6 +732,7 @@ def ring(  # noqa: PLR0913 — the older ring, the set, the clock and who is ask
     trips: list[departures.Trip],
     *,
     now_ms: int,
+    zone: tzinfo,
     reminder_id: str | None,
     ring_tid: str | None,
     action_id: str,
@@ -764,10 +750,10 @@ def ring(  # noqa: PLR0913 — the older ring, the set, the clock and who is ask
     live = sorted(catchable, key=lambda t: (t.leave_at_ms, t.departs_at_ms)) or trips
     target = live[0]
     text = lang.t(
-        "departure.go", route=target.first_route, departs=_hhmm(target.departs_at_ms),
+        "departure.go", route=target.first_route, departs=_hhmm(target.departs_at_ms, zone),
         stop=target.board_stop,
     ) + "".join(
-        lang.t("departure.also", route=t.first_route, departs=_hhmm(t.departs_at_ms))
+        lang.t("departure.also", route=t.first_route, departs=_hhmm(t.departs_at_ms, zone))
         for t in live[1:]
     )
     old = reminders.fold(conn).get(reminder_id) if reminder_id else None
@@ -783,7 +769,7 @@ def ring(  # noqa: PLR0913 — the older ring, the set, the clock and who is ask
         return reminder_id or "", target.tid
     new = reminders.schedule(
         conn,
-        due=datetime.fromtimestamp(target.leave_at_ms / 1000, _ZONE),
+        due=datetime.fromtimestamp(target.leave_at_ms / 1000, zone),
         text=text,
         action_id=action_id,
         source_event_id=source_event_id,
@@ -802,12 +788,13 @@ def _cancel_ring(
         )
 
 
-def pin_trips(
+def pin_trips(  # noqa: PLR0913 - the log, the set, the offer, the action, the moment, the source.
     conn: sqlite3.Connection,
     trips: list[departures.Trip],
     *,
     offer_id: str | None,
     action_id: str,
+    now: datetime,
     source_event_id: str | None = None,
 ) -> dict[str, Any]:
     """Pin these trips as a new set and schedule its ring (ADR 0200, 0204); a newer set replaces."""
@@ -817,8 +804,8 @@ def pin_trips(
     # One pin at a time: the older pin's reminder must not ring for a dropped set.
     _cancel_ring(conn, departures.current(conn), action_id, source_event_id)
     reminder_id, ring_tid = ring(
-        conn, trips, now_ms=_now_ms(), reminder_id=None, ring_tid=None, action_id=action_id,
-        source_event_id=source_event_id,
+        conn, trips, now_ms=int(now.timestamp() * 1000), zone=_zone(now), reminder_id=None,
+        ring_tid=None, action_id=action_id, source_event_id=source_event_id,
     )
     pin_id = departures.pin(
         conn,
@@ -833,11 +820,14 @@ def pin_trips(
     return {
         "pin_id": pin_id,
         "pinned": True,
-        "leave_at": _hhmm(first.leave_at_ms),
-        "departs": _hhmm(first.departs_at_ms),
+        "leave_at": _hhmm(first.leave_at_ms, _zone(now)),
+        "departs": _hhmm(first.departs_at_ms, _zone(now)),
         "route": first.route,
         "trips": [
-            {"route": t.route, "leave_at": _hhmm(t.leave_at_ms), "departs": _hhmm(t.departs_at_ms)}
+            {
+                "route": t.route, "leave_at": _hhmm(t.leave_at_ms, _zone(now)),
+                "departs": _hhmm(t.departs_at_ms, _zone(now)),
+            }
             for t in trips
         ],
     }
@@ -845,23 +835,25 @@ def pin_trips(
 
 def add_trip(
     conn: sqlite3.Connection, pin: departures.Departure, trip: departures.Trip, *, action_id: str,
+    now: datetime,
 ) -> None:
     """Add a trip to the set (once); ToolError ``full`` when it already holds three catchable."""
     if pin.trip(trip.tid):
         return
-    now_ms = _now_ms()
+    now_ms = int(now.timestamp() * 1000)
     if len(pin.catchable(now_ms)) >= departures.MAX_TRIPS:
         msg = f"{departures.MAX_TRIPS} trips are already pinned"
         raise ToolError(msg, code="full")
     reminder_id, ring_tid = ring(
-        conn, [*pin.trips, trip], now_ms=now_ms, reminder_id=pin.reminder_id,
+        conn, [*pin.trips, trip], now_ms=now_ms, zone=_zone(now), reminder_id=pin.reminder_id,
         ring_tid=pin.ring_tid, action_id=action_id,
     )
     departures.add(conn, pin.pin_id, trip, reminder_id=reminder_id, ring=ring_tid)
 
 
-def pin_offered(
+def pin_offered(  # noqa: PLR0913 - the log, the offers, which one, add or not, the moment.
     conn: sqlite3.Connection, offers: TransitOffers, offer_id: str, index: int, *, add: bool,
+    now: datetime,
 ) -> dict[str, Any]:
     """The card's click: pin that option; ``add`` puts it on the set this offer already started.
 
@@ -869,12 +861,12 @@ def pin_offered(
     """
     row = offers.row(offer_id, index)
     try:
-        trip = _row_trip(offers, row, f"{offer_id}-{index}")
-        pin = departures.active(conn, _now_ms())
+        trip = _row_trip(offers, row, f"{offer_id}-{index}", now)
+        pin = departures.active(conn, int(now.timestamp() * 1000))
         if add and pin is not None and pin.offer_id == offer_id:
-            add_trip(conn, pin, trip, action_id=offer_id)
+            add_trip(conn, pin, trip, action_id=offer_id, now=now)
             return {"pin_id": pin.pin_id}
-        return pin_trips(conn, [trip], offer_id=offer_id, action_id=offer_id)
+        return pin_trips(conn, [trip], offer_id=offer_id, action_id=offer_id, now=now)
     except ToolError as exc:
         if exc.code == "full":
             return {"reason": "full"}
@@ -960,15 +952,13 @@ def _offer(  # noqa: PLR0913 - the offers, the context, the answer, its options,
     # The card offers only buses he can still catch: a missed one is in the answer.
     catchable = [o for o in options if o["spare_min"] > -_EASY_SPARE_MIN]
     if catchable:
-        show_card(ctx, {**offers.put(catchable, asked), "modes": modes})
+        show_card(ctx, {**offers.put(catchable, asked, ctx.clock.now()), "modes": modes})
 
 
-def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers, live; one plan.
+def build_planner(  # noqa: PLR0913, C901 - the key, places, offers, live; one plan.
     api_key: str | None,
     places: Callable[[], Mapping[str, str]],
-    here: Callable[[], Mapping[str, Any]] | None,
     *,
-    phone_here: Callable[[], Mapping[str, Any]] | None,
     offers: TransitOffers,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None,
     kept: Callable[[], list[place_state.Place]] | None = None,
@@ -983,13 +973,12 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
     ``route`` and ``place_id`` (a ``map_search`` result standing for the destination). ``places``
     reads, at each call, the kept ``home`` and ``school`` as an address or
     ``lat,lng`` (ADR 0234); a missing one makes that word a tool error rather than a guess.
-    ``here`` reads this Mac's location when asked (ADR 0194) and ``phone_here`` the phone's last
-    report (ADR 0198), whose age the result then says; with both, a turn a phone opened gets the
-    phone's (ADR 0212). A failed read is a tool error telling the model to ask where the user is.
+    "here" is the call's Here (ADR 0322), whose age the result then says. A failed read is a tool
+    error telling the model to ask where the user is.
     ``offers`` is where each answer leaves its options, for the chat card (ADR 0205) and for
     ``bus(pin=...)``; the runtime shares it with the routes that pin them. ``bus_live`` is BC
     Transit's live departure of a route at a stop near ``(lat, lng)`` around an epoch ms (the
-    runtime wires it, as it does ``here``); when it answers, a named route's ``departs`` and
+    runtime wires it); when it answers, a named route's ``departs`` and
     ``spare_min`` use it. ``kept`` reads every kept place, so a "here" inside one is said as it.
     Every Google request is counted against the month's ``cap_usd`` (ADR 0283); ``book`` holds the
     places ``map_search`` found, so a place_id has a name. ``quiet`` is for a background caller
@@ -1006,14 +995,14 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
             msg = "origin and destination are both required"
             raise ToolError(msg, code="invalid_arguments")
         saved = places()
-        start, start_label, old_start = _waypoint(origin, saved, here, phone_here, ctx, kept)
+        start, start_label, old_start = _waypoint(origin, saved, ctx, kept)
         place_id = str(args.get("place_id") or "").strip()
         if place_id:
             end, end_label = _by_id(place_id, book)
             destination = end_label
         else:
-            end, end_label, _ = _waypoint(destination, saved, here, phone_here, ctx, kept)
-        now = _now()
+            end, end_label, _ = _waypoint(destination, saved, ctx, kept)
+        now = ctx.clock.now()
         when = _when(args, now)
         wanted = re.sub(r"[^0-9A-Za-z]", "", str(args.get("route") or ""))
         try:
@@ -1045,7 +1034,7 @@ def build_planner(  # noqa: PLR0913, C901 - the key, places, two readers, offers
         return {"from": start_label, "to": end_label, **old_start, "options": options, **extra}
 
     def transit(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        maps_spend.guard(ctx.conn, cap_usd)
+        maps_spend.guard(ctx.conn, cap_usd, ctx.clock.now())
         meter: list[str] = []
         try:
             return plan(args, ctx, meter)
@@ -1076,7 +1065,7 @@ def build_leg_planner(  # noqa: PLR0913 - the key, places, the context, kept, ca
     passed or a day over 30 days ahead, ``not_found`` for no bus route.
     """
     plan = build_planner(
-        api_key, places, None, phone_here=None, offers=TransitOffers(), bus_live=None,
+        api_key, places, offers=TransitOffers(), bus_live=None,
         kept=kept, cap_usd=cap_usd, book=book, quiet=True,
     )
     if plan is None:
@@ -1105,43 +1094,50 @@ def build_leg_planner(  # noqa: PLR0913 - the key, places, the context, kept, ca
     return plan_leg
 
 
-def said_clock(at: datetime, *, soon: bool = False) -> str:
+def said_clock(at: datetime, now: datetime, *, soon: bool = False) -> str:
     """``at`` as he hears it: ``5:06 pm``; ``soon`` adds `` (in 6 min)`` within 90 minutes."""
-    local = at.astimezone(_ZONE)
+    local = at.astimezone(_zone(now))
     hour = local.hour % 12 or 12
     text = f"{hour}:{local.minute:02d} {'am' if local.hour < 12 else 'pm'}"  # noqa: PLR2004
-    ahead = math.floor((at - _now()).total_seconds() / 60)
+    ahead = math.floor((at - now).total_seconds() / 60)
     return f"{text} (in {ahead} min)" if soon and 0 < ahead <= _SAY_AHEAD_MIN else text
 
 
-def said_hhmm(hhmm: str, *, soon: bool = False, day: date | None = None) -> str:
+def said_hhmm(
+    hhmm: str, now: datetime, *, soon: bool = False, day: date | None = None,
+) -> str:
     """A ``HH:MM`` of today, as :func:`said_clock` says it; on another ``day`` the date leads."""
-    text = said_clock(_today(hhmm, "time", day), soon=soon)
-    return text if day is None or day == _now().date() else f"{day:%a %b} {day.day}, {text}"
+    text = said_clock(_today(hhmm, "time", now, day), now, soon=soon)
+    return text if day is None or day == now.date() else f"{day:%a %b} {day.day}, {text}"
 
 
-def said_ms(ms: int, *, soon: bool = False) -> str:
+def said_ms(ms: int, now: datetime, *, soon: bool = False) -> str:
     """An epoch ms, as :func:`said_clock` says it."""
-    return said_clock(datetime.fromtimestamp(ms / 1000, _ZONE), soon=soon)
+    return said_clock(datetime.fromtimestamp(ms / 1000, _zone(now)), now, soon=soon)
 
 
-def _row_trip(offers: TransitOffers, row: Mapping[str, Any], tid: str) -> departures.Trip:
+def _row_trip(
+    offers: TransitOffers, row: Mapping[str, Any], tid: str, now: datetime,
+) -> departures.Trip:
     """The trip a listed row stands for, with the stop and drop-off positions Google gave."""
     first = str(row["route"]).split("→")[0].strip()
     return trip_of(
         tid=tid,
         route=row["route"],
         board_stop=row["board_stop"],
-        leave=_today(row["leave_at"], "leave_at"),
-        departs=_today(row["departs"], "departs"),
+        leave=_today(row["leave_at"], "leave_at", now),
+        departs=_today(row["departs"], "departs", now),
         arrive_at=row["arrive_at"],
         to=row["to"],
         stop=offers.stops.get((first, row["board_stop"])),
+        now=now,
         alight=offers.alights.get((first, row["board_stop"])),
     )
 
 
-def _pinned_already(held: departures.Departure | None, rows: list[dict[str, Any]]) -> bool:
+def _pinned_already(
+    held: departures.Departure | None, rows: list[dict[str, Any]], now: datetime,
+) -> bool:
     """Whether the pin in force holds exactly these rows' buses (same route and stop, same bus).
 
     A pinned bus's time moves with the live feed, so the bus counts as the same within five
@@ -1152,7 +1148,7 @@ def _pinned_already(held: departures.Departure | None, rows: list[dict[str, Any]
     return all(
         any(
             t.route == r["route"] and t.board_stop == r["board_stop"]
-            and abs(t.departs_at_ms - _today(r["departs"], "departs").timestamp() * 1000)
+            and abs(t.departs_at_ms - _today(r["departs"], "departs", now).timestamp() * 1000)
             <= _SAME_BUS_MS
             for t in held.trips
         )
@@ -1160,12 +1156,13 @@ def _pinned_already(held: departures.Departure | None, rows: list[dict[str, Any]
     )
 
 
-def pin_listed(
+def pin_listed(  # noqa: PLR0913 - the log, the offers, the numbers, the action, the moment.
     conn: sqlite3.Connection,
     offers: TransitOffers,
     numbers: list[int],
     *,
     action_id: str,
+    now: datetime,
     source_event_id: str | None = None,
 ) -> tuple[list[departures.Trip], bool]:
     """Pin options ``numbers`` (from 1) of the last list as a new set; a newer set replaces.
@@ -1175,22 +1172,24 @@ def pin_listed(
     ``not_found`` for a number the list has not got, ``time_in_past`` for a leave time gone.
     """
     rows = [offers.listed_row(n) for n in numbers]
-    held = departures.active(conn, _now_ms())
-    if held is not None and _pinned_already(held, rows):
+    held = departures.active(conn, int(now.timestamp() * 1000))
+    if held is not None and _pinned_already(held, rows, now):
         return held.trips, False
     trips = []
     for n, row in zip(numbers, rows, strict=True):
         try:
-            trips.append(_row_trip(offers, row, departures.new_tid()))
+            trips.append(_row_trip(offers, row, departures.new_tid(), now))
         except ToolError as exc:
             if exc.code != "time_in_past":
                 raise
             msg = (
-                f"Option {n} (leave {said_hhmm(row['leave_at'])}) is already past; ask for the"
+                f"Option {n} (leave {said_hhmm(row['leave_at'], now)}) is already past; ask for the"
                 " times again with bus(to=...)"
             )
             raise ToolError(msg, code="time_in_past") from exc
-    pin_trips(conn, trips, offer_id=None, action_id=action_id, source_event_id=source_event_id)
+    pin_trips(
+        conn, trips, offer_id=None, action_id=action_id, now=now, source_event_id=source_event_id,
+    )
     return trips, True
 
 

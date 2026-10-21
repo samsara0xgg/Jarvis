@@ -44,6 +44,7 @@ from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarification
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -133,8 +134,9 @@ class _World:
         self.paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(self.paths.event_log)
         self.offers = TransitOffers()
-        self.local_now = NOW
+        self.fake = FakeClock(NOW)
         self.registry = build_default_registry(
+            clock=self.fake,
             transit_api_key="not-a-key",
             transit_places=lambda: {"home": "48.48,-123.38"},
             transit_offers=self.offers,
@@ -160,12 +162,21 @@ class _World:
         self.reminders.may_speak = lambda: True
         self.reminders.say = self.said.append
         self.departures = self.reminders.departures
-        monkeypatch.setattr(transit_tool, "_now", lambda: self.local_now)
         monkeypatch.setattr(
             urllib.request,
             "urlopen",
             lambda *_a, **_k: io.BytesIO(json.dumps(self.google).encode()),
         )
+
+    @property
+    def local_now(self) -> datetime:
+        """The tool's clock; setting it moves the daemon's too."""
+        return self.fake.now().astimezone(ZONE)
+
+    @local_now.setter
+    def local_now(self, value: datetime) -> None:
+        self.fake.set(value)
+        self.clock = value.astimezone(UTC)
 
     def _serve_feed(self) -> bytes:
         self.feed_calls += 1
@@ -549,7 +560,7 @@ def _slot(world: _World) -> PendingClarification:
 
 def _offer(world: _World) -> dict[str, Any]:
     """The card as the companion is served it now: the offer's id and the rows still catchable."""
-    shown = live_card(_slot(world).trip or {})
+    shown = live_card(_slot(world).trip or {}, world.local_now)
     assert shown is not None
     return {"id": shown["offer_id"], "options": shown["options"]}
 
@@ -577,9 +588,10 @@ def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -
     world.local_now = _local("17:10")
     assert [o["index"] for o in _offer(world)["options"]] == [1, 2]
     world.local_now = _local("17:40")
-    assert live_card(_slot(world).trip or {}) is None
+    assert live_card(_slot(world).trip or {}, world.local_now) is None
     world.local_now = _local("17:10") + timedelta(days=1)
-    assert live_card(_slot(world).trip or {}) is None, "a past card must not come back the next day"
+    gone = live_card(_slot(world).trip or {}, world.local_now)
+    assert gone is None, "a past card must not come back the next day"
 
 
 def test_the_bus_card_asks_the_model_nothing(world: _World) -> None:
@@ -801,10 +813,10 @@ def test_three_trips_is_the_most(world: _World) -> None:
     assert one is not None
     extra = transit_tool.trip_of(
         tid="x", route="28", board_stop="Shelbourne at Pear", leave=_local("17:32"),
-        departs=_local("17:35"), arrive_at="17:50", to="home", stop=STOP,
+        departs=_local("17:35"), arrive_at="17:50", to="home", stop=STOP, now=world.local_now,
     )
     with pytest.raises(ToolError) as full:
-        transit_tool.add_trip(world.conn, one, extra, action_id="A")
+        transit_tool.add_trip(world.conn, one, extra, action_id="A", now=world.local_now)
     assert full.value.code == "full"
 
 
@@ -964,9 +976,9 @@ def test_an_old_single_trip_pin_still_folds(world: _World, monkeypatch: pytest.M
     assert one is not None
     extra = transit_tool.trip_of(
         tid="n", route="28", board_stop="Shelbourne at Pear", leave=_local("17:12"),
-        departs=_local("17:15"), arrive_at="17:30", to="home", stop=STOP,
+        departs=_local("17:15"), arrive_at="17:30", to="home", stop=STOP, now=world.local_now,
     )
-    transit_tool.add_trip(world.conn, one, extra, action_id="A")
+    transit_tool.add_trip(world.conn, one, extra, action_id="A", now=world.local_now)
     assert (_served(world) or {})["more"] == 1
 
 
@@ -1004,8 +1016,8 @@ def test_a_late_card_keeps_its_after_midnight_row_and_an_unkept_day_is_gone(worl
         "options": [{"index": 0, "leave_at": "23:55"}, {"index": 1, "leave_at": "00:10"}],
     }
     world.local_now = made + timedelta(minutes=15)
-    shown = live_card(trip)
+    shown = live_card(trip, world.local_now)
     assert shown is not None
     assert [o["index"] for o in shown["options"]] == [1]
     world.local_now = made + timedelta(minutes=25)
-    assert live_card(trip) is None
+    assert live_card(trip, world.local_now) is None

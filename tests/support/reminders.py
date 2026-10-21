@@ -20,6 +20,7 @@ from jarvis.state import things
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,10 +35,10 @@ class ReminderWorld:
         self.paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(self.paths.event_log)
         self.zone = ZoneInfo("America/Los_Angeles")  # his zone, not whatever the machine leaks
-        self.registry = build_default_registry(local_zone=self.zone)
-        self.lifecycle = ActionLifecycle()
         self.start = datetime.now(UTC).replace(microsecond=0)
-        self.clock = self.start
+        self.fake = FakeClock(self.start, zone=self.zone)
+        self.registry = build_default_registry(clock=self.fake)
+        self.lifecycle = ActionLifecycle()
         self.said: list[str] = []
         self.device: dict[str, Any] = dict(PRIVATE)
         self.hold: str | None = None
@@ -50,6 +51,15 @@ class ReminderWorld:
         self.reminders.may_speak = lambda: True
         self.reminders.say = self.said.append
         self.reminders.output = lambda fresh=False: dict(self.device)  # noqa: ARG005
+
+    @property
+    def clock(self) -> datetime:
+        """The one moment the tools, the reminders and the voice share (UTC)."""
+        return self.fake.now().astimezone(UTC)
+
+    @clock.setter
+    def clock(self, value: datetime) -> None:
+        self.fake.set(value)
 
     def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         self.n += 1
@@ -73,7 +83,7 @@ class ReminderWorld:
 
     def set(self, minutes: float, text: str = "和 employer 一对一") -> dict[str, Any]:
         """Keep a thing at ``minutes`` from now; its ring's id, and the words the ring carries."""
-        when = (self.start + timedelta(minutes=minutes)).astimezone(self.zone)
+        when = (self.clock + timedelta(minutes=minutes)).astimezone(self.zone)
         made = self.call(
             "schedule",
             {"action": "add", "what": text, "at": when.isoformat(timespec="seconds")},

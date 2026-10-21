@@ -20,14 +20,12 @@ import contextlib
 import logging
 import socket
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from jarvis.execution.location_tool import describe_age
 from jarvis.state import device_tokens, places, push_tokens, terminal_tools
 from jarvis.state.event_log import MAC_NODE, turn_origin
-from jarvis.state.phone_location import latest_phone_fix
 
 if TYPE_CHECKING:
     import sqlite3
@@ -35,16 +33,14 @@ if TYPE_CHECKING:
     from datetime import tzinfo
 
     from jarvis.execution.around import Surroundings
+    from jarvis.runtime.locate import HerePolicy
     from jarvis.runtime.moment import Moment
+    from jarvis.state.phone_location import PhoneFix
     from jarvis.surface.terminal_link import TerminalHub
 
 LOGGER = logging.getLogger(__name__)
 
 WHERE_PREFIX: Final = "Where you run:"
-ASK_FIX_MAX_AGE_MS: Final = 15 * 60_000
-"""How fresh the phone's fix must be for him to count as at a spot."""
-AROUND_MAX_AGE_MS: Final = 3 * 3_600_000
-"""How old the phone's fix may be and still say what is around him (the held readings' life)."""
 ASK_PLACE_LINE: Final = (
     "[Place] He is at a spot he has been to on {n} days in the last 4 weeks (last {date}). "
     "It has no name. If the moment suits, you may ask him once, in passing, what it is. "
@@ -67,13 +63,15 @@ class Whereabouts:
     def __init__(  # noqa: PLR0913 - the root, hub and moment, then what the lines read.
         self, root: Path, hub: TerminalHub | None, moment: Moment | None,
         *, memory_db: Path | None = None, zone: tzinfo | None = None,
-        around: Surroundings | None = None,
+        around: Surroundings | None = None, here: HerePolicy | None = None,
     ) -> None:
         """``hub`` is the brain's terminal table (``None`` on a Mac running alone).
 
         ``memory_db`` and ``zone`` (the one days are cut in) let :meth:`lines` tell her of a spot
         to ask about; without them it never does. ``around`` adds the line about his surroundings
-        (ADR 0284), made from what it already holds and never by a request.
+        (ADR 0284), made from what it already holds and never by a request. ``here`` (ADR 0322) says
+        which device's report the place lines speak of and how old it may be; without it there are
+        none.
         """
         self._root = root
         self._hub = hub
@@ -81,10 +79,10 @@ class Whereabouts:
         self._memory_db = memory_db
         self._zone = zone
         self._around = around
+        self._here = here
         self._host = _host() if hub is not None else ""
         # Wired by the daemon: whether a device has its ``/phone/ws`` socket open now (ADR 0209).
         self.phone_open: Callable[[str], bool] = lambda _device: False
-        self.clock: Callable[[], float] = time.time
 
     def at_mac(self) -> bool:
         """Whether TimeSink says he is active at the Mac now; unknown is not (ADR 0218).
@@ -93,7 +91,7 @@ class Whereabouts:
         """
         return self._moment is not None and self._moment.facts().get("presence") == "active"
 
-    def lines(self, conn: sqlite3.Connection) -> tuple[str, ...]:
+    def lines(self, conn: sqlite3.Connection, turn_id: str | None = None) -> tuple[str, ...]:
         """This turn's lines for the state block: the devices there are and the phone's place.
 
         A spot he keeps going back to adds its note, once (ADR 0234).
@@ -104,9 +102,9 @@ class Whereabouts:
         found = [
             self._devices_line([*terminals, *(n for n in paired if n not in terminals)], kind,
                                terminals),
-            self._place_line(conn),
-            self._around_line(conn),
-            self._ask_line(conn),
+            self._place_line(conn, turn_id),
+            self._around_line(conn, turn_id),
+            self._ask_line(conn, turn_id),
         ]
         return tuple(line for line in found if line)
 
@@ -171,43 +169,62 @@ class Whereabouts:
             return f"{WHERE_PREFIX} {where}."
         return f"{WHERE_PREFIX} {where}. His devices: {'; '.join(describe(n) for n in names)}."
 
-    def _place_line(self, conn: sqlite3.Connection) -> str | None:
-        fix = latest_phone_fix(conn)
+    def _place_line(self, conn: sqlite3.Connection, turn_id: str | None) -> str | None:
+        """Where the turn's device last put him; past Here's age limit, that it is unknown now."""
+        if self._here is None:
+            return None
+        fix = self._here.last_report(conn, turn_id)
         if fix is None:
             return None
-        age = describe_age(max(0, int(self.clock() * 1000) - fix.at_ms) // 1000)
+        age = describe_age(self._here.age_s(fix))
+        if self._stale(fix):
+            return (
+                f"His place is unknown now: his last position report, from {fix.device}, is {age}"
+                " old. where_am_i asks his phone."
+            )
         if fix.place is None:
             return f"His phone's last position report, {age} ago, has no place name."
         if fix.left:
             return f"His phone last reported him leaving {fix.place}, {age} ago."
         return f"His phone last put him at {fix.place}, {age} ago."
 
-    def _around_line(self, conn: sqlite3.Connection) -> str | None:
+    def _stale(self, fix: PhoneFix) -> bool:
+        """Whether ``fix`` is older than Here trusts (``locate.max_age_s``)."""
+        return self._here is not None and self._here.age_s(fix) > self._here.max_age_s
+
+    def _current(self, conn: sqlite3.Connection, turn_id: str | None) -> PhoneFix | None:
+        """The turn's device's report when Here still trusts it and it is not a departure."""
+        if self._here is None:
+            return None
+        fix = self._here.last_report(conn, turn_id)
+        return None if fix is None or fix.left or self._stale(fix) else fix
+
+    def _around_line(self, conn: sqlite3.Connection, turn_id: str | None) -> str | None:
         """His street and the place he is at, from what is held for where the phone put him.
 
         Free: no request is made here (ADR 0284). It never fails the other lines.
         """
-        if self._around is None:
+        if self._around is None or self._here is None:
             return None
         try:
-            fix = latest_phone_fix(conn)
-            now_ms = int(self.clock() * 1000)
-            if fix is None or fix.left or now_ms - fix.at_ms > AROUND_MAX_AGE_MS:
+            fix = self._current(conn, turn_id)
+            if fix is None:
                 return None
+            now_ms = self._here.now_ms()
             return self._around.line(conn, (fix.lat, fix.lng), fix.accuracy_m, now_ms)
         except Exception:  # the other lines are worth more than this one.
             LOGGER.exception("whereabouts: the surroundings line failed, skipped")
             return None
 
-    def _ask_line(self, conn: sqlite3.Connection) -> str | None:
+    def _ask_line(self, conn: sqlite3.Connection, turn_id: str | None) -> str | None:
         """The note about an unnamed spot he is at now, once; it never fails the other lines."""
-        if self._memory_db is None or self._zone is None:
+        if self._memory_db is None or self._zone is None or self._here is None:
             return None
         try:
-            fix = latest_phone_fix(conn)
-            now_ms = int(self.clock() * 1000)
-            if fix is None or fix.left or now_ms - fix.at_ms > ASK_FIX_MAX_AGE_MS:
+            fix = self._current(conn, turn_id)
+            if fix is None:
                 return None
+            now_ms = self._here.now_ms()
             spot = places.ask_once(self._memory_db, conn, (fix.lat, fix.lng), now_ms, self._zone)
         except Exception:  # the other lines are worth more than this one.
             LOGGER.exception("whereabouts: the unnamed-spot note failed, skipped")

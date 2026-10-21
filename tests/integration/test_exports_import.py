@@ -26,13 +26,15 @@ from pypdf import PdfWriter
 
 from jarvis.deployment import data
 from jarvis.execution.archive_tool import build_archive_tool
-from jarvis.execution.tools import Tool, ToolContext, ToolError
+from jarvis.execution.tools import Tool, ToolError
 from jarvis.runtime.daemon import retention
 from jarvis.state import imports, meaning
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log
 from jarvis.state.import_parsers import boc_text
 from jarvis.state.memory_db import open_memory_db
+from tests.support.clock import FakeClock
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
@@ -208,12 +210,12 @@ def test_a_changed_held_row_is_logged_and_kept_as_it_was(
 
 
 def _tool(root: Path) -> Tool:
-    (tool,) = build_archive_tool(root / "memory.db", VANCOUVER, lambda: NOW)
+    (tool,) = build_archive_tool(root / "memory.db")
     return tool
 
 
 def _call(tool: Tool, **args: object) -> dict[str, Any]:
-    return cast("dict[str, Any]", tool.handler(args, cast("ToolContext", None)))
+    return cast("dict[str, Any]", tool.handler(args, tool_context(clock=FakeClock(NOW, zone=VANCOUVER))))
 
 
 def test_the_archive_tool_searches_pages_totals_and_opens(tmp_path: Path) -> None:
@@ -300,7 +302,7 @@ def test_the_archive_finds_an_entry_by_meaning_and_says_when_totals_rest_on_it(t
     embedder = _LunchEmbedder()
     while meaning.index_pending(tmp_path / "memory.db", embedder):
         pass
-    (tool,) = build_archive_tool(tmp_path / "memory.db", VANCOUVER, lambda: NOW, embedder=embedder)
+    (tool,) = build_archive_tool(tmp_path / "memory.db", embedder=embedder)
 
     near = _call(tool, query="午饭")
     assert [e["text"] for e in near["entries"]] == ["paid CNY 68.00 to Lotus Noodle House: Lunch set"]

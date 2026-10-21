@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 
+from jarvis.shared.here import HereReading
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -85,7 +87,8 @@ class Receipt:
 
     ``object`` is ``<kind>:<the short id she sees>`` for a change and ``undo`` the event id an
     undo reverses; ``covered`` is a read's account of what it looked at. The constructor keeps
-    those on the side they belong to, and ``failure`` on a failed receipt only.
+    those on the side they belong to, and ``failure`` on a failed receipt only. ``here`` is the
+    reading of where he is that the call used (ADR 0322); the dispatcher fills it, a tool never.
     """
 
     status: Status
@@ -96,6 +99,7 @@ class Receipt:
     covered: Covered | None = None
     failure: FailureKind | None = None
     derived: bool = False
+    here: HereReading | None = None
 
     def __post_init__(self) -> None:
         """Refuse a receipt that contradicts itself; cut the line to one short line."""
@@ -141,6 +145,8 @@ class Receipt:
             out["failure"] = self.failure
         if self.derived:
             out["derived"] = True
+        if self.here is not None:
+            out["here"] = self.here.to_json()
         return out
 
     @classmethod
@@ -157,6 +163,7 @@ class Receipt:
             covered=None if covered is None else Covered.from_json(covered),
             failure=data.get("failure"),
             derived=data.get("derived") is True,
+            here=None if data.get("here") is None else HereReading.from_json(data["here"]),
         )
 
 

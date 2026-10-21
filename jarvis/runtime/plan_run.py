@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 
     from jarvis.execution.tools import RuntimePathsLike
     from jarvis.runtime.day_plan import Ask, RouteLegs
+    from jarvis.shared.clock import Clock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -107,14 +108,14 @@ def _record_time(ts: str, zone: tzinfo) -> datetime:
 
 
 def leg_session(
-    factory: LegFactory, event_log_path: Path, runtime_paths: RuntimePathsLike,
+    factory: LegFactory, event_log_path: Path, runtime_paths: RuntimePathsLike, clock: Clock,
 ) -> OpenLeg:
     """An :data:`OpenLeg` over ``factory`` (``build_leg_planner`` with the key and places bound)."""
 
     @contextmanager
     def session(action_id: str) -> Iterator[PlanLeg | None]:
         with closing(open_runtime_event_log(event_log_path)) as conn:
-            yield factory(ToolContext(conn, runtime_paths, action_id))
+            yield factory(ToolContext(conn, runtime_paths, action_id, clock))
 
     return session
 

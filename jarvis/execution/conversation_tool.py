@@ -18,10 +18,11 @@ from jarvis.state.daily_records import rank_by_words, read_connection
 from jarvis.state.memory_db import PICTURE_NOTE_SOURCE, latest_day_summaries
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
-    from datetime import tzinfo
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
+    from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
     from jarvis.state.embedding import Embedder
 
 LOGGER = logging.getLogger(__name__)
@@ -142,13 +143,10 @@ def _where(window: tuple[date, date] | None, today: date) -> str:
 class _Conversation:
     """The tool's handler: lines for words or a window, a window's topics, one line opened."""
 
-    def __init__(
-        self, store: Path, zone: tzinfo, clock: Callable[[], datetime],
-        embedder: Embedder | None,
-    ) -> None:
+    def __init__(self, store: Path, clock: Clock, embedder: Embedder | None) -> None:
         self._store = store
-        self._zone = zone
-        self._clock = clock
+        self._zone = clock.zone
+        self._clock = clock.now
         self._embedder = embedder
 
     def run(self, args: Mapping[str, Any], _ctx: object) -> dict[str, Any]:
@@ -432,18 +430,21 @@ class _Conversation:
 
 
 def build_conversation_tool(
-    store: Path | None, zone: tzinfo, clock: Callable[[], datetime] = speakable.now,
-    embedder: Embedder | None = None,
+    store: Path | None, embedder: Embedder | None = None,
 ) -> tuple[Tool, ...]:
     """``conversation`` over the memory store's records and day summaries; none without a store."""
     if store is None:
         return ()
+
+    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _Conversation(store, ctx.clock, embedder).run(args, ctx)
+
     return (
         Tool(
             name="conversation",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Conversation(store, zone, clock, embedder).run,
+            handler=run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,

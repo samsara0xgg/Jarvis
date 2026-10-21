@@ -7,7 +7,6 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -18,9 +17,13 @@ from jarvis.execution import transit_tool
 from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime import _here_location, _transit_places
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.here import HereUnavailable
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarification
 from jarvis.surface import mac_location
+from tests.support.clock import FakeClock
+from tests.support.here import FixedHere
+from tests.support.tool_context import tool_context
 from tests.support.transit import (
     FAKE_KEY,
     FIX,
@@ -33,6 +36,7 @@ from tests.support.transit import (
     routes_with,
     sent_request,
     serve_routes,
+    transit_clock,
 )
 
 if TYPE_CHECKING:
@@ -50,22 +54,25 @@ def _event_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 _LOG: dict[str, Any] = {}
 
 
-def _call(
+def _call(  # noqa: PLR0913 - the arguments, the places, Here, which tool, live buses, the moment.
     args: dict[str, Any],
     places: dict[str, str] | None = None,
-    here: Callable[[], dict[str, Any]] | None = None,
+    here: FixedHere | None = None,
     tool: str = "bus",
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
+    clock = transit_clock() if now is None else FakeClock(now)
     registry = build_default_registry(
         bus_live=bus_live,
         transit_api_key=FAKE_KEY,
         transit_places=lambda: PLACES if places is None else places,
-        here_location=here,
+        clock=clock,
+        here=here,
     )
     (definition,) = (d for d in registry.get_definitions() if d.name == tool)
-    ctx = SimpleNamespace(conn=_LOG["conn"], action_id="A1")
-    return dict(definition.handler(args, ctx))  # type: ignore[arg-type]
+    ctx = tool_context(_LOG["conn"], clock=clock, here=None if here is None else here.bind(None))
+    return dict(definition.handler(args, ctx))
 
 
 def test_the_answer_is_plain_words_in_local_time_with_three_options(
@@ -231,12 +238,9 @@ def test_here_without_a_reading_is_a_tool_error_that_says_to_ask_and_sends_nothi
     """Denied, timed out, or no reader at all: the Mac's location could not be read; ask him."""
     seen = serve_routes(monkeypatch)
 
-    def denied() -> dict[str, Any]:
-        reason = "location access is denied"
-        raise mac_location.LocationUnavailable(reason)
-
+    denied = FixedHere(error=HereUnavailable("this Mac's location could not be read (denied)"))
     for reader in (denied, None):
-        with pytest.raises(ToolError, match=r"Mac's location could not be read.*ask the user") as e:
+        with pytest.raises(ToolError, match=r"location.*ask the user") as e:
             _call({"from": "here", "to": "home"}, here=reader)
         assert e.value.code == "location_unavailable"
     assert seen == []
@@ -249,7 +253,7 @@ def test_here_is_the_default_start_and_a_guessed_one_is_forbidden() -> None:
     start = definition.input_schema["properties"]["from"]["description"]
     assert "only when he says he starts elsewhere" in start
     assert "never guess" in start
-    assert "this Mac" in start
+    assert "device he is talking from" in start
     assert "from" not in definition.input_schema.get("required", ())
 
 
@@ -265,7 +269,7 @@ def test_where_am_i_reads_the_mac_with_or_without_a_place_and_is_a_quiet_read_on
         "source": "this Mac",
     }
     assert _call({}, here=fix_with(place=None), tool="where_am_i")["place"] is None
-    registry = build_default_registry(here_location=fix_with())
+    registry = build_default_registry(here=fix_with())
     (definition,) = (d for d in registry.get_definitions() if d.name == "where_am_i")
     assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert definition.read_only
@@ -274,7 +278,7 @@ def test_where_am_i_reads_the_mac_with_or_without_a_place_and_is_a_quiet_read_on
     assert "bus instead" in definition.description
     assert _dispatch_key("where_am_i") is None
     with pytest.raises(ToolError, match="ask the user where he is"):
-        _call({}, here=dict, tool="where_am_i")
+        _call({}, here=FixedHere(error=HereUnavailable("no location")), tool="where_am_i")
 
 
 def test_the_helper_output_parses_with_and_without_a_place_and_each_failure_has_a_reason() -> None:
@@ -552,12 +556,10 @@ def test_without_a_route_a_bus_about_to_go_stays_with_its_spare_and_a_gone_one_i
         return everything if "departureTime" in body else routes_with(bus_route("26", "09:54"))
 
     seen = serve_routes(monkeypatch, answer=answer)
-    monkeypatch.setattr(
-        transit_tool,
-        "_now",
-        lambda: datetime(2026, 10, 6, 9, 29, tzinfo=ZoneInfo("America/Vancouver")),
+    out = _call(
+        {"from": "here", "to": "UVic"}, here=fix_with(),
+        now=datetime(2026, 10, 6, 9, 29, tzinfo=ZoneInfo("America/Vancouver")),
     )
-    out = _call({"from": "here", "to": "UVic"}, here=fix_with())
     assert _times(seen) == ["2026-10-06T16:19:00Z"]  # 09:19 PDT
     assert len(seen) == 3
     assert [(o["legs"][0]["route"], o["spare_min"], o["verdict"]) for o in out["options"]] == [

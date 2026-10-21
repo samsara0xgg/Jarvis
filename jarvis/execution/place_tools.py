@@ -6,24 +6,19 @@ is kept, under which name and when to ask. Both writers record origin ``model``.
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.execution.location_tool import read_here
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.state import places
-from jarvis.state.daily_report import resolve_zone
-from jarvis.state.phone_location import latest_phone_fix
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from datetime import tzinfo
     from pathlib import Path
 
     from jarvis.execution.tools import ToolContext
 
-FIX_MAX_AGE_MS: Final = 30 * 60_000
-"""How old the phone's latest fix may be and still be `here`."""
 SPOTS_LISTED: Final = 10
 
 PLACES_DESCRIPTION: Final = (
@@ -50,10 +45,6 @@ FORGET_DESCRIPTION: Final = (
 )
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 def _integer(args: Mapping[str, Any], key: str) -> int | None:
     value = args.get(key)
     if value is None:
@@ -74,15 +65,14 @@ def _refused(exc: Exception, tool: str) -> ToolError:
 class _PlaceTools:
     """memory.db's places and the phone's rows in the log, as three handlers."""
 
-    def __init__(self, memory_db: Path, zone: tzinfo) -> None:
+    def __init__(self, memory_db: Path) -> None:
         self._db = memory_db
-        self._zone = zone
 
     def listing(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         query = str(args.get("query") or "").strip().casefold()
-        now = _now_ms()
+        now, zone = int(ctx.clock.time() * 1000), ctx.clock.zone
         held = places.read_kept(self._db)
-        counted = places.tally(places.read_stays(ctx.conn, now, self._zone), held, now, self._zone)
+        counted = places.tally(places.read_stays(ctx.conn, now, zone), held, now, zone)
 
         def has_label(facts: places.Facts) -> bool:
             return query in (facts.label or "").casefold()
@@ -99,19 +89,20 @@ class _PlaceTools:
         }
 
     def _point(self, where: str, ctx: ToolContext, now: int) -> tuple[float, float]:
-        """The centre `where` names: the phone's fix for "here", else a listed spot's."""
+        """The centre `where` names: Here's position for "here", else a listed spot's."""
         if where == "here":
-            fix = latest_phone_fix(ctx.conn)
-            if fix is None or now - fix.at_ms > FIX_MAX_AGE_MS:
+            fix = read_here(ctx)
+            if fix.why:
                 msg = (
-                    "save_place: his phone has not reported where he is in the last 30 minutes; "
+                    "save_place: his phone's last report is old and no fresh fix came; "
                     "ask him where the place is"
                 )
                 raise ToolError(msg, code="location_unavailable")
             return fix.lat, fix.lng
-        seen = places.read_stays(ctx.conn, now, self._zone)
+        zone = ctx.clock.zone
+        seen = places.read_stays(ctx.conn, now, zone)
         held = places.read_kept(self._db)
-        spot = places.spot_at(places.tally(seen, held, now, self._zone).spots, where)
+        spot = places.spot_at(places.tally(seen, held, now, zone).spots, where)
         return spot.lat, spot.lng
 
     def save(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
@@ -131,7 +122,7 @@ class _PlaceTools:
                     self._db, where, name=name, role=kind, radius_m=radius, origin="model",
                 )
             else:
-                lat, lng = self._point(where, ctx, _now_ms())
+                lat, lng = self._point(where, ctx, int(ctx.clock.time() * 1000))
                 written = places.save(
                     self._db, name=name, lat=lat, lng=lng, role=kind, radius_m=radius,
                     origin="model",
@@ -165,12 +156,12 @@ class _PlaceTools:
         return {"forgotten": found.name}
 
 
-def build_place_tools(memory_db_path: Path, zone: tzinfo | None = None) -> tuple[Tool, ...]:
+def build_place_tools(memory_db_path: Path) -> tuple[Tool, ...]:
     """`places`, `save_place` and `forget_place` over memory.db and the phone's rows in the log.
 
-    ``zone`` is the one days are cut in (default: the machine's).
+    Days are cut in the context clock's zone.
     """
-    tools = _PlaceTools(memory_db_path, zone or resolve_zone(None, None)[1])
+    tools = _PlaceTools(memory_db_path)
     caller = frozenset({CallerPrincipal.JARVIS_LLM})
     return (
         Tool(

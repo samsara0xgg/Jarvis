@@ -22,18 +22,19 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis.execution import place_tools, transit_tool
+from jarvis.deployment import bootstrap_runtime
+from jarvis.execution import transit_tool
 from jarvis.execution.tools import build_default_registry
 from jarvis.runtime import _locate_places, _places_block, _transit_places
 from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
+from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.rides import Rides
 from jarvis.runtime.whereabouts import ASK_PLACE_LINE, Whereabouts
@@ -44,6 +45,7 @@ from jarvis.state.memory_db import open_memory_db, remember_fact, render_context
 from jarvis.state.memory_page import Conflict
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.clock import FakeClock
 from tests.support.core_memory import consolidation_input, consolidator, core_schedule, seed_days
 from tests.support.day_summaries import TODAY as CORE_TODAY
 from tests.support.day_summaries import day_ago
@@ -51,6 +53,7 @@ from tests.support.ledger import NOW as LEDGER_NOW
 from tests.support.ledger import ZONE as LEDGER_ZONE
 from tests.support.ledger import ledger_world
 from tests.support.places import NOW, NOW_MS, TODAY, ZONE, ms_days_ago, stay
+from tests.support.tool_context import tool_context
 from tests.support.tool_world import ToolWorld, tool_request
 from tests.support.transit import FAKE_KEY, sent_request, serve_routes
 
@@ -146,12 +149,6 @@ def expected(haunt: Haunt) -> places.Facts:
     )
 
 
-@pytest.fixture(autouse=True)
-def _clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The tools read the clock from one function; pin it to noon on the 11th."""
-    monkeypatch.setattr(place_tools, "_now_ms", lambda: NOW_MS)
-
-
 class World:
     """One tmp runtime: memory.db, the log, the default registry and its dispatcher."""
 
@@ -161,10 +158,10 @@ class World:
         self.db = tmp_path / "memory.db"
         with closing(open_memory_db(self.db)):
             pass
-        self.tools = build_default_registry(
-            memory_db_path=self.db, local_zone=ZONE,
-        ).get_definitions()
-        self.fx = ToolWorld(tmp_path, tools=self.tools)
+        self.tools = build_default_registry(memory_db_path=self.db).get_definitions()
+        self.clock = FakeClock(NOW)
+        self.here = HerePolicy(bootstrap_runtime(tmp_path).event_log, self.clock)
+        self.fx = ToolWorld(tmp_path, tools=self.tools, clock=self.clock, here=self.here)
         self.conn = self.fx.conn
         self.log = self.fx.paths.event_log
         self.count = 0
@@ -345,13 +342,13 @@ def test_places_lists_the_kept_and_the_ten_most_visited_spots_and_answers_a_quer
 
 
 def test_here_needs_a_fresh_fix_then_keeps_a_place_with_a_version(world: World) -> None:
-    """No fix, or one older than 30 minutes, is a clear error; a fresh one keeps the place."""
+    """No fix, or one older than the limit, is a clear error; a fresh one keeps the place."""
     args = {"name": "gym", "where": "here"}
     assert world.call("save_place", args)["code"] == "location_unavailable"
     stay(world.conn, "stale", 48.0050, -123.0001, NOW_MS - 40 * MINUTE)
     refused = world.call("save_place", args)
     assert refused["code"] == "location_unavailable"
-    assert "30 minutes" in refused["error"]
+    assert "no fresh fix came" in refused["error"]
     assert world.rows() == []
     assert world.rows("place_changes") == []
     stay(world.conn, "fresh", 48.0050, -123.0001, NOW_MS - 5 * MINUTE)
@@ -741,8 +738,8 @@ def lines(
         stay(world.conn, f"fix-{world.fixes}", *centre, at_ms - 10 * MINUTE, at_ms)
     else:
         stay(world.conn, f"fix-{world.fixes}", *centre, at_ms)
-    where = Whereabouts(world.tmp, None, None, memory_db=world.db, zone=ZONE)
-    where.clock = lambda: now_ms / 1000
+    world.clock.set(datetime.fromtimestamp(now_ms / 1000, ZONE))
+    where = Whereabouts(world.tmp, None, None, memory_db=world.db, zone=ZONE, here=world.here)
     return [line for line in where.lines(world.conn) if line.startswith("[Place]")]
 
 
@@ -786,8 +783,7 @@ def test_it_needs_three_days_a_fresh_fix_and_an_unkept_unasked_spot(world: World
 def test_whereabouts_without_a_store_never_asks(world: World) -> None:
     """The line needs the store and the zone; the other lines are as they were."""
     stay(world.conn, "fix", *CAFE.centre(), NOW_MS - MINUTE, label="Lotus Rd")
-    where = Whereabouts(world.tmp, None, None)
-    where.clock = lambda: NOW_MS / 1000
+    where = Whereabouts(world.tmp, None, None, here=world.here)
     found = where.lines(world.conn)
     assert not [line for line in found if line.startswith("[Place]")]
     assert any(line.startswith("His phone last put him at Lotus Rd") for line in found)
@@ -979,8 +975,8 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
         transit_api_key=FAKE_KEY, transit_places=partial(places.home_school, world.db),
     )
     (transit,) = (d for d in registry.get_definitions() if d.name == "bus")
-    ctx = SimpleNamespace(conn=world.conn, action_id="A1")
-    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type]
+    ctx = tool_context(world.conn, "A1", clock=world.clock)
+    transit.handler({"from": "home", "to": "school"}, ctx)
     sent = _body(seen)
     assert sent["origin"] == {"location": {"latLng": {"latitude": 48.0, "longitude": -123.0}}}
     assert sent["destination"] == {"address": "Example Campus, Example City"}
@@ -988,7 +984,7 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     places.forget(world.db, school.id, origin="user")
     places.save(world.db, name="school", lat=48.5, lng=-123.5, role="school", origin="user")
     seen.clear()
-    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type]
+    transit.handler({"from": "home", "to": "school"}, ctx)
     sent = _body(seen)
     assert sent["destination"] == {"location": {"latLng": {"latitude": 48.5, "longitude": -123.5}}}
     # The rides find his stop from the same table.

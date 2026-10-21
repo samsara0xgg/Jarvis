@@ -196,8 +196,10 @@ class Push:
             skip=lambda name: device is not None and name != device,
         )
 
-    def locate(self, request_id: str) -> int:
-        """Wake every registered phone with a silent push asking for a fix; how many took it.
+    def locate(self, request_id: str, device: str | None = None) -> int:
+        """Wake ``device`` (every registered phone when ``None``) with a silent push for a fix.
+
+        Returns how many took it.
 
         The phone answers by posting a location report that carries ``request_id`` (ADR 0281).
         Blocks for the network; nothing is retried. Pushes nothing until a key is configured.
@@ -206,6 +208,8 @@ class Push:
             return 0
         sent = 0
         for name, one in push_tokens.registrations(self._root).items():
+            if device is not None and name != device:
+                continue
             try:
                 outcome = self._client.send_locate(
                     one.device_token, one.environment, request_id, label=name,

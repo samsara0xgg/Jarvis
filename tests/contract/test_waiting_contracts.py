@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -26,7 +28,14 @@ from jarvis.execution.tools import (
 from jarvis.execution.transit_tool import TransitOffers, show_card
 from jarvis.runtime import plugin_connections
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.support.contracts import WORLD_NOW_MS, Contracts, Inputs, brain_at, fixed_uuids
+from tests.support.contracts import (
+    WORLD_NOW_MS,
+    WORLD_ZONE,
+    Contracts,
+    Inputs,
+    brain_at,
+    fixed_uuids,
+)
 from tests.support.daemon_app import Daemon, run_in_daemon
 
 if TYPE_CHECKING:
@@ -96,7 +105,8 @@ def _bus_card(log: Path) -> None:
             ("09:42", "10:08", "26", "Douglas at Hillside", "09:45"),
         )
     ]
-    trip = TransitOffers().put(options, "UVic")
+    made = datetime.fromtimestamp(WORLD_NOW_MS / 1000, ZoneInfo(WORLD_ZONE))
+    trip = TransitOffers().put(options, "UVic", made)
     with closing(open_event_log(log)) as conn:
         show_card(SimpleNamespace(conn=conn, action_id=ACTION), trip)  # type: ignore[arg-type]
 

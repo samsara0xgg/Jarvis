@@ -26,9 +26,12 @@ from jarvis.state.ledger import (
 from jarvis.state.work_state import current_state
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from datetime import date, tzinfo
     from pathlib import Path
+
+    from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
 
 _DESCRIPTION: Final = (
     "Use for what Allen did or is doing: now, a day, a span of days or one project; what was "
@@ -197,9 +200,9 @@ def _gone(missing: Sequence[str]) -> str:
 class _MyDay:
     """The tool's handler: today and what he is doing, a day, a span, one project."""
 
-    def __init__(self, src: LedgerSources, clock: Callable[[], datetime]) -> None:
+    def __init__(self, src: LedgerSources, clock: Clock) -> None:
         self._src = src
-        self._clock = clock
+        self._clock = clock.now
 
     def run(self, args: Mapping[str, Any], _ctx: object) -> dict[str, Any]:
         """Dispatch on the arguments; a store that cannot be read is worded for the model."""
@@ -437,16 +440,18 @@ def _fit(answer: dict[str, Any]) -> dict[str, Any]:
     return answer
 
 
-def build_my_day_tool(
-    sources: LedgerSources, clock: Callable[[], datetime] = speakable.now,
-) -> tuple[Tool, ...]:
+def build_my_day_tool(sources: LedgerSources) -> tuple[Tool, ...]:
     """``my_day`` over the ledger's sources (memory.db, the Event Log, TimeSink or its terminal)."""
+
+    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _MyDay(sources, ctx.clock).run(args, ctx)
+
     return (
         Tool(
             name="my_day",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_MyDay(sources, clock).run,
+            handler=run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,

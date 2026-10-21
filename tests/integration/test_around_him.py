@@ -21,7 +21,6 @@ import io
 import json
 import urllib.error
 import urllib.request
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -29,14 +28,19 @@ import pytest
 
 from jarvis.execution import around, maps_spend, places_api
 from jarvis.execution.location_tool import build_where_tool
+from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.state import places
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.clock import FakeClock
+from tests.support.here import FixedHere, reading
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
+
+    from jarvis.shared.here import HereReading
 
 KEY = "test-key-not-real"
 ZONE = ZoneInfo("America/Vancouver")
@@ -132,14 +136,15 @@ class World:
         self.db = tmp_path / "memory.db"
         self.clock = FakeClock()
         self.root = tmp_path
-        self.surroundings = around.Surroundings(key, cap, self.db, ZONE, lambda: self.now)
-        self.tool = build_where_tool(None, self._phone, self.surroundings)[0]
+        self.surroundings = around.Surroundings(key, cap, self.db, ZONE)
+        self.phone = FixedHere(self._phone)
+        self.tool = build_where_tool(self.phone, self.surroundings)[0]
+        self.here = HerePolicy(tmp_path / "events.db", self.clock)
 
-    def _phone(self) -> dict[str, Any]:
-        return {
-            "lat": self.at[0], "lng": self.at[1], "accuracy_m": 15.0, "age_s": 5,
-            "device": "iphone", "source": "phone", "fresh": True,
-        }
+    def _phone(self) -> HereReading:
+        return reading(
+            self.at[0], self.at[1], 15.0, age_s=5, device="iphone", fresh=True, place=None,
+        )
 
     at: tuple[float, float] = HERE
 
@@ -169,8 +174,8 @@ class World:
 
     def ask(self) -> dict[str, Any]:
         """`where_am_i` as the model calls it."""
-        ctx = SimpleNamespace(conn=self.log, action_id="A1")
-        return dict(self.tool.handler({}, ctx))  # type: ignore[arg-type]
+        ctx = tool_context(self.log, clock=self.clock, here=self.phone.bind(None))
+        return dict(self.tool.handler({}, ctx))
 
     def costs(self) -> list[tuple[str, float]]:
         """The (SKU, USD) rows recorded, oldest first."""
@@ -184,8 +189,8 @@ class World:
         """The state block's lines about his surroundings."""
         where = Whereabouts(
             self.root, None, None, memory_db=self.db, zone=ZONE, around=self.surroundings,
+            here=self.here,
         )
-        where.clock = lambda: self.now
         return [ln for ln in where.lines(self.log) if ln.startswith("Around him")]
 
 
@@ -321,7 +326,9 @@ def test_near_the_cap_no_request_is_made_and_the_fix_still_comes_with_the_reason
     places.save(world.db, name="Home", lat=HERE[0], lng=HERE[1], origin="user")
     maps_spend.PRICE_USD["test.spend"] = 9.5
     try:
-        maps_spend.record(SimpleNamespace(conn=world.log, action_id="A-seed"), ["test.spend"])  # type: ignore[arg-type]
+        maps_spend.record(
+            tool_context(world.log, "A-seed", clock=world.clock), ["test.spend"],
+        )
         out = world.ask()
     finally:
         maps_spend.PRICE_USD.pop("test.spend", None)
@@ -471,7 +478,7 @@ def test_the_runtime_gives_the_state_block_the_line_and_makes_no_request(
             runtime.conn, type="phone.location_observed", ingestion_node="iphone",
             payload={"lat": HERE[0], "lng": HERE[1], "accuracy_m": 15.0},
         )
-        assert "Around him: at Home." in _whereabouts_lines(runtime)
+        assert "Around him: at Home." in _whereabouts_lines(runtime, None)
         assert google.seen == []
     finally:
         runtime.conn.close()

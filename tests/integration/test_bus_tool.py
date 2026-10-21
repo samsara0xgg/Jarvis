@@ -30,11 +30,14 @@ from tests.support.transit import (
     local_ms,
     routes_with,
     serve_routes,
+    transit_clock,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from jarvis.shared.here import HereReading
 
 ROUTES = routes_with(bus_route("26", "17:12"), bus_route("28", "17:20"))
 """Now is 17:00: the 26 leaves at 17:12 (walk 4: leave 17:08) and the 28 at 17:20 (leave 17:16)."""
@@ -66,7 +69,10 @@ class Follower:
         self.calls.append(("watch", (place,)))
         return {"watching": True, "minutes": 45, "note": "if his phone moves with a bus ..."}
 
-    def start(self, route: str | None, place: str | None, vehicle: str | None) -> dict[str, Any]:
+    def start(
+        self, route: str | None, place: str | None, vehicle: str | None,
+        _here: HereReading | None = None,
+    ) -> dict[str, Any]:
         """``bus(ride="start")``: begin, or say it already has."""
         self.calls.append(("start", (route, place, vehicle)))
         if self.route is not None:
@@ -118,7 +124,7 @@ class World:
         self.lifecycle = ActionLifecycle()
         self.registry = build_default_registry(
             transit_api_key=FAKE_KEY, transit_places=lambda: PLACES, transit_offers=self.offers,
-            here_location=fix_with(), ride_control=self.follower.control(),
+            clock=transit_clock(), here=fix_with(), ride_control=self.follower.control(),
         )
 
     def call(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -297,7 +303,7 @@ def test_without_the_follower_the_tool_still_plans_and_pins(
     made = World(tmp_path)
     registry = build_default_registry(
         transit_api_key=FAKE_KEY, transit_places=lambda: PLACES, transit_offers=made.offers,
-        here_location=fix_with(),
+        clock=transit_clock(), here=fix_with(),
     )
     made.registry = registry
     assert made.call({"to": "home"})["options"]

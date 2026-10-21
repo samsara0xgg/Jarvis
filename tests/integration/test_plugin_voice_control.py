@@ -31,6 +31,7 @@ from jarvis.execution.tools import (
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import open_event_log
+from tests.support.clock import FakeClock
 from tests.support.mcp import ECHO
 from tests.support.mcp import (
     oauth_url as oauth_url,  # noqa: PLC0414 — re-export fixture.
@@ -74,14 +75,14 @@ def test_open_plugin_starts_a_credential_free_plugin_and_only_opens_the_panel_fo
         assert service.connected_apps_line() == "Connected apps: echo"
         again = service.request_from_tool(
             {"plugin_id": "echo", "continue_task": False},
-            ToolContext(fixture.conn, fixture.paths, "A1"),
+            ToolContext(fixture.conn, fixture.paths, "A1", FakeClock()),
         )
         assert again["panel_opened"] is False
         assert "already connected" in again["instruction"]
 
         reply = service.request_from_tool(
             {"plugin_id": "private", "continue_task": False},
-            ToolContext(fixture.conn, fixture.paths, "A1"),
+            ToolContext(fixture.conn, fixture.paths, "A1", FakeClock()),
         )
         assert reply["state"] == "offered"
         assert "enter the key" in reply["instruction"]

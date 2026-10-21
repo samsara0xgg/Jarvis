@@ -1,63 +1,62 @@
-"""ADR 0198, 0212: "here" is the phone's latest report on a brain, and for a turn a phone opened.
+"""ADR 0198, 0212, 0322: where he is for a tool call, and which device and report say so.
 
 Acceptance checks, each against a real event log:
 
-- which report is the latest, as a table of log rows to the reading: a location at its event time,
+- which report is the latest, as a table of log rows to the report: a location at its event time,
   a visit at its departure (else its arrival), the latest time wins, the later row on a tie, any
-  device, no age cutoff, no report at all;
-- the whole path: a batch posted to ``/inherent/device/events`` is what ``here`` reads;
-- on a brain booted for real, `where_am_i` and `bus`'s `here` say the fix is the phone's last
-  report with its age and accuracy, read from a tool's own thread; with no report, or a log that
-  cannot be read, they are a tool error that tells the model to ask;
-- the age in words, and a Mac running alone keeping the wording of ADR 0194;
-- one host with both readers (ADR 0212), as a table of the turn's opening row to the reading it
-  gets: a phone's spoken or typed turn reads the phone, the Mac's own turn reads the Mac, a phone
-  turn before any report falls back to the Mac and says so, and a brain reads the phone for every
-  turn; the same for the `bus` start, and for the descriptions the model is shown;
-- the HTTP routes a phone uses (`submit`, `ask`, `share`) write the turn's opening row under the
-  device's name, and the Mac's own key writes it under the Mac's.
+  device, no report at all;
+- the whole path: a batch posted to ``/inherent/device/events`` is what Here reads;
+- the policy, through the dispatcher and the real tools on a fake clock (nothing sleeps): the
+  carried phone's recent report is used without asking and the receipt carries it; an old one asks
+  that phone only; no answer gives the last place with its age and says he may have moved; an iPad
+  turn reads the iPad; a Mac terminal on a brain reads ``locate.phone`` even when the iPad's
+  report is newer; ``where_am_i`` asks however fresh the report; ``save_place`` goes through Here;
+- the turn's opening row to the reading it gets on a host that has a Mac reader too;
+- the place line of the state block, inside and past the age limit;
+- a brain booted for real wires ``locate.phone`` and ``locate.max_age_s``;
+- the age in words, and the HTTP routes a phone uses writing the turn's opening row under the
+  device's name.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import json
 import sqlite3
 import time
 from contextlib import closing
-from functools import partial
-from types import SimpleNamespace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.decision.commentary import _dispatch_key
-from jarvis.execution import transit_tool
+from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.location_tool import describe_age
-from jarvis.execution.tools import (
-    ToolError,
-    build_default_registry,
-    register_live_action,
-    release_turn_actions,
-)
-from jarvis.runtime import _phone_here, bootstrap_runtime_app
-from jarvis.shared import CallerPrincipal
+from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.runtime import bootstrap_runtime_app
+from jarvis.runtime.locate import NO_PHONE_REPORT, NOT_ASKED, HerePolicy, Locator
+from jarvis.runtime.whereabouts import Whereabouts
+from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state import places as place_state
-from jarvis.state.device_tokens import (
-    pair_device,
-)
+from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import (
+    MAC_NODE,
     emit_event,
     open_event_log,
     open_runtime_event_log,
     turn_origin,
 )
-from jarvis.state.phone_location import NoPhoneReport, read_phone_here
+from jarvis.state.locate_wait import Located, LocateWaits
+from jarvis.state.memory_db import open_memory_db
+from jarvis.state.phone_location import NoPhoneReport, latest_phone_fix
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
+from tests.support.clock import FakeClock
 from tests.support.phone import GOOD, LOCATION, PNG, VISIT, event_frame, here_daemon
 from tests.support.terminal import bearer, brain_client
+from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 from tests.support.transit import FIX as MAC_FIX
-from tests.support.transit import serve_routes
+from tests.support.transit import TRANSIT_NOW, serve_routes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -101,12 +100,11 @@ def write(path: Path, rows: list[Row]) -> sqlite3.Connection:
     return conn
 
 
-def reading(
+def expect(
     lat: float, lng: float, acc: float, age_s: int, device: str = "phone", **place: str,
 ) -> dict[str, Any]:
-    """What ``read_phone_here`` returns for a report like this."""
-    return {"lat": lat, "lng": lng, "accuracy_m": acc, "age_s": age_s, "source": "phone",
-            "device": device, **place}
+    """The report a row means, with its age against :data:`T`."""
+    return {"lat": lat, "lng": lng, "accuracy_m": acc, "age_s": age_s, "device": device, **place}
 
 
 UVIC: dict[str, Any] = {"place": "University of Victoria"}
@@ -125,93 +123,113 @@ CASES: dict[str, tuple[list[Row], dict[str, Any] | None]] = {
     "an empty log has no report": ([], None),
     "other phone signals and other devices' events are not a place": (NOISE, None),
     "a location is where he is at its event time": (
-        [loc(T - 90_000, 48.46, -123.31)], reading(48.46, -123.31, 50.0, 90),
+        [loc(T - 90_000, 48.46, -123.31)], expect(48.46, -123.31, 50.0, 90),
     ),
     "a location keeps its place name": (
         [loc(T - 5 * MIN, 48.46, -123.31, acc=120, **UVIC)],
-        reading(48.46, -123.31, 120.0, 300, **UVIC),
+        expect(48.46, -123.31, 120.0, 300, **UVIC),
     ),
     "a visit without a departure is at its arrival": (
         [visit(T - 2 * MIN, T - 3 * HOUR, None, 48.4, -123.4, **UVIC)],
-        reading(48.4, -123.4, 65.0, 3 * 3600, **UVIC),
+        expect(48.4, -123.4, 65.0, 3 * 3600, **UVIC),
     ),
     "a visit with a departure is at its departure": (
         [visit(T - 2 * MIN, T - 3 * HOUR, T - HOUR, 48.4, -123.4)],
-        reading(48.4, -123.4, 65.0, 3600),
+        expect(48.4, -123.4, 65.0, 3600),
     ),
     "a location after a visit's arrival is later": (
         [visit(T - HOUR, T - 3 * HOUR, None, 48.4, -123.4), loc(T - 10 * MIN, 48.5, -123.5)],
-        reading(48.5, -123.5, 50.0, 600),
+        expect(48.5, -123.5, 50.0, 600),
     ),
     "a visit's arrival after the last location is later": (
         [loc(T - HOUR, 48.5, -123.5), visit(T - 20 * MIN, T - 30 * MIN, None, 48.4, -123.4)],
-        reading(48.4, -123.4, 65.0, 30 * 60),
+        expect(48.4, -123.4, 65.0, 30 * 60),
     ),
     "a departure after the last location is later, though its row is older": (
         [visit(T - 40 * MIN, T - 3 * HOUR, T - 45 * MIN, 48.4, -123.4),
          loc(T - 50 * MIN, 48.5, -123.5)],
-        reading(48.4, -123.4, 65.0, 45 * 60),
+        expect(48.4, -123.4, 65.0, 45 * 60),
     ),
     "a location after a visit's departure is later, though its row is older": (
         [loc(T - 20 * MIN, 48.5, -123.5),
          visit(T - 10 * MIN, T - 3 * HOUR, T - 25 * MIN, 48.4, -123.4)],
-        reading(48.5, -123.5, 50.0, 20 * 60),
+        expect(48.5, -123.5, 50.0, 20 * 60),
     ),
     "a tie goes to the later row, a location after a visit": (
         [visit(T - 8 * MIN, T - 10 * MIN, None, 48.4, -123.4), loc(T - 10 * MIN, 48.5, -123.5)],
-        reading(48.5, -123.5, 50.0, 600),
+        expect(48.5, -123.5, 50.0, 600),
     ),
     "a tie goes to the later row, a visit after a location": (
         [loc(T - 10 * MIN, 48.5, -123.5), visit(T - 8 * MIN, T - 10 * MIN, None, 48.4, -123.4)],
-        reading(48.4, -123.4, 65.0, 600),
+        expect(48.4, -123.4, 65.0, 600),
     ),
     "a tie goes to the later row, a departure and a location": (
         [loc(T - 10 * MIN, 48.5, -123.5),
          visit(T - 8 * MIN, T - HOUR, T - 10 * MIN, 48.4, -123.4)],
-        reading(48.4, -123.4, 65.0, 600),
+        expect(48.4, -123.4, 65.0, 600),
     ),
     "a tie between two locations goes to the later row": (
         [loc(T - MIN, 48.5, -123.5), loc(T - MIN, 48.6, -123.6)],
-        reading(48.6, -123.6, 50.0, 60),
+        expect(48.6, -123.6, 50.0, 60),
     ),
     "the latest report of any device wins and names its device": (
         [loc(T - 30 * MIN, 48.5, -123.5, device="iphone"),
          loc(T - 10 * MIN, 48.6, -123.6, device="ipad"),
          loc(T - 20 * MIN, 48.7, -123.7, device="iphone")],
-        reading(48.6, -123.6, 50.0, 600, device="ipad"),
+        expect(48.6, -123.6, 50.0, 600, device="ipad"),
     ),
     "a report ten days old is still where he is": (
-        [loc(T - 10 * DAY, 48.5, -123.5)], reading(48.5, -123.5, 50.0, 10 * 24 * 3600),
+        [loc(T - 10 * DAY, 48.5, -123.5)], expect(48.5, -123.5, 50.0, 10 * 24 * 3600),
     ),
     "a time ahead of the clock is no age": (
-        [loc(T + 2 * MIN, 48.5, -123.5)], reading(48.5, -123.5, 50.0, 0),
+        [loc(T + 2 * MIN, 48.5, -123.5)], expect(48.5, -123.5, 50.0, 0),
     ),
     "the age is whole seconds, rounded down": (
-        [loc(T - 1_999, 48.5, -123.5)], reading(48.5, -123.5, 50.0, 1),
+        [loc(T - 1_999, 48.5, -123.5)], expect(48.5, -123.5, 50.0, 1),
     ),
     "the noise around a report changes nothing": (
-        [*NOISE, loc(T - 7 * MIN, 48.5, -123.5), *NOISE], reading(48.5, -123.5, 50.0, 420),
+        [*NOISE, loc(T - 7 * MIN, 48.5, -123.5), *NOISE], expect(48.5, -123.5, 50.0, 420),
     ),
 }
 
 
 @pytest.mark.parametrize("name", list(CASES))
-def test_the_latest_report_is_the_reading_with_its_age(name: str, tmp_path: Path) -> None:
-    """Log rows in, the reading out: position, accuracy, place if any, age, source and device."""
+def test_the_latest_report_is_the_one_a_row_table_says(name: str, tmp_path: Path) -> None:
+    """Log rows in, the latest report out: position, accuracy, place if any, age and device."""
     rows, expected = CASES[name]
     conn = write(tmp_path / "events.db", rows)
     try:
+        fix = latest_phone_fix(conn)
         if expected is None:
-            with pytest.raises(NoPhoneReport, match="no phone has reported a location"):
-                read_phone_here(conn, now_ms=T)
+            assert fix is None
         else:
-            assert read_phone_here(conn, now_ms=T) == expected
+            assert fix is not None
+            got = expect(
+                fix.lat, fix.lng, fix.accuracy_m, max(0, T - fix.at_ms) // 1000, fix.device,
+                **({"place": fix.place} if fix.place else {}),
+            )
+            assert got == expected
+    finally:
+        conn.close()
+
+
+def test_a_report_of_another_device_is_never_the_named_ones(tmp_path: Path) -> None:
+    """Asked for a device, the latest report is that device's, newer ones of others aside."""
+    conn = write(tmp_path / "events.db", [
+        loc(T - 30 * MIN, 48.5, -123.5, device="iphone"),
+        loc(T - 10 * MIN, 48.6, -123.6, device="ipad"),
+    ])
+    try:
+        iphone = latest_phone_fix(conn, "iphone")
+        assert iphone is not None
+        assert (iphone.lat, iphone.device) == (48.5, "iphone")
+        assert latest_phone_fix(conn, "watch") is None
     finally:
         conn.close()
 
 
 def test_a_batch_posted_to_the_route_is_what_here_reads(tmp_path: Path) -> None:
-    """Phone to brain to `here`: a visit, then a newer location, through the real route and log."""
+    """Phone to brain to Here: a visit, then a newer location, through the real route and log."""
     token = pair_device(tmp_path, "iphone")
     client, _hub, log = brain_client(tmp_path, speaks=False)
     now = int(time.time() * 1000)
@@ -223,144 +241,394 @@ def test_a_batch_posted_to_the_route_is_what_here_reads(tmp_path: Path) -> None:
     ]
     posted = client.post(PHONE_EVENTS_PATH, json={"events": batch}, headers=bearer(token))
     assert [ack["ok"] for ack in posted.json()["acks"]] == [True, True]
-    with sqlite3.connect(log) as conn:
-        here = read_phone_here(conn)
-    assert here["device"] == "iphone"
-    assert (here["lat"], here["lng"], here["accuracy_m"]) == (48.43, -123.37, 80.0)
-    assert here["place"] == fix_payload["place"]
-    assert 20 * 60 <= here["age_s"] <= 20 * 60 + 30
+    clock = FakeClock(datetime.fromtimestamp(now / 1000, UTC))
+    here = HerePolicy(log, clock, max_age_s=3600).bind(None).read()
+    assert here.device == "iphone"
+    assert (here.lat, here.lng, here.accuracy_m) == (48.43, -123.37, 80.0)
+    assert here.place == fix_payload["place"]
+    assert here.age_s == 20 * 60
+    assert (here.fresh, here.why) == (False, "")
 
 
-# --- on a brain, the tools --------------------------------------------------------------------
+# --- the policy, through the dispatcher ------------------------------------------------------
+
+IPHONE, IPAD = (48.50, -123.50), (48.60, -123.60)
+ANSWER = (48.70, -123.70)
+"""Where a phone says it is when it is asked."""
 
 
-def _brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> JarvisRuntime:
+class Phones:
+    """The phones a Locator can ask: records who was asked and answers for those that will.
+
+    A phone not in ``answering`` has no socket and no push token, so nothing is sent to it.
+    """
+
+    def __init__(self, waits: LocateWaits, clock: FakeClock, answering: dict[str, bool]) -> None:
+        """``answering[name]`` is whether that phone answers a request for a fix."""
+        self.waits = waits
+        self.clock = clock
+        self.answering = answering
+        self.asked: list[str | None] = []
+
+    def socket(self, request_id: str, device: str | None) -> int:
+        """The ``locate`` frame sent to ``device`` (every phone when ``None``)."""
+        self.asked.append(device)
+        names = [n for n in ([device] if device else self.answering) if n in self.answering]
+        for name in names:
+            if self.answering[name]:
+                self.waits.deliver(request_id, Located(
+                    *ANSWER, 12.0, self.clock.time_ms() - 1000, name, place="Asked Rd",
+                ))
+        return len(names)
+
+    def push(self, _request_id: str, device: str | None) -> int:
+        """A background push that wakes nothing, sent to each phone there is."""
+        return len([n for n in ([device] if device else self.answering) if n in self.answering])
+
+
+class Rig:
+    """A runtime root, a fake clock, Here over the log and the real tools over both."""
+
+    def __init__(
+        self, root: Path, monkeypatch: pytest.MonkeyPatch, *, phone: str = "iphone",
+        answering: dict[str, bool] | None = None, mac: bool = False,
+    ) -> None:
+        """Wire a registry whose tools read Here; ``mac`` gives the host a reader of its own."""
+        self.clock = FakeClock(TRANSIT_NOW)
+        self.seen = serve_routes(monkeypatch)
+        self.memory = root / "memory.db"
+        open_memory_db(self.memory).close()
+        waits = LocateWaits()
+        self.phones = Phones(waits, self.clock, answering or {})
+        locator = Locator(waits, self.clock)
+        locator.ask_socket = self.phones.socket
+        locator.ask_push = self.phones.push
+        self.here = HerePolicy(
+            bootstrap_runtime(root / "run").event_log, self.clock, locator=locator, phone=phone,
+            mac=(lambda: dict(MAC_FIX)) if mac else None, memory_db=self.memory,
+        )
+        registry = build_default_registry(
+            transit_api_key="test-key-not-real", transit_places=dict, memory_db_path=self.memory,
+            clock=self.clock, here=self.here,
+        )
+        self.world = ToolWorld(
+            root / "run", tools=tuple(registry.get_definitions()), clock=self.clock, here=self.here,
+        )
+        self.conn = self.world.conn
+        self.n = 0
+
+    def report(self, device: str, ago_s: int, at: tuple[float, float], **more: Any) -> None:  # noqa: ANN401
+        """``device`` reported ``at`` ``ago_s`` seconds ago."""
+        emit_event(
+            self.conn, type="phone.location_observed", ingestion_node=device,
+            payload={"lat": at[0], "lng": at[1], "accuracy_m": 30.0, **more},
+            ts_epoch_ms=self.clock.time_ms() - ago_s * 1000,
+        )
+
+    def open_turn(self, turn_id: str, node: str) -> None:
+        """The words that open ``turn_id`` came from ``node``."""
+        emit_event(
+            self.conn, type="surface.user_intent", ingestion_node=node,
+            payload={"transcript": "where", "turn_id": turn_id, "channel": "cli_stdin"},
+            correlation={"turn_id": turn_id},
+        )
+
+    def call(
+        self, name: str, args: dict[str, Any], turn_id: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Dispatch ``name`` as the model would; the output and the receipt."""
+        self.n += 1
+        action_id = f"A{self.n}"
+        request = dataclasses.replace(
+            tool_request(name, action_id, arguments=args), turn_id=turn_id,
+        )
+        self.world.dispatch(request)
+        observed = tool_chain(self.world, action_id)
+        return json.loads(observed["tool_output"]), observed["receipt"]
+
+    def origin(self) -> tuple[float, float]:
+        """Where the last Routes request started from."""
+        latlng = json.loads(self.seen[-1][0].data)["origin"]["location"]["latLng"]
+        return latlng["latitude"], latlng["longitude"]
+
+    def close(self) -> None:
+        """Close the log."""
+        self.world.close()
+
+
+@pytest.fixture
+def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+    """Builds a rig; every one made is closed."""
+    made: list[Rig] = []
+
+    def build(**more: Any) -> Rig:  # noqa: ANN401
+        one = Rig(tmp_path, monkeypatch, **more)
+        made.append(one)
+        return one
+
+    yield build
+    for one in made:
+        one.close()
+
+
+def test_a_two_minute_old_report_of_the_carried_phone_is_used_without_asking(rig: Any) -> None:  # noqa: ANN401
+    """The bus starts from it, says how old it is, and the receipt carries the reading."""
+    r: Rig = rig(answering={"iphone": True, "ipad": True})
+    r.report("iphone", 120, IPHONE, place="Home Rd")
+    r.report("ipad", 30, IPAD)  # newer, but not the phone he carries
+    out, receipt = r.call("bus", {"to": "Mayfair Mall"})
+    assert r.phones.asked == []
+    assert r.origin() == IPHONE
+    assert out["from"] == "here (the phone's last report 2 min ago, Home Rd, ±30 m)"
+    assert "warning" not in out
+    assert receipt["here"] == {
+        "lat": IPHONE[0], "lng": IPHONE[1], "accuracy_m": 30.0, "age_s": 120,
+        "device": "iphone", "fresh": False, "place": "Home Rd",
+    }
+
+
+def test_an_old_report_asks_only_the_carried_phone_and_the_receipt_says_fresh(rig: Any) -> None:  # noqa: ANN401
+    """Past the limit the carried phone is asked, no other, and its answer is the reading."""
+    r: Rig = rig(answering={"iphone": True, "ipad": True})
+    r.report("iphone", 20 * 60, IPHONE)
+    r.report("ipad", 5 * 60, IPAD)
+    out, receipt = r.call("bus", {"to": "Mayfair Mall"})
+    assert r.phones.asked == ["iphone"]
+    assert r.origin() == ANSWER
+    assert receipt["here"]["fresh"] is True
+    assert receipt["here"]["device"] == "iphone"
+    assert (receipt["here"]["lat"], receipt["here"]["lng"]) == ANSWER
+    assert "warning" not in out
+
+
+def test_no_answer_gives_the_last_place_with_its_age_and_says_he_may_have_moved(
+    rig: Any,  # noqa: ANN401
+) -> None:
+    """Both waits pass on the clock: the last report, how old, whose, and that it may be stale."""
+    r: Rig = rig(answering={"iphone": False})  # connected, and silent
+    r.report("iphone", 20 * 60, IPHONE, place="Old Rd")
+    def pass_both_waits() -> None:
+        for seconds in (4.0, 8.0):  # the socket wait, then the push wait
+            r.clock.wait_until(lambda: r.clock.blocked >= 1, "the locator to wait")
+            r.clock.advance(seconds)
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        moving = pool.submit(pass_both_waits)
+        out, receipt = r.call("where_am_i", {})  # on this thread: the log is this thread's
+        moving.result(timeout=10)
+    assert (out["place"], out["device"], out["fresh"]) == ("Old Rd", "iphone", False)
+    assert out["age_s"] == 20 * 60 + 12
+    assert out["not_fresh"] == "the phone did not answer the push within 8 s"
+    assert "he may not be where this says now" in out["note"]
+    assert receipt["here"]["why"] == out["not_fresh"]
+    assert receipt["here"]["age_s"] == out["age_s"]
+
+
+def test_an_ipad_turn_reads_the_ipad(rig: Any) -> None:  # noqa: ANN401
+    """A turn a device that reports locations opened reads that device, not the carried phone."""
+    r: Rig = rig(answering={"iphone": True, "ipad": True})
+    r.report("iphone", 60, IPHONE)
+    r.report("ipad", 90, IPAD)
+    r.open_turn("T1", "ipad")
+    _, receipt = r.call("bus", {"to": "Mayfair Mall"}, turn_id="T1")
+    assert r.origin() == IPAD
+    assert r.phones.asked == []
+    assert receipt["here"]["device"] == "ipad"
+
+
+@pytest.mark.parametrize(("carried", "device"), [("iphone", "iphone"), ("", "ipad")])
+def test_a_mac_terminal_turn_on_a_brain_reads_the_carried_phone(
+    rig: Any, carried: str, device: str,  # noqa: ANN401
+) -> None:
+    """The Mac's words on a host with no location of its own: ``locate.phone``, else the newest."""
+    r: Rig = rig(phone=carried, answering={})
+    r.report("iphone", 5 * 60, IPHONE)
+    r.report("ipad", 60, IPAD)  # newer than the iPhone's
+    r.open_turn("T1", MAC_NODE)
+    _, receipt = r.call("bus", {"to": "Mayfair Mall"}, turn_id="T1")
+    assert receipt["here"]["device"] == device
+    assert r.origin() == (IPHONE if device == "iphone" else IPAD)
+    assert r.phones.asked == []
+
+
+def test_where_am_i_asks_even_when_the_report_is_ten_seconds_old(rig: Any) -> None:  # noqa: ANN401
+    """It is the tool for where he is now: it always asks, and the receipt says the fix is fresh."""
+    r: Rig = rig(answering={"iphone": True})
+    r.report("iphone", 10, IPHONE)
+    out, receipt = r.call("where_am_i", {})
+    assert r.phones.asked == ["iphone"]
+    assert out["fresh"] is True
+    assert (out["lat"], out["lng"]) == ANSWER
+    assert receipt["here"]["fresh"] is True
+
+
+def test_save_place_here_goes_through_here(rig: Any) -> None:  # noqa: ANN401
+    """The place is kept where the turn's device puts him, and refused when no fix can be had."""
+    r: Rig = rig(answering={})
+    r.report("iphone", 60, IPHONE)
+    r.report("ipad", 90, IPAD)
+    r.open_turn("T1", "ipad")
+    out, receipt = r.call("save_place", {"name": "gym", "where": "here"}, turn_id="T1")
+    assert out["kept"]["name"] == "gym"
+    assert receipt["here"]["device"] == "ipad"
+    (kept,) = place_state.read_kept(r.memory)
+    assert (kept.lat, kept.lng) == IPAD
+
+
+# --- a host that has a Mac reader too (ADR 0212) ------------------------------------------------
+
+# (node that opened the turn or None, whether a phone has reported) -> (device read, why)
+ORIGINS: dict[str, tuple[str | None, bool, tuple[str, str]]] = {
+    "a phone's turn reads the phone": ("iphone", True, ("iphone", "")),
+    "any paired device's name is a phone": ("ipad", True, ("ipad", "")),
+    "the Mac's own turn reads the Mac, though a phone has reported": (
+        MAC_NODE, True, (MAC_NODE, ""),
+    ),
+    "a turn with no opening row reads the carried phone": (None, True, ("iphone", "")),
+    "a phone's turn before any report falls back to the Mac and says so": (
+        "iphone", False, (MAC_NODE, NO_PHONE_REPORT),
+    ),
+    "the Mac's turn before any report is just the Mac": (MAC_NODE, False, (MAC_NODE, "")),
+}
+
+
+@pytest.mark.parametrize("name", list(ORIGINS))
+def test_the_turns_opening_row_picks_the_device_it_reads(rig: Any, name: str) -> None:  # noqa: ANN401
+    """On a Mac that hears phones: opening row and reports in, the reading's device and why out."""
+    node, reported, (device, why) = ORIGINS[name]
+    r: Rig = rig(mac=True, answering={})
+    if reported:
+        r.report("iphone", 5 * 60, IPHONE)
+        r.report("ipad", 2 * 60, IPAD)
+    if node is not None:
+        r.open_turn("T1", node)
+    got = r.here.bind("T1" if node else None).read()
+    assert (got.device, got.why) == (device, why)
+    if reported and device == "iphone":
+        assert (got.lat, got.lng) == IPHONE
+    if device == MAC_NODE:
+        assert (got.lat, got.lng, got.place) == (MAC_FIX["lat"], MAC_FIX["lng"], MAC_FIX["place"])
+        assert (got.fresh, got.age_s) == (True, 0)
+
+
+def test_without_a_mac_reader_and_no_report_here_is_unavailable(rig: Any) -> None:  # noqa: ANN401
+    """A brain: no phone has reported and none answers, so there is nothing to read."""
+    r: Rig = rig(answering={})
+    with pytest.raises(NoPhoneReport, match="no phone has reported a location"):
+        r.here.bind(None).read()
+    out, receipt = r.call("where_am_i", {})
+    assert out["code"] == "location_unavailable"
+    assert "here" not in receipt
+
+
+# --- the place line of the state block ----------------------------------------------------------
+
+
+def test_the_place_line_names_the_place_inside_the_limit_and_says_unknown_past_it(
+    rig: Any,  # noqa: ANN401
+) -> None:
+    """Within ``locate.max_age_s`` the phone's place; past it, that it is unknown and why."""
+    r: Rig = rig(answering={})
+    r.report("iphone", 2 * 60, IPHONE, place="Lotus Rd")
+    where = Whereabouts(r.world.paths.root, None, None, here=r.here)
+
+    def place_line() -> str:
+        return next(
+            line for line in where.lines(r.conn) if line.startswith(("His phone", "His place"))
+        )
+
+    assert place_line() == "His phone last put him at Lotus Rd, 2 min ago."
+    r.clock.advance(13 * 60)  # exactly the limit
+    assert place_line() == "His phone last put him at Lotus Rd, 15 min ago."
+    r.clock.advance(1)
+    assert place_line() == (
+        "His place is unknown now: his last position report, from iphone, is 15 min old."
+        " where_am_i asks his phone."
+    )
+    assert not [line for line in where.lines(r.conn) if line.startswith("Around him")]
+
+
+# --- a brain booted for real wires the two settings -------------------------------------------
+
+
+def _brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: str) -> JarvisRuntime:
     monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "test-key-not-real")
     root = tmp_path / "root"
     root.mkdir()
-    (root / "settings.yaml").write_text("runtime:\n  role: brain\n", encoding="utf-8")
+    (root / "settings.yaml").write_text(f"runtime:\n  role: brain\n{settings}", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
     return bootstrap_runtime_app(runtime_root=root)
 
 
-def _tool(runtime: JarvisRuntime, name: str) -> Any:  # noqa: ANN401
-    (definition,) = (d for d in runtime.tool_registry.get_definitions() if d.name == name)
-    return definition
-
-
-def _report(runtime: JarvisRuntime, kind: str, payload: dict[str, Any], ts: int) -> None:
+def _report(runtime: JarvisRuntime, device: str, lat: float, lng: float, ts: int) -> None:
     """A phone's report through the brain's own hub, as the route hands it over."""
     assert runtime.terminal_hub is not None
     assert runtime.terminal_hub.events is not None
-    frame = {"event_uid": f"{int(time.time_ns()):032x}", "event_type": kind,
-             "ts_epoch_ms": ts, "payload": payload}
-    [ack] = runtime.terminal_hub.events.record_phone_batch("iphone", [frame])
+    frame = {
+        "event_uid": f"{time.time_ns():032x}", "event_type": "phone.location_observed",
+        "ts_epoch_ms": ts, "payload": {"lat": lat, "lng": lng, "accuracy_m": 40.0},
+    }
+    [ack] = runtime.terminal_hub.events.record_phone_batch(device, [frame])
     assert ack["ok"] is True, ack
 
 
-def _on_a_tool_thread(
-    event_log: Path, definition: Any, args: dict[str, Any],  # noqa: ANN401
-) -> dict[str, Any]:
-    """Run a handler on a worker thread, as a tool runs: the runtime's connection can't go there."""
+def _bus_on_a_tool_thread(runtime: JarvisRuntime, turn_id: str | None = None) -> dict[str, Any]:
+    """Dispatch ``bus`` from here through the runtime's own registry, on a worker thread.
+
+    The routes the test serves are for another day, so the trip is not found; what the call read
+    is on its receipt.
+    """
+    action_id = f"A-{turn_id}"
+    request = ActionRequest(
+        action_id=action_id, tool_name="bus", target_entity_ref=None,
+        caller_principal=CallerPrincipal.JARVIS_LLM, risk_level="L1",
+        arguments={"to": "Mayfair Mall"}, authorization_lease=None, run_id=None,
+        turn_id=turn_id,
+    )
 
     def run() -> dict[str, Any]:
-        conn = sqlite3.connect(event_log)
-        try:  # The bus card (ADR 0205) is written through the call's own connection.
-            ctx = SimpleNamespace(conn=conn, action_id="A1")
-            return dict(definition.handler(args, ctx))
-        finally:
-            conn.close()
+        with closing(sqlite3.connect(runtime.runtime_paths.event_log)) as conn:
+            lifecycle = ActionLifecycle()
+            lifecycle.register(action_id)
+            lifecycle.transition(action_id, "authorized")
+            runtime.tool_registry.dispatch(request, conn, runtime.runtime_paths, lifecycle)
+            row = conn.execute(
+                "SELECT payload_json FROM events WHERE type = 'action.result_observed'"
+                " ORDER BY id DESC LIMIT 1",
+            ).fetchone()
+        return dict(json.loads(row[0])["receipt"])
 
     with concurrent.futures.ThreadPoolExecutor(1) as pool:
         return pool.submit(run).result()
 
 
-def _words(definition: Any) -> str:  # noqa: ANN401 - a tool definition of either kind.
-    """Everything the model reads of a tool: its description and its argument descriptions."""
-    return str(definition.description) + json.dumps(definition.input_schema)
-
-
-def test_on_a_brain_where_am_i_and_bus_here_say_it_is_the_phones_last_report(
+def test_a_booted_brain_reads_locate_phone_and_asks_past_locate_max_age_s(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both tools exist on a brain on any machine and read the log from a tool's own thread.
-
-    They carry the report's age and accuracy; bus starts the trip from the reported position.
-    """
+    """The carried phone is the named one even when another is newer; past the limit it asks."""
     seen = serve_routes(monkeypatch)
-    # A direct call has no `action.running` event to link the bus card to.
-    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
-    brain = _brain(tmp_path, monkeypatch)
+    brain = _brain(tmp_path, monkeypatch, "locate:\n  phone: iphone\n  max_age_s: 600\n")
     try:
-        where, bus = _tool(brain, "where_am_i"), _tool(brain, "bus")
-        for definition in (where, bus):
-            assert "phone" in _words(definition)
-            assert "Mac" not in _words(definition)
-        assert "500 m" in where.description
-        assert where.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
-        assert where.read_only
-        assert not where.requires_confirmation
-        assert _dispatch_key("where_am_i") is None
-
-        call = partial(_on_a_tool_thread, brain.runtime_paths.event_log)
-
-        with pytest.raises(ToolError, match=r"no phone has reported a location.*ask the user"):
-            call(where, {})
-        with pytest.raises(ToolError, match="no phone has reported a location") as error:
-            call(bus, {"to": "Mayfair Mall"})
-        assert error.value.code == "location_unavailable"
-        assert seen == []
-
         now = int(time.time() * 1000)
-        _report(brain, "phone.location_observed", {**GOOD[LOCATION], "accuracy_m": 120.4},
-                now - 12 * MIN)
-        got = call(where, {})
-        assert got["lat"] == GOOD[LOCATION]["lat"]
-        assert got["lng"] == GOOD[LOCATION]["lng"]
-        assert got["accuracy_m"] == 120.4
-        assert got["place"] == GOOD[LOCATION]["place"]
-        assert (got["source"], got["device"]) == ("phone", "iphone")
-        assert 12 * 60 <= got["age_s"] <= 12 * 60 + 30
-        assert "the phone's last report 12 min ago, accurate to about 120 m" in got["note"]
-        assert "has not moved far since" in got["note"]
-
-        trip = call(bus, {"to": "Mayfair Mall"})
-        place = GOOD[LOCATION]["place"]
-        assert trip["from"] == f"here (the phone's last report 12 min ago, {place}, ±120 m)"
-        assert trip["to"] == "Mayfair Mall"
-        (request, _timeout) = seen[0]
-        origin = json.loads(request.data)["origin"]["location"]["latLng"]
-        assert origin == {"latitude": GOOD[LOCATION]["lat"], "longitude": GOOD[LOCATION]["lng"]}
-        assert trip["options"]
+        _report(brain, "iphone", 48.50, -123.50, now - 5 * MIN)
+        _report(brain, "ipad", 48.60, -123.60, now - MIN)
+        first = _bus_on_a_tool_thread(brain)["here"]
+        origin = json.loads(seen[-1][0].data)["origin"]["location"]["latLng"]
+        assert (origin["latitude"], origin["longitude"]) == (48.50, -123.50)
+        assert (first["device"], first["fresh"], "why" in first) == ("iphone", False, False)
+        assert 5 * 60 <= first["age_s"] < 5 * 60 + 30
+        # A watch's report 12 minutes old is past the 600 s limit; no phone is connected to ask,
+        # and the receipt of a turn the watch opened says so.
+        _report(brain, "watch", 48.51, -123.51, now - 12 * MIN)
+        emit_event(
+            brain.conn, type="surface.user_intent", ingestion_node="watch",
+            payload={"transcript": "bus", "turn_id": "T2", "channel": "cli_stdin"},
+            correlation={"turn_id": "T2"},
+        )
+        old = _bus_on_a_tool_thread(brain, "T2")["here"]
+        assert (old["device"], old["why"]) == ("watch", NOT_ASKED)
     finally:
         brain.conn.close()
-
-
-def test_a_log_that_cannot_be_read_is_a_tool_error_that_says_to_ask(tmp_path: Path) -> None:
-    """The reader is the runtime's own: a missing log is the phone's report not being readable."""
-    registry = build_default_registry(
-        here_phone=partial(_phone_here, tmp_path / "missing" / "events.db"),
-    )
-    definition = next(d for d in registry.get_definitions() if d.name == "where_am_i")
-    unreadable = r"last location report could not be read.*ask the user"
-    with pytest.raises(ToolError, match=unreadable) as e:
-        definition.handler({}, None)  # type: ignore[arg-type]
-    assert e.value.code == "location_unavailable"
-
-
-def test_a_mac_running_alone_keeps_the_wording_of_adr_0194() -> None:
-    """Without the phone flag the description and the label are the Mac's, as before."""
-    fix = {"lat": 48.46, "lng": -123.31, "accuracy_m": 40.4, "place": "Ring Rd, Saanich"}
-    registry = build_default_registry(
-        transit_api_key="k", transit_places=dict, here_location=lambda: fix,
-    )
-    where = next(d for d in registry.get_definitions() if d.name == "where_am_i")
-    bus = next(d for d in registry.get_definitions() if d.name == "bus")
-    assert "read from this Mac (he carries it)" in where.description
-    assert "his location, read from this Mac, which he carries." in _words(bus)
-    assert "phone" not in where.description + _words(bus)
-    mac_reading = dict(where.handler({}, None))  # type: ignore[arg-type]
-    assert mac_reading["source"] == "this Mac"
 
 
 @pytest.mark.parametrize(("seconds", "words"), [
@@ -371,235 +639,6 @@ def test_a_mac_running_alone_keeps_the_wording_of_adr_0194() -> None:
 def test_the_age_is_told_in_words(seconds: int, words: str) -> None:
     """What the model reads for how old a report is."""
     assert describe_age(seconds) == words
-
-
-# --- one host, two devices (ADR 0212) ---------------------------------------------------------
-
-Opening = tuple[str, str, str]
-"""The row that opens a turn: its event type, its channel, and the node it was written under."""
-
-PHONE_SPOKEN: Opening = ("utterance.received", "phone_voice", "iphone")
-PHONE_TYPED: Opening = ("surface.user_intent", "cli_stdin", "iphone")
-MAC_TYPED: Opening = ("surface.user_intent", "cli_stdin", "mac")
-MAC_SPOKEN: Opening = ("utterance.received", "inherent_ptt", "mac")
-
-
-def _open_turn(conn: sqlite3.Connection, turn_id: str, opening: Opening) -> None:
-    kind, channel, node = opening
-    words = {"transcript": "where am I", "turn_id": turn_id, "channel": channel}
-    emit_event(
-        conn, type=kind, payload=words, correlation={"turn_id": turn_id}, ingestion_node=node,
-    )
-
-
-def _both(log: Path) -> Any:  # noqa: ANN401
-    """The registry of a Mac that also hears a phone: both readers, as the runtime wires them."""
-    registry = build_default_registry(
-        transit_api_key="test-key-not-real", transit_places=dict,
-        here_location=lambda: dict(MAC_FIX), here_phone=partial(_phone_here, log),
-    )
-    return {d.name: d for d in registry.get_definitions()}
-
-
-def _in_turn(conn: sqlite3.Connection, turn_id: str | None, definition: Any,  # noqa: ANN401
-             args: dict[str, Any]) -> dict[str, Any]:
-    """Run a handler as the dispatcher does: its action is live under ``turn_id`` while it runs."""
-    action_id = f"A-{turn_id}"
-    if turn_id is not None:
-        register_live_action(turn_id=turn_id, action_id=action_id)
-    try:
-        return dict(definition.handler(args, SimpleNamespace(conn=conn, action_id=action_id)))
-    finally:
-        if turn_id is not None:
-            release_turn_actions(turn_id)
-
-
-# (opening row of the turn or None for a turn without one, whether a phone has reported)
-# -> (source of the reading, device if the phone's, words the note must carry)
-ORIGINS: dict[str, tuple[Opening | None, bool, tuple[str, str | None, str]]] = {
-    "a phone's spoken turn reads the phone": (PHONE_SPOKEN, True, ("phone", "iphone", "500 m")),
-    "a phone's typed turn reads the phone": (PHONE_TYPED, True, ("phone", "iphone", "500 m")),
-    "any paired device's name is a phone": (
-        ("surface.user_intent", "cli_stdin", "ipad"), True, ("phone", "iphone", "500 m"),
-    ),
-    "the Mac's typed turn reads the Mac, though a phone has reported": (
-        MAC_TYPED, True, ("this Mac", None, ""),
-    ),
-    "the Mac's spoken turn reads the Mac, though a phone has reported": (
-        MAC_SPOKEN, True, ("this Mac", None, ""),
-    ),
-    "a turn with no opening row is the Mac's": (None, True, ("this Mac", None, "")),
-    "a phone's turn before any report falls back to the Mac and says so": (
-        PHONE_SPOKEN, False, ("this Mac", None, "no phone has reported a location yet"),
-    ),
-    "the Mac's turn before any report is just the Mac": (MAC_TYPED, False, ("this Mac", None, "")),
-}
-
-
-@pytest.mark.parametrize("name", list(ORIGINS))
-def test_where_am_i_answers_from_the_device_the_turn_came_from(name: str, tmp_path: Path) -> None:
-    """Opening row and log in, the reading out: the phone's report, the Mac's, or the fallback."""
-    opening, reported, (source, device, words) = ORIGINS[name]
-    conn = open_event_log(tmp_path / "events.db")
-    try:
-        if reported:
-            emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
-                       payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0},
-                       ts_epoch_ms=int(time.time() * 1000) - 5 * MIN)
-        if opening is not None:
-            _open_turn(conn, "T1", opening)
-        got = _in_turn(conn, "T1", _both(tmp_path / "events.db")["where_am_i"], {})
-    finally:
-        conn.close()
-    assert got["source"] == source
-    assert got.get("device") == device
-    if source == "phone":
-        assert (got["lat"], got["lng"], got["accuracy_m"]) == (48.5, -123.5, 90.0)
-        assert 300 <= got["age_s"] <= 330
-        assert "the phone's last report 5 min ago" in got["note"]
-    else:
-        assert (got["lat"], got["lng"], got["place"]) == (MAC_FIX["lat"], MAC_FIX["lng"],
-                                                           MAC_FIX["place"])
-        assert "age_s" not in got
-    assert words in got.get("note", "")
-    assert "phone_unreported" not in got
-
-
-def test_an_action_outside_any_turn_is_the_macs(tmp_path: Path) -> None:
-    """No live turn to ask about: the Mac's own reading, as when a tool is called directly."""
-    conn = open_event_log(tmp_path / "events.db")
-    try:
-        emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
-                   payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0})
-        got = _in_turn(conn, None, _both(tmp_path / "events.db")["where_am_i"], {})
-    finally:
-        conn.close()
-    assert got["source"] == "this Mac"
-
-
-def test_bus_here_starts_from_the_device_the_turn_came_from(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The origin of the request and the label follow the turn: phone, Mac, or the fallback."""
-    seen = serve_routes(monkeypatch)
-    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
-    log = tmp_path / "events.db"
-    conn = open_event_log(log)
-    try:
-        bus = _both(log)["bus"]
-        trip = {"to": "Mayfair Mall"}
-        _open_turn(conn, "TM", MAC_TYPED)
-        _open_turn(conn, "TP", PHONE_SPOKEN)
-        origins = []
-
-        def go(turn: str) -> str:
-            seen.clear()
-            label = str(_in_turn(conn, turn, bus, trip)["from"])
-            latlng = json.loads(seen[0][0].data)["origin"]["location"]["latLng"]
-            origins.append((latlng["latitude"], latlng["longitude"]))
-            return label
-
-        before = go("TP")  # a phone turn, and no phone has reported
-        emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
-                   payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0},
-                   ts_epoch_ms=int(time.time() * 1000) - 12 * MIN)
-        phone = go("TP")
-        mac = go("TM")
-    finally:
-        conn.close()
-    fix = (MAC_FIX["lat"], MAC_FIX["lng"])
-    assert origins == [fix, (48.5, -123.5), fix]
-    assert before == "here (this Mac, no phone has reported yet, Ring Rd, Saanich, ±40 m)"
-    assert phone == "here (the phone's last report 12 min ago, ±90 m)"
-    assert mac == "here (this Mac, Ring Rd, Saanich, ±40 m)"
-
-
-def test_an_old_phone_report_is_flagged_unless_it_is_inside_a_kept_place(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Over 30 min old and outside every kept place: flagged. Inside home: said as home, no flag."""
-    serve_routes(monkeypatch)
-    monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
-    log, memory = tmp_path / "events.db", tmp_path / "memory.db"
-    conn = open_event_log(log)
-    payload = {"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0, "place": "Ring Rd, Saanich"}
-    asked = {"to": "Mayfair Mall"}
-
-    def report(minutes_ago: int) -> None:
-        emit_event(conn, type="phone.location_observed", ingestion_node="iphone", payload=payload,
-                   ts_epoch_ms=int(time.time() * 1000) - minutes_ago * MIN)
-
-    def ask() -> dict[str, Any]:
-        registry = build_default_registry(
-            transit_api_key="test-key-not-real", transit_places=dict, memory_db_path=memory,
-            here_location=lambda: dict(MAC_FIX), here_phone=partial(_phone_here, log),
-        )
-        bus = next(d for d in registry.get_definitions() if d.name == "bus")
-        return _in_turn(conn, "TP", bus, asked)
-
-    try:
-        _open_turn(conn, "TP", PHONE_SPOKEN)
-        report(150)
-        outside = ask()  # no kept place yet
-        place_state.save(memory, name="home", lat=48.5003, lng=-123.5, role="home", origin="user")
-        inside = ask()
-        report(12)
-        fresh = ask()
-    finally:
-        conn.close()
-    assert 150 <= outside["from_age_min"] <= 151
-    assert "2 h 30 min" in outside["warning"]
-    assert "Ring Rd, Saanich" in outside["warning"]
-    assert "ask where he is" in outside["warning"]
-    assert "from_age_min" not in inside
-    assert "warning" not in inside
-    assert inside["from"] == (
-        "here (the phone's last report 2 h 30 min ago, at home, still there since then, ±90 m)"
-    )
-    assert "warning" not in fresh
-    assert fresh["from"] == "here (the phone's last report 12 min ago, at home, ±90 m)"
-
-
-def test_a_brain_reads_the_phone_for_every_turn(tmp_path: Path) -> None:
-    """Without a Mac reader, as on a brain, a Mac-looking turn and an unknown one get the phone."""
-    log = tmp_path / "events.db"
-    conn = open_event_log(log)
-    registry = build_default_registry(here_phone=partial(_phone_here, log))
-    where = next(d for d in registry.get_definitions() if d.name == "where_am_i")
-    try:
-        for turn, opening in (("T1", MAC_TYPED), ("T2", PHONE_SPOKEN), ("T3", None)):
-            if opening is not None:
-                _open_turn(conn, turn, opening)
-            with pytest.raises(ToolError, match="no phone has reported a location"):
-                _in_turn(conn, turn, where, {})
-        emit_event(conn, type="phone.location_observed", ingestion_node="iphone",
-                   payload={"lat": 48.5, "lng": -123.5, "accuracy_m": 90.0})
-        _open_turn(conn, "T4", MAC_TYPED)
-        got = _in_turn(conn, "T4", where, {})
-    finally:
-        conn.close()
-    assert (got["source"], got["device"]) == ("phone", "iphone")
-    assert "Mac" not in where.description
-
-
-def test_the_descriptions_name_the_sources_the_host_has(tmp_path: Path) -> None:
-    """Both devices: both are named, briefly; one device: only that one, as before."""
-    log = tmp_path / "events.db"
-    both = _both(log)
-    for definition in (both["where_am_i"], both["bus"]):
-        text = _words(definition)
-        assert "phone" in text
-        assert "this Mac" in text
-    assert "500 m" in both["where_am_i"].description
-    phone_only = build_default_registry(
-        transit_api_key="k", transit_places=dict, here_phone=partial(_phone_here, log),
-    )
-    for definition in phone_only.get_definitions():
-        if definition.name in {"where_am_i", "bus"}:
-            assert "Mac" not in _words(definition)
-    assert len(both["where_am_i"].description) < 1.3 * len(
-        next(d for d in phone_only.get_definitions() if d.name == "where_am_i").description,
-    )
 
 
 # --- the routes a phone uses write its name ---------------------------------------------------

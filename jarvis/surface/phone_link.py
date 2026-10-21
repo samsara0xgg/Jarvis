@@ -304,13 +304,18 @@ class PhoneHub:
         """Whether ``device`` has a live socket now; the push sender reads it (ADR 0210)."""
         return device in self.live
 
-    def ask_location(self, request_id: str) -> int:
-        """Ask every connected phone for a fix now (``locate`` frame); how many were asked.
+    def ask_location(self, request_id: str, device: str | None = None) -> int:
+        """Ask ``device`` (every connected phone when ``None``) for a fix now; how many were asked.
+
+        The ``locate`` frame goes to that device's socket only (ADR 0322).
 
         Callable from any thread: ``where_am_i`` runs on a worker thread (ADR 0281).
         """
         frame = json.dumps({"type": "locate", "request_id": request_id})
-        return sum(conn.queue_threadsafe(frame) for conn in list(self.live.values()))
+        return sum(
+            conn.queue_threadsafe(frame) for name, conn in list(self.live.items())
+            if device is None or name == device
+        )
 
     def word_hooks(
         self, heard_elsewhere: Callable[[str, str], bool] | None = None,
@@ -586,7 +591,7 @@ def _located(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
         return
     if error is not None:
         if waits is not None:
-            waits.deliver(request_id, Refused(error))
+            waits.deliver(request_id, Refused(error, conn.device))
         return
     payload = {
         "lat": frame.get("lat"), "lng": frame.get("lng"), "accuracy_m": frame.get("accuracy_m"),
@@ -607,7 +612,7 @@ def _located(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
     if not ack["ok"]:
         conn.error("bad_located", f"the fix was refused: {ack.get('code')}")
         if waits is not None:
-            waits.deliver(request_id, Refused("unavailable"))
+            waits.deliver(request_id, Refused("unavailable", conn.device))
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,6 @@ again; what did come is returned with the reason.
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
@@ -29,11 +28,12 @@ from jarvis.state.phone_location import fixes_since
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
     from datetime import tzinfo
     from pathlib import Path
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.here import HereReading
     from jarvis.state.phone_day import Span
 
 CELL_M: Final = 50.0
@@ -144,26 +144,23 @@ class Surroundings:
 
     def __init__(
         self, api_key: str | None, cap_usd: float, memory_db: Path | None, zone: tzinfo,
-        clock: Callable[[], float] = time.time,
     ) -> None:
         """``api_key`` None is allowed: a lookup then returns the free parts and says why not."""
         self._key = api_key
         self._cap = cap_usd
         self._memory_db = memory_db
         self._zone = zone
-        self._clock = clock
         self._held: list[_Held] = []
         self._lock = threading.Lock()
 
-    def _find(self, lat: float, lng: float) -> _Held | None:
-        now = self._clock()
+    def _find(self, lat: float, lng: float, now: float) -> _Held | None:
         with self._lock:
             self._held = [h for h in self._held if now - h.at < TTL_S]
             near = [h for h in self._held if metres((lat, lng), (h.lat, h.lng)) <= CELL_M]
             return min(near, key=lambda h: metres((lat, lng), (h.lat, h.lng)), default=None)
 
-    def _hold(self, lat: float, lng: float) -> _Held:
-        held = _Held(lat, lng, self._clock())
+    def _hold(self, lat: float, lng: float, now: float) -> _Held:
+        held = _Held(lat, lng, now)
         with self._lock:
             self._held = [*self._held[-(_HELD - 1):], held]
         return held
@@ -179,7 +176,7 @@ class Surroundings:
 
     def _street(self, held: _Held, ctx: ToolContext, meter: list[str]) -> None:
         key = self._key_or_raise()
-        maps_spend.guard(ctx.conn, self._cap)
+        maps_spend.guard(ctx.conn, self._cap, ctx.clock.now())
         try:
             held.street = geocode.reverse(held.lat, held.lng, key)
         except geocode.Unplaced as exc:
@@ -192,7 +189,7 @@ class Surroundings:
 
     def _places(self, held: _Held, ctx: ToolContext, meter: list[str]) -> None:
         key = self._key_or_raise()
-        maps_spend.guard(ctx.conn, self._cap)
+        maps_spend.guard(ctx.conn, self._cap, ctx.clock.now())
         found = places_api.nearby_around(
             key,
             {
@@ -203,11 +200,12 @@ class Surroundings:
         )
         held.nearby = [one for raw in found if (one := _nearby(raw)) is not None]
 
-    def lookup(self, ctx: ToolContext, fix: Mapping[str, Any]) -> dict[str, Any]:
+    def lookup(self, ctx: ToolContext, fix: HereReading) -> dict[str, Any]:
         """Everything around the fix; what could not be got is named in ``unavailable``."""
-        point = (float(fix["lat"]), float(fix["lng"]))
-        held = self._find(*point) or self._hold(*point)
-        looked_up = describe_age(int(self._clock() - held.at))
+        point = (fix.lat, fix.lng)
+        now = ctx.clock.time()
+        held = self._find(*point, now) or self._hold(*point, now)
+        looked_up = describe_age(int(now - held.at))
         unavailable: list[str] = []
         meter: list[str] = []
         try:
@@ -222,7 +220,7 @@ class Surroundings:
                     unavailable.append(str(exc))
         finally:
             maps_spend.record(ctx, meter)
-        now_ms = int(self._clock() * 1000)
+        now_ms = int(now * 1000)
         kept_all = [] if self._memory_db is None else places.read_kept(self._memory_db)
         seen = places.read_stays(ctx.conn, now_ms, self._zone)
         counted = places.tally(seen, kept_all, now_ms, self._zone)
@@ -242,7 +240,7 @@ class Surroundings:
                 out["unkept_spot"] = places.fact_view(spot.facts)
         if held.nearby is not None:
             out["candidates"], out["nearby"] = _ranked(
-                held.nearby, point, float(fix["accuracy_m"]), seen,
+                held.nearby, point, fix.accuracy_m, seen,
             )
         if held.street is not None or held.nearby is not None:
             out["looked_up"] = looked_up if looked_up != "under a minute" else "just now"
@@ -262,7 +260,7 @@ class Surroundings:
         """
         kept_all = [] if self._memory_db is None else places.read_kept(self._memory_db)
         inside = places.containing(kept_all, *point)
-        held = self._find(*point)
+        held = self._find(*point, now_ms / 1000)
         street = None if held is None or not held.street else (
             held.street.get("intersection") or held.street.get("address")
             or held.street.get("street")

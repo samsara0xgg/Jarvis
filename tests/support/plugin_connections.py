@@ -11,6 +11,7 @@ import pytest
 from jarvis.execution.tools import ToolContext
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.state.event_log import emit_event
+from tests.support.clock import FakeClock
 from tests.support.net import free_port
 from tests.support.tool_world import ToolWorld
 
@@ -93,6 +94,6 @@ def plugin_tool_request(
     )
     service.request_from_tool(
         {"plugin_id": plugin, "continue_task": True, "purpose": "Read my echo task"},
-        ToolContext(fx.conn, fx.paths, "A1"),
+        ToolContext(fx.conn, fx.paths, "A1", FakeClock()),
     )
     return str(service.read()["request"]["id"])

@@ -10,7 +10,6 @@ import json
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -21,9 +20,13 @@ from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.state import places
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.projections import CLARIFICATION_EVENT_TYPES
+from tests.support.clock import FakeClock
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from jarvis.execution.tools import ToolContext
 
 ZONE = ZoneInfo("America/Vancouver")
 NOW = datetime(2026, 10, 6, 17, 0, tzinfo=ZONE)
@@ -87,9 +90,9 @@ class World:
         """The TRANSIT request bodies, in order."""
         return [b for b in self.bodies if b["travelMode"] == "TRANSIT"]
 
-    def ctx(self) -> Any:  # noqa: ANN401 - the planner reads only the connection and the id.
+    def ctx(self) -> ToolContext:
         """The context a job hands the planner."""
-        return SimpleNamespace(conn=self.log, runtime_paths=None, action_id="plan-leg")
+        return tool_context(self.log, "plan-leg", clock=FakeClock(NOW))
 
     def leg_planner(self, cap: float = 10.0) -> Any:  # noqa: ANN401
         """``plan_leg`` over the kept Gym and Corner Cafe."""
@@ -122,7 +125,6 @@ def _world(
         return io.BytesIO(json.dumps(reply).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr(transit_tool, "_now", lambda: NOW)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     return world
 
@@ -204,7 +206,7 @@ def test_the_chat_call_on_today_still_shows_its_card_and_another_day_does_not(
     """`bus` with arrive_by today keeps the card; with day=<later> no card and no pin list."""
     world = _world(tmp_path, monkeypatch, [_bus("26", "2026-10-06", "17:30")])
     registry = build_default_registry(
-        transit_api_key=KEY, transit_places=lambda: SAVED, here_location=None,
+        transit_api_key=KEY, transit_places=lambda: SAVED, clock=FakeClock(NOW),
     )
     (bus,) = (d for d in registry.get_definitions() if d.name == "bus")
 
@@ -261,8 +263,7 @@ def test_a_time_gone_a_far_day_or_a_muddled_ask_is_a_clear_error_before_any_requ
     """Each is ToolError invalid_arguments, raised before Google is asked."""
     world = _world(tmp_path, monkeypatch, BUSES)
     plan = transit_tool.build_planner(
-        KEY, lambda: SAVED, None, phone_here=None, offers=transit_tool.TransitOffers(),
-        bus_live=None, quiet=True,
+        KEY, lambda: SAVED, offers=transit_tool.TransitOffers(), bus_live=None, quiet=True,
     )
     assert plan is not None
     with pytest.raises(ToolError) as caught:

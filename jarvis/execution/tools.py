@@ -47,7 +47,6 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
@@ -66,6 +65,7 @@ from jarvis.shared import (
     lang,
 )
 from jarvis.shared.action_admission import action_admission_guard
+from jarvis.shared.clock import Clock, SystemClock
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.shared.receipts import FailureKind, Receipt, derive, failure_kind, only_reads
 from jarvis.shared.text import truncate_utf8
@@ -87,7 +87,6 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Sequence
     from datetime import time as clock_time
-    from datetime import tzinfo
 
     from jarvis.execution.around import Surroundings
     from jarvis.execution.bus_tool import RideControl
@@ -98,6 +97,7 @@ if TYPE_CHECKING:
     from jarvis.execution.weather_tool import WeatherRequest
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
+    from jarvis.shared.here import Here, HereSource
     from jarvis.state.voice_settings import VoiceSettings
 
 
@@ -284,8 +284,12 @@ class ToolContext:
     conn: sqlite3.Connection
     runtime_paths: RuntimePathsLike
     action_id: str
+    clock: Clock
+    """The one clock (ADR 0322): a tool takes the time of day from here and nowhere else."""
     target_entity_ref: str | None = None
     """The ref the Pre-action Gate trusted for a ``requires_entity`` tool; ``None`` otherwise."""
+    here: Here | None = None
+    """Where he is for this call (ADR 0322); ``None`` on a registry built without a source."""
 
 
 class Receipted(dict[str, Any]):
@@ -484,6 +488,8 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
     lifecycle: ActionLifecycle,
     *,
     running_event_uid: str,
+    clock: Clock,
+    here: HereSource | None,
 ) -> RawResult:
     """Run a flat tool and write its one terminal, ``action.result_observed``.
 
@@ -503,8 +509,11 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
     payload: dict[str, Any] = {}
     tool_output = ""
     receipt: Receipt | None = None
+    ctx = ToolContext(
+        conn, runtime_paths, action_id, clock, action_request.target_entity_ref,
+        None if here is None else here.bind(action_request.turn_id),
+    )
     try:
-        ctx = ToolContext(conn, runtime_paths, action_id, action_request.target_entity_ref)
         returned = tool_def.handler(arguments, ctx)
         if isinstance(returned, Receipted):
             receipt = returned.receipt
@@ -528,6 +537,8 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
         receipt = derive(tool_def.name, arguments, reads=reads, code=error, failure=kind)
     elif receipt is None:
         receipt = derive(tool_def.name, arguments, reads=reads)
+    if ctx.here is not None and ctx.here.used is not None:
+        receipt = replace(receipt, here=ctx.here.used)  # the dispatcher's, never the tool's
     semantics: ResultSemantics = "observation" if error is None else "error"
     event_payload: dict[str, Any] = {
         "action_id": action_id,
@@ -613,14 +624,14 @@ _OUTPUT_TAIL_BYTES: Final[int] = 2048
     risk_level="L0",
     read_only=True,
 )
-def get_current_time(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+def get_current_time(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """Read the system clock (spec §3.5.4) for Tier 0.
 
     The payload carries the machine keys ``iso`` / ``date`` / ``time`` /
     ``weekday`` (English) plus the TTS-ready ``spoken_time`` / ``spoken_date``,
     in the language setting, that the Tier 0 replies read.
     """
-    now = datetime.now().astimezone()
+    now = ctx.clock.now()
     return {
         "iso": now.isoformat(timespec="seconds"),
         "date": now.strftime("%Y-%m-%d"),
@@ -828,7 +839,7 @@ def dismiss_card(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     slot = PendingConfirmations.from_events(iter_events_of_types(ctx.conn, _CARD_TYPES)).slot
     turn_id = _turn_of(ctx.action_id)
     late = False
-    if slot is not None and slot.is_live(int(time.time() * 1000)):
+    if slot is not None and slot.is_live(int(ctx.clock.time() * 1000)):
         try:
             answer_confirmation_once(
                 ctx.conn,
@@ -3063,7 +3074,7 @@ def _make_screen_look(
         artifacts_dir = ctx.runtime_paths.artifacts_root / SCREEN_ARTIFACTS_DIRNAME
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         # `action_id` makes this collision-free; the timestamp prefix is for chronological `ls`.
-        image_path = artifacts_dir / f"{int(time.time() * 1000)}_{ctx.action_id}.png"
+        image_path = artifacts_dir / f"{int(ctx.clock.time() * 1000)}_{ctx.action_id}.png"
         if device_link is None:
             _capture_screen(image_path, max_width_px)
         else:
@@ -3139,8 +3150,8 @@ def make_screen_capture(max_width_px: int) -> Tool:
 # --- ToolRegistry ------------------------------------------------------------
 
 
-def _leased(action_request: ActionRequest) -> bool:
-    """Whether the request carries a lease from Allen that covers this tool and target now."""
+def _leased(action_request: ActionRequest, now_ms: int) -> bool:
+    """Whether Allen's lease covers this request's tool and target and outlives ``now_ms``."""
     lease = action_request.authorization_lease
     if lease is None:
         return False
@@ -3149,7 +3160,7 @@ def _leased(action_request: ActionRequest) -> bool:
         lease["granted_by"] == "allen"
         and action_request.tool_name in lease["allowed_tools"]
         and (not lease["allowed_targets"] if target is None else target in lease["allowed_targets"])
-        and lease["expires_at_ms"] > int(time.time() * 1000)
+        and lease["expires_at_ms"] > now_ms
     )
 
 
@@ -3181,13 +3192,28 @@ class ToolRegistry:
     rationale as `ActionLifecycle`.
     """
 
-    def __init__(self, *, confirmation_dispatch_outbox: bool = False) -> None:
-        """Construct an empty registry (no tools yet)."""
+    def __init__(
+        self, *, confirmation_dispatch_outbox: bool = False, clock: Clock | None = None,
+        here: HereSource | None = None,
+    ) -> None:
+        """Construct an empty registry (no tools yet).
+
+        ``clock`` and ``here`` are what every call's context carries (ADR 0322); the runtime
+        passes its one clock and its one Here source. A hand-built registry gets the real clock
+        and no Here.
+        """
+        self._clock: Clock = clock or SystemClock()
+        self._here = here
         self._tools: dict[str, Tool] = {}
         self._lock = threading.RLock()
         self._confirmation_dispatch_outbox = confirmation_dispatch_outbox
         self._device_catalogue: dict[str, tuple[Tool, str]] = {}
         self._offered_device_tools: frozenset[str] = frozenset()
+
+    @property
+    def clock(self) -> Clock:
+        """The clock every call's context carries."""
+        return self._clock
 
     def register(self, tool_def: Tool) -> None:
         """Register a Tool. Raises DuplicateToolError on re-register.
@@ -3306,7 +3332,9 @@ class ToolRegistry:
         return or its raised error into the one `RawResult`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
-        if tool_def.requires_confirmation and not _leased(action_request):
+        if tool_def.requires_confirmation and not _leased(
+            action_request, int(self._clock.time() * 1000),
+        ):
             tool_def = replace(tool_def, handler=_refuse_unleased)  # ADR 0321, I7
         dispatched_event = self._emit_dispatched(action_request, conn, lifecycle)
         return self._run_inline(
@@ -3415,6 +3443,7 @@ class ToolRegistry:
             return _observe(
                 tool_def, action_request, conn, runtime_paths, lifecycle,
                 running_event_uid=running_event.event_uid,
+                clock=self._clock, here=self._here,
             )
         finally:
             _clear_running_event_uid(conn, action_request.action_id)
@@ -3604,15 +3633,13 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     transit_api_key: str | None = None,
     transit_places: Callable[[], Mapping[str, str]] | None = None,
     transit_offers: TransitOffers | None = None,
-    here_location: Callable[[], Mapping[str, Any]] | None = None,
-    here_phone: Callable[[], Mapping[str, Any]] | None = None,
-    locate_phone: Callable[[], Mapping[str, Any]] | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
     maps_monthly_usd: float = 10.0,
     surroundings: Surroundings | None = None,
-    local_zone: tzinfo | None = None,
+    clock: Clock | None = None,
+    here: HereSource | None = None,
     plan_day_ends: clock_time | None = None,
     ring_before_min: int = 60,
 ) -> ToolRegistry:
@@ -3697,21 +3724,15 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             menu altogether without a `ride_control`).
         transit_places: reads the kept `home` and `school` for `bus` at each call (an
             address or `lat,lng`; ADR 0234).
-        local_zone: the zone `places` counts days in (`None`: the machine's).
+        clock: ADR 0322 — the one clock every call's context carries, and the zone `places`
+            counts days in (`None`: the real clock in the machine's zone).
+        here: ADR 0322 — the one source of where he is; gives `bus`, `map_search`, `weather`,
+            `save_place` and `where_am_i` their position and registers `where_am_i`. `None`
+            leaves `where_am_i` off and those tools unable to read a position.
         plan_day_ends: `day_plan.day_ends`, where `plan` counts the day's time left (`None`: 23:30).
         ring_before_min: `commitments.remind_before_min` — how long before it a thing he goes to
             rings, when `schedule` adds one and `remind` is left out.
         transit_offers: where `bus` leaves its options, for the chat card (ADR 0205) and `pin`.
-        here_location: ADR 0194 — one fresh read of this Mac's location (`lat`, `lng`,
-            `accuracy_m`, optional `place`); gives `bus` its `here` and registers
-            `where_am_i`. `None` leaves both off unless `here_phone` is given.
-        here_phone: ADR 0198 — one read of the phone's last report (it also returns `age_s`
-            and `device`). Without `here_location` (a brain) it is every turn's `here`; with
-            both, a turn a paired phone opened gets it and the Mac's own turn gets the Mac's
-            (ADR 0212). Both tools say which they read.
-        locate_phone: ADR 0281 — like `here_phone` for `where_am_i` alone, but asks the phone for
-            a fresh fix first and falls back to its last report (`fresh`, `not_fresh`).
-            `None`: `where_am_i` reads `here_phone`.
         bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
             a route `bus` is asked about.
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
@@ -3723,7 +3744,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         highlight_marker: ADR 0235 — what the runtime does to mark or unmark an item of a day's
             timeline as a highlight; registers `mark_highlight`. `None` leaves it off the menu.
     """
-    registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
+    registry = ToolRegistry(
+        confirmation_dispatch_outbox=confirmation_dispatch_outbox, clock=clock, here=here,
+    )
     # ADR 0225: a brain builds every device tool, whatever its own settings say, and keeps them
     # as a catalogue; `offer_device_tools` puts on the menu those its terminals declare.
     device_catalogue: dict[str, tuple[Tool, str]] = {}
@@ -3815,23 +3838,21 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         register_device_tool(night_tool)  # a brain's run is its terminal's
     found_places = PlaceBook()  # what `map_search` found, so `bus` can name a place_id (ADR 0283)
     for conversation_tool in (
-        *build_keep_tools(memory_db_path, local_zone),
-        *build_schedule_tool(local_zone, ring_before_min),
-        *build_plan_tool(local_zone, day_ends=plan_day_ends),
+        *build_keep_tools(memory_db_path),
+        *build_schedule_tool(ring_before_min),
+        *build_plan_tool(day_ends=plan_day_ends),
         *build_voice_tool(voice_settings),
-        *build_weather_tool(weather_lookup, here_location, here_phone),
+        *build_weather_tool(weather_lookup, here),
         *build_picture_tool(vision_client, memory_db_path),
-        *(() if memory_db_path is None else build_place_tools(memory_db_path, local_zone)),
+        *(() if memory_db_path is None else build_place_tools(memory_db_path)),
         *build_bus_tool(
-            transit_api_key, transit_places or dict, here_location, phone_here=here_phone,
+            transit_api_key, transit_places or dict,
             offers=transit_offers, bus_live=bus_live, control=ride_control,
             kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
             cap_usd=maps_monthly_usd, book=found_places,
         ),
-        *build_map_tool(
-            transit_api_key, maps_monthly_usd, found_places, here_location, phone_here=here_phone,
-        ),
-        *build_where_tool(here_location, locate_phone or here_phone, surroundings),
+        *build_map_tool(transit_api_key, maps_monthly_usd, found_places),
+        *build_where_tool(here, surroundings),
         *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)

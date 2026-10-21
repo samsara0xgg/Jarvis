@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
 
 _DESCRIPTION: Final = (
     "Use for any question about Allen's email: finding, summarizing, what needs a reply, what a "
@@ -76,10 +77,6 @@ class _Held:
     query: str = ""
     tokens: dict[int, str | None] = field(default_factory=dict)
     last: int | None = None
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _cut(text: str, limit: int) -> str:
@@ -177,18 +174,14 @@ class _Mail:
         unread: Callable[[], Mapping[str, Any]],
         gmail: Callable[[str, Mapping[str, Any]], dict[str, Any]],
         text: Callable[[str], str],
-        zone: tzinfo,
-        clock: Callable[[], datetime],
     ) -> None:
         self._unread = unread
         self._gmail = gmail
         self._text = text
-        self._zone = zone
-        self._clock = clock
         self._lock = threading.Lock()
         self._held = _Held()
 
-    def run(self, args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Dispatch on the arguments; a Gmail failure is worded for the model."""
         query, read = _argument(args, "query"), _argument(args, "read")
         page = _page(args)
@@ -200,8 +193,8 @@ class _Mail:
             raise ToolError(msg, code="invalid_arguments")
         try:
             if read:
-                return self._read(read)
-            return self._search(query, page) if query else self._overview()
+                return self._read(read, ctx.clock)
+            return self._search(query, page, ctx.clock) if query else self._overview(ctx.clock)
         except LookupError as exc:  # the home's "not connected".
             raise _failed(exc) from exc
         except ToolError as exc:
@@ -209,15 +202,15 @@ class _Mail:
                 raise
             raise _failed(exc) from exc
 
-    def _overview(self) -> dict[str, Any]:
+    def _overview(self, clock: Clock) -> dict[str, Any]:
         """``Home.mail``'s unread list (reply marks and ratings are its) as compact rows."""
         letters = list(self._unread().get("unread") or [])
         kept = [one for one in letters if not one.get("junk")]
-        now, rows = self._clock(), []
+        now, rows = clock.now(), []
         for one in kept:
             row = {k: one[k] for k in ("id", "from", "subject") if one.get(k) is not None}
             if at := _iso(one.get("received")):
-                row["when"] = _when(at, now, self._zone)
+                row["when"] = _when(at, now, clock.zone)
             rows.append({**row, **{
                 k: one[k] for k in ("reply", "importance", "category") if one.get(k) is not None
             }})
@@ -228,7 +221,7 @@ class _Mail:
             summary += f" ({', '.join(asking[:3])})"
         return {"summary": f"{summary}.", "unread": rows, "junk_left_out": len(letters) - len(kept)}
 
-    def _search(self, query: str, page: int) -> dict[str, Any]:
+    def _search(self, query: str, page: int, clock: Clock) -> dict[str, Any]:
         """Page ``page`` of ``_PAGE`` results, each with its headers and snippet read in parallel.
 
         Gmail's page tokens are held for the last query. A page not reached yet is walked to with
@@ -260,8 +253,8 @@ class _Mail:
             end = page - 1 if last is None else last
             msg = f'There is no page {page} of "{query}"; its results end at page {end}.'
             return {"summary": msg, "messages": [], "more": False}
-        now = self._clock()
-        rows = [self._row(head, now) for head in self._heads(ids)]
+        now = clock.now()
+        rows = [self._row(head, now, clock.zone) for head in self._heads(ids)]
         more = last is None or page < last
         if not rows:
             return {"summary": f'No messages match "{query}".', "messages": [], "more": False}
@@ -285,7 +278,7 @@ class _Mail:
                 lambda one: self._gmail("gmail_get", {"messageId": one, "format": "metadata"}), ids,
             ))
 
-    def _row(self, head: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+    def _row(self, head: Mapping[str, Any], now: datetime, zone: tzinfo) -> dict[str, Any]:
         name, address = parseaddr(str(head.get("from") or ""))
         row = {
             "id": str(head["id"]),
@@ -293,13 +286,13 @@ class _Mail:
             "subject": _cut(str(head.get("subject") or ""), _SUBJECT_CHARS),
         }
         if at := _dated(head.get("date")):
-            row["when"] = _when(at, now, self._zone)
+            row["when"] = _when(at, now, zone)
         # Gmail's snippet is HTML-escaped ("don&#39;t").
         if snippet := _cut(html.unescape(str(head.get("snippet") or "")), _SNIPPET_CHARS):
             row["snippet"] = snippet
         return row
 
-    def _read(self, message_id: str) -> dict[str, Any]:
+    def _read(self, message_id: str, clock: Clock) -> dict[str, Any]:
         """One message whole: headers, the body as clean text, attachment names."""
         try:
             message = self._gmail("gmail_get", {"messageId": message_id, "format": "full"})
@@ -322,7 +315,7 @@ class _Mail:
         ]
         files = [one for one in files if one][:_ATTACHMENTS_SHOWN]
         at = _dated(message.get("date"))
-        when = _when(at, self._clock(), self._zone) if at else ""
+        when = _when(at, clock.now(), clock.zone) if at else ""
         summary = f"From {name or address or 'an unknown sender'}{f', {when}' if when else ''}: "
         summary += f"{_cut(subject, _SUBJECT_CHARS) or '(no subject)'}."
         if files:
@@ -331,7 +324,7 @@ class _Mail:
             "to": str(message.get("to") or ""),
             "when": when,
             # The ISO form is for the mail card (ADR 0063), which parses it; he hears `when`.
-            "at": at.astimezone(self._zone).isoformat(timespec="minutes") if at else "",
+            "at": at.astimezone(clock.zone).isoformat(timespec="minutes") if at else "",
             "attachments": files,
         }
         return {
@@ -349,8 +342,6 @@ def build_mail_tool(
     unread: Callable[[], Mapping[str, Any]],
     gmail: Callable[[str, Mapping[str, Any]], dict[str, Any]],
     text: Callable[[str], str],
-    zone: tzinfo,
-    clock: Callable[[], datetime] = _now,
 ) -> tuple[Tool, ...]:
     """``mail`` over ``Home``: its unread list, its ``gmail`` calls and the HTML-to-text read.
 
@@ -361,7 +352,7 @@ def build_mail_tool(
             name="mail",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Mail(unread, gmail, text, zone, clock).run,
+            handler=_Mail(unread, gmail, text).run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,

@@ -20,15 +20,15 @@ import io
 import json
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from jarvis import runtime as runtime_module
-from jarvis.execution import map_tool, maps_spend, places_api, transit_tool
+from jarvis.execution import maps_spend, places_api, transit_tool
 from jarvis.execution.tools import (
     ToolError,
     build_default_registry,
@@ -36,9 +36,13 @@ from jarvis.execution.tools import (
     release_turn_actions,
 )
 from jarvis.state.event_log import open_event_log
+from jarvis.state.phone_location import NoPhoneReport
 from jarvis.surface.cli import emit_surface_user_intent
+from tests.support.clock import FakeClock
+from tests.support.here import FixedHere, reading
 from tests.support.routine import drive_streaming_turn, logged_payloads
 from tests.support.spoken import SpokenPeer, spoken_runtime
+from tests.support.tool_context import tool_context
 from tests.support.transit import HANDBUILT
 
 if TYPE_CHECKING:
@@ -47,13 +51,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 FAKE_KEY = "test-key-not-real"
+NEVER = FixedHere(error=NoPhoneReport("no phone has reported a location"))
 ZONE = ZoneInfo("America/Vancouver")
 NOW = datetime(2026, 10, 12, 17, 0, tzinfo=ZONE)  # a Monday
+CLOCK = FakeClock(NOW)
 # The phone's last report, five minutes old, and a place 0.003 degrees (about 334 m) north of it.
-PHONE: dict[str, Any] = {
-    "lat": 48.4284, "lng": -123.3656, "accuracy_m": 30.0, "place": "Government St",
-    "age_s": 300, "device": "iphone",
-}
+PHONE = reading(
+    48.4284, -123.3656, 30.0, age_s=300, device="iphone", place="Government St",
+)
+PHONE_HERE = FixedHere(PHONE)
 WEEK = [
     f"{day}: 9:00 AM - 5:00 PM"
     for day in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -66,7 +72,7 @@ def _place(n: int, *, lat_off: float = 0.003, with_extras: bool = True) -> dict[
         "id": f"ChIJplace{n}",
         "displayName": {"text": f"Ramen Shop {n}", "languageCode": "en"},
         "formattedAddress": f"{n} Fort St, Victoria, BC V8W 1E5, Canada",
-        "location": {"latitude": PHONE["lat"] + lat_off * n, "longitude": PHONE["lng"]},
+        "location": {"latitude": PHONE.lat + lat_off * n, "longitude": PHONE.lng},
         "googleMapsUri": f"https://maps.google.com/?cid={n}",
     }
     if with_extras:
@@ -165,8 +171,6 @@ def google(monkeypatch: pytest.MonkeyPatch) -> Google:
     """Google."""
     stub = Google()
     monkeypatch.setattr(urllib.request, "urlopen", stub)
-    monkeypatch.setattr(map_tool, "_now", lambda: NOW)
-    monkeypatch.setattr(transit_tool, "_now", lambda: NOW)
     return stub
 
 
@@ -190,13 +194,14 @@ def _tools(
     log: sqlite3.Connection,
     *,
     cap: float = 10.0,
-    phone: Callable[[], dict[str, Any]] | None = lambda: dict(PHONE),
+    phone: FixedHere | None = PHONE_HERE,
 ) -> Callable[..., dict[str, Any]]:
     """A registry as the brain builds it; ``call(tool, args, turn=...)`` runs one handler."""
     registry = build_default_registry(
         transit_api_key=FAKE_KEY,
         transit_places=lambda: {"home": "48.48,-123.38"},
-        here_phone=phone,
+        clock=CLOCK,
+        here=phone,
         maps_monthly_usd=cap,
     )
     handlers = {d.name: d.handler for d in registry.get_definitions()}
@@ -208,8 +213,10 @@ def _tools(
         if turn:
             register_live_action(turn_id=turn, action_id=action_id)
         try:
-            ctx = SimpleNamespace(conn=log, action_id=action_id)
-            return dict(handlers[tool](args, ctx))  # type: ignore[arg-type]
+            ctx = tool_context(
+                log, action_id, clock=CLOCK, here=None if phone is None else phone.bind(turn),
+            )
+            return dict(handlers[tool](args, ctx))
         finally:
             if turn:
                 release_turn_actions(turn)
@@ -235,7 +242,7 @@ def _costs(log: sqlite3.Connection) -> list[tuple[str, float]]:
 def _spend(log: sqlite3.Connection, usd: float) -> None:
     """Earlier map spend in the log: one row."""
     maps_spend.PRICE_USD["test.spend"] = usd
-    maps_spend.record(SimpleNamespace(conn=log, action_id="A-seed"), ["test.spend"])  # type: ignore[arg-type]
+    maps_spend.record(tool_context(log, "A-seed", clock=CLOCK), ["test.spend"])
 
 
 @pytest.fixture(autouse=True)
@@ -267,8 +274,8 @@ def test_the_default_is_a_text_search_near_the_phones_last_report(
     ]
     assert _body(request) == {
         "textQuery": "ramen", "maxResultCount": 5, "languageCode": "en",
-        "locationBias": {"circle": {"center": {"latitude": PHONE["lat"],
-                                                "longitude": PHONE["lng"]}, "radius": 2000}},
+        "locationBias": {"circle": {"center": {"latitude": PHONE.lat,
+                                                "longitude": PHONE.lng}, "radius": 2000}},
     }
     first = out["places"][0]
     assert first == {
@@ -311,8 +318,8 @@ def test_a_bare_type_is_a_nearby_search_nearest_first(
     assert _body(request) == {
         "includedTypes": ["pharmacy"], "maxResultCount": 3, "languageCode": "en",
         "rankPreference": "DISTANCE",
-        "locationRestriction": {"circle": {"center": {"latitude": PHONE["lat"],
-                                                       "longitude": PHONE["lng"]}, "radius": 800}},
+        "locationRestriction": {"circle": {"center": {"latitude": PHONE.lat,
+                                                       "longitude": PHONE.lng}, "radius": 800}},
     }
     assert out["places"][0]["name"] == "Ramen Shop 1"
 
@@ -333,12 +340,7 @@ def test_an_area_search_works_when_no_phone_has_reported_but_has_no_distances(
     log: sqlite3.Connection,
 ) -> None:
     """An area search works when no phone has reported but has no distances."""
-    def never() -> dict[str, Any]:
-        """Never."""
-        msg = "no phone has reported a location"
-        raise LookupError(msg)
-
-    out = _tools(log, phone=never)("map_search", {"query": "ramen", "area": "Fairfield"})
+    out = _tools(log, phone=NEVER)("map_search", {"query": "ramen", "area": "Fairfield"})
     assert "distance_m" not in out["places"][0]
     assert "near" not in out
 
@@ -347,13 +349,8 @@ def test_near_him_with_no_position_asks_instead_of_searching(
     google: Google, log: sqlite3.Connection,
 ) -> None:
     """Near him with no position asks instead of searching."""
-    def never() -> dict[str, Any]:
-        """Never."""
-        msg = "no phone has reported a location"
-        raise LookupError(msg)
-
     with pytest.raises(ToolError) as caught:
-        _tools(log, phone=never)("map_search", {"query": "ramen"})
+        _tools(log, phone=NEVER)("map_search", {"query": "ramen"})
     assert caught.value.code == "location_unavailable"
     assert not google.seen
     assert _costs(log) == []
@@ -363,7 +360,8 @@ def test_an_old_phone_report_comes_with_a_warning(
     log: sqlite3.Connection,
 ) -> None:
     """An old phone report comes with a warning."""
-    out = _tools(log, phone=lambda: {**PHONE, "age_s": 3 * 3600})("map_search", {"query": "ramen"})
+    stale = replace(PHONE, age_s=3 * 3600, why="the phone did not answer")
+    out = _tools(log, phone=FixedHere(stale))("map_search", {"query": "ramen"})
     assert "may have moved" in out["warning"]
 
 
@@ -403,7 +401,7 @@ def test_arguments_that_do_not_make_one_question_are_refused_before_any_request(
 
 def test_vague_or_misheard_names_are_the_descriptions_rule_not_code() -> None:
     """Vague or misheard names are the descriptions rule not code."""
-    registry = build_default_registry(transit_api_key=FAKE_KEY, here_phone=lambda: dict(PHONE))
+    registry = build_default_registry(transit_api_key=FAKE_KEY, here=FixedHere(PHONE))
     (tool,) = (d for d in registry.get_definitions() if d.name == "map_search")
     text = tool.description
     assert tool.read_only
@@ -541,7 +539,7 @@ def test_each_request_is_priced_and_recorded_under_its_sku(
         ("places.nearby_search.enterprise", 0.035),
         ("places.details.enterprise_atmosphere", 0.025),
     ]
-    assert maps_spend.month_spent(log) == pytest.approx(0.095)
+    assert maps_spend.month_spent(log, NOW) == pytest.approx(0.095)
 
 
 def test_paid_calls_stop_near_the_cap_for_places_and_routes_alike(
@@ -566,7 +564,7 @@ def test_a_bus_search_counts_against_the_cap_too(google: Google, log: sqlite3.Co
     google.routes["TRANSIT"] = _answer_with_end(place_id=None)
     call = _tools(log, cap=0.035)  # one bus search costs 0.01 + 2 x 0.005 = 0.02
     call("bus", {"to": "home"})
-    assert maps_spend.month_spent(log) == pytest.approx(0.02)
+    assert maps_spend.month_spent(log, NOW) == pytest.approx(0.02)
     call("bus", {"to": "home"})  # 0.02 < 90% of 0.035 = 0.0315: still allowed
     with pytest.raises(ToolError) as caught:
         call("bus", {"to": "home"})  # 0.04 is past it
@@ -583,8 +581,8 @@ def test_last_months_spend_is_not_this_months(log: sqlite3.Connection) -> None:
     """Last months spend is not this months."""
     maps_spend.PRICE_USD["test.spend"] = 50.0
     last_month = datetime.now(ZoneInfo("America/Los_Angeles")).replace(day=1) - timedelta(days=2)
-    maps_spend.record(SimpleNamespace(conn=log, action_id="A-old"), ["test.spend"], last_month)  # type: ignore[arg-type]
-    assert maps_spend.month_spent(log) == 0
+    maps_spend.record(tool_context(log, "A-old", clock=CLOCK), ["test.spend"], last_month)
+    assert maps_spend.month_spent(log, NOW) == 0
     _tools(log)("map_search", {"query": "ramen"})
 
 
@@ -596,7 +594,7 @@ def test_the_months_total_survives_a_restart(tmp_path: Path) -> None:
     first.close()
 
     second = open_event_log(path)  # the brain restarted: a new connection, a new registry
-    assert maps_spend.month_spent(second) == pytest.approx(0.035)
+    assert maps_spend.month_spent(second, NOW) == pytest.approx(0.035)
     _spend(second, 9.0)
     with pytest.raises(ToolError) as caught:
         _tools(second)("map_search", {"query": "ramen"})
@@ -628,10 +626,10 @@ def test_the_places_a_turn_returned_are_what_its_answer_carries(
 
     got = places_api.turn_places(log, "T1")
     assert got[:2] == [
-        {"name": "Ramen Shop 1", "lat": PHONE["lat"] + 0.003, "lng": PHONE["lng"],
+        {"name": "Ramen Shop 1", "lat": PHONE.lat + 0.003, "lng": PHONE.lng,
          "address": "1 Fort St, Victoria, BC V8W 1E5, Canada", "place_id": "ChIJplace1",
          "kind": "place"},
-        {"name": "Ramen Shop 2", "lat": PHONE["lat"] + 0.006, "lng": PHONE["lng"],
+        {"name": "Ramen Shop 2", "lat": PHONE.lat + 0.006, "lng": PHONE.lng,
          "address": "2 Fort St, Victoria, BC V8W 1E5, Canada", "place_id": "ChIJplace2",
          "kind": "place"},
     ]

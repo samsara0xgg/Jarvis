@@ -12,10 +12,11 @@ in as a :class:`RideControl` of plain callables, as it hands the planner its liv
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution import maps_spend, places_api, transit_tool
+from jarvis.execution.location_tool import read_here
 from jarvis.execution.tools import Receipted, Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.receipts import Receipt
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
     from jarvis.execution.tools import ToolContext
     from jarvis.execution.transit_tool import TransitOffers
+    from jarvis.shared.here import HereReading
     from jarvis.state.places import Place
 
 
@@ -34,7 +36,7 @@ class RideControl:
     """What the runtime does for the tool; each raises ``ToolError`` for a refusal."""
 
     watch: Callable[[str], dict[str, Any]]
-    start: Callable[[str | None, str | None, str | None], dict[str, Any]]
+    start: Callable[[str | None, str | None, str | None, HereReading | None], dict[str, Any]]
     set_stop: Callable[[str], dict[str, Any]]
     end: Callable[[], dict[str, Any]]
     status: Callable[[], dict[str, Any] | None]
@@ -51,14 +53,9 @@ _DESCRIPTION: Final = (
     " ride=start: he boarded; ride=watch: he is heading out; ride=end: he got off."
     " get_off=<stop> sets his stop and warns him before it."
 )
-_FROM_MAC: Final = "here: his location, read from this Mac, which he carries."
-_FROM_PHONE: Final = (
-    "here: his location from his phone's last report; the result gives its age, and an old one"
-    " means he has not moved far."
-)
-_FROM_BOTH: Final = (
-    "here: his phone's last report when he is talking from his phone (the result gives its age;"
-    " an old one means he has not moved far), otherwise read from this Mac, which he carries."
+_FROM: Final = (
+    "here: his location, from the device he is talking from when it reports locations, else his"
+    " phone; the result gives its age, and a report that is old gets a fresh fix first."
 )
 _STARTS: Final = ("start", "watch", "end")
 _KEYS: Final = frozenset(
@@ -190,10 +187,10 @@ def _buses(option: Mapping[str, Any]) -> str:
     return ", then ".join(f"the {leg['route']}" for leg in option["legs"])
 
 
-def _leave(option: Mapping[str, Any], day: date | None = None) -> str:
+def _leave(option: Mapping[str, Any], now: datetime, day: date | None = None) -> str:
     if option["spare_min"] <= 0 and day is None:
         return "leave now"
-    return f"leave {transit_tool.said_hhmm(option['leave_at'], soon=True, day=day)}"
+    return f"leave {transit_tool.said_hhmm(option['leave_at'], now, soon=True, day=day)}"
 
 
 def _where(label: str) -> str:
@@ -201,12 +198,12 @@ def _where(label: str) -> str:
     return "here" if label.startswith("here (") else label
 
 
-def _named_line(named: Mapping[str, Any], day: date | None = None) -> str:
+def _named_line(named: Mapping[str, Any], now: datetime, day: date | None = None) -> str:
     """The sentence that answers 'can I still catch the 39': catchable or not, how tight, next."""
     route = named["route"]
     if named["verdict"] == "none":
         return f"Google has no route {route} bus then."
-    at = transit_tool.said_hhmm(named["departs"], soon=True, day=day)
+    at = transit_tool.said_hhmm(named["departs"], now, soon=True, day=day)
     first = f"The {route} leaves {named['board_stop']} at {at}"
     if named["verdict"] == "easy":
         first += f"; he has room ({named['spare_min']} min to spare after the walk)."
@@ -216,7 +213,7 @@ def _named_line(named: Mapping[str, Any], day: date | None = None) -> str:
         first += "; he has missed it."
     later = named.get("next")
     if later and named["verdict"] == "missed":
-        first += f" The next one is at {transit_tool.said_hhmm(later['departs'], day=day)}."
+        first += f" The next one is at {transit_tool.said_hhmm(later['departs'], now, day=day)}."
     return first
 
 
@@ -228,12 +225,12 @@ def _to_said(raw: Mapping[str, Any]) -> str:
     return str(dest.get("name") or _where(raw["to"]))
 
 
-def _plan_line(raw: Mapping[str, Any]) -> str:
+def _plan_line(raw: Mapping[str, Any], now: datetime) -> str:
     """The plan in a few words: the named bus if one was asked about, else the first catchable."""
     options = raw["options"]
     day = date.fromisoformat(raw["day"]) if raw.get("day") else None
     if named := raw.get("named_route"):
-        text = _named_line(named, day)
+        text = _named_line(named, now, day)
         return text + (" Other options are listed." if len(options) > 1 else "")
     if by := raw.get("arrive_by"):
         # The options are in leave order; the last that is in time is the one nearest the deadline.
@@ -243,9 +240,9 @@ def _plan_line(raw: Mapping[str, Any]) -> str:
     leg = pick["legs"][0]
     said = transit_tool.said_hhmm
     text = (
-        f"To {_to_said(raw)}, option {options.index(pick) + 1}: {_leave(pick, day)}, take"
-        f" {_buses(pick)} from {leg['board_stop']} at {said(leg['departs'], day=day)},"
-        f" arrive {said(pick['arrive_at'], day=day)} ({pick['total_min']} min)."
+        f"To {_to_said(raw)}, option {options.index(pick) + 1}: {_leave(pick, now, day)}, take"
+        f" {_buses(pick)} from {leg['board_stop']} at {said(leg['departs'], now, day=day)},"
+        f" arrive {said(pick['arrive_at'], now, day=day)} ({pick['total_min']} min)."
     )
     if pick["spare_min"] <= -_EASY_SPARE_MIN:
         text += " It is probably too late to catch."
@@ -272,7 +269,7 @@ def sources_said(*, position_live: bool, arrival_live: bool, has_arrival: bool) 
     )
 
 
-def _ride_line(ride: Mapping[str, Any]) -> str:
+def _ride_line(ride: Mapping[str, Any], now: datetime) -> str:
     """How the ride is going, in words: the bus, the next stop, his stop and when."""
     text = f"On the {ride['route']}"
     if ride.get("board_stop"):
@@ -285,7 +282,7 @@ def _ride_line(ride: Mapping[str, Any]) -> str:
     if ride.get("eta_ms") is not None and ride.get("stops_left") is not None:
         left = ride["stops_left"]
         text += f": {left} stop{'' if left == 1 else 's'} left, about"
-        text += f" {transit_tool.said_ms(ride['eta_ms'], soon=True)}."
+        text += f" {transit_tool.said_ms(ride['eta_ms'], now, soon=True)}."
     else:
         text += "."
     position = bool(ride.get("position_live"))
@@ -335,13 +332,13 @@ class _Bus:
             )
             raise _bad(msg)
         if "ride" in given:
-            return self._ride(given)
+            return self._ride(given, ctx)
         if "pin" in given:
             self._alone(given, "pin")
             return self._pin(_numbers(given["pin"]), ctx)
         if "get_off" in given:
             self._alone(given, "get_off")
-            return self._get_off(str(given["get_off"]))
+            return self._get_off(str(given["get_off"]), ctx)
         for name, needs in _RIDE_ONLY.items():
             if name in given:
                 msg = f"{name} goes with {needs}"
@@ -350,12 +347,12 @@ class _Bus:
             return self._times(given, ctx)
         ride = self._control.status() if self._control is not None else None
         if ride is not None:
-            return _ride_view(self._riding(ride), ride)
+            return _ride_view(self._riding(ride, ctx.clock.now()), ride)
         return self._times({}, ctx)
 
-    def _riding(self, ride: Mapping[str, Any]) -> str:
+    def _riding(self, ride: Mapping[str, Any], now: datetime) -> str:
         """How the ride is going; with no stop set, where the last plan lets this bus off."""
-        text = _ride_line(ride)
+        text = _ride_line(ride, now)
         if not ride.get("alight_stop") and (
             hit := self._offers.alight_for(str(ride["route"]))
         ):
@@ -400,19 +397,20 @@ class _Bus:
             asked["route"] = route
         raw = self._plan(asked, ctx)
         options = [{"option": n, **o} for n, o in enumerate(raw["options"], 1)]
-        return {"summary": _plan_line(raw), **raw, "options": options}
+        return {"summary": _plan_line(raw, ctx.clock.now()), **raw, "options": options}
 
     # --- the pin -----------------------------------------------------------------------------
 
     def _pin(self, numbers: list[int], ctx: ToolContext) -> dict[str, Any]:
+        now = ctx.clock.now()
         trips, new = transit_tool.pin_listed(
-            ctx.conn, self._offers, numbers, action_id=ctx.action_id,
+            ctx.conn, self._offers, numbers, action_id=ctx.action_id, now=now,
             source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
         )
         said = "; ".join(
             f"the {t.route} from {t.board_stop}: leave"
-            f" {transit_tool.said_ms(t.leave_at_ms, soon=True)}, bus at"
-            f" {transit_tool.said_ms(t.departs_at_ms)}"
+            f" {transit_tool.said_ms(t.leave_at_ms, now, soon=True)}, bus at"
+            f" {transit_tool.said_ms(t.departs_at_ms, now)}"
             for t in trips
         )
         summary = (
@@ -427,8 +425,8 @@ class _Bus:
                 {
                     "route": t.route,
                     "board_stop": t.board_stop,
-                    "leave": transit_tool.said_ms(t.leave_at_ms, soon=True),
-                    "departs": transit_tool.said_ms(t.departs_at_ms),
+                    "leave": transit_tool.said_ms(t.leave_at_ms, now, soon=True),
+                    "departs": transit_tool.said_ms(t.departs_at_ms, now),
                 }
                 for t in trips
             ],
@@ -442,13 +440,13 @@ class _Bus:
             raise ToolError(msg, code="unavailable")
         return self._control
 
-    def _ride(self, given: Mapping[str, Any]) -> dict[str, Any] | Receipted:
+    def _ride(self, given: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any] | Receipted:
         what = given["ride"]
         if what not in _STARTS:
             msg = f"ride must be start, watch or end, not {what!r}"
             raise _bad(msg)
         if what == "start":
-            return self._start(given)
+            return self._start(given, ctx)
         extra = set(given) - {"ride", "to"}
         if extra or (what == "end" and "to" in given):
             msg = f"ride={what} takes {'to= only' if what == 'watch' else 'no other arguments'}"
@@ -470,7 +468,7 @@ class _Bus:
         )
         return _ride_view(summary, raw)
 
-    def _start(self, given: Mapping[str, Any]) -> dict[str, Any] | Receipted:
+    def _start(self, given: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any] | Receipted:
         if {"from", "at", "pin", "get_off"} & set(given):
             msg = "ride=start takes option= or route=, and to= and vehicle_id= if needed"
             raise _bad(msg)
@@ -481,7 +479,14 @@ class _Bus:
         if "option" in given:
             row = self._offers.listed_row(_number(given["option"], "option"))
             route, place = str(row["route"]).split("→")[0].strip(), str(row["to"])
-        raw = self._rides().start(route, place, _text(given.get("vehicle_id"), 64))
+        rides = self._rides()
+        try:
+            fix: HereReading | None = read_here(ctx)
+        except ToolError:
+            fix = None  # no report: the ride is found by the pin or the route he names
+        if fix is not None and fix.why:
+            fix = None  # a report no fresh fix confirmed does not say which bus he is on
+        raw = rides.start(route, place, _text(given.get("vehicle_id"), 64), fix)
         if raw.get("ambiguous"):
             names = " or ".join(
                 f"the one heading for {c.get('next_stop') or 'an unknown stop'}"
@@ -495,9 +500,9 @@ class _Bus:
                 _ride_view(summary, raw), "Two buses are about equally near; not following one yet",
             )
         lead = "Already following this ride; nothing changed. " if raw.get("already_riding") else ""
-        return _ride_view(lead + _ride_line(raw), raw)
+        return _ride_view(lead + _ride_line(raw, ctx.clock.now()), raw)
 
-    def _get_off(self, stop: str) -> dict[str, Any] | Receipted:
+    def _get_off(self, stop: str, ctx: ToolContext) -> dict[str, Any] | Receipted:
         raw = self._rides().set_stop(stop.strip()[:80])
         if raw.get("ambiguous"):
             summary = (
@@ -508,7 +513,9 @@ class _Bus:
                 _ride_view(summary, raw), "More than one stop matches; the get-off stop is not set",
             )
         lead = "Already set to this stop, nothing changed." if raw.get("already") else "Set."
-        return _ride_view(f"{lead} {_ride_line(raw)} He is warned one stop before it.", raw)
+        return _ride_view(
+            f"{lead} {_ride_line(raw, ctx.clock.now())} He is warned one stop before it.", raw,
+        )
 
     def _end(self) -> dict[str, Any]:
         raw = self._rides().end()
@@ -517,12 +524,10 @@ class _Bus:
         return _ride_view("He was not on a followed ride, so nothing was ended.", raw)
 
 
-def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, live, the ride.
+def build_bus_tool(  # noqa: PLR0913 - the key, places, offers, live, the ride.
     api_key: str | None,
     places: Callable[[], Mapping[str, str]],
-    here: Callable[[], Mapping[str, Any]] | None = None,
     *,
-    phone_here: Callable[[], Mapping[str, Any]] | None = None,
     offers: TransitOffers | None = None,
     bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
     control: RideControl | None = None,
@@ -541,18 +546,14 @@ def build_bus_tool(  # noqa: PLR0913 - the key, places, two readers, offers, liv
         return ()
     offers = offers if offers is not None else transit_tool.TransitOffers()
     plan = transit_tool.build_planner(
-        api_key, places, here, phone_here=phone_here, offers=offers, bus_live=bus_live,
+        api_key, places, offers=offers, bus_live=bus_live,
         kept=kept, cap_usd=cap_usd, book=book,
     )
     return (
         Tool(
             name="bus",
             description=_DESCRIPTION,
-            input_schema=_schema(
-                _FROM_BOTH if here is not None and phone_here is not None
-                else _FROM_PHONE if phone_here is not None
-                else _FROM_MAC,
-            ),
+            input_schema=_schema(_FROM),
             handler=_Bus(plan, offers, control).run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",

@@ -474,13 +474,14 @@ def _keep_item(  # noqa: PLR0913 — the version's inputs, all keyword-only.
     section: str | None,
     origin: str,
     only_new: bool = False,
+    now: datetime | None = None,
 ) -> bool:
     """Append a core-memory version that keeps ``text`` under ``topic`` (ADR 0146).
 
     ``only_new`` writes nothing when an item already says exactly ``text``. Whether a version
     was written.
     """
-    now = local_now()
+    now = now or local_now()
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
         base = core_memory.current(conn, iso_seconds(now))
         if only_new and any(item["text"] == text for _, item, _ in core_memory.listing(base.doc)):
@@ -526,6 +527,7 @@ def remember_fact(path: Path, topic: str, fact: str, section: str | None = None)
 
 def keep_fact(
     path: Path, text: str, topic: str | None = None, section: str | None = None,
+    now: datetime | None = None,
 ) -> bool:
     """Keep ``text`` in core memory as ``remember_fact`` does; False when it is there already.
 
@@ -539,6 +541,7 @@ def keep_fact(
         section=section,
         origin="remember",
         only_new=True,
+        now=now,
     )
 
 

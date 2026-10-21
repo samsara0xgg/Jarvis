@@ -3010,7 +3010,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 "device": device,
             }
             if slot.trip is not None:  # ADR 0205: a bus card shows only the rows still catchable
-                shown = live_card(slot.trip)
+                shown = live_card(slot.trip, runtime.clock.now())
                 if shown is None:
                     return {"card": None}
                 card["trip"] = shown
@@ -3704,6 +3704,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             open_leg = (
                 None if runtime.leg_planner is None else leg_session(
                     runtime.leg_planner, runtime.runtime_paths.event_log, runtime.runtime_paths,
+                    runtime.clock,
                 )
             )
             watchers.append(

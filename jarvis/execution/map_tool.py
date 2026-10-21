@@ -8,9 +8,7 @@ places it returns are logged so the turn's answer can carry them to the phone's 
 from __future__ import annotations
 
 import calendar
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
-from zoneinfo import ZoneInfo
 
 from jarvis.execution import maps_spend, places_api
 from jarvis.execution.location_tool import read_here, said_where
@@ -18,19 +16,18 @@ from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
+    from datetime import datetime
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.here import HereReading
 
-_ZONE: Final = ZoneInfo("America/Vancouver")
 _DEFAULT_RADIUS_M: Final = 2000
 _MAX_RADIUS_M: Final = 50_000
 _DEFAULT_LIMIT: Final = 5
 _MAX_LIMIT: Final = 8
 _REVIEWS: Final = 3
 _REVIEW_CHARS: Final = 240
-# A phone report older than this is not where he is now; the result says so (as `bus` does).
-_OLD_FIX_S: Final = 30 * 60
 _KEYS: Final = frozenset({"query", "kind", "area", "radius_m", "limit", "place_id"})
 
 _DESCRIPTION: Final = (
@@ -39,7 +36,7 @@ _DESCRIPTION: Final = (
     " maps link and place_id. query= is what he wants ('ramen', 'Shoppers Drug Mart',"
     " 'pharmacy open late'); kind=<Google place type> (cafe, restaurant, pharmacy, atm,"
     " gas_station, supermarket) lists the nearest of a type. Both look near his current position"
-    " (his phone's last report, which the result dates) unless area= names another area"
+    " (the result says whose report and how old) unless area= names another area"
     " ('Fairfield, Victoria'). place_id= (from an earlier result) gives that one place in"
     " detail: weekly hours, review highlights, website. When a place name is vague or may be"
     " misheard, search first, name the specific match (name and street) and let him confirm"
@@ -93,18 +90,16 @@ def _count(value: object, name: str, low: int, high: int, default: int) -> int:
     return max(low, min(high, int(value)))
 
 
-def _now() -> datetime:
-    return datetime.now(_ZONE)
-
-
-def _today_hours(raw: Mapping[str, Any]) -> str | None:
+def _today_hours(raw: Mapping[str, Any], now: datetime) -> str | None:
     """Today's line of Google's seven weekday lines ('Monday: 9:00 AM - 5:00 PM')."""
     lines = (raw.get("currentOpeningHours") or {}).get("weekdayDescriptions") or []
-    day = calendar.day_name[_now().weekday()]
+    day = calendar.day_name[now.weekday()]
     return next((str(line) for line in lines if str(line).startswith(f"{day}:")), None)
 
 
-def _shape(raw: Mapping[str, Any], origin: tuple[float, float] | None) -> dict[str, Any]:
+def _shape(
+    raw: Mapping[str, Any], origin: tuple[float, float] | None, now: datetime,
+) -> dict[str, Any]:
     """One place as the model reads it; what Google did not give is left out, never guessed."""
     name = raw.get("displayName")
     out: dict[str, Any] = {
@@ -120,7 +115,7 @@ def _shape(raw: Mapping[str, Any], origin: tuple[float, float] | None) -> dict[s
     hours = raw.get("currentOpeningHours") or {}
     out |= {
         "open_now": hours.get("openNow"),
-        "hours_today": _today_hours(raw),
+        "hours_today": _today_hours(raw, now),
         "rating": raw.get("rating"),
         "rating_count": raw.get("userRatingCount"),
         "price_level": places_api.price_word(raw.get("priceLevel")),
@@ -131,8 +126,10 @@ def _shape(raw: Mapping[str, Any], origin: tuple[float, float] | None) -> dict[s
     return {k: v for k, v in out.items() if v is not None}
 
 
-def _detail(raw: Mapping[str, Any], origin: tuple[float, float] | None) -> dict[str, Any]:
-    out = _shape(raw, origin)
+def _detail(
+    raw: Mapping[str, Any], origin: tuple[float, float] | None, now: datetime,
+) -> dict[str, Any]:
+    out = _shape(raw, origin, now)
     out["hours_week"] = list((raw.get("currentOpeningHours") or {}).get("weekdayDescriptions", []))
     if raw.get("websiteUri"):
         out["website"] = raw["websiteUri"]
@@ -155,19 +152,15 @@ class _MapSearch:
         api_key: str,
         cap_usd: float,
         book: places_api.PlaceBook,
-        here: Callable[[], Mapping[str, Any]] | None,
-        phone_here: Callable[[], Mapping[str, Any]] | None,
     ) -> None:
         self._key = api_key
         self._cap = cap_usd
         self._book = book
-        self._here = here
-        self._phone = phone_here
 
-    def _fix(self, ctx: ToolContext, *, needed: bool) -> dict[str, Any] | None:
+    def _fix(self, ctx: ToolContext, *, needed: bool) -> HereReading | None:
         """Where he is; None, when ``needed`` is false and it cannot be read."""
         try:
-            return read_here(self._here, self._phone, ctx)
+            return read_here(ctx)
         except ToolError:
             if needed:
                 raise
@@ -191,8 +184,8 @@ class _MapSearch:
         if kind and area:
             query, kind = kind.replace("_", " "), ""
         fix = self._fix(ctx, needed=not (area or place_id))
-        origin = (fix["lat"], fix["lng"]) if fix is not None else None
-        maps_spend.guard(ctx.conn, self._cap)
+        origin = (fix.lat, fix.lng) if fix is not None else None
+        maps_spend.guard(ctx.conn, self._cap, ctx.clock.now())
         meter: list[str] = []
         try:
             if place_id:
@@ -214,7 +207,7 @@ class _MapSearch:
         if (one := places_api.on_map(raw)) is not None:
             self._book.remember(one)
             places_api.announce(ctx, [one])
-        return {"place": _detail(raw, origin)}
+        return {"place": _detail(raw, origin, ctx.clock.now())}
 
     def _search(  # noqa: PLR0913 - the question, where from, the reading, the meter and the limits.
         self,
@@ -222,7 +215,7 @@ class _MapSearch:
         kind: str,
         area: str,
         origin: tuple[float, float] | None,
-        fix: Mapping[str, Any] | None,
+        fix: HereReading | None,
         meter: list[str],
         ctx: ToolContext,
         *,
@@ -268,11 +261,11 @@ class _MapSearch:
                 f"{len(found)} place{'' if len(found) == 1 else 's'} for {searched}"
                 if found else f"Google found no place for {searched}; say so, do not guess"
             ),
-            "places": [_shape(raw, origin) for raw in found],
+            "places": [_shape(raw, origin, ctx.clock.now()) for raw in found],
         }
         if fix is not None:
             out["near"] = f"his position ({said_where(fix)})"
-            if fix["source"] == "phone" and fix["age_s"] > _OLD_FIX_S:
+            if fix.why:
                 out["warning"] = (
                     "His phone's report is old, so he may have moved: say that first, or ask"
                     " where he is, before sending him to a place by its distance."
@@ -284,9 +277,6 @@ def build_map_tool(
     api_key: str | None,
     cap_usd: float,
     book: places_api.PlaceBook,
-    here: Callable[[], Mapping[str, Any]] | None = None,
-    *,
-    phone_here: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Tool, ...]:
     """`map_search`; none without a Google key."""
     if not api_key:
@@ -296,7 +286,7 @@ def build_map_tool(
             name="map_search",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_MapSearch(api_key, cap_usd, book, here, phone_here).run,
+            handler=_MapSearch(api_key, cap_usd, book).run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=True,

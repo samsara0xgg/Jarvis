@@ -11,17 +11,19 @@ import json
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
 
 from jarvis.execution.conversation_tool import build_conversation_tool
-from jarvis.execution.tools import Tool, ToolContext, ToolError
+from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.state.memory_db import open_memory_db
 from scripts import tool_exam
+from tests.support.clock import FakeClock
+from tests.support.tool_context import tool_context
 
 REPO = Path(__file__).resolve().parents[2]
 ZONE = ZoneInfo("America/Vancouver")
@@ -57,12 +59,12 @@ LONG = "word " * 900  # 4500 characters of one answer
 
 
 def _tool(path: Path) -> Tool:
-    (tool,) = build_conversation_tool(path, ZONE, lambda: NOW)
+    (tool,) = build_conversation_tool(path)
     return tool
 
 
 def _call(tool: Tool, **args: Any) -> dict[str, Any]:  # noqa: ANN401 - the model's arguments.
-    return dict(tool.handler(args, cast("ToolContext", None)))
+    return dict(tool.handler(args, tool_context(clock=FakeClock(NOW))))
 
 
 def _failure(tool: Tool, **args: Any) -> ToolError:  # noqa: ANN401 - the model's arguments.
@@ -109,7 +111,7 @@ def test_the_tool_is_a_small_read_only_native_menu_entry(tool: Tool) -> None:
     assert set(tool.input_schema["properties"]) == {
         "query", "date", "to", "open", "order", "speaker", "page",
     }
-    assert build_conversation_tool(None, ZONE) == ()
+    assert build_conversation_tool(None) == ()
 
 
 def test_a_query_returns_moments_with_who_when_and_an_excerpt(tool: Tool) -> None:

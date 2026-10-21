@@ -28,6 +28,7 @@ from jarvis.state import core_memory
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import current_core_memory, open_memory_db
 from scripts import tool_exam
+from tests.support.clock import FakeClock
 from tests.support.model import ScriptedModel, tool_call
 from tests.support.turn_guards import guard_batch, logged_guards, tool_texts
 
@@ -49,12 +50,21 @@ class _World:
         self.memory = root / "memory.db" if memory else None
         if self.memory is not None:
             open_memory_db(self.memory).close()
-        self.now = NOW
-        self.registry = ToolRegistry()
-        for tool in build_keep_tools(self.memory, ZONE, lambda: self.now):
+        self.clock = FakeClock(NOW, zone=ZONE)
+        self.registry = ToolRegistry(clock=self.clock)
+        for tool in build_keep_tools(self.memory):
             self.registry.register(tool)
         self.lifecycle = ActionLifecycle()
         self.n = 0
+
+    @property
+    def now(self) -> datetime:
+        """The tool's clock; assigning moves it."""
+        return self.clock.now()
+
+    @now.setter
+    def now(self, value: datetime) -> None:
+        self.clock.set(value)
 
     def call(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
         self.n += 1
@@ -88,12 +98,11 @@ class _World:
 
 
 @pytest.fixture
-def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_World]:
+def world(tmp_path: Path) -> Iterator[_World]:
     """A fresh world whose memory stamps items with its clock; the language is Chinese, as run."""
     before = lang.language()
     lang.set_language("zh")
     made = _World(tmp_path)
-    monkeypatch.setattr("jarvis.state.memory_db.local_now", lambda: made.now)
     yield made
     made.conn.close()
     lang.set_language(before)
@@ -104,7 +113,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_World]:
 
 def test_the_menu_entries_are_two_small_tools_with_the_owner_s_words() -> None:
     """One write and one read; each brief is short, says when to use it and what it returns."""
-    keep, kept = build_keep_tools(None, ZONE)
+    keep, kept = build_keep_tools(None)
     assert (keep.name, keep.read_only, keep.risk_level) == ("keep", False, "L1")
     assert (kept.name, kept.read_only, kept.risk_level) == ("kept", True, "L0")
     assert keep.allowed_callers == {CallerPrincipal.JARVIS_LLM}
@@ -151,7 +160,7 @@ def test_the_offline_menu_offers_keep_and_kept_in_place_of_the_six(tmp_path: Pat
 
 def test_core_memory_has_ten_sections_and_keep_offers_each() -> None:
     """The enum is the sections of core memory, and the retired to-do section is not one."""
-    (keep, _) = build_keep_tools(None, ZONE)
+    (keep, _) = build_keep_tools(None)
     offered = keep.input_schema["properties"]["section"]["enum"]
     assert len(offered) == len(core_memory.SECTIONS) == 10
     assert core_memory.DUE_SECTION not in offered
@@ -320,7 +329,7 @@ def test_kept_shows_a_fact_in_his_zone_the_day_it_was_saved(world: _World) -> No
     """A fact saved at 02:55 UTC on the 12th is the 11th in Victoria."""
     world.now = datetime(2026, 10, 12, 2, 55, tzinfo=UTC)
     world.keep("他爱喝茶")
-    assert world.kept()["items"][0]["when"] == "saved Oct 12"
+    assert world.kept()["items"][0]["when"] == "saved Oct 11"
 
 
 # --- decide() with a scripted model ------------------------------------------------------------

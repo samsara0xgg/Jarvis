@@ -21,13 +21,13 @@ from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
 from jarvis.state import commitments, departures, things
 from jarvis.state.daily_contract import encoded
-from jarvis.state.daily_report import resolve_zone
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from datetime import tzinfo
 
     from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
 
 _DESCRIPTION: Final = (
     "Use for anything he has to go to or do, with or without a time: appointments, plans with"
@@ -326,10 +326,10 @@ def _holds(words: list[str]) -> Callable[[things.Thing], bool]:
 class _Schedule:
     """The tool's handler: a read of the ledger, and a write for each thing he asks for."""
 
-    def __init__(self, zone: tzinfo, before_min: int, clock: Callable[[], datetime]) -> None:
-        self._zone = zone
+    def __init__(self, clock: Clock, before_min: int) -> None:
+        self._zone = clock.zone
         self._before_min = before_min
-        self._clock = clock
+        self._clock = clock.now
 
     def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Do what ``action`` says (reading when it is left out) and answer in one sentence."""
@@ -1036,20 +1036,22 @@ class _Schedule:
         return f"{window.label}: {counts}.{lead}{no_time}{unsure_words}{paged}"
 
 
-def build_schedule_tool(
-    zone: tzinfo | None, before_min: int, clock: Callable[[], datetime] = speakable.now,
-) -> tuple[Tool, ...]:
-    """``schedule`` over the ledger of his things and his zone (``None``: the machine's).
+def build_schedule_tool(before_min: int) -> tuple[Tool, ...]:
+    """``schedule`` over the ledger of his things, in the context clock's zone.
 
     ``before_min`` is how many minutes before it a thing he goes to rings
     (``commitments.remind_before_min``, the lead the mail poller uses).
     """
+
+    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _Schedule(ctx.clock, before_min).run(args, ctx)
+
     return (
         Tool(
             name="schedule",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Schedule(resolve_zone(None, zone)[1], before_min, clock).run,
+            handler=run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM, CallerPrincipal.REGEX_ROUTER}),
             risk_level="L1",
             read_only=False,

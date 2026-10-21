@@ -36,6 +36,7 @@ from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.execution.transit_tool import TransitOffers
 from jarvis.runtime import _live_lines
 from jarvis.runtime.bus_live import BusLive
+from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.push import Push
 from jarvis.runtime.rides import RIDE_LINE_PREFIX, Rides
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
@@ -62,6 +63,8 @@ from jarvis.surface.apns import (
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.clock import FakeClock
+from tests.support.transit import TRANSIT_NOW
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -305,8 +308,11 @@ class World:
 
     def tool(self, args: dict[str, Any]) -> dict[str, Any]:
         """Dispatch one `bus` call through the real registry, as the model would."""
+        moment = datetime.fromtimestamp(self.clock_ms / 1000, UTC)
+        clock = FakeClock(moment, zone=ZoneInfo("America/Vancouver"))
         registry = build_default_registry(
-            ride_control=self.rides.control(), transit_offers=self.offers,
+            ride_control=self.rides.control(), transit_offers=self.offers, clock=clock,
+            here=HerePolicy(self.paths.event_log, clock),
         )
         request = ActionRequest(
             action_id=f"A-bus-{self.clock_ms}", tool_name="bus", target_entity_ref=None,
@@ -1011,7 +1017,7 @@ def test_no_feeds_at_all_is_a_declared_ride_on_the_timetable(world: World) -> No
     bare.now = world.rides.now
     bare.defer = lambda call: call()
     world.clock_ms = at("17:07")
-    out = bare.start("12", "campus", None)
+    out = bare.start("12", "campus", None, None)
     assert (out["started"], out["route"], out["position_live"]) == (True, "12", False)
     line = bare.line()
     assert line is not None
@@ -1022,7 +1028,7 @@ def test_no_feeds_at_all_is_a_declared_ride_on_the_timetable(world: World) -> No
     assert world.ride() is None
     assert _ended(world)["reason"] == "schedule_end"
     with pytest.raises(Exception, match="route"):
-        Rides(world.paths.event_log, None).control().start(None, None, None)
+        Rides(world.paths.event_log, None).control().start(None, None, None, None)
 
 
 # --- the routes -------------------------------------------------------------------------------
@@ -1104,7 +1110,7 @@ def test_a_transit_answer_remembers_where_the_first_bus_lets_him_off() -> None:
     assert offers.stops[("7", "Alder St")] == (STOPS[0][2], LNG)
     assert offers.alights[("7", "Alder St")] == ("Fir Lane", STOPS[5][2], LNG)
     offers.put([{"legs": [{"route": "7", "board_stop": "Alder St", "departs": "17:05"}],
-                 "leave_at": "17:02", "arrive_at": "17:12"}], "harbour")
+                 "leave_at": "17:02", "arrive_at": "17:12"}], "harbour", TRANSIT_NOW)
     assert offers.alight_for("7", "Harbour") == ("Fir Lane", STOPS[5][2], LNG)
     assert offers.alight_for("7", "elsewhere") is None
     assert offers.alight_for("12") is None

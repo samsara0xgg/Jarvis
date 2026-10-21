@@ -25,6 +25,7 @@ from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime.home import weather_lookup
 from jarvis.runtime.weatherkit import NOT_SET_UP, WeatherKit
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.here import HereUnavailable
 from tests.integration.weatherkit_world import (
     GEOCODED,
     KEY_ID,
@@ -37,6 +38,9 @@ from tests.integration.weatherkit_world import (
     kit_for,
     make_key,
 )
+from tests.support.clock import FakeClock
+from tests.support.here import FixedHere, mac_reading
+from tests.support.tool_context import tool_context
 
 PLACE = {"latitude": 48.48, "longitude": -123.38, "country_code": "CA"}
 ZONE = "America/Vancouver"
@@ -71,16 +75,17 @@ def key(tmp_path: Path) -> tuple[Path, ec.EllipticCurvePrivateKey]:
 
 def _call(
     kit: WeatherKit | None, args: dict[str, Any] | None = None,
-    here: Any = None,  # noqa: ANN401 - a location reader or nothing.
+    here: FixedHere | None = None,
 ) -> dict[str, Any]:
     # One lookup per client and reader, as the daemon builds it: it remembers the places it listed.
     token = (id(kit), id(here))
     if token not in _TOOLS:
         registry = build_default_registry(
-            weather_lookup=weather_lookup(PLACE, kit, ZONE), here_location=here,
+            weather_lookup=weather_lookup(PLACE, kit, ZONE), here=here,
         )
         (_TOOLS[token],) = (d for d in registry.get_definitions() if d.name == "weather")
-    return dict(_TOOLS[token].handler(args or {}, None))
+    ctx = tool_context(clock=FakeClock(NOW), here=None if here is None else here.bind(None))
+    return dict(_TOOLS[token].handler(args or {}, ctx))
 
 
 def _day(offset: int) -> str:
@@ -399,18 +404,15 @@ def test_here_reads_the_location_seam_and_says_where_it_came_from(
     """``here`` reads the fix without geocoding; far away its own zone; no reader: error."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
-    fix = {"lat": 48.45, "lng": -123.37, "accuracy_m": 30.0, "place": "Government St, Victoria"}
-    report = _call(kit, {"place": "Here"}, here=lambda: fix)
+    fix = mac_reading(lat=48.45, lng=-123.37, accuracy_m=30.0, place="Government St, Victoria")
+    report = _call(kit, {"place": "Here"}, here=FixedHere(fix))
     assert net.hosts() == ["weatherkit.apple.com"]
     assert urlparse(net.asked[0].split(" ")[0]).path == "/api/v1/weather/en/48.45/-123.37"
     assert report["place"] == "Government St, Victoria"
     assert report["location_from"] == "this Mac"
-    away = {"lat": 43.65, "lng": -79.38, "accuracy_m": 30.0, "place": "King St, Toronto"}
-    assert _call(kit, {"place": "here"}, here=lambda: away)["timezone"] == "America/Toronto"
-
-    def denied() -> dict[str, Any]:
-        msg = "denied"
-        raise PermissionError(msg)
+    away = mac_reading(lat=43.65, lng=-79.38, accuracy_m=30.0, place="King St, Toronto")
+    assert _call(kit, {"place": "here"}, here=FixedHere(away))["timezone"] == "America/Toronto"
+    denied = FixedHere(error=HereUnavailable("this Mac's location could not be read (denied)"))
 
     net.asked.clear()
     with pytest.raises(ToolError, match="location could not be read") as caught:
@@ -575,7 +577,7 @@ def test_the_description_offers_here_only_where_a_location_can_be_read(
     """``here`` is in the text and the schema only with a Mac or phone location reader."""
     lookup = weather_lookup(PLACE, kit_for(key[0]), ZONE)
     plain = build_default_registry(weather_lookup=lookup)
-    located = build_default_registry(weather_lookup=lookup, here_location=dict)
+    located = build_default_registry(weather_lookup=lookup, here=FixedHere())
     (without,) = (d for d in plain.get_definitions() if d.name == "weather")
     (with_here,) = (d for d in located.get_definitions() if d.name == "weather")
     assert '"here"' not in without.description

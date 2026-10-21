@@ -5,6 +5,11 @@ checks every built-in tool on it: a name that is lowercase words joined by under
 description of at most 600 characters written in English that calls him "he", and a
 description on every parameter. Plugin tools (``mcp__``) are their servers' and are not checked.
 
+It also fails a tool module that reads the wall clock itself (ADR 0322): a tool takes the time of
+day from the clock in its context, so that the runtime's clock and the exam's frozen one reach it.
+The modules that wait on real time are exempt (:data:`REAL_TIME`), and so is ``time.monotonic``,
+which the dispatcher and ``web_fetch`` use for their call deadlines.
+
 Tools that predate the standard are listed in ``PRE_STANDARD`` with the rules they still break.
 They are reported, not failed, and each one leaves the list when it is rebuilt to the standard.
 What fails is a rule a tool breaks that its entry does not name, and an entry that no longer
@@ -15,6 +20,7 @@ matches a tool or names a rule the tool now keeps, so the list can only shrink.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -35,6 +41,13 @@ DESCRIPTION_CAP = 600
 NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
 CJK_RE = re.compile(r"[　-鿿＀-￯]")
 THE_USER_RE = re.compile(r"\bthe user\b", re.IGNORECASE)
+
+REAL_TIME: frozenset[str] = frozenset({"workers.py", "codex_app_server.py", "mcp_oauth.py"})
+"""The tool modules whose clock is real time by nature: subprocess deadlines, token expiry."""
+_WALL_READS: frozenset[tuple[str, str]] = frozenset({
+    ("time", "time"), ("time", "sleep"), ("time", "localtime"), ("time", "gmtime"),
+    ("datetime", "now"), ("datetime", "utcnow"), ("datetime", "today"), ("date", "today"),
+})
 
 # Every built-in tool that broke a rule when the standard was set (2026-10-17), with the rules
 # it breaks. Remove a rule when the tool keeps it, and the entry when it keeps them all.
@@ -109,6 +122,28 @@ def broken_rules(name: str, description: str, schema: Mapping[str, Any]) -> dict
     return broken
 
 
+def wall_clock_reads() -> tuple[int, list[str]]:
+    """``(modules scanned, each wall-clock read)`` in the tool modules outside :data:`REAL_TIME`."""
+    scanned, found = 0, []
+    for path in sorted((REPO / "jarvis" / "execution").glob("*.py")):
+        if path.name in REAL_TIME:
+            continue
+        scanned += 1
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Attribute):
+                continue
+            base = node.value
+            owner = base.id if isinstance(base, ast.Name) else (
+                base.attr if isinstance(base, ast.Attribute) else ""
+            )
+            if (owner, node.attr) in _WALL_READS:
+                found.append(
+                    f"{path.relative_to(REPO)}:{node.lineno}: reads {owner}.{node.attr}; "
+                    "take the time from ctx.clock",
+                )
+    return scanned, found
+
+
 def checked_tools() -> dict[str, dict[str, str]]:
     """Every built-in tool the decision model is offered -> the rules it breaks."""
     config = yaml.safe_load((REPO / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
@@ -144,6 +179,9 @@ def main() -> int:
     legacy = sum(1 for name in tools if name in PRE_STANDARD)
     sys.stdout.write(f"tools checked: {len(tools)}   pre-standard: {legacy}\n")
     found = failures(tools)
+    scanned, reads = wall_clock_reads()
+    sys.stdout.write(f"tool modules scanned for wall-clock reads: {scanned}   reads: {len(reads)}\n")  # noqa: E501
+    found += reads
     for line in found:
         sys.stdout.write(f"FAIL {line}\n")
     if not found:

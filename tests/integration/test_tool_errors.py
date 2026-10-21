@@ -36,6 +36,9 @@ from jarvis.execution.voice_tools import build_voice_tool
 from jarvis.execution.weather_tool import build_weather_tool
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.here import HereUnavailable
+from tests.support.clock import FakeClock
+from tests.support.here import FixedHere
 from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
@@ -44,6 +47,9 @@ if TYPE_CHECKING:
 
 
 _ASK = {"question": "Where to?", "fields": [{"label": "address"}]}
+
+
+_NO_SIGNAL = FixedHere(error=HereUnavailable("this Mac's location could not be read (no signal)"))
 
 
 def _boom(*_args: object, **_kwargs: object) -> dict[str, Any]:
@@ -67,7 +73,7 @@ def _flat(tmp_path: Path) -> dict[str, Tool]:
             memory_db_path=tmp_path / "memory.db", vision_client=cast("Any", _Stub()),
         ).get_definitions(),
         *build_weather_tool(_boom),
-        *build_where_tool(_boom),
+        *build_where_tool(_NO_SIGNAL),
         *build_place_tools(tmp_path / "memory.db"),
         *build_highlight_tool(lambda *_: {}),
         *build_voice_tool(cast("Any", _Stub())),
@@ -147,7 +153,10 @@ def test_a_failing_call_says_what_happened_and_what_to_do_next(
     """The message holds the phrases, its code is the one the dispatcher records, no JSON in it."""
     name, args, code, phrases = row
     monkeypatch.setattr(tools, "_ddgs_search_backend", _boom)
-    ctx = SimpleNamespace(conn=sqlite3.connect(":memory:"), action_id="A1")
+    ctx = SimpleNamespace(
+        conn=sqlite3.connect(":memory:"), action_id="A1", clock=FakeClock(),
+        here=_NO_SIGNAL.bind(None),
+    )
     error = _error(_flat(tmp_path)[name], args, ctx)
     assert error.code == code
     for phrase in phrases:
@@ -332,7 +341,9 @@ def test_screen_look_says_plainly_when_the_display_is_asleep(
     look = tools._make_screen_look(  # noqa: SLF001
         vision_client=cast("Any", _Vision()), max_width_px=1568,
     )
-    ctx = SimpleNamespace(runtime_paths=SimpleNamespace(artifacts_root=tmp_path), action_id="S1")
+    ctx = SimpleNamespace(
+        runtime_paths=SimpleNamespace(artifacts_root=tmp_path), action_id="S1", clock=FakeClock(),
+    )
     if not blank:
         done = look.handler({"question": "what is open?"}, cast("ToolContext", ctx))
         assert done["description"] == "a window (what is open?)", label

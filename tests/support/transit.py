@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from jarvis.execution import transit_tool
+from tests.support.clock import FakeClock
+from tests.support.here import FixedHere, mac_reading
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,9 +68,16 @@ def serve_routes(
         return io.BytesIO(json.dumps(answer(sent) if callable(answer) else answer).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    now = datetime(2026, 10, 6, 17, 0, tzinfo=ZoneInfo("America/Vancouver"))
-    monkeypatch.setattr(transit_tool, "_now", lambda: now)
     return seen
+
+
+TRANSIT_NOW = datetime(2026, 10, 6, 17, 0, tzinfo=ZoneInfo("America/Vancouver"))
+"""The moment the hand-built answers are for: a Tuesday, 17:00."""
+
+
+def transit_clock() -> FakeClock:
+    """A clock at :data:`TRANSIT_NOW`, to hand the registry (``clock=``) and the call's context."""
+    return FakeClock(TRANSIT_NOW)
 
 
 def payload(request: urllib.request.Request) -> Any:  # noqa: ANN401 - the JSON the stub was sent
@@ -87,8 +95,9 @@ def sent_request(seen: list[Any], travel: str = "TRANSIT") -> tuple[urllib.reque
 FIX = {"lat": 48.46, "lng": -123.31, "accuracy_m": 40.4, "place": "Ring Rd, Saanich"}
 
 
-def fix_with(**changes: object) -> Callable[[], dict[str, Any]]:
-    return lambda: {**FIX, **changes}
+def fix_with(**changes: object) -> FixedHere:
+    """This Mac's fix (``FIX`` with ``changes``) as every call's Here."""
+    return FixedHere(mac_reading(**{"place": FIX["place"], **changes}))
 
 
 def bus_route(

@@ -13,7 +13,7 @@ import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -23,9 +23,8 @@ from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.state import core_memory, meaning
 from jarvis.state.embedding import E5Embedder
 from jarvis.state.memory_db import open_memory_db
-
-if TYPE_CHECKING:
-    from jarvis.execution.tools import ToolContext
+from tests.support.clock import FakeClock
+from tests.support.tool_context import tool_context
 
 ZONE = ZoneInfo("America/Vancouver")
 NOW = datetime(2026, 10, 11, 21, 0, tzinfo=UTC)
@@ -70,8 +69,8 @@ def _store(root: Path, records: list[tuple[str, str, str, str]] = RECORDS) -> Pa
 
 
 def _ids(path: Path, embedder: FakeEmbedder | None, **args: Any) -> list[str]:  # noqa: ANN401
-    (tool,) = build_conversation_tool(path, ZONE, lambda: NOW, embedder)
-    answer = tool.handler(args, cast("ToolContext", None))
+    (tool,) = build_conversation_tool(path, embedder)
+    answer = tool.handler(args, tool_context(clock=FakeClock(NOW)))
     return [m["id"] for m in answer["moments"]]
 
 

@@ -16,13 +16,13 @@ import time
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import yaml
 
 from jarvis.execution.my_day_tool import build_my_day_tool
-from jarvis.execution.tools import Tool, ToolContext, ToolError
+from jarvis.execution.tools import Tool, ToolError
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.shared import CallerPrincipal
 from jarvis.state.device_reads import TIMESINK_READ
@@ -30,9 +30,11 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
 from jarvis.surface.terminal_link import TerminalHub
 from scripts import tool_exam
+from tests.support.clock import FakeClock
 from tests.support.day_line import load_rows
 from tests.support.ledger import CHROME, NOW, ZONE, ledger_at, ledger_world, terminal_link, utc_text
 from tests.support.ledger_phone import ORIGIN, phone_rows
+from tests.support.tool_context import tool_context
 
 REPO = Path(__file__).resolve().parents[2]
 WECHAT = "com.tencent.xinWeChat"
@@ -41,7 +43,7 @@ REPORT = "# Report\n\n## Summary\n{}\n\n## Work items\n- not the summary line\n"
 
 
 def _call(tool: Tool, **args: Any) -> dict[str, Any]:  # noqa: ANN401 - the model's arguments.
-    return dict(tool.handler(args, cast("ToolContext", None)))
+    return dict(tool.handler(args, tool_context(clock=FakeClock(NOW))))
 
 
 def _failure(tool: Tool, **args: Any) -> ToolError:  # noqa: ANN401 - the model's arguments.
@@ -55,7 +57,7 @@ def _size(result: dict[str, Any]) -> int:
 
 
 def _tool(src: LedgerSources) -> Tool:
-    (tool,) = build_my_day_tool(src, lambda: NOW)
+    (tool,) = build_my_day_tool(src)
     return tool
 
 
@@ -148,7 +150,7 @@ def test_the_tool_is_a_small_read_only_menu_entry_that_replaces_four(tool: Tool)
         "refresh_work_state",
     }
     # It reads the saved analysis; nothing in what it is built from can start a paid one.
-    assert list(inspect.signature(build_my_day_tool).parameters) == ["sources", "clock"]
+    assert list(inspect.signature(build_my_day_tool).parameters) == ["sources"]
 
 
 # (arguments, the spoken summary exactly). Times are Vancouver; "today" is Thu Oct 8.

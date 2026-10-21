@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections import Counter
-from datetime import datetime
 from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
 
@@ -20,6 +19,7 @@ from jarvis.state.event_log import emit_event
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from datetime import datetime
 
     from jarvis.execution.tools import ToolContext
 
@@ -59,13 +59,12 @@ def _month_start_ms(now: datetime) -> int:
     return int(local.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
 
-def month_spent(conn: sqlite3.Connection, now: datetime | None = None) -> float:
-    """USD recorded for map calls since the first of this month, Pacific time."""
-    at = now or datetime.now(_BILLING_ZONE)
-    return float(conn.execute(_MONTH_SQL, (_month_start_ms(at),)).fetchone()[0])
+def month_spent(conn: sqlite3.Connection, now: datetime) -> float:
+    """USD recorded for map calls since the first of the month ``now`` falls in, Pacific time."""
+    return float(conn.execute(_MONTH_SQL, (_month_start_ms(now),)).fetchone()[0])
 
 
-def guard(conn: sqlite3.Connection, cap_usd: float, now: datetime | None = None) -> None:
+def guard(conn: sqlite3.Connection, cap_usd: float, now: datetime) -> None:
     """Refuse a paid map call once the month's spend is near the cap; a cap of 0 or less is off.
 
     Raises ``ToolError`` (code ``spend_cap``) whose message she can pass on as it is.
@@ -85,9 +84,10 @@ def guard(conn: sqlite3.Connection, cap_usd: float, now: datetime | None = None)
 def record(ctx: ToolContext, skus: Iterable[str], now: datetime | None = None) -> None:
     """Record the requests made, one ``maps.spend_recorded`` row per SKU; a failed write is logged.
 
-    ``now`` stamps the rows (tests); the default is the moment of the call.
+    ``now`` stamps the rows (tests); the default is the context clock's moment.
     """
     turn = _turn_of(ctx.action_id)
+    stamp = int((now or ctx.clock.now()).timestamp() * 1000)
     for sku, count in Counter(skus).items():
         try:
             emit_event(
@@ -100,7 +100,7 @@ def record(ctx: ToolContext, skus: Iterable[str], now: datetime | None = None) -
                     "action_id": ctx.action_id,
                 },
                 correlation={"turn_id": turn} if turn else None,
-                ts_epoch_ms=None if now is None else int(now.timestamp() * 1000),
+                ts_epoch_ms=stamp,
             )
         except sqlite3.Error:
             LOGGER.exception("maps spend: could not record %d x %s", count, sku)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
 from jarvis.execution.tools import ToolError
@@ -13,11 +13,6 @@ if TYPE_CHECKING:
 _NOON: Final = 12
 _MINUTE: Final = 60
 _HOUR: Final = 3600
-
-
-def now() -> datetime:
-    """The clock the day tools read unless a test hands them another."""
-    return datetime.now(UTC)
 
 
 def cut(text: str, limit: int) -> str:

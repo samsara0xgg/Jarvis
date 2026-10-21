@@ -19,7 +19,7 @@ import pytest
 import yaml
 
 from jarvis.execution.archive_tool import build_archive_tool
-from jarvis.execution.tools import Tool, ToolContext, ToolError
+from jarvis.execution.tools import Tool, ToolError
 from jarvis.runtime import RuntimeBootstrapError, _claude_daily
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
 from jarvis.state import imports
@@ -28,6 +28,8 @@ from jarvis.state.event_log import open_event_log
 from jarvis.state.import_parsers import claude_daily, is_daily_subject
 from jarvis.state.memory_db import open_memory_db
 from tests.canary._helpers import repo_root
+from tests.support.clock import FakeClock
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -389,10 +391,10 @@ def test_the_archive_finds_the_letters_by_source_day_and_words(tmp_path: Path) -
     """The archive tool finds, filters and opens the letters' entries like any other source."""
     rig = _Rig(tmp_path)
     rig.intake.poll_once()
-    tool: Tool = build_archive_tool(rig.db, VANCOUVER, lambda: datetime(2026, 10, 20, 9, 0, tzinfo=UTC))[0]
+    tool: Tool = build_archive_tool(rig.db)[0]
 
     def call(**args: object) -> dict[str, Any]:
-        return cast("dict[str, Any]", tool.handler(args, cast("ToolContext", None)))
+        return cast("dict[str, Any]", tool.handler(args, tool_context(clock=FakeClock(datetime(2026, 10, 20, 9, 0, tzinfo=UTC), zone=VANCOUVER))))
 
     found = call(source="claude_daily", query=["pottery"])
     assert found["entries"] and all(e["source"] == "claude_daily" for e in found["entries"])

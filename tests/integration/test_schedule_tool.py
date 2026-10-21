@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
@@ -40,6 +40,7 @@ from jarvis.state import commitments, departures, things
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from scripts import tool_exam, tool_exam_steps
+from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:
     import sqlite3
@@ -88,10 +89,19 @@ class _World:
     def __init__(self, root: Path, before_min: int = 60) -> None:
         self.paths = bootstrap_runtime(root)
         self.conn = open_event_log(self.paths.event_log)
-        self.now = NOW
-        self.registry = ToolRegistry()
-        for tool in build_schedule_tool(LOCAL, before_min, lambda: self.now):
+        self.clock = FakeClock(NOW, zone=LOCAL)
+        self.registry = ToolRegistry(clock=self.clock)
+        for tool in build_schedule_tool(before_min):
             self.registry.register(tool)
+
+    @property
+    def now(self) -> datetime:
+        """The tool's clock; assigning moves it."""
+        return self.clock.now()
+
+    @now.setter
+    def now(self, value: datetime) -> None:
+        self.clock.set(value)
 
     def run(
         self, who: CallerPrincipal, args: Mapping[str, Any],
@@ -163,7 +173,7 @@ def _rows(out: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def test_the_tool_is_one_resident_menu_entry_that_reads_and_writes() -> None:
     """One L1 tool for the model and the router, on the menu from the first request."""
-    (tool,) = build_schedule_tool(LOCAL, 60)
+    (tool,) = build_schedule_tool(60)
     assert tool.name == "schedule"
     assert (tool.risk_level, tool.read_only, tool.deferred) == ("L1", False, False)
     assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM, ROUTER})
@@ -1271,12 +1281,12 @@ def test_the_booted_runtime_has_the_tool_and_not_the_old_ones(
 
 
 def test_the_default_registry_gives_schedule_the_ring_lead_and_his_zone(tmp_path: Path) -> None:
-    """``build_default_registry(ring_before_min=, local_zone=)`` reaches the tool's clock."""
-    registry = build_default_registry(local_zone=LOCAL, ring_before_min=15)
+    """``build_default_registry(ring_before_min=, clock=)`` reaches the tool's clock."""
+    registry = build_default_registry(clock=FakeClock(NOW, zone=LOCAL), ring_before_min=15)
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
     try:
-        soon = (datetime.now(UTC).astimezone(LOCAL) + timedelta(days=2)).strftime("%Y-%m-%d")
+        soon = (NOW + timedelta(days=2)).strftime("%Y-%m-%d")
         out = _dispatch(
             registry, conn, paths, "schedule",
             {"action": "add", "what": "Dentist", "kind": "go", "at": f"{soon} 15:30"},

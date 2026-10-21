@@ -19,10 +19,11 @@ from jarvis.state.import_parsers import money
 from jarvis.state.imports import mask_secrets
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from datetime import tzinfo
+    from collections.abc import Mapping
     from pathlib import Path
 
+    from jarvis.execution.tools import ToolContext
+    from jarvis.shared.clock import Clock
     from jarvis.state.embedding import Embedder
 
 LOGGER = logging.getLogger(__name__)
@@ -162,13 +163,10 @@ def _masked_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
 class _Archive:
     """The tool's handler: entries for words, a source or a span; one entry opened."""
 
-    def __init__(
-        self, store: Path, zone: tzinfo, clock: Callable[[], datetime],
-        embedder: Embedder | None,
-    ) -> None:
+    def __init__(self, store: Path, clock: Clock, embedder: Embedder | None) -> None:
         self._store = store
-        self._zone = zone
-        self._clock = clock
+        self._zone = clock.zone
+        self._clock = clock.now
         self._embedder = embedder
 
     def run(self, args: Mapping[str, Any], _ctx: object) -> dict[str, Any]:
@@ -351,18 +349,21 @@ class _Archive:
 
 
 def build_archive_tool(
-    store: Path | None, zone: tzinfo, clock: Callable[[], datetime] = speakable.now,
-    *, embedder: Embedder | None = None,
+    store: Path | None, *, embedder: Embedder | None = None,
 ) -> tuple[Tool, ...]:
     """``archive`` over the memory store's import entries; none without a store."""
     if store is None:
         return ()
+
+    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        return _Archive(store, ctx.clock, embedder).run(args, ctx)
+
     return (
         Tool(
             name="archive",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Archive(store, zone, clock, embedder).run,
+            handler=run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L0",
             read_only=True,

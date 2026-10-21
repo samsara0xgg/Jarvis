@@ -1,6 +1,6 @@
 """ADR 0281: the requests for a fresh fix that are waiting for his phone's answer.
 
-``where_am_i`` asks his phone for a fix and waits on a worker thread; the answer comes back on
+Here (ADR 0322) asks his phone for a fix and waits on a worker thread; the answer comes back on
 the loop thread, over ``/phone/ws`` (a ``located`` frame) or in a ``phone.location_observed``
 event carrying the request's id. This is the meeting point of the two: a request is
 :meth:`~LocateWaits.expect`-ed, :meth:`~LocateWaits.deliver`-ed an answer or a refusal, and
@@ -12,7 +12,10 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass
-from typing import Final, TypeGuard
+from typing import TYPE_CHECKING, Final, TypeGuard
+
+if TYPE_CHECKING:
+    from jarvis.shared.clock import Clock
 
 REQUEST_ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
 """What a request id looks like on the wire (``locate`` frame, push ``locate`` key, report)."""
@@ -43,6 +46,7 @@ class Refused:
     """The phone answered that it cannot take a fix (``denied`` or ``unavailable``)."""
 
     error: str
+    device: str = ""
 
 
 class LocateWaits:
@@ -51,29 +55,32 @@ class LocateWaits:
     def __init__(self) -> None:
         """Start with no request open."""
         self._lock = threading.Lock()
-        self._open: dict[str, tuple[threading.Event, list[Located | Refused]]] = {}
+        self._open: dict[str, tuple[threading.Event, list[Located | Refused], str | None]] = {}
 
-    def expect(self, request_id: str) -> None:
-        """Open ``request_id``; an answer for an id that is not open is ignored."""
+    def expect(self, request_id: str, device: str | None = None) -> None:
+        """Open ``request_id``; an answer for an id that is not open is ignored.
+
+        With ``device``, only that device's answer counts (ADR 0322).
+        """
         with self._lock:
-            self._open[request_id] = (threading.Event(), [])
+            self._open[request_id] = (threading.Event(), [], device)
 
     def deliver(self, request_id: str, answer: Located | Refused) -> None:
         """Hand ``answer`` to whoever waits on ``request_id``; the first answer counts."""
         with self._lock:
             slot = self._open.get(request_id)
-            if slot is None or slot[1]:
+            if slot is None or slot[1] or (slot[2] is not None and answer.device != slot[2]):
                 return
             slot[1].append(answer)
         slot[0].set()
 
-    def wait(self, request_id: str, timeout_s: float) -> Located | Refused | None:
-        """The answer to ``request_id`` within ``timeout_s`` seconds, else ``None``."""
+    def wait(self, request_id: str, timeout_s: float, clock: Clock) -> Located | Refused | None:
+        """The answer to ``request_id`` within ``timeout_s`` seconds of ``clock``, else ``None``."""
         with self._lock:
             slot = self._open.get(request_id)
         if slot is None:
             return None
-        slot[0].wait(max(0.0, timeout_s))
+        clock.wait(slot[0], max(0.0, timeout_s))
         with self._lock:
             return slot[1][0] if slot[1] else None
 

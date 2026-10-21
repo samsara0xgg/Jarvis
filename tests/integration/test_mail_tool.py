@@ -26,6 +26,7 @@ from jarvis.runtime.home import Home, mail_text
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event, open_event_log
 from scripts import tool_exam
+from tests.support.clock import FakeClock
 from tests.support.home_routes import (
     ZONE,
     Connections,
@@ -34,6 +35,7 @@ from tests.support.home_routes import (
     Microsoft,
     jev,  # noqa: F401 - the fixture.
 )
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -107,12 +109,12 @@ def _mail(mailbox: _Mailbox | None) -> Tool:
         Connections(Microsoft(), mailbox),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None,
     )
-    (tool,) = build_mail_tool(home.mail, home.gmail, mail_text, ZoneInfo(ZONE), lambda: NOW)
+    (tool,) = build_mail_tool(home.mail, home.gmail, mail_text)
     return tool
 
 
 def _call(tool: Tool, **args: Any) -> dict[str, Any]:  # noqa: ANN401 - the model's arguments.
-    return dict(tool.handler(args, cast("ToolContext", None)))
+    return dict(tool.handler(args, tool_context(clock=FakeClock(NOW, zone=ZoneInfo(ZONE)))))
 
 
 def _failure(tool: Tool, **args: Any) -> ToolError:  # noqa: ANN401 - the model's arguments.
@@ -150,7 +152,7 @@ def test_no_arguments_lists_the_marked_letters_without_junk_bodies_or_addresses(
         Connections(Microsoft(), gmail),  # type: ignore[arg-type]
         (ZONE, ZoneInfo(ZONE)), None, jev.reply(importance=True),
     )
-    (tool,) = build_mail_tool(home.mail, home.gmail, mail_text, ZoneInfo(ZONE), lambda: NOW)
+    (tool,) = build_mail_tool(home.mail, home.gmail, mail_text)
     result = _call(tool)
     assert result["junk_left_out"] == 1  # the Shop Deals letter, 199a1c0d4105
     letters = {one["id"]: one for one in result["unread"]}
@@ -470,7 +472,7 @@ def test_a_message_read_by_the_tool_still_shows_as_the_mail_card(tmp_path: Path)
     """ADR 0063: the one message a turn read whole is a mail record, as with gmail_get."""
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
-    registry = ToolRegistry()
+    registry = ToolRegistry(clock=FakeClock(NOW, zone=ZoneInfo(ZONE)))
     registry.register(_mail(_Mailbox([_message(7, **{"from": LEE}, subject="Re: Hours")], {})))
     lifecycle = ActionLifecycle()
     lifecycle.register("A1")

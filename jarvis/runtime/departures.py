@@ -172,7 +172,9 @@ class Departures:
         ``add`` puts it on the set this offer already started (a new set when it did not).
         """
         with contextlib.closing(open_runtime_event_log(self._path)) as conn:
-            made = pin_offered(conn, self.offers, offer_id, index, add=add)
+            made = pin_offered(
+                conn, self.offers, offer_id, index, add=add, now=self.now().astimezone(_ZONE),
+            )
         return {"departure": self.view(), "reason": made.get("reason")}
 
     def remove(self, trip_id: str) -> dict[str, Any]:
@@ -191,7 +193,8 @@ class Departures:
                 self._undo = _Undo(one.pin_id, [trip], whole=False, offer_id=one.offer_id)
                 reminder_id, ring_tid = ring(
                     conn, [t for t in one.trips if t.tid != trip_id], now_ms=now_ms,
-                    reminder_id=one.reminder_id, ring_tid=one.ring_tid, action_id=one.pin_id,
+                    zone=_ZONE, reminder_id=one.reminder_id, ring_tid=one.ring_tid,
+                    action_id=one.pin_id,
                 )
                 folded.remove(conn, one.pin_id, trip_id, reminder_id=reminder_id, ring=ring_tid)
         return {"departure": self.view(), "reason": None}
@@ -227,11 +230,16 @@ class Departures:
             reason: str | None = "past"
             try:
                 if back and (gone.whole or one is None):
-                    pin_trips(conn, back, offer_id=gone.offer_id, action_id=pin_id)
+                    pin_trips(
+                        conn, back, offer_id=gone.offer_id, action_id=pin_id,
+                        now=self.now().astimezone(_ZONE),
+                    )
                     reason = None
                 elif back and one is not None:
                     for trip in back:
-                        add_trip(conn, one, trip, action_id=pin_id)
+                        add_trip(
+                            conn, one, trip, action_id=pin_id, now=self.now().astimezone(_ZONE),
+                        )
                         one = folded.current(conn)
                         assert one is not None  # noqa: S101 - just added to it.
                     reason = None
@@ -254,7 +262,9 @@ class Departures:
             if (t.first_route, t.board_stop) == (trip.first_route, trip.board_stop)
         )
         after = datetime.fromtimestamp(line / 1000, _ZONE)
-        if later := self.offers.later(trip.first_route, trip.board_stop, after):
+        if later := self.offers.later(
+            trip.first_route, trip.board_stop, after, self.now().astimezone(_ZONE),
+        ):
             return int(later[0].timestamp() * 1000), int(later[1].timestamp() * 1000), later[2]
         if self.live is None or trip.stop_lat is None or trip.stop_lng is None:
             return None
@@ -278,8 +288,8 @@ class Departures:
     ) -> None:
         """Write ``trip``'s new times, the ring moved to match them, as one ``updated``."""
         reminder_id, ring_tid = ring(
-            conn, one.trips, now_ms=now_ms, reminder_id=one.reminder_id, ring_tid=one.ring_tid,
-            action_id=one.pin_id,
+            conn, one.trips, now_ms=now_ms, zone=_ZONE, reminder_id=one.reminder_id,
+            ring_tid=one.ring_tid, action_id=one.pin_id,
         )
         folded.update(conn, one.pin_id, trip, reminder_id=reminder_id, ring=ring_tid)
 
@@ -310,7 +320,7 @@ class Departures:
                 self._last = now.timestamp()
                 moved = self._poll(one, now_ms)
             reminder_id, ring_tid = ring(
-                conn, one.trips, now_ms=now_ms, reminder_id=one.reminder_id,
+                conn, one.trips, now_ms=now_ms, zone=_ZONE, reminder_id=one.reminder_id,
                 ring_tid=one.ring_tid, action_id=one.pin_id,
             )
             # The ring moves with a trip's new time, or alone when the earliest trip was missed.
