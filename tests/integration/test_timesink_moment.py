@@ -21,7 +21,7 @@ from jarvis.decision import moment as rules
 from jarvis.decision.attention import replay, rule_judge_v1
 from jarvis.runtime import RuntimeBootstrapError, _moment
 from jarvis.runtime.card_feedback import CardFeedback
-from jarvis.runtime.inherent_loop import _moment_hold
+from jarvis.runtime.daemon.routes import moment_hold
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.state import job_ledger, job_time, timesink_moment
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -711,7 +711,7 @@ def test_the_hold_reaches_the_client_on_both_routes(
             InherentDeps(
                 submit_callable=lambda _text: None,
                 broadcaster=InherentBroadcaster(),
-                moment_read=lambda: _moment_hold(h.job.moment),  # type: ignore[arg-type]
+                moment_read=lambda: moment_hold(h.job.moment),  # type: ignore[arg-type]
             )
         )
     )

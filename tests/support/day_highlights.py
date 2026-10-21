@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.highlight_marks import HighlightMarks
-from jarvis.runtime.inherent_loop import _read_day
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state import picture_notes as note_records
 from jarvis.state.attachments import AttachmentRef
@@ -93,7 +93,7 @@ def picture_note(src: LedgerSources, picture: str, at: datetime, note: str) -> N
 
 def served_day(src: LedgerSources, day: date = DAY, now_ms: int = NOW_MS) -> dict[str, Any]:
     """``GET /inherent/day`` for ``day``, as the route folds it."""
-    return _read_day(src.event_log, VANCOUVER, src.memory_db, src.timesink, day, now_ms)
+    return read_day(src.event_log, VANCOUVER, src.memory_db, src.timesink, day, now_ms)
 
 
 def marks_of(src: LedgerSources) -> HighlightMarks:

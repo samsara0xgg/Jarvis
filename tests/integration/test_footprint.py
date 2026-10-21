@@ -38,6 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import routes
 from jarvis.shared.geo import metres
 from jarvis.state import places
 from jarvis.state.day_line import day_window
@@ -301,7 +302,7 @@ class Brain:
             phone_events=BrainEvents(brain_log(self.log)),
             device_name=functools.partial(device_name_for_token, tmp_path),
             day_read=functools.partial(
-                inherent_loop._serve_day, self.log, ZONE, self.memory, None,  # noqa: SLF001
+                routes.serve_day, self.log, ZONE, self.memory, None,
             ),
             footprint_read=(
                 functools.partial(

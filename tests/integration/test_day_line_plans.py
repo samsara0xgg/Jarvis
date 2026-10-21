@@ -36,7 +36,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.execution.tools import ToolError
-from jarvis.runtime.inherent_loop import _read_day, _serve_day
+from jarvis.runtime.daemon.routes import read_day, serve_day
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.state import departures, things
 from jarvis.state.day_line import DayLine, day_window, fold_day, parse_day
@@ -557,7 +557,7 @@ def test_the_day_route_serves_events_labels_and_departures(tmp_path: Path) -> No
     client = TestClient(create_app(InherentDeps(
         submit_callable=lambda _text: "T1",
         broadcaster=InherentBroadcaster(),
-        day_read=functools.partial(_serve_day, log, ZONE, None, None),
+        day_read=functools.partial(serve_day, log, ZONE, None, None),
     )))
 
     reply = client.get("/inherent/day", params={"date": DAY})
@@ -583,7 +583,7 @@ def test_the_day_route_without_microsoft_serves_the_rest_and_never_names_the_cal
     conn = open_event_log(log)
     load_rows(conn, [visit("home", 480, place="Home")], ORIGIN)
     conn.close()
-    body = _read_day(log, ZONE, None, None, date(2026, 10, 10), _at(720))
+    body = read_day(log, ZONE, None, None, date(2026, 10, 10), _at(720))
 
     assert [item["id"] for item in body["items"]] == ["home"]
     assert (body["labels"], body["missing"]) == ([], ["mac", "talks"])

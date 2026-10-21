@@ -506,7 +506,7 @@ def test_without_a_shipped_store_there_are_no_code_items_and_nothing_is_missing_
 
 def test_the_day_route_serves_the_shipped_sessions_and_lane(tmp_path: Path) -> None:
     """``GET /inherent/day``'s reader is given the imports directory and shows what it holds."""
-    from jarvis.runtime.inherent_loop import _read_day  # noqa: PLC0415 - the route's own reader
+    from jarvis.runtime.daemon.routes import read_day  # noqa: PLC0415 - the route's own reader
 
     start_ms, _ = day_window(parse_day("2026-10-10"), ZONE)
     one = make_stores(tmp_path, ZONE, origin=start_ms, spans=(Spun(540, 600),))
@@ -516,7 +516,7 @@ def test_the_day_route_serves_the_shipped_sessions_and_lane(tmp_path: Path) -> N
     with closing(open_event_log(tmp_path / "events.db")):
         pass
 
-    body = _read_day(
+    body = read_day(
         tmp_path / "events.db",
         ZONE,
         None,

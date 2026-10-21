@@ -33,8 +33,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.runtime.daemon.routes import answer_doing, read_day
 from jarvis.runtime.doing_answers import DoingAnswers
-from jarvis.runtime.inherent_loop import _answer_doing, _read_day
 from jarvis.state import places, plan
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.doing import (
@@ -975,7 +975,7 @@ def world(tmp_path: Path) -> tuple[LedgerSources, Any]:
         src.event_log, DaySources(VANCOUVER, src.timesink, src.memory_db),
         clock=lambda: NOW_MS / 1000,
     )
-    return src, peers_with(tmp_path, doing_answer=functools.partial(_answer_doing, answers))
+    return src, peers_with(tmp_path, doing_answer=functools.partial(answer_doing, answers))
 
 
 def _rows(src: LedgerSources) -> list[tuple[Any, ...]]:
@@ -1222,7 +1222,7 @@ def test_the_day_over_http_carries_spans_and_coverage_as_json(tmp_path: Path) ->
     stays_of(src)
 
     async def day_read(day: Any) -> dict[str, Any]:  # noqa: ANN401 — the route's argument
-        return _read_day(src.event_log, VANCOUVER, src.memory_db, src.timesink, day, NOW_MS)
+        return read_day(src.event_log, VANCOUVER, src.memory_db, src.timesink, day, NOW_MS)
 
     peers = peers_with(tmp_path, day_read=day_read)
     got = peers.local.get(f"/inherent/day?date={DAY_KEY}")

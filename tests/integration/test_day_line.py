@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime.inherent_loop import _read_day, _serve_day
+from jarvis.runtime.daemon.routes import read_day, serve_day
 from jarvis.state import day_line, phone_day, reminders
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
@@ -1042,7 +1042,7 @@ def _client(
             phone_events=events,
             device_name=functools.partial(device_name_for_token, tmp_path) if phone else None,
             day_read=functools.partial(
-                _serve_day,
+                serve_day,
                 log,
                 None if zone is None else ZoneInfo(zone),
                 stores.memory_db if memory else None,
@@ -1317,7 +1317,7 @@ def test_today_is_where_the_owner_is_not_where_the_server_clock_is(tmp_path: Pat
     log = tmp_path / "events.db"
     open_event_log(log).close()
     now_ms = int(datetime(2026, 10, 10, 6, 30, tzinfo=UTC).timestamp()) * 1000
-    body = _read_day(log, ZoneInfo(VANCOUVER), None, None, None, now_ms)
+    body = read_day(log, ZoneInfo(VANCOUVER), None, None, None, now_ms)
     assert (body["date"], body["tz"], body["now_ms"]) == ("2026-10-09", VANCOUVER, now_ms)
     assert (body["start_ms"], body["end_ms"]) == day_window(date(2026, 10, 9), ZoneInfo(VANCOUVER))
     assert set(body) == {

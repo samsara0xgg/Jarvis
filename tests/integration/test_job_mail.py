@@ -35,7 +35,8 @@ from jarvis.execution.tools import ToolError
 from jarvis.runtime import RuntimeBootstrapError, _job_mail, audio_output
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.audio_output import TerminalOutput
-from jarvis.runtime.inherent_loop import _job_mail_deps, _say_job_line
+from jarvis.runtime.daemon.routes import job_mail_deps
+from jarvis.runtime.inherent_loop import _say_job_line
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import JobMail, gmail_read, repair
 from jarvis.shared import lang
@@ -1343,7 +1344,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
             _job_mail(bad, config_path, None, connections, db, clock)
 
     # The daemon wires no route for it, so every one answers 404.
-    assert _job_mail_deps(None) == {}
+    assert job_mail_deps(None) == {}
     client = TestClient(
         create_app(
             InherentDeps(

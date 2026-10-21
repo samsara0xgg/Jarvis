@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime.inherent_loop import _notice_deps
+from jarvis.runtime.daemon.routes import notice_deps
 from jarvis.runtime.reminders import Reminders
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state import reminders as reminder_state
@@ -95,7 +95,7 @@ class ReminderWorld:
         return [dict(e.payload) for e in iter_events_of_types(self.conn, ("reminder.fired",))]
 
     def app(self, job_mail: object | None = None) -> TestClient:
-        deps = _notice_deps(job_mail, self.reminders, None)  # type: ignore[arg-type]
+        deps = notice_deps(job_mail, self.reminders, None)  # type: ignore[arg-type]
         return TestClient(
             create_app(
                 InherentDeps(

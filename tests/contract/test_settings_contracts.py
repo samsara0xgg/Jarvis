@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from jarvis.runtime.inherent_loop import _save_settings
+from jarvis.runtime.daemon.routes import save_settings
 from jarvis.runtime.settings import SETTINGS_FILE, Settings, apply_settings
 from tests.support.contracts import WORLD_NOW_MS, Contracts, Inputs, brain_at
 from tests.support.timeline import Peers, peers_with
@@ -40,7 +40,7 @@ def _peers(root: Path, page: Settings) -> Peers:
     keys = root / "keys"
     keys.mkdir()
     return peers_with(
-        keys, settings_read=read, settings_update=lambda changes: _save_settings(page, changes),
+        keys, settings_read=read, settings_update=lambda changes: save_settings(page, changes),
     )
 
 

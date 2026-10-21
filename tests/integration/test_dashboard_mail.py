@@ -14,9 +14,9 @@ from fastapi.testclient import TestClient
 from jarvis.decision.llm import ChatResult
 from jarvis.execution.tools import ToolContext, ToolError, build_default_registry
 from jarvis.runtime import _dashboard_mail, _live_lines
+from jarvis.runtime.daemon.routes import mail_letter, mail_summary
 from jarvis.runtime.dashboard import DRAFT_CHARS, DRAFT_LINE_CHARS, MailDrafts, ViewState
 from jarvis.runtime.home import Home, mail_layout, mail_summarizer
-from jarvis.runtime.inherent_loop import _mail_letter, _mail_summary
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -226,8 +226,8 @@ def _page(
         None if model is None else mail_summarizer(model, log),  # type: ignore[arg-type]
     )
     routes: dict[str, Any] = {} if view is None else {
-        "mail_letter": functools.partial(_mail_letter, home),
-        "mail_summary": functools.partial(_mail_summary, home),
+        "mail_letter": functools.partial(mail_letter, home),
+        "mail_summary": functools.partial(mail_summary, home),
     }
     app = create_app(InherentDeps(
         submit_callable=lambda _text: None,

@@ -33,8 +33,8 @@ from jarvis.execution import transit_tool
 from jarvis.execution.tools import ActionLifecycle, ToolError, build_default_registry
 from jarvis.execution.transit_tool import TransitOffers, live_card
 from jarvis.runtime.bus_live import STATIC_MAX_AGE_S, BusLive
+from jarvis.runtime.daemon.routes import notice_deps
 from jarvis.runtime.departures import REFRESH_S, Departures
-from jarvis.runtime.inherent_loop import _notice_deps
 from jarvis.runtime.reminders import Reminders
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
 from jarvis.state import departures as departures_state
@@ -221,7 +221,7 @@ class _World:
         return [dict(e.payload) for e in iter_events_of_types(self.conn, types)]
 
     def app(self) -> TestClient:
-        deps = _notice_deps(None, self.reminders, None)
+        deps = notice_deps(None, self.reminders, None)
         return TestClient(
             create_app(
                 InherentDeps(

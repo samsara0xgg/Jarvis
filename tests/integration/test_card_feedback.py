@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from jarvis.decision import attention
 from jarvis.decision.attention import ContextPack, replay, rule_judge_v1
 from jarvis.runtime.card_feedback import KINDS, CardFeedback
-from jarvis.runtime.inherent_loop import _card_act
+from jarvis.runtime.daemon.routes import card_act
 from jarvis.shared import lang
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -61,7 +61,7 @@ class _Harness:
                 InherentDeps(
                     submit_callable=lambda _text: None,
                     broadcaster=InherentBroadcaster(),
-                    card_act=functools.partial(_card_act, self.cards),
+                    card_act=functools.partial(card_act, self.cards),
                 )
             )
         )

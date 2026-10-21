@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import routes
 from jarvis.state import places
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.lifelog import COVERAGE_FRESH_MS, LIFELOG_DIRNAME, Lifelog
@@ -59,7 +59,7 @@ class World:
             broadcaster=InherentBroadcaster(),
             device_name=functools.partial(device_name_for_token, self.root),
             lifelog=self.store,
-            lifelog_coverage=inherent_loop._lifelog_coverage(runtime, self.store),  # noqa: SLF001
+            lifelog_coverage=routes.lifelog_coverage(runtime, self.store),
         )
         app = create_app(deps)
         self.key = local_key(self.root)

@@ -36,9 +36,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jarvis.decision.attention_threads import Asked, ThreadBrief, read_threads
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.doing_day import DayDoing, Lane
 from jarvis.runtime.doing_run import DoingSchedule
-from jarvis.runtime.inherent_loop import _read_day
 from jarvis.state import attention, imports
 from jarvis.state.day_line import DaySources
 from jarvis.state.doing import Doing
@@ -306,7 +306,7 @@ def test_every_doing_stretch_on_the_page_tells_its_own_attention(tmp_path: Path)
     sources = DaySources(VANCOUVER, None, memory, shipped=directory)
     after = DAY + timedelta(days=1)
     for day, now in ((DAY, _at(23)), (after, _at(1, 0, day=after))):
-        page = _read_day(log, VANCOUVER, memory, None, day, _ms(now), shipped=directory)
+        page = read_day(log, VANCOUVER, memory, None, day, _ms(now), shipped=directory)
         doing = [s for s in page["spans"] if s["lane"] == "doing"]
         assert doing
         for span in doing:
@@ -366,7 +366,7 @@ def _shipped_world(world: World, tmp_path: Path) -> World:
 
 
 def _page_threads(world: World, now: datetime) -> dict[str, tuple[str | None, int]]:
-    page = _read_day(
+    page = read_day(
         world.log, VANCOUVER, world.memory, None, DAY, _ms(now), shipped=world.sources.shipped,
     )
     found: dict[str, tuple[str | None, int]] = {}

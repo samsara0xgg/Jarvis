@@ -24,9 +24,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.surrogate_route import JevLog
+from jarvis.runtime.daemon.routes import mail_letter, serve_today, set_todo
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.runtime.home import Home
-from jarvis.runtime.inherent_loop import _mail_letter, _serve_today, _set_todo
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.state import things
 from jarvis.state.daily_report import save_report
@@ -105,8 +105,8 @@ def _client(
         await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
 
     today: dict[str, Any] = {} if ledger is None else {
-        "today_read": functools.partial(_serve_today, ledger.path, LOCAL, home.weather),
-        "todo_set": functools.partial(_set_todo, home, ledger.mirror, ledger.path, LOCAL),
+        "today_read": functools.partial(serve_today, ledger.path, LOCAL, home.weather),
+        "todo_set": functools.partial(set_todo, home, ledger.mirror, ledger.path, LOCAL),
     }
     return TestClient(create_app(InherentDeps(
         submit_callable=lambda _text: None,
@@ -117,7 +117,7 @@ def _client(
         **today,
         # ADR 0148: the mail page's routes, wired as inherent_loop wires them.
         **({} if view is None else {
-            "mail_letter": functools.partial(_mail_letter, home),
+            "mail_letter": functools.partial(mail_letter, home),
             "mail_mark_read": _flag(home.mark_read, "unread"),
             "mail_trash": _flag(home.trash, "undo"),
             "view_set": view.set,
@@ -827,7 +827,7 @@ def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> N
 
 def _drafts_client(gmail: Gmail | None = None) -> tuple[TestClient, ViewState, MailDrafts]:
     """The mail page's draft routes wired over the real stores, as inherent_loop wires them."""
-    from jarvis.runtime.inherent_loop import _draft_view, _save_draft  # noqa: PLC0415
+    from jarvis.runtime.daemon.routes import draft_view, save_draft  # noqa: PLC0415
 
     view = ViewState()
     drafts = MailDrafts(view)
@@ -837,10 +837,10 @@ def _drafts_client(gmail: Gmail | None = None) -> tuple[TestClient, ViewState, M
     )
 
     async def read(letter_id: str) -> dict[str, Any]:
-        return await asyncio.to_thread(_draft_view, home, drafts, letter_id)
+        return await asyncio.to_thread(draft_view, home, drafts, letter_id)
 
     async def save(letter_id: str, subject: str, body: str) -> dict[str, Any]:
-        return await asyncio.to_thread(_save_draft, home, drafts, letter_id, subject, body)
+        return await asyncio.to_thread(save_draft, home, drafts, letter_id, subject, body)
 
     async def discard(letter_id: str) -> None:
         drafts.discard(letter_id)

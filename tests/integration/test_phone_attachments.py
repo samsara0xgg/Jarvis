@@ -40,8 +40,8 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.deployment import bootstrap_runtime, data
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _live_lines, _record_words, _shares_line, inherent_loop
-from jarvis.runtime.daemon import retention
+from jarvis.runtime import JarvisRuntime, _live_lines, _record_words, _shares_line
+from jarvis.runtime.daemon import retention, routes
 from jarvis.shared import llm_io_log
 from jarvis.state import attachments as attachments_module
 from jarvis.state.attachments import (
@@ -674,7 +674,7 @@ def test_attachments_age_out_with_the_recordings_and_clear_with_them(tmp_path: P
 def test_only_a_preset_that_says_it_reads_pictures_gets_them() -> None:
     """The shipped chat presets say so; a preset that does not, or another host, gets none."""
     shipped = yaml.safe_load((Path(__file__).parents[2] / "config" / "jarvis.yaml").read_text())
-    takes = inherent_loop._model_takes_images  # noqa: SLF001
+    takes = routes.model_takes_images
 
     assert takes(shipped) is True
     assert takes({"llm": {**shipped["llm"], "default_preset": "grok-fast"}}) is False

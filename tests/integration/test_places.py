@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from jarvis.execution import place_tools, transit_tool
 from jarvis.execution.tools import build_default_registry
 from jarvis.runtime import _locate_places, _places_block, _transit_places
-from jarvis.runtime.inherent_loop import _read_day
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.rides import Rides
@@ -879,7 +879,7 @@ def test_a_failing_block_leaves_the_prompt_whole(
 
 def day_stays(world: World) -> list[dict[str, Any]]:
     """The stays of today as ``GET /inherent/day`` serves them."""
-    served = _read_day(world.log, ZONE, world.db, None, TODAY, NOW_MS)
+    served = read_day(world.log, ZONE, world.db, None, TODAY, NOW_MS)
     return [item for item in served["items"] if item["kind"] == "stay"]
 
 
@@ -905,7 +905,7 @@ def test_the_day_line_gives_each_stay_the_smallest_kept_circle_that_holds_it(
     assert "kept_place" not in found["t3"]
     assert [found[k]["place"] for k in ("t1", "t2", "t3")] == ["Main Library", "Quad", "Elsewhere"]
     # Without the memory store the day is what it was.
-    plain = _read_day(world.log, ZONE, None, None, TODAY, NOW_MS)
+    plain = read_day(world.log, ZONE, None, None, TODAY, NOW_MS)
     assert not [i for i in plain["items"] if "kept_place" in i]
     # Forget the library: the smaller circle is gone, the campus holds the stay.
     places.forget(world.db, library.id, origin="user")

@@ -23,12 +23,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 
-from jarvis.runtime.inherent_loop import (
-    _act_commitment,
-    _serve_today,
-    _set_highlight,
-    _set_todo,
-)
+from jarvis.runtime.daemon.routes import act_commitment, serve_today, set_highlight, set_todo
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.shared import lang
@@ -82,7 +77,7 @@ def day(tmp_path: Path) -> Day:
     """The stays, and the route wired as the runtime wires it, to the world's stores."""
     src = ledger_world(tmp_path)
     stays_of(src)
-    peers = peers_with(tmp_path, highlight_set=functools.partial(_set_highlight, marks_of(src)))
+    peers = peers_with(tmp_path, highlight_set=functools.partial(set_highlight, marks_of(src)))
     return Day(src, peers, tmp_path)
 
 
@@ -292,7 +287,7 @@ def appointments(tmp_path: Path) -> Iterator[Appointments]:
         ref="m2", zone=COMMITMENT_ZONE, now=COMMITMENT_NOW,
     )
     peers = peers_with(tmp_path, commitment_act=functools.partial(
-        _act_commitment, log.paths.event_log, COMMITMENT_ZONE,
+        act_commitment, log.paths.event_log, COMMITMENT_ZONE,
     ))
     yield Appointments(log, peers, "ab" * 16)
     log.conn.close()
@@ -420,8 +415,8 @@ def _todo_peers(
     """The checkbox route as the runtime wires it: ``Home`` writes To Do, the mirror follows."""
     home = make_home(microsoft)
     return peers_with(
-        root, today_read=functools.partial(_serve_today, event_log, COMMITMENT_ZONE, home.weather),
-        todo_set=functools.partial(_set_todo, home, mirror, event_log, COMMITMENT_ZONE),
+        root, today_read=functools.partial(serve_today, event_log, COMMITMENT_ZONE, home.weather),
+        todo_set=functools.partial(set_todo, home, mirror, event_log, COMMITMENT_ZONE),
     )
 
 

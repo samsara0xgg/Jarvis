@@ -19,8 +19,8 @@ from zoneinfo import ZoneInfo
 
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.execution.tools import ToolError
+from jarvis.runtime.daemon.routes import serve_day
 from jarvis.runtime.doing_run import compose_run, read_brief, store_run
-from jarvis.runtime.inherent_loop import _serve_day
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.state import things
 from jarvis.state.event_log import open_event_log
@@ -174,11 +174,11 @@ def test_the_days_timeline_with_every_source_and_with_none_of_them(
         log, sources = _the_day(tmp_path / "full")
     full = _served(
         tmp_path / "full-keys",
-        functools.partial(_serve_day, log, ZONE, sources.memory_db, sources.timesink),
+        functools.partial(serve_day, log, ZONE, sources.memory_db, sources.timesink),
     )
     empty = tmp_path / "empty.db"
     open_event_log(empty).close()
-    bare = _served(tmp_path / "bare-keys", functools.partial(_serve_day, empty, ZONE, None, None))
+    bare = _served(tmp_path / "bare-keys", functools.partial(serve_day, empty, ZONE, None, None))
 
     contracts.output(
         "day/timeline",

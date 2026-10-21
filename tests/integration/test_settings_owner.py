@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from jarvis.runtime import _BRAIN_OVERRIDES
-from jarvis.runtime.inherent_loop import _settings_notice_deps
+from jarvis.runtime.daemon.routes import settings_notice_deps
 from jarvis.runtime.settings import PATHS
 from jarvis.runtime.settings_owner import (
     PRESENT,
@@ -258,7 +258,7 @@ def test_the_card_rides_the_notice_routes_and_says_when_a_restart_is_needed(
     async def mail_act(notice_id: str, action: str, reaction: str | None) -> None:
         seen.append(f"{notice_id}:{action}:{reaction}")
 
-    deps = _settings_notice_deps(
+    deps = settings_notice_deps(
         {"notices_read": mail_read, "notice_act": mail_act}, drift, lambda: True,
     )
 

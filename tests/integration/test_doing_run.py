@@ -54,6 +54,7 @@ from jarvis.decision.doing_run import (
 )
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.runtime import doing_run as runtime
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.doing_answers import DoingAnswers
 from jarvis.runtime.doing_run import (
     CHECK_EVERY,
@@ -64,7 +65,6 @@ from jarvis.runtime.doing_run import (
     read_brief,
     store_run,
 )
-from jarvis.runtime.inherent_loop import _read_day
 from jarvis.state.day_line import DaySources, day_window
 from jarvis.state.doing import CATEGORIES, CLUE_KINDS, cut, fact_spans
 from jarvis.state.doing_clues import (
@@ -1533,7 +1533,7 @@ def test_the_day_serves_the_stored_run_up_to_what_it_covers_and_his_words_over_i
     store_run(world.memory, brief, composed)
 
     def served(now: datetime) -> list[dict[str, Any]]:
-        day = _read_day(world.log, VANCOUVER, world.memory, None, DAY, doing_ms(now))
+        day = read_day(world.log, VANCOUVER, world.memory, None, DAY, doing_ms(now))
         return [s for s in day["spans"] if s["lane"] == "doing" and s["basis"] != "planned"]
 
     spans = served(NOW)
@@ -1840,7 +1840,7 @@ def test_a_late_night_is_the_days_until_he_goes_to_bed(world: World, clock: Cloc
         doing_ms(late),
     )
 
-    page = _read_day(world.log, VANCOUVER, world.memory, None, after, doing_ms(late))
+    page = read_day(world.log, VANCOUVER, world.memory, None, after, doing_ms(late))
     doing = [s for s in page["spans"] if s["lane"] == "doing"]
     assert [(s["id"], s["start_ms"], s["end_ms"], s["title"]) for s in doing] == [
         (run.spans[-1]["id"], doing_ms(doing_at(21)), doing_ms(late), "Work on it"),
@@ -1863,7 +1863,7 @@ def test_a_late_night_is_the_days_until_he_goes_to_bed(world: World, clock: Cloc
     assert brief is not None
     assert (brief.waking.end_ms, brief.final) == (doing_ms(doing_at(2, 30, day=after)), True)
     assert schedule.tick(morning) == {KEY: "landed (final, 9 spans, 0 questions)"}  # to 02:30
-    page = _read_day(world.log, VANCOUVER, world.memory, None, after, doing_ms(morning))
+    page = read_day(world.log, VANCOUVER, world.memory, None, after, doing_ms(morning))
     doing = [s for s in page["spans"] if s["lane"] == "doing"]
     tail = [s for s in doing if s["start_ms"] < midnight]
     assert tail[0]["title"] == "和朋友看电影"  # his answer still holds there
@@ -1899,7 +1899,7 @@ def test_the_timeline_asks_by_its_route_and_the_day_serves_what_was_written(
         "written": True,
         "outcome": "landed (draft, 7 spans, 0 questions)",
     }
-    served = _read_day(world.log, VANCOUVER, world.memory, None, DAY, doing_ms(NOW))
+    served = read_day(world.log, VANCOUVER, world.memory, None, DAY, doing_ms(NOW))
     titles = {
         s["title"] for s in served["spans"] if s["lane"] == "doing" and s["basis"] != "planned"
     }

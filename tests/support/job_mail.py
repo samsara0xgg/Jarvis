@@ -19,7 +19,7 @@ from jarvis.decision.attention import ContextPack, Judgement, rule_judge_v1
 from jarvis.decision.surrogate_route import SurrogateRoute
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ToolError
-from jarvis.runtime.inherent_loop import _job_mail_deps
+from jarvis.runtime.daemon.routes import job_mail_deps
 from jarvis.runtime.job_mail import JobMail, JobMailSettings
 from jarvis.shared import lang
 from jarvis.state.event_log import open_event_log
@@ -367,7 +367,7 @@ class JobHarness:
                 InherentDeps(
                     submit_callable=lambda _text: None,
                     broadcaster=InherentBroadcaster(),
-                    **_job_mail_deps(self.job),
+                    **job_mail_deps(self.job),
                 )
             )
         )

@@ -27,8 +27,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import retention
+from jarvis.runtime.daemon import retention, routes
 from jarvis.state.device_tokens import (
     device_name_for_token,
     device_token_matches,
@@ -247,8 +246,8 @@ def test_the_runtime_places_the_archive_and_keeps_it_out_of_sweep_clear_and_expo
 ) -> None:
     """``lifelog.dir`` and ``min_free_gb`` are read; the archive is never a media directory."""
     root = tmp_path / "root"
-    default = inherent_loop._lifelog(_runtime(root, {}))  # noqa: SLF001
-    moved = inherent_loop._lifelog(  # noqa: SLF001
+    default = routes.open_lifelog(_runtime(root, {}))
+    moved = routes.open_lifelog(
         _runtime(root, {"lifelog": {"dir": str(tmp_path / "ssd" / "lifelog"), "min_free_gb": 1}}),
     )
 

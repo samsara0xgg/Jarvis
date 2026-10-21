@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from jarvis.runtime import home as home_module
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.home import Home
-from jarvis.runtime.inherent_loop import _read_day
 from jarvis.state import phone_day
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
 from jarvis.state.event_log import emit_event, open_event_log
@@ -216,8 +216,8 @@ def test_the_day_route_carries_the_summary_and_the_weather(tmp_path: Path) -> No
         return {"condition": "rain", "high": 12.0, "low": 6.0, "sunrise_ms": 1, "sunset_ms": 2}
 
     day, now = date(2026, 10, 10), start_ms + 20 * HOUR
-    body = _read_day(log, ZONE, None, None, day, now, weather=weather)
-    plain = _read_day(log, ZONE, None, None, day, now)
+    body = read_day(log, ZONE, None, None, day, now, weather=weather)
+    plain = read_day(log, ZONE, None, None, day, now)
 
     assert body["summary"] == {"steps": 1000, "resting_hr": None, "hrv": None}
     assert body["weather"] == {

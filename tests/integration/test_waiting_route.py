@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime.inherent_loop import _notice_deps
+from jarvis.runtime.daemon.routes import notice_deps
 from jarvis.state.plugin_settings import local_key_matches
 from jarvis.surface import claude_hooks, claude_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -151,7 +151,7 @@ def test_one_read_holds_every_card_and_the_answers_stay_on_their_own_routes(
             plugin_read=lambda: {"plugins": [], "request": PLUGIN_REQUEST},
             plugin_action=lambda *_a: {},
             plugin_authorize=lambda header: header == f"Bearer {DEVICE_TOKEN}",
-            **_notice_deps(None, reminders.reminders, None),
+            **notice_deps(None, reminders.reminders, None),
         )
     )
     _guard(app)

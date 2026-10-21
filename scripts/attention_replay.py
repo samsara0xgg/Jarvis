@@ -32,13 +32,13 @@ import yaml
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.deployment import load_env_file
 from jarvis.deployment.launchd import default_runtime_root
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.doing_run import (
     DoingSettings,
     compose_threads,
     read_brief,
     read_thread_brief,
 )
-from jarvis.runtime.inherent_loop import _read_day
 from jarvis.runtime.interview_reminders import local_zone
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared.pricing import load_pricing_table
@@ -101,7 +101,7 @@ def show(  # noqa: PLR0913 — the day, its stores and the clock, and what was t
     told: Mapping[str, tuple[str | None, str | None]],
 ) -> list[str]:
     """Each doing stretch of ``day`` as the page serves it, with ``told`` laid over the store."""
-    page = _read_day(
+    page = read_day(
         event_log, sources.zone, memory_db, None, day, int(now.timestamp() * 1000),
         shipped=sources.shipped,
     )
