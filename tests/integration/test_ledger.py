@@ -41,6 +41,7 @@ from jarvis.state.memory_db import (
     prose_days,
     render_context,
 )
+from tests.support.hold import HANG_S, never_waits_for
 from tests.support.ledger import (
     CHROME,
     GHOSTTY,
@@ -587,13 +588,18 @@ def test_a_turn_never_waits_on_the_terminal_for_a_read_it_already_knows(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A cold ask waits; a new minute gets the kept answer at once, a background ask replaces it."""
-    delay, asked = [0.3], list[str]()
+    asked = list[str]()
+    refresh_answers = threading.Event()  # the Mac answers any later ask only once this is set
 
     def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
         del op, target
-        asked.append(arguments["args"]["as_of"])
-        time.sleep(delay[0])
-        return {"result": f"answer@{arguments['args']['as_of']}"}
+        as_of = arguments["args"]["as_of"]
+        asked.append(as_of)
+        if as_of == "m1":
+            time.sleep(0.3)
+        else:
+            refresh_answers.wait()
+        return {"result": f"answer@{as_of}"}
 
     screen = TerminalScreen(link)
     caplog.set_level("INFO", logger="jarvis.state.ledger")
@@ -601,12 +607,14 @@ def test_a_turn_never_waits_on_the_terminal_for_a_read_it_already_knows(
     assert screen.read("ledger_submissions", as_of="m1") == "answer@m1"
     assert time.monotonic() - began >= 0.3  # nothing known: waits
     assert any("terminal read ledger_submissions took" in r.message for r in caplog.records)
-    delay[0] = 3.0  # a slow terminal from here on
-    began = time.monotonic()
-    assert screen.read("ledger_submissions", as_of="m2") == "answer@m1"  # new minute: kept one
-    assert screen.read("ledger_submissions", as_of="m3") == "answer@m1"  # one refresh in flight
-    assert time.monotonic() - began < 0.5
-    deadline = time.monotonic() + 10
+    # A slow terminal from here on: the refresh it is asked for stays out until the test lets it.
+    try:
+        with never_waits_for(refresh_answers):
+            assert screen.read("ledger_submissions", as_of="m2") == "answer@m1"  # new minute
+            assert screen.read("ledger_submissions", as_of="m3") == "answer@m1"  # refresh in flight
+    finally:
+        refresh_answers.set()
+    deadline = time.monotonic() + HANG_S
     while screen.read("ledger_submissions", as_of="m2") != "answer@m2":
         assert time.monotonic() < deadline
         time.sleep(0.1)
@@ -624,13 +632,12 @@ def _gated(link: Any, answers: threading.Event) -> Any:  # noqa: ANN401
     return gated
 
 
-def _turn_state(tmp_path: Path, src: LedgerSources, context: LedgerContext) -> tuple[str, float]:
-    """The state block a turn sends, and the seconds from his words to the model request."""
+def _turn_state(tmp_path: Path, src: LedgerSources, context: LedgerContext) -> str:
+    """The state block a turn sends to the model."""
     (tmp_path / "turn").mkdir(exist_ok=True)
-    began = time.monotonic()
     memory = render_context(src.memory_db, exclude_id="", now=NOW, ledger=context)
     _, messages = drive_one_turn(tmp_path / "turn", (), time_note=memory.now)
-    return str(messages[-1]["content"]), time.monotonic() - began
+    return str(messages[-1]["content"])
 
 
 def test_a_turn_reaches_the_model_while_the_terminal_hangs_and_leaves_the_computer_out(
@@ -639,14 +646,20 @@ def test_a_turn_reaches_the_model_while_the_terminal_hangs_and_leaves_the_comput
     """ADR 0264: a Mac that does not answer for 10 s holds no turn; the line is left out."""
     one = ledger_world(tmp_path)
     answers = threading.Event()  # never set here: every read of the Mac hangs
-    link = _gated(terminal_link(one.timesink, [], up=[True]), answers)
+    hangs = _gated(terminal_link(one.timesink, [], up=[True]), answers)
+    asked = threading.Event()
+
+    def link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
+        asked.set()
+        return dict(hangs(op, arguments, target))
+
     src = LedgerSources(one.memory_db, one.event_log, None, ZONE, TerminalScreen(link))
     context = LedgerContext(src, LedgerSettings())
     context.warm(lambda: NOW)
-    time.sleep(0.3)  # the warm-up thread is inside the hung read
-    block, took = _turn_state(tmp_path, src, context)
+    assert asked.wait(HANG_S)  # the warm-up thread is inside the hung read
+    with never_waits_for(answers):
+        block = _turn_state(tmp_path, src, context)
     answers.set()
-    assert took < 0.2
     assert "[Today so far" in block
     assert "Computer:" not in block
     assert "no activity recorded" not in block
@@ -668,9 +681,9 @@ def test_a_turn_shows_the_computer_from_the_prefetch_with_when_it_was_read(
         assert time.monotonic() < deadline
         time.sleep(0.05)
     answers.clear()  # the Mac stops answering
-    block, took = _turn_state(tmp_path, src, context)
+    with never_waits_for(answers):
+        block = _turn_state(tmp_path, src, context)
     answers.set()
-    assert took < 0.2
     assert re.search(r"Computer: .*active today 1h00m.*\(TimeSink as of 1[45]:\d\d\)", block)
 
 
