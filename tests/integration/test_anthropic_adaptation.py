@@ -35,7 +35,7 @@ from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.system_prompt import SplitSystem
 from jarvis.state.event_log import open_event_log
 from tests.canary._helpers import repo_root
-from tests.integration.test_typed_llm_stream import _SSE
+from tests.support.typed_stream import SSEPeer
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -95,8 +95,8 @@ def _reply(*blocks: dict[str, Any], stop: str, usage: dict[str, int] | None = No
     return frames
 
 
-async def _run(client: LLMClient, frames: list[dict[str, Any]], **call: Any) -> tuple[_SSE, list[Any]]:  # noqa: ANN401
-    peer = _SSE(frames)
+async def _run(client: LLMClient, frames: list[dict[str, Any]], **call: Any) -> tuple[SSEPeer, list[Any]]:  # noqa: ANN401
+    peer = SSEPeer(frames)
     async with peer.running() as url:
         client._base_url = url.removesuffix("/v1")  # noqa: SLF001 — the peer's address
         handle = client.stream_events(on_settled=lambda _d: None, **call)
@@ -331,8 +331,8 @@ def test_the_prefix_warm_asks_for_no_output_and_ends_on_the_users_last_message(
     client = _preset("")
     registry = SimpleNamespace(for_caller=lambda _principal: [])
 
-    async def go() -> _SSE:
-        peer = _SSE(frames)
+    async def go() -> SSEPeer:
+        peer = SSEPeer(frames)
         async with peer.running() as url:
             client._base_url = url.removesuffix("/v1")  # noqa: SLF001
             conn = open_event_log(tmp_path / "e.db")
@@ -547,8 +547,8 @@ def test_the_replay_script_rebuilds_the_history_and_streams_it_through_the_clien
         {"role": "tool", "tool_call_id": "c1", "content": "cold"},
     ]
 
-    async def go() -> tuple[_SSE, dict[str, Any]]:
-        peer = _SSE(_reply({"type": "text", "text": '{"spoken": "x", "written": ""}'}, stop="end_turn"))
+    async def go() -> tuple[SSEPeer, dict[str, Any]]:
+        peer = SSEPeer(_reply({"type": "text", "text": '{"spoken": "x", "written": ""}'}, stop="end_turn"))
         async with peer.running() as url:
             client = _preset(url.removesuffix("/v1"))
             return peer, await replay_once(client, request, {"lookup": TOOLS[0]})

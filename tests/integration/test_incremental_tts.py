@@ -40,13 +40,6 @@ from tests.support.tts import (
     wait_for_rows,
 )
 
-# Old names for test_soft_barge_in.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support import tts as _shim
-
-_pipeline = _shim.make_pipeline
-# isort: on
-
 if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path

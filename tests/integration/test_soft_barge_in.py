@@ -39,15 +39,10 @@ from jarvis.surface import (
 )
 from jarvis.surface.voice_ledger import GenerationLease
 from tests.canary._helpers import repo_root
-from tests.integration.test_incremental_tts import _pipeline
 from tests.integration.test_voice_short_sounds import _EnergySilero
-from tests.integration.test_wave2_streaming_media import _FakeProvider, _player
-from tests.integration.test_wave3_single_audio_ingress import (
-    _FakeBackend,
-    _FakeWakeEngine,
-    _ingress,
-    _wait_until,
-)
+from tests.support.media import FakeProvider, make_player
+from tests.support.tts import make_pipeline
+from tests.support.voice_input import FakeBackend, FakeWakeEngine, make_ingress, wait_until_true
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -137,7 +132,7 @@ class _Rig:
         ask_words: Callable[[str, str, str, bool, bool], str | None] | None = None,
         note_words: Callable[[str, str, str, bool, bool], None] | None = None,
         begin_line: Callable[[str, str, str, bool, bool], None] | None = None,
-        backend: _FakeBackend | None = None,
+        backend: FakeBackend | None = None,
         wake_input_channel: int | None = None,
         output_active: Callable[[], bool] | None = None,
         stop_speaking: Callable[[], object] | None = None,
@@ -159,8 +154,8 @@ class _Rig:
         self.speaking = speaking
         self.db = tmp_path / "events.db"
         open_event_log(self.db).close()
-        self.backend = backend or _FakeBackend()
-        self.ingress = _ingress(self.backend, wake_input_channel=wake_input_channel)
+        self.backend = backend or FakeBackend()
+        self.ingress = make_ingress(self.backend, wake_input_channel=wake_input_channel)
         self.asr = _ScriptedAsr([heard])
         pipeline = voice_pipeline.VoicePipeline(
             conn_factory=None if emit else (lambda: open_event_log(self.db)),
@@ -175,7 +170,7 @@ class _Rig:
         with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySilero()):
             self.session = voice_session.DuplexVoiceSession(
                 ingress=self.ingress,
-                wake_engine=_FakeWakeEngine(detections=set()),
+                wake_engine=FakeWakeEngine(detections=set()),
                 vad=voice_audio.SileroVad(mode="record"),
                 pipeline=pipeline,
                 broadcaster=self,
@@ -238,9 +233,9 @@ class _Rig:
             self.backend.emit(epoch=epoch, value=value)
             time.sleep(0.002)
         if judged == "gain":
-            _wait_until(lambda: self.output[-1:] == ["gain 1.0"])
+            wait_until_true(lambda: self.output[-1:] == ["gain 1.0"])
         else:
-            _wait_until(lambda: any(phase in {"accepted", "empty"} for phase, _ in self.phases))
+            wait_until_true(lambda: any(phase in {"accepted", "empty"} for phase, _ in self.phases))
 
     def room(self, seconds: float) -> None:
         """Nobody talking for ``seconds``."""
@@ -260,7 +255,7 @@ class _Rig:
             self.backend.emit(epoch=epoch, value=ROOM)
             return bool(done())
 
-        _wait_until(next_frame)
+        wait_until_true(next_frame)
 
     def turns(self) -> list[str]:
         with contextlib.closing(open_event_log(self.db)) as conn:
@@ -772,7 +767,7 @@ def test_allens_own_words_over_her_are_not_her_echo(heard: str, said: str) -> No
     assert not voice_asr.is_own_echo(heard, said)
 
 
-class _StereoBackend(_FakeBackend):
+class _StereoBackend(FakeBackend):
     """Two channels: channel 0 is ``value``, channel 1 the beam, ``value`` plus ``BEAM``."""
 
     def __init__(self) -> None:
@@ -958,9 +953,9 @@ def test_a_sound_while_she_is_silent_is_an_ordinary_utterance(tmp_path: Path) ->
 
 def test_a_yield_never_lifts_the_speech_mute(tmp_path: Path) -> None:
     """The player's gain is the mute's times the yield's, whatever order they come in."""
-    pipeline, player = _pipeline(
+    pipeline, player = make_pipeline(
         tmp_path / "events.db",
-        _FakeProvider(candidate_count=1),
+        FakeProvider(candidate_count=1),
         speak_from_segments=True,
     )
     gains: list[float] = []
@@ -1008,7 +1003,7 @@ def test_the_answer_after_a_stop_starts_at_the_gain_set_while_she_was_silent(
     0.2 (so it was never counted as heard in full), or let a mute's first
     block through.
     """
-    player = _player(ring_seconds=0.02)
+    player = make_player(ring_seconds=0.02)
     player.set_gain(0.2, 0.0)  # Allen talks over her
     first, _ = _speak(player, "R1")
     player.interrupt_generation(expected_playback_generation_id=first)
@@ -1028,7 +1023,7 @@ def _block(player: voice_tts.AudioStreamPlayer, frames: int) -> np.ndarray:
 
 def test_a_held_answer_keeps_its_place_and_fades_back_in() -> None:
     """Held, nothing of the answer is consumed; let go, it goes on from the held sample."""
-    player = _player()
+    player = make_player()
     lease = player.activate_generation(
         session_id="S", response_id="R1", response_group_id="G", turn_id="T",
     )
@@ -1054,7 +1049,7 @@ def test_a_held_answer_keeps_its_place_and_fades_back_in() -> None:
 
 def test_a_later_answer_never_starts_held() -> None:
     """A hold names the answer it held: the next one plays at once, whole."""
-    player = _player(ring_seconds=0.02)
+    player = make_player(ring_seconds=0.02)
     first, _ = _speak(player, "R1")
     player.pause_generation(paused=True)
     _block(player, 8)

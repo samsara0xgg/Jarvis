@@ -18,7 +18,7 @@ from jarvis.runtime import _register_workers, _timesink_db_path
 from jarvis.state import daily_activity
 from jarvis.state.daily_contract import ACTIVITY_PAGE_BUDGET
 from jarvis.state.event_log import emit_event
-from tests.integration.test_daily_tools import DailyHarness
+from tests.support.daily_tools import DailyHarness
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

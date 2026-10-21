@@ -51,14 +51,6 @@ from tests.support.media import (
     wait_until,
 )
 
-# Old names for test_soft_barge_in.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support import media as _shim
-
-_FakeProvider = _shim.FakeProvider
-_player = _shim.make_player
-# isort: on
-
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any

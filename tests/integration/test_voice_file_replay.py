@@ -17,16 +17,7 @@ import numpy as np
 import pytest
 
 from jarvis.surface import voice_audio, voice_backend, voice_session
-from tests.support.voice_input import write_wav
-
-# Old names for test_terminal_listen.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support import voice_input as _shim
-from tests.support.voice_input import EnergySession
-
-_EnergySession = _shim.EnergySession
-_write_wav = _shim.write_wav
-# isort: on
+from tests.support.voice_input import EnergySession, write_wav
 
 if TYPE_CHECKING:
     from collections.abc import Callable

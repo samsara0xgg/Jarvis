@@ -69,23 +69,19 @@ from jarvis.surface.terminal_listen import (
     with_voice_commands,
 )
 from jarvis.surface.terminal_speaker import BrainCallError, Journal, VoiceLink
-from tests.integration.test_terminal_voice import (
+from tests.integration.test_terminal_voice import _answer, _Brain, _rows, _Terminal, _types
+from tests.support.terminal import (
     SPEECH_CONFIG,
     TERMINAL_WS,
-    _ack,
-    _answer,
-    _bearer,
-    _Brain,
-    _brain_client,
-    _hello,
-    _open_stream,
-    _playback_frame,
-    _rows,
-    _Terminal,
-    _types,
-    _wait_for,
+    ack_frame,
+    bearer,
+    brain_client,
+    hello_frame,
+    open_stream,
+    playback_frame,
+    wait_for,
 )
-from tests.integration.test_voice_file_replay import _EnergySession, _write_wav
+from tests.support.voice_input import EnergySession, write_wav
 from tools.realtime_trace_report import load_trace, summarize_trace
 
 if TYPE_CHECKING:
@@ -167,7 +163,7 @@ def test_the_brains_answers_are_what_the_terminals_callbacks_return(tmp_path: Pa
         )
         turn.hold_runs(True)
         turn.answer_words("T1", "wait", "Okay.")
-        _wait_for(lambda: len(bench.frames) == 6, "frames did not reach the brain")
+        wait_for(lambda: len(bench.frames) == 6, "frames did not reach the brain")
     finally:
         bench.close()
     told = [frame for frame in bench.frames if "id" not in frame]
@@ -223,7 +219,7 @@ def test_an_ask_in_flight_fails_at_once_when_the_link_drops(tmp_path: Path) -> N
     try:
         thread = threading.Thread(target=asker)
         thread.start()
-        _wait_for(lambda: bool(bench.frames), "the ask never left")
+        wait_for(lambda: bool(bench.frames), "the ask never left")
         started = time.monotonic()
         bench.link.down()
         thread.join(timeout=5)
@@ -279,17 +275,17 @@ def test_conversation_mode_follows_the_brain_both_ways(tmp_path: Path) -> None:
     controls.start()
     try:
         controls.set_conversation(True, "wake")
-        _wait_for(lambda: ("conversation", {"on": True, "reason": "wake"}) in taken, "not taken")
+        wait_for(lambda: ("conversation", {"on": True, "reason": "wake"}) in taken, "not taken")
         assert controls.conversation() is True
         time.sleep(0.15)  # polls come and go; the brain agrees, so nothing flips back
         assert controls.conversation() is True
         controls.set_quiet("quiet")
-        _wait_for(lambda: state["quiet"] == "quiet", "quiet never reached the brain")
+        wait_for(lambda: state["quiet"] == "quiet", "quiet never reached the brain")
         state["conversation"] = False  # the owner switched it off from a surface
-        _wait_for(lambda: controls.conversation() is False, "the terminal never followed")
-        _wait_for(lambda: left == [True], "the session was not told to leave conversation")
+        wait_for(lambda: controls.conversation() is False, "the terminal never followed")
+        wait_for(lambda: left == [True], "the session was not told to leave conversation")
         state["conversation"] = True  # and on again: mirrored, no exit callback
-        _wait_for(controls.conversation, "the terminal never followed it back on")
+        wait_for(controls.conversation, "the terminal never followed it back on")
     finally:
         controls.stop()
         bench.close()
@@ -351,7 +347,7 @@ def test_a_polish_the_brain_cannot_give_raises_so_dictation_shows_the_raw_words(
 def _listening_client(
     tmp_path: Path, **hooks: Any,  # noqa: ANN401 — whichever hooks a test binds.
 ) -> tuple[TestClient, TerminalHub, Path]:
-    client, hub, log = _brain_client(tmp_path)
+    client, hub, log = brain_client(tmp_path)
     listening = BrainListening(hub, hub.events)  # type: ignore[arg-type]
     listening.hooks = ListenHooks(**hooks)
     hub.listening = listening
@@ -383,9 +379,9 @@ def _utterances(log: Path) -> list[tuple[str, str, str]]:
 
 def _connect(client: TestClient, tmp_path: Path, name: str, stack: Any) -> Any:  # noqa: ANN401
     ws = stack.enter_context(
-        client.websocket_connect(TERMINAL_WS, headers=_bearer(pair_device(tmp_path, name))),
+        client.websocket_connect(TERMINAL_WS, headers=bearer(pair_device(tmp_path, name))),
     )
-    ws.send_text(_hello(voice=True, rows_after=None))
+    ws.send_text(hello_frame(voice=True, rows_after=None))
     ready = ws.receive_json()
     assert ready["listen"] is True
     return ws
@@ -513,10 +509,10 @@ def test_the_brain_polishes_a_terminals_dictation_or_says_it_does_not(tmp_path: 
 def test_a_brain_that_does_not_listen_says_so_and_a_tell_to_it_is_dropped(tmp_path: Path) -> None:
     """`ready` names it, and an ask is answered with a refusal rather than left to time out."""
     token = pair_device(tmp_path, "macbook")
-    client, hub, log = _brain_client(tmp_path)
+    client, hub, log = brain_client(tmp_path)
     assert hub.listening is None
-    with client.websocket_connect(TERMINAL_WS, headers=_bearer(token)) as ws:
-        ws.send_text(_hello(voice=True, rows_after=None))
+    with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
+        ws.send_text(hello_frame(voice=True, rows_after=None))
         assert ws.receive_json()["listen"] is False
         _ask(ws, "utterance", _utterance("T1"), "a" * 32)
         refusal = ws.receive_json()
@@ -587,9 +583,9 @@ def test_the_answer_goes_to_the_terminal_that_heard_the_utterance(tmp_path: Path
         assert [row["event_uid"] for row in _rows(last, 3)] == other
         # Whatever a terminal was sent comes before the answer to its next frame: the ack must
         # be the first thing each receives after its own rows, so nothing else came.
-        probe = _playback_frame("1" * 32)
-        assert _ack(heard, probe)["type"] == "ack"
-        assert _ack(last, _playback_frame("2" * 32))["type"] == "ack"
+        probe = playback_frame("1" * 32)
+        assert ack_frame(heard, probe)["type"] == "ack"
+        assert ack_frame(last, playback_frame("2" * 32))["type"] == "ack"
     assert [node for _uid, node, _p in _utterances(log)] == ["macbook"]
     assert hub.voice is not None
 
@@ -608,7 +604,7 @@ def test_a_turn_heard_by_a_terminal_that_then_left_is_spoken_by_the_one_connecte
             _ask(went, "utterance", _utterance("T-M"), "a" * 32)
             assert went.receive_json()["ok"] is True
         # The macbook was connected last, so it is gone and the ipad is the only one.
-        _wait_for(lambda: len(_hub.connected()) == 1, "the macbook never left")
+        wait_for(lambda: len(_hub.connected()) == 1, "the macbook never left")
         uids = _answer(log, "T-M", "Still heard.")
         assert [row["event_uid"] for row in _rows(stay, 3)] == uids
 
@@ -816,13 +812,13 @@ def _heard(
     monkeypatch.setattr(terminal_module, "_voice_models_preflight", lambda **_k: (True, []))
     monkeypatch.setattr(voice_asr, "SenseVoiceRecognizer", _Ears)
     monkeypatch.setattr(voice_wake, "MicroWakeWordEngine", _Wake)
-    monkeypatch.setattr(voice_audio, "_load_silero_session", lambda *_a, **_k: _EnergySession())
+    monkeypatch.setattr(voice_audio, "_load_silero_session", lambda *_a, **_k: EnergySession())
     monkeypatch.setitem(
         voice_audio._MODE_THRESHOLDS,  # noqa: SLF001
         "record", voice_audio.VadThresholds(0.4, -45.0, 1, 1, 2),
     )
     monkeypatch.setattr(voice_backend, "SoundDeviceDuplexBackend", lambda **_k: backend())
-    monkeypatch.setattr(voice_tts, "_open_output_stream", _open_stream(pull=True))
+    monkeypatch.setattr(voice_tts, "_open_output_stream", open_stream(pull=True))
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     return power
 
@@ -831,7 +827,7 @@ def _say(path: Path) -> Path:
     """One second of room, then 0.6 s of voice; the replay goes on with silence."""
     quiet = np.zeros(16_000, dtype="<i2")
     voice = np.full(int(0.6 * 16_000), 10_000, dtype="<i2")
-    return _write_wav(path, np.concatenate([quiet, voice]))
+    return write_wav(path, np.concatenate([quiet, voice]))
 
 
 def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
@@ -860,17 +856,17 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
         brain,
         _Terminal(brain.url, token, root, LISTEN_CONFIG) as terminal,
     ):
-        _wait_for(
+        wait_for(
             lambda: bool(brain.hub.voice and brain.hub.voice._peers),  # noqa: SLF001
             "the terminal never connected as a voice terminal",
         )
-        _wait_for(
+        wait_for(
             lambda: any("does not listen" in r.getMessage() for r in caplog.records),
             "the terminal never said it could not listen",
         )
         time.sleep(1.5)  # a hot loop would have tried again by now
         _answer(brain.log, "T1", "Still speaking.")
-        _wait_for(
+        wait_for(
             lambda: "surface.playback_completed" in _types(brain.log),
             "a terminal without a microphone did not speak",
         )
@@ -894,7 +890,7 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
     the daemon prints), the system's sleep notice reaches the coordinator, the Settings page's
     device pick reaches the watch, and ending the terminal shuts the observer and the watch.
     """
-    wav = _write_wav(tmp_path / "room.wav", np.zeros(16_000 * 20, dtype="<i2"))  # nobody speaks
+    wav = write_wav(tmp_path / "room.wav", np.zeros(16_000 * 20, dtype="<i2"))  # nobody speaks
     power = _heard(monkeypatch, lambda: voice_backend.FileReplayBackend(wav))
     default_mic = [1]
     monkeypatch.setattr(
@@ -927,7 +923,7 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
         brain,
         _Terminal(brain.url, token, tmp_path / "terminal-root", LISTEN_CONFIG, page) as terminal,
     ):
-        _wait_for(lambda: power.hooks is not None and bool(watches), "no watch started", 40)
+        wait_for(lambda: power.hooks is not None and bool(watches), "no watch started", 40)
         assert power.installs == 1
         assert not watches[0].done()
         assert page.on_devices is not None  # a pick on the page reaches the watch
@@ -938,7 +934,7 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
         assert on_wake.__self__ is coordinator
         time.sleep(0.3)  # the watch has taken its first look
         default_mic[0] = 2  # the microphone the system defaults to has changed
-        _wait_for(
+        wait_for(
             lambda: any("audio devices re-read" in r.getMessage() for r in caplog.records),
             "the device watch never re-read the devices",
         )
@@ -1026,13 +1022,13 @@ def test_a_terminal_hears_the_owner_and_the_brains_answer_is_played_where_it_was
     )
     try:
         with brain, _Terminal(brain.url, token, root, LISTEN_CONFIG) as terminal:
-            _wait_for(lambda: "utterance.received" in _types(brain.log), "nothing was heard", 40)
+            wait_for(lambda: "utterance.received" in _types(brain.log), "nothing was heard", 40)
             conn = open_event_log(brain.log)
             [heard] = [e for e in iter_events(conn) if e.type == "utterance.received"]
             turn = str(heard.payload["turn_id"])
             working.set()
             _answer(brain.log, turn, "Done, the light is on.")
-            _wait_for(
+            wait_for(
                 lambda: "surface.playback_completed" in _types(brain.log),
                 "the terminal never played the brain's answer",
             )

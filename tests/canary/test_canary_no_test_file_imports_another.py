@@ -27,20 +27,14 @@ from tests.canary._helpers import parse, relative_to_repo, repo_root
 # import across test files because the helper lives in a file another pass is rewriting
 # (job_mail, soft_barge_in, timesink_activity, worker_confirmation, anthropic_adaptation,
 # terminal_listen). That pass moves each helper to ``tests/support/`` and deletes its pairs
-# here; the blocks marked "Old names for ..." that re-export private names for it go too.
+# here.
 KNOWN: frozenset[tuple[str, str]] = frozenset(
     {
         # The files being rewritten, which still take their helpers from the files they import.
-        ("test_anthropic_adaptation", "test_typed_llm_stream"),
         ("test_job_mail", "test_audio_output"),
         ("test_job_mail", "test_lifecycle_commentary"),
-        ("test_soft_barge_in", "test_incremental_tts"),
         ("test_soft_barge_in", "test_voice_short_sounds"),
-        ("test_soft_barge_in", "test_wave2_streaming_media"),
-        ("test_soft_barge_in", "test_wave3_single_audio_ingress"),
         ("test_terminal_listen", "test_terminal_voice"),
-        ("test_terminal_listen", "test_voice_file_replay"),
-        ("test_timesink_activity", "test_daily_tools"),
         # Files that take a helper from one of those: the helper stays where it is until its
         # file is rewritten, so they cannot import it from tests/support yet.
         ("test_conversation_model", "test_anthropic_adaptation"),

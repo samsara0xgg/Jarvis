@@ -67,6 +67,8 @@ from jarvis.surface.voice_tts import (
 )
 from tests.support.net import free_port
 from tests.support.terminal import (
+    SPEECH_CONFIG,
+    TERMINAL_WS,
     AsRemote,
     NoRows,
     VoiceSpeechProvider,
@@ -81,21 +83,6 @@ from tests.support.terminal import (
     segment_speech,
     wait_for,
 )
-
-# Old names for test_terminal_listen.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support import terminal as _shim
-
-SPEECH_CONFIG = _shim.SPEECH_CONFIG
-TERMINAL_WS = _shim.TERMINAL_WS
-_ack = _shim.ack_frame
-_bearer = _shim.bearer
-_brain_client = _shim.brain_client
-_hello = _shim.hello_frame
-_open_stream = _shim.open_stream
-_playback_frame = _shim.playback_frame
-_wait_for = _shim.wait_for
-# isort: on
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine

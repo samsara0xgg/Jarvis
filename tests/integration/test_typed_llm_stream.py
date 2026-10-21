@@ -34,13 +34,6 @@ from tests.support.typed_stream import (
     tool_call_delta,
 )
 
-# Old names for test_anthropic_adaptation.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support import typed_stream as _shim
-
-_SSE = _shim.SSEPeer
-# isort: on
-
 if TYPE_CHECKING:
     from pathlib import Path
 

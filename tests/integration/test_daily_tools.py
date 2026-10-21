@@ -19,12 +19,8 @@ from jarvis.execution.tools import (
 )
 from jarvis.state.event_log import emit_event, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
+from tests.support.daily_tools import DailyHarness
 from tests.support.tool_world import ToolWorld, tool_request
-
-# Old names for test_timesink_activity.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support.daily_tools import DailyHarness as DailyHarness  # noqa: PLC0414
-# isort: on
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

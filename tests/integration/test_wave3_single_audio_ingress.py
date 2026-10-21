@@ -41,16 +41,6 @@ from tests.support.voice_input import (
 )
 from tools.realtime_trace_report import TraceRow, summarize_trace
 
-# Old names for test_soft_barge_in.py, which has not migrated; its pass drops this block.
-# isort: off
-from tests.support import voice_input as _shim
-
-_FakeBackend = _shim.FakeBackend
-_FakeWakeEngine = _shim.FakeWakeEngine
-_ingress = _shim.make_ingress
-_wait_until = _shim.wait_until_true
-# isort: on
-
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
