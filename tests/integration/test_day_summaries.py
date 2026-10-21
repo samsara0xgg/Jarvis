@@ -101,12 +101,14 @@ class _Summariser:
         )
 
 
-def _schedule(tmp_path: Path, summariser: _Summariser) -> DaySummarySchedule:
+def _schedule(
+    tmp_path: Path, summariser: _Summariser, at: time = time(5, 0),
+) -> DaySummarySchedule:
     log = tmp_path / "events.db"
     open_event_log(log).close()
     schedule = DaySummarySchedule(
         memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
-        settings=DaySummarySettings(at=time(5, 0), preset="p", prompt="summarise", max_chars=500),
+        settings=DaySummarySettings(at=at, preset="p", prompt="summarise", max_chars=500),
         llm_config={},
         event_log_path=log,
         pricing_table={},
@@ -292,14 +294,15 @@ def test_a_restart_does_not_ask_again_for_a_day_already_tried(tmp_path: Path) ->
     _insert(path, [(_rid(2, 1), _stamp(2, 9), "allen", "第二天")], pad=True)
     summariser = _Summariser()
     summariser.replies[_day(2).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"  # rejected
-    five = datetime.now().astimezone().replace(hour=5, minute=0)
-    assert _run_once(_schedule(tmp_path, summariser), five) is not None
+    # The log stamps its rows with the real clock, so the run happens now, after a midnight ``at``.
+    now = datetime.now().astimezone()
+    assert _run_once(_schedule(tmp_path, summariser, time.min), now) is not None
     assert summariser.asked == [_day(2).isoformat()] * 2
-    restarted = _schedule(tmp_path, summariser)
-    assert restarted.due(five.replace(hour=14)) is None, "tried at 05:00: the restart waits"
+    restarted = _schedule(tmp_path, summariser, time.min)
+    assert restarted.due(now) is None, "tried after at: the restart waits"
     assert summariser.asked == [_day(2).isoformat()] * 2
     fresh = tmp_path / "fresh"
     fresh.mkdir()
-    assert _schedule(fresh, _Summariser()).due(five.replace(hour=14)) == five.date(), (
+    assert _schedule(fresh, _Summariser(), time.min).due(now) == now.date(), (
         "a log with no call today: a start still writes"
     )
