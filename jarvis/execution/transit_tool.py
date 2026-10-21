@@ -75,6 +75,8 @@ _FIELD_MASK: Final = ",".join(
 # DRIVE and WALK need only how long and how far; the default routing preference is the cheap one.
 _MODE_MASK: Final = "routes.duration,routes.distanceMeters"
 _MODES: Final = (("drive", "DRIVE"), ("walk", "WALK"))
+# How the other ways are said, with their minutes: beside the buses (walking) or in place of them.
+_BY_MODE: Final = {"drive": "Driving takes {} min.", "walk": "Walking all the way is {} min."}
 
 
 class BusTimes(Protocol):
@@ -1045,16 +1047,29 @@ def _offer(  # noqa: PLR0913 - the offers, the context, the answer, its options,
 # --- what is said --------------------------------------------------------------------------
 
 
+def _today(at: datetime, now: datetime) -> bool:
+    zone = _zone(now)
+    return at.astimezone(zone).date() == now.astimezone(zone).date()
+
+
 def said(at: datetime, now: datetime, *, soon: bool = False) -> str:
     """``at`` as he hears it: ``5:06 pm`` today (``soon`` adds ``(in 6 min)``), else with its day.
 
     Another day is ``tomorrow (Thu), 12:10 am`` or ``Mon Sep 22, 2:40 pm`` (speakable).
     """
-    zone = _zone(now)
-    local = at.astimezone(zone)
-    if local.date() == now.astimezone(zone).date():
+    if _today(at, now):
         return said_clock(at, now, soon=soon)
-    return speakable.when(at, now, zone)
+    return speakable.when(at, now, _zone(now))
+
+
+def said_at(at: datetime, now: datetime, *, soon: bool = False) -> str:
+    """:func:`said` with the "at" a clock time wants: ``at 5:06 pm``, ``tomorrow (Thu), 12:10 am``.
+
+    A time that already carries its day has no "at" ("at tomorrow (Thu), 12:10 am" is not how
+    anyone speaks).
+    """
+    text = said(at, now, soon=soon)
+    return f"at {text}" if _today(at, now) else text
 
 
 def said_clock(at: datetime, now: datetime, *, soon: bool = False) -> str:
@@ -1069,6 +1084,11 @@ def said_clock(at: datetime, now: datetime, *, soon: bool = False) -> str:
 def said_ms(ms: int, now: datetime, *, soon: bool = False) -> str:
     """An epoch ms, as :func:`said` says it."""
     return said(datetime.fromtimestamp(ms / 1000, _zone(now)), now, soon=soon)
+
+
+def said_at_ms(ms: int, now: datetime, *, soon: bool = False) -> str:
+    """An epoch ms, as :func:`said_at` says it."""
+    return said_at(datetime.fromtimestamp(ms / 1000, _zone(now)), now, soon=soon)
 
 
 def _buses(option: Mapping[str, Any]) -> str:
@@ -1110,8 +1130,8 @@ def _leave(option: Mapping[str, Any], now: datetime) -> str:
 def _from(option: Mapping[str, Any], now: datetime) -> str:
     leg = option["legs"][0]
     return (
-        f"{_buses(option)} from {leg['board_stop']} at"
-        f" {said(leg['departs'], now, soon=True)} ({leg['source']})"
+        f"{_buses(option)} from {leg['board_stop']}"
+        f" {said_at(leg['departs'], now, soon=True)} ({leg['source']})"
     )
 
 
@@ -1150,8 +1170,8 @@ def _named_line(named: Mapping[str, Any], now: datetime) -> str:
     route = named["route"]
     if named["verdict"] == "none":
         return f"Google has no route {route} bus then."
-    at = said(named["_at"], now, soon=True)
-    first = f"The {route} leaves {named['board_stop']} at {at} ({named['source']})"
+    at = said_at(named["_at"], now, soon=True)
+    first = f"The {route} leaves {named['board_stop']} {at} ({named['source']})"
     if named["verdict"] == "easy":
         first += f"; he has room ({named['spare_min']} min to spare after the walk)."
     elif named["verdict"] == "tight":
@@ -1160,7 +1180,7 @@ def _named_line(named: Mapping[str, Any], now: datetime) -> str:
         first += "; he has missed it."
     later = named.get("next")
     if later and named["verdict"] == "missed":
-        first += f" The next one is at {said(later['_at'], now)} ({later['source']})."
+        first += f" The next one is {said_at(later['_at'], now)} ({later['source']})."
     return first
 
 
@@ -1188,9 +1208,9 @@ def _summary(  # noqa: PLR0913 - the plan's parts, in the order they are said (A
     else:
         parts.extend(_ordered(selected, to, now))
     if last_today is not None:
-        parts.append(f"The last {last_today[0]} had left at {said(last_today[1], now)}.")
+        parts.append(f"The last {last_today[0]} had left {said_at(last_today[1], now)}.")
     if walk := modes.get("walk"):
-        parts.append(f"Walking all the way is {walk['minutes']} min.")
+        parts.append(_BY_MODE["walk"].format(walk["minutes"]))
     if len(selected) > 1 and named is None and arrive_by is not None:
         parts.append(f"{len(selected)} options are listed.")
     return " ".join(parts)
@@ -1318,8 +1338,8 @@ def build_planner(  # noqa: PLR0913, PLR0915, C901 - the key, places, offers, li
                 old.get("warning"),
                 f"No bus route to {end.said} at that time. "
                 + " ".join(
-                    f"By {name} it is {m['minutes']} min." for name, m in modes.items()
-                    if name in ("walk", "drive")
+                    _BY_MODE[name].format(m["minutes"]) for name, m in modes.items()
+                    if name in _BY_MODE
                 ),
             ]))
             return {
@@ -1526,6 +1546,8 @@ __all__ = [
     "pin_trips",
     "ring",
     "said",
+    "said_at",
+    "said_at_ms",
     "said_clock",
     "said_ms",
     "show_card",
