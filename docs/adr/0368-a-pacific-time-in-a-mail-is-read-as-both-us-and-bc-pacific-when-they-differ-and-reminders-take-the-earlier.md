@@ -8,8 +8,8 @@
 
 - The job-mail reader maps "PST", "PDT", "PT" and "Pacific" to America/Vancouver
   (`decision/job_mail.py`).
-- An interview time read from job mail sets two reminders and an Outlook event by itself
-  (ADR 0186).
+- An interview time read from job mail becomes a thing in his ledger by itself, with two rings:
+  the evening before and shortly before the start (ADR 0186, 0299).
 - From 2026-11-01, BC stays at UTC−7 all year, while US Pacific goes back to UTC−8. The Pi's and
   the Mac's tzdata 2026c know both, checked on 2026-10-20.
   - A US employer's "10 am PST" is then 11:00 his time. It is stored as 10:00, so he arrives an
@@ -31,7 +31,7 @@ date, show him both, and set reminders from the earlier.
 - When they differ:
   - the interview line names both, with what the mail said ("10:00 or 11:00: the mail says
     10 am PT, BC or US Pacific");
-  - the reminders and the Outlook event start from the earlier, and the event's text names both.
+  - the interview's thing and its rings start from the earlier, and the thing names both.
 - Other zone labels a mail names (ET, CT, MT, UTC, an offset) are converted by their zone. A bare
   time is his own, as now.
 - One reader of zone labels serves every mail reader that converts a zone a mail names.
