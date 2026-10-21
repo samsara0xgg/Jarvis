@@ -14,6 +14,7 @@ struct FootprintModel {
     let reply: FootprintReply
     let day: DayReply?
     let clock: TLClock
+    private let trackBox = TrackBox()
 
     init(reply: FootprintReply, day: DayReply?) {
         self.reply = reply
@@ -29,6 +30,9 @@ struct FootprintModel {
 
     var totalDistanceM: Double { reply.outings.reduce(0) { $0 + $1.distance_m } }
     var topSpeedMps: Double? { reply.outings.compactMap(\.max_speed_mps).max() }
+
+    /// Every outing's drawn line by outing id, indexed on first use and kept for this reply.
+    var tracks: [String: FootprintTrack] { trackBox.tracks(of: self) }
 
     /// The long stay he is in now: today's open one. Nil on any other day, and when he is out.
     var nowStay: FootprintStay? {
@@ -133,13 +137,24 @@ struct FootprintModel {
     }
 
     /// The two neighbours of time `t` in a list ordered by time and how far between them it is (0...1); the end one twice before the first and after the last.
-    // ponytail: a linear scan, a binary search if a scrub over thousands of points stutters
     private static func between<T>(_ xs: [T], _ t: Int64, _ at: KeyPath<T, Int64>) -> (T, T, Double)? {
         guard let first = xs.first, let last = xs.last else { return nil }
         if t <= first[keyPath: at] { return (first, first, 0) }
-        guard let i = xs.firstIndex(where: { $0[keyPath: at] > t }) else { return (last, last, 0) }
+        let i = xs.partitionPoint { $0[keyPath: at] > t }
+        guard i < xs.count else { return (last, last, 0) }
         let a = xs[i - 1], b = xs[i]
         return (a, b, Double(t - a[keyPath: at]) / Double(b[keyPath: at] - a[keyPath: at]))
+    }
+}
+
+/// the tracks of a model, built when first asked for
+private final class TrackBox {
+    private var built: [String: FootprintTrack]?
+    func tracks(of m: FootprintModel) -> [String: FootprintTrack] {
+        if let built { return built }
+        let b = Dictionary(m.reply.outings.map { ($0.id, FootprintTrack(model: m, outing: $0)) }) { a, _ in a }
+        built = b
+        return b
     }
 }
 
