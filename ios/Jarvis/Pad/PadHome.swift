@@ -62,6 +62,7 @@ let padMotion = Animation.smooth(duration: 0.3)
 struct PadHome: View {
     let engine: StarEngine
     @State private var menu = PadMenu()
+    @State private var flight = PadFlight()          // a tapped row's icon on its way to the stage's title
     @State private var typing = false                   // the field in her band is open
     @FocusState private var fieldFocus: Bool
     @FocusState private var homeFocus: Bool             // the home takes a hardware keyboard's keys when nothing else does: typing anywhere opens the field
@@ -89,13 +90,14 @@ struct PadHome: View {
                             .padding(.top, geo.safeAreaInsets.top + 6)
                             .zIndex(1)          // over the list and the stage: the attach panel hangs from the field over them
                         HStack(alignment: .top, spacing: 0) {
-                            list(built).frame(width: Self.listW)
+                            list(built).frame(width: Self.listW).environment(\.padFlight, flight)
                             Rectangle().fill(SetColor.line).frame(width: 0.5).padding(.vertical, 12)
-                            PadStage(engine: engine, model: built?.model, width: geo.size.width - Self.listW)
+                            PadStage(engine: engine, model: built?.model, width: geo.size.width - Self.listW, flight: flight)
                         }
                         .frame(maxHeight: .infinity)
                         .overlay { AttachScrim(model: ui.attach) }
                     }
+                    PadFlightView(flight: flight)
                     PadHerMenu(engine: engine, menu: menu, items: items, center: herAt)
                 }
                 .coordinateSpace(name: "padHome")
@@ -205,11 +207,13 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached
+    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped
     private func padScene(_ s: String) {
         switch s {
         case "menu": menu.show(holding: false)
         case "type": ui.text = Words.Pad.field; engine.beginEditing?()
+        case "row":             // a tap on the row before the last stretch's: its icon flies to the stage's title
+            if let e = builtDay()?.model.entries.filter({ $0.kind == .segment }).dropLast().last { withAnimation(padMotion) { tl.openRow = e.id } }
         case "attach":          // the field open with two pictures (made-up ones) attached
             engine.beginEditing?()
             let size = CGSize(width: 160, height: 160)

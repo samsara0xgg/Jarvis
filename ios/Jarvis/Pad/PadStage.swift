@@ -4,6 +4,52 @@ import SwiftUI
 // and under it 「等你」, each thing that waits on him with its own buttons, answered on the spot. A tap on a row of the list on the left puts that row here instead
 // (the bar outlines its span, so the list, the bar and the stage show the same stretch); 今天 brings back what is now. It changes in place: no sheet, no push.
 
+/// A row's icon flying from its place in the list to the stage's title when the row is tapped (the one motion `padMotion`; under Reduce Motion the title just cross-fades in).
+/// The rows say where their icons are (in the home's space `padHome`, which no view of the phone has), the title says where it stands, and the home draws the flight over both.
+@Observable final class PadFlight {
+    struct Item { let id: String; let symbol: String; let color: Color; let from: CGRect; var to: CGRect? }
+    @ObservationIgnored var rects: [String: CGRect] = [:]          // row icons, rewritten while the list scrolls: kept out of observation
+    var item: Item?
+
+    func begin(_ e: TLEntry) {
+        guard !e.symbol.isEmpty, let from = rects[e.id] else { item = nil; return }
+        item = Item(id: e.id, symbol: e.symbol, color: e.color.map { $0.color } ?? SetColor.ink.opacity(0.82), from: from, to: nil)
+    }
+    /// the title's icon is in place: the flight lands on it
+    func land(_ id: String, at r: CGRect) { if item?.id == id, item?.to != r { item?.to = r } }
+}
+
+private struct PadFlightKey: EnvironmentKey { static let defaultValue: PadFlight? = nil }
+extension EnvironmentValues { var padFlight: PadFlight? { get { self[PadFlightKey.self] } set { self[PadFlightKey.self] = newValue } } }
+
+/// the flight itself, over the home: the icon moves from the row's circle to the title's, and the title's own icon shows when it has landed
+struct PadFlightView: View {
+    let flight: PadFlight
+    var body: some View { if let it = flight.item { Flying(flight: flight, it: it).id(it.id) } }
+
+    private struct Flying: View {
+        let flight: PadFlight
+        let it: PadFlight.Item
+        @State private var go = false
+
+        var body: some View {
+            let r = go ? (it.to ?? it.from) : it.from
+            Image(systemName: it.symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(it.color)
+                .frame(width: r.width, height: r.height).background(Circle().fill(Color.white.opacity(0.06)))
+                .position(x: r.midX, y: r.midY)
+                .allowsHitTesting(false)
+                .onChange(of: it.to != nil) { _, has in if has { start() } }
+                .onAppear { if it.to != nil { start() } }
+        }
+
+        private func start() {
+            guard !go else { return }
+            let id = it.id
+            withAnimation(padMotion) { go = true } completion: { if flight.item?.id == id { flight.item = nil } }
+        }
+    }
+}
+
 private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let faint = SetColor.faint
@@ -13,6 +59,7 @@ struct PadStage: View {
     let engine: StarEngine
     let model: DayTimelineModel?
     let width: Double
+    let flight: PadFlight
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var tl: TimelineState { engine.ui.tl }
@@ -31,6 +78,10 @@ struct PadStage: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .animation(padMotion, value: opened?.id)
+        .onChange(of: opened?.id) { _, id in
+            guard let id, let e = model?.entries.first(where: { $0.id == id }) else { return flight.item = nil }
+            if reduce { flight.item = nil } else { flight.begin(e) }
+        }
     }
 
     // MARK: a row of the list
@@ -56,6 +107,8 @@ struct PadStage: View {
             if !e.symbol.isEmpty {
                 Image(systemName: e.symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(e.color.map { $0.color } ?? ink.opacity(0.82))
                     .frame(width: 36, height: 36).background(Circle().fill(Color.white.opacity(0.06)))
+                    .opacity(flight.item?.id == e.id ? 0 : 1)          // while the row's icon is flying here
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("padHome")) } action: { flight.land(e.id, at: $0) }
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(e.title).font(.system(size: 22, weight: .semibold)).foregroundStyle(e.unknown ? muted : ink).fixedSize(horizontal: false, vertical: true)

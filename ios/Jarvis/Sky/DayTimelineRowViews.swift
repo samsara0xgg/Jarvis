@@ -58,6 +58,7 @@ struct TLRowView: View, Equatable {
     let engine: StarEngine
     let tap: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(\.padFlight) private var flight          // set on the iPad only
 
     /// Two rows are the same when what they draw is, and where they stand (the closures come from the list and know where): a row that is the same is not drawn again, which is what keeps
     /// the list cheap while it is scrolled to the minute under a finger. What lights a row is read by the row's own `TLRowHeat`.
@@ -172,6 +173,7 @@ struct TLRowView: View, Equatable {
                     .foregroundStyle(e.kind == .segment ? e.color?.color ?? muted : iconColor)          // a stretch's icon is its category's colour
             }
             .frame(width: TLColumns.bead, height: TLColumns.bead)
+            .background { if let flight { Color.clear.onGeometryChange(for: CGRect.self) { $0.frame(in: .named("padHome")) } action: { flight.rects[e.id] = $0 } } }          // the iPad's stage flies this icon to its title
             .overlay(alignment: .topTrailing) { if e.lit { TLRowStar(hers: e.hers).frame(width: 12, height: 12).offset(x: 3, y: -3).transition(.opacity) } }
             .animation(tlStarFade(reduce: reduce), value: e.lit)
         }
