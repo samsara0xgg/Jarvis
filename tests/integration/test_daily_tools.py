@@ -587,7 +587,7 @@ _SEARCH_STATEMENTS = (
 )
 # (query, statements expected in order, unmatched words). Cases avoid equal scores: ties fall
 # back to recency, which a one-second timestamp cannot order inside a test.
-_SEARCH_CASES = (
+_SEARCH_CASES: tuple[tuple[str | None, tuple[int, ...], list[str] | None], ...] = (
     ("莲香 餐厅", (3, 0), []),  # the statement holding both words ranks first
     ("莲香\uff0c餐厅\u3002", (3, 0), []),  # punctuation splits like whitespace
     ("莲香 麦当劳 餐厅", (3, 1, 0), []),  # rare words outweigh the common one

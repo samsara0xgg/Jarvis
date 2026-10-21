@@ -61,7 +61,7 @@ def _serve(
             msg = "not served here"
             raise urllib.error.URLError(msg)
         seen.append((request, timeout))
-        sent = json.loads(request.data)
+        sent = _payload(request)
         travel = sent["travelMode"]
         if travel != "TRANSIT":
             reply = (modes or {}).get(travel, {})
@@ -76,6 +76,12 @@ def _serve(
     now = datetime(2026, 10, 6, 17, 0, tzinfo=ZoneInfo("America/Vancouver"))
     monkeypatch.setattr(transit_tool, "_now", lambda: now)
     return seen
+
+
+def _payload(request: urllib.request.Request) -> Any:  # noqa: ANN401 - the JSON the stub was sent
+    """The JSON body a stubbed request carried."""
+    assert isinstance(request.data, bytes)
+    return json.loads(request.data)
 
 
 def _sent(seen: list[Any], travel: str = "TRANSIT") -> tuple[urllib.request.Request, float]:
@@ -175,7 +181,7 @@ def test_one_post_with_the_key_a_tight_field_mask_and_the_saved_places(
         "routes.legs.endLocation",
         "geocodingResults",
     ]
-    assert json.loads(request.data) == {
+    assert _payload(request) == {
         "origin": {"location": {"latLng": {"latitude": 48.48, "longitude": -123.38}}},
         "destination": {"address": "University of Victoria, Victoria, BC"},
         "travelMode": "TRANSIT",
@@ -191,7 +197,7 @@ def test_any_other_text_goes_to_google_as_an_address_and_now_looks_back_ten_minu
     """Free text is an address; without depart_at the time sent is ten minutes ago (ADR 0265)."""
     seen = _serve(monkeypatch)
     _call({"from": "school", "to": "Mayfair Mall"})
-    body = json.loads(_sent(seen)[0].data)
+    body = _payload(_sent(seen)[0])
     assert body["destination"] == {"address": "Mayfair Mall"}
     assert body["departureTime"] == "2026-10-06T23:50:00Z"
 
@@ -226,7 +232,7 @@ def test_an_unsaved_place_is_a_tool_error_and_sends_nothing(
         _call({"from": "home", "to": "school"}, places={"school": "UVic"})
     assert seen == []
     _call({"from": "school", "to": "work"})
-    assert json.loads(_sent(seen)[0].data)["destination"] == {"address": "work"}
+    assert _payload(_sent(seen)[0])["destination"] == {"address": "work"}
 
 
 @pytest.mark.parametrize(
@@ -266,7 +272,7 @@ def test_here_is_the_macs_location_as_a_lat_lng_waypoint_and_is_said_with_its_ac
     """'here': the fix goes to Google as latLng; from says this Mac, the place and the metres."""
     seen = _serve(monkeypatch)
     out = _call({"from": "Here", "to": "home"}, here=_fix())
-    assert json.loads(_sent(seen)[0].data)["origin"] == {
+    assert _payload(_sent(seen)[0])["origin"] == {
         "location": {"latLng": {"latitude": 48.46, "longitude": -123.31}}
     }
     assert out["from"] == "here (this Mac, Ring Rd, Saanich, ±40 m)"
@@ -405,7 +411,7 @@ def test_the_other_ways_there_come_back_beside_the_bus_and_a_failed_one_is_left_
     for travel in ("DRIVE", "WALK"):
         request, timeout = _sent(seen, travel)
         assert request.get_header("X-goog-fieldmask") == "routes.duration,routes.distanceMeters"
-        assert json.loads(request.data) == {
+        assert _payload(request) == {
             "origin": {"address": "University of Victoria, Victoria, BC"},
             "destination": {"location": {"latLng": {"latitude": 48.48, "longitude": -123.38}}},
             "travelMode": travel,
@@ -690,7 +696,7 @@ def test_uvic_is_the_saved_school(monkeypatch: pytest.MonkeyPatch, word: str) ->
     """The campus by name goes to Google as the saved school address."""
     seen = _serve(monkeypatch)
     _call({"from": "here", "to": word}, here=_fix())
-    assert json.loads(_sent(seen)[0].data)["destination"] == {"address": PLACES["school"]}
+    assert _payload(_sent(seen)[0])["destination"] == {"address": PLACES["school"]}
 
 
 def test_a_text_destination_not_found_is_tried_again_with_the_city(

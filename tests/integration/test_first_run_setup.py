@@ -16,7 +16,9 @@ import stat
 import subprocess
 import sys
 import urllib.error
+import urllib.request
 from contextlib import closing
+from email.message import Message
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -194,12 +196,12 @@ def test_an_anthropic_key_is_kept_only_when_anthropic_lists_models_with_it(
             says = json.dumps(
                 {"error": {"type": "authentication_error", "message": "bad key sk-ant-zzz"}},
             ).encode()
-            raise urllib.error.HTTPError(  # type: ignore[arg-type]
-                request.full_url, status, "no", None, io.BytesIO(says),
+            raise urllib.error.HTTPError(
+                request.full_url, status, "no", Message(), io.BytesIO(says),
             )
         return io.BytesIO(b"{}")
 
-    monkeypatch.setattr(runtime_setup.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     client = _client(_setup(tmp_path))
     body = {"provider": "anthropic", "key": " sk-ant-x "}
     refused = client.post("/inherent/setup/key", json=body).json()
@@ -247,7 +249,7 @@ def test_an_anthropic_default_needs_the_anthropic_key_not_the_openai_one(
         seen.append(request.get_header("X-api-key"))
         return io.BytesIO(b"{}")
 
-    monkeypatch.setattr(runtime_setup.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     with caplog.at_level("WARNING"):
         setup.check_at_boot()
     assert seen == ["sk-ant-x"]
