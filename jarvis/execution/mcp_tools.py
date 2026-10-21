@@ -266,8 +266,6 @@ class McpServers:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="mcp-loop", daemon=True)
         self._thread.start()
-        self._stops: list[asyncio.Event] = []
-        self._serving: list[Future[None]] = []
         self._tasks: set[asyncio.Task[None]] = set()
         self._stop_lock = threading.Lock()
         self._stopped = False
@@ -370,8 +368,7 @@ class McpServers:
             if self._stopped:
                 msg = "MCP connection cancelled"
                 raise RuntimeError(msg)
-            self._stops.append(stop)
-            self._serving.append(asyncio.run_coroutine_threadsafe(serve(), self._loop))
+            asyncio.run_coroutine_threadsafe(serve(), self._loop)
         return ready.result(self._wait_s)
 
     async def _list(self, client: Client) -> list[mcp_types.Tool]:
