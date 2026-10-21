@@ -1,0 +1,62 @@
+name: CI
+
+# The Tier 1 gates of docs/git-guide.md §1, on Linux, for every push to main and
+# every pull request into it. No secrets: live_llm tests are deselected and nothing
+# here calls a model.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+          enable-cache: true
+      - name: Install
+        run: scripts/ci_install.sh
+      - name: Layers
+        run: .venv/bin/lint-imports
+      - name: Ruff
+        run: .venv/bin/ruff check .
+      - name: Mypy
+        run: .venv/bin/mypy --strict jarvis tests scripts tools
+      - name: ADRs
+        run: .venv/bin/python scripts/check_adrs.py
+
+  tests:
+    name: tests (TZ=${{ matrix.tz }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The owner's clock is a setting, not the host's: UTC and a zone with
+        # daylight saving and a negative offset catch a test that reads the host's.
+        tz: [UTC, America/Vancouver]
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+          enable-cache: true
+      - name: Install
+        run: scripts/ci_install.sh
+      - name: Tests
+        run: .venv/bin/pytest tests -m "not live_llm"
