@@ -3,10 +3,10 @@
 Data-driven checks over the real code, a real event log and a real memory.db, with a fake model
 that answers canned JSON (no key, no network, no provider). The examples are invented.
 
-- the model's answer: each shape of action and of doing that is kept or dropped, and why;
+- the model's answer: each shape of action that is kept or dropped, and why;
 - the pass: a go thing with a time, a thing marked paid, a quote that is not his, a close that names
   no open thing, a new thing already past, her tool having written it already, unsure and stated;
-- stated doings: past and ongoing written, the latest set per record standing, a window read;
+- no doings: what he says he did is read only as the actions it makes (ADR 0328);
 - when a record is read: after her answer, a picture waits for its note or its window, an
   unanswered record waits, live-voice rows are covered, a first start reads seven days back, the
   rescan, errors tried three times, an outage costs one record one try;
@@ -34,10 +34,10 @@ from jarvis.runtime import RuntimeBootstrapError, bootstrap_runtime_app
 from jarvis.runtime import turn_things as runtime
 from jarvis.runtime.turn_things import ModelFailed, TurnThings, TurnThingsSettings
 from jarvis.shared import lang
-from jarvis.state import picture_notes, plan, stated_doings, things
+from jarvis.state import picture_notes, plan, things
 from jarvis.state import turn_things as marks
 from jarvis.state.attachments import AttachmentRef
-from jarvis.state.event_log import EventTypeRegistry, iter_events_of_types, open_event_log
+from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.memory_db import open_memory_db
 from scripts import turn_things_replay
 from tests.support.runtime_log import RuntimeLog
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 ZONE = ZoneInfo("America/Vancouver")  # UTC-7 until Nov 1 2026
 SAID = datetime(2026, 10, 14, 14, 0, tzinfo=ZONE)  # a Wednesday, 14:00
 SECOND = timedelta(seconds=1)
-NOTHING: dict[str, list[Any]] = {"actions": [], "doings": []}
+NOTHING: dict[str, list[Any]] = {"actions": []}
 DENTIST = "2026-10-15T15:00:00-07:00"
 
 
@@ -70,10 +70,6 @@ _PAID = {"action": "paid", "thing": "ab12cd", "quote": "I paid the rent", "sure"
 _NEW = {
     "action": "new", "kind": "go", "title": "Dentist", "start_at": "2026-10-15T15:00:00",
     "quote": "dentist tomorrow at 3pm", "sure": True,
-}
-_DOING = {
-    "quote": "had lunch with Mia at noon", "tense": "past", "start": "2026-10-14T12:00:00",
-    "end": "2026-10-14T13:00:00", "place": None, "who": "Mia",
 }
 _WORDS = (
     "I paid the rent. Dentist tomorrow at 3pm, the pottery class moved. I had lunch with Mia at "
@@ -97,16 +93,12 @@ def _read(
 ) -> decision.Read:
     text = answer if isinstance(answer, str) else json.dumps(answer)
     return decision.parse_answer(
-        text, _turn(words, notes, answer_text), zone=ZONE, known=_KNOWN, extractor="test",
+        text, _turn(words, notes, answer_text), zone=ZONE, known=_KNOWN,
     )
 
 
 def _actions(*items: object) -> dict[str, list[Any]]:
-    return {"actions": list(items), "doings": []}
-
-
-def _doings(*items: object) -> dict[str, list[Any]]:
-    return {"actions": [], "doings": list(items)}
+    return {"actions": list(items)}
 
 
 def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:  # noqa: ANN401 - fields
@@ -262,93 +254,15 @@ def test_a_quote_that_only_her_answer_holds_is_not_his() -> None:
     assert "not in his words" in found.dropped[0]
 
 
-def _stated(**changes: Any) -> dict[str, Any]:  # noqa: ANN401 - fields
-    return {
-        "record_id": "r1", "extractor": "test", "said_ms": _ms(SAID),
-        "quote": "had lunch with Mia at noon", "tense": "past",
-        "start_ms": _ms(datetime(2026, 10, 14, 12, 0, tzinfo=ZONE)),
-        "end_ms": _ms(datetime(2026, 10, 14, 13, 0, tzinfo=ZONE)), "place": "", "who": "Mia",
-    } | changes
-
-
-@pytest.mark.parametrize(
-    ("doing", "kept", "dropped"),
-    [
-        (_DOING, _stated(), None),
-        (_with(_DOING, who="mia"), _stated(who="mia"), None),
-        (_with(_DOING, who=None, start=None, end=None), _stated(who="", start_ms=None, end_ms=None),
-         None),
-        (_with(_DOING, who=None, end=None), _stated(who="", end_ms=None), None),
-        (
-            _with(
-                _DOING, quote="I'm at the library since 13:00", tense="ongoing",
-                start="2026-10-14T13:00:00", end=None, who=None, place="library",
-            ),
-            _stated(
-                quote="I'm at the library since 13:00", tense="ongoing", end_ms=None, who="",
-                place="library", start_ms=_ms(datetime(2026, 10, 14, 13, 0, tzinfo=ZONE)),
-            ),
-            None,
-        ),
-        (
-            _with(
-                _DOING, quote="I'm at the library since 13:00", tense="ongoing", start=None,
-                end=None, who=None,
-            ),
-            _stated(
-                quote="I'm at the library since 13:00", tense="ongoing", start_ms=None,
-                end_ms=None, who="",
-            ),
-            None,
-        ),
-        (_with(_DOING, quote="a lunch he never mentioned"), None, "not in his words"),
-        (_with(_DOING, quote=None), None, "no quote"),
-        (_with(_DOING, tense="planned"), None, "tense"),
-        (_with(_DOING, tense=None), None, "tense"),
-        (_with(_DOING, tense="ongoing"), None, "no end"),
-        (_with(_DOING, start="2026-10-14T15:00:00", end=None), None, "plan"),
-        (_with(_DOING, start="2026-10-15T12:00:00", end=None), None, "plan"),
-        (_with(_DOING, start="2026-10-14T13:00:00", end="2026-10-14T12:00:00"), None, "before"),
-        (_with(_DOING, start="noon"), None, "does not read"),
-        (_with(_DOING, start="2024-10-14T12:00:00", end=None), None, "more than a year"),
-        (_with(_DOING, who="Zoe"), None, "who is not in his words"),
-        (_with(_DOING, who=None, place="the museum"), None, "place is not in his words"),
-        (_with(_DOING, who=7), None, "who is not text"),
-        ("a doing", None, "not a doing"),
-    ],
-)
-def test_a_doing_is_past_or_ongoing_and_backed_by_his_words(
-    doing: object, kept: dict[str, Any] | None, dropped: str | None,
-) -> None:
-    """A stated doing keeps its times and what he named, or is dropped; a plan is not a doing."""
-    found = _read(_doings(doing))
-    if kept is None:
-        assert found.doings == ()
-        assert dropped is not None
-        assert len(found.dropped) == 1
-        assert dropped in found.dropped[0]
-    else:
-        assert [asdict(one) for one in found.doings] == [kept | {"extractor": "test"}]
-        assert found.dropped == ()
-
-
-def test_a_doing_is_taken_from_a_picture_note_too() -> None:
-    """The note of a picture he sent is as good a place for the quote as his words."""
-    found = _read(_doings(_with(
-        _DOING, quote="your road test is booked", tense="past", start=None, end=None, who=None,
-    )))
-    assert [one.quote for one in found.doings] == ["your road test is booked"]
-
-
 @pytest.mark.parametrize(
     "bad",
     [
-        "not json at all", "[]", "7", '{"actions": []}', '{"actions": 3, "doings": []}',
-        '{"actions": [], "doings": {}}', "{", "",
+        "not json at all", "[]", "7", '{"actions": 3}', '{"doings": []}', '{"actions": {}}', "{",
+        "",
     ],
 )
 def test_an_answer_that_is_not_the_object_asked_for_is_refused(bad: str) -> None:
-    """No JSON object with an actions list and a doings list is an error, not an empty answer."""
+    """No JSON object with an actions list is an error, not an empty answer."""
     with pytest.raises(decision.AnswerError):
         _read(bad)
 
@@ -791,141 +705,25 @@ def test_a_record_read_again_does_not_write_what_it_wrote(log: _Log) -> None:
     assert [row[0] for row in log.ledger()] == ["Dentist"]
 
 
-# --- stated doings -------------------------------------------------------------------------
+# --- no doings ----------------------------------------------------------------------------
 
 
-def test_stated_doings_past_and_ongoing_are_written_as_one_set_and_read_by_window(
-    log: _Log,
-) -> None:
-    """A past and an ongoing doing, one set for the record; the window reader finds them."""
-    words = "I had lunch with Mia at noon. I'm at the library since 13:00."
-    model = _Model({words: _doings(
-        _DOING,
-        _with(
-            _DOING, quote="I'm at the library since 13:00", tense="ongoing",
-            start="2026-10-14T13:00:00", end=None, who=None, place="library",
-        ),
-    )})
-    log.turn(words)
-    tt = _pass(log, model, [SAID + 60 * SECOND])
-
-    assert tt.poll_once() == 1
-
-    (event,) = iter_events_of_types(log.conn, (stated_doings.TYPE,))
-    assert (event.payload["record_id"], event.payload["extractor"], event.payload["said_ms"]) == (
-        "r1", decision.EXTRACTOR, _ms(SAID),
-    )
-    assert len(event.payload["doings"]) == 2
-    noon = _ms(datetime(2026, 10, 14, 12, 0, tzinfo=ZONE))
-    lunch = stated_doings.standing(log.conn, noon, noon + 60_000)
-    assert [(d.quote, d.tense, d.who) for d in lunch] == [
-        ("had lunch with Mia at noon", "past", "Mia"),
-    ]
-    both = stated_doings.standing(log.conn, noon, _ms(SAID))
-    assert [d.tense for d in both] == ["past", "ongoing"]
-    assert both[1].place == "library"
-    assert stated_doings.standing(log.conn, _ms(SAID) + 3_600_000, _ms(SAID) + 7_200_000) == []
-    assert log.verdicts() == {"r1": ("written", 0)}
-    assert log.ledger() == []  # a doing is not a thing
-
-
-def test_a_plan_for_later_is_no_doing_and_a_doing_is_no_thing(log: _Log) -> None:
-    """The model's "doing" that is a plan is dropped; one kept does not reach the ledger."""
-    words = "I had lunch with Mia at noon. Dentist tomorrow at 3pm."
+def test_what_he_did_is_read_only_as_the_actions_it_makes(log: _Log) -> None:
+    """ADR 0328: no doings are asked for or written; a doings key in an answer is not read."""
+    words = "I paid the rent. I had lunch with Mia at noon."
+    held = log.hold("Pay rent", "do", due="2026-10-31")
     model = _Model({words: {
-        "actions": [_with(_NEW, quote="Dentist tomorrow at 3pm")],
-        "doings": [
-            _DOING,
-            _with(_DOING, quote="Dentist tomorrow at 3pm", who=None, start="2026-10-15T15:00:00",
-                  end=None),
-        ],
+        "actions": [_with(_PAID, thing=things.short_id(held))],
+        "doings": [{"quote": "I had lunch with Mia at noon", "tense": "past"}],
     }})
     log.turn(words)
-    tt = _pass(log, model, [SAID + 60 * SECOND])
 
-    outcome = tt.read("r1", SAID + 60 * SECOND)
+    assert "doing" not in decision.INSTRUCTIONS
+    assert _pass(log, model, [SAID + 60 * SECOND]).poll_once() == 1
 
-    assert outcome is not None
-    assert [line.split()[0] for line in outcome.wrote] == ["added"]
-    assert any("a plan, not a doing" in line for line in outcome.dropped)
-    (event,) = iter_events_of_types(log.conn, (stated_doings.TYPE,))
-    assert [d["quote"] for d in event.payload["doings"]] == ["had lunch with Mia at noon"]
-    assert [row[0] for row in log.ledger()] == ["Dentist"]
-
-
-def test_a_record_read_by_a_newer_extractor_writes_a_newer_set(log: _Log) -> None:
-    """Another version of the instructions reads the same record: its set replaces the old one."""
-    first = stated_doings.Doing("r1", "v1", _ms(SAID), "lunch", "past", _ms(SAID) - 7_200_000)
-    second = stated_doings.Doing(
-        "r1", "v2", _ms(SAID), "lunch with Mia", "past", _ms(SAID) - 7_200_000,
-    )
-    other = stated_doings.Doing("r2", "v1", _ms(SAID) + 60_000, "a walk", "past")
-    window = (_ms(SAID) - 8_000_000, _ms(SAID) + 1_000_000)
-
-    assert stated_doings.write(log.conn, "r1", "v1", _ms(SAID), [first], now=SAID)
-    assert stated_doings.write(log.conn, "r2", "v1", _ms(SAID) + 60_000, [other], now=SAID)
-    assert not stated_doings.write(log.conn, "r1", "v1", _ms(SAID), [first, second], now=SAID)
-    assert [d.quote for d in stated_doings.standing(log.conn, *window)] == ["lunch", "a walk"]
-
-    assert stated_doings.write(log.conn, "r1", "v2", _ms(SAID), [second], now=SAID)
-    found = stated_doings.standing(log.conn, *window)
-    assert [d.quote for d in found] == ["lunch with Mia", "a walk"]
-
-    assert stated_doings.write(log.conn, "r1", "v3", _ms(SAID), [], now=SAID)  # found nothing
-    assert [d.quote for d in stated_doings.standing(log.conn, *window)] == ["a walk"]
-    assert not stated_doings.write(log.conn, "r9", "v3", _ms(SAID), [], now=SAID)  # nothing to undo
-    assert len(list(iter_events_of_types(log.conn, (stated_doings.TYPE,)))) == 4
-
-
-@pytest.mark.parametrize(
-    ("doing", "window", "found"),
-    [
-        (("past", 100, 200), (0, 100), False),
-        (("past", 100, 200), (0, 101), True),
-        (("past", 100, 200), (200, 300), True),
-        (("past", 100, 200), (201, 300), False),
-        (("past", 100, None), (100, 101), True),
-        (("past", 100, None), (101, 200), False),
-        (("ongoing", 100, None), (400, 500), True),  # said at 500: still going on at 400
-        (("ongoing", 100, None), (501, 600), False),
-        (("past", None, None), (500, 501), True),  # no time: when he said it
-        (("past", None, None), (0, 500), False),
-    ],
-)
-def test_a_doing_falls_in_a_window_by_its_own_times_else_by_when_he_said_it(
-    log: _Log, doing: tuple[str, int | None, int | None], window: tuple[int, int],
-    found: bool,  # noqa: FBT001
-) -> None:
-    """The window is half open; an ongoing doing lasts until he said it."""
-    tense, start, end = doing
-    one = stated_doings.Doing("r1", "v1", 500, "quote", tense, start, end)
-    stated_doings.write(log.conn, "r1", "v1", 500, [one], now=SAID)
-    assert bool(stated_doings.standing(log.conn, *window)) is found
-
-
-@pytest.mark.parametrize(
-    ("bad", "why"),
-    [
-        (stated_doings.Doing("r1", "v", 1, "q", "future"), "tense"),
-        (stated_doings.Doing("r1", "v", 1, " ", "past"), "its quote"),
-        (stated_doings.Doing("r1", "v", 1, "q", "past", 10, 5), "does not end before"),
-    ],
-)
-def test_a_doing_that_could_not_be_read_back_is_refused(
-    log: _Log, bad: stated_doings.Doing, why: str,
-) -> None:
-    """A tense outside the set, no quote, or an end before the start is an error, not a row."""
-    with pytest.raises(ValueError, match=why):
-        stated_doings.write(log.conn, "r1", "v", 1, [bad], now=SAID)
-    assert list(iter_events_of_types(log.conn, (stated_doings.TYPE,))) == []
-
-
-def test_the_event_type_is_registered_to_the_state_layer() -> None:
-    """The set is an event of the log, owned by L2."""
-    schema = EventTypeRegistry.get(stated_doings.TYPE)
-    assert schema is not None
-    assert schema.owner_layer == "L2"
-    assert schema.required_payload == ("record_id", "extractor", "said_ms", "doings")
+    assert log.verdicts() == {"r1": ("written", 0)}
+    assert [(row[0], row[2]) for row in log.ledger()] == [("Pay rent", "paid")]
+    assert list(iter_events_of_types(log.conn, ("doings.stated",))) == []
 
 
 # --- when a record is read -----------------------------------------------------------------

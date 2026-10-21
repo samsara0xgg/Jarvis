@@ -15,8 +15,8 @@ of its pictures, the open things, today's plan, what her tools wrote in the turn
 time (:func:`jarvis.decision.turn_things.build_prompt`). What passes the checks of
 :func:`jarvis.decision.turn_things.parse_answer` is written: ledger actions through
 ``things.add``, ``move`` and ``close`` or ``confirm`` as the pass, with his quote as evidence and
-the record id as ref; stated doings as one ``doings.stated`` set. The row keeps what the model was
-given and said. Nothing is written by the model: a ledger write that is refused is dropped.
+the record id as ref. The row keeps what the model was given and said. Nothing is written by the
+model: a ledger write that is refused is dropped.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 from jarvis.decision import turn_things as decision
 from jarvis.runtime.picture_notes import RETRY_AFTER_S as PICTURE_RETRY_S
 from jarvis.runtime.picture_notes import WINDOW_S as PICTURE_WINDOW_S
-from jarvis.state import plan, stated_doings, things
+from jarvis.state import plan, things
 from jarvis.state import turn_things as marks
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
@@ -235,10 +235,6 @@ class TurnThings:
                     said, turn, zone=self.zone, known={things.short_id(one): one for one in shown},
                 )
                 wrote, dropped = self._apply(conn, found, turn, written, now)
-                stated = stated_doings.write(
-                    conn, turn.record_id, decision.EXTRACTOR, int(turn.at.timestamp() * 1000),
-                    found.doings, now=now,
-                )
             except decision.AnswerError as why:
                 LOGGER.warning("turn things: %s: %s", record_id, why)
                 self._finish(record_id, "error", now, given, said)
@@ -246,11 +242,11 @@ class TurnThings:
             except Exception:
                 self._finish(record_id, "error", now, given, said)
                 raise
-        verdict = "written" if wrote or stated else "none"
+        verdict = "written" if wrote else "none"
         self._finish(record_id, verdict, now, given, said)
         LOGGER.info(
-            "turn things: %s %s: %d written, %d doings, %d dropped",
-            record_id, verdict, len(wrote), len(found.doings) if stated else 0, len(dropped),
+            "turn things: %s %s: %d written, %d dropped", record_id, verdict, len(wrote),
+            len(dropped),
         )
         for line in dropped:
             LOGGER.info("turn things: %s dropped %s", record_id, line)

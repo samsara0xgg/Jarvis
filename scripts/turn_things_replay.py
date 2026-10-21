@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 REPO = Path(__file__).resolve().parents[1]
 CHARS_PER_TOKEN = 3.0
 """A rough, high-side guess for mixed English and Chinese."""
-_NOTHING = '{"actions": [], "doings": []}'
+_NOTHING = '{"actions": []}'
 _SECOND = timedelta(seconds=1)
 
 
