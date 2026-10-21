@@ -1,17 +1,14 @@
-"""A runtime with the response-run lifecycle, scripted decide() and the rows it leaves."""
+"""A runtime with the response-run lifecycle, a scripted model and the rows it leaves."""
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
-from jarvis import runtime as runtime_module
-from jarvis.decision.gates import ResponsePlan
-from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.response_run import (
     ResponseRun,
@@ -27,20 +24,18 @@ from jarvis.shared.realtime import Wave1FeatureFlags, stable_response_group_id
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started
+from tests.support.model import ScriptedModel, ScriptedSessions
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
-    import pytest
-
-    from jarvis.decision import DecideContext, DecideResult
     from jarvis.shared import Event
 
 PLAN_TEXT = "已完成。"
+"""What the scripted model answers unless a test scripts another."""
 
-
-PLAN_HASH = "hash-fixed"
+PLAN_HASH = hashlib.sha256(PLAN_TEXT.encode("utf-8")).hexdigest()
+"""The ``response_hash`` of an answer of exactly ``PLAN_TEXT``."""
 
 
 def rows_of(conn: sqlite3.Connection, event_type: str) -> list[tuple[Any, ...]]:
@@ -64,19 +59,6 @@ def event_count(conn: sqlite3.Connection, event_type: str) -> int:
 def payloads_of(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
     """Return the decoded payloads of one event type in append order."""
     return [json.loads(row[0]) for row in rows_of(conn, event_type)]
-
-
-def response_plan(text: str = PLAN_TEXT, response_hash: str = PLAN_HASH) -> ResponsePlan:
-    """Build a fixed approved ResponsePlan."""
-    return ResponsePlan(
-        text=text,
-        permission="allow_completion_language",
-        downgrade_required=False,
-        active_claim_levels=(),
-        response_hash=response_hash,
-        output_risk_class="routine",
-        required_gate_mode="full_text",
-    )
 
 
 LLM_CONFIG: dict[str, Any] = {
@@ -134,14 +116,25 @@ def realtime_config(  # noqa: PLR0913 — every knob of the flag graph, keyword-
     }
 
 
+def answering(text: str = PLAN_TEXT) -> ScriptedModel:
+    """A model that answers every request with ``text``, however many turns ask."""
+    return ScriptedModel(otherwise=text)
+
+
 def make_runtime(
     tmp_path: Path,
     *,
     lifecycle: bool = False,
     cancel: bool = False,
     cancel_timeout_ms: int = 500,
+    model: ScriptedModel | None = None,
 ) -> JarvisRuntime:
-    """Assemble a JarvisRuntime wired exactly the way bootstrap wires one."""
+    """Assemble a JarvisRuntime wired exactly the way bootstrap wires one.
+
+    ``model`` answers the turns, as the shared client with the lifecycle off and as every
+    response run's own client with it on; left out, it answers ``PLAN_TEXT`` to every request.
+    """
+    model = answering() if model is None else model
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
     config = realtime_config(
@@ -156,7 +149,7 @@ def make_runtime(
         conn=conn,
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
-        llm_client=LLMClient(LLM_CONFIG),
+        llm_client=model.as_llm_client(),
         system_prompt="",
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,
@@ -164,7 +157,7 @@ def make_runtime(
         ),
         response_flags=flags,
         llm_session_factory=(
-            LLMSessionFactory(LLM_CONFIG) if flags.response_run_lifecycle else None
+            ScriptedSessions(model, LLM_CONFIG) if flags.response_run_lifecycle else None
         ),
         response_runs=(ResponseRunRegistry() if flags.independent_response_cancel else None),
         committed_event_bus=CommittedEventBus(),
@@ -205,33 +198,6 @@ def emit_intent(conn: sqlite3.Connection, turn_id: str, transcript: str = "你�
         },
         correlation={"turn_id": turn_id},
     )
-
-
-def script_decide(
-    monkeypatch: pytest.MonkeyPatch,
-    behavior: Callable[[Event, DecideContext], DecideResult],
-) -> None:
-    """Replace the composition root's ``decide`` with a scripted stub."""
-    monkeypatch.setattr(runtime_module, "decide", behavior)
-
-
-def final_result(plan: ResponsePlan | None = None) -> Callable[..., Any]:
-    """Return a decide stub that finishes immediately with one plan."""
-
-    def _decide(_trigger: Event, _ctx: DecideContext) -> Any:  # noqa: ANN401
-        return SimpleNamespace(
-            response_plan=plan if plan is not None else response_plan(),
-            events_emitted=(),
-            stream_failure=None,
-            written_apart=False,
-            reaction=None,
-            route=None,
-            last_gate_event_uid=None,
-            turn_id=None,
-            attention_channel="voice_notify",
-        )
-
-    return _decide
 
 
 def seed_started(path: Path, response_id: str, turn_id: str) -> ResponseRunFacts:

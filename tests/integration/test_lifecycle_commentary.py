@@ -18,14 +18,12 @@ import threading
 import time
 from dataclasses import FrozenInstanceError, replace
 from functools import partial
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis import runtime as runtime_module
 from jarvis.decision.commentary import (
     _D6_ROWS,
     COMMENTARY_ATTENTION_CHANNEL,
@@ -33,7 +31,6 @@ from jarvis.decision.commentary import (
     commentary_speech_text,
     lead_in_speech_text,
 )
-from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.pre_route import pre_route
 from jarvis.decision.response_run import (
@@ -1858,10 +1855,9 @@ def _emit_rows(runtime: JarvisRuntime, rows: list[tuple[str, dict[str, Any]]]) -
 
 
 def _one_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> tuple[JarvisRuntime, sqlite3.Connection, Event, str, list[tuple[str, dict[str, Any]]]]:
     """A runtime with turn T-queue claimed, a scripted final, and a line to emit by hand."""
-    _script_final(monkeypatch)
     lines = _line_rows(tmp_path)
     (tmp_path / "main").mkdir()
     runtime = commentary_runtime(tmp_path / "main")
@@ -1870,10 +1866,10 @@ def _one_turn(
 
 
 def test_a_line_arriving_after_the_answer_started_is_never_played(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Live Tbd3d5d36: the answer's rows, then the line's; it played after the whole answer."""
-    runtime, reader, intent, line_id, lines = _one_turn(tmp_path, monkeypatch)
+    runtime, reader, intent, line_id, lines = _one_turn(tmp_path)
     _drive_final(runtime, intent)
     _emit_rows(runtime, lines)
     terminals, dropped = _replay(runtime, reader)
@@ -1886,10 +1882,10 @@ def test_a_line_arriving_after_the_answer_started_is_never_played(
 
 
 def test_a_pending_line_is_dropped_when_the_answer_opens(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The line is buffered, not yet playing, when the answer's open arrives."""
-    runtime, reader, intent, line_id, lines = _one_turn(tmp_path, monkeypatch)
+    runtime, reader, intent, line_id, lines = _one_turn(tmp_path)
     _emit_rows(runtime, lines[:-1])  # open and chunks: nothing to schedule yet
     _drive_final(runtime, intent)
     _emit_rows(runtime, lines[-1:])  # emitted
@@ -1903,10 +1899,10 @@ def test_a_pending_line_is_dropped_when_the_answer_opens(
 
 
 def test_a_line_that_started_before_the_answer_still_plays_and_the_answer_follows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The normal order is untouched: line first, answer queued behind it, both completed."""
-    runtime, reader, intent, line_id, lines = _one_turn(tmp_path, monkeypatch)
+    runtime, reader, intent, line_id, lines = _one_turn(tmp_path)
     _emit_rows(runtime, lines)
     _drive_final(runtime, intent)
     ops = _VoiceOps()
@@ -1937,14 +1933,13 @@ class _FakeSocket:
 
 
 def test_the_wire_marks_a_wait_line_and_says_nothing_of_its_cancel(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The companion must tell a wait line from her answer, and a taken-back line from a cancel.
 
     Live 2026-10-02: the line's `open` cleared the wait the tool status line shows
     under, and a cancelled line would have cleared it as a cancelled turn.
     """
-    _script_final(monkeypatch)
     runtime = commentary_runtime(tmp_path)
     socket = _FakeSocket()
     broadcaster = InherentBroadcaster()
@@ -1987,38 +1982,6 @@ def test_the_wire_marks_a_wait_line_and_says_nothing_of_its_cancel(
 # --- observer: the final is never delayed, dropped or superseded ------------
 
 
-def _plan(text: str = "现在是下午三点。") -> ResponsePlan:
-    """A fixed approved plan for the scripted final turn."""
-    return ResponsePlan(
-        text=text,
-        permission="allow_completion_language",
-        downgrade_required=False,
-        active_claim_levels=(),
-        response_hash="hash-final",
-        output_risk_class="routine",
-        required_gate_mode="sentence",
-    )
-
-
-def _script_final(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace the composition root's ``decide`` with a one-shot final."""
-
-    def _decide(_trigger: Event, _ctx: object) -> object:
-        return SimpleNamespace(
-            response_plan=_plan(),
-            events_emitted=(),
-            stream_failure=None,
-            written_apart=False,
-            reaction=None,
-            route=None,
-            last_gate_event_uid=None,
-            turn_id=None,
-            attention_channel="voice_notify",
-        )
-
-    monkeypatch.setattr(runtime_module, "decide", _decide)
-
-
 def _drive_final(runtime: JarvisRuntime, intent: Event) -> None:
     """Drive the turn on its own connection, the way the turn worker does."""
     conn = open_event_log(runtime.runtime_paths.event_log)
@@ -2049,13 +2012,11 @@ def _surface_stream(conn: sqlite3.Connection) -> list[tuple[int, Event]]:
 
 def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ADR-0006 §261: the commentary-to-final handoff is enqueue-after-drain."""
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     intent = _user_turn(runtime.conn, "T-both")
-    _script_final(monkeypatch)
     with _Observer(runtime):
         _dispatch(runtime.conn, action_id="ACT-b", turn_id="T-both")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)
@@ -2112,11 +2073,20 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
 # --- flag off: nothing this card added is reachable -------------------------
 
 _VOLATILE_PAYLOAD_KEYS: Final[frozenset[str]] = frozenset(
-    {"response_id", "trigger", "evidence_snapshot_hash", "policy_hash"},
+    {
+        "response_id",
+        "trigger",
+        "consumed_trigger_event_uid",
+        "evidence_snapshot_hash",
+        "policy_hash",
+        "admission_id",
+    },
 )
 """Values that differ between two runs of the same scenario for reasons this
-card does not own: a minted response id, the trigger's own uid, and the two
-hashes derived from the log's byte position when a run opened.
+card does not own: a minted response id, the trigger's own uid (and the
+turn's record of having consumed it), the two hashes derived from the log's
+byte position when a run opened, and the id minted for each model request's
+admission.
 """
 
 
@@ -2174,7 +2144,6 @@ def _commentary_response_hashes(conn: sqlite3.Connection) -> frozenset[str]:
 
 def test_flag_off_event_log_is_what_the_observer_never_touched(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Flag off, the log is the flag-on log with the commentary rows removed.
 
@@ -2185,7 +2154,6 @@ def test_flag_off_event_log_is_what_the_observer_never_touched(
     """
     off = commentary_runtime(tmp_path / "off", commentary=False)
     off_reader = _reader(off)
-    _script_final(monkeypatch)
     off_intent = _user_turn(off.conn, "T-cmp")
     _dispatch(off.conn, action_id="ACT-cmp", turn_id="T-cmp")
     _drive_final(off, off_intent)
@@ -2245,7 +2213,6 @@ def test_the_observer_task_is_created_only_under_the_flag() -> None:
 
 def test_two_presentation_records_under_one_turn_stay_consistent(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A commentary plus its final fold into one consistent ConversationTurn.
 
@@ -2261,7 +2228,6 @@ def test_two_presentation_records_under_one_turn_stay_consistent(
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     intent = _user_turn(runtime.conn, "T-fold")
-    _script_final(monkeypatch)
     with _Observer(runtime):
         _dispatch(runtime.conn, action_id="ACT-f", turn_id="T-fold")
         _wait_until(lambda: _count(reader, "surface.response_emitted") == 1)

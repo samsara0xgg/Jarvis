@@ -26,14 +26,13 @@ from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.support.media import CallbackPump, FakeProvider, RecordingBroadcaster, submit_response
-from tests.support.response_run import emit_intent, make_runtime, open_run, script_decide
+from tests.support.model import ScriptedModel
+from tests.support.response_run import emit_intent, make_runtime, open_run
 from tests.support.tts import append_chunk, append_emitted, append_open, make_pipeline, tts_rows
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from jarvis.decision import DecideContext, DecideResult
-    from jarvis.shared import Event
 
 
 def test_a_turn_still_thinking_is_stopped_by_its_turn(tmp_path: Path) -> None:
@@ -70,19 +69,11 @@ def test_a_turn_still_thinking_is_stopped_by_its_turn(tmp_path: Path) -> None:
     assert not other.cancellation_token.is_cancelled
 
 
-def test_a_stop_before_the_run_opens_still_stops_the_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_stop_before_the_run_opens_still_stops_the_turn(tmp_path: Path) -> None:
     """Pressed after turn.started but before the run opens: no model, no words."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    model = ScriptedModel()  # asked once, it fails the test
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, model=model)
     intent = emit_intent(runtime.conn, "T-early", "Explain how a transformer works.")
-    asked: list[str] = []
-
-    def decide_is_never_asked(_trigger: Event, _ctx: DecideContext) -> DecideResult:
-        asked.append("decide")
-        raise AssertionError
-
-    script_decide(monkeypatch, decide_is_never_asked)
     try:
         outcome = make_turn_cancel_callable(runtime)("T-early", "user_stop")
         with pytest.raises(ResponseCancelledError):
@@ -102,7 +93,7 @@ def test_a_stop_before_the_run_opens_still_stops_the_turn(
     finally:
         runtime.conn.close()
     assert outcome == "stopped_before_start"
-    assert asked == []
+    assert model.requests == []
     assert rows == [("response.cancelled", "user_stop")]
     assert not wait_line_owed
     assert leaked == ()

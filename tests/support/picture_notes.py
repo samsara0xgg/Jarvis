@@ -13,15 +13,12 @@ from jarvis.shared import lang
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.memory_db import MemorySettings
 from jarvis.surface.cli import emit_surface_user_intent
+from tests.support.model import ScriptedModel
 from tests.support.phone import PNG
-from tests.support.response_run import final_result, make_runtime, response_plan, script_decide
+from tests.support.response_run import make_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
-
-    from jarvis.decision import DecideContext
 
 WORDS = "这是什么"
 
@@ -73,9 +70,10 @@ class _Clock:
 class World:
     """A runtime with memory.db, the attachment store and a note writer, driven by real turns."""
 
-    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Assemble the runtime under ``tmp_path``; ``monkeypatch`` scripts its decisions."""
-        base = make_runtime(tmp_path)
+    def __init__(self, tmp_path: Path) -> None:
+        """Assemble the runtime under ``tmp_path``; ``model`` answers each turn it is driven."""
+        self.model = ScriptedModel()
+        base = make_runtime(tmp_path, model=self.model)
         self.store = Attachments(base.runtime_paths.artifacts_root / ATTACHMENTS_DIRNAME)
         self.memory = MemorySettings(
             db_path=base.runtime_paths.root / "memory.db",
@@ -91,8 +89,6 @@ class World:
             attachments=self.store,
             picture_notes=self.notes,
         )
-        self.seen: list[DecideContext] = []
-        self._monkeypatch = monkeypatch
         self._turns = 0
 
     def restart(self) -> PictureNotes:
@@ -109,13 +105,7 @@ class World:
     def turn(self, said: str, answer: str, pictures: tuple[str, ...] = ()) -> None:
         """Drive one whole turn: his intent in the log, a scripted answer, the records written."""
         self._turns += 1
-        plan = final_result(response_plan(text=answer, response_hash=f"h{self._turns}"))
-
-        def decide_stub(trigger: Any, ctx: DecideContext) -> Any:  # noqa: ANN401
-            self.seen.append(ctx)
-            return plan(trigger, ctx)
-
-        script_decide(self._monkeypatch, decide_stub)
+        self.model.script(answer)
         intent = emit_surface_user_intent(
             self.runtime.conn,
             transcript=said,
@@ -123,6 +113,17 @@ class World:
             attachments=pictures,
         )
         drive_turn(self.runtime, user_intent_event=intent, available_surfaces=frozenset())
+
+    def history_sent(self, request: int = -1) -> list[dict[str, Any]]:
+        """The earlier turns a request showed the model: every message before the live one."""
+        return self.model.requests[request].messages[:-1]
+
+    def live_text(self, request: int) -> str:
+        """The text of the live user message a request carried, state lines and all."""
+        content = self.model.requests[request].messages[-1]["content"]
+        if isinstance(content, str):
+            return content
+        return "\n".join(part["text"] for part in content if part["type"] == "text")
 
     def picture(self, name: str = "IMG_1.png") -> str:
         """Store one picture the way an upload does; its id."""

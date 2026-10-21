@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from jarvis.decision.llm import LLMClient
-from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
@@ -15,6 +13,7 @@ from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.cli import parse_response_channels
+from tests.support.model import ScriptedModel, ScriptedSessions
 
 if TYPE_CHECKING:
     import sqlite3
@@ -54,13 +53,19 @@ _LLM_CONFIG: dict[str, Any] = {
 }
 
 
+FINAL_ANSWER = "现在是下午三点。"
+"""What the scripted model answers when a turn is driven on a commentary runtime."""
+
+
 def commentary_runtime(
     tmp_path: Path,
     *,
     commentary: bool = True,
     cancel: bool = False,
+    model: ScriptedModel | None = None,
 ) -> JarvisRuntime:
-    """Assemble the runtime the daemon's watchers receive."""
+    """Assemble the runtime the daemon's watchers receive; ``model`` answers its turns."""
+    model = ScriptedModel(otherwise=FINAL_ANSWER) if model is None else model
     paths = bootstrap_runtime(tmp_path)
     config = _observer_config(commentary=commentary, cancel=cancel)
     flags = _wave4_response_activation(config).flags
@@ -70,14 +75,14 @@ def commentary_runtime(
         conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
-        llm_client=LLMClient(_LLM_CONFIG),
+        llm_client=model.as_llm_client(),
         system_prompt="",
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,
             lifecycle_terminal_cas=True,
         ),
         response_flags=flags,
-        llm_session_factory=LLMSessionFactory(_LLM_CONFIG),
+        llm_session_factory=ScriptedSessions(model, _LLM_CONFIG),
         response_runs=ResponseRunRegistry() if flags.independent_response_cancel else None,
         committed_event_bus=CommittedEventBus(),
     )

@@ -23,8 +23,6 @@ from fastapi.testclient import TestClient
 import jarvis.decision.think_mode as think_mode_module
 import jarvis.runtime as runtime_module
 import jarvis.state.event_log as event_log_module
-from jarvis.decision.llm import LLMClient
-from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
@@ -36,7 +34,8 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.support.response_run import final_result, realtime_config
+from tests.support.model import ScriptedModel, ScriptedSessions
+from tests.support.response_run import realtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -112,23 +111,23 @@ def test_on_word_thinks_its_own_turn_only(
     # The turns are stamped minutes apart by the test's clock; a hold counted from those stamps
     # would be waited out in real time.
     config = realtime_config(lifecycle=True, cancel=False, answer_hold_s=0)
+    model = ScriptedModel(otherwise="好的。")
     runtime = JarvisRuntime(
         config=config,
         runtime_paths=paths,
         conn=conn,
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
-        llm_client=LLMClient(_LLM),
+        llm_client=model.as_llm_client(),
         system_prompt="",
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True, lifecycle_terminal_cas=True
         ),
         response_flags=_wave4_response_flags(config),
-        llm_session_factory=LLMSessionFactory(_LLM),
+        llm_session_factory=ScriptedSessions(model, _LLM),
         committed_event_bus=CommittedEventBus(),
         think_mode=load_think_mode(_LLM),
     )
-    monkeypatch.setattr(runtime_module, "decide", final_result())
     start = int(time.time() * 1000)
     clock = _clocked(monkeypatch, start)
     think = runtime.think_mode

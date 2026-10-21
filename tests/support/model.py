@@ -6,9 +6,9 @@ asserts on what the model was shown. It replaces the per-file stubs that each ca
 half of the client.
 
 ``DecisionClient`` is the part of the real client that ``decide()``, the turn timer, the cost
-guard and the spoken route read. ``LLMClient`` is checked against it below, and so is
-``ScriptedModel``; if the real client changes shape, the type check fails here, in one place,
-instead of a stub going quietly stale in some test file.
+guard, the spoken route and the runtime's connection warm-up read. ``LLMClient`` is checked
+against it below, and so is ``ScriptedModel``; if the real client changes shape, the type check
+fails here, in one place, instead of a stub going quietly stale in some test file.
 
 A runtime that opens a response run asks its ``LLMSessionFactory`` for the run's own request
 client; ``ScriptedSessions`` is that factory with every run answered from the one script, so a
@@ -75,6 +75,10 @@ class DecisionClient(Protocol):
 
     def request_tier(self, service_tier: str | None) -> str | None:
         """The service tier a request to this client sends."""
+        ...
+
+    def warm_stream(self) -> None:
+        """Open the connection a stream is about to need."""
         ...
 
     def chat(
@@ -280,6 +284,9 @@ class ScriptedModel:
     def request_tier(self, service_tier: str | None) -> str | None:  # noqa: ARG002
         """No tier is sent: only OpenAI's own host gets one, and this is not it."""
         return None
+
+    def warm_stream(self) -> None:
+        """A script has no connection to open."""
 
     def upload_file(self, name: str, data: bytes, mime: str) -> str:
         """Keep the upload as a Claude preset's Files API would; the id counts the uploads."""

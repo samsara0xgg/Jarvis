@@ -75,6 +75,7 @@ from jarvis.state.response_runs import append_response_started, open_response_ru
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
+from tests.support.model import Failure, Pause, ScriptedModel
 from tests.support.response_run import (
     LLM_CONFIG,
     PLAN_HASH,
@@ -82,14 +83,11 @@ from tests.support.response_run import (
     drive_turn_on_own_connection,
     emit_intent,
     event_count,
-    final_result,
     make_runtime,
     open_run,
     payloads_of,
     realtime_config,
-    response_plan,
     rows_of,
-    script_decide,
     seed_started,
 )
 
@@ -97,7 +95,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from jarvis.decision import DecideContext
     from jarvis.shared import Event
     from jarvis.shared.realtime import TerminalOutcome
 
@@ -131,13 +128,9 @@ def _ordered_types(conn: sqlite3.Connection) -> list[str]:
 # --- A1: flag-off parity ----------------------------------------------------
 
 
-def test_flag_off_drive_turn_matches_legacy_sequence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_flag_off_drive_turn_matches_legacy_sequence(tmp_path: Path) -> None:
     """Flags off: zero response.* rows and the legacy uuid5 L5 identity."""
     runtime = make_runtime(tmp_path)
-    script_decide(monkeypatch, final_result())
     intent = emit_intent(runtime.conn, "T-fixed")
 
     result = drive_turn(
@@ -149,13 +142,15 @@ def test_flag_off_drive_turn_matches_legacy_sequence(
 
     for terminal in (*_RESPONSE_TERMINALS, "response.started"):
         assert event_count(runtime.conn, terminal) == 0, terminal
-    assert _ordered_types(runtime.conn) == [
+    types = _ordered_types(runtime.conn)
+    # The decision's own rows (turn, cost, gate) sit between the intent and the answer.
+    assert [name for name in types if name.startswith("surface.")] == [
         "surface.user_intent",
         "surface.response_open",
         "surface.response_chunk",
         "surface.response_emitted",
-        "turn.timing",  # ADR 0276
     ]
+    assert types[-1] == "turn.timing"  # ADR 0276
     legacy = stable_legacy_presentation_binding(turn_id="T-fixed", response_hash=PLAN_HASH)
     opened = payloads_of(runtime.conn, "surface.response_open")[0]
     assert opened["response_id"] == legacy.response_id
@@ -170,13 +165,9 @@ def test_flag_off_drive_turn_matches_legacy_sequence(
 # --- lifecycle --------------------------------------------------------------
 
 
-def test_flag_on_emits_started_then_completed_with_one_terminal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_flag_on_emits_started_then_completed_with_one_terminal(tmp_path: Path) -> None:
     """One started, one completed, and the ADR §4.2 causal chain holds."""
     runtime = make_runtime(tmp_path, lifecycle=True)
-    script_decide(monkeypatch, final_result())
     intent = emit_intent(runtime.conn, "T-life")
 
     drive_turn(
@@ -215,13 +206,9 @@ def test_flag_on_emits_started_then_completed_with_one_terminal(
     runtime.conn.close()
 
 
-def test_flag_on_l5_events_carry_the_l3_response_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_flag_on_l5_events_carry_the_l3_response_id(tmp_path: Path) -> None:
     """ADR-0014 identity: surface.response_* name the L3 run, not the uuid5."""
     runtime = make_runtime(tmp_path, lifecycle=True)
-    script_decide(monkeypatch, final_result())
     intent = emit_intent(runtime.conn, "T-ident")
 
     drive_turn(
@@ -260,7 +247,6 @@ def test_response_events_never_go_through_emit_event(
         return real_emit(conn, **kwargs)
 
     runtime = make_runtime(tmp_path, lifecycle=True)
-    script_decide(monkeypatch, final_result())
     intent = emit_intent(runtime.conn, "T-spy")
     # Every caller does `from jarvis.state.event_log import emit_event`, so the
     # name is bound per module at import time; patching only the defining
@@ -282,7 +268,13 @@ def test_response_events_never_go_through_emit_event(
     )
 
     assert recorded, "the spy observed no emit_event call at all"
-    assert not [name for name in recorded if name.startswith("response.")]
+    # Every lifecycle row has its own atomic append; the admission fact of each model request
+    # (ADR 0008 D3) is the one response row that is an ordinary event.
+    assert not [
+        name
+        for name in recorded
+        if name.startswith("response.") and name != "response.request_admitted"
+    ]
     assert event_count(runtime.conn, "response.started") == 1
     assert event_count(runtime.conn, "response.completed") == 1
     runtime.conn.close()
@@ -446,30 +438,18 @@ def test_response_terminal_failure_injection_is_all_or_nothing(tmp_path: Path) -
 
 def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """§9.4 cancellation-before-first-delta: nothing is rendered, no failure."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = emit_intent(runtime.conn, "T-early")
     entered = threading.Event()
     released = threading.Event()
+    runtime = make_runtime(
+        tmp_path,
+        lifecycle=True,
+        cancel=True,
+        model=ScriptedModel(Pause(entered, released, PLAN_TEXT)),
+    )
+    intent = emit_intent(runtime.conn, "T-early")
 
-    def _blocking_decide(_trigger: Event, _ctx: DecideContext) -> Any:  # noqa: ANN401
-        entered.set()
-        released.wait(timeout=5)
-        return SimpleNamespace(
-            response_plan=response_plan(),
-            events_emitted=(),
-            stream_failure=None,
-            written_apart=False,
-            reaction=None,
-            route=None,
-            last_gate_event_uid=None,
-            turn_id=None,
-            attention_channel="voice_notify",
-        )
-
-    script_decide(monkeypatch, _blocking_decide)
     cancel = make_response_cancel_callable(runtime)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -504,15 +484,23 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
     runtime.conn.close()
 
 
-def test_cancel_during_action_wait_leaves_action_alive(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A5 headline: a response cancel never touches the action it is waiting on."""
+def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
+    """A5 headline: a response cancel never touches the action it is waiting on.
+
+    ``decide()`` answers a user's words in one call, so a turn waits on an action only when its
+    trigger is one ``decide()`` has no answer for: here the action's own dispatch row, with the
+    action registered live for the turn, and the worker's failure as the trigger that ends the
+    wait.
+    """
     runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = emit_intent(runtime.conn, "T-action")
     action_id = "A-live"
-    waiting = threading.Event()
+    intent = emit_event(
+        runtime.conn,
+        type="action.dispatched",
+        payload={"action_id": action_id, "turn_id": "T-action"},
+        correlation={"action_id": action_id, "turn_id": "T-action"},
+    )
+    register_live_action(turn_id="T-action", action_id=action_id)
     worker_done = threading.Event()
     event_log_path = runtime.runtime_paths.event_log
 
@@ -531,35 +519,7 @@ def test_cancel_during_action_wait_leaves_action_alive(
             conn.close()
         worker_done.set()
 
-    def _dispatching_decide(_trigger: Event, _ctx: DecideContext) -> Any:  # noqa: ANN401
-        if not waiting.is_set():
-            register_live_action(turn_id="T-action", action_id=action_id)
-            threading.Thread(target=_late_worker, daemon=True).start()
-            waiting.set()
-            return SimpleNamespace(
-                response_plan=None,
-                events_emitted=(),
-                stream_failure=None,
-                written_apart=False,
-                reaction=None,
-                route=None,
-                last_gate_event_uid=None,
-                turn_id="T-action",
-                attention_channel="queue_review",
-            )
-        return SimpleNamespace(
-            response_plan=response_plan(),
-            events_emitted=(),
-            stream_failure=None,
-            written_apart=False,
-            reaction=None,
-            route=None,
-            last_gate_event_uid=None,
-            turn_id="T-action",
-            attention_channel="voice_notify",
-        )
-
-    script_decide(monkeypatch, _dispatching_decide)
+    threading.Thread(target=_late_worker, daemon=True).start()
     cancel = make_response_cancel_callable(runtime)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -571,7 +531,6 @@ def test_cancel_during_action_wait_leaves_action_alive(
             streaming_enabled=True,
             trigger_timeout_s=5.0,
         )
-        assert waiting.wait(timeout=5)
         assert runtime.response_runs is not None
         # Wait until the run is actually parked in the trigger waiter.
         deadline = time.monotonic() + 5
@@ -596,13 +555,9 @@ def test_cancel_during_action_wait_leaves_action_alive(
     runtime.conn.close()
 
 
-def test_cancel_after_completion_keeps_completed_terminal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cancel_after_completion_keeps_completed_terminal(tmp_path: Path) -> None:
     """A6 / D10: after response.completed a cancel writes nothing."""
     runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
-    script_decide(monkeypatch, final_result())
     intent = emit_intent(runtime.conn, "T-late")
     drive_turn(
         runtime,
@@ -694,7 +649,6 @@ def test_completed_without_delivery_when_render_raises(
 ) -> None:
     """§7 accepted gap, pinned: completed with no surface.response_emitted."""
     runtime = make_runtime(tmp_path, lifecycle=True)
-    script_decide(monkeypatch, final_result())
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         msg = "render exploded"
@@ -839,18 +793,13 @@ def test_request_client_pins_its_snapshot() -> None:
         factory.snapshot("missing")
 
 
-def test_provider_failure_records_cost_and_fails_the_response_once(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_provider_failure_records_cost_and_fails_the_response_once(tmp_path: Path) -> None:
     """F27: a raised turn yields one response.failed and re-raises unmasked."""
-    runtime = make_runtime(tmp_path, lifecycle=True)
-
-    def _raising_decide(_trigger: Event, _ctx: DecideContext) -> Any:  # noqa: ANN401
-        msg = "provider exploded"
-        raise RuntimeError(msg)
-
-    script_decide(monkeypatch, _raising_decide)
+    runtime = make_runtime(
+        tmp_path,
+        lifecycle=True,
+        model=ScriptedModel(Failure(RuntimeError("provider exploded"))),
+    )
     intent = emit_intent(runtime.conn, "T-fail")
 
     with pytest.raises(RuntimeError, match="provider exploded"):
@@ -975,7 +924,6 @@ def test_cancel_winning_the_completion_cas_never_renders(
     or thread interleaving is involved.
     """
     runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
-    script_decide(monkeypatch, final_result())
     intent = emit_intent(runtime.conn, "T-cas-race")
     rendered: list[object] = []
     def _record_render(*_args: object, **kwargs: object) -> None:

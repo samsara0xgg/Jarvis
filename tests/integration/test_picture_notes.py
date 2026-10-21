@@ -57,9 +57,9 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+def world(tmp_path: Path) -> Any:  # noqa: ANN401
     """A fresh runtime per test."""
-    one = World(tmp_path, monkeypatch)
+    one = World(tmp_path)
     yield one
     one.close()
 
@@ -284,7 +284,10 @@ def test_an_attachment_only_turn_takes_the_language_of_his_last_words(world: Wor
     world.turn(FILLER_EN, ANSWER, (world.picture("IMG_2.png"),))
     world.turn(FILLER_EN, ANSWER, (world.picture("IMG_3.png"),))
 
-    assert [ctx.last_words for ctx in world.seen] == ["", WORDS, WORDS]
+    # Each request ends on the language of his words, never of the English filler (ADR 0223).
+    assert [world.live_text(request).splitlines()[-1] for request in range(3)] == [
+        "[Reply language for this turn: Chinese]"
+    ] * 3
     first_record = world.records()[0][0]
     assert note_records.next_words(world.memory.db_path, first_record) == "", "a turn, no words"
     assert note_records.next_words(world.memory.db_path, world.records()[-1][0]) is None

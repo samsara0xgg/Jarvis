@@ -66,9 +66,9 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
+def world(tmp_path: Path) -> Any:  # noqa: ANN401
     """A fresh runtime per test."""
-    one = World(tmp_path, monkeypatch)
+    one = World(tmp_path)
     yield one
     one.close()
 
@@ -385,19 +385,17 @@ def test_the_anthropic_request_names_the_file_and_sends_the_files_beta_header(
 
 def test_a_real_turn_after_a_picture_turn_sees_the_picture_by_file_id(world: World) -> None:
     """Through drive_turn: the picture's own turn is excluded from history, the next one has it."""
-    client = FilesClient()
-    world.runtime = replace(
-        world.runtime, llm_client=client, picture_files=PictureFiles(world.store),
-    )
+    world.model.provider = "anthropic"  # only a Claude preset takes a picture as a file
+    world.runtime = replace(world.runtime, picture_files=PictureFiles(world.store))
     picture = world.picture("IMG_1.png")
 
     world.turn(WORDS, ANSWER, (picture,))
-    first = world.seen[-1].history
+    first = world.history_sent()
     world.turn("谢谢", "不客气。")
-    second = world.seen[-1].history
+    second = world.history_sent()
 
-    assert first == (), "the live turn carries the picture inline, not by history"
-    assert client.uploads == [("IMG_1.png", len(PNG), "image/png")]
+    assert first == [], "the live turn carries the picture inline, not by history"
+    assert world.model.uploads == [("IMG_1.png", len(PNG), "image/png")]
     assert second[0]["content"][1] == {"type": "image_file", "file_id": "file_001"}
     assert [turn["role"] for turn in second] == ["user", "assistant"]
 
