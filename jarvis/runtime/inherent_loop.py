@@ -1045,7 +1045,7 @@ def _reconcile_open_playback_in_thread(
     """Close every playback generation a dead process abandoned (ADR-0008 §4.4).
 
     Runs on an ``asyncio.to_thread`` worker with its OWN connection, for the
-    same ``check_same_thread`` reason as the two reconcilers above. Returns
+    same ``check_same_thread`` reason as the reconciler above. Returns
     the number of generations it closed.
     """
     conn = open_event_log(event_log_path)
