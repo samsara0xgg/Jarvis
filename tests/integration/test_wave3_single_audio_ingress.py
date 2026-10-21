@@ -31,6 +31,7 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
+from tests.support.hold import HANG_S, never_waits_for
 from tests.support.stderr_log import stderr_in, stderr_sent_nowhere
 from tests.support.voice_input import (
     FakeBackend,
@@ -1342,7 +1343,7 @@ def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
         ) -> voice_backend.BackendStartResult:
             if self.start_count == 1:
                 self.reopen_entered.set()
-                assert self.reopen_release.wait(timeout=1.0)
+                assert self.reopen_release.wait(timeout=HANG_S)
             return super().start(
                 stream_epoch=stream_epoch,
                 attempt_id=attempt_id,
@@ -1373,19 +1374,19 @@ def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
     )
     recovery = threading.Thread(target=lambda: ingress._handle_fault(fault))
     recovery.start()
-    assert backend.reopen_entered.wait(timeout=1.0)
-    ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
-    assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
-    close_started = time.monotonic()
-    first_close = ingress.close()
-    close_wall_s = time.monotonic() - close_started
-    assert close_wall_s < 0.08
+    assert backend.reopen_entered.wait(timeout=HANG_S)
+    # The foreign reopen stays inside the backend until close has answered: sleep and close give
+    # up on it at their deadlines instead of waiting for it.
+    with never_waits_for(backend.reopen_release):
+        ingress.stop_for_sleep(deadline=time.monotonic() + 0.02)
+        assert ingress.capability.state is voice_audio.InputCapabilityState.SUSPENDED
+        first_close = ingress.close()
     assert not first_close.definitively_closed
     assert ingress.stream_epoch is None
     terminal_version = ingress.capability.version
     assert ingress.capability.state.value == "close_uncertain"
     backend.reopen_release.set()
-    recovery.join(timeout=1.0)
+    recovery.join(timeout=HANG_S)
     assert not recovery.is_alive()
     assert ingress.stream_epoch is None
     assert backend.start_count == 2
@@ -1412,14 +1413,14 @@ def test_blocked_fault_capability_observer_cannot_delay_close_generation() -> No
         observed_versions.append(snapshot.version)
         if snapshot.state is voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE:
             observer_entered.set()
-            assert observer_release.wait(timeout=1.0)
+            assert observer_release.wait(timeout=HANG_S)
 
     backend = FakeBackend()
     ingress = voice_audio.AudioIngress(
         backend=backend,
         config=replace(
             voice_audio.AudioIngressConfig(),
-            shutdown_timeout_s=0.04,
+            shutdown_timeout_s=HANG_S,
             route_poll_s=60.0,
         ),
         capability_sink=_observe,
@@ -1436,12 +1437,12 @@ def test_blocked_fault_capability_observer_cannot_delay_close_generation() -> No
             attempt_id=backend.active_attempt_id,
         ),
     )
-    assert observer_entered.wait(timeout=1.0)
+    assert observer_entered.wait(timeout=HANG_S)
     generation_before_close = ingress._control_generation
-    started = time.monotonic()
-    result = ingress.close()
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.1
+    # The observer stays inside its sink until close has answered, and close has proved the
+    # shutdown without it.
+    with never_waits_for(observer_release):
+        result = ingress.close()
     assert result.definitively_closed
     assert ingress._control_generation > generation_before_close
     assert ingress.capability.state is voice_audio.InputCapabilityState.STOPPED
@@ -1463,24 +1464,23 @@ def test_blocked_stopped_capability_observer_is_outside_close_deadline() -> None
         observed_versions.append(snapshot.version)
         if snapshot.state is voice_audio.InputCapabilityState.STOPPED:
             stopped_entered.set()
-            assert stopped_release.wait(timeout=1.0)
+            assert stopped_release.wait(timeout=HANG_S)
 
     ingress = voice_audio.AudioIngress(
         backend=FakeBackend(),
         config=replace(
             voice_audio.AudioIngressConfig(),
-            shutdown_timeout_s=0.04,
+            shutdown_timeout_s=HANG_S,
             route_poll_s=60.0,
         ),
         capability_sink=_observe,
     )
     assert ingress.start().started
-    started = time.monotonic()
-    result = ingress.close()
-    elapsed = time.monotonic() - started
+    # The observer of STOPPED stays inside its sink until close has answered.
+    with never_waits_for(stopped_release):
+        result = ingress.close()
     assert result.definitively_closed
-    assert elapsed < 0.1
-    assert stopped_entered.wait(timeout=1.0)
+    assert stopped_entered.wait(timeout=HANG_S)
     stopped_release.set()
     dispatcher = ingress._capability_dispatcher
     assert dispatcher is not None
