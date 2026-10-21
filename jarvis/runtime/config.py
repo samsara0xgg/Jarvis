@@ -40,6 +40,7 @@ from jarvis.deployment.models import (
     default_voiceprint_model_path,
 )
 from jarvis.execution import maps_spend
+from jarvis.execution.mail_gmail import DEFAULT_LIST_CAP, DEFAULT_RAW_MAX_BYTES
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -292,6 +293,18 @@ class WebToolsSettings:
 
 
 @dataclass(frozen=True)
+class MailToolsSettings:
+    """``tools.mail`` (ADR 0363, 0364): the bounds the `mail` tool and the home's list keep.
+
+    ``list_cap`` is how many matches a list pages through before it says "more than";
+    ``raw_max_bytes`` the size past which a message is read in the server's text form, not raw.
+    """
+
+    list_cap: int
+    raw_max_bytes: int
+
+
+@dataclass(frozen=True)
 class WorkersSettings:
     """``tools.workers`` (ADR 0019): Codex workers, off unless enabled.
 
@@ -314,6 +327,7 @@ class ToolsSettings:
 
     obsidian_vault_root: Path | None
     web: WebToolsSettings
+    mail: MailToolsSettings
     vision_preset: str
     screen_max_width_px: int
     workers: WorkersSettings
@@ -926,6 +940,22 @@ def _web_tools(tools: Mapping[str, Any]) -> WebToolsSettings:
     )
 
 
+def _mail_tools(tools: Mapping[str, Any]) -> MailToolsSettings:
+    """``tools.mail.*``: UX knobs, so a malformed value is the shipped default, not a refusal."""
+    block = _block(tools, "mail")
+
+    def count(key: str, fallback: int) -> int:
+        value = block.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return fallback
+
+    return MailToolsSettings(
+        list_cap=count("list_cap", DEFAULT_LIST_CAP),
+        raw_max_bytes=count("raw_max_bytes", DEFAULT_RAW_MAX_BYTES),
+    )
+
+
 def _workers(tools: Mapping[str, Any]) -> WorkersSettings:
     """``tools.workers.enabled`` (exactly ``true``) and ``tools.workers.roots``."""
     block = _block(tools, "workers")
@@ -947,6 +977,7 @@ def _tools(raw: Mapping[str, Any]) -> ToolsSettings:
         obsidian_vault_root=Path(vault).expanduser() if isinstance(vault, str) and vault.strip()
         else None,
         web=_web_tools(tools),
+        mail=_mail_tools(tools),
         vision_preset=preset if isinstance(preset, str) and preset.strip()
         else _FALLBACK_VISION_PRESET,
         screen_max_width_px=width if isinstance(width, int) and not isinstance(width, bool)
