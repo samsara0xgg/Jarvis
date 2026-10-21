@@ -30,6 +30,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
@@ -1141,41 +1142,52 @@ def brief_note(path: Path, *, max_chars: int, now: datetime | None = None) -> st
     The retrieval line tells the Live model
     to ask the backend, which it can, instead of naming ``search_records``,
     which it cannot call.
+
+    The records are read newest first and no further than the budget keeps them, so the cost
+    follows the size of the brief, not the length of the conversation.
     """
     moment = now or local_now()
+    record_lines: list[str] = []
     with closing(open_memory_db(path)) as conn:
         profile = _core_memory_lines(conn)
         current = _current_summary(conn)
-        records = _records_after(conn, -1 if current is None else current.anchor_rowid)
-    summary_head = (
-        [f"[Conversation summary · up to {current.anchor_ts} · ask the backend for exact words]"]
-        if current
-        else []
-    )
-    sections = _summary_sections(current.summary) if current else []
-    record_lines = [
-        f"[{ts}] {_USER_LABEL if source == 'allen' else source}: {text}"
-        for _, ts, source, text in records
-    ]
-    now_line = _now_line(moment, records[-1][1] if records else None)
+        cursor = conn.execute(
+            "SELECT id, ts, source, text FROM records WHERE rowid > ? ORDER BY rowid DESC",
+            (-1 if current is None else current.anchor_rowid,),
+        )
+        newest = cursor.fetchone()
+        summary_head = (
+            [
+                f"[Conversation summary · up to {current.anchor_ts} · "
+                "ask the backend for exact words]",
+            ]
+            if current
+            else []
+        )
+        sections = _summary_sections(current.summary) if current else []
+        now_line = _now_line(moment, None if newest is None else str(newest[1]))
+
+        def _head() -> list[str]:
+            return [
+                "[About the user]", *profile, now_line, *summary_head, *sections,
+                "[Conversation records, oldest first]",
+            ]
+
+        # The newest records that fit beside the head; the first that does not ends the read.
+        used = len("\n".join(_head()))
+        for _, ts, source, text in () if newest is None else chain((newest,), cursor):
+            line = f"[{ts}] {_USER_LABEL if source == 'allen' else source}: {text}"
+            used += 1 + len(line)
+            if used > max_chars:
+                break
+            record_lines.append(line)
+    record_lines.reverse()
 
     def _assemble() -> str:
-        return "\n".join(
-            [
-                "[About the user]",
-                *profile,
-                now_line,
-                *summary_head,
-                *sections,
-                "[Conversation records, oldest first]",
-                *(record_lines or ["(none)"]),
-            ],
-        )
+        return "\n".join([*_head(), *(record_lines or ["(none)"])])
 
-    while len(_assemble()) > max_chars:
-        if record_lines:
-            record_lines.pop(0)
-        elif sections:
+    while len(_assemble()) > max_chars:  # only the head is left to cut
+        if sections:
             sections.pop()
         elif len(profile) > 2:  # noqa: PLR2004 — a section heading and its first item stay
             profile.pop()
