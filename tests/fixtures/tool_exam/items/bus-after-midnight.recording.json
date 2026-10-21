@@ -1,0 +1,34 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"DRIVE\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"780s\", \"distanceMeters\": 6100}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"WALK\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"4500s\", \"distanceMeters\": 5800}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"TRANSIT\", \"computeAlternativeRoutes\": true, \"departureTime\": \"2026-10-13T06:40:00Z\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"300s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"1200s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Douglas at Hillside\"}, \"arrivalStop\": {\"name\": \"Oak Bay Junction\"}, \"departureTime\": \"2026-10-13T07:12:00Z\", \"arrivalTime\": \"2026-10-13T07:32:00Z\"}, \"headsign\": \"Uvic\", \"transitLine\": {\"nameShort\": \"11\", \"name\": \"Uvic\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"240s\"}], \"endLocation\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}]}, {\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"300s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"1200s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Douglas at Hillside\"}, \"arrivalStop\": {\"name\": \"Oak Bay Junction\"}, \"departureTime\": \"2026-10-13T07:40:00Z\", \"arrivalTime\": \"2026-10-13T08:00:00Z\"}, \"headsign\": \"Uvic\", \"transitLine\": {\"nameShort\": \"14\", \"name\": \"Uvic\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"240s\"}], \"endLocation\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}]}]}"
+  }
+ ],
+ "mcp": []
+}

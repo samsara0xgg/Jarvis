@@ -50,6 +50,7 @@ dev = [
     "ruff",
     "mypy",
     "types-PyYAML",
+    "time-machine>=3.5.1",
 ]
 
 [tool.hatch.build.targets.wheel]

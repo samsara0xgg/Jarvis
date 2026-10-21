@@ -1,0 +1,14 @@
+{
+  "id": "bus-after-midnight",
+  "tool": "bus",
+  "said": "when is the next bus home",
+  "at": "2026-10-12T23:50:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.4284, "lng": -123.3656, "age_s": 60},
+  "state": null,
+  "args": {"to": "48.4634,-123.3117"},
+  "recording": "bus-after-midnight.recording.json",
+  "expect": {
+    "checker": "bus_catchable_departures"
+  }
+}

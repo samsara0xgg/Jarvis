@@ -1,0 +1,996 @@
+r"""Tool exam, tool layer (ADR 0317): one tool through the real dispatcher, no model, no network.
+
+    .venv/bin/python -m scripts.tool_exam_tools run    [--items DIR] [--only ID,...]
+    .venv/bin/python -m scripts.tool_exam_tools score  [--items DIR]
+    .venv/bin/python -m scripts.tool_exam_tools record ITEM.json [--root ~/.jarvis]
+
+``run`` prints every item's failures; ``score`` prints the counts and the verdict against the
+baseline and exits 1 on a regression; ``record`` runs one item live and stores what each provider
+answered. ``--items`` defaults to ``~/.jarvis/evals/tool-exam/tool-items/work``. The ``held``
+sibling is read only by ``score`` (``--items .../held``), which prints counts and ids, never
+an item.
+
+An item (JSON, one per file) holds his words and the moment, place and data they were said in:
+
+- ``id``, ``tool``, ``said``, ``args``; optional ``layer`` (``tool``, the default).
+- ``at``: ISO time with offset; the wall clock is frozen there. ``zone``: IANA zone of his day.
+- ``here``: optional ``{lat, lng, age_s?, place?, accuracy_m?}``, the phone's last report.
+- ``state``: a backup directory name under ``~/.jarvis/backups/pi-brain``, a fixture directory
+  (relative to the item's directory or the repo), or null for empty databases. A directory holds
+  ``mac_events.db`` / ``memory.db`` (copied before the boot) and/or ``mac_events.sql`` /
+  ``memory.sql`` (run after it).
+- ``setup``: earlier calls, ``[{tool, args}]``, made through the same dispatcher.
+- ``recording``: path (relative to the item's directory) of what each provider answered, or null.
+  A provider call the recording lacks fails the item.
+- ``expect``:
+  - ``summary_must[]`` / ``summary_must_not[]``: regexes on the result's ``summary`` (an
+    error's text).
+  - ``result[]``: ``{path, op, value?}`` on the decoded result; ``path`` is dotted with list
+    indexes (``items.0.title``); ``op`` is eq, ne, contains, not_contains, matches, in, gt, gte,
+    lt, lte, len, exists or absent.
+  - ``state_after[]``: ``{db: events|memory, sql, answer}``; ``answer`` is the rows (a list of
+    lists) or one value for a single-cell query.
+  - ``events_after``: ``{must[], must_not[]}``; an entry is an event type, or
+    ``{type, payload_matches}`` (a regex on the payload), among events the call wrote.
+  - ``error_kind``: the kind the call must fail with (``needs_him``, ``impossible``,
+    ``retry_other_args`` or ``dont_retry``); without it an error fails the item.
+  - ``checker``: name of a reference checker in ``scripts/tool_exam_checkers.py`` that derives the
+    facts from the recording.
+
+Every result also passes :func:`assert_tool_result`, the spec's rules for a result and an error.
+The ``baseline.json`` beside the items lists the ids that fail; a run fails when an item outside it
+fails, and names a listed item that now passes, so the list only shrinks.
+
+Recordings are scrubbed of every credential before they are written, and the recorder checks in
+memory that no key value is in the bytes it writes; it never prints one.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import contextlib
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import sqlite3
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from collections.abc import Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from email.message import Message
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
+from unittest.mock import patch
+
+import time_machine
+import yaml
+
+from jarvis.execution.mcp_tools import McpServers
+from jarvis.execution.tools import ActionLifecycle, release_turn_actions
+from jarvis.runtime import bootstrap_runtime_app
+from jarvis.shared import ActionRequest, CallerPrincipal
+from jarvis.state.event_log import emit_event
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator, Sequence
+
+    from jarvis.runtime import JarvisRuntime
+
+REPO = Path(__file__).resolve().parent.parent
+ITEMS = Path("~/.jarvis/evals/tool-exam/tool-items").expanduser()
+BACKUPS = Path("~/.jarvis/backups/pi-brain").expanduser()
+BASELINE = "baseline.json"
+ITEM_TIMEOUT_S = 60
+RESULT_CHARS = 4000
+SUMMARY_CHARS = 400
+
+# --- the spec's rules for a result and an error (docs/spec.html#tools) -------------------------
+
+ERROR_KINDS = ("needs_him", "impossible", "retry_other_args", "dont_retry")
+"""The four kinds of error: he must act, impossible, retry with other arguments, do not retry."""
+_UUID = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE
+)
+_HASH = re.compile(r"\b[0-9a-f]{32,}\b", re.IGNORECASE)
+_PATH = re.compile(r"(?:^|[\s\"'(=])(?:~|/)?/[\w.@+-]+(?:/[\w.@+-]+)+")
+_HTML = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]*)?/?>")
+
+
+def _strings(value: object, path: str = "") -> Iterator[tuple[str, str]]:
+    """Every string in a decoded result, with where it sits (keys are not walked)."""
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, Mapping):
+        for key, one in value.items():
+            yield from _strings(one, f"{path}.{key}" if path else str(key))
+    elif isinstance(value, list | tuple):
+        for i, one in enumerate(value):
+            yield from _strings(one, f"{path}.{i}" if path else str(i))
+
+
+def result_problems(  # noqa: C901 - one pass over every rule of the spec
+    out: str | Mapping[str, Any],
+) -> list[str]:
+    """What breaks the spec's rules for this tool result (the dispatcher's JSON or its decoding)."""
+    raw = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+    problems: list[str] = []
+    if len(raw) > RESULT_CHARS:
+        problems.append(f"result is {len(raw)} characters, over about {RESULT_CHARS}")
+    try:
+        decoded = json.loads(raw) if isinstance(out, str) else dict(out)
+    except ValueError:
+        return [*problems, "result is not JSON"]
+    if not isinstance(decoded, dict) or not decoded:
+        return [*problems, "result is not a JSON object"]
+    if "error" in decoded:
+        problems += _error_problems(decoded)
+    else:
+        first = next(iter(decoded))
+        summary = decoded.get("summary")
+        if first != "summary":
+            problems.append(f"the first field is {first!r}, not a speakable summary")
+        elif not isinstance(summary, str) or not summary.strip():
+            problems.append("summary is empty")
+        elif "\n" in summary or "{" in summary or len(summary) > SUMMARY_CHARS:
+            problems.append("summary is not one speakable line (a newline, a brace, or too long)")
+    for where, text in _strings(decoded):
+        for rule, pattern in (("uuid", _UUID), ("hash", _HASH), ("path", _PATH), ("html", _HTML)):
+            if pattern.search(text):
+                problems.append(f"{where} holds a {rule}")
+        if text.lstrip()[:1] in "{[":
+            with contextlib.suppress(ValueError):
+                json.loads(text)
+                problems.append(f"{where} holds JSON inside JSON")
+    return problems
+
+
+def _error_problems(decoded: Mapping[str, Any]) -> list[str]:
+    """An error says what happened and what to do next, and is one of the four kinds."""
+    text, code = decoded.get("error"), decoded.get("code")
+    problems = []
+    if not isinstance(text, str) or not text.strip():
+        problems.append("error text is empty")
+    if code not in ERROR_KINDS:
+        problems.append(f"error code {code!r} is not one of the four kinds {ERROR_KINDS}")
+    return problems
+
+
+def assert_tool_result(out: str | Mapping[str, Any]) -> None:
+    """Raise AssertionError listing every rule this tool result breaks."""
+    problems = result_problems(out)
+    if problems:
+        raise AssertionError("; ".join(problems))
+
+
+# --- recordings: what each provider answered ----------------------------------------------------
+
+_SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH", re.IGNORECASE)
+_SECRET_PARAM = re.compile(
+    r"^(key|api[-_]?key|apikey|token|access[-_]?token|sig|signature|auth)$", re.IGNORECASE
+)
+_KEPT_HEADERS = frozenset({"content-type"})
+_SCRUBBED = "<scrubbed>"
+_MIN_SECRET = 6
+
+
+class RecordingMiss(OSError):  # noqa: N818 - reads as the fact it states
+    """A provider call the item's recording does not hold (the item fails)."""
+
+
+def scrub_url(url: str) -> str:
+    """``url`` without the query parameters that carry a credential."""
+    parts = urllib.parse.urlsplit(url)
+    pairs = [
+        (k, v)
+        for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        if not _SECRET_PARAM.match(k)
+    ]
+    query = "&".join(
+        f"{urllib.parse.quote(k, safe=',:/')}={urllib.parse.quote(v, safe=',:/')}" for k, v in pairs
+    )
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+
+
+def secret_values() -> dict[str, str]:
+    """Environment variable name -> value for every value the program may read as a key."""
+    return {n: v for n, v in os.environ.items() if _SECRET_NAME.search(n) and len(v) >= _MIN_SECRET}
+
+
+def _hash(data: bytes | None) -> str:
+    return hashlib.sha256(data or b"").hexdigest()[:16]
+
+
+def _request_of(url: object, data: object) -> tuple[str, str, bytes]:
+    """``(method, url, body)`` of what ``urlopen`` was given: a string or a Request."""
+    if isinstance(url, urllib.request.Request):
+        body = (
+            url.data
+            if isinstance(url.data, bytes)
+            else (str(url.data).encode() if url.data is not None else b"")
+        )
+        return url.get_method(), url.full_url, body
+    body = data if isinstance(data, bytes) else b""
+    return ("POST" if body else "GET"), str(url), body
+
+
+class _Reply(io.BytesIO):
+    """What ``urlopen`` returns: a readable body with a status and a content type."""
+
+    def __init__(self, body: bytes, status: int, content_type: str, url: str) -> None:
+        super().__init__(body)
+        self.status = self.code = status
+        self.url = url
+        self.headers = Message()
+        if content_type:
+            self.headers["Content-Type"] = content_type
+
+    def getcode(self) -> int:
+        return self.status
+
+    def geturl(self) -> str:
+        return self.url
+
+    def info(self) -> Message:
+        return self.headers
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+class Recording:
+    """What each provider answered for one item: HTTP replies and MCP tool results."""
+
+    def __init__(self, data: Mapping[str, Any] | None = None) -> None:
+        """Hold ``data`` (a loaded recording), or an empty one."""
+        self.data: dict[str, Any] = {"version": 1, "settings": {}, "env": [], "http": [], "mcp": []}
+        self.data.update(data or {})
+        for entry in self.data["http"]:  # a hand-written entry gives its request body, not a hash
+            entry.setdefault("body_sha", _hash(entry.get("request", "").encode()))
+
+    @classmethod
+    def load(cls, path: Path) -> Recording:
+        """Read a recording from its file."""
+        return cls(json.loads(path.read_text(encoding="utf-8")))
+
+    @property
+    def settings(self) -> dict[str, Any]:
+        """The settings the recorded URLs depend on."""
+        return dict(self.data["settings"])
+
+    @property
+    def env(self) -> list[str]:
+        """Names of the environment variables the program read as keys."""
+        return list(self.data["env"])
+
+    def http(self, method: str, url: str, body: bytes) -> dict[str, Any] | None:
+        """The recorded HTTP exchange for this request, or None."""
+        want = (method.upper(), scrub_url(url), _hash(body))
+        return next(
+            (e for e in self.data["http"] if (e["method"], e["url"], e["body_sha"]) == want), None
+        )
+
+    def mcp(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The recorded MCP tool call, or None."""
+        want = json.dumps(args, sort_keys=True)
+        return next(
+            (
+                e
+                for e in self.data["mcp"]
+                if (e["server"], e["tool"], json.dumps(e["args"], sort_keys=True))
+                == (server, tool, want)
+            ),
+            None,
+        )
+
+    def save(self, path: Path, secrets: Mapping[str, str]) -> None:
+        """Write the recording after checking in memory that no credential is in the bytes."""
+        blob = json.dumps(self.data, indent=1, ensure_ascii=False)
+        raw = blob.encode()
+        for name, value in secrets.items():
+            forms = {value, urllib.parse.quote(value), urllib.parse.quote(value, safe="")}
+            forms.add(base64.b64encode(value.encode()).decode())
+            if any(f.encode() in raw for f in forms if len(f) >= _MIN_SECRET):
+                msg = f"refusing to write {path.name}: it would hold the value of {name}"
+                raise SystemExit(msg)
+        path.write_text(blob + "\n", encoding="utf-8")
+
+
+def _scrub(text: str, secrets: Mapping[str, str]) -> str:
+    for value in secrets.values():
+        text = text.replace(value, _SCRUBBED)
+    return text
+
+
+class _Transport:
+    """Patches the provider boundaries: ``urlopen`` and the MCP client's tool call.
+
+    ``replay`` answers from the recording and fails any call it lacks; ``record`` makes the call
+    and stores the answer. Everything else that opens a socket is refused while replaying.
+    """
+
+    def __init__(self, recording: Recording, *, live: bool) -> None:
+        self.recording = recording
+        self.live = live
+        self.misses: list[str] = []
+        self.secrets: dict[str, str] = secret_values()
+        self._real_urlopen = urllib.request.urlopen
+        self._stack = contextlib.ExitStack()
+
+    def __enter__(self) -> Self:
+        real_call, real_direct = McpServers._call, McpServers.call  # noqa: SLF001
+
+        def call(
+            srv: McpServers, server: str, client: object, tool: str, args: Mapping[str, Any]
+        ) -> dict[str, Any]:
+            return self._mcp(server, tool, args, lambda: real_call(srv, server, client, tool, args))  # type: ignore[arg-type]
+
+        def direct(
+            srv: McpServers, server: str, tool: str, args: Mapping[str, Any]
+        ) -> dict[str, Any]:
+            return self._mcp(server, tool, args, lambda: real_direct(srv, server, tool, args))
+
+        self._stack.enter_context(patch.object(urllib.request, "urlopen", self._urlopen))
+        self._stack.enter_context(patch.object(McpServers, "_call", call))
+        if not self.live:  # a call outside a model turn skips the "connected" check when replayed
+            self._stack.enter_context(patch.object(McpServers, "call", direct))
+            self._stack.enter_context(patch.object(socket.socket, "connect", _refuse))
+            self._stack.enter_context(patch.object(socket, "getaddrinfo", _refuse))
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stack.close()
+
+    def _urlopen(self, url: object, data: object = None, *args: object, **kw: object) -> _Reply:
+        method, full, body = _request_of(url, data)
+        if self.live:
+            return self._record(url, data, args, kw, method, full, body)
+        entry = self.recording.http(method, full, body)
+        if entry is None:
+            shown = body.decode("utf-8", "replace")[:400]
+            self.misses.append(f"{method} {scrub_url(full)} body#{_hash(body)} {shown}")
+            msg = f"the recording has no answer for {method} {scrub_url(full)}"
+            raise RecordingMiss(msg)
+        payload = (
+            base64.b64decode(entry["body_b64"]) if "body_b64" in entry else entry["body"].encode()
+        )
+        if entry["status"] >= 400:  # noqa: PLR2004 - HTTP
+            raise urllib.error.HTTPError(
+                full,
+                entry["status"],
+                "recorded",
+                Message(),
+                io.BytesIO(payload),
+            )
+        return _Reply(payload, entry["status"], entry.get("content_type", ""), full)
+
+    def _record(  # noqa: PLR0913 - the call as made and what it was reduced to
+        self,
+        url: object,
+        data: object,
+        args: tuple[object, ...],
+        kw: dict[str, object],
+        method: str,
+        full: str,
+        body: bytes,
+    ) -> _Reply:
+        headers = dict(url.header_items()) if isinstance(url, urllib.request.Request) else {}
+        self.secrets.update(
+            {
+                f"header:{k}": v.removeprefix("Bearer ").strip()
+                for k, v in headers.items()
+                if _SECRET_NAME.search(k) and len(v.removeprefix("Bearer ").strip()) >= _MIN_SECRET
+            }
+        )
+        status, payload, ctype = 200, b"", ""
+        try:
+            with self._real_urlopen(url, data, *args, **kw) as reply:  # type: ignore[call-overload]
+                payload, status = reply.read(), reply.status
+                ctype = reply.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as exc:
+            payload, status, ctype = exc.read(), exc.code, exc.headers.get("Content-Type", "")
+            self._store(method, full, body, headers, status, payload, ctype)
+            raise urllib.error.HTTPError(
+                full, status, exc.msg, exc.headers, io.BytesIO(payload)
+            ) from None
+        self._store(method, full, body, headers, status, payload, ctype)
+        return _Reply(payload, status, ctype, full)
+
+    def _store(  # noqa: PLR0913 - one HTTP exchange
+        self,
+        method: str,
+        full: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        status: int,
+        payload: bytes,
+        ctype: str,
+    ) -> None:
+        raw_request = full + body.decode("utf-8", "replace") + "".join(headers.values())
+        for name, value in self.secrets.items():
+            if value in raw_request and not name.startswith("header:"):
+                names = self.recording.data["env"]
+                if name not in names:
+                    names.append(name)
+        entry: dict[str, Any] = {
+            "method": method,
+            "url": _scrub(scrub_url(full), self.secrets),
+            "body_sha": _hash(body),
+            "status": status,
+            "content_type": ctype,
+        }
+        if body:
+            entry["request"] = _scrub(body.decode("utf-8", "replace"), self.secrets)
+        try:
+            entry["body"] = _scrub(payload.decode("utf-8"), self.secrets)
+        except UnicodeDecodeError:
+            entry["body_b64"] = base64.b64encode(payload).decode()
+        self.recording.data["http"].append(entry)
+
+    def _mcp(
+        self, server: str, tool: str, args: Mapping[str, Any], live: Callable[[], dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self.live:
+            made = live()
+            self.recording.data["mcp"].append(
+                {
+                    "server": server,
+                    "tool": tool,
+                    "args": dict(args),
+                    "result": json.loads(_scrub(json.dumps(made), self.secrets)),
+                }
+            )
+            return made
+        entry = self.recording.mcp(server, tool, args)
+        if entry is None:
+            self.misses.append(f"mcp {server}.{tool}")
+            msg = f"the recording has no answer for mcp {server}.{tool}"
+            raise RecordingMiss(msg)
+        result: dict[str, Any] = entry["result"]
+        return result
+
+
+def _refuse(*_a: object, **_k: object) -> None:
+    msg = "network blocked: the tool layer runs from recordings"
+    raise OSError(msg)
+
+
+# --- the sandbox ---------------------------------------------------------------------------------
+
+
+@dataclass
+class Item:
+    """One exam item and where it was read from."""
+
+    raw: dict[str, Any]
+    path: Path
+
+    @property
+    def id(self) -> str:
+        """The item's id."""
+        return str(self.raw["id"])
+
+
+def load_items(directory: Path) -> list[Item]:
+    """Every ``*.json`` item in ``directory`` (not the baseline or a recording), in name order."""
+    return [
+        Item(json.loads(p.read_text(encoding="utf-8")), p)
+        for p in sorted(directory.glob("*.json"))
+        if p.name != BASELINE and not p.name.endswith(".recording.json")
+    ]
+
+
+def _state_dir(item: Item) -> Path | None:
+    name = item.raw.get("state")
+    if not name:
+        return None
+    for base in (BACKUPS, item.path.parent, REPO):
+        if (base / name).is_dir():
+            return Path(base / name)
+    msg = f"{item.id}: no state directory {name!r}"
+    raise SystemExit(msg)
+
+
+def _ephemeral_weather_key(root: Path) -> dict[str, Any]:
+    """A throwaway signing key, so WeatherKit is on in the sandbox without the real one."""
+    from cryptography.hazmat.primitives import serialization  # noqa: PLC0415
+    from cryptography.hazmat.primitives.asymmetric import ec  # noqa: PLC0415
+
+    pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    key = root / "weatherkit-exam.p8"
+    key.write_bytes(pem)
+    key.chmod(0o600)
+    return {
+        "weatherkit": {"key_id": "EXAMKEY000", "service_id": "exam.service", "key_file": str(key)}
+    }
+
+
+def _settings(item: Item, root: Path, recording: Recording | None, real_root: Path | None) -> None:
+    """The sandbox's ``settings.yaml``: a brain on his zone, WeatherKit on, the recorded places."""
+    zone = str(item.raw.get("zone") or "UTC")
+    settings: dict[str, Any] = {}
+    if real_root is not None and (real_root / "settings.yaml").is_file():
+        settings = yaml.safe_load((real_root / "settings.yaml").read_text(encoding="utf-8")) or {}
+    else:
+        settings.update(recording.settings if recording else {})
+        settings["weather"] = _ephemeral_weather_key(root)
+    settings["runtime"] = {"role": "brain"}
+    settings.setdefault("work_state", {})["timezone"] = zone
+    settings.setdefault("observer", {})["claude_sessions"] = {"enabled": False}
+    (root / "settings.yaml").write_text(yaml.safe_dump(settings), encoding="utf-8")
+
+
+@dataclass
+class Box:
+    """A booted sandbox: the runtime, its root and what the item named."""
+
+    runtime: JarvisRuntime
+    root: Path
+    item: Item
+    clock: Any
+    """The frozen clock; ``clock.shift(seconds=n)`` lets time pass between two calls."""
+
+
+@contextmanager
+def _environment(
+    item: Item, tmp: Path, recording: Recording | None, *, live: bool
+) -> Iterator[None]:
+    """Process environment for the sandbox: his zone, a home of its own, placeholder keys."""
+    zone = str(item.raw.get("zone") or "UTC")
+    set_env = {"TZ": zone, "JARVIS_RUNTIME_ROOT": str(tmp / "root")}
+    if not live:
+        set_env["HOME"] = str(tmp / "home")
+        (tmp / "home").mkdir()
+        for name in recording.env if recording else []:
+            set_env[name] = "exam-placeholder-key"
+    saved = {k: os.environ.get(k) for k in set_env}
+    os.environ.update(set_env)
+    time.tzset()
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        time.tzset()
+
+
+def _copy_state(item: Item, root: Path) -> list[Path]:
+    """Copy the item's databases in before the boot; return the ``.sql`` files to run after it."""
+    state = _state_dir(item)
+    sql: list[Path] = []
+    if state is None:
+        return sql
+    for name in ("mac_events.db", "memory.db"):
+        if (state / name).is_file():
+            src = sqlite3.connect(f"file:{state / name}?mode=ro", uri=True)
+            dst = sqlite3.connect(root / name)
+            try:
+                src.backup(dst)
+            finally:
+                src.close()
+                dst.close()
+    return [state / n for n in ("mac_events.sql", "memory.sql") if (state / n).is_file()]
+
+
+@contextmanager
+def sandbox(
+    item: Item,
+    recording: Recording | None,
+    *,
+    live: bool = False,
+    real_root: Path | None = None,
+) -> Iterator[Box]:
+    """Boot the runtime on a copy of his data at the item's moment, with the providers recorded."""
+    import jarvis.runtime as runtime_module  # noqa: PLC0415
+
+    tmp = Path(tempfile.mkdtemp(prefix="tool-exam-"))
+    root = tmp / "root"
+    root.mkdir()
+    runtime: JarvisRuntime | None = None
+    moment = datetime.fromisoformat(item.raw["at"])
+    try:
+        sql = _copy_state(item, root)
+        _settings(item, root, recording, real_root)
+        if live and real_root is not None and (real_root / "env").is_file():
+            shutil.copyfile(real_root / "env", root / "env")
+        with (
+            _environment(item, tmp, recording, live=live),
+            time_machine.travel(moment, tick=False) as clock,
+            patch.object(runtime_module, "_start_locating_places", lambda *_: None),
+        ):
+            runtime = bootstrap_runtime_app(runtime_root=root)
+            if runtime.runtime_paths.root != root.resolve() and runtime.runtime_paths.root != root:
+                msg = f"the runtime booted on {runtime.runtime_paths.root}, not on the sandbox"
+                raise SystemExit(msg)
+            if runtime.rides is not None:
+                runtime.rides.defer = lambda _fn: None
+            for script in sql:
+                runtime.conn.executescript(script.read_text(encoding="utf-8"))
+            _place_him(runtime, item.raw.get("here"), moment)
+            yield Box(runtime, root, item, clock)
+    finally:
+        if runtime is not None:
+            runtime.conn.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _place_him(runtime: JarvisRuntime, here: Mapping[str, Any] | None, moment: datetime) -> None:
+    """The phone's last report, as ``here`` says, written to the sandbox log."""
+    if not here:
+        return
+    payload = {"lat": here["lat"], "lng": here["lng"], "accuracy_m": here.get("accuracy_m", 20.0)}
+    if here.get("place"):
+        payload["place"] = here["place"]
+    emit_event(
+        runtime.conn,
+        type="phone.location_observed",
+        ingestion_node="iphone",
+        payload=payload,
+        ts_epoch_ms=int(moment.timestamp() * 1000) - int(here.get("age_s", 0)) * 1000,
+    )
+
+
+def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
+    """One call through the real dispatcher as the model would make it; the result it reads."""
+    runtime = box.runtime
+    definitions = {t.name: t for t in runtime.tool_registry.get_definitions()}
+    if tool not in definitions:
+        msg = f"the booted runtime has no tool {tool!r}"
+        raise LookupError(msg)
+    turn_id = f"T{uuid.uuid4().hex[:12]}"
+    emit_event(
+        runtime.conn,
+        type="surface.user_intent",
+        payload={"transcript": said, "turn_id": turn_id, "channel": "cli_stdin"},
+        correlation={"turn_id": turn_id},
+    )
+    action_id = uuid.uuid4().hex
+    request = ActionRequest(
+        action_id=action_id,
+        tool_name=tool,
+        target_entity_ref=None,
+        caller_principal=CallerPrincipal.JARVIS_LLM,
+        risk_level=definitions[tool].risk_level,
+        arguments=args,
+        authorization_lease=None,
+        run_id=None,
+        turn_id=turn_id,
+    )
+    lifecycle = ActionLifecycle()
+    lifecycle.register(action_id)
+    lifecycle.transition(action_id, "authorized")
+    try:
+        slot = runtime.tool_registry.dispatch(
+            request,
+            runtime.conn,
+            runtime.runtime_paths,
+            lifecycle,
+        ).slots[0]
+    finally:
+        release_turn_actions(turn_id)
+    return slot.tool_output or ""
+
+
+# --- checking one item ---------------------------------------------------------------------------
+
+
+def _at(value: Any, path: str) -> tuple[bool, Any]:  # noqa: ANN401 - decoded JSON
+    """``(found, value)`` at a dotted path with list indexes."""
+    for part in path.split("."):
+        if (
+            isinstance(value, list)
+            and part.lstrip("-").isdigit()
+            and -len(value) <= int(part) < len(value)
+        ):
+            value = value[int(part)]
+        elif isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            return False, None
+    return True, value
+
+
+def _op(found: bool, got: Any, op: str, want: Any) -> bool:  # noqa: ANN401, PLR0911, C901, FBT001, PLR0912
+    if op == "exists":
+        return found
+    if op == "absent":
+        return not found
+    if not found:
+        return False
+    match op:
+        case "eq":
+            return bool(got == want)
+        case "ne":
+            return bool(got != want)
+        case "contains":
+            return want in got if isinstance(got, str | list | dict) else False
+        case "not_contains":
+            return want not in got if isinstance(got, str | list | dict) else False
+        case "matches":
+            return isinstance(got, str) and re.search(want, got) is not None
+        case "in":
+            return bool(got in want)
+        case "gt":
+            return bool(got > want)
+        case "gte":
+            return bool(got >= want)
+        case "lt":
+            return bool(got < want)
+        case "lte":
+            return bool(got <= want)
+        case "len":
+            return bool(len(got) == want)
+    msg = f"unknown result op {op!r}"
+    raise ValueError(msg)
+
+
+def _rows(box: Box, db: str, sql: str) -> list[list[Any]]:
+    path = box.root / "mac_events.db" if db == "events" else box.runtime.memory.db_path  # type: ignore[union-attr]
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return [list(r) for r in con.execute(sql).fetchall()]
+    finally:
+        con.close()
+
+
+def state_failures(box: Box, checks: Sequence[Mapping[str, Any]]) -> list[str]:
+    """What differs between the sandbox databases and the ``state_after`` queries' answers."""
+    failures = []
+    for check in checks:
+        got_rows = _rows(box, check.get("db", "events"), check["sql"])
+        want = check["answer"]
+        cell = len(got_rows) == 1 and len(got_rows[0]) == 1 and not isinstance(want, list)
+        got: Any = got_rows[0][0] if cell else got_rows
+        if got != want:
+            failures.append(f"state {check['sql'][:60]!r}: expected {want!r}, got {got!r}")
+    return failures
+
+
+def _events_since(box: Box, after: int) -> list[tuple[str, str]]:
+    rows = box.runtime.conn.execute(
+        "SELECT type, payload_json FROM events WHERE id > ? ORDER BY id",
+        (after,),
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def _check_events(spec: Mapping[str, Any], events: Sequence[tuple[str, str]]) -> list[str]:
+    def seen(entry: str | Mapping[str, Any]) -> bool:
+        kind, pattern = (
+            (entry, None)
+            if isinstance(entry, str)
+            else (entry["type"], entry.get("payload_matches"))
+        )
+        return any(t == kind and (pattern is None or re.search(pattern, p)) for t, p in events)
+
+    return [f"event expected but not written: {e}" for e in spec.get("must", ()) if not seen(e)] + [
+        f"event written that must not be: {e}" for e in spec.get("must_not", ()) if seen(e)
+    ]
+
+
+def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
+    """Run one tool-layer item in a sandbox; the list of what failed (empty = passed)."""
+    if item.raw.get("layer", "tool") != "tool":
+        msg = f"{item.id}: not a tool-layer item"
+        raise ValueError(msg)
+    rec_path = item.raw.get("recording")
+    if recording is None and rec_path:
+        recording = Recording.load(item.path.parent / rec_path)
+    transport = _Transport(recording or Recording(), live=False)
+    expect = item.raw.get("expect") or {}
+    failures: list[str] = []
+
+    def alarm(*_: object) -> None:
+        msg = f"timed out after {ITEM_TIMEOUT_S}s (a wait on the frozen clock?)"
+        raise TimeoutError(msg)
+
+    previous = signal.signal(signal.SIGALRM, alarm)
+    signal.alarm(ITEM_TIMEOUT_S)
+    try:
+        with transport, sandbox(item, recording) as box:
+            for step in item.raw.get("setup") or ():
+                dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+            after = int(
+                box.runtime.conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+            )
+            raw = dispatch(
+                box, item.raw["tool"], item.raw.get("args") or {}, item.raw.get("said", "")
+            )
+            failures += _judge(box, item, expect, raw, after, recording)
+    except (LookupError, TimeoutError, RecordingMiss) as exc:
+        failures.append(str(exc))
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    failures += [f"provider call missing from the recording: {m}" for m in transport.misses]
+    return failures
+
+
+def _judge(  # noqa: PLR0913 - one result against everything the item expects
+    box: Box,
+    item: Item,
+    expect: Mapping[str, Any],
+    raw: str,
+    after: int,
+    recording: Recording | None,
+) -> list[str]:
+    failures = [f"rule: {p}" for p in result_problems(raw)]
+    try:
+        out = json.loads(raw)
+    except ValueError:
+        return [*failures, "the result is not JSON"]
+    if not isinstance(out, dict):
+        return [*failures, "the result is not an object"]
+    errored = "error" in out
+    kind = expect.get("error_kind")
+    if errored and not kind:
+        failures.append(f"the call failed: {out.get('code')}: {str(out['error'])[:120]}")
+    elif kind and not errored:
+        failures.append(f"expected an error of kind {kind}, got a result")
+    elif kind and out.get("code") != kind:
+        failures.append(f"expected error kind {kind}, got code {out.get('code')!r}")
+    said = str(out.get("error") if errored else out.get("summary", ""))
+    failures += [
+        f"summary lacks /{p}/: {said[:120]!r}"
+        for p in expect.get("summary_must", ())
+        if not re.search(p, said)
+    ]
+    failures += [
+        f"summary has /{p}/: {said[:120]!r}"
+        for p in expect.get("summary_must_not", ())
+        if re.search(p, said)
+    ]
+    for check in expect.get("result", ()):
+        found, got = _at(out, check["path"])
+        if not _op(found, got, check["op"], check.get("value")):
+            failures.append(
+                f"result {check['path']} {check['op']} {check.get('value')!r}: got {got!r}"
+            )
+    failures += state_failures(box, expect.get("state_after", ()))
+    failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
+    if name := expect.get("checker"):
+        from scripts.tool_exam_checkers import CHECKERS  # noqa: PLC0415
+
+        failures += [f"checker {name}: {m}" for m in CHECKERS[name](item.raw, recording, out)]
+    return failures
+
+
+# --- the runner ----------------------------------------------------------------------------------
+
+
+def run_one(item: Item) -> list[str]:
+    """Run an item."""
+    return run_item(item)
+
+
+def score(
+    directory: Path,
+    only: Sequence[str] = (),
+    *,
+    run: Callable[[Item], list[str]] = run_one,
+) -> dict[str, Any]:
+    """Run the items in ``directory`` against its baseline.
+
+    ``failed`` maps each failing id to why; ``regressed`` are the failures not in the baseline;
+    ``fixed`` are baselined ids that now pass (remove them from the baseline).
+    """
+    items = [i for i in load_items(directory) if not only or i.id in only]
+    base_file = directory / BASELINE
+    baseline: list[str] = (
+        json.loads(base_file.read_text(encoding="utf-8")) if base_file.is_file() else []
+    )
+    failed = {i.id: run(i) for i in items}
+    failed = {k: v for k, v in failed.items() if v}
+    ids = {i.id for i in items}
+    return {
+        "items": len(items),
+        "failed": failed,
+        "regressed": sorted(set(failed) - set(baseline)),
+        "fixed": sorted(i for i in baseline if i in ids and i not in failed),
+        "stale": sorted(i for i in baseline if not only and i not in ids),
+    }
+
+
+def verdict(result: Mapping[str, Any]) -> list[str]:
+    """What fails the gate: a failure outside the baseline, a baselined item that passes."""
+    return (
+        [f"FAIL {i}: {'; '.join(result['failed'][i])[:300]}" for i in result["regressed"]]
+        + [f"{i}: passes now; remove it from the baseline" for i in result["fixed"]]
+        + [f"{i}: no such item; remove it from the baseline" for i in result["stale"]]
+    )
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    """``record``: run one item live and store what each provider answered beside it."""
+    item = Item(json.loads(args.item.read_text(encoding="utf-8")), args.item.resolve())
+    recording = Recording({"settings": _snapshot_settings(args.root)})
+    transport = _Transport(recording, live=True)
+    with transport, sandbox(item, recording, live=True, real_root=args.root.expanduser()) as box:
+        for step in item.raw.get("setup") or ():
+            dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+        raw = dispatch(box, item.raw["tool"], item.raw.get("args") or {}, item.raw.get("said", ""))
+    target = args.item.with_name(f"{args.item.stem}.recording.json")
+    recording.save(target, transport.secrets)
+    sys.stdout.write(
+        f"recorded {len(recording.data['http'])} http, {len(recording.data['mcp'])} mcp"
+        f" -> {target.name}"
+        f'; set "recording": "{target.name}" in the item. Result {len(raw)} characters.\n',
+    )
+    return 0
+
+
+_SNAPSHOT_KEYS = (("home", "weather"), ("transit",))
+
+
+def _snapshot_settings(root: Path) -> dict[str, Any]:
+    """The settings a provider URL depends on (his home, his stops), kept so a replay asks alike."""
+    path = root.expanduser() / "settings.yaml"
+    if not path.is_file():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    out: dict[str, Any] = {}
+    for keys in _SNAPSHOT_KEYS:
+        cursor: Any = data
+        for k in keys:
+            cursor = cursor.get(k) if isinstance(cursor, dict) else None
+        if cursor is not None:
+            target = out
+            for k in keys[:-1]:
+                target = target.setdefault(k, {})
+            target[keys[-1]] = cursor
+    return out
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point for ``run``, ``score`` and ``record``."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    for name in ("run", "score"):
+        one = sub.add_parser(name)
+        one.add_argument("--items", type=Path, default=ITEMS / "work")
+        one.add_argument("--only", default="")
+    rec = sub.add_parser("record")
+    rec.add_argument("item", type=Path)
+    rec.add_argument("--root", type=Path, default=Path("~/.jarvis"))
+    args = parser.parse_args(argv)
+    if args.cmd == "record":
+        return cmd_record(args)
+    only = [s for s in args.only.split(",") if s]
+    result = score(args.items.expanduser(), only)
+    if args.cmd == "run":
+        for ident, why in result["failed"].items():
+            sys.stdout.write(f"FAIL {ident}\n" + "".join(f"  - {m}\n" for m in why))
+    sys.stdout.write(
+        f"items: {result['items']}   failing: {len(result['failed'])}"
+        f"   regressed: {len(result['regressed'])}   fixed: {len(result['fixed'])}\n",
+    )
+    problems = verdict(result)
+    for line in problems:
+        sys.stdout.write(line + "\n")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

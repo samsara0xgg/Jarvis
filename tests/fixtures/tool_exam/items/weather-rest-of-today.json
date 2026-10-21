@@ -1,0 +1,13 @@
+{
+  "id": "weather-rest-of-today",
+  "tool": "weather",
+  "said": "will it rain for the rest of today",
+  "at": "2026-10-12T14:20:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "args": {"hourly": true},
+  "recording": "weather-rest-of-today.recording.json",
+  "expect": {
+    "checker": "weather_rest_of_today"
+  }
+}

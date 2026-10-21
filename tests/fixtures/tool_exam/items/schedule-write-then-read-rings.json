@@ -1,0 +1,28 @@
+{
+  "id": "schedule-write-then-read-rings",
+  "tool": "schedule",
+  "said": "what do I have tomorrow",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "setup": [
+    {"tool": "schedule", "args": {"action": "add", "what": "Dentist", "kind": "go", "at": "2026-10-13 15:30"}}
+  ],
+  "args": {"at": "tomorrow"},
+  "recording": null,
+  "expect": {
+    "summary_must": ["Dentist", "3:30 pm"],
+    "result": [
+      {"path": "items", "op": "len", "value": 1},
+      {"path": "items.0.what", "op": "eq", "value": "Dentist"}
+    ],
+    "state_after": [
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.due_at_local') FROM events WHERE type = 'reminder.scheduled'",
+        "answer": "2026-10-13T14:30:00-07:00"
+      }
+    ],
+    "events_after": {"must": [], "must_not": ["thing.added", "reminder.scheduled"]}
+  }
+}
