@@ -114,13 +114,19 @@ final class VoiceSession {
     @ObservationIgnored private let log = Logger(subsystem: "com.allen.jarvis", category: "voice")
 
     private var now: Double { Double(uptimeNs()) / 1e9 }
-    private var armed: Bool { wake && foreground && state == .idle }
+    // The wake word's microphone takes the audio session from whatever else is on (a Discord or phone call, music), so it is armed only
+    // while no other app's audio is on; only a tap may interrupt another app (phone, 2026-10-20 night: each app open cut his Discord call).
+    private var armed: Bool {
+        wake && foreground && state == .idle
+            && !AVAudioSession.sharedInstance().isOtherAudioPlaying && !AVAudioSession.sharedInstance().secondaryAudioShouldBeSilencedHint
+    }
 
     private init() {
         foreground = UIApplication.shared.applicationState != .background
         hop(UIApplication.didEnterBackgroundNotification) { $0.foreground = false; $0.refreshArming() }
         hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.prewarm() }
         hop(UIApplication.didBecomeActiveNotification) { if TalkRequest.pending { $0.requestTalk() } }
+        hop(AVAudioSession.silenceSecondaryAudioHintNotification) { $0.refreshArming() }   // another app's audio began or ended
         hop(TalkRequest.notification) { $0.requestTalk() }
         audio.onMic = { [weak self, feed] buf, level in
             feed.feed(buf)
