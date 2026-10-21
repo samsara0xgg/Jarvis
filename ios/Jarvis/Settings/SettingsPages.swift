@@ -78,7 +78,7 @@ struct SettingsMainPage: View {
                              selection: Binding(get: { model.language.rawValue },
                                                 set: { model.language = .init(rawValue: $0) ?? .followMe }))
             }
-            if DeviceRole.senses {          // an iPad senses and records nothing (ADR 0336): no switches for it
+            if DeviceRole.senses {          // an iPad senses and records nothing (ADR 0338): no switches for it
                 SetSection(header: "手机感知", footer: "这些只发给你自己的大脑，随时可以关。") {
                     ForEach($model.senses) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
                 }

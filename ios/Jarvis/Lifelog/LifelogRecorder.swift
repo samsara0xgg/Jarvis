@@ -484,7 +484,7 @@ final class LifelogRecorder {
     }
 
     private func apply() {
-        let on = LifelogStore.isOn && DeviceRole.senses          // an iPad records nothing (ADR 0336)
+        let on = LifelogStore.isOn && DeviceRole.senses          // an iPad records nothing (ADR 0338)
         let paused = interrupted || calls.inCall
         let live = on && !paused
         LifelogWriter.shared.setAccepting(live)

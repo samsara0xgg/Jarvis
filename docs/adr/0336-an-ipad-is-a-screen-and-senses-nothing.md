@@ -1,6 +1,6 @@
 # ADR 0336 — An iPad is a screen and senses nothing
 
-**Status:** Accepted
+**Status:** Superseded-by-0338
 **Date:** 2026-10-21
 **Supersedes:** none
 

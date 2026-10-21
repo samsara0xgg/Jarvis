@@ -240,7 +240,7 @@ final class Reporter {
     }
 
     private func startCollectors(_ s: ReportSense) {
-        guard DeviceRole.senses else { return }          // an iPad senses nothing (ADR 0336)
+        guard DeviceRole.senses else { return }          // an iPad senses nothing (ADR 0338)
         let cs: [Collector] = switch s {
         case .location: [LocationCollector()]
         case .motion: [MotionCollector(), HealthCollector(.totals)]
@@ -332,7 +332,7 @@ final class Reporter {
     /// A state change a Shortcuts automation reported through the app intent. Focus and power also keep the
     /// baseline the wake-time sampling compares with, so the same change is not sent twice.
     func tell(_ change: StateChange) async {
-        guard DeviceRole.senses, ReportMemory.isOn(.focusAlarm) else { return }          // an iPad's automations say nothing of him (ADR 0336)
+        guard DeviceRole.senses, ReportMemory.isOn(.focusAlarm) else { return }          // an iPad's automations say nothing of him (ADR 0338)
         switch change {
         case .focus: _ = ReportMemory.stateChanged("state.focus", to: change.value, quiet: "")
         case .power: _ = ReportMemory.stateChanged("state.power", to: change.value, quiet: "")
