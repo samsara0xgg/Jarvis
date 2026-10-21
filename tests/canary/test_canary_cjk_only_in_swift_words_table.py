@@ -10,7 +10,8 @@ Swift file holding a Chinese literal says why where it is defined, on a line of 
 - ``// words: his — <reason>`` — code that reads his own words (word lists for matching him).
 - ``// words: sample — <reason>`` — DEBUG made-up data standing in for what the brain sends.
 
-A mark on a file that holds no Chinese literal any more fails too, so marks do not outlive their reason.
+A mark on a file that holds no Chinese literal any more fails too, so marks do not outlive
+their reason.
 
 Canary house style: stdlib only, no import of the code under test.
 """
@@ -29,85 +30,102 @@ _ROOTS: Final = ("ios/Jarvis", "ios/JarvisWidgets", "ios/JarvisShare")
 
 _TABLE_DIR: Final = "ios/Jarvis/App"
 
-_MARK: Final = re.compile(r"^// words: (legacy|his|sample)\b", re.M)
+_MARK: Final = re.compile(r"^// words: (legacy|his|sample)\b", re.MULTILINE)
 
 # Files still marked ``// words: legacy``. Lower it in the commit that moves one into the table;
 # it never goes up, since new code words through the table.
 _LEGACY_FILES: Final = 87
 
 
-def swift_cjk_literal_lines(src: str) -> list[int]:
-    """Lines of every string literal in Swift source that holds CJK; comments are skipped.
+class _SwiftScanner:
+    """Walks Swift source once and records the line of every string literal holding CJK."""
 
-    Handles ``"..."``, ``\"\"\"`` blocks, ``#"..."#`` raw strings and ``\\(...)`` interpolations
-    (which hold code, so string literals nested in them are scanned too).
-    """
-    found: list[int] = []
-    n = len(src)
+    def __init__(self, src: str) -> None:
+        """Hold the source to read; ``found`` fills as ``code`` runs."""
+        self.src = src
+        self.n = len(src)
+        self.found: list[int] = []
 
-    def line(i: int) -> int:
-        return src.count("\n", 0, i) + 1
+    def line(self, i: int) -> int:
+        """The 1-based line number of index ``i``."""
+        return self.src.count("\n", 0, i) + 1
 
-    def code(i: int, in_interp: bool) -> int:
-        """Scan code from i; return the index after the closing ``)`` of an interpolation."""
+    def code(self, i: int, *, in_interp: bool) -> int:
+        """Scan code from ``i``; return the index after the ``)`` closing an interpolation."""
         depth = 0
-        while i < n:
-            c = src[i]
-            if src.startswith("//", i):
-                j = src.find("\n", i)
-                i = n if j < 0 else j
-            elif src.startswith("/*", i):
-                level, i = 1, i + 2
-                while i < n and level:
-                    if src.startswith("/*", i):
-                        level, i = level + 1, i + 2
-                    elif src.startswith("*/", i):
-                        level, i = level - 1, i + 2
-                    else:
-                        i += 1
-            elif c == '"' or (c == "#" and _raw_open(i)):
-                i = string(i)
-            elif c == "(":
-                depth, i = depth + 1, i + 1
-            elif c == ")":
-                if in_interp and depth == 0:
-                    return i + 1
-                depth, i = depth - 1, i + 1
+        while i < self.n:
+            c = self.src[i]
+            if self.src.startswith("//", i):
+                i = self.line_comment(i)
+            elif self.src.startswith("/*", i):
+                i = self.block_comment(i)
+            elif c == '"' or (c == "#" and self.raw_open(i)):
+                i = self.string(i)
+            elif c == ")" and in_interp and depth == 0:
+                return i + 1
+            else:
+                depth += (c == "(") - (c == ")")
+                i += 1
+        return i
+
+    def line_comment(self, i: int) -> int:
+        """Index of the newline ending the ``//`` comment at ``i`` (or the end of the source)."""
+        j = self.src.find("\n", i)
+        return self.n if j < 0 else j
+
+    def block_comment(self, i: int) -> int:
+        """Index after the ``/* */`` comment at ``i``; these nest in Swift."""
+        level, i = 1, i + 2
+        while i < self.n and level:
+            if self.src.startswith("/*", i):
+                level, i = level + 1, i + 2
+            elif self.src.startswith("*/", i):
+                level, i = level - 1, i + 2
             else:
                 i += 1
         return i
 
-    def _raw_open(i: int) -> bool:
+    def raw_open(self, i: int) -> bool:
+        """Whether the ``#`` run at ``i`` opens a raw string (ends on a quote)."""
         j = i
-        while j < n and src[j] == "#":
+        while j < self.n and self.src[j] == "#":
             j += 1
-        return j < n and src[j] == '"'
+        return j < self.n and self.src[j] == '"'
 
-    def string(i: int) -> int:
+    def string(self, i: int) -> int:
+        """Read the literal at ``i``, record its line if it holds CJK, return the index after it."""
         start = i
         hashes = 0
-        while src[i] == "#":
+        while self.src[i] == "#":
             hashes, i = hashes + 1, i + 1
-        quotes = 3 if src.startswith('"""', i) else 1
+        quotes = 3 if self.src.startswith('"""', i) else 1
         i += quotes
         close = '"' * quotes + "#" * hashes
         esc = "\\" + "#" * hashes
         text: list[str] = []
-        while i < n and not src.startswith(close, i):
-            if src.startswith(esc + "(", i):
-                i = code(i + len(esc) + 1, True)
-            elif src.startswith(esc, i):
-                text.append(src[i + len(esc) : i + len(esc) + 1])
+        while i < self.n and not self.src.startswith(close, i):
+            if self.src.startswith(esc + "(", i):
+                i = self.code(i + len(esc) + 1, in_interp=True)
+            elif self.src.startswith(esc, i):
+                text.append(self.src[i + len(esc) : i + len(esc) + 1])
                 i += len(esc) + 1
             else:
-                text.append(src[i])
+                text.append(self.src[i])
                 i += 1
         if _CJK.search("".join(text)):
-            found.append(line(start))
+            self.found.append(self.line(start))
         return i + len(close)
 
-    code(0, False)
-    return found
+
+def swift_cjk_literal_lines(src: str) -> list[int]:
+    r"""Lines of every string literal in Swift source that holds CJK; comments are skipped.
+
+    Handles ``"..."``, triple-quote blocks, ``#"..."#`` raw strings and ``\(...)`` interpolations
+    (which hold code, so string literals nested in them are scanned too).
+    """
+    scanner = _SwiftScanner(src)
+    scanner.code(0, in_interp=False)
+    return scanner.found
 
 
 def _swift_files() -> list[str]:
@@ -137,6 +155,7 @@ def _holders() -> dict[str, list[int]]:
 
 
 def test_scanner_reads_swift_literals() -> None:
+    """The scanner finds CJK in literals (plain, block, raw, interpolated) and skips comments."""
     src = (
         '// 注释\nlet a = "x"\n/* 块 /* 嵌套 */ 注释 */\nlet b = "a \\(f("中")) b"\n'
         'let c = """\n  多行\n"""\nlet d = #"\\n 字"#\nlet e = "\\(x) // not 字 a comment"\n'
@@ -156,7 +175,7 @@ def _marks() -> dict[str, str]:
 
 
 def test_cjk_swift_literals_only_in_words_table() -> None:
-    """Every Swift file with a Chinese literal is the table or says why; marks match what files hold."""
+    """Every Swift file with a Chinese literal is the table or says why; marks match its files."""
     held, marks = _holders(), _marks()
     stray = [f"{rel}:{lines[0]}" for rel, lines in held.items() if rel not in marks]
     assert not stray, (
