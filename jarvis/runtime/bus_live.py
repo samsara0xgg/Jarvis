@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Final
 
 from google.transit import gtfs_realtime_pb2
 
+from jarvis.shared.rounding import departure_ms
 from jarvis.state import timetable
 from jarvis.state.ride_progress import Vehicle
 
@@ -67,44 +68,40 @@ def _download_static(dest: Path) -> None:
         shutil.copyfileobj(reply, out)
 
 
-def _predicted_at(
+def _updates(
     feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
-) -> tuple[int, int] | None:
-    """``(arrive, depart)`` in epoch ms, when the feed says ``call``'s bus reaches and leaves.
+) -> list[tuple[gtfs_realtime_pb2.TripUpdate.StopTimeUpdate, bool]]:
+    """The stop time updates the feed holds for ``call``'s trip on its service day.
 
-    A trip runs every day under one id, so only a prediction for the call's own service day counts:
-    one the feed dates with that day's ``start_date``, or an undated one within
-    :data:`~jarvis.state.timetable.LIVE_SLACK_MS` of the call's scheduled time. A stop the feed
-    gives one time for has it for both.
+    Each comes with whether the feed dated it. A trip runs every day under one id, so an update
+    dated with another day's ``start_date`` is not this day's.
     """
     day = f"{call.day:%Y%m%d}"
+    found: list[tuple[gtfs_realtime_pb2.TripUpdate.StopTimeUpdate, bool]] = []
     for entity in feed.entity:
         update = entity.trip_update
         if not entity.HasField("trip_update") or update.trip.trip_id != call.trip_id:
             continue
         if update.trip.start_date and update.trip.start_date != day:
             continue
-        for one in update.stop_time_update:
-            arrive, depart = int(one.arrival.time) * 1000, int(one.departure.time) * 1000
-            if one.stop_id != call.stop_id or not (arrive or depart):
-                continue
-            if update.trip.start_date or (
-                abs((depart or arrive) - call.depart_ms) <= timetable.LIVE_SLACK_MS
-            ):
-                return arrive or depart, depart or arrive
-    return None
+        found.extend((one, bool(update.trip.start_date)) for one in update.stop_time_update)
+    return found
 
 
-def live_departure(feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
-    """When the feed says ``call``'s bus leaves its stop (epoch ms), else when it arrives."""
-    found = _predicted_at(feed, call)
-    return None if found is None else found[1]
+def _given(one: gtfs_realtime_pb2.TripUpdate.StopTimeUpdate) -> tuple[int, int] | None:
+    """``(arrive, depart)`` in epoch ms an update gives; one time stands for both, none is None."""
+    arrive, depart = int(one.arrival.time) * 1000, int(one.departure.time) * 1000
+    return (arrive or depart, depart or arrive) if arrive or depart else None
 
 
-def live_arrival(feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
-    """When the feed says ``call``'s bus reaches its stop (epoch ms), else when it leaves."""
-    found = _predicted_at(feed, call)
-    return None if found is None else found[0]
+def _own_day(*, dated: bool, late_ms: int) -> bool:
+    """Whether a prediction ``late_ms`` from the schedule is for the call's own service day.
+
+    One the feed dated has passed the date check already; an undated one counts only when it is no
+    later than a bus can run (:data:`~jarvis.state.timetable.LIVE_SLACK_MS`), else it is another
+    day's.
+    """
+    return dated or abs(late_ms) <= timetable.LIVE_SLACK_MS
 
 
 class BusLive:
@@ -190,9 +187,55 @@ class BusLive:
 
     # --- the realtime feed --------------------------------------------------------------
 
+    def _live(
+        self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
+    ) -> tuple[int, int] | None:
+        """``(arrive, depart)`` in epoch ms when the feed says ``call``'s bus reaches and leaves.
+
+        The feed's own prediction for the stop; with none, the delay of the nearest earlier stop
+        of that trip it does predict, carried on to this one (GTFS-realtime holds a delay good
+        until the next prediction). Only a prediction for the call's own service day counts: one
+        the feed dates with that day's ``start_date``, or an undated one within
+        :data:`~jarvis.state.timetable.LIVE_SLACK_MS` of the schedule.
+        """
+        known = [
+            (one, dated, given) for one, dated in _updates(feed, call)
+            if (given := _given(one)) is not None
+        ]
+        for one, dated, given in known:
+            if one.stop_id == call.stop_id and _own_day(
+                dated=dated, late_ms=given[1] - call.depart_ms,
+            ):
+                return given
+        if not known:
+            return None
+        places: dict[str, timetable.Call] = {}
+        for each in self.table().trip_calls(call.trip_id, call.day):
+            places.setdefault(each.stop_id, each)
+        carried: tuple[int, int] | None = None  # the nearest earlier stop's (seq, delay)
+        for one, dated, given in known:
+            earlier = places.get(one.stop_id)
+            if earlier is None or earlier.seq >= call.seq:
+                continue
+            delay = given[1] - earlier.depart_ms
+            if _own_day(dated=dated, late_ms=delay) and (
+                carried is None or earlier.seq >= carried[0]
+            ):
+                carried = (earlier.seq, delay)
+        if carried is None:
+            return None
+        return call.arrive_ms + carried[1], call.depart_ms + carried[1]
+
     def live_at(self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
         """When the feed says ``call``'s bus leaves its stop (epoch ms), None when it is silent."""
-        return live_departure(feed, call)
+        found = self._live(feed, call)
+        return None if found is None else found[1]
+
+    def _arrival_at(
+        self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
+    ) -> int | None:
+        found = self._live(feed, call)
+        return None if found is None else found[0]
 
     def snapshot(self) -> gtfs_realtime_pb2.FeedMessage:
         """The realtime feed, downloaded and parsed once, for lookups to share."""
@@ -216,23 +259,25 @@ class BusLive:
         table = self.table()
         found = table.match_leg(
             route, board, alight, around_ms,
-            None if feed is None else lambda call: live_departure(feed, call),
+            None if feed is None else lambda call: self.live_at(feed, call),
         )
         if found is None:
             return None
         return timetable.Timed(
             found,
-            None if feed is None else live_departure(feed, found.board),
-            None if feed is None else live_arrival(feed, found.alight),
+            None if feed is None else self.live_at(feed, found.board),
+            None if feed is None else self._arrival_at(feed, found.alight),
         )
 
     def following(
         self, after: timetable.Timed, feed: gtfs_realtime_pb2.FeedMessage | None = None,
+        not_before_ms: int | None = None,
     ) -> timetable.Timed | None:
         """The next trip of the same route, from the same stop, in the same direction.
 
-        It is read to the same alight stop; None when no later trip calls at both. Errors
-        propagate.
+        It is read to the same alight stop; None when no later trip calls at both. With
+        ``not_before_ms``, the first one whose departure (live, else scheduled, to the minute) is
+        no earlier than that: the bus he can still catch at a change. Errors propagate.
         """
         table, board = self.table(), after.match.board
         run, day = board.trip_id, board.day
@@ -246,11 +291,13 @@ class BusLive:
                 None,
             )
             if end is not None:
-                return timetable.Timed(
+                found = timetable.Timed(
                     timetable.Match(nxt, end),
-                    None if feed is None else live_departure(feed, nxt),
-                    None if feed is None else live_arrival(feed, end),
+                    None if feed is None else self.live_at(feed, nxt),
+                    None if feed is None else self._arrival_at(feed, end),
                 )
+                if not_before_ms is None or departure_ms(found.depart_ms) >= not_before_ms:
+                    return found
             run, day = nxt.trip_id, nxt.day
         return None
 
@@ -285,7 +332,7 @@ class BusLive:
             table = self.table()
             for near, _ in table.stops_near(stop, STOP_RADIUS_M):
                 call = table.call_near(trip_id, near.stop_id, around_ms)
-                if call is not None and (at := live_departure(feed, call)) is not None:
+                if call is not None and (at := self.live_at(feed, call)) is not None:
                     return trip_id, at
             return None
         return _closest(self._stop_times(route, stop, around_ms, feed))
@@ -451,4 +498,4 @@ def _closest(found: list[tuple[int, str, int]]) -> tuple[str, int] | None:
     return (best, live) if off <= MATCH_WINDOW_MS else None
 
 
-__all__ = ["BusLive", "live_arrival", "live_departure"]
+__all__ = ["BusLive"]

@@ -115,7 +115,11 @@ class Match:
 
 @dataclass(frozen=True)
 class Timed:
-    """A matched leg with the realtime feed's times at its two stops, when it has them."""
+    """A matched leg with the realtime feed's times at its two stops, when it has them.
+
+    A stop the feed does not predict takes the delay of the nearest earlier stop it does (the
+    runtime's reading of the feed); either way the time is the feed's and the leg is ``live``.
+    """
 
     match: Match
     board_live_ms: int | None = None
@@ -452,9 +456,10 @@ class Timetable:
 
     def calls_after(self, trip_id: str, day: date, seq: int) -> list[Call]:
         """The calls of a trip after stop sequence ``seq``, in order."""
-        return [c for c in self._trip_calls(trip_id, day) if c.seq > seq]
+        return [c for c in self.trip_calls(trip_id, day) if c.seq > seq]
 
-    def _trip_calls(self, trip_id: str, day: date) -> list[Call]:
+    def trip_calls(self, trip_id: str, day: date) -> list[Call]:
+        """Every call of a trip on service day ``day``, in order."""
         with self._db() as db:
             rows = db.execute(
                 "SELECT st.seq, st.stop_id, st.arr_s, st.dep_s, r.short_name, t.headsign,"
@@ -542,7 +547,7 @@ class Timetable:
         best: Call | None = None
         for offset in range(3):
             day = first + timedelta(days=offset)
-            call = next((c for c in self._trip_calls(trip_id, day) if c.stop_id == stop_id), None)
+            call = next((c for c in self.trip_calls(trip_id, day) if c.stop_id == stop_id), None)
             if call is not None and (
                 best is None or abs(call.depart_ms - around_ms) < abs(best.depart_ms - around_ms)
             ):
@@ -555,7 +560,7 @@ class Timetable:
         It is the earliest one leaving after ``trip_id`` does, on the service day ``day`` or the
         next; None when the trip does not call there or no later trip does.
         """
-        here = next((c for c in self._trip_calls(trip_id, day) if c.stop_id == stop_id), None)
+        here = next((c for c in self.trip_calls(trip_id, day) if c.stop_id == stop_id), None)
         if here is None:
             return None
         end = here.depart_ms + 2 * _DAY_S * 1000

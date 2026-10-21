@@ -893,6 +893,118 @@ def test_the_next_bus_of_tomorrow_does_not_take_todays_run_of_its_trip(
     assert [r["bus_trip_id"] for r in _card()["options"]] == ["T26", "T26first"]
 
 
+# A stop of the 26 before the board stop, a kilometre off; two stops 22 m apart where he changes.
+BEFORE_STOP = gtfs.StopSpec("X0", "Before the stop", BOARD[0] - 0.01, BOARD[1], "10009")
+CHANGE = (48.47, -123.29)
+CHANGE_STOPS = (
+    gtfs.StopSpec("X1", "Change A", *CHANGE, "10003"),
+    gtfs.StopSpec("X2", "Change B", CHANGE[0] + 0.0002, CHANGE[1], "10004"),
+)
+
+
+def _feed_of(*updates: tuple[str, str, tuple[int, int]]) -> bytes:
+    """A feed predicting each ``(trip, stop, (hour, minute))`` departure, today."""
+    return realtime(*((trip, stop, local_ms(*at)) for trip, stop, at in updates))
+
+
+@pytest.mark.parametrize(
+    ("updates", "departs", "source", "arrives"),
+    [
+        ([("T26", "B1", (17, 20))], "5:20 pm", "live", "5:40 pm"),
+        ([("T26", "X0", (17, 9))], "5:16 pm", "live", "5:36 pm"),
+        ([("T26", "A1", (17, 40))], "5:12 pm", "scheduled", "5:40 pm"),
+        ([("T26", "B1", (17, 20)), ("T26", "A1", (17, 38))], "5:20 pm", "live", "5:38 pm"),
+        ([("T26", "X0", (17, 9)), ("T26", "B1", (17, 20))], "5:20 pm", "live", "5:40 pm"),
+    ],
+    ids=[
+        "late at his stop, nothing after", "late at an earlier stop", "only a later stop",
+        "his stop and the last", "an earlier stop and his",
+    ],
+)
+def test_a_bus_late_at_one_stop_is_late_at_the_stops_after_it_unless_the_feed_says_otherwise(  # noqa: PLR0913 - the case's columns.
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    updates: list[tuple[str, str, tuple[int, int]]], departs: str, source: str, arrives: str,
+) -> None:
+    """The feed's delay at a stop holds for the stops after it until its next prediction.
+
+    The 26 is scheduled 5:05 pm at an earlier stop, 5:12 at his stop and 5:32 at the last; a
+    stop the feed does not predict takes the delay of the nearest earlier stop it does, a
+    prediction at the stop itself is kept, and nothing is carried back to an earlier stop.
+    """
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "17:12"))))
+    trip = gtfs.TripSpec(
+        "T26", "26", (("X0", "17:05:00"), ("B1", "17:12:00"), ("A1", "17:32:00")),
+        headsign="Downtown",
+    )
+    feed = _feed_of(*updates)
+    live = _live(
+        tmp_path, trip, feed=lambda: feed, stops=(BEFORE_STOP, BOARD_STOP, ALIGHT_STOP),
+    )
+    out = _call({"to": "home"}, here=fix_with(), bus_live=live)
+    leg = out["options"][0]["legs"][0]
+    assert (leg["departs"], leg["source"], leg["arrives"]) == (departs, source, arrives)
+    assert out["options"][0]["arrive_at"] == arrives
+
+
+def _with_a_change(*, later_39: bool) -> tuple[dict[str, Any], tuple[gtfs.TripSpec, ...]]:
+    """Google's 26 then 39 with a change, a plain 28 beside it, and the trips of the store."""
+    first = _placed(bus_route("26", "17:12", ride=13), alight=CHANGE)
+    second = _placed(bus_route("39", "17:30", ride=20, at=(CHANGE[0] + 0.0002, CHANGE[1])))
+    steps = [
+        *first["legs"][0]["steps"], {"staticDuration": "120s", "travelMode": "WALK"},
+        *second["legs"][0]["steps"][1:],
+    ]
+    answer = routes_with(
+        {"legs": [{"steps": steps}]}, _placed(bus_route("28", "17:20", ride=40)),
+    )
+    trips = (
+        gtfs.TripSpec("T26", "26", (("B1", "17:12:00"), ("X1", "17:25:00")), headsign="Downtown"),
+        gtfs.TripSpec("T39", "39", (("X2", "17:30:00"), ("A1", "17:50:00")), headsign="UVic"),
+        gtfs.TripSpec("T28", "28", (("B1", "17:20:00"), ("A1", "18:00:00")), headsign="Downtown"),
+        *((gtfs.TripSpec(
+            "T39b", "39", (("X2", "17:50:00"), ("A1", "18:10:00")), headsign="UVic",
+        ),) if later_39 else ()),
+    )
+    return answer, trips
+
+
+@pytest.mark.parametrize(
+    ("updates", "later_39", "options"),
+    [
+        ([], True, [[("26", "5:12 pm", "scheduled"), ("39", "5:30 pm", "scheduled")],
+                    [("28", "5:20 pm", "scheduled")]]),
+        ([("T26", "B1", (17, 22)), ("T26", "X1", (17, 35))], True,
+         [[("28", "5:20 pm", "scheduled")],
+          [("26", "5:22 pm", "live"), ("39", "5:50 pm", "scheduled")]]),
+        ([("T26", "B1", (17, 22)), ("T26", "X1", (17, 35))], False,
+         [[("28", "5:20 pm", "scheduled")]]),
+    ],
+    ids=["on time", "late: the next 39 from the change", "late: no later 39, the option goes"],
+)
+def test_a_change_the_late_first_bus_makes_miss_takes_the_next_bus_of_the_second_route_or_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    updates: list[tuple[str, str, tuple[int, int]]], *, later_39: bool,
+    options: list[list[tuple[str, str, str]]],
+) -> None:
+    """The 26 reaches the change at 5:25 pm and the 39 leaves it at 5:30 pm; the 26 is 10 min late.
+
+    Reaching the change at 5:35 pm, the 39 of 5:30 pm is gone: the option holds the next 39 from
+    that stop (5:50 pm), and with none later it is dropped, leaving the plain 28 in the answer.
+    A change that still works is left as it is.
+    """
+    answer, trips = _with_a_change(later_39=later_39)
+    _serve(monkeypatch, answer=answer)
+    feed = _feed_of(*updates)
+    live = _live(
+        tmp_path, *trips, feed=lambda: feed, stops=(BOARD_STOP, *CHANGE_STOPS, ALIGHT_STOP),
+    )
+    out = _call({"to": "home"}, here=fix_with(), bus_live=live)
+    assert [
+        [(leg["route"], leg["departs"], leg["source"]) for leg in option["legs"]]
+        for option in out["options"]
+    ] == options
+
+
 def test_with_no_later_bus_from_google_the_next_is_the_timetables_on_the_same_stop_and_way(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

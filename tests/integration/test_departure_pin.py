@@ -574,6 +574,26 @@ def test_a_pinned_trip_is_followed_only_on_its_own_service_day(
     )
 
 
+def test_a_pinned_trip_late_at_an_earlier_stop_is_late_at_the_pinned_stop(tmp_path: Path) -> None:
+    """ADR 0342: the feed's delay at the stop before holds for the pinned stop until its own.
+
+    The 28 is four minutes late at the stop before; the feed says nothing of the pinned stop.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    gtfs.write(cache / "bctransit-gtfs.zip", gtfs.Export(
+        (
+            gtfs.StopSpec("S0", "Before", 48.5, -123.4),
+            gtfs.StopSpec("S1", "Shelbourne Pear", STOP[0] + .0002, STOP[1]),
+        ),
+        (gtfs.TripSpec("T28a", "28", (("S0", "16:55:00"), ("S1", "17:05:00"))),),
+    ))
+    feed = _feed(("T28a", "S0", "16:55", 240))
+    live = BusLive(cache, feed=lambda: feed, download=lambda _p: None)
+    around = int(_local("17:05").timestamp() * 1000)
+    assert live.departure("28", STOP, around, "T28a") == ("T28a", around + 240_000)
+
+
 def test_a_day_old_export_answers_at_once_while_the_new_one_downloads(tmp_path: Path) -> None:
     """A stale export is not waited on: it answers, and a new one replaces it in the background."""
     cache = tmp_path / "cache"
