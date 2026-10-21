@@ -5,9 +5,9 @@ text Inherent surface introduced by ADR-0003 Step 1 (single-envelope)
 and rewired for Step 2 (three-envelope ``open`` / ``append`` x N /
 ``done`` wire schema):
 
-1. Acquire the per-runtime-root process lock via
-   :func:`jarvis.deployment.process_lock.acquire_exclusive` (ADR-0003
-   D4 — refuses if another daemon already holds it).
+1. Run inside :func:`jarvis.deployment.daemon_session`, which holds the
+   per-runtime-root process lock (ADR-0003 D4, ADR 0318 — refuses if
+   another daemon already holds it) before anything is erased or opened.
 2. Build the shared :class:`jarvis.surface.inherent_output.InherentBroadcaster`
    and a sync ``submit_callable`` bound to
    :func:`jarvis.surface.cli.emit_surface_user_intent` (mints a fresh
@@ -37,9 +37,8 @@ and rewired for Step 2 (three-envelope ``open`` / ``append`` x N /
      construction.
 
 5. Run :meth:`uvicorn.Server.serve` (blocks until SIGINT / SIGTERM).
-6. On exit: cancel both watchers, await with ``return_exceptions=True``,
-   then release the process lock as the OUTERMOST cleanup step (the
-   ``acquire_exclusive`` context manager unwinds last).
+6. On exit: cancel both watchers, await with ``return_exceptions=True``;
+   the process lock is released last, by the caller's ``daemon_session``.
 
 SQLite thread-safety note
 -------------------------
@@ -142,7 +141,6 @@ from jarvis.decision.response_run import (
 )
 from jarvis.deployment import data, inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import logs_dir, repo_root, supervised
-from jarvis.deployment.process_lock import acquire_exclusive
 from jarvis.deployment.sleep_wake import install_power_observer, sweep_overdue_actions
 from jarvis.execution.tools import SCREEN_ARTIFACTS_DIRNAME, live_action_ids
 from jarvis.execution.transit_tool import live_card
@@ -7426,23 +7424,25 @@ def _listen_sockets(host: str, port: int, addresses: tuple[str, ...]) -> list[so
     return sockets
 
 
-async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
+async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
     port: int = _DEFAULT_PORT,
-    lock_path: Path,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
     shutdown_budget_s: float = _SHUTDOWN_BUDGET_S,
 ) -> None:
     """Run the Inherent daemon (text + voice). Blocks until SIGINT / SIGTERM.
 
-    Lifecycle (the ``acquire_exclusive`` context manager is the
-    OUTERMOST scope so the lock release is the very LAST cleanup step):
+    The caller holds the daemon lock (:func:`jarvis.deployment.daemon_session`,
+    ADR 0318): it is the OUTERMOST scope, so its release is the very LAST
+    cleanup step, after this function has returned and the Event Log is closed.
 
-    1. :func:`acquire_exclusive` — raises
+    Lifecycle:
+
+    1. (the caller) :func:`jarvis.deployment.daemon_session` — raises
        :class:`jarvis.deployment.process_lock.ProcessLockHeld` if
-       another live daemon already holds it.
+       another live daemon already holds it, before it erases or opens anything.
     2. Build :class:`InherentBroadcaster` and attach the running
        event loop via :meth:`InherentBroadcaster.attach_loop` (ADR-0005
        §4.2 worker-thread → broadcaster bridge); bind
@@ -7499,9 +7499,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
        during runtime does not mask the shutdown path. The whole teardown
        is bounded by ``shutdown_budget_s``: a turn still in a model call at
        the deadline is left running, its response run cancelled as
-       ``shutdown``, and the children are stopped anyway. Then the
-       ``acquire_exclusive`` context manager unwinds and releases the lock
-       file.
+       ``shutdown``, and the children are stopped anyway.
 
     Env vars:
         ``MINIMAX_API_KEY``         — gates the TTS subsystem.
@@ -7512,18 +7510,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — compositi
         runtime: Assembled :class:`JarvisRuntime`.
         host: Bind interface for the FastAPI app.
         port: TCP port for the FastAPI app.
-        lock_path: Per-runtime-root daemon lock file. Resolved by
-            ``jarvis.cli._main_serve`` to ``${runtime_root}/daemon.lock``.
         poll_interval_s: Watcher poll cadence (default 10 ms).
         shutdown_budget_s: How long the teardown waits for the watchers (and the turns they
             drive) before it leaves them behind and stops the children regardless.
-
-    Raises:
-        jarvis.deployment.process_lock.ProcessLockHeld: Another daemon
-            already holds the lock for this runtime root.
     """
     async with contextlib.AsyncExitStack() as unwind:
-        unwind.enter_context(acquire_exclusive(lock_path))  # entered first, so released last
         if runtime.decision_state is not None:
             runtime.decision_state.warm()  # ADR 0164: the first turn then reads only a delta
         if runtime.ledger is not None:

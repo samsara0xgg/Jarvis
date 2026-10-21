@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.deployment import bootstrap_runtime, data
+from jarvis.deployment import bootstrap_runtime, daemon_session, data
+from jarvis.deployment.process_lock import ProcessLockHeld, acquire_exclusive
 from jarvis.state import NewerDataError
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
@@ -175,7 +176,7 @@ def test_clearing_recordings_keeps_the_conversation(tmp_path: Path) -> None:
 
 
 def test_erase_empties_the_root_at_the_next_boot(tmp_path: Path) -> None:
-    """The route only marks; the next bootstrap leaves models, logs and an empty artifacts/."""
+    """The route only marks; the next daemon leaves models, logs, its lock, an empty artifacts/."""
     root, media = _root_with_data(tmp_path)
     erased: list[bool] = []
     reply = _client(root, media, erased).post("/inherent/data/erase")
@@ -184,13 +185,31 @@ def test_erase_empties_the_root_at_the_next_boot(tmp_path: Path) -> None:
     assert erased == [True]
     assert (root / "memory.db").exists(), "nothing is deleted while this daemon runs"
 
-    bootstrap_runtime(root)
+    with daemon_session(root):
+        assert sorted(one.name for one in root.iterdir()) == [
+            "artifacts", "daemon.lock", "logs", "models",
+        ]
+        assert list((root / "artifacts").iterdir()) == []
+        assert (root / "models" / "silero_vad.onnx").read_bytes() == b"model"
+    with daemon_session(root):  # no marker left: a second boot deletes nothing
+        assert (root / "models").exists()
 
-    assert sorted(one.name for one in root.iterdir()) == ["artifacts", "logs", "models"]
-    assert list((root / "artifacts").iterdir()) == []
-    assert (root / "models" / "silero_vad.onnx").read_bytes() == b"model"
-    bootstrap_runtime(root)  # no marker left: a second boot deletes nothing
-    assert (root / "models").exists()
+
+def test_an_erase_asked_for_waits_for_the_daemon_that_holds_the_root(tmp_path: Path) -> None:
+    """With the marker down, a second daemon is refused and every other entry point leaves it be."""
+    root, _media = _root_with_data(tmp_path)
+    data.request_erase(root)
+
+    with acquire_exclusive(root / "daemon.lock"):  # the running daemon
+        before = {one.name for one in root.iterdir()}
+        with pytest.raises(ProcessLockHeld), daemon_session(root):
+            pytest.fail("a held root was entered")
+        bootstrap_runtime(root)  # jarvis "...", import, voiceprint, mcp-login all boot like this
+        assert {one.name for one in root.iterdir()} == before
+        assert (root / "memory.db").exists()
+        assert (root / "env").read_text() == "OPENAI_API_KEY=sk-secret\n"
+
+    assert (root / data.ERASE_MARKER).exists(), "still owed to the next daemon"
 
 
 def test_erase_forgets_the_daemons_key_and_the_agents_windows_key(
@@ -205,7 +224,8 @@ def test_erase_forgets_the_daemons_key_and_the_agents_windows_key(
     monkeypatch.setattr("jarvis.deployment._uses_keychain", lambda: True)  # the macOS branch
     data.request_erase(root)
 
-    bootstrap_runtime(root)
+    with daemon_session(root):
+        pass
 
     resolved = root.resolve()
     assert calls.read_text().splitlines() == [

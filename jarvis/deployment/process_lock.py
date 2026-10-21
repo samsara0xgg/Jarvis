@@ -36,6 +36,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+# The lock file's name under the runtime root. The erase keeps it (data.py): an
+# unlinked lock is a new inode, and a new inode is a second daemon.
+LOCK_FILE = "daemon.lock"
+
 # Lock-file permission bits, shared by both os.open call sites in
 # _open_and_acquire. Lifted to a module constant so the two opens stay
 # in sync and the magic number gets a name.
@@ -223,6 +227,7 @@ def acquire_exclusive(lock_path: Path) -> Iterator[None]:
 
 
 __all__ = [
+    "LOCK_FILE",
     "ProcessLockHeld",
     "acquire_exclusive",
     "holder_pid",

@@ -129,9 +129,7 @@ def test_a_setup_failure_after_the_mic_started_closes_it_and_ends_the_daemon(
 
     async def run() -> list[asyncio.Task[Any]]:
         try:
-            await inherent_loop.serve_inherent(
-                runtime, port=0, lock_path=tmp_path / "root" / "daemon.lock",
-            )
+            await inherent_loop.serve_inherent(runtime, port=0)
         except sqlite3.OperationalError:
             current = asyncio.current_task()
             return [t for t in asyncio.all_tasks() if t is not current and not t.done()]
@@ -184,12 +182,7 @@ def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
         try:
             # The outer bound only turns a hang into a failure; the budget is what ends the wait.
             await asyncio.wait_for(
-                inherent_loop.serve_inherent(
-                    runtime,
-                    port=0,
-                    lock_path=tmp_path / "root" / "daemon.lock",
-                    shutdown_budget_s=0.05,
-                ),
+                inherent_loop.serve_inherent(runtime, port=0, shutdown_budget_s=0.05),
                 timeout=30,
             )
         finally:

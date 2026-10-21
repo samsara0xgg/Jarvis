@@ -19,6 +19,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from jarvis.deployment.process_lock import LOCK_FILE
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -27,8 +29,10 @@ LOGGER = logging.getLogger(__name__)
 ERASE_MARKER = "erase-requested"
 # Kept by an erase: the speech models are the app's, not the user's (fetched
 # again otherwise), and ``logs`` is where the running daemon's stderr goes
-# (the Electron app creates it only once per launch) and holds no content.
-_KEPT_ON_ERASE = frozenset({"models", "logs", ERASE_MARKER})
+# (the Electron app creates it only once per launch) and holds no content. The
+# erase runs while this process holds ``LOCK_FILE``: unlinking it would leave the
+# held lock on an inode no other process can find.
+_KEPT_ON_ERASE = frozenset({"models", "logs", ERASE_MARKER, LOCK_FILE})
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_FILES_KEPT = 3
 _DAY_S = 86400
@@ -125,11 +129,13 @@ def request_erase(root: Path) -> None:
 
 
 def erase_if_requested(root: Path) -> bool:
-    """Empty ``root`` (all but the models and logs) when an erase was asked for.
+    """Empty ``root`` (all but the models, logs and daemon lock) when an erase was asked for.
 
-    Runs at boot, before anything under ``root`` is opened. The marker goes
-    last, so an erase cut short by a crash runs again on the next boot.
-    Refuses a root that is the home directory itself.
+    Runs at boot, before anything under ``root`` is opened, and only in the
+    process that holds the daemon lock (``jarvis.deployment.daemon_session``):
+    emptying a root a running daemon has open corrupts that daemon's stores.
+    The marker goes last, so an erase cut short by a crash runs again on the
+    next boot. Refuses a root that is the home directory itself.
     """
     marker = root / ERASE_MARKER
     if not marker.exists():

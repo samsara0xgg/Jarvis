@@ -56,7 +56,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-from jarvis.deployment import DEFAULT_RUNTIME_ROOT_LITERAL, launchd, process_lock
+from jarvis.deployment import (
+    DEFAULT_RUNTIME_ROOT_LITERAL,
+    daemon_session,
+    launchd,
+    process_lock,
+)
 from jarvis.deployment.models import default_meaning_dir, fetch_meaning_model
 from jarvis.deployment.process_lock import ProcessLockHeld
 from jarvis.runtime import (
@@ -715,9 +720,10 @@ def _resolve_runtime_root(arg: Path | None) -> Path:
 def _main_serve(argv: list[str]) -> int:
     """Parse serve-mode args, bootstrap runtime, call :func:`serve_inherent`.
 
-    Owns the daemon process lifecycle (ADR-0003 Step 1). The
-    ``acquire_exclusive`` call is INSIDE ``serve_inherent`` so the lock
-    file is the OUTERMOST scope of the daemon's resource ladder.
+    Owns the daemon process lifecycle (ADR-0003 Step 1). The daemon lock is
+    taken by :func:`jarvis.deployment.daemon_session` before the erase and
+    before any bootstrap (ADR 0318), so it is the OUTERMOST scope of the
+    daemon's resource ladder and is released after the Event Log is closed.
 
     Returns:
         0 on clean shutdown, 1 on bootstrap failure, 2 if another live
@@ -780,46 +786,38 @@ def _main_serve(argv: list[str]) -> int:
         return 2
 
     try:
-        runtime = bootstrap_runtime_app(
-            config_path=args.config,
-            prompt_path=args.prompt,
-            runtime_root=args.runtime_root,
-        )
-    except RuntimeBootstrapError as exc:
-        sys.stderr.write(f"jarvis serve: bootstrap failed: {exc}\n")
-        return 1
-    except NewerDataError as exc:
-        # ADR 0068: its own exit code, so the app can say "update Jarvis".
-        sys.stderr.write(f"jarvis serve: {exc}\n")
-        return EXIT_NEWER_DATA
-
-    lock_path = runtime.runtime_paths.root / "daemon.lock"
-
-    try:
-        asyncio.run(
-            serve_inherent(
-                runtime,
-                host=args.host,
-                port=args.port,
-                lock_path=lock_path,
-            )
-        )
+        with daemon_session(args.runtime_root) as paths:
+            try:
+                runtime = bootstrap_runtime_app(
+                    config_path=args.config,
+                    prompt_path=args.prompt,
+                    runtime_root=paths.root,
+                )
+            except RuntimeBootstrapError as exc:
+                sys.stderr.write(f"jarvis serve: bootstrap failed: {exc}\n")
+                return 1
+            except NewerDataError as exc:
+                # ADR 0068: its own exit code, so the app can say "update Jarvis".
+                sys.stderr.write(f"jarvis serve: {exc}\n")
+                return EXIT_NEWER_DATA
+            try:
+                asyncio.run(serve_inherent(runtime, host=args.host, port=args.port))
+            except KeyboardInterrupt:
+                # SIGINT during serve — serve_inherent's teardown cancels
+                # watchers; we just surface the interrupt to the operator
+                # and exit cleanly.
+                sys.stderr.write("jarvis serve: interrupted\n")
+            finally:
+                # Single close site (sqlite3.Connection.close raises ProgrammingError
+                # if called twice; suppress only the documented OSError path that
+                # the synchronous helpers above also catch).
+                try:
+                    runtime.conn.close()
+                except OSError:
+                    LOGGER.exception("failed to close Event Log connection on serve exit")
     except ProcessLockHeld as exc:
         sys.stderr.write(f"jarvis serve: daemon already running at pid {exc.holder_pid}\n")
         return 2
-    except KeyboardInterrupt:
-        # SIGINT during serve — serve_inherent's finally block cancels
-        # watchers and releases the lock; we just surface the interrupt
-        # to the operator and exit cleanly.
-        sys.stderr.write("jarvis serve: interrupted\n")
-    finally:
-        # Single close site (sqlite3.Connection.close raises ProgrammingError
-        # if called twice; suppress only the documented OSError path that
-        # the synchronous helpers above also catch).
-        try:
-            runtime.conn.close()
-        except OSError:
-            LOGGER.exception("failed to close Event Log connection on serve exit")
 
     return 0
 

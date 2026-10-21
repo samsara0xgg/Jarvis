@@ -34,10 +34,16 @@ import secrets
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jarvis.deployment.data import erase_if_requested
+from jarvis.deployment.process_lock import LOCK_FILE, acquire_exclusive
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Single canonical home for the `~/.jarvis` literal. Every other file in
 # `jarvis/` referencing the runtime root must go through `bootstrap_runtime`,
@@ -297,8 +303,9 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         - `${root}` created with `parents=True, exist_ok=True`, then
           set to 0700 on every call, so other accounts on this Mac can
           read none of the conversations, audio or keys under it.
-        - An erase the Settings page asked for (ADR 0067) empties
-          `${root}` and its Keychain item before anything else.
+        - An erase the Settings page asked for is NOT done here: only the
+          daemon, holding its lock, empties the root (:func:`daemon_session`,
+          ADR 0067, ADR 0318).
         - `${root}/artifacts/` created with `parents=True, exist_ok=True`.
         - `mac_events.db` and `registry.json` are NOT created here;
           they are L2's responsibility at first write.
@@ -318,11 +325,6 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
 
     resolved_root.mkdir(parents=True, exist_ok=True)
     resolved_root.chmod(0o700)
-    # ADR 0067: Settings > erase everything takes effect here, before anything is open.
-    if erase_if_requested(resolved_root):
-        forget_keys(resolved_root)
-        # ADR 0094: the key the Agents window's Claude sessions run on has an item of its own.
-        forget_keys(resolved_root / "agents")
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
     return RuntimePaths(
@@ -332,6 +334,39 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         registry=resolved_root / "registry.json",
         inherent_v2_token=resolved_root / "inherent-v2.token",
     )
+
+
+@contextmanager
+def daemon_session(root: Path | None = None) -> Iterator[RuntimePaths]:
+    """Own the runtime root for one daemon run: lock, then erase, then lay out the paths.
+
+    The order is the contract (ADR 0318). The lock is taken before anything
+    under the root is written, so a second ``jarvis serve`` on a held root
+    raises :class:`~jarvis.deployment.process_lock.ProcessLockHeld` having
+    changed nothing. The erase Settings asked for (ADR 0067) runs only here,
+    under the lock, so it can never empty the stores of a daemon that is
+    running; it also forgets the root's Keychain items. The lock is released
+    when the block exits, after everything the daemon opened has been closed.
+
+    Args:
+        root: Optional override, as for :func:`bootstrap_runtime`.
+
+    Yields:
+        The bootstrapped :class:`RuntimePaths`.
+
+    Raises:
+        ProcessLockHeld: Another live daemon owns this root.
+    """
+    resolved_root = _resolve_root(root)
+    # The lock file lives in the root, so the root is the one thing made first.
+    resolved_root.mkdir(parents=True, exist_ok=True)
+    resolved_root.chmod(0o700)
+    with acquire_exclusive(resolved_root / LOCK_FILE):
+        if erase_if_requested(resolved_root):
+            forget_keys(resolved_root)
+            # ADR 0094: the key the Agents window's Claude sessions run on has an item of its own.
+            forget_keys(resolved_root / "agents")
+        yield bootstrap_runtime(resolved_root)
 
 
 class InherentTokenError(OSError):
