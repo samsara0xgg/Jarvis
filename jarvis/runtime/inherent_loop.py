@@ -2118,7 +2118,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     disposition to record.
     """
     factory = runtime.llm_session_factory
-    if factory is None:  # pragma: no cover - the flag graph pairs the two
+    if factory is None:  # pragma: no cover - bootstrap always builds the factory
         msg = "lifecycle commentary requires the ResponseRun session factory"
         raise RuntimeError(msg)
     response_id = new_response_id()
@@ -2543,7 +2543,7 @@ def _make_cancel_voice_runs(
         return bool(channels) and not any(channel in _TTS_SILENT_CHANNELS for channel in channels)
 
     def _cancel_voice_runs() -> None:
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return
         runs = [
             run

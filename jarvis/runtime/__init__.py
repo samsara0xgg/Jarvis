@@ -3882,7 +3882,7 @@ def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact o
         def _connect() -> sqlite3.Connection:
             return open_runtime_event_log(event_log_path, deadline=deadline)
 
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return "unknown_response"
         if scope not in ("generation", "foreground_output"):
             return "unsupported_scope"
@@ -4006,7 +4006,7 @@ def make_barge_in_interrupt_callable(
     registry = runtime.response_runs
 
     def _interrupt(confirm_source: str) -> str:
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return "no_open_run"
         # A commentary run for the same turn is legitimately open while the
         # final run waits on its action (ADR-0006 D8): counting it would make
@@ -4087,7 +4087,7 @@ def make_supersede_unspoken_callable(
     event_log_path = runtime.runtime_paths.event_log
 
     def _supersede(turn_id: str) -> None:
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return
         kept = leave(turn_id) if leave is not None else None
         runs = [
@@ -4192,7 +4192,7 @@ def make_relation_supersede_callable(
     event_log_path = runtime.runtime_paths.event_log
 
     def _relate(earlier: str, turn_id: str, relation: str) -> str:
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return "no_registry"
         runs = [
             run
@@ -4247,7 +4247,7 @@ def make_compose_callable(
     event_log_path = runtime.runtime_paths.event_log
 
     def _compose(device: str, turn_id: str, words: str | None) -> str | None:
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return None
         return device_voice.compose_target(
             event_log_path, device, turn_id, words, superseded=registry.turn_superseded,
@@ -4277,7 +4277,7 @@ def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], s
     event_log_path = runtime.runtime_paths.event_log
 
     def _continue(earlier: str, turn_id: str) -> str:
-        if registry is None:  # pragma: no cover - wiring pairs the two flags
+        if registry is None:  # pragma: no cover - bootstrap always builds the registry
             return "no_registry"
         with contextlib.closing(
             open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
