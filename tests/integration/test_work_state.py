@@ -21,9 +21,8 @@ from jarvis.decision.llm import ChatResult
 from jarvis.decision.work_state import build_request, parse_report
 from jarvis.runtime.inherent_loop import _poll_timesink_once
 from jarvis.runtime.work_state import WorkStateService, auto_check
-from jarvis.state import daily_store
 from jarvis.state.daily_contract import DailyError
-from jarvis.state.event_log import iter_events_of_types, open_event_log
+from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.state.work_state import (
     compose_state,
@@ -53,13 +52,23 @@ def rig(tmp_path: Path, source: sqlite3.Connection) -> Iterator[WorkStateRig]:
     add_capture(source, _stamp(-30), _stamp(-5), text="rules for jarvis\nkeep todos local")
     built = WorkStateRig(tmp_path, timesink=tmp_path / "timesink.sqlite")
     append_record(built.memory, record_id="rec-1", source="allen", text="待办就留在本地")
-    # ADR 0036 retired the todo tools; work state still reads the local store they wrote.
-    daily_store.write_revision(
+    # ADR 0036 retired the todo tools; work state still reads the rows they wrote.
+    emit_event(
         built.fx.conn,
-        built.memory,
-        "create_todo",
-        {"title": "把 TimeSink 修复合进 main", "request_id": "todo-1"},
-        "todo-1",
+        type="todo.revised",
+        actor="jarvis_llm",
+        payload={
+            "request_id": "todo-1",
+            "request_hash": "x",
+            "operation": "create_todo",
+            "item": {
+                "id": "todo_1", "version": 1, "title": "把 TimeSink 修复合进 main",
+                "project": None, "due_at": None, "priority": "normal", "status": "open",
+                "source_refs": [], "created_at": "2026-09-19T00:00:00-07:00",
+                "updated_at": "2026-09-19T00:00:00-07:00",
+            },
+            "action_id": "todo-1",
+        },
     )
     yield built
     built.fx.close()

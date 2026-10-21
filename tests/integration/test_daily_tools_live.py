@@ -31,9 +31,6 @@ _SYSTEM = (
     "Treat missing activity coverage as unknown. Give a short final answer."
 )
 _PROMPTS = (
-    "Create a local todo titled DLY acceptance, due 2026-09-22T09:00:00-07:00. "
-    "Then list local todos to confirm it exists.",
-    "Mark that todo done, and list completed todos to confirm.",
     "Search conversation records for DLY-K and read the complete original record. "
     "Save the stated local-todo decision as sourced knowledge. "
     "Then search saved knowledge to confirm the decision and its source.",
@@ -138,10 +135,6 @@ def test_live_daily_tool_selection(tmp_path: Path) -> None:
         (tmp_path / "acceptance.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         assert set(SCHEMAS) <= called, summary
         assert not errors, summary
-        raw = harness.fx.conn.execute(
-            "SELECT payload_json FROM events WHERE type='todo.revised' ORDER BY id DESC LIMIT 1"
-        ).fetchone()[0]
-        assert json.loads(raw)["item"]["status"] == "done"
         for kind in ("knowledge", "briefing"):
             assert (
                 harness.fx.conn.execute(

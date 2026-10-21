@@ -1,4 +1,8 @@
-"""Local todos, knowledge and briefings derived from immutable revision events."""
+"""Local knowledge and briefings derived from immutable revision events.
+
+``current_items`` also folds the ``todo.revised`` rows an earlier tool wrote, which work state
+reads.
+"""
 
 from __future__ import annotations
 
@@ -34,10 +38,8 @@ if TYPE_CHECKING:
 
     from jarvis.shared.device_link import DeviceLink
 
-EVENT_TYPES = ("todo.revised", "knowledge.revised", "briefing.revised")
+EVENT_TYPES = ("knowledge.revised", "briefing.revised")
 _OPERATIONS = {
-    "create_todo": "todo",
-    "update_todo": "todo",
     "save_knowledge": "knowledge",
     "save_briefing": "briefing",
 }
@@ -170,18 +172,7 @@ def _new_item(
         "created_at": previous["created_at"] if previous else now,
         "updated_at": now,
     }
-    if kind == "todo":
-        item.update(
-            {
-                "title": args["title"],
-                "project": args.get("project"),
-                "due_at": args.get("due_at"),
-                "priority": args.get("priority", "normal"),
-                "status": "open",
-                "source_refs": args.get("source_refs", []),
-            }
-        )
-    elif kind == "knowledge":
+    if kind == "knowledge":
         item.update({k: args[k] for k in ("statement", "kind", "source_refs", "basis")})
         item.update(
             project=args.get("project", previous.get("project") if previous else None),
@@ -244,7 +235,7 @@ def _write_locked(  # noqa: PLR0913 — transaction-local half of write_revision
     kind = _OPERATIONS[operation]
     digest = fingerprint([operation, args])
     receipt = conn.execute(
-        "SELECT event_uid,payload_json FROM events WHERE type IN (?,?,?) "
+        "SELECT event_uid,payload_json FROM events WHERE type IN (?,?) "
         "AND json_extract(payload_json,'$.request_id')=? ORDER BY id LIMIT 1",
         (*EVENT_TYPES, args["request_id"]),
     ).fetchone()
@@ -255,9 +246,7 @@ def _write_locked(  # noqa: PLR0913 — transaction-local half of write_revision
             raise DailyError(msg, "request_conflict")
         return _receipt(kind, body["item"], receipt[0])
     identity = (
-        args["todo_id"]
-        if operation == "update_todo"
-        else args.get("knowledge_id")
+        args.get("knowledge_id")
         if kind == "knowledge"
         else _brief_key(args)
         if kind == "briefing"
@@ -266,33 +255,18 @@ def _write_locked(  # noqa: PLR0913 — transaction-local half of write_revision
     previous = next(
         (x for x in current_items(conn, kind, high_water(conn)) if x["id"] == identity), None
     )
-    if (operation == "update_todo" or "knowledge_id" in args) and previous is None:
+    if "knowledge_id" in args and previous is None:
         msg = "Entry does not exist"
         raise DailyError(msg, "not_found")
     _version_check(previous, args)
     identity = identity or f"{kind}_{uuid4().hex}"
-    if operation == "update_todo":
-        if previous is None:
-            msg = "Todo does not exist"
-            raise DailyError(msg, "not_found")
-        item = {k: v for k, v in previous.items() if k != "source_ref"}
-        item.update(args["patch"])
-        item.update(
-            version=previous["version"] + 1,
-            updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-        )
-    else:
-        item = _new_item(kind, args, previous, identity)
-    if kind == "todo" and item["due_at"] is not None:
-        timestamp(item["due_at"])
+    item = _new_item(kind, args, previous, identity)
     # Every saved item must remain retrievable below the Tool output cap.
     metadata = {key: value for key, value in item.items() if key != "content"}
     if len(encoded(metadata)) > PAGE_BUDGET - 1000:
         message = "Entry metadata/text is too large; shorten it or use fewer sources"
         raise DailyError(message, "result_too_large")
-    if operation != "update_todo":
-        # Existing commitments cannot change sources; prior evidence may have disappeared.
-        check_refs(conn, memory_path, item["source_refs"], timesink_path, device)
+    check_refs(conn, memory_path, item["source_refs"], timesink_path, device)
     running = conn.execute(
         "SELECT event_uid FROM events WHERE type='action.running' "
         "AND json_extract(payload_json,'$.action_id')=? ORDER BY id DESC LIMIT 1",
@@ -320,15 +294,13 @@ def _receipt(kind: str, item: dict[str, Any], uid: str) -> dict[str, Any]:
 
 
 def search_items(conn: sqlite3.Connection, operation: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Page todos or knowledge from a reproducible historical revision set."""
-    kind = "todo" if operation == "list_todos" else "knowledge"
+    """Page saved knowledge from a reproducible historical revision set."""
     binding = fingerprint(
         [operation, _log_identity(conn), {k: v for k, v in args.items() if k != "cursor"}]
     )
     snapshot, offset = cursor_position(args.get("cursor"), binding, [high_water(conn), 0])
-    items = current_items(conn, kind, snapshot)
-    status = args.get("status", "open" if kind == "todo" else "active")
-    before = timestamp(args["due_before"]) if "due_before" in args else None
+    items = current_items(conn, "knowledge", snapshot)
+    status = args.get("status", "active")
     found = []
     for item in items:
         if status != "all" and item["status"] != status:
@@ -337,12 +309,10 @@ def search_items(conn: sqlite3.Connection, operation: str, args: dict[str, Any])
             continue
         if "kind" in args and item["kind"] != args["kind"]:
             continue
-        if before and (item.get("due_at") is None or timestamp(item["due_at"]) >= before):
-            continue
         found.append(item)
     # Any of the words, as search_records: a whole-query substring found nothing for
     # 「莲香 餐厅」 and the model saved the same fact three more times (live 2026-10-10).
-    terms = re.split(r"[\W_]+", args.get("query", "").casefold()) if kind == "knowledge" else []
+    terms = re.split(r"[\W_]+", args.get("query", "").casefold())
     words = list(dict.fromkeys(filter(None, terms)))
     extra: dict[str, Any] = {}
     if words:

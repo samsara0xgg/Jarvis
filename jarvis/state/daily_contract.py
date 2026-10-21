@@ -73,13 +73,6 @@ _REFS = {
     ),
 }
 _PROJECT = text_field(512, nullable=True)
-_TODO_FIELDS = {
-    "title": text_field(500),
-    "project": _PROJECT,
-    "due_at": text_field(50, nullable=True),
-    "priority": enum_field("low", "normal", "high"),
-    "status": enum_field("open", "done", "cancelled"),
-}
 _COVERAGE = object_fields(
     {
         name: enum_field("available", "partial", "unknown", "unavailable", "not_implemented")
@@ -175,35 +168,6 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "kind",
         "source_refs",
         "basis",
-        "request_id",
-    ),
-    "create_todo": object_fields(
-        {
-            **{k: v for k, v in _TODO_FIELDS.items() if k != "status"},
-            "source_refs": _REFS,
-            "request_id": text_field(200),
-        },
-        "title",
-        "request_id",
-    ),
-    "list_todos": object_fields(
-        {
-            "status": enum_field("open", "done", "cancelled", "all"),
-            "project": text_field(512),
-            "due_before": text_field(50),
-            **_PAGE,
-        }
-    ),
-    "update_todo": object_fields(
-        {
-            "todo_id": text_field(200),
-            "expected_version": _VERSION,
-            "patch": {**object_fields(_TODO_FIELDS), "minProperties": 1},
-            "request_id": text_field(200),
-        },
-        "todo_id",
-        "expected_version",
-        "patch",
         "request_id",
     ),
     "save_briefing": object_fields(
