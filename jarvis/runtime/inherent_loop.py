@@ -89,7 +89,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Generator, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Generator, Sequence
     from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
@@ -5968,14 +5968,18 @@ def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
         LOGGER.info("retention: started %d new log files", cut)
 
 
-async def _data_sweep_task(
+async def _data_sweep_task(  # noqa: PLR0913 — the brain's two hooks, a terminal's gate, the wait.
     dirs: dict[Path, int | None], logs: Path, link_pictures: Callable[[], object] | None = None,
-    release_pictures: Callable[[], object] | None = None,
+    release_pictures: Callable[[], object] | None = None, *,
+    swept_elsewhere: Callable[[], bool] | None = None,
+    sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
 ) -> None:
     """At boot and then every hour; a failed pass waits for the next one.
 
     ``link_pictures`` runs once, first (ADR 0255): the files must be there to be linked.
     ``release_pictures`` runs after each sweep: the copies of the pictures it removed go too.
+    ``swept_elsewhere`` (ADR 0334) is a terminal's: while it says a daemon holds this root, the
+    daemon sweeps it and the pass is skipped; it is asked again at every pass.
     """
     if link_pictures is not None:
         try:
@@ -5984,12 +5988,13 @@ async def _data_sweep_task(
             LOGGER.exception("pictures: could not link earlier records to their files")
     while True:
         try:
-            await asyncio.to_thread(_sweep_data, dirs, logs)
-            if release_pictures is not None:
-                await asyncio.to_thread(release_pictures)
+            if swept_elsewhere is None or not await asyncio.to_thread(swept_elsewhere):
+                await asyncio.to_thread(_sweep_data, dirs, logs)
+                if release_pictures is not None:
+                    await asyncio.to_thread(release_pictures)
         except OSError:
             LOGGER.exception("retention: sweep failed; next try in an hour")
-        await asyncio.sleep(_DATA_SWEEP_INTERVAL_S)
+        await sleep(_DATA_SWEEP_INTERVAL_S)
 
 
 def _clear_media(runtime: JarvisRuntime) -> int:

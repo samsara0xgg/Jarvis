@@ -13,6 +13,9 @@ It also runs the observers that only read this machine's files and apps (the rep
 to the brain's log instead of a log here. The usage observer needs provider keys and the Claude
 sessions page is a live read, so those stay with the brain (ADR 0170).
 
+It also keeps this machine's own logs and microphone recordings within their retention, at boot
+and hourly, unless a daemon holds this runtime root and does it (ADR 0334).
+
 With ``--voice`` it also speaks and listens (ADR 0172): the brain streams the answer's rows into
 a scratch journal here, the same media actor as on one machine plays them, its provider
 sessions run on the brain, and the playback rows it writes go back to the brain as events. The
@@ -51,13 +54,14 @@ from zoneinfo import ZoneInfo
 
 import uvicorn
 
-from jarvis.deployment.launchd import spawned_by_terminal_agent
+from jarvis.deployment.launchd import logs_dir, spawned_by_terminal_agent
 from jarvis.deployment.models import (
     default_sensevoice_dir,
     default_silero_vad_path,
     default_voiceprint_model_path,
 )
 from jarvis.deployment.night_power import MacPower
+from jarvis.deployment.process_lock import LOCK_FILE, is_held
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
 from jarvis.execution.tools import (
     TERMINAL_TOOL_NAMES,
@@ -92,6 +96,7 @@ from jarvis.runtime.inherent_loop import (
     _build_tts_pipeline,
     _build_voice_pipeline,
     _claude_sessions_read,
+    _data_sweep_task,
     _install_power_observer_or_degrade,
     _ListenPorts,
     _log_watcher_death,
@@ -158,7 +163,7 @@ from jarvis.surface.voice_ducking import SystemAudioDucker
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.shared.realtime import Wave4ResponseFlags
@@ -921,6 +926,36 @@ def _start_night(night: NightRun | None, speech: _Speech) -> asyncio.Task[None] 
     return asyncio.create_task(night.run(), name="night_run")
 
 
+@dataclass(frozen=True)
+class _Retention:
+    """ADR 0334: the root whose logs and recordings this terminal keeps in bounds itself."""
+
+    config: Mapping[str, Any]
+    runtime_root: Path
+    sleep: Callable[[float], Awaitable[object]] = asyncio.sleep
+
+
+def _start_retention(retention: _Retention) -> asyncio.Task[None]:
+    """The brain's hourly sweep (ADR 0067) over what this machine writes under its root.
+
+    That is every ``logs/*.log`` (this terminal's, the companion's) and the recordings of its
+    microphone (``memory.audio_dir``, the capture session's and dictation's). Screenshots go
+    through a temporary folder and phone attachments reach the brain, so neither lands here.
+    A daemon that holds this root sweeps it itself: two processes cutting one log lose lines.
+    """
+    root = retention.runtime_root
+    memory = MemorySettings.from_config(retention.config.get("memory"), runtime_root=root)
+    task = asyncio.create_task(
+        _data_sweep_task(
+            {memory.audio_dir: memory.audio_retention_days}, logs_dir(root),
+            swept_elsewhere=functools.partial(is_held, root / LOCK_FILE), sleep=retention.sleep,
+        ),
+        name="data_sweep",
+    )
+    task.add_done_callback(_log_watcher_death)
+    return task
+
+
 def _device_page(config: Mapping[str, Any], runtime_root: Path) -> Settings:
     """This machine's Settings page; the UI, the board look and the device watch share one."""
     return Settings(
@@ -968,18 +1003,22 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
     watched: _Watched | None, speaking: _Speaking | None = None, ui: _Ui | None = None,
     night: NightRun | None = None, settings: Mapping[str, Any] | None = None,
     page: Settings | None = None, ship: ShipConfig | None = None,
+    retention: _Retention | None = None,
 ) -> None:
     """The link, and beside it the observers, the voice and the UI when there is anything to run.
 
     ``page`` is this machine's Settings page. The reSpeaker's saved look is kept on the board
     for as long as the terminal runs (ADR 0147); with voice listening it also carries the device
-    watch and the power observer a daemon runs (ADR 0054, ADR-0009 D3).
+    watch and the power observer a daemon runs (ADR 0054, ADR-0009 D3). ``retention`` is the
+    sweep of this machine's own logs and recordings (ADR 0334), which runs whether or not the
+    brain can be reached.
     """
     outbox = EventOutbox() if watched is not None or speaking is not None else None
     observing = None if outbox is None or watched is None else asyncio.create_task(
         _observe(outbox, watched),
     )
     shipping = None if ship is None else asyncio.create_task(run_shipper(ship, base_url, token))
+    sweeping = None if retention is None else _start_retention(retention)
     speech = _Speech()
     serving: asyncio.Task[None] | None = None
     server: _UiServer | None = None
@@ -1014,7 +1053,7 @@ async def _run(  # noqa: PLR0913 — one keyword per thing a terminal runs.
             settings=settings,
         )
     finally:
-        for task in (nights, boarding, observing, shipping):
+        for task in (nights, boarding, observing, shipping, sweeping):
             await _cancel(task)
         await _stop_speech(speech)
         if server is not None and serving is not None:
@@ -1145,7 +1184,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
                 config, runtime_root, config_path.parent, brain_url=base_url, brain_token=token,
             ) if voice else None,
             ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root), page=page,
-            ship=ship,
+            ship=ship, retention=_Retention(config, runtime_root),
         ))
     except TerminalRefusedError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

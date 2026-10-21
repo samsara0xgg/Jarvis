@@ -7,6 +7,7 @@ does to its ``user_version``.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sqlite3
@@ -21,14 +22,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.deployment import bootstrap_runtime, daemon_session, data
-from jarvis.deployment.process_lock import ProcessLockHeld, acquire_exclusive
+from jarvis.deployment.process_lock import LOCK_FILE, ProcessLockHeld, acquire_exclusive
+from jarvis.runtime import inherent_loop
+from jarvis.runtime.terminal import _Retention, _run
 from jarvis.state import NewerDataError
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.net import free_port
+from tests.support.stepped_sleep import SteppedSleep
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
 _DAY = 86400
@@ -99,6 +105,96 @@ def test_a_long_log_starts_over_while_its_writer_keeps_appending(tmp_path: Path)
     ]
     assert (tmp_path / "daemon.err.log.1").read_text().startswith("round 3 ")
     assert (tmp_path / "daemon.err.log.2").read_text().startswith("round 2 ")
+
+
+def _terminal_machine(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """The root a terminal ran on: a log past its cap, and the folder its recordings go to."""
+    root = tmp_path / "terminal-machine"
+    log = root / "logs" / "terminal.err.log"
+    audio = root / "memory" / "audio"
+    audio.mkdir(parents=True)
+    log.parent.mkdir()
+    log.write_bytes(b"x" * (data.LOG_MAX_BYTES + 1))
+    return root, log, audio
+
+
+async def _boot_terminal(
+    root: Path, laps: Callable[[SteppedSleep], Awaitable[None]],
+) -> list[float]:
+    """Boot a terminal on ``root`` with no brain to reach; ``laps`` steps its sweep; the waits."""
+    sleep = SteppedSleep()
+    booted = asyncio.create_task(_run(
+        f"http://127.0.0.1:{free_port()}", "token", tools=frozenset(),
+        execute=lambda *_: {"ok": False}, watched=None,
+        retention=_Retention({"memory": {"audio_retention_days": 30}}, root, sleep),
+    ))
+    try:
+        await laps(sleep)
+    finally:
+        booted.cancel()
+        await asyncio.wait({booted})
+    return sleep.waits
+
+
+def test_a_terminal_machine_keeps_its_own_logs_and_recordings_in_bounds(tmp_path: Path) -> None:
+    """ADR 0334: at boot and then every hour, the log is cut and the old recording goes."""
+    root, log, audio = _terminal_machine(tmp_path)
+    old, fresh = _aged(audio / "T1.m4a", 31), _aged(audio / "T2.m4a", 29)
+
+    async def laps(sleep: SteppedSleep) -> None:
+        await sleep.parked()
+        assert log.stat().st_size == 0
+        assert log.with_name("terminal.err.log.1").stat().st_size == data.LOG_MAX_BYTES + 1
+        assert [old.exists(), fresh.exists()] == [False, True]
+        later = _aged(audio / "T3.m4a", 45)  # written since, and past its days an hour on
+        sleep.release()
+        await sleep.parked()
+        assert not later.exists()
+
+    assert asyncio.run(_boot_terminal(root, laps)) == [3600.0, 3600.0]
+
+
+def test_a_terminal_leaves_the_sweep_to_a_daemon_on_its_root_until_it_is_gone(
+    tmp_path: Path,
+) -> None:
+    """One sweeper per root: two processes cutting one log lose lines; it is asked every hour."""
+    root, log, audio = _terminal_machine(tmp_path)
+    old = _aged(audio / "T1.m4a", 31)
+
+    async def laps(sleep: SteppedSleep) -> None:
+        with acquire_exclusive(root / LOCK_FILE):  # the daemon that runs on this root
+            await sleep.parked()
+            assert log.stat().st_size == data.LOG_MAX_BYTES + 1
+            assert old.exists()
+        sleep.release()  # the daemon has stopped; the next hour is the terminal's
+        await sleep.parked()
+        assert log.stat().st_size == 0
+        assert not old.exists()
+
+    assert asyncio.run(_boot_terminal(root, laps)) == [3600.0, 3600.0]
+
+
+def test_a_daemon_sweeps_its_root_while_it_holds_the_lock(tmp_path: Path) -> None:
+    """The gate is the terminal's: the daemon's own pass, which holds the lock, is never skipped."""
+    root, log, audio = _terminal_machine(tmp_path)
+    old = _aged(audio / "T1.m4a", 31)
+
+    async def daemon() -> None:
+        sleep = SteppedSleep()
+        sweeping = asyncio.create_task(
+            inherent_loop._data_sweep_task(  # noqa: SLF001
+                {audio: 30}, root / "logs", sleep=sleep,
+            ),
+        )
+        await sleep.parked()
+        sweeping.cancel()
+        await asyncio.wait({sweeping})
+
+    with acquire_exclusive(root / LOCK_FILE):
+        asyncio.run(daemon())
+
+    assert log.stat().st_size == 0
+    assert not old.exists()
 
 
 def _root_with_data(tmp_path: Path) -> tuple[Path, list[Path]]:
