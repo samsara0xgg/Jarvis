@@ -296,6 +296,12 @@ final class FootprintTests: XCTestCase {
         XCTAssertNil(m.follow(atMs: b - 1), "nowhere: no camera")
     }
 
+    func testTheFastestFixIsTheOneWithTheHighestSpeedAndNilWhenNoneHasOne() throws {
+        let m = try model()
+        XCTAssertEqual(m.reply.outings[0].fastest, FootprintPoint(at_ms: b + 1_500_000, lat: -10.08, lng: 20.08, speed_mps: 30))
+        XCTAssertNil(m.reply.outings[1].fastest, "an outing with no fixes")
+    }
+
     func testTheCameraStandsAtSixHundredMetresWalkingAndOutToTwoKilometresAt80KmhAndNoFurther() {
         XCTAssertEqual(FootprintMapFollow.distance(speedMps: 0), 600)
         XCTAssertEqual(FootprintMapFollow.distance(speedMps: 1.4), 600, "walking")

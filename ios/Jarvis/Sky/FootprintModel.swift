@@ -140,6 +140,11 @@ struct FootprintModel {
     }
 }
 
+extension FootprintOuting {
+    /// the fix he was fastest at; nil when no fix has a speed
+    var fastest: FootprintPoint? { points.filter { $0.speed_mps != nil }.max { ($0.speed_mps ?? 0) < ($1.speed_mps ?? 0) } }
+}
+
 extension FootprintStay {
     var coord: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
 }

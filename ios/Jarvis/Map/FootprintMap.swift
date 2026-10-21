@@ -42,10 +42,10 @@ struct FootprintMapNow: Equatable {
     static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.label == b.label }
 }
 
-/// The scrub dot: where he was at the held minute.
+/// The scrub dot: where he was at the held minute. One that is not held (the outing page's, at its fastest fix, while no finger is on a curve) only marks the place: the route stays lit, and the stops.
 struct FootprintMapDot: Equatable {
-    var coord: CLLocationCoordinate2D, ms: Int64, rgb: RGB, label: String
-    static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.ms == b.ms && a.rgb == b.rgb && a.label == b.label }
+    var coord: CLLocationCoordinate2D, ms: Int64, rgb: RGB, label: String, held = true
+    static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.ms == b.ms && a.rgb == b.rgb && a.label == b.label && a.held == b.held }
 }
 
 /// The first-person camera while a finger holds a time: where he was (the scrub dot, kept at the map's centre), the way he was going in degrees clockwise from north (nil while still: the
@@ -101,6 +101,9 @@ struct FootprintMapView: UIViewRepresentable {
     var fitKey = ""
     /// room kept under the map's own marks (Apple's logo and legal label) so that a fade over its foot does not hide them
     var legalInset: CGFloat = 0
+
+    /// the minute a finger holds, which lights the route before it
+    var heldMs: Int64? { dot.flatMap { $0.held ? $0.ms : nil } }
 
     /// everything the frame must cover
     var fitCoordinates: [CLLocationCoordinate2D] {
@@ -193,8 +196,8 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
                 dotNote = n; m.addAnnotation(n)
             }
         } else if let n = dotNote { m.removeAnnotation(n); dotNote = nil }
-        if old?.dot?.ms != v.dot?.ms {
-            renderers.forEach { $0.litMs = v.dot?.ms; $0.setNeedsDisplay() }
+        if old?.heldMs != v.heldMs {
+            renderers.forEach { $0.litMs = v.heldMs; $0.setNeedsDisplay() }
             for n in staticMarks { (m.view(for: n) as? FootprintMark)?.alpha = alpha(n) }
         }
         if fitKey != v.fitKey {
@@ -281,7 +284,7 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
 
     /// a stop after the held minute is faint
     private func alpha(_ n: FootprintMark.Note) -> CGFloat {
-        guard let t = view?.dot?.ms, let ms = n.ms else { return 1 }
+        guard let t = view?.heldMs, let ms = n.ms else { return 1 }
         return ms > t ? 0.4 : 1
     }
 
@@ -294,7 +297,7 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate {
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
         guard let o = overlay as? FootprintRoute else { return MKOverlayRenderer(overlay: overlay) }
         let r = FootprintRouteRenderer(o, width: view?.lineWidth ?? 4.2)
-        r.litMs = view?.dot?.ms
+        r.litMs = view?.heldMs
         renderers.append(r)
         return r
     }

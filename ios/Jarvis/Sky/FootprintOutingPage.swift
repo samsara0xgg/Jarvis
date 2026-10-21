@@ -2,7 +2,7 @@ import SwiftUI
 import MapKit
 
 // One outing of the footprint day (ADR 0323), the page A1 slides in over the sky from the outing's row: the map framed to it, its four numbers, the speed and heart-rate curves and the list of
-// its stops. A finger on either curve holds one time, and the map's dot, a line on both curves and the capsule by the dot follow it. Laid out in the app's 440 pt design space; her corner
+// its stops. A finger on either curve holds one time, and the map's dot, a line on both curves and the capsule by the dot follow it; with none held they stand at his fastest fix. Laid out in the app's 440 pt design space; her corner
 // (`TLLayout.her`) stays clear, so the way back stands beside her and the title after it. The page paints no ground of its own: the sky is under it.
 
 private let ink = SetColor.ink
@@ -123,12 +123,15 @@ struct FootprintOutingPage: View {
         }
     }
 
-    /// the held time on the map: where he was, in the colour of his speed, with the time and the speed in its capsule
+    /// where the cursor stands while no finger is on a curve: his fastest fix
+    private var fastestMs: Int64? { outing.fastest?.at_ms }
+
+    /// the held time on the map: where he was, in the colour of his speed, with the time and the speed in its capsule; with no finger on a curve, the same at his fastest fix
     private var dot: FootprintMapDot? {
-        guard let t = scrub, let c = model.position(atMs: t) else { return nil }
+        guard let t = scrub ?? fastestMs, let c = model.position(atMs: t) else { return nil }
         let v = model.speedMps(atMs: t)
         let label = time(t) + (v.map { "  " + Words.Footprint.held(speed: "\(Int(($0 * 3.6).rounded()))") } ?? "")
-        return FootprintMapDot(coord: c, ms: t, rgb: FootprintPaint.speed(mps: v ?? 0), label: label)
+        return FootprintMapDot(coord: c, ms: t, rgb: FootprintPaint.speed(mps: v ?? 0), label: label, held: scrub != nil)
     }
 
     // MARK: numbers
@@ -164,7 +167,7 @@ struct FootprintOutingPage: View {
                 Text(w.speedAxis); Spacer(minLength: 8); Text(w.colorsMatchMap)
             }
             .font(.system(size: 12.5)).foregroundStyle(muted).lineLimit(1).frame(width: FootprintCurves.width, height: 16).padding(.top, 10)
-            FootprintSpeedCurve(c: curves, scrub: scrub) { scrub = $0 }.padding(.top, 6)
+            FootprintSpeedCurve(c: curves, scrub: scrub ?? fastestMs) { scrub = $0 }.padding(.top, 6)
             ticks.padding(.top, 4)
             if curves.hasHeart, let heart = outing.heart_rate {
                 HStack {
@@ -172,7 +175,7 @@ struct FootprintOutingPage: View {
                     Text(w.heartAverage(avg: "\(Int(heart.avg_bpm.rounded()))", home: heart.home_avg_bpm.map { "\(Int($0.rounded()))" }))
                 }
                 .font(.system(size: 12.5).monospacedDigit()).foregroundStyle(muted).lineLimit(1).frame(width: FootprintCurves.width, height: 16).padding(.top, 12)
-                FootprintHeartCurve(c: curves, scrub: scrub) { scrub = $0 }.padding(.top, 6)
+                FootprintHeartCurve(c: curves, scrub: scrub ?? fastestMs) { scrub = $0 }.padding(.top, 6)
             }
         }
         .padding(.leading, 30)
