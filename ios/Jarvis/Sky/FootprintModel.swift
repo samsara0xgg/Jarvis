@@ -116,9 +116,11 @@ struct FootprintModel {
     }
     private static let headingSpanMs: Int64 = 5_000
 
-    /// What the map's first-person camera takes at a time: where he was, the way he was going and how fast (still when it is not known); nil when he was nowhere.
+    /// What the map's first-person camera takes at a time: where he was, the way he was going and how far out to stand, which is by the outing's activity (the nearest outing's in a stay
+    /// between two); nil when he was nowhere.
     func follow(atMs t: Int64) -> FootprintMapFollow? {
-        position(atMs: t).map { FootprintMapFollow(coord: $0, heading: heading(atMs: t), speedMps: speedMps(atMs: t) ?? 0) }
+        let o = outing(atMs: t) ?? reply.outings.min { abs($0.start_ms - t) < abs($1.start_ms - t) }
+        return position(atMs: t).map { FootprintMapFollow(coord: $0, heading: heading(atMs: t), height: FootprintMapFollow.height(activity: o?.activity)) }
     }
 
     /// His heart rate on an outing at a time, between the watch's readings; nil outside them or when the outing has none.
