@@ -1,0 +1,26 @@
+{
+  "route": "GET /inherent/confirmation",
+  "direction": "brain -> client",
+  "description": "`card` is the card waiting for his button, or null. `id` is what the answer posts back; `tool` is the tool's name and `action` what it would do, in words; `source` the app of an `mcp__app__tool` ('' for a built-in tool); `letter` is true when it would send a letter, whose `to`, `subject` and `body` are in `args`; `args` are the arguments the model proposed (a client draws the short ones and never the large ones it is not shown). `device` is the paired device whose turn asked, or null when none did; a card is served only to that device and the host's own UI (ADR 0218), so a phone never reads another device's.",
+  "now_ms": 1791993600000,
+  "examples": {
+    "card": {
+      "card": {
+        "id": "C1",
+        "tool": "mcp__gmail__gmail_send",
+        "action": "发这封邮件",
+        "source": "gmail",
+        "letter": true,
+        "args": {
+          "body": "Can we move it to ten?",
+          "subject": "Thursday",
+          "to": "pat@example.com"
+        },
+        "device": "phone"
+      }
+    },
+    "none": {
+      "card": null
+    }
+  }
+}

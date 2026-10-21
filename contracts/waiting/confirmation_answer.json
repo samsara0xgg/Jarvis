@@ -1,0 +1,95 @@
+{
+  "route": "POST /inherent/confirmation",
+  "direction": "client -> brain",
+  "description": "The button on a confirmation card (ADR 0062): the card's `id`, accept or reject, and `edits`, the card's text fields as the user changed them (keyed by argument name, text only). The brain starts a turn under the device that posted, answered `{status: \"accepted\", turn_id}`. Another body is refused with the status in `refusal`: 422 for a body that is not this shape, 409 once the card is no longer the one waiting (answered from another device, expired, replaced).",
+  "valid": [
+    {
+      "name": "accept",
+      "value": {
+        "confirmation_id": "C1",
+        "decision": "accept"
+      }
+    },
+    {
+      "name": "reject",
+      "value": {
+        "confirmation_id": "C1",
+        "decision": "reject"
+      }
+    },
+    {
+      "name": "accept with the card's text changed",
+      "value": {
+        "confirmation_id": "C1",
+        "decision": "accept",
+        "edits": {
+          "subject": "Thursday?"
+        }
+      }
+    },
+    {
+      "name": "accept with an empty edits",
+      "value": {
+        "confirmation_id": "C1",
+        "decision": "accept",
+        "edits": {}
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a decision that is neither",
+      "value": {
+        "confirmation_id": "C1",
+        "decision": "maybe"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "no decision",
+      "value": {
+        "confirmation_id": "C1"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "no id",
+      "value": {
+        "decision": "accept"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an id that is not text",
+      "value": {
+        "confirmation_id": 1,
+        "decision": "accept"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "edits that are not text",
+      "value": {
+        "confirmation_id": "C1",
+        "decision": "accept",
+        "edits": {
+          "subject": 3
+        }
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a body that is not an object",
+      "value": ["accept"],
+      "refusal": "422"
+    },
+    {
+      "name": "the id of a card that is gone",
+      "value": {
+        "confirmation_id": "C0",
+        "decision": "accept"
+      },
+      "refusal": "409"
+    }
+  ]
+}

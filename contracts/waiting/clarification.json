@@ -1,0 +1,70 @@
+{
+  "route": "GET /inherent/clarification",
+  "direction": "brain -> client",
+  "description": "`card` is the ask card to fill in, or null. `fields` are one to four details, each a `label` the answer is keyed by, `choices` when the answer is one of a few (typed otherwise) and `value` when the model pre-filled it; the card never says whether a field is remembered. A bus card (ADR 0205) has no fields and a `trip`: `to`, `made_at` and `options`, one row per bus still catchable, each with `leave_at`, `route`, `board_stop`, `departs`, `arrive_at` and `to`. `device` is as for the confirmation card.",
+  "now_ms": 1791993600000,
+  "examples": {
+    "ask": {
+      "card": {
+        "id": "Qc0ffee000000",
+        "question": "送到哪里",
+        "fields": [
+          {
+            "label": "送餐地址",
+            "value": "1 Test St"
+          },
+          {
+            "label": "几位",
+            "choices": ["1", "2", "3", "4"]
+          }
+        ],
+        "device": "phone"
+      }
+    },
+    "trip": {
+      "card": {
+        "id": "offer-c0ffee00",
+        "question": "UVic",
+        "fields": [],
+        "device": "phone",
+        "trip": {
+          "made_at": "2026-10-14T09:00-07:00",
+          "offer_id": "offer-c0ffee00",
+          "options": [
+            {
+              "arrive_at": "09:41",
+              "board_stop": "Hillside Mall",
+              "departs": "09:15",
+              "index": 0,
+              "leave_at": "09:12",
+              "route": "14",
+              "to": "UVic"
+            },
+            {
+              "arrive_at": "09:56",
+              "board_stop": "Hillside Mall",
+              "departs": "09:30",
+              "index": 1,
+              "leave_at": "09:27",
+              "route": "14",
+              "to": "UVic"
+            },
+            {
+              "arrive_at": "10:08",
+              "board_stop": "Douglas at Hillside",
+              "departs": "09:45",
+              "index": 2,
+              "leave_at": "09:42",
+              "route": "26",
+              "to": "UVic"
+            }
+          ],
+          "to": "UVic"
+        }
+      }
+    },
+    "none": {
+      "card": null
+    }
+  }
+}

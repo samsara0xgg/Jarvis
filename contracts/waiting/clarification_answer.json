@@ -1,0 +1,100 @@
+{
+  "route": "POST /inherent/clarification",
+  "direction": "client -> brain",
+  "description": "The ask card's send button or its close button (ADR 0066): the card's `id` and either `answers`, keyed by the `label` of each field (a field left blank is dropped), or `dismiss`. The brain answers `{status, turn_id}`: `accepted` with the turn the answers start, `dismissed` with `turn_id` null and nothing run. Another body is refused with the status in `refusal`: 422 for a body that is not this shape, 400 when nothing was filled in and it was not dismissed, 409 once the card is no longer the one waiting.",
+  "valid": [
+    {
+      "name": "both fields filled in",
+      "value": {
+        "clarification_id": "Q1",
+        "answers": {
+          "送餐地址": "1 Test St",
+          "几位": "2"
+        }
+      }
+    },
+    {
+      "name": "one field filled in and one left blank",
+      "value": {
+        "clarification_id": "Q1",
+        "answers": {
+          "送餐地址": "1 Test St",
+          "几位": ""
+        }
+      }
+    },
+    {
+      "name": "the close button",
+      "value": {
+        "clarification_id": "Q1",
+        "dismiss": true
+      }
+    },
+    {
+      "name": "the close button with answers beside it (they are dropped)",
+      "value": {
+        "clarification_id": "Q1",
+        "dismiss": true,
+        "answers": {
+          "送餐地址": "1 Test St"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no id",
+      "value": {
+        "answers": {
+          "送餐地址": "1 Test St"
+        }
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "answers that are not text",
+      "value": {
+        "clarification_id": "Q1",
+        "answers": {
+          "几位": 2
+        }
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "answers that are not an object",
+      "value": {
+        "clarification_id": "Q1",
+        "answers": ["1 Test St"]
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "every answer blank",
+      "value": {
+        "clarification_id": "Q1",
+        "answers": {
+          "送餐地址": "  "
+        }
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "neither answers nor the close button",
+      "value": {
+        "clarification_id": "Q1"
+      },
+      "refusal": "400"
+    },
+    {
+      "name": "the id of a card that is gone",
+      "value": {
+        "clarification_id": "Q0",
+        "answers": {
+          "送餐地址": "1 Test St"
+        }
+      },
+      "refusal": "409"
+    }
+  ]
+}

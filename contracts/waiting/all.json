@@ -1,0 +1,67 @@
+{
+  "route": "GET /inherent/waiting",
+  "direction": "brain -> client",
+  "description": "Each source in one body: `confirmation` and `clarification` are the `card` of the two routes above, `notices` is the body of `/inherent/notices` (reminders and job mail), `plugin_request` is the plugin whose connection or sign-in is asked (its `id` is what a plugin action posts back) and `claude_requests` the permission prompts Claude Code holds. Nothing waiting is null or empty, and so is a source this brain does not have; one source failing leaves the others readable. Reading this keeps Claude Code's prompts held for the phone.",
+  "now_ms": 1791993600000,
+  "examples": {
+    "nothing": {
+      "confirmation": null,
+      "clarification": null,
+      "notices": {
+        "notices": [],
+        "audio_private": false,
+        "hold": null,
+        "departure": null
+      },
+      "plugin_request": null,
+      "claude_requests": []
+    },
+    "everything": {
+      "confirmation": {
+        "id": "C1",
+        "tool": "mcp__gmail__gmail_send",
+        "action": "发这封邮件",
+        "source": "gmail",
+        "letter": true,
+        "args": {
+          "body": "Can we move it to ten?",
+          "subject": "Thursday",
+          "to": "pat@example.com"
+        },
+        "device": "phone"
+      },
+      "clarification": {
+        "id": "Qc0ffee000000",
+        "question": "送到哪里",
+        "fields": [
+          {
+            "label": "送餐地址",
+            "value": "1 Test St"
+          },
+          {
+            "label": "几位",
+            "choices": ["1", "2", "3", "4"]
+          }
+        ],
+        "device": "phone"
+      },
+      "notices": {
+        "notices": [],
+        "audio_private": false,
+        "hold": null,
+        "departure": null
+      },
+      "plugin_request": {
+        "id": "c0ffee00000040008000000000000002",
+        "plugin_id": "github",
+        "purpose": "",
+        "state": "offered",
+        "continue_task": false,
+        "resume_status": "not_requested",
+        "error": null,
+        "presentation": 1
+      },
+      "claude_requests": []
+    }
+  }
+}
