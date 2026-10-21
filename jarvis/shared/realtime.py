@@ -33,19 +33,19 @@ wave can switch on the value without string archaeology.
 
 @dataclass(frozen=True)
 class Wave1FeatureFlags:
-    """Production adoption switches for ADR-0006/0008 Wave 1.
+    """Production adoption switch for ADR-0006/0008 Wave 1.
 
     The primitives themselves are always importable so deterministic
     integration and recovery checks can exercise them.  Runtime callers must
-    opt into each behavior explicitly.  Since 2026-09-07 the shipped
-    configuration turns both on (the tier-A adoption decision recorded in
-    ADR-0006 §13); the dataclass defaults stay off so an absent or malformed
+    opt into the behavior explicitly.  Since 2026-09-07 the shipped
+    configuration turns it on (the tier-A adoption decision recorded in
+    ADR-0006 §13); the dataclass default stays off so an absent or malformed
     block still degrades to the serial Wave-0 path.  The transactional
-    append and the lifecycle terminal CAS are not switches any more (ADR 0332).
+    append, the lifecycle terminal CAS and the exactly-once cost accounting
+    are not switches any more (ADR 0332).
     """
 
     confirmation_dispatch_outbox: bool = False
-    exactly_once_cost_accounting: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave1FeatureFlags:
@@ -58,7 +58,6 @@ class Wave1FeatureFlags:
         values = {} if raw is None else raw
         return cls(
             confirmation_dispatch_outbox=values.get("confirmation_dispatch_outbox") is True,
-            exactly_once_cost_accounting=values.get("exactly_once_cost_accounting") is True,
         )
 
 

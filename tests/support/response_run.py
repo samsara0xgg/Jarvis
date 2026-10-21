@@ -20,7 +20,7 @@ from jarvis.decision.response_run import (
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
-from jarvis.shared.realtime import Wave1FeatureFlags, stable_response_group_id
+from jarvis.shared.realtime import stable_response_group_id
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started
@@ -102,7 +102,6 @@ def realtime_config(
             "enabled": enabled,
             "concurrency_safety": {
                 "confirmation_dispatch_outbox": False,
-                "exactly_once_cost_accounting": True,
             },
             "response": response,
         },
@@ -137,7 +136,6 @@ def make_runtime(
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        wave1_features=Wave1FeatureFlags(exactly_once_cost_accounting=True),
         response_flags=_wave4_response_flags(config),
         llm_session_factory=ScriptedSessions(model, LLM_CONFIG),
         response_runs=ResponseRunRegistry(),

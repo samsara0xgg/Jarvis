@@ -227,11 +227,7 @@ def _build_overlay(root: Path) -> Path:
     shipped = yaml.safe_load((source / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     realtime = shipped["realtime"]
     realtime["enabled"] = True
-    for switch in (
-        "confirmation_dispatch_outbox",
-        "exactly_once_cost_accounting",
-    ):
-        realtime["concurrency_safety"][switch] = True
+    realtime["concurrency_safety"]["confirmation_dispatch_outbox"] = True
     realtime["response"]["routine_streaming"]["enabled"] = True
     realtime["streaming_output"]["speak_from_segments"] = True
     # The daemon opens this device itself, so the burn is silent without

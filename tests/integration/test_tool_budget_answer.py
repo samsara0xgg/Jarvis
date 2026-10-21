@@ -90,7 +90,16 @@ def test_failed_answer_request_falls_back_to_a_chinese_limitation(tmp_path: Path
         assert text == "这一轮工具调用次数用完了，还没整理出答案。请把问题拆小一点再问一次。"  # noqa: RUF001 — fullwidth punctuation, the fixed Chinese limitation.
         assert "exhausted" not in text
         assert len(llm.requests) == BUDGET + 1
-        assert _count(conn, "cost.recorded") == BUDGET
+        # The request that failed is paid for like the others: one error row, after the three
+        # that completed.
+        costs = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT payload_json FROM events WHERE type='cost.recorded' ORDER BY id"
+            )
+        ]
+        assert [cost["disposition"] for cost in costs] == ["completed"] * BUDGET + ["error"]
+        assert costs[-1]["error_code"] == "RuntimeError"
         assert _count(conn, "turn.ended") == 1
     finally:
         conn.close()

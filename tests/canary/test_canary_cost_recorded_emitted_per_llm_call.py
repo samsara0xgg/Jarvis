@@ -2,9 +2,9 @@
 
 Per ADR-0002 § Tier 1 canaries, ADR-0008 §4.1, and spec §5.4.1
 (``cost.recorded.owner_layer == L3``): every full or streamed provider call
-under :mod:`jarvis.decision` must share a function body with either the legacy
-cost emitter or the Wave 1 exactly-once ``CostRecorder`` guard. Forgetting the
-guard silently drops spend attribution or an explicit unavailable disposition.
+under :mod:`jarvis.decision` must share a function body with the Wave 1
+exactly-once ``CostRecorder`` guard. Forgetting the guard silently drops spend
+attribution or an explicit unavailable disposition.
 
 The scan recursively covers every Python module under ``jarvis/decision``,
 ``jarvis/runtime`` and ``jarvis/surface`` — no file list is maintained.  Only

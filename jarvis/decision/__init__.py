@@ -233,52 +233,17 @@ def _emit_cost_recorded(
             worker run; ``cost.recorded`` carries it as an optional
             correlation field so per-run cost rollups are possible).
     """
-    if ctx.wave1_features.exactly_once_cost_accounting:
-        outcome = CostRecorder(
-            ctx.conn,
-            pricing_table=_pricing_table(),
-        ).record_chat_result(
-            chat_result,
-            client=ctx.llm_client,
-            kind=kind,
-            turn_id=turn_id,
-            run_id=run_id,
-        )
-        return outcome.event
-
-    cost_usd = compute_cost_usd(
-        chat_result.model_used or None,
-        chat_result.tokens_in,
-        chat_result.tokens_out,
-        chat_result.cache_read_in,
-        chat_result.cache_write_in,
-        dict(_pricing_table()),
-        chat_result.service_tier,
-    )
-    payload: dict[str, Any] = {
-        "kind": kind,
-        "model": chat_result.model_used,
-        "tokens_in": chat_result.tokens_in,
-        "tokens_out": chat_result.tokens_out,
-        "cache_read_in": chat_result.cache_read_in,
-        "cache_write_in": chat_result.cache_write_in,
-        "cost_usd": cost_usd,
-    }
-    if chat_result.service_tier is not None:
-        payload["service_tier"] = chat_result.service_tier
-    if run_id is not None:
-        payload["run_id"] = run_id
-    correlation: dict[str, str] = {}
-    if turn_id is not None:
-        correlation["turn_id"] = turn_id
-    if run_id is not None:
-        correlation["run_id"] = run_id
-    return emit_event(
+    outcome = CostRecorder(
         ctx.conn,
-        type="cost.recorded",
-        payload=payload,
-        correlation=correlation or None,
+        pricing_table=_pricing_table(),
+    ).record_chat_result(
+        chat_result,
+        client=ctx.llm_client,
+        kind=kind,
+        turn_id=turn_id,
+        run_id=run_id,
     )
+    return outcome.event
 
 
 def _check_response_cancelled(ctx: DecideContext, where: str) -> None:
@@ -314,36 +279,22 @@ def _run_llm_chat_with_cost_guard(  # noqa: PLR0913 - mirrors the provider call 
     turn_id: str | None,
     tool_choice: str | None = "auto",
 ) -> ChatResult:
-    """Use the exactly-once guard only when its Wave 1 flag is enabled."""
+    """Send one chat request through the exactly-once cost guard."""
     _check_response_cancelled(ctx, "before provider request")
-    cost_recorder = (
-        CostRecorder(ctx.conn, pricing_table=_pricing_table())
-        if ctx.wave1_features.exactly_once_cost_accounting
-        else None
-    )
+    cost_recorder = CostRecorder(ctx.conn, pricing_table=_pricing_table())
     if ctx.request_admission is not None:
         ctx.request_admission(kind)
     sent = timing.request(kind, ctx.llm_client)
-    if cost_recorder is None:
-        extra: dict[str, Any] = {"service_tier": ctx.service_tier} if ctx.service_tier else {}
-        result = ctx.llm_client.chat(
-            messages=messages,
-            system=system,
-            tools=tools,
-            tool_choice=tool_choice,
-            **extra,
-        )
-    else:
-        result = cost_recorder.chat(
-            ctx.llm_client,
-            messages=messages,
-            system=system,
-            tools=tools,
-            tool_choice=tool_choice,
-            kind=kind,
-            turn_id=turn_id,
-            service_tier=ctx.service_tier,
-        )
+    result = cost_recorder.chat(
+        ctx.llm_client,
+        messages=messages,
+        system=system,
+        tools=tools,
+        tool_choice=tool_choice,
+        kind=kind,
+        turn_id=turn_id,
+        service_tier=ctx.service_tier,
+    )
     sent.chat_done(result)
     return result
 

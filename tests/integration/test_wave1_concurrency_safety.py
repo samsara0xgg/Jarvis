@@ -847,11 +847,11 @@ def test_cost_failure_injection_rolls_back_event_and_claim(tmp_path: Path) -> No
     conn.close()
 
 
-def test_flag_on_decide_path_records_one_production_cost_disposition(
+def test_decide_records_one_production_cost_disposition(
     tmp_path: Path,
 ) -> None:
     """The real decide orchestration uses the guard, not only its L2 primitive."""
-    path = tmp_path / "flag-on-decide.db"
+    path = tmp_path / "decide-cost.db"
     conn = open_event_log(path)
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -866,7 +866,6 @@ def test_flag_on_decide_path_records_one_production_cost_disposition(
         lifecycle=cast("Any", ActionLifecycle()),
         llm_client=client,
         system_prompt="integration system",
-        wave1_features=Wave1FeatureFlags(exactly_once_cost_accounting=True),
     )
     trigger = emit_event(
         conn,
@@ -933,10 +932,9 @@ def test_vision_cost_guard_records_success_and_error_and_no_recorder_records_not
 
 
 def test_wave1_feature_flags_ship_enabled() -> None:
-    """Shipped config opts into the two Wave-1 safety switches that remain (tier A)."""
+    """Shipped config opts into the Wave-1 safety switch that remains (tier A)."""
     raw = yaml.safe_load(Path("config/jarvis.yaml").read_text(encoding="utf-8"))
     realtime = raw["realtime"]
     flags = Wave1FeatureFlags.from_mapping(realtime["concurrency_safety"])
     assert realtime["enabled"] is True
     assert flags.confirmation_dispatch_outbox
-    assert flags.exactly_once_cost_accounting

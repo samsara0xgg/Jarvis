@@ -99,9 +99,6 @@ def test_cancel_during_pricing_prevents_provider_admission(
     """Real drive_turn must not enter chat after cancellation won during setup."""
     model = answering()
     runtime = make_runtime(tmp_path, model=model)
-    runtime = replace(runtime, wave1_features=replace(
-        runtime.wave1_features, exactly_once_cost_accounting=True,
-    ))
     intent = emit_intent(runtime.conn, "pricing-cancel", "现在时间")
     entered, release = threading.Event(), threading.Event()
     original_pricing = decision._pricing_table

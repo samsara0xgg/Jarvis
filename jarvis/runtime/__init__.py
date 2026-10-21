@@ -3184,7 +3184,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             _work_state_preset(full_config),
             pricing_path=repo_root / "data" / "pricing.json",
-            account_cost=wave1_features.exactly_once_cost_accounting,
+            account_cost=True,
         ),
         model=_work_state_preset(full_config),
         tz=_work_state_timezone(full_config),
@@ -3202,7 +3202,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 full_config,
                 _work_state_preset(full_config),
                 pricing_path=repo_root / "data" / "pricing.json",
-                account_cost=wave1_features.exactly_once_cost_accounting,
+                account_cost=True,
                 kind="projects",
             ),
             model=_work_state_preset(full_config),
@@ -3218,7 +3218,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             _daily_report_preset(full_config),
             pricing_path=repo_root / "data" / "pricing.json",
-            account_cost=wave1_features.exactly_once_cost_accounting,
+            account_cost=True,
             kind="daily_report",
             timeout_s=_DAILY_REPORT_TIMEOUT_S,
         ),
@@ -3251,13 +3251,13 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         vision_preset_name,
         event_log_path=paths.event_log,
         pricing_path=repo_root / "data" / "pricing.json",
-        account_cost=wave1_features.exactly_once_cost_accounting,
+        account_cost=True,
     )
     deep_search = build_deep_search(
         full_config,
         event_log_path=paths.event_log,
         pricing_path=repo_root / "data" / "pricing.json",
-        account_cost=wave1_features.exactly_once_cost_accounting,
+        account_cost=True,
     )
     rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
@@ -3291,7 +3291,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                     full_config,
                     _work_state_preset(full_config),
                     pricing_path=repo_root / "data" / "pricing.json",
-                    account_cost=wave1_features.exactly_once_cost_accounting,
+                    account_cost=True,
                     kind="mail_summary",
                 ),
                 paths.event_log,
@@ -3463,7 +3463,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             preset,
             pricing_path=repo_root / "data" / "pricing.json",
-            account_cost=wave1_features.exactly_once_cost_accounting,
+            account_cost=True,
             kind="commitments",
         ),
     )
@@ -3478,7 +3478,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             full_config,
             preset,
             pricing_path=repo_root / "data" / "pricing.json",
-            account_cost=wave1_features.exactly_once_cost_accounting,
+            account_cost=True,
             kind="turn_things",
         ),
     )

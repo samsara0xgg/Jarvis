@@ -1112,8 +1112,8 @@ tools:
 confirmation:
   ttl_ms: 600000
 
-# ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has both
-# adoption switches on (confirmation outbox, exactly-once cost).
+# ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has the
+# confirmation outbox adoption switch on.
 realtime:
   enabled: true
   # ADR 0151.  Apple SoundAnalysis listens to the mic audio the voice session already
@@ -1236,7 +1236,6 @@ realtime:
       required_misses: 24
   concurrency_safety:
     confirmation_dispatch_outbox: true
-    exactly_once_cost_accounting: true
   # ADR-0008 Step 2 (Wave 4A).  Every turn is a durable ResponseRun that can
   # be cancelled on its own (ADR 0332).  The switches below additionally
   # require realtime.enabled and downgrade once, with one warning, without it.
