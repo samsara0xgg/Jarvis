@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from jarvis.decision import (
     DecideContext,
     LifecycleLike,
@@ -142,6 +144,7 @@ def _rows(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
     ]
 
 
+@pytest.mark.usefixtures("codex_on_path")
 def test_workers_are_off_unless_enabled(tmp_path: Path) -> None:
     """The shipped config registers no worker tool; the user's settings turn them on."""
     shipped = build_default_registry()
@@ -156,6 +159,18 @@ def test_workers_are_off_unless_enabled(tmp_path: Path) -> None:
     assert (spawn.risk_level, spawn.requires_confirmation) == ("L3", True)
     send = next(t for t in enabled.get_definitions() if t.name == "send_input")
     assert "approval" not in send.input_schema["properties"]  # nothing answers for a worker
+
+
+def test_workers_stay_off_on_a_machine_without_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabled in the settings but no codex on PATH (the Pi): no worker tool, no server."""
+    (tmp_path / "bin").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    registry = build_default_registry()
+    paths = cast("Any", _Paths(tmp_path, tmp_path / "events.db", tmp_path / "artifacts"))
+    assert _register_workers(registry, paths, {"tools": {"workers": {"enabled": True}}}) is None
+    assert "spawn_worker" not in {t.name for t in registry.get_definitions()}
 
 
 def test_a_worker_starts_only_after_the_user_says_yes(tmp_path: Path) -> None:

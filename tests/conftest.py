@@ -243,3 +243,19 @@ def _block_real_audio_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(notify, "deliver_banner", lambda *_a, **_kw: None)
     # F7 ``macos_say`` fallback inside the TTS pipeline.
     monkeypatch.setattr(voice_tts, "macos_say_fallback", lambda *_a, **_kw: None)
+
+
+@pytest.fixture
+def codex_on_path(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stand-in ``codex`` first on PATH: registering Codex workers needs no Codex install.
+
+    ``_register_workers`` leaves workers off when ``shutil.which("codex")`` finds nothing, as on
+    CI or the Pi. The stand-in is never run: the server starts at the first spawn.
+    """
+    folder = tmp_path_factory.mktemp("codex-bin")
+    stand_in = folder / "codex"
+    stand_in.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stand_in.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{folder}{os.pathsep}{os.environ.get('PATH', '')}")

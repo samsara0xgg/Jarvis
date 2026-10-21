@@ -407,6 +407,7 @@ def test_configuration_is_explicit_and_validated(tmp_path: Path) -> None:
         _timesink_db_path({"observer": {"timesink": {"enabled": True}}})
 
 
+@pytest.mark.usefixtures("codex_on_path")
 def test_codex_workers_coexist_with_local_activity_tools(
     tmp_path: Path, source: sqlite3.Connection
 ) -> None:
