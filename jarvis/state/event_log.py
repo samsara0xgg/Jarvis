@@ -1418,7 +1418,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         schema_version=1,
     ),
     # What he said he did or was doing, as the post-turn pass read it (ADR 0300): no longer written
-    # since ADR 0328; kept so the sets already in a log still read.
+    # since ADR 0329; kept so the sets already in a log still read.
     EventTypeSchema(
         event_type="doings.stated",
         owner_layer="L2",

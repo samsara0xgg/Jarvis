@@ -56,6 +56,7 @@ CHARS_PER_TOKEN = 3.0
 """A rough, high-side guess for mixed English and Chinese."""
 _NOTHING = '{"actions": []}'
 _SECOND = timedelta(seconds=1)
+_RING_BEFORE_MIN = 60  # commitments.remind_before_min's default; rings change no line here
 
 
 def refuse_live(*paths: Path) -> None:
@@ -136,7 +137,9 @@ def replay(  # noqa: PLR0913 - the two stores, the stretch, the model and where 
     copy = scratch / "memory.db"
     _copy_memory(memory, copy)
     settings = runtime.TurnThingsSettings(1, "replay")
-    pass_ = runtime.TurnThings(settings, copy, scratch / "events.db", ask, zone)
+    pass_ = runtime.TurnThings(
+        settings, copy, scratch / "events.db", ask, zone, ring_before_min=_RING_BEFORE_MIN,
+    )
     marks.queue(copy, since, from_rowid=marks.rowid_since(copy, since))
     with closing(sqlite3.connect(f"file:{event_log}?mode=ro", uri=True)) as source:
         events = [

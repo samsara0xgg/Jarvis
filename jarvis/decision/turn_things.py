@@ -1,10 +1,11 @@
-"""The post-turn pass's question and the reading of its answer (ADR 0300). Pure: no I/O, no clock.
+"""The post-turn pass's question and reading of its answer (ADR 0300, 0329). Pure: no I/O, no clock.
 
 After each record of his is answered, one model call reads it in context and returns the actions
 it makes on the ledger of his things: a new one, a move, done, paid, cancelled, confirmed.
 :func:`build_prompt` is that question and :func:`parse_answer` the reading of the answer. The
-answer is untrusted JSON and every check is code, not the model's word: a quote that is not in that
-record's words or its picture notes drops the action; a time that does not read drops it; a new
+answer is untrusted JSON and every check is code, not the model's word: the model cites numbered
+lines of his message and its picture notes and the program copies them as the evidence, so a
+label that is not one of his lines drops the action; a time that does not read drops it; a new
 thing already past when he said it is not new; a move, close or confirm must name an open thing
 the model was shown. What does not pass is dropped, never repaired, and said in ``dropped``. The
 caller owns the reads, the model call and the writes.
@@ -19,6 +20,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.state import things
@@ -42,6 +44,15 @@ _ANSWER_CHARS: Final[int] = 1500
 _BEFORE_CHARS: Final[int] = 500
 _YEAR: Final[timedelta] = timedelta(days=366)
 _DAY: Final[re.Pattern[str]] = re.compile(r"\d{4}-\d{2}-\d{2}")
+_SENTENCE_END: Final[re.Pattern[str]] = re.compile(
+    "(?<=[\u3002\uff01\uff1f\uff1b!?;])|(?<=\\.)(?=\\s)",
+)
+"""Where a sentence ends: after a full stop, exclamation, question mark or semicolon, CJK or
+not, and after a Latin full stop that a space follows."""
+_MAX_LINES: Final[int] = 6
+"""How many lines one action may cite."""
+_REMIND_MAX: Final[int] = 7 * 24 * 60
+"""The earliest a ring may come before its thing, in minutes."""
 
 INSTRUCTIONS: Final[str] = """\
 You read one message that Allen sent to his assistant, with the messages before it, and answer \
@@ -51,20 +62,23 @@ Answer with one JSON object and nothing else: {"actions": [...]}; [] means none.
 Only his own things count. Other people's things, jokes, hypotheticals, wishes, questions, and \
 anything only the assistant said do not. A picture he sends shows what is so for him, whoever \
 wrote the words in it; what anyone in it suggests he do does not count. The assistant's answer \
-and the earlier messages are there to understand his words, not to be quoted. When in doubt, \
-leave it out.
+and the earlier messages are there to understand his words; only his numbered lines can back \
+anything. When in doubt, leave it out.
 
 An action is one change to the list of his things:
 {"action": "new" | "move" | "done" | "paid" | "cancelled" | "confirmed",
  "thing": the id of the open thing it is about; every action but "new" has one,
- "quote": the words that make it so, copied exactly from his message or from a note on a picture \
-he sent,
+ "lines": the numbers of the lines that make it so, such as ["m2"] or ["p1", "p3"],
  "sure": true if he said or showed it plainly, false if you infer it or he hedged,
  "kind": "go" if he goes to it, "do" if he does it ("new" only),
  "title": his words for it, short, in the language he used ("new" only),
  "place": where, only if he said or showed it ("new" only),
  "start_at", "end_at", "on_day", "due": when ("new" and "move"),
  "weekly_until": the last day of a thing that repeats every week ("new" only),
+ "remind": only if he asks to be reminded or told: the whole minutes before the time he wants \
+it, such as [60]; [] when he does not say how early ("new" only),
+ "private": true for counselling, therapy, mental health, legal and medical matters, else false \
+("new" only),
  "occurrence": one date of a thing that repeats every week, when the action is about that date \
 only}
 - new: a thing he will go to or do later, or must do, that the list does not hold already, however \
@@ -106,8 +120,9 @@ class Written:
 class Action:
     """One checked action. ``thing`` is the full id of the open thing; empty for a new one.
 
-    ``source`` says where the quote was found, ``said`` or ``picture``; times are ISO with an
-    offset (or a date), empty when there is none.
+    ``quote`` is his cited lines as the program copied them, ``source`` ``picture`` when a note's
+    line is among them, else ``said``; ``remind`` is None when he did not ask to be told, () when
+    he did without saying how early; times are ISO with an offset (or a date), empty for none.
     """
 
     action: str
@@ -124,6 +139,9 @@ class Action:
     due: str = ""
     weekly_until: str = ""
     occurrence: str = ""
+    remind: tuple[int, ...] | None = None
+    """Minutes before its time he asked to be told; () for when he did not say; None: not asked."""
+    private: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,6 +214,24 @@ def _wrote(one: Written) -> dict[str, Any]:
     return {"what": one.what, **_listed(one.thing)}
 
 
+def numbered(turn: Turn) -> tuple[tuple[str, str], ...]:
+    """His message and the notes of his pictures, one line per sentence: ``(label, text)``.
+
+    ``m1``, ``m2``… are his message's, ``p1``, ``p2``… the notes', in order. The model cites
+    labels and the program copies the lines, so what backs a write is always his words as sent.
+    """
+    out: list[tuple[str, str]] = []
+    for prefix, texts in (("p", turn.notes), ("m", (_cut(turn.words, _WORDS_CHARS),))):
+        count = 0
+        for text in texts:
+            for line in text.splitlines():
+                for sentence in _SENTENCE_END.split(line):
+                    if sentence := " ".join(sentence.split()):
+                        count += 1
+                        out.append((f"{prefix}{count}", sentence))
+    return tuple(out)
+
+
 def build_prompt(  # noqa: PLR0913 - the record, its clock and what the model is shown with it
     turn: Turn, *, now: datetime, zone: tzinfo, zone_name: str, plan: Plan | None,
     open_things: Sequence[things.Thing], written: Sequence[Written],
@@ -206,6 +242,7 @@ def build_prompt(  # noqa: PLR0913 - the record, its clock and what the model is
     :func:`shown` chose.
     """
     sent = turn.at.astimezone(zone)
+    lines = numbered(turn)
     user = [
         f"Now: {_local(now, zone)}, {now.astimezone(zone):%A}, {zone_name}.",
         f"His message was sent at {_local(sent, zone)}, {sent:%A}.",
@@ -221,11 +258,11 @@ def build_prompt(  # noqa: PLR0913 - the record, its clock and what the model is
             for said in turn.before
         ],
         "",
-        "Notes on the pictures he sent with his message:",
-        *[f"{number}. {note}" for number, note in enumerate(turn.notes, start=1)],
+        "Notes on the pictures he sent with his message, one numbered line per sentence:",
+        *[f"[{label}] {text}" for label, text in lines if label.startswith("p")],
         "",
-        "His message:",
-        _cut(turn.words, _WORDS_CHARS),
+        "His message, one numbered line per sentence:",
+        *[f"[{label}] {text}" for label, text in lines if label.startswith("m")],
         "",
         "The assistant's answer to it:",
         _cut(turn.answer, _ANSWER_CHARS),
@@ -251,10 +288,6 @@ def _object(text: str) -> dict[str, Any]:
         msg = "the answer is not an object with an actions list"
         raise AnswerError(msg)
     return found
-
-
-def _flat(text: str) -> str:
-    return " ".join(text.split()).casefold()
 
 
 class _When(NamedTuple):
@@ -283,19 +316,52 @@ class _Reading:
     def today(self) -> date:
         return self.turn.at.astimezone(self.zone).date()
 
+    @cached_property
+    def lines(self) -> dict[str, str]:
+        return dict(numbered(self.turn))
 
-def _where(raw: Mapping[str, Any], reading: _Reading) -> str:
-    """Where the quote is, ``said`` or ``picture``; ``_Drop`` when it is nowhere."""
-    quote = raw.get("quote")
-    if not isinstance(quote, str) or not (key := _flat(quote)):
-        msg = "no quote"
+
+def _cited(raw: Mapping[str, Any], reading: _Reading) -> tuple[str, str]:
+    """``(quote, source)``: the lines the action cites, copied, and ``said`` or ``picture``.
+
+    The lines go in their own order, joined by a space, with "…" where one was skipped. A label
+    that is not one of his lines, or none, drops the action.
+    """
+    cited = raw.get("lines")
+    if not isinstance(cited, list) or not cited or len(cited) > _MAX_LINES:
+        msg = f"it cites none of his lines, or more than {_MAX_LINES}"
         raise _Drop(msg)
-    if key in _flat(reading.turn.words):
-        return "said"
-    if any(key in _flat(note) for note in reading.turn.notes):
-        return "picture"
-    msg = "the quote is not in his words or the notes"
-    raise _Drop(msg)
+    labels = list(reading.lines)
+    picked: set[int] = set()
+    for label in cited:
+        key = label.strip().strip("[]").lower() if isinstance(label, str) else ""
+        if key not in reading.lines:
+            msg = f"{label!r} is not one of his lines"
+            raise _Drop(msg)
+        picked.add(labels.index(key))
+    parts: list[str] = []
+    before = None
+    for at in sorted(picked):
+        if before is not None and at != before + 1:
+            parts.append("…")
+        parts.append(reading.lines[labels[at]])
+        before = at
+    quote = " ".join(parts)[: things.EVIDENCE_CHARS]
+    source = "picture" if any(labels[at].startswith("p") for at in picked) else "said"
+    return quote, source
+
+
+def _remind(raw: Mapping[str, Any]) -> tuple[int, ...] | None:
+    """What ``remind`` asks for: whole minutes before, () for no lead given, None for none."""
+    value = raw.get("remind")
+    if value is None:
+        return None
+    if not isinstance(value, list) or any(
+        isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= _REMIND_MAX for n in value
+    ):
+        msg = "remind is not a list of whole minutes"
+        raise _Drop(msg)
+    return tuple(dict.fromkeys(value))
 
 
 def _text(value: object, limit: int, what: str) -> str:
@@ -440,12 +506,11 @@ def _action(raw: object, reading: _Reading) -> Action:  # noqa: C901, PLR0912 - 
         msg = "it is not an action"
         raise _Drop(msg)
     name = str(raw["action"])
-    source = _where(raw, reading)
+    quote, source = _cited(raw, reading)
     sure = raw.get("sure")
     if not isinstance(sure, bool):
         msg = "sure is not true or false"
         raise _Drop(msg)
-    quote = " ".join(str(raw["quote"]).split())
     if name == "new":
         kind = raw.get("kind")
         if kind not in things.KINDS:
@@ -456,10 +521,15 @@ def _action(raw: object, reading: _Reading) -> Action:  # noqa: C901, PLR0912 - 
             msg = "no title"
             raise _Drop(msg)
         when = _times(raw, reading, weekly=True)
+        private = raw.get("private", False)
+        if not isinstance(private, bool):
+            msg = "private is not true or false"
+            raise _Drop(msg)
         return Action(
             name, quote, sure, source=source, kind=str(kind), title=title,
             place=_text(raw.get("place"), _PLACE_CHARS, "place"), start_at=when.start_at,
             end_at=when.end_at, on_day=when.on_day, due=when.due, weekly_until=when.weekly_until,
+            remind=_remind(raw), private=private,
         )
     if not sure:
         msg = "he did not say or show it plainly"
@@ -517,7 +587,7 @@ def _brief(raw: object) -> str:
     """A short name for a dropped item: its kind and its title or quote."""
     if not isinstance(raw, dict):
         return "?"
-    said = raw.get("title") or raw.get("quote") or raw.get("thing") or ""
+    said = raw.get("title") or raw.get("thing") or raw.get("lines") or ""
     return f"{raw.get('action') or '?'} {str(said)[:40]!r}"
 
 
