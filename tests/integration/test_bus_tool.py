@@ -482,19 +482,22 @@ BOARD = gtfs.Export(
         gtfs.StopSpec("S1", "Ring Rd at Oak St", 48.4609, -123.31, "10001"),  # 100 m
         gtfs.StopSpec("S2", "Oak St at Elm Ave", 48.46, -123.3125),  # 184 m
         gtfs.StopSpec("S3", "Ring Rd at Pine St", 48.48, -123.31),  # 2.2 km
+        gtfs.StopSpec("S4", "Alder Ave at Fern St", 48.45, -123.31),  # 1.1 km
     ),
     trips=(
         gtfs.TripSpec("T7a", "7", (("S1", "17:10:00"), ("S3", "17:20:00")), headsign="Downtown"),
         gtfs.TripSpec("T7c", "7", (("S1", "17:40:00"), ("S3", "17:50:00")), headsign="Downtown"),
         gtfs.TripSpec(
-            "T7b", "7", (("S3", "17:05:00"), ("S2", "17:12:00"), ("S1", "17:15:00")),
+            "T7b", "7",
+            (("S3", "17:05:00"), ("S2", "17:12:00"), ("S1", "17:15:00"), ("S4", "17:20:00")),
             direction=1, headsign="Harbour",
         ),
         gtfs.TripSpec(
-            "T7d", "7", (("S3", "17:35:00"), ("S2", "17:42:00"), ("S1", "17:45:00")),
+            "T7d", "7",
+            (("S3", "17:35:00"), ("S2", "17:42:00"), ("S1", "17:45:00"), ("S4", "17:50:00")),
             direction=1, headsign="Harbour",
         ),
-        gtfs.TripSpec("T9a", "9", (("S1", "17:20:00"),), headsign="Uplands"),
+        gtfs.TripSpec("T9a", "9", (("S1", "17:20:00"), ("S4", "17:25:00")), headsign="Uplands"),
     ),
 )
 
@@ -595,3 +598,36 @@ def test_a_board_for_tomorrow_does_not_take_todays_prediction_of_the_same_trip(
 
     assert first_downtown({}) == ("5:12 pm", "live")
     assert first_downtown({"at": "2026-10-07 17:00"}) == ("tomorrow (Wed), 5:10 pm", "scheduled")
+
+
+def test_a_trip_that_ends_at_the_stop_is_not_a_bus_to_board_and_takes_no_slot(
+    board_of: Callable[..., World],
+) -> None:
+    """Nobody boards at a trip's last stop: it is an arrival, not a bus on the board.
+
+    Two 7s end at Ring Rd at Oak St at 5:05 and 5:10 pm. They are not listed, and they do not
+    use up the two places of their direction: the 7 that goes on to the next stop at 5:25 pm is.
+    """
+    stops = (
+        gtfs.StopSpec("S1", "Ring Rd at Oak St", 48.4609, -123.31, "10001"),
+        gtfs.StopSpec("S2", "Ring Rd at Pine St", 48.48, -123.31),
+        gtfs.StopSpec("S3", "Alder Ave at Fern St", 48.45, -123.31),
+    )
+    export = gtfs.Export(stops, (
+        gtfs.TripSpec("T7go", "7", (("S1", "17:20:00"), ("S2", "17:30:00")), headsign="Pine"),
+        gtfs.TripSpec(
+            "T7e1", "7", (("S2", "16:55:00"), ("S1", "17:05:00")), direction=1, headsign="Oak",
+        ),
+        gtfs.TripSpec(
+            "T7e2", "7", (("S2", "17:00:00"), ("S1", "17:10:00")), direction=1, headsign="Oak",
+        ),
+        gtfs.TripSpec(
+            "T7c", "7", (("S2", "17:15:00"), ("S1", "17:25:00"), ("S3", "17:30:00")),
+            direction=1, headsign="Harbour",
+        ),
+    ))
+    out = board_of(export).call({"stop": "10001", "at": "17:00"})
+    (stop,) = out["stops"]
+    assert [(b["headsign"], b["departs"]) for b in stop["buses"]] == [
+        ("Pine", "5:20 pm"), ("Harbour", "5:25 pm"),
+    ]
