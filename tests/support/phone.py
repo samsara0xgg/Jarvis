@@ -325,10 +325,6 @@ class CapturingModel:
     def last_finish_reason(self) -> str | None:
         return "stop"
 
-    @contextmanager
-    def fresh_context(self) -> Iterator[CapturingModel]:
-        yield self
-
     def chat(
         self,
         *,

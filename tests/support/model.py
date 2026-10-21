@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import copy
 import json
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
@@ -28,8 +27,7 @@ from jarvis.decision.llm import ChatResult, LLMClient, Provider, ToolCall
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-    from contextlib import AbstractContextManager
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from jarvis.decision.llm_stream import StreamDisposition
 
@@ -70,10 +68,6 @@ class DecisionClient(Protocol):
 
     def request_tier(self, service_tier: str | None) -> str | None:
         """The service tier a request to this client sends."""
-        ...
-
-    def fresh_context(self) -> AbstractContextManager[DecisionClient]:
-        """A view of the client that carries no earlier turn; the client itself."""
         ...
 
     def chat(
@@ -207,11 +201,6 @@ class ScriptedModel:
     def request_tier(self, service_tier: str | None) -> str | None:  # noqa: ARG002
         """No tier is sent: only OpenAI's own host gets one, and this is not it."""
         return None
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[ScriptedModel]:
-        """The model itself, as the real client's is: ``chat`` keeps no turn to forget."""
-        yield self
 
     def _step_for_latest_request(self, kind: str) -> Reply | Failure:
         asked, scripted = len(self.requests), len(self._steps)

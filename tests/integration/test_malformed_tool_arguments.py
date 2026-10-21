@@ -8,7 +8,6 @@ dispatched with ``{}`` would run and answer as if the model had asked for it.
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,7 +26,6 @@ from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator
     from pathlib import Path
 
 ANSWER = "好的，我再试一次。"  # noqa: RUF001 — fullwidth punctuation, a Chinese reply.
@@ -50,10 +48,6 @@ class _CutOffClient:
     def __init__(self, arguments_json: str) -> None:
         self.arguments_json = arguments_json
         self.requests: list[list[dict[str, Any]]] = []
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_CutOffClient]:
-        yield self
 
     def chat(
         self,

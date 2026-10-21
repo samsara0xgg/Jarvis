@@ -1,4 +1,4 @@
-"""Every production full, legacy-stream or typed-stream site has an L3 guard.
+"""Every production full or typed-stream site has an L3 guard.
 
 Per ADR-0002 § Tier 1 canaries, ADR-0008 §4.1, and spec §5.4.1
 (``cost.recorded.owner_layer == L3``): every full or streamed provider call
@@ -10,12 +10,12 @@ The scan recursively covers every Python module under ``jarvis/decision``,
 ``jarvis/runtime`` and ``jarvis/surface`` — no file list is maintained.  Only
 the provider adapter implementation module is excluded; the CostRecorder
 implementation methods are checked against their exact internal commit seam.
-Adding a future ``response_stream.py`` with an unguarded ``chat_stream``
+Adding a future ``response_stream.py`` with an unguarded ``stream_events``
 therefore fails this canary, and so does a nested ``def`` that hides a raw
 call inside an otherwise-guarded outer function.
 
 The "same function body" pairing is conservative: the canary does not require
-strict adjacency, only a direct ``CostRecorder.chat``/``chat_stream`` branch in
+strict adjacency, only a direct ``CostRecorder.chat`` branch in
 the same body as a raw call.  It deliberately does not accept broad helper
 names such as ``_commit`` or ``_emit_cost_recorded`` as exemptions.
 
@@ -38,11 +38,10 @@ _PROVIDER_ADAPTER_MODULES = frozenset({"jarvis/decision/llm.py"})
 _COST_RECORDER_IMPLEMENTATION_METHODS = frozenset(
     {
         ("jarvis/decision/cost_guard.py", "CostRecorder.chat"),
-        ("jarvis/decision/cost_guard.py", "CostRecorder.chat_stream"),
     },
 )
 _SCANNED_PACKAGES = ("jarvis/decision", "jarvis/runtime", "jarvis/surface")
-_LLM_METHODS = {"chat", "chat_stream", "stream_events"}
+_LLM_METHODS = {"chat", "stream_events"}
 
 
 def _modules_in_scope() -> list[Path]:
@@ -196,14 +195,14 @@ def _violations(module: ast.Module, rel: str) -> list[str]:
         ]
         if not raw_chat_calls:
             continue
-        legacy_calls_only = all(
+        batch_calls_only = all(
             isinstance(call.func, ast.Attribute) and call.func.attr != "stream_events"
             for call in raw_chat_calls
         )
-        if legacy_calls_only and any(_is_cost_recorder_call(call) for call in calls):
+        if batch_calls_only and any(_is_cost_recorder_call(call) for call in calls):
             continue
         if (
-            legacy_calls_only
+            batch_calls_only
             and (rel, qualified_name) in _COST_RECORDER_IMPLEMENTATION_METHODS
             and any(_is_cost_recorder_internal_commit(call) for call in calls)
         ):

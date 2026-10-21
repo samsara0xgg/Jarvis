@@ -9,7 +9,6 @@ answered in Chinese (offline replay: 5 of 5 English without it, 0 of 5 with it).
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -27,7 +26,6 @@ from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
 ENGLISH_LINE = "[Reply language for this turn: English]"
@@ -52,10 +50,6 @@ class _RecordingClient:
     @property
     def last_finish_reason(self) -> str | None:
         return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_RecordingClient]:
-        yield self
 
     def chat(
         self,

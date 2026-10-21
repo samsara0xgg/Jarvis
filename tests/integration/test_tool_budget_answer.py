@@ -9,7 +9,6 @@ without tools. Asserts on the spoken text and on the persisted ``cost.recorded``
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -30,7 +29,6 @@ from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator
     from pathlib import Path
 
 ANSWER = "查到了：今天没有网易云音乐的前台记录；微信聊天对象无法从截图确认。"  # noqa: RUF001 — fullwidth punctuation, a Chinese reply.
@@ -58,10 +56,6 @@ class _ToolHungryClient:
     @property
     def last_finish_reason(self) -> str | None:
         return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_ToolHungryClient]:
-        yield self
 
     def chat(
         self,

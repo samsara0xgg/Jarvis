@@ -48,7 +48,6 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -82,7 +81,7 @@ from scripts.tool_exam import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterator, Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from jarvis.decision.llm import LLMClient
     from jarvis.execution.mcp_tools import McpServers
@@ -359,11 +358,6 @@ class _Substituting:
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401
         return getattr(self._inner, name)
 
-    @contextmanager
-    def fresh_context(self) -> Iterator[_Substituting]:
-        """The loop's marker for an isolated call; this client keeps no history anyway."""
-        yield self
-
     def chat(
         self, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None, tool_choice: str | None = "auto",
@@ -433,11 +427,6 @@ class ScriptedModel:
         self._steps = list(steps)
         self._n = 0
         self.requests: list[dict[str, Any]] = []
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[ScriptedModel]:
-        """The loop's marker for an isolated call; this client keeps no history anyway."""
-        yield self
 
     def chat(
         self, *, messages: list[dict[str, Any]], system: str,

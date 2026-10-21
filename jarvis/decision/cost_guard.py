@@ -17,9 +17,9 @@ from jarvis.state.cost_accounting import FailureInjector, record_cost_dispositio
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Mapping
 
-    from jarvis.decision.llm import ChatResult, ChatStreamChunk, LLMClient
+    from jarvis.decision.llm import ChatResult, LLMClient
     from jarvis.decision.llm_stream import LLMStreamHandle, StreamDisposition
     from jarvis.state.committed_event_bus import CommittedEventBus
 
@@ -247,89 +247,6 @@ class CostRecorder:
             run_id=run_id,
         )
         return result
-
-    def chat_stream(  # noqa: C901, PLR0913 - explicit provider/accounting state machine
-        self,
-        client: LLMClient,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,
-        tools: list[dict[str, Any]] | None = None,
-        kind: str,
-        turn_id: str | None,
-        run_id: str | None = None,
-    ) -> Iterator[ChatStreamChunk]:
-        """Yield the legacy stream while guaranteeing one disposition.
-
-        A provider-final chunk is accounted before it is yielded, so a
-        consumer that closes immediately after seeing the terminal cannot
-        accidentally rewrite completion as cancellation.  Closing earlier
-        records explicit partial/unavailable cancellation instead of zeros.
-        """
-        stream = client.chat_stream(messages=messages, system=system, tools=tools)
-        recorded = False
-        try:
-            while True:
-                try:
-                    chunk = next(stream)
-                except StopIteration:
-                    break
-                except BaseException as exc:
-                    outcome: LLMRequestOutcome = (
-                        "cancelled" if isinstance(exc, asyncio.CancelledError) else "error"
-                    )
-                    self._commit(
-                        self._from_client(
-                            client,
-                            kind=kind,
-                            outcome=outcome,
-                            error_code=type(exc).__name__,
-                        ),
-                        turn_id=turn_id,
-                        run_id=run_id,
-                    )
-                    raise
-
-                if chunk.is_final and not recorded:
-                    # Deliberately outside the provider-iteration exception
-                    # boundary above: an accounting failure is not a provider
-                    # failure and must never trigger a second, contradictory
-                    # outcome="error" disposition.
-                    self._commit(
-                        self._from_client(client, kind=kind, outcome="completed"),
-                        turn_id=turn_id,
-                        run_id=run_id,
-                    )
-                    recorded = True
-                try:
-                    yield chunk
-                except GeneratorExit:
-                    if not recorded:
-                        self._commit(
-                            self._from_client(client, kind=kind, outcome="cancelled"),
-                            turn_id=turn_id,
-                            run_id=run_id,
-                        )
-                    raise
-                except BaseException:
-                    if not recorded:
-                        self._commit(
-                            self._from_client(client, kind=kind, outcome="cancelled"),
-                            turn_id=turn_id,
-                            run_id=run_id,
-                        )
-                    raise
-
-            if not recorded:
-                self._commit(
-                    self._from_client(client, kind=kind, outcome="completed"),
-                    turn_id=turn_id,
-                    run_id=run_id,
-                )
-        finally:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
 
     def stream_events(  # noqa: PLR0913 — request plus audit correlation
         self, client: LLMClient, *, messages: list[dict[str, Any]], system: str,

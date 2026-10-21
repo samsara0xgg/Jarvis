@@ -16,11 +16,10 @@ and no accounting code changes at all.  A client has no way to change its
 preset (there is no ``switch_model``): another model is another client.
 
 ``LLMRequestClient`` subclasses ``LLMClient`` deliberately.
-``DecideContext.llm_client``, ``CostRecorder.chat``/``chat_stream`` and
-``reviewer.review_diff`` are all annotated against ``LLMClient``; subclassing
-keeps every one of those annotations — and therefore every legacy code path —
-untouched, which is what makes "flags off is byte-for-byte legacy" cheap to
-prove.  A wrapper type would force a second ``DecideContext`` field and a
+``DecideContext.llm_client`` and ``CostRecorder.chat`` are annotated against
+``LLMClient``; subclassing keeps both annotations — and therefore every legacy
+code path — untouched, which is what makes "flags off is byte-for-byte legacy"
+cheap to prove.  A wrapper type would force a second ``DecideContext`` field and a
 branch inside the cost guard for no verification gain.
 """
 

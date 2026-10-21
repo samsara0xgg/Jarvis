@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import DecideContext
@@ -13,7 +12,6 @@ from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator
     from pathlib import Path
 
     from jarvis.decision import LifecycleLike, RuntimePathsLike, ToolRegistryLike
@@ -46,10 +44,6 @@ class _StubLLMClient:
     @property
     def last_finish_reason(self) -> str | None:
         return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_StubLLMClient]:
-        yield self
 
     def chat(
         self,

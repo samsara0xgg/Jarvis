@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import DecideContext, decide
@@ -14,7 +13,7 @@ from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
 
     from jarvis.decision import LifecycleLike, RuntimePathsLike, ToolRegistryLike
@@ -44,10 +43,6 @@ class StepModel:
     @property
     def last_finish_reason(self) -> str | None:
         return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[StepModel]:
-        yield self
 
     def chat(
         self,

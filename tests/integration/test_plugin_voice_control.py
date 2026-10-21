@@ -141,11 +141,6 @@ class _RemovingClient:
     def __init__(self) -> None:
         self.offered: list[list[str]] = []
 
-    def fresh_context(self) -> Any:  # noqa: ANN401 — the client protocol's context manager
-        import contextlib  # noqa: PLC0415
-
-        return contextlib.nullcontext(self)
-
     def chat(self, *, tools: list[dict[str, Any]] | None = None, **_kw: Any) -> ChatResult:  # noqa: ANN401
         self.offered.append([t["name"] for t in tools or []])
         call = (

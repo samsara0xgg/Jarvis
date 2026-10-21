@@ -9,7 +9,6 @@ model and a stand-in for the app-server. Asserts on the consent line, the
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -33,7 +32,6 @@ from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator
 
 REPO = Path(__file__).resolve().parents[2]
 ASK = "要派这个后台任务吗？"  # noqa: RUF001 — the fixed Chinese ask under the card (ADR 0062).
@@ -73,10 +71,6 @@ class _ScriptedClient:
     def __init__(self, cwd: Path) -> None:
         self.cwd = cwd
         self.calls = 0
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_ScriptedClient]:
-        yield self
 
     def chat(self, **_: Any) -> ChatResult:  # noqa: ANN401 — the decide() loop's keyword call.
         self.calls += 1

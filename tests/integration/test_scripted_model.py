@@ -110,8 +110,6 @@ def test_the_stand_in_and_the_real_client_both_have_the_shape_decide_reads() -> 
     }
     assert isinstance(ScriptedModel(), DecisionClient)
     assert isinstance(LLMClient(config), DecisionClient)
-    with ScriptedModel().fresh_context() as fresh:
-        assert isinstance(fresh, ScriptedModel)
 
 
 def test_decide_runs_a_tool_round_and_an_answer_on_a_script(tmp_path: Path) -> None:

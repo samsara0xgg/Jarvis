@@ -13,7 +13,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -63,10 +62,6 @@ class _ScriptedClient:
         self.offered: list[list[str]] = []
         self.seen: list[str] = []
         self.query, self.call = query, call
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_ScriptedClient]:
-        yield self
 
     def chat(
         self,

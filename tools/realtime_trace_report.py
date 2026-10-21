@@ -244,7 +244,7 @@ def summarize_trace(
             ),
         },
         "measurement_limits": [
-            "batch LLM mode has no first text delta unless chat_stream is used",
+            "batch LLM mode has no first text delta",
             "SDK call start is an upper bound; actual network send is not observed",
             "PortAudio callback is buffer submission, not measured DAC audibility",
             "audio_ring_empty is software-ring state, not complete audible playback",

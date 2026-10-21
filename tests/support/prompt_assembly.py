@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import _MISHEARD, DecideContext, decide
@@ -12,7 +11,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
     from pathlib import Path
 
     from jarvis.decision import LifecycleLike, RuntimePathsLike, ToolRegistryLike
@@ -55,10 +54,6 @@ class _CapturingLLMClient:
     @property
     def last_finish_reason(self) -> str | None:
         return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_CapturingLLMClient]:
-        yield self
 
     def chat(
         self,

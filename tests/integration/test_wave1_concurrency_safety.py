@@ -11,14 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import yaml
 
 from jarvis.decision import DecideContext, decide
 from jarvis.decision.cost_guard import CostRecorder
-from jarvis.decision.llm import ChatStreamChunk, LLMClient
+from jarvis.decision.llm import LLMClient
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import VisionCallError, _build_vision_cost_recorder, _LLMVisionClient
 from jarvis.shared.realtime import (
@@ -58,7 +58,7 @@ from jarvis.state.lifecycle_terminal import (
 from tests.support.concurrency import confirmation_candidate, seed_accepted_confirmation
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
 
     from jarvis.shared import Event
     from jarvis.shared.realtime import ConfirmationConsumptionOutcome, TerminalOutcome
@@ -665,7 +665,7 @@ class _FakeOpenAICompletions:
     def __init__(self, mode: str) -> None:
         self.mode = mode
 
-    def create(self, **kwargs: object) -> object:
+    def create(self, **_kwargs: object) -> object:
         if self.mode == "error":
             message = "provider exploded"
             raise RuntimeError(message)
@@ -673,63 +673,20 @@ class _FakeOpenAICompletions:
             encoded = "A" * 96
             message = f"provider echoed data:image/png;base64,{encoded}"
             raise RuntimeError(message)
-        if kwargs.get("stream") is not True:
-            return SimpleNamespace(
-                id=f"resp-{self.mode}",
-                choices=[
-                    SimpleNamespace(
-                        finish_reason="stop",
-                        message=SimpleNamespace(content="batch", tool_calls=None),
-                    ),
-                ],
-                usage=SimpleNamespace(
-                    prompt_tokens=11,
-                    completion_tokens=3,
-                    prompt_tokens_details=SimpleNamespace(cached_tokens=2),
-                ),
-            )
-
-        text = SimpleNamespace(
+        return SimpleNamespace(
             id=f"resp-{self.mode}",
             choices=[
                 SimpleNamespace(
-                    delta=SimpleNamespace(content="hello"),
-                    finish_reason=None,
-                ),
-            ],
-            usage=None,
-        )
-        if self.mode == "cancel":
-            return iter((text,))
-        if self.mode == "stream_error":
-            return self._stream_error(text)
-        terminal = SimpleNamespace(
-            id=f"resp-{self.mode}",
-            choices=[
-                SimpleNamespace(
-                    delta=SimpleNamespace(content=None),
                     finish_reason="stop",
+                    message=SimpleNamespace(content="batch", tool_calls=None),
                 ),
             ],
-            usage=None,
+            usage=SimpleNamespace(
+                prompt_tokens=11,
+                completion_tokens=3,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=2),
+            ),
         )
-        if self.mode == "usage_only":
-            usage_only = SimpleNamespace(
-                id=f"resp-{self.mode}",
-                choices=[],
-                usage=SimpleNamespace(
-                    prompt_tokens=17,
-                    completion_tokens=5,
-                    prompt_tokens_details=SimpleNamespace(cached_tokens=4),
-                ),
-            )
-            return iter((text, terminal, usage_only))
-        return iter((text, terminal))
-
-    def _stream_error(self, text: object) -> Iterator[object]:
-        yield text
-        message = "stream provider exploded"
-        raise RuntimeError(message)
 
 
 def _openai_client(mode: str) -> LLMClient:
@@ -742,194 +699,42 @@ def _openai_client(mode: str) -> LLMClient:
     return client
 
 
-class _FakeAnthropicStream:
-    def __enter__(self) -> Self:
-        return self
+def test_cost_guard_covers_batch_completion_and_error(tmp_path: Path) -> None:
+    """Every batch provider exit gets one row; a failed call's row says its usage is unavailable.
 
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def __iter__(self) -> Iterator[object]:
-        return iter(
-            (
-                SimpleNamespace(
-                    type="message_start",
-                    message=SimpleNamespace(
-                        id="anthropic-response",
-                        usage=SimpleNamespace(
-                            input_tokens=23,
-                            cache_read_input_tokens=3,
-                            cache_creation_input_tokens=2,
-                        ),
-                    ),
-                ),
-                SimpleNamespace(
-                    type="content_block_delta",
-                    delta=SimpleNamespace(text="anthropic"),
-                ),
-                SimpleNamespace(
-                    type="message_delta",
-                    delta=SimpleNamespace(stop_reason="end_turn"),
-                    usage=SimpleNamespace(output_tokens=7),
-                ),
-            ),
-        )
-
-    def get_final_message(self) -> object:
-        return SimpleNamespace(
-            id="anthropic-response",
-            stop_reason="end_turn",
-            usage=SimpleNamespace(
-                input_tokens=23,
-                output_tokens=7,
-                cache_read_input_tokens=3,
-                cache_creation_input_tokens=2,
-            ),
-        )
-
-
-def _anthropic_client() -> LLMClient:
-    client = LLMClient(
-        {"provider": "anthropic", "model": "claude-test", "max_tokens": 32},
-    )
-    client._anthropic_client = SimpleNamespace(  # noqa: SLF001 - provider fixture seam
-        messages=SimpleNamespace(stream=lambda **_kwargs: _FakeAnthropicStream()),
-    )
-    return client
-
-
-def _stream_all(recorder: CostRecorder, client: LLMClient) -> list[ChatStreamChunk]:
-    return list(
-        recorder.chat_stream(
-            client,
-            messages=[{"role": "user", "content": "hi"}],
-            system="system",
-            kind="decision",
-            turn_id="T-cost",
-        ),
-    )
-
-
-def test_cost_guard_covers_batch_stream_cancel_error_and_terminal_usage(tmp_path: Path) -> None:
-    """Every provider exit gets one non-zero-or-explicitly-unavailable row."""
+    The streamed exits (completion, cancel, error, terminal usage) are pinned through the real
+    SDK in ``test_typed_llm_stream.py``.
+    """
     conn = open_event_log(tmp_path / "cost-guard.db")
     recorder = CostRecorder(conn)
 
-    batch_client = _openai_client("batch")
     recorder.chat(
-        batch_client,
+        _openai_client("batch"),
         messages=[{"role": "user", "content": "batch"}],
         system="system",
         kind="decision",
         turn_id="T-cost",
     )
-
-    stream_client = _openai_client("stream")
-    stream_chunks = _stream_all(recorder, stream_client)
-    assert stream_chunks[-1].is_final is True
-
-    cancel_client = _openai_client("cancel")
-    cancelled = recorder.chat_stream(
-        cancel_client,
-        messages=[{"role": "user", "content": "cancel"}],
-        system="system",
-        kind="decision",
-        turn_id="T-cost",
-    )
-    assert next(cancelled).text == "hello"
-    cast("Any", cancelled).close()
-
-    error_client = _openai_client("error")
     with pytest.raises(RuntimeError, match="provider exploded"):
         recorder.chat(
-            error_client,
+            _openai_client("error"),
             messages=[{"role": "user", "content": "error"}],
             system="system",
             kind="decision",
             turn_id="T-cost",
         )
 
-    stream_error_client = _openai_client("stream_error")
-    with pytest.raises(RuntimeError, match="stream provider exploded"):
-        _stream_all(recorder, stream_error_client)
-
-    usage_client = _openai_client("usage_only")
-    usage_chunks = _stream_all(recorder, usage_client)
-    assert usage_chunks[-1].input_tokens == 17
-    assert usage_chunks[-1].output_tokens == 5
-    assert usage_chunks[-1].usage_status == "provider_final"
-
-    anthropic_client = _anthropic_client()
-    anthropic_chunks = _stream_all(recorder, anthropic_client)
-    # the whole prompt: 23 fresh plus 3 read and 2 written (what cost arithmetic means)
-    assert anthropic_chunks[-1].input_tokens == 28
-    assert anthropic_chunks[-1].output_tokens == 7
-    assert anthropic_chunks[-1].usage_status == "provider_final"
-
     rows = conn.execute(
         "SELECT payload_json FROM events WHERE type = 'cost.recorded' ORDER BY id",
     ).fetchall()
     payloads = [json.loads(str(row[0])) for row in rows]
-    assert len(payloads) == 7
-    assert len({payload["llm_request_id"] for payload in payloads}) == 7
-    by_outcome = {payload["disposition"] for payload in payloads}
-    assert by_outcome == {"completed", "cancelled", "error"}
-    unavailable = [payload for payload in payloads if payload["usage_status"] == "unavailable"]
-    assert unavailable
-    assert all(
-        "tokens_in" not in payload and "tokens_out" not in payload
-        for payload in unavailable
-    )
-    usage_only = next(
-        payload
-        for payload in payloads
-        if payload.get("provider_response_id") == "resp-usage_only"
-    )
-    assert usage_only["tokens_in"] == 17
-    assert usage_only["tokens_out"] == 5
-
-    before = len(payloads)
-    existing = record_cost_disposition_once(
-        conn,
-        CostAccountingDisposition(
-            llm_request_id=usage_client.last_llm_request_id or "",
-            kind="decision",
-            provider="openai",
-            model="gpt-4",
-            outcome="completed",
-            usage_status="provider_final",
-            input_tokens=17,
-            output_tokens=5,
-        ),
-    )
-    assert isinstance(existing, CostAlreadyRecorded)
-    assert _event_count(conn, "cost.recorded") == before
-    conn.close()
-
-
-def test_stream_completion_accounting_failure_is_not_reclassified_as_provider_error(
-    tmp_path: Path,
-) -> None:
-    """A failed completion commit propagates without a second disposition attempt."""
-    conn = open_event_log(tmp_path / "stream-accounting-failure.db")
-    attempts = 0
-
-    def _fail_once(stage: str) -> None:
-        nonlocal attempts
-        if stage == "after_begin":
-            attempts += 1
-            if attempts == 1:
-                message = "completion accounting failed"
-                raise RuntimeError(message)
-
-    recorder = CostRecorder(conn, failure_injector=cast("Any", _fail_once))
-    with pytest.raises(RuntimeError, match="completion accounting failed"):
-        _stream_all(recorder, _openai_client("stream"))
-
-    assert attempts == 1
-    assert _event_count(conn, "cost.recorded") == 0
-    assert _table_count(conn, "cost_accounting_dispositions") == 0
-    conn.close()
+    assert [payload["disposition"] for payload in payloads] == ["completed", "error"]
+    assert len({payload["llm_request_id"] for payload in payloads}) == 2
+    assert payloads[0]["usage_status"] == "provider_final"
+    assert payloads[0]["tokens_in"] == 11
+    assert payloads[1]["usage_status"] == "unavailable"
+    assert "tokens_in" not in payloads[1]
+    assert "tokens_out" not in payloads[1]
 
 
 def test_cost_disposition_two_connection_race_preserves_first_committed_truth(

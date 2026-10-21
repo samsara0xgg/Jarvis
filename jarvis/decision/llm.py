@@ -2,9 +2,8 @@
 
 Adapted from legacy ``jarvis-legacy/core/llm.py`` (1650 LOC) per ADR
 § Reference sources. Day-1 keeps the provider switch (``openai`` /
-``anthropic``), presets, the metadata accessors, and a preserved
-:meth:`LLMClient.chat_stream` skeleton. A client is pinned to its preset at
-construction: another model is another client.
+``anthropic``), presets and the metadata accessors. A client is pinned to its
+preset at construction: another model is another client.
 
 Day-1 deviations from legacy:
 
@@ -30,7 +29,6 @@ import json
 import logging
 import os
 import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -51,7 +49,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.system_prompt import SplitSystem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
     from pathlib import Path
 
     from jarvis.decision.llm_stream import StreamDisposition
@@ -73,16 +71,6 @@ def _usage_status(input_tokens: int | None, output_tokens: int | None) -> UsageS
     if input_tokens is not None or output_tokens is not None:
         return "partial"
     return "unavailable"
-
-
-def _iter_and_close(stream: Iterable[Any]) -> Iterator[Any]:
-    """Consume a provider stream and close it on EOF, error, or cancellation."""
-    try:
-        yield from stream
-    finally:
-        close = getattr(stream, "close", None)
-        if callable(close):
-            close()
 
 
 # --- Typed exceptions -------------------------------------------------------
@@ -205,28 +193,6 @@ class ChatResult:
     usage_status: UsageStatus = "unavailable"
     service_tier: str | None = None
     """The tier the provider says it served (``fast``, ``default``, ...), else the one sent."""
-
-
-@dataclass(frozen=True)
-class ChatStreamChunk:
-    """One chunk yielded by :meth:`LLMClient.chat_stream` (unused Day-1).
-
-    Attributes:
-        text: Text delta, or ``None``.
-        is_final: ``True`` for the terminal chunk only.
-        finish_reason: Set on the final chunk; ``None`` otherwise.
-    """
-
-    text: str | None
-    is_final: bool
-    finish_reason: str | None
-    llm_request_id: str = ""
-    provider_response_id: str | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cache_read_tokens: int | None = None
-    cache_write_tokens: int | None = None
-    usage_status: UsageStatus = "unavailable"
 
 
 # --- Config loader ----------------------------------------------------------
@@ -412,7 +378,7 @@ class LLMClient:
         self._last_input_tokens: int | None = None
         self._last_output_tokens: int | None = None
 
-        # Lazy SDK handles, instantiated on first chat() / chat_stream().
+        # Lazy SDK handles, instantiated on first chat() / stream_events().
         self._openai_client: Any | None = None
         self._anthropic_client: Any | None = None
 
@@ -671,23 +637,6 @@ class LLMClient:
             self._tracker.record_success(component)  # type: ignore[attr-defined]
         return result
 
-    def chat_stream(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,
-        tools: list[dict[str, Any]] | None = None,
-    ) -> Iterator[ChatStreamChunk]:
-        """Stream a chat turn chunk-by-chunk. Unused Day-1.
-
-        Yields :class:`ChatStreamChunk` instances; the final has
-        ``is_final=True`` and a non-None ``finish_reason``.
-        """
-        system = _with_note(system, self._system_note)
-        if self._provider == "openai":
-            return self._chat_stream_openai(messages=messages, system=system, tools=tools)
-        return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
-
     def stream_events(  # noqa: C901, PLR0913 — the request, its settlement owner, per-request knobs
         self, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None,
@@ -793,37 +742,6 @@ class LLMClient:
         else:
             async for chunk in _anthropic_events(options, body):
                 yield chunk
-
-    # ---- fresh-context contextmanager (ADR-0002 Step 9) ---------------
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[LLMClient]:
-        """Yield a view of self that does NOT carry parent session history.
-
-        Day-2 reviewer use case (ADR-0002 § Reviewer contract): when L3's
-        Result Interpreter calls :func:`jarvis.decision.reviewer.review_diff`,
-        the reviewer's chat call must NOT see the decision LLM's prior
-        turns; the reviewer evaluates the diff against the goal in
-        isolation (a Report-grade verdict per spec §8.5 rule 1).
-        ``test_canary_reviewer_fresh_context`` enforces that every
-        reviewer ``.chat(...)`` call site is wrapped in
-        ``with llm_client.fresh_context() as fresh:``.
-        Why this is currently a structural no-op:
-        :meth:`chat` is fully stateless — the caller owns the ``messages``
-        list, the system prompt is passed per-call, and ``LLMClient`` keeps
-        zero conversation state across :meth:`chat` invocations (only
-        per-call ``_last_*`` metadata is stored, and that is reset at the
-        top of every :meth:`chat` call before any provider work). So a
-        downstream chat inside this contextmanager already CANNOT see any
-        earlier turn's content. The contextmanager is the architectural
-        marker the canary enforces; should :meth:`chat` ever gain
-        cross-call conversation state (e.g. cached message history),
-        this is the single place to clear and restore it.
-        Yields ``self`` directly: callers may invoke any method on the
-        yielded client identically to the parent. The contract is
-        "fresh", not "different object".
-        """
-        yield self
 
     def warm(self) -> None:
         """Open the provider connection ahead of a call that is about to come.
@@ -1073,122 +991,6 @@ class LLMClient:
             service_tier=_served_tier(response, service_tier),
         )
 
-    def _chat_stream_openai(  # noqa: C901, PLR0915 - provider protocol normalization
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,
-        tools: list[dict[str, Any]] | None,
-    ) -> Iterator[ChatStreamChunk]:
-        """Stream OpenAI chat completions. Unused Day-1; preserved skeleton."""
-        self._last_metadata = _empty_metadata()
-        self._last_metadata["provider"] = "openai"
-        self._last_metadata["streaming"] = True
-        self._last_metadata["preset"] = self._active_preset
-        self._last_metadata["model"] = self._model
-        self._last_metadata["llm_request_id"] = _new_llm_request_id()
-        self._last_finish_reason = None
-        self._last_input_tokens = None
-        self._last_output_tokens = None
-
-        client = self._get_openai_client()
-        oai_messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        oai_messages.extend(messages)
-        openai_tools = _tools_to_openai(tools) if tools else None
-
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            _openai_token_key(self._base_url): self._max_tokens,
-            "messages": oai_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if openai_tools:
-            kwargs["tools"] = openai_tools
-        if self._reasoning_effort:
-            kwargs["reasoning_effort"] = self._reasoning_effort
-        if self._extra_body:
-            kwargs["extra_body"] = copy.deepcopy(self._extra_body)
-
-        finish_reason: str | None = None
-        record_realtime_trace(
-            "llm_sdk_request_call_started_upper_bound",
-            provider="openai",
-            model=self._model,
-            streaming=True,
-            measurement_semantics="immediately_before_sdk_call_not_network_send",
-        )
-        response = client.chat.completions.create(**kwargs)
-        first_text_delta = True
-        for chunk in _iter_and_close(response):
-            response_id = getattr(chunk, "id", None)
-            if response_id:
-                self._last_metadata["response_id"] = response_id
-            usage = getattr(chunk, "usage", None)
-            if usage is not None:
-                prompt_tokens = getattr(usage, "prompt_tokens", None)
-                completion_tokens = getattr(usage, "completion_tokens", None)
-                if prompt_tokens is not None:
-                    self._last_input_tokens = int(prompt_tokens)
-                if completion_tokens is not None:
-                    self._last_output_tokens = int(completion_tokens)
-                details = getattr(usage, "prompt_tokens_details", None)
-                cached = getattr(details, "cached_tokens", None) if details is not None else None
-                self._last_metadata["cache_read_tokens"] = int(cached) if cached is not None else 0
-                self._last_metadata["cache_write_tokens"] = 0
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                # OpenAI-compatible providers put final usage on an
-                # empty-choices terminal chunk.  Usage was consumed above;
-                # only text/tool parsing is skipped here.
-                continue
-            delta = choices[0].delta
-            text = getattr(delta, "content", None) if delta is not None else None
-            fr = getattr(choices[0], "finish_reason", None)
-            if fr:
-                finish_reason = fr
-            if text:
-                if first_text_delta:
-                    first_text_delta = False
-                    record_realtime_trace(
-                        "llm_provider_first_text_delta",
-                        provider="openai",
-                        model=self._model,
-                        measurement_semantics="first_nonempty_sdk_stream_delta",
-                    )
-                yield ChatStreamChunk(
-                    text=text,
-                    is_final=False,
-                    finish_reason=None,
-                    llm_request_id=str(self._last_metadata["llm_request_id"]),
-                    provider_response_id=(
-                        str(self._last_metadata["response_id"])
-                        if self._last_metadata["response_id"] is not None
-                        else None
-                    ),
-                )
-        self._last_finish_reason = finish_reason
-        self._last_metadata["usage_status"] = _usage_status(
-            self._last_input_tokens,
-            self._last_output_tokens,
-        )
-        yield ChatStreamChunk(
-            text=None,
-            is_final=True,
-            finish_reason=finish_reason,
-            llm_request_id=str(self._last_metadata["llm_request_id"]),
-            provider_response_id=(
-                str(self._last_metadata["response_id"])
-                if self._last_metadata["response_id"] is not None
-                else None
-            ),
-            input_tokens=self._last_input_tokens,
-            output_tokens=self._last_output_tokens,
-            cache_read_tokens=self.last_cache_read_tokens,
-            cache_write_tokens=self.last_cache_write_tokens,
-            usage_status=self.last_usage_status,
-        )
-
     # ---- Anthropic backend --------------------------------------------
 
     def _get_anthropic_client(self) -> Any:  # noqa: ANN401
@@ -1341,153 +1143,6 @@ class LLMClient:
             service_tier="fast" if getattr(usage, "speed", None) == "fast" else None,
         )
 
-    def _chat_stream_anthropic(  # noqa: C901, PLR0912, PLR0915 - provider protocol normalization
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,
-        tools: list[dict[str, Any]] | None,
-    ) -> Iterator[ChatStreamChunk]:
-        """Stream Anthropic messages. Unused Day-1; preserved skeleton."""
-        self._last_metadata = _empty_metadata()
-        self._last_metadata["provider"] = "anthropic"
-        self._last_metadata["streaming"] = True
-        self._last_metadata["preset"] = self._active_preset
-        self._last_metadata["model"] = self._model
-        self._last_metadata["llm_request_id"] = _new_llm_request_id()
-        self._last_finish_reason = None
-        self._last_input_tokens = None
-        self._last_output_tokens = None
-
-        client = self._get_anthropic_client()
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            **request_fields(
-                model=self._model, messages=messages, system=system, tools=tools,
-                max_tokens=self._max_tokens,
-                reasoning_effort=self._reasoning_effort, cache=bool(tools), fast=self._fast,
-            ),
-        }
-
-        finish_reason: str | None = None
-        first_text_delta = True
-        record_realtime_trace(
-            "llm_sdk_request_call_started_upper_bound",
-            provider="anthropic",
-            model=self._model,
-            streaming=True,
-            measurement_semantics="immediately_before_sdk_call_not_network_send",
-        )
-        with client.messages.stream(**create_args(kwargs)) as stream:
-            for event in stream:
-                etype = getattr(event, "type", None)
-                if etype == "message_start":
-                    message = getattr(event, "message", None)
-                    response_id = getattr(message, "id", None)
-                    if response_id:
-                        self._last_metadata["response_id"] = response_id
-                    usage = getattr(message, "usage", None)
-                    if usage is not None:
-                        input_tokens = getattr(usage, "input_tokens", None)
-                        if input_tokens is not None:
-                            self._last_input_tokens = int(input_tokens)
-                        cache_read = getattr(usage, "cache_read_input_tokens", None)
-                        cache_write = getattr(usage, "cache_creation_input_tokens", None)
-                        self._last_metadata["cache_read_tokens"] = (
-                            int(cache_read) if cache_read is not None else 0
-                        )
-                        self._last_metadata["cache_write_tokens"] = (
-                            int(cache_write) if cache_write is not None else 0
-                        )
-                elif etype == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    text = getattr(delta, "text", None) if delta is not None else None
-                    if text:
-                        if first_text_delta:
-                            first_text_delta = False
-                            record_realtime_trace(
-                                "llm_provider_first_text_delta",
-                                provider="anthropic",
-                                model=self._model,
-                                measurement_semantics="first_nonempty_sdk_stream_delta",
-                            )
-                        yield ChatStreamChunk(
-                            text=text,
-                            is_final=False,
-                            finish_reason=None,
-                            llm_request_id=str(self._last_metadata["llm_request_id"]),
-                            provider_response_id=(
-                                str(self._last_metadata["response_id"])
-                                if self._last_metadata["response_id"] is not None
-                                else None
-                            ),
-                        )
-                elif etype == "message_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta is not None:
-                        fr = getattr(delta, "stop_reason", None)
-                        if fr:
-                            finish_reason = fr
-                    usage = getattr(event, "usage", None)
-                    if usage is not None:
-                        output_tokens = getattr(usage, "output_tokens", None)
-                        if output_tokens is not None:
-                            self._last_output_tokens = int(output_tokens)
-
-            # Some Anthropic SDK versions expose the authoritative final
-            # message only after protocol EOF.  Consume it while the stream
-            # context is still alive so final usage cannot be dropped.
-            get_final_message = getattr(stream, "get_final_message", None)
-            if callable(get_final_message):
-                final_message = get_final_message()
-                response_id = getattr(final_message, "id", None)
-                if response_id:
-                    self._last_metadata["response_id"] = response_id
-                final_reason = getattr(final_message, "stop_reason", None)
-                if final_reason:
-                    finish_reason = final_reason
-                final_usage = getattr(final_message, "usage", None)
-                if final_usage is not None:
-                    input_tokens = getattr(final_usage, "input_tokens", None)
-                    output_tokens = getattr(final_usage, "output_tokens", None)
-                    if input_tokens is not None:
-                        self._last_input_tokens = int(input_tokens)
-                    if output_tokens is not None:
-                        self._last_output_tokens = int(output_tokens)
-                    cache_read = getattr(final_usage, "cache_read_input_tokens", None)
-                    cache_write = getattr(final_usage, "cache_creation_input_tokens", None)
-                    self._last_metadata["cache_read_tokens"] = (
-                        int(cache_read) if cache_read is not None else 0
-                    )
-                    self._last_metadata["cache_write_tokens"] = (
-                        int(cache_write) if cache_write is not None else 0
-                    )
-        if self._last_input_tokens is not None:  # Anthropic's count leaves the cached ones out
-            self._last_input_tokens += (self.last_cache_read_tokens or 0) + (
-                self.last_cache_write_tokens or 0
-            )
-        self._last_finish_reason = finish_reason
-        self._last_metadata["usage_status"] = _usage_status(
-            self._last_input_tokens,
-            self._last_output_tokens,
-        )
-        yield ChatStreamChunk(
-            text=None,
-            is_final=True,
-            finish_reason=finish_reason,
-            llm_request_id=str(self._last_metadata["llm_request_id"]),
-            provider_response_id=(
-                str(self._last_metadata["response_id"])
-                if self._last_metadata["response_id"] is not None
-                else None
-            ),
-            input_tokens=self._last_input_tokens,
-            output_tokens=self._last_output_tokens,
-            cache_read_tokens=self.last_cache_read_tokens,
-            cache_write_tokens=self.last_cache_write_tokens,
-            usage_status=self.last_usage_status,
-        )
-
 
 # --- private helpers --------------------------------------------------------
 
@@ -1628,7 +1283,6 @@ def _safe_model_dump(obj: object) -> Mapping[str, Any]:
 
 __all__ = [
     "ChatResult",
-    "ChatStreamChunk",
     "LLMClient",
     "MissingAPIKeyError",
     "MissingLLMSectionError",

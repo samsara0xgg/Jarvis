@@ -7,9 +7,8 @@ written answer was English under ``reply_language: en``, and the spoken form was
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import pytest
 
@@ -29,9 +28,6 @@ from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.runtime_paths import StubRuntimePaths
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 TIER0_TABLE = Path(__file__).parents[2] / "config" / "tier0_patterns.yaml"
 
@@ -65,10 +61,6 @@ class _RecordingClient:
     @property
     def last_finish_reason(self) -> str | None:
         return "stop"
-
-    @contextmanager
-    def fresh_context(self) -> Iterator[_RecordingClient]:
-        yield self
 
     def chat(
         self,

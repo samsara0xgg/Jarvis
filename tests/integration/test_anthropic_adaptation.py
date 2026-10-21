@@ -528,9 +528,6 @@ def _sent_by(entry: str, system: str, note: str) -> dict[str, Any]:
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
-        if sent[-1].get("stream"):
-            sse = "".join(f"event: {f['type']}\ndata: {json.dumps(f)}\n\n" for f in frames)
-            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse.encode())
         return httpx.Response(200, json=message)
 
     client = anthropic_preset("", **({"system_note": note} if note else {}))
@@ -541,14 +538,11 @@ def _sent_by(entry: str, system: str, note: str) -> dict[str, Any]:
     client._anthropic_client = anthropic.Anthropic(  # noqa: SLF001 — the transport under the real SDK
         api_key="synthetic", http_client=httpx.Client(transport=httpx.MockTransport(respond)),
     )
-    if entry == "chat":
-        client.chat(messages=messages, system=system)
-    else:
-        list(client.chat_stream(messages=messages, system=system))
+    client.chat(messages=messages, system=system)
     return sent[0]
 
 
-@pytest.mark.parametrize("entry", ["chat", "chat_stream", "stream_events"])
+@pytest.mark.parametrize("entry", ["chat", "stream_events"])
 @pytest.mark.parametrize("note", ["", _NOTE])
 def test_a_split_system_prompt_caches_its_stable_prefix_as_a_block_of_its_own(
     entry: str, note: str, monkeypatch: pytest.MonkeyPatch,
@@ -568,7 +562,7 @@ def test_a_split_system_prompt_caches_its_stable_prefix_as_a_block_of_its_own(
     assert "".join(b["text"] for b in body["system"]) == f"{system}" + (f"\n\n{_NOTE}" if note else "")
 
 
-@pytest.mark.parametrize("entry", ["chat", "chat_stream", "stream_events"])
+@pytest.mark.parametrize("entry", ["chat", "stream_events"])
 def test_a_preset_note_alone_is_the_rules_after_a_stable_prefix_and_a_plain_prompt_stays_plain(
     entry: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
