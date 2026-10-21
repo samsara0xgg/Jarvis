@@ -22,13 +22,14 @@ struct AttachDim: View {
 struct AttachOverlay: View {
     @Bindable var model: AttachModel
     let kbLift: Double
+    var drop: CGPoint? = nil                   // the iPad's: the panel hangs from here (its top left) and grows downward, the field being at the top
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if model.mounted { AttachPanel(model: model, kbLift: kbLift) }
+            if model.mounted { AttachPanel(model: model, kbLift: kbLift, drop: drop) }
             ForEach(model.flights) { AttachFlightView(flight: $0, model: model) }
         }
         .frame(width: W, height: H, alignment: .topLeading)
@@ -70,6 +71,7 @@ private struct AttachFlightView: View {
 private struct AttachPanel: View {
     let model: AttachModel
     let kbLift: Double
+    let drop: CGPoint?
     @State private var appeared = false
     @State private var dragY = 0.0
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -94,10 +96,10 @@ private struct AttachPanel: View {
         .clipShape(shape)
         .overlay(shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.2), Color.white.opacity(0.07)], startPoint: .top, endPoint: .bottom), lineWidth: 0.6))
         .shadow(color: .black.opacity(0.5), radius: 24, y: 16)
-        .simultaneousGesture(dismissDrag)
-        .scaleEffect(reduce || appeared ? 1 : 0.2, anchor: UnitPoint(x: 24 / AT.panelW, y: (h + 34) / h))     // grown out of the +
+        .simultaneousGesture(dismissDrag, isEnabled: drop == nil)
+        .scaleEffect(reduce || appeared ? 1 : 0.2, anchor: UnitPoint(x: 24 / AT.panelW, y: drop == nil ? (h + 34) / h : -30 / h))     // grown out of the +
         .opacity(appeared ? 1 : 0)
-        .offset(x: 20, y: H - 34 - kbLift - 58 - model.rise - h + dragY)
+        .offset(x: drop?.x ?? 20, y: drop?.y ?? H - 34 - kbLift - 58 - model.rise - h + dragY)
         .allowsHitTesting(model.isOpen)
         .accessibilityElement(children: .contain).accessibilityLabel("添加")
         .onAppear { grow(model.isOpen) }

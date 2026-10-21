@@ -87,12 +87,14 @@ struct PadHome: View {
                         PadBand(engine: engine, built: built, width: geo.size.width, talk: ui.tlTalk || (ctx.date < talkUntil && !ui.liveTurns.isEmpty),
                                 typing: $typing, focus: $fieldFocus, menu: menu, items: items, herAt: $herAt)
                             .padding(.top, geo.safeAreaInsets.top + 6)
+                            .zIndex(1)          // over the list and the stage: the attach panel hangs from the field over them
                         HStack(alignment: .top, spacing: 0) {
                             list(built).frame(width: Self.listW)
                             Rectangle().fill(SetColor.line).frame(width: 0.5).padding(.vertical, 12)
                             PadStage(engine: engine, model: built?.model, width: geo.size.width - Self.listW)
                         }
                         .frame(maxHeight: .infinity)
+                        .overlay { AttachScrim(model: ui.attach) }
                     }
                     PadHerMenu(engine: engine, menu: menu, items: items, center: herAt)
                 }
@@ -115,7 +117,8 @@ struct PadHome: View {
         .onKeyPress(phases: .down) { press in typed(press) }
         .onChange(of: fieldFocus) { _, f in
             ui.typing = f
-            if !f && ui.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { withAnimation(padMotion) { typing = false }; homeFocus = true }
+            let at = ui.attach          // the field stays out while something is attached, or while its panel or the system's file picker has the screen
+            if !f && ui.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !at.hasItems && !at.isOpen && !at.importing { withAnimation(padMotion) { typing = false }; homeFocus = true }
         }
         .onChange(of: phase) { _, p in
             // away for five minutes, it comes back to now, as the phone's home does
@@ -127,6 +130,7 @@ struct PadHome: View {
         .sheet(isPresented: Bindable(ui).settingsOpen) { SettingsSheet(tuneNear: { ui.settingsOpen = false }) }
         .sheet(isPresented: Binding(get: { ui.panelOpen }, set: { if !$0 { engine.closePanel() } })) { PadHistory(engine: engine) }
         .sheet(item: Bindable(tl).sayWhat) { TLSayWhatSheet(tl: tl, s: $0) }
+        .sheet(isPresented: Bindable(ui).footprintOpen, onDismiss: { ui.footprint.reset() }) { PadFootprint(engine: engine) }
     }
 
     /// what the brain told of the day on show, as the screen has it (a debug build's made-up day stands in for it); none while it is asked for, or when there is nothing
@@ -201,11 +205,22 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it
+    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached
     private func padScene(_ s: String) {
         switch s {
         case "menu": menu.show(holding: false)
         case "type": ui.text = Words.Pad.field; engine.beginEditing?()
+        case "attach":          // the field open with two pictures (made-up ones) attached
+            engine.beginEditing?()
+            let size = CGSize(width: 160, height: 160)
+            let shots = [(UIColor.systemTeal, UIColor.systemIndigo), (UIColor.systemOrange, UIColor.systemPink)].enumerated().map { n, c in
+                let img = UIGraphicsImageRenderer(size: size).image { r in
+                    let g = CGGradient(colorsSpace: nil, colors: [c.0.cgColor, c.1.cgColor] as CFArray, locations: [0, 1])!
+                    r.cgContext.drawLinearGradient(g, start: .zero, end: CGPoint(x: size.width, y: size.height), options: [])
+                }
+                return AttachItem(kind: .photo, title: "sample-\(n).jpg", thumbnail: img)
+            }
+            ui.attach.attach(shots, from: [])
         default: break
         }
     }
@@ -226,6 +241,7 @@ private struct PadBand: View {
     @Binding var herAt: CGPoint
     @State private var lastScrub = 0.0
     @State private var lastStretch: String?
+    @State private var fieldAt = CGRect.zero         // the field in the band's own space: the attach panel hangs from its bottom left
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var ui: StarUI { engine.ui }
@@ -263,6 +279,12 @@ private struct PadBand: View {
                 HStack(spacing: 18) {
                     PadHer(engine: engine, menu: menu, items: items, center: herAt)
                         .onGeometryChange(for: CGPoint.self) { g in let f = g.frame(in: .named("padHome")); return CGPoint(x: f.midX, y: f.midY) } action: { herAt = $0 }
+                    Button { ui.footprintOpen = true } label: {          // the footprint's one-day page, between her and settings
+                        Image(systemName: "map").font(.system(size: 17)).foregroundStyle(TLPaint.icon.color(0.8))
+                            .frame(width: 40, height: 40).glass(Circle())
+                    }
+                    .buttonStyle(PressScale())
+                    .accessibilityLabel(Words.Footprint.button)
                     Button { ui.settingsOpen = true } label: {          // settings to her right, as on the phone
                         Image(systemName: "gearshape").font(.system(size: 18)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                             .frame(width: 40, height: 40).glass(Circle())
@@ -274,7 +296,8 @@ private struct PadBand: View {
             .padding(.horizontal, side)
             if typing {
                 PadField(engine: engine, focus: focus) { withAnimation(padMotion) { typing = false } }
-                    .padding(.leading, side).padding(.trailing, side + padHerSize + 18 + 40 + 28).padding(.top, 12)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("design")) } action: { fieldAt = $0 }
+                    .padding(.leading, side).padding(.trailing, side + padHerSize + 2 * (18 + 40) + 28).padding(.top, 12)
                     .transition(.asymmetric(insertion: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity), removal: .scale(scale: 0.2, anchor: .trailing).combined(with: .opacity)))
             }
             if let built, let m {
@@ -294,6 +317,8 @@ private struct PadBand: View {
         .padding(.bottom, 12)
         .animation(padMotion, value: typing)
         .animation(padMotion, value: talk)
+        .overlay(alignment: .topLeading) { AttachOverlay(model: ui.attach, kbLift: 0, drop: CGPoint(x: fieldAt.minX, y: fieldAt.maxY + 8)) }
+        .coordinateSpace(name: "design")          // the phone's attach views measure themselves in it (where a photo flies from and to)
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
     }
 
@@ -409,38 +434,79 @@ private struct PadTalk: View {
 
 // MARK: - the field in her band
 
-/// What he types to her, unrolled from her: the words go as the phone's composer sends them.
+/// What he types to her, unrolled from her: the words go as the phone's composer sends them, and what is attached (the phone's + and strip) goes with them.
 private struct PadField: View {
     let engine: StarEngine
     var focus: FocusState<Bool>.Binding
     let done: () -> Void
 
     var body: some View {
-        let ui = engine.ui
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField(Words.Pad.field, text: Bindable(ui).text, axis: .vertical)
-                .font(.system(size: 16)).foregroundStyle(ink).lineLimit(1...5)
-                .focused(focus)
-                .onSubmit(send)
-                .padding(.vertical, 11).padding(.leading, 18)
-            Button(action: send) {
-                Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(red: 11 / 255, green: 13 / 255, blue: 26 / 255))
-                    .frame(width: 34, height: 34).background(Circle().fill(Color(red: 238 / 255, green: 241 / 255, blue: 1)))
+        let ui = engine.ui, at = ui.attach
+        VStack(spacing: 0) {
+            AttachStrip(model: at)
+            HStack(alignment: .bottom, spacing: 8) {
+                AttachPlusButton(model: at).padding(.leading, 6).padding(.bottom, 5)
+                TextField(Words.Pad.field, text: Bindable(ui).text, axis: .vertical)
+                    .font(.system(size: 16)).foregroundStyle(ink).lineLimit(1...5)
+                    .focused(focus)
+                    .onSubmit(send)
+                    .padding(.vertical, 11)
+                Button(action: send) {
+                    Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(red: 11 / 255, green: 13 / 255, blue: 26 / 255))
+                        .frame(width: 34, height: 34).background(Circle().fill(Color(red: 238 / 255, green: 241 / 255, blue: 1)))
+                }
+                .buttonStyle(PressScale())
+                .padding(5)
+                .accessibilityLabel(Words.Pad.send)
             }
-            .buttonStyle(PressScale())
-            .padding(5)
-            .accessibilityLabel(Words.Pad.send)
         }
         .glass(RoundedRectangle(cornerRadius: 22), focused: true)
     }
 
+    /// words and attachments go together; with no words the attachments are named (the phone's `sendComposer`)
     private func send() {
-        let words = engine.ui.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !words.isEmpty else { return }
-        if BrainLink.shared.hasToken { engine.sendToBrain(words) } else { engine.send(words) }
-        engine.ui.text = ""
+        let ui = engine.ui
+        let words = ui.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty || ui.attach.hasItems else { return }
+        if BrainLink.shared.hasToken { engine.sendToBrain(words) } else {
+            let sent = ui.attach.take()
+            engine.send(words.isEmpty ? AttachModel.caption(sent) : words, pics: SentPics.items(sent))
+        }
+        ui.text = ""
         focus.wrappedValue = false
         done()
+    }
+}
+
+/// the home behind the attach panel steps back; a tap on it puts the panel away and goes no further (the phone's `AttachDim`, over the list and the stage only)
+private struct AttachScrim: View {
+    let model: AttachModel
+    var body: some View {
+        Color(red: 3 / 255, green: 4 / 255, blue: 12 / 255).opacity(model.isOpen ? 0.42 : 0)
+            .contentShape(Rectangle()).onTapGesture { model.close() }
+            .allowsHitTesting(model.isOpen).accessibilityHidden(true)
+            .animation(.easeOut(duration: 0.3), value: model.isOpen)
+    }
+}
+
+// MARK: - the footprint
+
+/// The phone's one-day footprint page, in a sheet at the phone's own size (it is laid out in the phone's design points), as the history is. The page's chevron closes it as on the phone.
+private struct PadFootprint: View {
+    let engine: StarEngine
+
+    var body: some View {
+        GeometryReader { g in
+            let k = min(g.size.width / W, g.size.height / H)
+            FootprintDayPage(engine: engine, ui: engine.ui, back: { engine.ui.footprintOpen = false })
+                .coordinateSpace(name: "design")
+                .scaleEffect(k, anchor: .topLeading)
+                .frame(width: W * k, height: H * k, alignment: .topLeading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255).ignoresSafeArea())
+        .preferredColorScheme(.dark)
+        .presentationSizing(.page)
     }
 }
 
