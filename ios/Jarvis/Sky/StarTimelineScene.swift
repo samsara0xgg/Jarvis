@@ -207,6 +207,37 @@ extension TLBrain {
 }
 
 extension StarEngine {
+    /// `-scene 足迹` opens the footprint's one-day screen on the made-up day (Sky/FootprintFixture.swift); the words after a colon go further: `:拖:1329` the bar held at that time, `:开:<outing id>`
+    /// (or its number in the day, from 0) that outing's page opened.
+    func runFootprintScene(_ name: String) {
+        RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
+        switchWorld(real: true)
+        let cal = Cal.cur, parts = name.split(separator: ":").map(String.init), mode = parts.count > 1 ? parts[1] : ""
+        let day = FootprintFixture.day(cal.cal), reply = FootprintFixture.footprint(cal.cal)
+        MainActor.assumeIsolated {
+            ui.tl.fixture = .init(replies: [0: day], now: TimelineFixture.now)
+            FootprintStore.shared.fixture = [cal.iso(ui.tl.today): reply]
+            ui.footprintOpen = true
+        }
+        switch mode {
+        case "拖":
+            let n = Int(parts.count > 2 ? parts[2] : "") ?? 1329, t = Double(n / 100 * 60 + n % 100)
+            let content = MainActor.assumeIsolated { FootprintDayContent.make(FootprintModel(reply: reply, day: day), past: false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
+                ui.footprint.minute = t
+                ui.footprint.list.hot = FootprintDayContent.hot(at: t, in: content.entries)
+            }
+        case "开":
+            let want = parts.count > 2 ? parts[2] : "0"
+            let pick = reply.outings.first { $0.id == want } ?? Int(want).flatMap { reply.outings.indices.contains($0) ? reply.outings[$0] : nil }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.footprint.openOuting = pick?.id }
+        default: break
+        }
+        wake()
+    }
+}
+
+extension StarEngine {
     /// `-scene 时间线` puts the timeline on the made-up day (now 21:50), whatever the setting was; the words after a colon go further:
     /// `:早上` the list at the morning, `:开:<id>` any row opened (`:开:ride-8`; a fourth word, `:开:stay-1:有对话` or `:有长对话`, with talk before it), `:改名` the place he keeps opened with the field for its new name, `:日出` the weather tapped (the sun's times in the header), `:她菜单` her cards out over the day, `:理一下` 理一下 tapped with a brain that does not answer (在理…, and the light along the bar; `:理一下:写` the keyboard up and nothing typed, for the chip among the suggestions), `:碎片` the day with fifteen places, `:只有对话` the day of talks alone, `:对话` a talk opened, `:照片` the picture opened, `:补一段` a stretch opened with the sheet for what he was doing in it (a third word: the row's id; a last word `:败` and the brain will not take it), `:工作` the evening's Mac work opened (its span is bracketed on the bar), `:透镜:路上` (or 睡, 运动, Mac, 通话, 和她, 花, 照片) that chip pressed, `:拖:1015` a finger held on the bar at that time (a fourth word after it lifts the finger again), `:在干嘛` the bar with what he was doing on it and a finger held on the morning's work (`:在干嘛:1530` at that time), `:按在干嘛` the day as a row for each stretch of what he was doing (`:按在干嘛:早上` at the morning, `:按在干嘛:doing-575` a stretch opened), `:星:talk-1` that row opened (a fourth word: `:点` with its star tapped once it is open, `:满` with five of his marks standing and the star of a sixth tapped, `:二` with his mark on one row and hers on the one opened), `:确认` the class his mail made, opened with 是我的 and 不是 (a third word: `:点是` with 是我的 tapped once it is open, `:点否` with 不是; a last word `:败` and the brain will not take it), `:命名` the stay no place he keeps is at, opened with the field for its first name and the kinds of place (a third word: `:点` with it named as 其他 once it is open, `:点学校` or `:点家` as that kind; a last word `:败` and the brain will not keep it), `:等你` a card waiting on him over the list (`:等你展开` with it opened, `:等你晚到` with it arriving
     /// a moment later), `:关于` the event row opened and a turn going out over it (its chip is the talk's first row; the panel opens a moment later), `:总结` 总结 sent over the evening's Mac work (`:总结:列表` her answer has a list), `:长答` an answer taller than her place for the talk (`:长答:开` with 全文 › tapped a moment later), `:语音` a round he speaks and she answers aloud (`:语音:文档` her answer has a document that says more), `:卡片` a card she puts up in the round, `:失败` a message that did not go out (`:失败:答` a turn she failed), `:空` a day with nothing recorded, `:打字` the keyboard up with words in the field (the day stays where it is; a keyboard the simulator does not show is made up), `:加载` the day still being asked for (the bar's empty track shimmers) until it arrives three seconds later, `:新增` a talk coming in a moment later, `:测帧` the frame times of the motion (Sky/StarTimelineProbe.swift; `:测帧:拖`, `:甩`, `:换日`, `:滑回` or `:键盘` (the composer's lift moved a frame at a time, as a finger on the keyboard would) runs that kind alone, over and over), `:走时` the clock moving on a minute a moment later, `:昨天` the day before (`:昨天:1630` with a finger held on its bar), `:切换` the dial changing to the timeline a moment later (launch with `-homeModule stars`), `:切回` the timeline changing to the dial.

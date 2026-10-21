@@ -128,5 +128,7 @@ final class StarUI {
     let tl = TimelineState()
     var tlShow = HomeModule.shared.isTimeline       // the timeline is drawn: it is the middle of the screen, or the dial is still giving way to it
     var tlHome = HomeModule.shared.isTimeline       // she is in the timeline's corner (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
+    var footprintOpen = false           // the footprint's one-day screen is over the timeline, which and the top row give way to it (Sky/FootprintDayPage.swift)
+    let footprint = FootprintDayState()
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 }

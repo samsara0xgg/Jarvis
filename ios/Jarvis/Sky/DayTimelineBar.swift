@@ -121,6 +121,7 @@ enum TLPaint {
     static let trip = RGB(196, 208, 255)
     static let sleep = RGB(112, 120, 205)
     static let ground = RGB(9, 10, 20)                  // what the bar sits on: the sky under the scrim
+    static let icon = RGB(214, 220, 246)                // the glyph of a button on the glass (the gear, the footprint's map)
 
     /// how much a fill is drawn at, and its colour
     static func look(_ f: TLPiece.Fill) -> (rgb: RGB, alpha: Double)? {

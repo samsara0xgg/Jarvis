@@ -60,11 +60,15 @@ struct StarChrome: View {
             // behind the open panel the dial dims
             Color.black.opacity(0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
                 .animation(pull == nil ? panelSpring(reduce, velocity: ui.panelRelease) : nil, value: ui.panelOpen).allowsHitTesting(false)
-            topRow
+            topRow.opacity(ui.footprintOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen)
+                .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
             detail
                 grabber
             Group { if ui.tlShow { DayTimelineView(engine: engine, ui: ui, pull: $pull).transition(.opacity) } }
                 .animation(.easeOut(duration: 0.35), value: ui.tlShow)
+                .opacity(ui.footprintOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen)
+                .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
+            FootprintDayLayer(engine: engine, ui: ui)
             TalkPanel(engine: engine, ui: ui, pull: $pull)
             voiceNote
             AttachDim(model: ui.attach)
@@ -137,7 +141,7 @@ struct StarChrome: View {
     private var headRoom: Double {
         let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.talking ? 0 : ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
         let tidy = ui.tl.tidyShown ? TLTidyButton.width(ui.tl.tidy) + 8 : 0          // and the capsule of 理一下 beside the settings button
-        return W - 30 - 36 - 3 * 8 - (30 + TLLayout.dateShift) - date - 8 - tidy
+        return W - 30 - 36 - 3 * 8 - 36 - 8 - (30 + TLLayout.dateShift) - date - 8 - tidy          // and the map button beside the settings button
     }
 
     private var topRow: some View {
@@ -156,6 +160,13 @@ struct StarChrome: View {
                 .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
                 .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is the date's
             if tlOn && ui.tl.tidyShown { TLTidyButton(tl: ui.tl).transition(.opacity) }        // at the right, left of the settings button: the brain tidies today
+            if tlOn {          // the footprint's one-day screen, left of the settings button
+                Button { ui.footprintOpen = true } label: {
+                    Image(systemName: "map").font(.system(size: 17, weight: .regular)).foregroundStyle(TLPaint.icon.color(0.8))
+                        .frame(width: 36, height: 36).glass(Circle())
+                }.buttonStyle(PressScale())
+                .accessibilityLabel(Words.Footprint.button)
+            }
             Button { ui.settingsOpen = true } label: {
                 Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                     .frame(width: 36, height: 36).glass(Circle())
