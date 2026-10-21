@@ -37,11 +37,11 @@ class DailyHarness:
         """Dispatch and decode the actual persisted tool output."""
         self.sequence += 1
         result = self.fx.dispatch(tool_request(name, f"daily{self.sequence}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        output = json.loads(result.slots[0].tool_output)
+        assert result.tool_output is not None
+        output = json.loads(result.tool_output)
         assert output.get("truncated") is not True
         caps = {tool.name: tool.max_result_chars for tool in self.tools if isinstance(tool, Tool)}
-        assert len(result.slots[0].tool_output) <= caps[name]
+        assert len(result.tool_output) <= caps[name]
         return dict(output)
 
     def record(self, identity: str, text: str = "Use local todos") -> None:

@@ -120,7 +120,6 @@ from jarvis.shared import (
     CallerPrincipal,
     Event,
     RawResult,
-    RawResultBundle,
     llm_io_log,
 )
 from jarvis.shared.about import clean_about, prompt_title
@@ -397,8 +396,8 @@ class RuntimePathsLike(Protocol):
         ...
 
 
-class ToolDefinitionLike(Protocol):
-    """Structural view of L4 ``ToolDefinition`` records.
+class ToolLike(Protocol):
+    """Structural view of L4 ``Tool`` records.
 
     Used by ``decide()`` when assembling the LLM tool list.
     """
@@ -500,7 +499,7 @@ class ToolRegistryLike(Protocol):
     the real registry; tests build minimal duck-typed substitutes.
     """
 
-    def get_definitions(self) -> tuple[ToolDefinitionLike, ...]:
+    def get_definitions(self) -> tuple[ToolLike, ...]:
         """Return every registered tool, unfiltered by caller.
 
         Used for caller-blind NAME resolution (Tier 0), where deciding
@@ -509,7 +508,7 @@ class ToolRegistryLike(Protocol):
         """
         ...
 
-    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinitionLike, ...]:
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolLike, ...]:
         """Return tools this caller may dispatch."""
         ...
 
@@ -519,14 +518,8 @@ class ToolRegistryLike(Protocol):
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: LifecycleLike,
-    ) -> RawResultBundle:
-        """Dispatch one ActionRequest and return its RawResultBundle.
-
-        Day-2 § RawResultBundle contract: the L4 dispatcher uniformly
-        returns ``RawResultBundle``. Bare ``RawResult`` returns from
-        single-slot handlers are wrapped at the L4 boundary; multi-slot
-        tools (``verify_diff``) return a bundle directly.
-        """
+    ) -> RawResult:
+        """Dispatch one ActionRequest and return its RawResult."""
         ...
 
 
@@ -2167,7 +2160,7 @@ def _run_tier0_path(
         tool_name=hit.tool_name,
     )
     _hold_for_next_words(ctx, "before tool dispatch", tool_name=hit.tool_name)
-    bundle = ctx.tool_registry.dispatch(
+    result = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
         ctx.runtime_paths,
@@ -2178,7 +2171,6 @@ def _run_tier0_path(
         turn_id=scratch.turn_id,
         action_id=action_id,
         tool_name=hit.tool_name,
-        result_slots=len(bundle.slots),
     )
     record_realtime_trace(
         "action_result_available",
@@ -2188,8 +2180,7 @@ def _run_tier0_path(
         result_source="synchronous_dispatch_return",
     )
 
-    primary_slot = bundle.slots[0]
-    if primary_slot.error is not None:
+    if result.error is not None:
         # The error tag is a developer string: it can carry anything,
         # including completion-class wording that would push
         # _finalize_response onto the LLM-retry path. Keep it in the log
@@ -2198,12 +2189,12 @@ def _run_tier0_path(
             "tier0: pattern %r tool %r returned error slot %r — answering with fixed text",
             hit.pattern_id,
             hit.tool_name,
-            primary_slot.error,
+            result.error,
         )
         draft = t("tier0.tool_error", lang=scratch.lang)
         return _finalize_response(draft, packet, ctx, scratch)
 
-    # MUST-FIX 2 (ADR-0011 §12): `primary_slot.payload` may carry
+    # MUST-FIX 2 (ADR-0011 §12): `result.payload` may carry
     # user-controlled tool output (e.g. clipboard content) — cap it to
     # a short spoken preview before it goes to TTS (2b), and gate on
     # `hit.response_template` (the closed, unformatted template
@@ -2215,7 +2206,7 @@ def _run_tier0_path(
     draft = render_tier0_response(
         hit,
         _spoken_preview_payload(
-            primary_slot.payload,
+            result.payload,
             hit.max_spoken_bytes or _TIER0_SPOKEN_PREVIEW_MAX_BYTES,
         ),
         scratch.lang,
@@ -2299,11 +2290,10 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
 
     # 2. ADR-0011 D4 (resolve-on-propose): a tool that declares
     # `requires_entity=True` (e.g. `read_file`) gets one shot at the
-    # injected entity resolver here. `ctx.entity_resolver` /
-    # `ctx.write_entity_resolver` (ADR-0012 D1, see the tool-name branch
-    # below) are `None` in any context that hasn't wired them; the
-    # feature is then inert and the `requires_entity` gate arm refuses,
-    # which is correct fail-closed behavior, not a bug.
+    # injected entity resolver here. `ctx.entity_resolver` is `None` in any
+    # context that hasn't wired it; the feature is then inert and the
+    # `requires_entity` gate arm refuses, which is correct fail-closed
+    # behavior, not a bug.
     target_entity_ref: str | None = None
     if tool_def.requires_entity and ctx.entity_resolver is not None:
         raw_target = arguments.get("target")
@@ -2441,7 +2431,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         tool_name=name,
     )
     _hold_for_next_words(ctx, "before tool dispatch", tool_name=name)
-    bundle = ctx.tool_registry.dispatch(
+    result = ctx.tool_registry.dispatch(
         action_request,
         ctx.conn,
         ctx.runtime_paths,
@@ -2452,7 +2442,6 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         turn_id=scratch.turn_id,
         action_id=action_id,
         tool_name=name,
-        result_slots=len(bundle.slots),
     )
     record_realtime_trace(
         "action_result_available",
@@ -2461,55 +2450,36 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
         tool_name=name,
         result_source="synchronous_dispatch_return",
     )
-    primary_slot = bundle.slots[0]
 
     # 6b. ADR-0002 Step 3: when L4 returns RawResult.metadata["cost"],
     #     emit cost.recorded from L3 — the sole emit-site per spec §5.4.1.
     cost_event = _emit_cost_recorded_from_metadata(
         ctx,
-        primary_slot,
+        result,
         turn_id=scratch.turn_id,
     )
     if cost_event is not None:
         scratch.events.append(cost_event)
 
     # ADR 0034: a result naming `loaded_tools` puts them on this turn's menu.
-    loaded = primary_slot.payload.get("loaded_tools") if primary_slot.error is None else None
+    loaded = result.payload.get("loaded_tools") if result.error is None else None
     if isinstance(loaded, list):
         scratch.loaded_tools.update(str(n) for n in loaded)
     scratch.calls.append(
-        TurnCall(name, tool_def.read_only, ok=primary_slot.error is None, key=key),
+        TurnCall(name, tool_def.read_only, ok=result.error is None, key=key),
     )
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
     messages.append(
-        _tool_result_message(call_id=call_id, content=_render_bundle_for_llm(bundle)),
+        _tool_result_message(call_id=call_id, content=_render_result_for_llm(result)),
     )
     return "continue"
 
 
-def _render_bundle_for_llm(bundle: RawResultBundle) -> str:
-    """Serialize a :class:`RawResultBundle` for the LLM tool-result message.
-
-    Single-slot bundles render exactly as the Day-1 ``raw_result.tool_output``
-    (or a JSON projection of ``raw_result.payload`` when ``tool_output``
-    is None) so existing prompt expectations stay stable. Multi-slot
-    bundles (Day-2 ``verify_diff`` with a chained ``verify_command``)
-    render as a JSON object keyed by slot semantics — the LLM sees both
-    the observation diff preview AND the verify_command exit code in
-    one tool-result, which Step 12's prompt asset will explicitly call
-    out.
-    """
-    if len(bundle.slots) == 1:
-        slot = bundle.slots[0]
-        return slot.tool_output or json.dumps(dict(slot.payload))
-    rendered: dict[str, Any] = {}
-    for slot in bundle.slots:
-        rendered[slot.semantics] = (
-            json.loads(slot.tool_output) if slot.tool_output else dict(slot.payload)
-        )
-    return json.dumps(rendered, ensure_ascii=False)
+def _render_result_for_llm(result: RawResult) -> str:
+    """The tool-result message text: the dispatcher's serialized output, else the payload."""
+    return result.tool_output or json.dumps(dict(result.payload))
 
 
 # --- action.result_observed branch -----------------------------------------
@@ -3892,7 +3862,7 @@ def _request_confirmation(
     ctx: DecideContext,
     *,
     action_request: ActionRequest,
-    tool_def: ToolDefinitionLike,
+    tool_def: ToolLike,
     source_event_id: str,
     lang: Language | None,
 ) -> Event:
@@ -4333,7 +4303,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
     )
     _hold_for_next_words(ctx, "before tool dispatch", tool_name=tool_name)
     try:
-        bundle = ctx.tool_registry.dispatch(
+        result = ctx.tool_registry.dispatch(
             action_request,
             ctx.conn,
             ctx.runtime_paths,
@@ -4348,7 +4318,6 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         turn_id=scratch.turn_id,
         action_id=action_id,
         tool_name=tool_name,
-        result_slots=len(bundle.slots),
     )
     record_realtime_trace(
         "action_result_available",
@@ -4357,10 +4326,9 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
         tool_name=tool_name,
         result_source="synchronous_confirmation_dispatch_return",
     )
-    primary_result_slot = bundle.slots[0]
 
-    if primary_result_slot.error is not None:
-        draft = t("confirm.dispatch_error", lang=scratch.lang, error=primary_result_slot.error)
+    if result.error is not None:
+        draft = t("confirm.dispatch_error", lang=scratch.lang, error=result.error)
         return _finalize_response(draft, packet, ctx, scratch)
 
     draft = t("confirm.tool_ran", lang=scratch.lang, done=action(tool_name, scratch.lang)[1])
@@ -4370,7 +4338,7 @@ def _handle_confirmation_accepted(  # noqa: PLR0911, PLR0913, PLR0915 — one au
 def _find_tool_def(
     registry: ToolRegistryLike,
     name: str,
-) -> ToolDefinitionLike | None:
+) -> ToolLike | None:
     """Locate a tool definition by name (JARVIS_LLM-scoped surface)."""
     for tool_def in registry.for_caller(CallerPrincipal.JARVIS_LLM):
         if tool_def.name == name:
@@ -4381,7 +4349,7 @@ def _find_tool_def(
 def _find_registered_tool_def(
     registry: ToolRegistryLike,
     name: str,
-) -> ToolDefinitionLike | None:
+) -> ToolLike | None:
     """Locate a tool definition by name across EVERY registered tool.
 
     Tier 0's lookup must cover at least what ``validate_tier0_table``
@@ -4427,7 +4395,7 @@ _CARD_NOTE: Final = (
 
 
 def _tool_menu(
-    llm_surface: Sequence[ToolDefinitionLike], loaded: Collection[str], *, native: bool = False,
+    llm_surface: Sequence[ToolLike], loaded: Collection[str], *, native: bool = False,
 ) -> list[dict[str, Any]]:
     """One request's tools: the surface without the deferred ones not yet loaded.
 
@@ -4454,8 +4422,8 @@ def _tool_menu(
     return menu
 
 
-def _tool_to_dict(tool_def: ToolDefinitionLike) -> dict[str, Any]:
-    """Project a ToolDefinitionLike into a dict for ``intent.build_messages``.
+def _tool_to_dict(tool_def: ToolLike) -> dict[str, Any]:
+    """Project a ToolLike into a dict for ``intent.build_messages``.
 
     A tool that asks first says so (ADR 0062), or the model, believing the
     call acts at once, asks in its own words before the card asks again.
@@ -4544,7 +4512,7 @@ __all__ = [
     "ResponsePlan",
     "RuntimePathsLike",
     "SituationPacket",
-    "ToolDefinitionLike",
+    "ToolLike",
     "ToolRegistryLike",
     "attention_policy",
     "decide",

@@ -118,8 +118,8 @@ class WorkStateRig:
         """Dispatch through the real dispatcher and decode the persisted output."""
         self.sequence += 1
         result = self.fx.dispatch(tool_request(name, f"ws{self.sequence}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        return dict(json.loads(result.slots[0].tool_output))
+        assert result.tool_output is not None
+        return dict(json.loads(result.tool_output))
 
     def events(self, kind: str) -> list[dict[str, Any]]:
         """Every persisted event of one type, oldest first."""

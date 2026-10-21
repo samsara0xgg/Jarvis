@@ -70,7 +70,7 @@ def test_tool_search_finds_each_and_the_description_names_them_all(
 ) -> None:
     """The query in English brings the tool; the description lists every one by name."""
     registry, _ = shipped
-    search = cast("Tool", next(t for t in registry.get_definitions() if t.name == "tool_search"))
+    search = next(t for t in registry.get_definitions() if t.name == "tool_search")
     found = search.handler({"query": query}, cast("ToolContext", None))["loaded_tools"]
     assert wanted in found
     for name in OFF_MENU:
@@ -110,8 +110,8 @@ def test_refresh_search_indexes_a_built_in_registered_after_the_last_publish(
         )
         fixture.registry.register(late)
         service.refresh_search()
-        search = cast(
-            "Tool", next(t for t in fixture.registry.get_definitions() if t.name == "tool_search"),
+        search = next(
+            t for t in fixture.registry.get_definitions() if t.name == "tool_search"
         )
         assert "late_note" in search.description
         found: Any = search.handler({"query": "late note"}, cast("ToolContext", None))
@@ -123,8 +123,8 @@ def test_refresh_search_indexes_a_built_in_registered_after_the_last_publish(
             replace(late, name="new_note", deferred=False, supersedes={"old_note": "new_note()"}),
         )
         service.refresh_search()
-        current = cast(
-            "Tool", next(t for t in fixture.registry.get_definitions() if t.name == "tool_search"),
+        current = next(
+            t for t in fixture.registry.get_definitions() if t.name == "tool_search"
         )
         assert "old_note" not in current.description
         named: Any = current.handler({"query": "old note"}, cast("ToolContext", None))

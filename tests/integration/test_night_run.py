@@ -414,7 +414,7 @@ def test_spoken_requests_reach_the_run_through_tier0_and_the_tools(tmp_path: Pat
             turn_id=None,
         )
         bundle = registry.dispatch(request, fx.conn, fx.paths, lifecycle)
-        return dict(bundle.slots[0].payload)
+        return dict(bundle.payload)
 
     started = dispatch("start_night_run", "act-start", {})
     assert started["status"] == "started"

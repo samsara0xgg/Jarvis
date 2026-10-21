@@ -7,13 +7,8 @@ Per spec.html §3.4 (`ActionRequest` / lifecycle / ToolRegistry) +
 spec.html §3.5 (CallerPrincipal scoping) + ADR 0001 § Acceptance B
 (lifecycle) + ADR 0019 (the flat `Tool` shape).
 
-Two handler shapes coexist while the old-shape tools remain:
-
-- `Tool` (ADR 0019) — a function of its arguments; the dispatcher emits
-  every event, moves the lifecycle and serializes the payload.
-- `ToolDefinition` — the handler writes its own `action.result_observed`
-  and transitions the lifecycle terminal before returning
-  (`search_notes` / `read_file` / `open_url`).
+One handler shape: `Tool` (ADR 0019) — a function of its arguments; the
+dispatcher emits every event, moves the lifecycle and serializes the payload.
 
 `tool_result` / `tool_error` JSON serializers are adapted verbatim from
 `/Users/alllllenshi/Projects/jarvis-legacy/tools_v2/helpers.py` per
@@ -66,7 +61,6 @@ from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
     RawResult,
-    RawResultBundle,
     ResultSemantics,
     RiskLevel,
     lang,
@@ -279,70 +273,7 @@ class ActionLifecycle:
             return state in _TERMINAL_STATES
 
 
-# --- ToolDefinition dataclass -----------------------------------------------
-#
-# `RawResult` (and `ResultSemantics`) live in `jarvis.shared` since Step 0b;
-# they are imported at the top of this module and re-exported via `__all__`.
-
-
-if TYPE_CHECKING:
-    ToolHandler = Callable[
-        [ActionRequest, "sqlite3.Connection", RuntimePathsLike, ActionLifecycle],
-        RawResult | RawResultBundle,
-    ]
-
-
-@dataclass(frozen=True)
-class ToolDefinition:
-    """One registered tool (ADR § Module map L4 row).
-
-    Attributes:
-        name: Stable string the LLM uses to call this tool.
-        description: One-line description (shown in the tool list the
-            LLM receives via `for_caller(...)`).
-        allowed_callers: Frozen set of `CallerPrincipal` enum values that
-            may dispatch this tool. Defense-in-depth: L3 Pre-action Gate
-            checks this first; L4 dispatch raises `CallerNotAllowedError`
-            if anyone slips through.
-        risk_level: One of L0..L4 (matches `RiskLevel` in shared types).
-            Compared against `EffectivePolicy.autonomy_ceiling` at the
-            Pre-action Gate.
-        result_semantics: The ``semantics`` tag the handler stamps on
-            its ``action.result_observed`` row.
-        input_schema: JSON schema describing the tool's arguments
-            (Anthropic-style `{type, properties, required}` shape).
-        handler: The callable that actually executes the tool.
-        read_only: True if the tool performs no durable-state mutation.
-            Feeds ``surface_for`` grouping and the Pre-emit scrub
-            context (ADR-0011 D2).
-        requires_entity: True if the Pre-action Gate must see a
-            resolved ``target_entity_ref`` on the ActionRequest before
-            letting this tool through. Feeds the gate's entity arm
-            landing in Step 3 (ADR-0011 D3).
-        requires_confirmation: True if dispatch needs a valid
-            ``authorization_lease`` (feeds ADR-0012's confirmation
-            template line). Must equal ``risk_rank(risk_level) >=
-            risk_rank(confirmation_threshold)``; boot validation
-            (``jarvis.decision.policy.validate_requires_confirmation``)
-            enforces this so the two fields cannot drift.
-        deferred: True if the tool stays off the model's tool list until
-            ``tool_search`` finds it (ADR 0034).
-    """
-
-    name: str
-    description: str
-    allowed_callers: frozenset[CallerPrincipal]
-    risk_level: RiskLevel
-    result_semantics: ResultSemantics
-    input_schema: Mapping[str, Any]
-    handler: ToolHandler
-    read_only: bool
-    requires_entity: bool
-    requires_confirmation: bool
-    deferred: bool = False
-
-
-# --- Tool (ADR 0019: the flat definition replacing ToolDefinition) ----------
+# --- Tool (ADR 0019: the flat definition) -------------------------------------
 
 
 @dataclass(frozen=True)
@@ -352,6 +283,8 @@ class ToolContext:
     conn: sqlite3.Connection
     runtime_paths: RuntimePathsLike
     action_id: str
+    target_entity_ref: str | None = None
+    """The ref the Pre-action Gate trusted for a ``requires_entity`` tool; ``None`` otherwise."""
 
 
 type FlatHandler = Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]]
@@ -503,7 +436,7 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
     payload: dict[str, Any] = {}
     tool_output = ""
     try:
-        ctx = ToolContext(conn, runtime_paths, action_id)
+        ctx = ToolContext(conn, runtime_paths, action_id, action_request.target_entity_ref)
         raw = tool_def.handler(action_request.arguments, ctx)
         payload = _fit_result(dict(raw), cap)
         tool_output = tool_result(payload)
@@ -542,24 +475,6 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
         payload=payload,
         tool_output=tool_output,
         error=error,
-    )
-
-
-def _run_handler(  # noqa: PLR0913 — the four handler arguments plus the definition and the uid the dispatcher holds.
-    tool_def: ToolDefinition | Tool,
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,
-    lifecycle: ActionLifecycle,
-    *,
-    running_event_uid: str,
-) -> RawResult | RawResultBundle:
-    """Call the handler under its contract; a flat ``Tool`` gets the dispatcher's bookkeeping."""
-    if isinstance(tool_def, ToolDefinition):
-        return tool_def.handler(action_request, conn, runtime_paths, lifecycle)
-    return _observe(
-        tool_def, action_request, conn, runtime_paths, lifecycle,
-        running_event_uid=running_event_uid,
     )
 
 
@@ -1043,117 +958,6 @@ def open_path(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     }
 
 
-# --- ADR-0011 D5 read-only tools (search_notes / read_file / read_clipboard) -
-#
-# All three are L0, sync, `result_semantics="observation"`. Two shared
-# helpers below cover the "emit exactly one action.result_observed +
-# terminal-transition lifecycle" contract every sync handler in this
-# module follows.
-
-
-def _emit_tool_observation(  # noqa: PLR0913 — all kwargs are the shared sync-handler success shape (conn/lifecycle/action_id/running_event_uid/payload/semantics); splitting them into a bundle defeats the point of a shared helper, same rationale as `_emit_tool_error`.
-    *,
-    conn: sqlite3.Connection,
-    lifecycle: ActionLifecycle,
-    action_id: str,
-    running_event_uid: str,
-    payload: Mapping[str, Any],
-    semantics: ResultSemantics = "observation",
-) -> RawResult:
-    """Shared success exit for the ADR-0011 D5 tools — observations AND acks alike.
-
-    NIT-FIX 8, ADR-0011 §12: despite the name, this is not
-    observation-only. ``semantics`` defaults to ``"observation"`` (every D5 tool but
-    ``open_url``, ADR-0011 §3 D5's result_semantics column). ``open_url``
-    passes ``semantics="ack"`` — it is the one D5 tool whose result is an
-    Execution Claim ``executed`` rather than an observation (the browser
-    opening is not verified) — so it shares this same emit+transition
-    shape instead of duplicating it.
-    """
-    tool_output_str = tool_result(payload)
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_id,
-            "semantics": semantics,
-            "tool_output": tool_output_str,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_id},
-    )
-    lifecycle.transition(action_id, "result_observed")
-    return RawResult(
-        action_id=action_id,
-        semantics=semantics,
-        payload=payload,
-        tool_output=tool_output_str,
-        error=None,
-    )
-
-
-_TOOL_ERROR_MESSAGE_MAX_BYTES: Final[int] = 8192
-"""Same 8 KiB order as every other D5 tool's output cap (MUST-FIX 1b,
-ADR-0011 §12). `_emit_tool_error` is the single choke point every sync
-handler's failure exit goes through — capping HERE, once, means no
-handler can write an unbounded `tool_output` / `action.result_observed`
-row by interpolating a raw exception's `str()` verbatim (the uncapped
-`f"...: {exc}"` idiom appears at half a dozen call sites; this bounds
-all of them without touching any of them individually)."""
-
-
-def _emit_tool_error(  # noqa: PLR0913 — all kwargs are the shared sync-handler failure shape (conn/lifecycle/action_id/running_event_uid/code/message); splitting them into a bundle defeats the point of a shared helper.
-    *,
-    conn: sqlite3.Connection,
-    lifecycle: ActionLifecycle,
-    action_id: str,
-    running_event_uid: str,
-    code: str,
-    message: str,
-) -> RawResult:
-    """Shared error exit: `action.result_observed(error)` + terminal-transition.
-
-    Used by the three ADR-0011 D5 tools AND `open_path_handler` — same
-    "emit exactly one action.result_observed, transition the lifecycle
-    terminal, on every exit path" contract every sync L4 handler in
-    this module follows (the invariant `_get_running_event_uid`
-    documents at its call sites).
-
-    `message` is capped at `_TOOL_ERROR_MESSAGE_MAX_BYTES` (MUST-FIX 1b,
-    ADR-0011 §12 / spec §3.5.11's bounded-payload rule) — a handler
-    that interpolates a raw exception's `str()` can otherwise write an
-    unbounded row into durable state (an upstream that echoes its
-    request body, or simply a pathological error message).
-    """
-    message_bytes = message.encode("utf-8")
-    if len(message_bytes) > _TOOL_ERROR_MESSAGE_MAX_BYTES:
-        capped_text, undelivered_bytes, _lossy = truncate_utf8(
-            message_bytes[:_TOOL_ERROR_MESSAGE_MAX_BYTES], len(message_bytes),
-        )
-        message = f"{capped_text}…[truncated {undelivered_bytes} bytes]"
-    tool_output_str = tool_error(message, code=code)
-    terminalize_action(
-        conn,
-        event_type="action.result_observed",
-        payload={
-            "action_id": action_id,
-            "semantics": "error",
-            "tool_output": tool_output_str,
-            "error": code,
-        },
-        source_event_id=running_event_uid,
-        correlation={"action_id": action_id},
-    )
-    lifecycle.transition(action_id, "result_observed")
-    return RawResult(
-        action_id=action_id,
-        semantics="error",
-        payload={"error": code},
-        tool_output=tool_output_str,
-        error=code,
-    )
-
-
 # --- search_notes ------------------------------------------------------------
 
 _SEARCH_NOTES_DEFAULT_MAX_RESULTS: Final[int] = 5
@@ -1258,13 +1062,29 @@ def _cap_rows_total_bytes(rows: list[str], max_bytes: int) -> list[str]:
     return capped
 
 
-def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 — one linear validate/search/rank pass; splitting scatters the fail-fast checks from the loop they guard.
-    """Bind ``vault_root`` into a ``search_notes`` handler closure (ADR-0011 D7).
+def _search_notes_tool(handler: FlatHandler) -> Tool:
+    return Tool(
+        name="search_notes",
+        description=(
+            "Case-insensitive full-text search over the user's Obsidian vault "
+            "(*.md files only). Returns matching lines with their source "
+            "file. No index — brute-force scan, fine for a small vault."
+        ),
+        input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
+        handler=handler,
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+        risk_level="L0",
+        read_only=True,
+        max_result_chars=2 * _SEARCH_NOTES_TOTAL_MAX_BYTES,
+    )
+
+
+def _make_search_notes(vault_root: Path) -> Tool:  # noqa: C901 — one linear validate/search/rank pass; splitting scatters the fail-fast checks from the loop they guard.
+    """Bind ``vault_root`` into the ``search_notes`` tool (ADR-0011 D7).
 
     ``search_notes`` is the only ADR-0011 D5 tool that needs a config
-    value the ``ActionRequest`` / ``RuntimePathsLike`` surface doesn't
-    already carry. Per the ADR-0011 build brief, L4 handlers do not
-    load YAML themselves — the composition root
+    value the request surface doesn't already carry. L4 handlers do not
+    load YAML themselves: the composition root
     (``jarvis.runtime.bootstrap_runtime_app``) reads
     ``tools.obsidian.vault_root`` once at registry-build time and
     closes over it here, the same seam a test uses to point the tool
@@ -1280,31 +1100,17 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
     (SHOULD-FIX 7).
     """
 
-    def _handler(  # noqa: C901, PLR0912 — one linear validate/search/rank pass (containment + encoding + per-line + total-cap guards all live in the loop they protect); splitting them out scatters the fail-fast checks from the data they guard, same rationale as the outer function's own noqa.
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-        action_id = action_request.action_id
-
-        query = action_request.arguments.get("query")
+    def search_notes(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:  # noqa: C901, PLR0912 — one linear validate/search/rank pass (containment + encoding + per-line + total-cap guards all live in the loop they protect); splitting them out scatters the fail-fast checks from the data they guard, same rationale as the outer function's own noqa.
+        query = args.get("query")
         if not isinstance(query, str) or not query.strip():
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="invalid_argument",
-                message=(
-                    "search_notes: query must be the words to look for in his notes "
-                    f"(got {query!r})"
-                ),
+            msg = (
+                "search_notes: query must be the words to look for in his notes "
+                f"(got {query!r})"
             )
+            raise ToolError(msg, code="invalid_argument")
 
         max_results = _SEARCH_NOTES_DEFAULT_MAX_RESULTS
-        max_results_arg = action_request.arguments.get("max_results")
+        max_results_arg = args.get("max_results")
         if (
             isinstance(max_results_arg, (int, float))
             and not isinstance(max_results_arg, bool)
@@ -1319,20 +1125,13 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
         max_results = max(1, min(max_results, _SEARCH_NOTES_MAX_RESULTS_CAP))
 
         if not vault_root.is_dir():
-            payload: dict[str, Any] = {
+            return {
                 "results": [],
                 "note": (
                     f"The notes folder {vault_root} does not exist (renamed or moved?); "
                     "tell him his notes cannot be searched until that is fixed."
                 ),
             }
-            return _emit_tool_observation(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                payload=payload,
-            )
 
         tokens = [tok.lower() for tok in query.split() if tok]
         results: list[str] = []
@@ -1366,19 +1165,14 @@ def _make_search_notes_handler(vault_root: Path) -> ToolHandler:  # noqa: C901 �
                     line_text += f"…[truncated {line_undelivered} bytes]"
                 results.append(f"{md_path} — {line_text}")
 
-        results = _cap_rows_total_bytes(results, _SEARCH_NOTES_TOTAL_MAX_BYTES)
-        payload = {"results": results}
+        payload: dict[str, Any] = {
+            "results": _cap_rows_total_bytes(results, _SEARCH_NOTES_TOTAL_MAX_BYTES),
+        }
         if non_utf8_files:
             payload["non_utf8_files"] = non_utf8_files
-        return _emit_tool_observation(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            payload=payload,
-        )
+        return payload
 
-    return _handler
+    return _search_notes_tool(search_notes)
 
 
 # --- read_file -----------------------------------------------------------------
@@ -1404,21 +1198,29 @@ _READ_FILE_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
-def read_file_handler(
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
+@tool(
+    description=(
+        "Read a text file's contents by spoken name or description. "
+        "The target is resolved to a canonical path before reading — "
+        "never pass a raw filesystem path. Binary files are rejected; "
+        "output is capped at 8 KiB."
+    ),
+    input_schema=_READ_FILE_INPUT_SCHEMA,
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L0",
+    read_only=True,
+    requires_entity=True,
+    max_result_chars=3 * _READ_FILE_MAX_BYTES,
+)
+def read_file(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
     """L0 `read_file` — the first `requires_entity=True` tool (ADR-0011 D5).
 
-    Reads the RESOLVED canonical path off
-    `action_request.target_entity_ref` — NEVER `arguments["target"]`,
-    the raw free text the LLM supplied. That is the entire point of
-    D4's resolve-on-propose contract and invariant I2 (no fabricated
-    entity IDs): by the time this handler runs, the Pre-action Gate has
-    already required a trusted ``"file:<abs-path>"`` ref, so the raw
-    argument is never even read here.
+    Reads the RESOLVED canonical path off `ctx.target_entity_ref` — NEVER
+    `arguments["target"]`, the raw free text the LLM supplied. That is the
+    entire point of D4's resolve-on-propose contract and invariant I2 (no
+    fabricated entity IDs): by the time this handler runs, the Pre-action
+    Gate has already required a trusted ``"file:<abs-path>"`` ref, so the
+    raw argument is never even read here.
 
     `target_entity_ref is None` cannot pass the gate for a
     `requires_entity=True` tool (ADR-0011 D3), but this handler checks
@@ -1436,57 +1238,30 @@ def read_file_handler(
     "lossy"` so the caller knows not to trust it as real text
     (SHOULD-FIX 7, ADR-0011 §12).
     """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-    action_id = action_request.action_id
-
-    ref = action_request.target_entity_ref
+    ref = ctx.target_entity_ref
     if ref is None or not ref.startswith(_READ_FILE_ENTITY_PREFIX):
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="no_resolved_target",
-            message="read_file: no file was resolved from that name; ask him which file he means",
-        )
+        msg = "read_file: no file was resolved from that name; ask him which file he means"
+        raise ToolError(msg, code="no_resolved_target")
 
     path = Path(ref[len(_READ_FILE_ENTITY_PREFIX) :])
     if not path.is_file():
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="file_not_found",
-            message=(
-                f"read_file: {path} does not exist or is not a regular file; "
-                "ask him which file he means"
-            ),
+        msg = (
+            f"read_file: {path} does not exist or is not a regular file; "
+            "ask him which file he means"
         )
+        raise ToolError(msg, code="file_not_found")
 
     try:
         total_bytes = path.stat().st_size
         with path.open("rb") as fh:
             prefix = fh.read(_READ_FILE_MAX_BYTES)
     except OSError as exc:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="read_failed",
-            message=f"read_file: {path} could not be read ({exc}); tell him it failed",
-        )
+        msg = f"read_file: {path} could not be read ({exc}); tell him it failed"
+        raise ToolError(msg, code="read_failed") from exc
 
     if b"\x00" in prefix:
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="binary_file",
-            message=f"read_file: {path} is a binary file; tell him you can only read text files",
-        )
+        msg = f"read_file: {path} is a binary file; tell him you can only read text files"
+        raise ToolError(msg, code="binary_file")
 
     text, undelivered_bytes, lossy = truncate_utf8(prefix, total_bytes)
     if undelivered_bytes > 0:
@@ -1504,13 +1279,7 @@ def read_file_handler(
         # observation full of mojibake the LLM would narrate as real
         # content.
         payload["encoding"] = "lossy"
-    return _emit_tool_observation(
-        conn=conn,
-        lifecycle=lifecycle,
-        action_id=action_id,
-        running_event_uid=running_event_uid,
-        payload=payload,
-    )
+    return payload
 
 
 # --- read_clipboard --------------------------------------------------------------
@@ -2459,7 +2228,7 @@ class _FetchOutcome:
     error_message: str | None = None
 
 
-def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch/redirect loop; each return is a distinct named terminal outcome (`_FetchOutcome.error_code`), same rationale as the other D5 handlers' `_emit_tool_error` call sites — splitting them apart would scatter the outcomes from the loop that produces them.
+def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch/redirect loop; each return is a distinct named terminal outcome (`_FetchOutcome.error_code`), same rationale as the other D5 handlers' error exits — splitting them apart would scatter the outcomes from the loop that produces them.
     url: str,
     *,
     timeout_s: float,
@@ -2871,12 +2640,17 @@ _OPEN_URL_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
 }
 
 
-def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subprocess/ack pass; each return is a distinct named terminal outcome via `_emit_tool_error`/`_emit_tool_observation`, same rationale as the D5 handlers this mirrors.
-    action_request: ActionRequest,
-    conn: sqlite3.Connection,
-    runtime_paths: RuntimePathsLike,  # noqa: ARG001 — signature uniformity.
-    lifecycle: ActionLifecycle,
-) -> RawResult:
+@tool(
+    description=(
+        "Open a URL in the default browser. Use when the user asks to open X"
+        " in the browser."
+    ),
+    input_schema=_OPEN_URL_INPUT_SCHEMA,
+    allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
+    risk_level="L1",
+    read_only=False,
+)
+def open_url(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     """Open a URL in the default browser (ADR-0011 D5).
 
     Same scheme + address checks as `web_fetch` via `validate_egress_url`
@@ -2888,109 +2662,54 @@ def open_url_handler(  # noqa: PLR0911 — one linear validate/canonicalize/subp
     `@` in the authority, in particular) differently from the
     `urlsplit`-based guard that just validated them; canonicalizing
     strips exactly the userinfo/fragment components that trick relies
-    on. Result is an ACK (`result_semantics="ack"`, Execution Claim
-    `executed`) — the browser actually opening is not verified, same
-    posture `open_path_handler` documents for its own `open` call.
+    on. The browser actually opening is not verified, same posture
+    `open_path` documents for its own `open` call.
     """
-    running_event_uid = _get_running_event_uid(conn, action_request.action_id)
-    action_id = action_request.action_id
+    url = args.get("url")
+    if not isinstance(url, str) or not url.strip():
+        msg = f"open_url: url must be the page address, http or https (got {url!r})"
+        raise ToolError(msg, code="invalid_argument")
+
+    allowed, reason = validate_egress_url(url)
+    if not allowed:
+        msg = (
+            f"open_url: {url!r} was refused ({reason}); only public http(s) pages "
+            "can be opened"
+        )
+        raise ToolError(msg, code="ssrf_guard_refused")
+
+    normalized = _normalize_egress_url(url)
+    if normalized is None:
+        # Should be unreachable — the guard just allowed `url` via
+        # the identical parser — but refuse rather than ever fall
+        # back to the raw string.
+        msg = f"open_url: {url!r} is not a usable address; check the URL"
+        raise ToolError(msg, code="ssrf_guard_refused")
 
     try:
-        url = action_request.arguments.get("url")
-        if not isinstance(url, str) or not url.strip():
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="invalid_argument",
-                message=f"open_url: url must be the page address, http or https (got {url!r})",
-            )
-
-        allowed, reason = validate_egress_url(url)
-        if not allowed:
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="ssrf_guard_refused",
-                message=(
-                    f"open_url: {url!r} was refused ({reason}); only public http(s) pages "
-                    "can be opened"
-                ),
-            )
-
-        normalized = _normalize_egress_url(url)
-        if normalized is None:
-            # Should be unreachable — the guard just allowed `url` via
-            # the identical parser — but refuse rather than ever fall
-            # back to the raw string.
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="ssrf_guard_refused",
-                message=f"open_url: {url!r} is not a usable address; check the URL",
-            )
-
-        try:
-            # argv list, no shell; `normalized` already passed the
-            # scheme+address allowlist above; `open` resolved via PATH
-            # matches the `pbpaste`/`open_path` precedent.
-            proc = subprocess.run(  # noqa: S603
-                ["open", normalized],  # noqa: S607
-                timeout=_OPEN_URL_SUBPROCESS_TIMEOUT_S,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="open_failed",
-                message=f"open_url: macOS could not run open ({exc}); tell him it did not open",
-            )
-
-        if proc.returncode != 0:
-            stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
-            return _emit_tool_error(
-                conn=conn,
-                lifecycle=lifecycle,
-                action_id=action_id,
-                running_event_uid=running_event_uid,
-                code="open_failed",
-                message=(
-                    f"open_url: macOS open failed (exit {proc.returncode}: {stderr_tail}); "
-                    "tell him it did not open"
-                ),
-            )
-
-        payload: dict[str, Any] = {"url": normalized}
-        return _emit_tool_observation(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            payload=payload,
-            semantics="ack",
+        # argv list, no shell; `normalized` already passed the
+        # scheme+address allowlist above; `open` resolved via PATH
+        # matches the `pbpaste`/`open_path` precedent.
+        proc = subprocess.run(  # noqa: S603
+            ["open", normalized],  # noqa: S607
+            timeout=_OPEN_URL_SUBPROCESS_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-    except Exception as exc:  # noqa: BLE001 — handler-boundary catch-all (MUST-FIX 2, ADR-0011 §12), same rationale as `web_fetch`'s: §5's contract is "never a crash", so any unexpected failure still terminal-transitions the lifecycle, naming the real exception type, instead of stranding it at `running`.
-        return _emit_tool_error(
-            conn=conn,
-            lifecycle=lifecycle,
-            action_id=action_id,
-            running_event_uid=running_event_uid,
-            code="open_url_unexpected_error",
-            message=(
-                f"open_url: failed unexpectedly ({type(exc).__name__}: {exc}); "
-                "tell him it did not open"
-            ),
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        msg = f"open_url: macOS could not run open ({exc}); tell him it did not open"
+        raise ToolError(msg, code="open_failed") from exc
+
+    if proc.returncode != 0:
+        stderr_tail = (proc.stderr or "").strip()[-_OUTPUT_TAIL_BYTES:]
+        msg = (
+            f"open_url: macOS open failed (exit {proc.returncode}: {stderr_tail}); "
+            "tell him it did not open"
         )
+        raise ToolError(msg, code="open_failed")
+
+    return {"url": normalized}
 
 
 # --- screen_look ---------------------------------------------------------------
@@ -3346,7 +3065,7 @@ class ToolRegistry:
     """L4 dispatch surface (ADR § Module map L4 row).
 
     Owns:
-        - The `name → ToolDefinition | Tool` table.
+        - The `name → Tool` table.
         - `for_caller(...)` — filtered list the L3 system-prompt assembler
           renders into the LLM tool list.
         - `dispatch(...)` — the L3-facing entry point. Validates caller,
@@ -3355,8 +3074,7 @@ class ToolRegistry:
 
     Owns NOT:
         - Lifecycle FSM mutation outside `authorized → dispatched → running`
-          (a ``ToolDefinition`` handler writes its own terminal; a flat
-          ``Tool`` gets the dispatcher's).
+          (the dispatcher writes every tool's terminal).
 
     Thread-safe by `threading.RLock` around the internal dict; same
     rationale as `ActionLifecycle`.
@@ -3364,14 +3082,14 @@ class ToolRegistry:
 
     def __init__(self, *, confirmation_dispatch_outbox: bool = False) -> None:
         """Construct an empty registry (no tools yet)."""
-        self._tools: dict[str, ToolDefinition | Tool] = {}
+        self._tools: dict[str, Tool] = {}
         self._lock = threading.RLock()
         self._confirmation_dispatch_outbox = confirmation_dispatch_outbox
-        self._device_catalogue: dict[str, tuple[ToolDefinition | Tool, str]] = {}
+        self._device_catalogue: dict[str, tuple[Tool, str]] = {}
         self._offered_device_tools: frozenset[str] = frozenset()
 
-    def register(self, tool_def: ToolDefinition | Tool) -> None:
-        """Register a ToolDefinition. Raises DuplicateToolError on re-register.
+    def register(self, tool_def: Tool) -> None:
+        """Register a Tool. Raises DuplicateToolError on re-register.
 
         Unlike legacy `tools_v2/registry.py` (which logged and overwrote),
         Day-1 raises so a double-register due to a misconfigured
@@ -3383,7 +3101,7 @@ class ToolRegistry:
                 raise DuplicateToolError(msg)
             self._tools[tool_def.name] = tool_def
 
-    def get_definitions(self) -> tuple[ToolDefinition | Tool, ...]:
+    def get_definitions(self) -> tuple[Tool, ...]:
         """Return every registered tool, in registration order."""
         with self._lock:
             return tuple(self._tools.values())
@@ -3402,7 +3120,7 @@ class ToolRegistry:
             }
 
     def replace_group(
-        self, previous: frozenset[str], tools: tuple[ToolDefinition | Tool, ...],
+        self, previous: frozenset[str], tools: tuple[Tool, ...],
     ) -> None:
         """Atomically publish a runtime-owned group of tools, preserving other tools."""
         with self._lock:
@@ -3416,7 +3134,7 @@ class ToolRegistry:
             }
 
     def set_device_tools(
-        self, catalogue: Mapping[str, tuple[ToolDefinition | Tool, str]],
+        self, catalogue: Mapping[str, tuple[Tool, str]],
     ) -> None:
         """ADR 0225: the device tools a brain may offer, each with the terminal operation it needs.
 
@@ -3428,7 +3146,7 @@ class ToolRegistry:
             self._device_catalogue = dict(catalogue)
             self._offered_device_tools = frozenset()
 
-    def device_catalogue(self) -> tuple[ToolDefinition | Tool, ...]:
+    def device_catalogue(self) -> tuple[Tool, ...]:
         """Every device tool this registry can offer, offered or not."""
         with self._lock:
             return tuple(tool for tool, _ in self._device_catalogue.values())
@@ -3447,7 +3165,7 @@ class ToolRegistry:
             self.replace_group(self._offered_device_tools, wanted)
             self._offered_device_tools = names
 
-    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[Tool, ...]:
         """Return only the tools `caller_principal` is allowed to dispatch."""
         with self._lock:
             return tuple(
@@ -3460,12 +3178,8 @@ class ToolRegistry:
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
-    ) -> RawResultBundle:
-        """Dispatch one ActionRequest and return its :class:`RawResultBundle`.
-
-        Day-2 (ADR-0002 § RawResultBundle contract wrapping rule): the
-        dispatcher uniformly returns ``RawResultBundle`` to L3; a bare
-        :class:`RawResult` is wrapped in ``RawResultBundle(slots=(result,))``.
+    ) -> RawResult:
+        """Dispatch one ActionRequest and return its :class:`RawResult`.
 
         Preconditions:
             - `action_request.tool_name` is registered → else `UnknownToolError`.
@@ -3487,8 +3201,8 @@ class ToolRegistry:
                running. The event_uid is stashed so the handler can use
                it as `source_event_id` for `action.result_observed`.
 
-        The handler then runs on the calling thread and returns a
-        `RawResult` or `RawResultBundle`.
+        The handler then runs on the calling thread; the dispatcher turns its
+        return or its raised error into the one `RawResult`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
         dispatched_event = self._emit_dispatched(action_request, conn, lifecycle)
@@ -3505,7 +3219,7 @@ class ToolRegistry:
         self,
         action_request: ActionRequest,
         lifecycle: ActionLifecycle,
-    ) -> ToolDefinition | Tool:
+    ) -> Tool:
         """Validate the three dispatch preconditions and return the definition."""
         with self._lock:
             tool_def = self._tools.get(action_request.tool_name)
@@ -3578,9 +3292,9 @@ class ToolRegistry:
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
         *,
-        tool_def: ToolDefinition | Tool,
+        tool_def: Tool,
         dispatched_event_uid: str,
-    ) -> RawResultBundle:
+    ) -> RawResult:
         """Run the handler on the calling thread."""
         running_event = emit_event(
             conn,
@@ -3595,18 +3309,13 @@ class ToolRegistry:
         # source_event_id for action.result_observed.
         _set_running_event_uid(conn, action_request.action_id, running_event.event_uid)
         try:
-            handler_result = _run_handler(
+            return _observe(
                 tool_def, action_request, conn, runtime_paths, lifecycle,
                 running_event_uid=running_event.event_uid,
             )
         finally:
             _clear_running_event_uid(conn, action_request.action_id)
 
-        # § RawResultBundle wrapping rule: bare RawResult returns get
-        # wrapped here so L3 always sees the bundle shape.
-        if isinstance(handler_result, RawResultBundle):
-            return handler_result
-        return RawResultBundle(slots=(handler_result,))
 
 # --- running_event_uid handoff (dispatcher → handler) -----------------------
 #
@@ -3615,7 +3324,7 @@ class ToolRegistry:
 # the events they emit next (`action.result_observed`).
 #
 # We cannot stash this on `sqlite3.Connection` (it forbids arbitrary
-# attribute assignment), and we cannot widen the ToolHandler signature
+# attribute assignment), and we cannot widen the handler signature
 # (the public contract is fixed). Instead, the dispatcher records the
 # uid in a module-level dict keyed by `action_id`, guarded by a Lock,
 # and clears the entry in a `try/finally`. Per-`action_id` keying is
@@ -3733,12 +3442,7 @@ def _action_correlation(action_request: ActionRequest) -> dict[str, str]:
 
 # --- Default registry assembly ----------------------------------------------
 
-def _runs_on_terminal(
-    _action_request: ActionRequest,
-    _conn: sqlite3.Connection,
-    _runtime_paths: RuntimePathsLike,
-    _lifecycle: ActionLifecycle,
-) -> RawResult:
+def _runs_on_terminal(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     """ADR 0225: the handler of a device tool a brain builds without its terminal's settings.
 
     `_device_proxy` replaces it, so it is never run; a brain cannot reach this machine's.
@@ -3747,7 +3451,7 @@ def _runs_on_terminal(
     raise RuntimeError(msg)
 
 
-def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefinition | Tool:
+def _device_proxy(original: Tool, link: DeviceLink) -> Tool:
     """ADR 0170: `original` with its handler swapped for one that runs the call on a terminal.
 
     Everything the model, the gate and the confirmation read (name, description, schema,
@@ -3755,39 +3459,14 @@ def _device_proxy(original: ToolDefinition | Tool, link: DeviceLink) -> ToolDefi
     tool's plain error result.
     """
     name = original.name
-    if isinstance(original, Tool):
 
-        def flat(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-            try:
-                return link(name, args, None)
-            except DeviceCallError as exc:
-                raise ToolError(str(exc), code=exc.code) from exc
-
-        return replace(original, handler=flat)
-
-    def handler(
-        action_request: ActionRequest,
-        conn: sqlite3.Connection,
-        _runtime_paths: RuntimePathsLike,
-        lifecycle: ActionLifecycle,
-    ) -> RawResult:
-        action_id = action_request.action_id
-        running_event_uid = _get_running_event_uid(conn, action_id)
+    def on_terminal(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         try:
-            payload = link(name, action_request.arguments, action_request.target_entity_ref)
+            return link(name, args, ctx.target_entity_ref)
         except DeviceCallError as exc:
-            return _emit_tool_error(
-                conn=conn, lifecycle=lifecycle, action_id=action_id,
-                running_event_uid=running_event_uid, code=exc.code, message=str(exc),
-            )
-        return _emit_tool_observation(
-            conn=conn, lifecycle=lifecycle, action_id=action_id,
-            running_event_uid=running_event_uid,
-            payload=_fit_result(payload, DEFAULT_MAX_RESULT_CHARS),
-            semantics=original.result_semantics,
-        )
+            raise ToolError(str(exc), code=exc.code) from exc
 
-    return replace(original, handler=handler)
+    return replace(original, handler=on_terminal)
 
 
 _OFF_MENU_DAILY: Final[frozenset[str]] = frozenset(
@@ -3944,9 +3623,9 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     registry = ToolRegistry(confirmation_dispatch_outbox=confirmation_dispatch_outbox)
     # ADR 0225: a brain builds every device tool, whatever its own settings say, and keeps them
     # as a catalogue; `offer_device_tools` puts on the menu those its terminals declare.
-    device_catalogue: dict[str, tuple[ToolDefinition | Tool, str]] = {}
+    device_catalogue: dict[str, tuple[Tool, str]] = {}
 
-    def register_device_tool(device_tool: ToolDefinition | Tool) -> None:
+    def register_device_tool(device_tool: Tool) -> None:
         if device_link is None:
             registry.register(device_tool)
         else:
@@ -3958,46 +3637,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     register_device_tool(open_path)
     if obsidian_vault_root is not None or device_link is not None:
         register_device_tool(
-            ToolDefinition(
-                name="search_notes",
-                description=(
-                    "Case-insensitive full-text search over the user's Obsidian vault "
-                    "(*.md files only). Returns matching lines with their source "
-                    "file. No index — brute-force scan, fine for a small vault."
-                ),
-                allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-                risk_level="L0",
-                result_semantics="observation",
-                input_schema=_SEARCH_NOTES_INPUT_SCHEMA,
-                handler=(
-                    _make_search_notes_handler(obsidian_vault_root)
-                    if obsidian_vault_root is not None
-                    else _runs_on_terminal
-                ),
-                read_only=True,
-                requires_entity=False,
-                requires_confirmation=False,
-            )
+            _make_search_notes(obsidian_vault_root)
+            if obsidian_vault_root is not None
+            else _search_notes_tool(_runs_on_terminal)
         )
-    register_device_tool(
-        ToolDefinition(
-            name="read_file",
-            description=(
-                "Read a text file's contents by spoken name or description. "
-                "The target is resolved to a canonical path before reading — "
-                "never pass a raw filesystem path. Binary files are rejected; "
-                "output is capped at 8 KiB."
-            ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L0",
-            result_semantics="observation",
-            input_schema=_READ_FILE_INPUT_SCHEMA,
-            handler=read_file_handler,
-            read_only=True,
-            requires_entity=True,
-            requires_confirmation=False,
-        )
-    )
+    register_device_tool(read_file)
     register_device_tool(read_clipboard)
     registry.register(ask_user)
     registry.register(dismiss_card)
@@ -4023,23 +3667,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             ),
         )
     )
-    register_device_tool(
-        ToolDefinition(
-            name="open_url",
-            description=(
-                "Open a URL in the default browser. Use when the user asks to open X"
-                " in the browser."
-            ),
-            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L1",
-            result_semantics="ack",
-            input_schema=_OPEN_URL_INPUT_SCHEMA,
-            handler=open_url_handler,
-            read_only=False,
-            requires_entity=False,
-            requires_confirmation=False,
-        )
-    )
+    register_device_tool(open_url)
     # Already link-aware: the terminal captures, this process describes (ADR 0170).
     screen_look = _make_screen_look(
         vision_client=vision_client, max_width_px=screen_max_width_px, device_link=device_link,
@@ -4126,14 +3754,14 @@ class ReadOnlyToolRegistry:
         self._inner = inner
 
     @staticmethod
-    def _visible(tool_def: ToolDefinition | Tool) -> bool:
+    def _visible(tool_def: Tool) -> bool:
         return tool_def.read_only
 
-    def get_definitions(self) -> tuple[ToolDefinition | Tool, ...]:
+    def get_definitions(self) -> tuple[Tool, ...]:
         """Every read-only tool, in registration order."""
         return tuple(t for t in self._inner.get_definitions() if self._visible(t))
 
-    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolDefinition | Tool, ...]:
+    def for_caller(self, caller_principal: CallerPrincipal) -> tuple[Tool, ...]:
         """The caller's tools narrowed to the read-only ones."""
         return tuple(t for t in self._inner.for_caller(caller_principal) if self._visible(t))
 
@@ -4143,7 +3771,7 @@ class ReadOnlyToolRegistry:
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
-    ) -> RawResultBundle:
+    ) -> RawResult:
         """Forward a read-only dispatch; refuse everything else without a trace."""
         if action_request.tool_name not in {t.name for t in self.get_definitions()}:
             LOGGER.warning(
@@ -4172,13 +3800,11 @@ __all__ = [
     "IllegalLifecycleTransition",
     "LifecycleState",
     "RawResult",
-    "RawResultBundle",
     "ReadOnlyToolRegistry",
     "ResultSemantics",
     "RuntimePathsLike",
     "Tool",
     "ToolContext",
-    "ToolDefinition",
     "ToolError",
     "ToolRegistry",
     "ToolRegistryError",
@@ -4189,9 +3815,9 @@ __all__ = [
     "live_action_ids",
     "make_screen_capture",
     "open_path",
-    "open_url_handler",
+    "open_url",
     "read_clipboard",
-    "read_file_handler",
+    "read_file",
     "register_live_action",
     "release_turn_actions",
     "tool",

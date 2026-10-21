@@ -172,8 +172,8 @@ def test_one_machine_registers_the_device_tools_as_they_were(tmp_path: Path) -> 
     own = build_default_registry(obsidian_vault_root=tmp_path / "vault")
     by_name = {t.name: t for t in own.get_definitions()}
     assert by_name["open_path"] is tools_module.open_path
-    assert by_name["read_file"].handler is tools_module.read_file_handler
-    assert by_name["open_url"].handler is tools_module.open_url_handler
+    assert by_name["read_file"] is tools_module.read_file
+    assert by_name["open_url"] is tools_module.open_url
     assert by_name["read_clipboard"] is tools_module.read_clipboard
     assert "screen_capture" not in by_name
 
@@ -210,7 +210,7 @@ def test_a_proxy_returns_what_the_terminal_answers_and_keeps_the_tools_semantics
 
     read, opened, clip, terminal = _on_a_thread(scenario)
     assert (read.error, read.semantics, read.payload["content"]) == (None, "observation", "hello")
-    assert (opened.error, opened.semantics) == (None, "ack")
+    assert (opened.error, opened.semantics) == (None, "observation")
     assert clip.payload == {"content": "copied", "total_bytes": 6}
     assert json.loads(read.tool_output)["path"] == "/Users/a/n.txt"
     frame = terminal.calls[0]

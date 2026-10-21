@@ -132,7 +132,7 @@ class Dispatcher:
         lifecycle.register(request.action_id)
         lifecycle.transition(request.action_id, "authorized")
         bundle = self.registry.dispatch(request, self.conn, self.paths, lifecycle)
-        out = json.loads(bundle.slots[0].tool_output or "{}")
+        out = json.loads(bundle.tool_output or "{}")
         return out if isinstance(out, dict) else {"value": out}
 
 

@@ -524,7 +524,7 @@ def test_tool_search_in_the_shipped_registry_sends_gmail_reads_to_mail(tmp_path:
     config = yaml.safe_load((REPO / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     registry = tool_exam._exam_registry(config, recorded)  # noqa: SLF001
     search = next(one for one in registry.get_definitions() if one.name == "tool_search")
-    handler = cast("Tool", search).handler
+    handler = search.handler
     out = dict(handler({"query": "gmail_search"}, cast("ToolContext", None)))
     # The write tool loads; both reads are found but not loaded, and the note names `mail`.
     assert "mcp__gmail__gmail_send" in out["loaded_tools"]

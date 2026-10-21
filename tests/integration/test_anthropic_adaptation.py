@@ -144,7 +144,7 @@ def test_a_tool_turn_sends_its_thinking_blocks_back_unchanged_with_the_result(
     ]
 
 
-def _tool(name: str, *, deferred: bool = False, supersedes: dict[str, str] | None = None) -> Any:  # noqa: ANN401 — a ToolDefinitionLike
+def _tool(name: str, *, deferred: bool = False, supersedes: dict[str, str] | None = None) -> Any:  # noqa: ANN401 — a ToolLike
     return SimpleNamespace(
         name=name, description=f"{name} d", input_schema={"type": "object"}, deferred=deferred,
         requires_confirmation=False, supersedes=supersedes or {},

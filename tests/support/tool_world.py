@@ -8,8 +8,8 @@ import sqlite3
 from typing import TYPE_CHECKING, Any
 
 from jarvis.deployment import bootstrap_runtime
-from jarvis.execution.tools import ActionLifecycle, Tool, ToolDefinition, ToolRegistry
-from jarvis.shared import ActionRequest, CallerPrincipal, RawResultBundle
+from jarvis.execution.tools import ActionLifecycle, Tool, ToolRegistry
+from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
 from jarvis.state.event_log import open_event_log
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class ToolWorld:
     """One runtime root, registry and lifecycle wired together."""
 
-    def __init__(self, tmp_path: Path, *, tools: tuple[Tool | ToolDefinition, ...]) -> None:
+    def __init__(self, tmp_path: Path, *, tools: tuple[Tool, ...]) -> None:
         self.paths = bootstrap_runtime(tmp_path)
         self.conn = open_event_log(self.paths.event_log)
         self.registry = ToolRegistry()
@@ -27,7 +27,7 @@ class ToolWorld:
             self.registry.register(one)
         self.lifecycle = ActionLifecycle()
 
-    def dispatch(self, request: ActionRequest) -> RawResultBundle:
+    def dispatch(self, request: ActionRequest) -> RawResult:
         """Authorize and dispatch one request on the caller's thread."""
         self.lifecycle.register(request.action_id)
         self.lifecycle.transition(request.action_id, "authorized")

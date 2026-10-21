@@ -42,7 +42,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from jarvis.execution.tools import ToolDefinition
 
 _ASK = {"question": "Where to?", "fields": [{"label": "address"}]}
 
@@ -190,7 +189,7 @@ def test_the_clipboard_that_cannot_be_read_says_so(
     )
 
 
-# ToolDefinition tools answer through the dispatcher's event rows.
+# The tools that once wrote their own rows answer through the dispatcher's event rows.
 DEFINITION_ROWS: tuple[tuple[str, dict[str, Any], str, tuple[str, ...]], ...] = (
     ("search_notes", {}, "invalid_argument",
      ("search_notes: query must be the words to look for in his notes (got None)",)),
@@ -211,7 +210,7 @@ def test_a_failing_definition_tool_answers_in_the_same_words(
     """The dispatcher's recorded output is one JSON object whose error is a sentence."""
     name, args, code, phrases = row
     registry = build_default_registry(obsidian_vault_root=tmp_path / "vault")
-    held = [cast("ToolDefinition", t) for t in registry.get_definitions() if t.name == name]
+    held = [t for t in registry.get_definitions() if t.name == name]
     fx = ToolWorld(tmp_path / "run", tools=tuple(held))
     try:
         fx.dispatch(tool_request(name, "E1", arguments=args))
@@ -263,8 +262,7 @@ def test_the_registry_says_which_tool_is_missing_and_who_may_call(tmp_path: Path
 
 
 def _ask_user() -> Tool:
-    found = next(t for t in build_default_registry().get_definitions() if t.name == "ask_user")
-    return cast("Tool", found)
+    return next(t for t in build_default_registry().get_definitions() if t.name == "ask_user")
 
 
 def test_a_tool_that_crashes_is_reported_as_failed_not_as_a_repeatable_error(

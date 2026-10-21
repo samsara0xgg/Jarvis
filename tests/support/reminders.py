@@ -68,7 +68,7 @@ class ReminderWorld:
         self.lifecycle.register(action_id)
         self.lifecycle.transition(action_id, "authorized")
         bundle = self.registry.dispatch(request, self.conn, self.paths, self.lifecycle)
-        out = json.loads(bundle.slots[0].tool_output or "{}")
+        out = json.loads(bundle.tool_output or "{}")
         return out if isinstance(out, dict) else {"value": out}
 
     def set(self, minutes: float, text: str = "和 employer 一对一") -> dict[str, Any]:

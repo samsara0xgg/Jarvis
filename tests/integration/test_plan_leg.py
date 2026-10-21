@@ -209,7 +209,7 @@ def test_the_chat_call_on_today_still_shows_its_card_and_another_day_does_not(
     (bus,) = (d for d in registry.get_definitions() if d.name == "bus")
 
     def chat(args: dict[str, str]) -> dict[str, Any]:
-        return dict(bus.handler(args, world.ctx()))  # type: ignore[arg-type,call-arg,misc]
+        return dict(bus.handler(args, world.ctx()))
 
     out = chat({"to": "school", "from": "home", "arrive_by": "18:30"})
     assert len(list(iter_events_of_types(world.log, CLARIFICATION_EVENT_TYPES))) == 1

@@ -204,7 +204,7 @@ def test_alerts_come_with_headline_severity_times_and_source_and_need_the_countr
         ),
     )
     (tool,) = (d for d in registry.get_definitions() if d.name == "weather")
-    report = dict(tool.handler({}, None))  # type: ignore[arg-type,call-arg,misc]
+    report = dict(tool.handler({}, None))  # type: ignore[arg-type]
     assert "weatherAlerts" not in net.asked[0]
     assert "countryCode" not in net.asked[0]
     assert "unavailable" in report["alerts"]

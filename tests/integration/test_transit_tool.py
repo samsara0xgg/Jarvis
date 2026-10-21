@@ -65,7 +65,7 @@ def _call(
     )
     (definition,) = (d for d in registry.get_definitions() if d.name == tool)
     ctx = SimpleNamespace(conn=_LOG["conn"], action_id="A1")
-    return dict(definition.handler(args, ctx))  # type: ignore[arg-type,call-arg,misc]
+    return dict(definition.handler(args, ctx))  # type: ignore[arg-type]
 
 
 def test_the_answer_is_plain_words_in_local_time_with_three_options(

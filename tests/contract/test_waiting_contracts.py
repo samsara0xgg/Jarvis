@@ -80,7 +80,7 @@ def _ask(log: Path, args: dict[str, Any]) -> None:
     (definition,) = (d for d in build_default_registry().get_definitions() if d.name == "ask_user")
     with closing(open_event_log(log)) as conn:
         ctx = SimpleNamespace(conn=conn, action_id=ACTION)
-        definition.handler(args, ctx)  # type: ignore[arg-type,call-arg,misc]
+        definition.handler(args, ctx)  # type: ignore[arg-type]
 
 
 def _bus_card(log: Path) -> None:

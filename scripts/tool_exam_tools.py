@@ -859,7 +859,7 @@ def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
             runtime.conn,
             runtime.runtime_paths,
             lifecycle,
-        ).slots[0]
+        )
     finally:
         release_turn_actions(turn_id)
     return slot.tool_output or ""

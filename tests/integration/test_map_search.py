@@ -209,7 +209,7 @@ def _tools(
             register_live_action(turn_id=turn, action_id=action_id)
         try:
             ctx = SimpleNamespace(conn=log, action_id=action_id)
-            return dict(handlers[tool](args, ctx))  # type: ignore[arg-type,call-arg]
+            return dict(handlers[tool](args, ctx))  # type: ignore[arg-type]
         finally:
             if turn:
                 release_turn_actions(turn)

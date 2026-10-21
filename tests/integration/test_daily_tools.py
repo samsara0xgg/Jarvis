@@ -538,7 +538,7 @@ def test_no_memory_file_is_created_by_history_lookup(tmp_path: Path) -> None:
     fx = ToolWorld(tmp_path, tools=tools)
     try:
         result = fx.dispatch(tool_request("search_records", "missing", arguments={}))
-        assert result.slots[0].error == "source_unavailable"
+        assert result.error == "source_unavailable"
         assert not missing.exists()
     finally:
         fx.close()

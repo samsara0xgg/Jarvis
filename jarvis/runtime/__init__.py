@@ -164,7 +164,6 @@ from jarvis.execution.tools import (
     ReadOnlyToolRegistry,
     Tool,
     ToolContext,
-    ToolDefinition,
     ToolRegistry,
     VisionClient,
     build_default_registry,
@@ -496,7 +495,7 @@ def _on_menu(table: Tier0Table, registry: ToolRegistry, role: Role) -> Tier0Tabl
     return tuple(row for row in table if row.tool_name in held)
 
 
-def _regex_router_tools(registry: ToolRegistry) -> tuple[ToolDefinition | Tool, ...]:
+def _regex_router_tools(registry: ToolRegistry) -> tuple[Tool, ...]:
     """What Tier 0 rows may name: the menu's, and a brain's device tools no terminal declared yet.
 
     A row that waits for its terminal (ADR 0225) must not fail the boot's cross-check.
@@ -2595,7 +2594,7 @@ half an hour."""
 _VISION_ERROR_EXCERPT_MAX_CHARS: Final[int] = 300
 """Bound on the redacted excerpt `VisionCallError` carries (MUST-FIX 1a,
 ADR-0011 §12) — independent of, and a first line of defense ahead of,
-`_emit_tool_error`'s own byte cap in `jarvis.execution.tools`."""
+the tool dispatcher's own cap in `jarvis.execution.tools`."""
 
 _BASE64_DATA_URL_RE: Final[re.Pattern[str]] = re.compile(
     r"data:[\w./+-]*;base64,[A-Za-z0-9+/=]+",

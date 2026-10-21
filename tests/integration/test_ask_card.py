@@ -164,7 +164,7 @@ def _take_down(conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> dic
         d for d in build_default_registry().get_definitions() if d.name == "dismiss_card"
     )
     ctx = SimpleNamespace(conn=conn, action_id="A1")
-    return dict(definition.handler({}, ctx))  # type: ignore[arg-type,call-arg,misc]
+    return dict(definition.handler({}, ctx))  # type: ignore[arg-type]
 
 
 _NOTHING = {"summary": "No card is waiting; nothing to do.", "dismissed": []}

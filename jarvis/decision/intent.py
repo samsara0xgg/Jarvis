@@ -130,12 +130,12 @@ def build_llm_messages(
 def tool_definitions_for_llm(
     tools: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Convert ToolDefinition records into the Anthropic-style tool list.
+    """Convert Tool records into the Anthropic-style tool list.
 
     ``LLMClient.chat`` accepts the Anthropic ``input_schema`` shape and
     translates internally for OpenAI. The composition root passes
     ``tool_registry.for_caller(JARVIS_LLM)`` through this helper to
-    avoid leaking the L4 ``ToolDefinition`` dataclass into L3.
+    avoid leaking the L4 ``Tool`` dataclass into L3.
 
     Args:
         tools: Iterable of dict-like objects with ``name`` /

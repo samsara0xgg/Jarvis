@@ -1,4 +1,4 @@
-"""ADR 0019 — a flat ``Tool`` leaves the rows a ``ToolDefinition`` handler left.
+"""ADR 0019 — a flat ``Tool`` leaves its rows through the dispatcher.
 
 Asserts on the Event Log after a real ``ToolRegistry.dispatch``: the chain
 ``action.dispatched`` → ``action.running`` → ``action.result_observed``, the
@@ -83,7 +83,7 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
         assert set(observed) == {"action_id", "semantics", "tool_output"}
         assert observed["semantics"] == "observation"
         assert set(json.loads(observed["tool_output"])) == _TIME_KEYS
-        slot = bundle.slots[0]
+        slot = bundle
         assert slot.error is None
         assert slot.tool_output == observed["tool_output"]
         assert set(slot.payload) == _TIME_KEYS
@@ -96,7 +96,7 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
             "tool_output": '{"error": "bad 7", "code": "invalid_argument"}',
             "error": "invalid_argument",
         }
-        slot = bundle.slots[0]
+        slot = bundle
         assert slot.error == "invalid_argument"
         assert slot.payload == {"error": "invalid_argument"}
         assert slot.tool_output == observed["tool_output"]
@@ -112,7 +112,7 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
         assert "…[omitted" in out["error"]
         assert out["error"].endswith("do not repeat the same call")  # the way out survives the cut
         assert out["truncated"] is True
-        assert bundle.slots[0].error == "unexpected_error"
+        assert bundle.error == "unexpected_error"
 
         bundle = fx.dispatch(tool_request("long_tool", "A4", arguments={"x": 2000}))
         observed = tool_chain(fx, "A4")
@@ -127,6 +127,6 @@ def test_flat_tool_writes_the_same_terminal_row(tmp_path: Path) -> None:
         assert head.endswith("\n")
         assert marker
         assert tail.endswith("a" * 10)
-        assert bundle.slots[0].payload == out
+        assert bundle.payload == out
     finally:
         fx.close()

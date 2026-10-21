@@ -184,15 +184,15 @@ def effective_policy(
 # `policy.py` (L3) must not import `jarvis.execution` (sibling layer) and
 # cannot import from `jarvis.decision.__init__` (import cycle:
 # decision/__init__ -> gates -> policy). The structural Protocols below
-# are the layer seam: the real L4 `ToolDefinition` / `ToolRegistry`
+# are the layer seam: the real L4 `Tool` / `ToolRegistry`
 # satisfy them structurally, and a frozen dataclass attribute satisfies a
 # read-only `@property` in a Protocol. Kept to exactly what `surface_for`
 # and `validate_requires_confirmation` below read — not a mirror of
-# `jarvis.decision.ToolDefinitionLike`.
+# `jarvis.decision.ToolLike`.
 #
 # `_RegistryLike` is generic in the tool type so `surface_for` returns
 # whatever concrete/structural tool type the caller's registry already
-# promises (e.g. `jarvis.decision.ToolDefinitionLike`, which carries
+# promises (e.g. `jarvis.decision.ToolLike`, which carries
 # `description` / `input_schema` that `_ToolLike` deliberately omits)
 # instead of narrowing every caller down to the two fields filtering
 # needs.
@@ -277,7 +277,7 @@ def validate_requires_confirmation(
     """Assert every tool's ``requires_confirmation`` matches its risk rank.
 
     Per ADR 0011 D2 (and V6): ``requires_confirmation`` is stored
-    explicitly on ``ToolDefinition`` rather than always recomputed, so
+    explicitly on ``Tool`` rather than always recomputed, so
     ADR-0012 can render its confirmation template line without
     recomputing policy — but that redundancy only stays safe if it can
     never drift from ``risk_rank(risk_level) >=

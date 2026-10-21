@@ -86,9 +86,9 @@ class LiveRig:
         result = self.fx.dispatch(
             tool_request(name, f"live-dr{self.sequence}", arguments=arguments)
         )
-        assert result.slots[0].tool_output is not None
-        assert len(result.slots[0].tool_output) <= 16384
-        return dict(json.loads(result.slots[0].tool_output))
+        assert result.tool_output is not None
+        assert len(result.tool_output) <= 16384
+        return dict(json.loads(result.tool_output))
 
     def read_all(self, day: str) -> str:
         """The whole saved report, paged back through get_briefing."""

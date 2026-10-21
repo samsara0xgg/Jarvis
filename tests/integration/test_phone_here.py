@@ -344,7 +344,7 @@ def test_a_log_that_cannot_be_read_is_a_tool_error_that_says_to_ask(tmp_path: Pa
     definition = next(d for d in registry.get_definitions() if d.name == "where_am_i")
     unreadable = r"last location report could not be read.*ask the user"
     with pytest.raises(ToolError, match=unreadable) as e:
-        definition.handler({}, None)  # type: ignore[arg-type,call-arg,misc]
+        definition.handler({}, None)  # type: ignore[arg-type]
     assert e.value.code == "location_unavailable"
 
 
@@ -359,7 +359,7 @@ def test_a_mac_running_alone_keeps_the_wording_of_adr_0194() -> None:
     assert "read from this Mac (he carries it)" in where.description
     assert "his location, read from this Mac, which he carries." in _words(bus)
     assert "phone" not in where.description + _words(bus)
-    mac_reading = dict(where.handler({}, None))  # type: ignore[arg-type,call-arg,misc]
+    mac_reading = dict(where.handler({}, None))  # type: ignore[arg-type]
     assert mac_reading["source"] == "this Mac"
 
 

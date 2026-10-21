@@ -131,7 +131,7 @@ class ToolCall:
     Attributes:
         call_id: Provider-supplied tool_call id; must be echoed in the
             tool-result message so the LLM matches results to requests.
-        name: Tool name (matches a ``ToolDefinition.name``).
+        name: Tool name (matches a ``Tool.name``).
         arguments_json: Raw JSON string from the LLM. The caller
             (Step 9 ``decide()``) parses it; this client does not.
     """

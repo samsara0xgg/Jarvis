@@ -177,9 +177,9 @@ class Rig:
         """Dispatch through the real dispatcher and decode the persisted output."""
         self.sequence += 1
         result = self.fx.dispatch(tool_request(name, f"dr{self.sequence}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        assert len(result.slots[0].tool_output) <= 16384
-        return dict(json.loads(result.slots[0].tool_output))
+        assert result.tool_output is not None
+        assert len(result.tool_output) <= 16384
+        return dict(json.loads(result.tool_output))
 
     def run(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401 — forwarded to run().
         """Run the workflow directly, on the fixture's own connection."""

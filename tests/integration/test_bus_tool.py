@@ -132,7 +132,7 @@ class World:
         self.lifecycle.register(request.action_id)
         self.lifecycle.transition(request.action_id, "authorized")
         bundle = self.registry.dispatch(request, self.conn, self.paths, self.lifecycle)
-        out = json.loads(bundle.slots[0].tool_output or "{}")
+        out = json.loads(bundle.tool_output or "{}")
         return out if isinstance(out, dict) else {"value": out}
 
     def pins(self) -> list[dict[str, Any]]:

@@ -65,7 +65,7 @@ def _result(
     conn: sqlite3.Connection, action_id: str, output: dict[str, Any] | None, *, error: bool = False,
 ) -> None:
     payload: dict[str, Any] = {
-        "action_id": action_id, "semantics": "error" if error else "ack",
+        "action_id": action_id, "semantics": "error" if error else "observation",
         "tool_output": json.dumps(output or {"error": "boom"}, ensure_ascii=False),
     }
     if error:

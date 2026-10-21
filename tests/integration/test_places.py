@@ -174,8 +174,8 @@ class World:
         """Dispatch a tool the way the model's call does and decode what it persisted."""
         self.count += 1
         result = self.fx.dispatch(tool_request(name, f"places{self.count}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        return dict(json.loads(result.slots[0].tool_output))
+        assert result.tool_output is not None
+        return dict(json.loads(result.tool_output))
 
     def rows(self, table: str = "places") -> list[sqlite3.Row]:
         """Every row of a memory.db table, oldest first."""
@@ -980,7 +980,7 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     )
     (transit,) = (d for d in registry.get_definitions() if d.name == "bus")
     ctx = SimpleNamespace(conn=world.conn, action_id="A1")
-    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type,call-arg,misc]
+    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type]
     sent = _body(seen)
     assert sent["origin"] == {"location": {"latLng": {"latitude": 48.0, "longitude": -123.0}}}
     assert sent["destination"] == {"address": "Example Campus, Example City"}
@@ -988,7 +988,7 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     places.forget(world.db, school.id, origin="user")
     places.save(world.db, name="school", lat=48.5, lng=-123.5, role="school", origin="user")
     seen.clear()
-    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type,call-arg,misc]
+    transit.handler({"from": "home", "to": "school"}, ctx)  # type: ignore[arg-type]
     sent = _body(seen)
     assert sent["destination"] == {"location": {"latLng": {"latitude": 48.5, "longitude": -123.5}}}
     # The rides find his stop from the same table.

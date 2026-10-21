@@ -409,7 +409,7 @@ def make_executor(
                 turn_id=None,
             )
             scratch = _ScratchPaths(Path(":memory:"), Path(tempfile.gettempdir()))
-            result = registry.dispatch(request, conn, scratch, lifecycle).slots[0]
+            result = registry.dispatch(request, conn, scratch, lifecycle)
         finally:
             conn.close()
         if result.error is None:

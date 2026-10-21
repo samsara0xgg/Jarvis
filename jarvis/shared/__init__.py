@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 # --- ResultSemantics (relocated from jarvis.execution.tools in Step 0b) -----
 
-ResultSemantics = Literal["ack", "observation", "verification", "report", "error"]
+ResultSemantics = Literal["observation", "verification", "report", "error"]
 """Day-1 `result_semantics` vocabulary (ADR § Gate contracts, Result Interpreter table).
 
 Relocated from :mod:`jarvis.execution.tools` in Step 0b of ADR-0002 so L3
@@ -60,7 +60,7 @@ class CallerPrincipal(enum.Enum):
 EvidenceLevel = Literal["reported", "observed", "executed", "verified", "accepted"]
 """Evidence level ladder (spec §8.4).
 
-Day-1 Result Interpreter maps ToolDefinition.result_semantics to one of these.
+Day-1 Result Interpreter maps a result's semantics to one of these.
 """
 
 ClaimStatus = Literal["open", "supported", "refuted", "limited", "superseded"]
@@ -245,7 +245,7 @@ class ActionRequest:
     Attributes:
         action_id: Unique per-action identifier; threads through
             action.proposed → action.result_observed.
-        tool_name: Name of the ToolDefinition to dispatch.
+        tool_name: Name of the Tool to dispatch.
         target_entity_ref: Canonical entity id (e.g. task_id). None when the
             tool requires no entity. Pre-action Gate refuses if non-None and
             not in trusted entity set.
@@ -306,15 +306,13 @@ class RawResult:
     Relocated from :mod:`jarvis.execution.tools` in Step 0b of ADR-0002
     so L3 (which consumes RawResults) can import the type directly
     without crossing the layer DAG. L4 handlers continue to construct
-    and return ``RawResult`` instances; the Day-2 dispatcher wrap
-    (Step 11) will wrap bare single-slot returns into a
-    :class:`RawResultBundle` at the L4/L3 boundary.
+    and return ``RawResult`` instances.
 
     Attributes:
         action_id: The ActionRequest's ``action_id`` (round-tripped so
             the interpreter can join back to the lifecycle / event
             chain).
-        semantics: One of ``ack`` / ``observation`` / ``verification`` /
+        semantics: One of ``observation`` / ``verification`` /
             ``report`` / ``error`` per ADR § Gate contracts table. The
             Result Interpreter maps this to a claim type + evidence
             level.
@@ -346,38 +344,6 @@ class RawResult:
     metadata: Mapping[str, Any] | None = None
 
 
-# --- RawResultBundle (Day-2 addition per ADR-0002 § RawResultBundle contract)
-
-
-@dataclass(frozen=True)
-class RawResultBundle:
-    """A sequence of RawResult slots returned by one L4 handler.
-
-    Day-1 tools returned a single RawResult. Day-2 introduces
-    RawResultBundle so tools declaring a ``post_action_check``
-    (spec §3.5.7) can return TWO slots in one call — slot 1 for the
-    primary observation, slot 2 for the chained verification/error.
-    Each slot carries its own ``result_semantics`` per spec §3.4.11;
-    L3 emits one ``action.result_observed`` event per slot (spec
-    §5.4.2).
-
-    Invariant: at least one slot. Two slots maximum Day-2 (one primary
-    + one post_action_check). Multi-stage chains are out of scope.
-
-    Step 0b note: the type is defined here so Day-2 steps (11 / 12) can
-    wire the dispatcher-wrap and the dual-slot interpreter without a
-    second relocation. No production call site constructs a bundle yet.
-    """
-
-    slots: tuple[RawResult, ...]
-
-    def __post_init__(self) -> None:
-        """Enforce the 1..2 slot invariant at construction time."""
-        if not (1 <= len(self.slots) <= 2):  # noqa: PLR2004 — the 1..2 bound IS the contract per spec §3.5.7.
-            msg = f"RawResultBundle requires 1-2 slots, got {len(self.slots)}"
-            raise ValueError(msg)
-
-
 __all__ = [
     "ActionRequest",
     "AuthorizationLease",
@@ -390,7 +356,6 @@ __all__ = [
     "EvidenceLevel",
     "PromptContext",
     "RawResult",
-    "RawResultBundle",
     "ResultSemantics",
     "RiskLevel",
 ]

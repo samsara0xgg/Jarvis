@@ -87,8 +87,8 @@ class _Tools:
         """Dispatch and decode the persisted output; an error has ``error`` and ``code``."""
         self.sequence += 1
         result = self.fx.dispatch(tool_request(name, f"t{self.sequence}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        return dict(json.loads(result.slots[0].tool_output))
+        assert result.tool_output is not None
+        return dict(json.loads(result.tool_output))
 
 
 def _fixtures(tmp_path: Path, store: sqlite3.Connection) -> tuple[Path, dict[str, str]]:

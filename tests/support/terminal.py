@@ -500,7 +500,7 @@ def dispatch_tool(
             turn_id=None,
         )
         paths = StubRuntimePaths(root / "events.db", root / "artifacts")
-        return registry.dispatch(request, conn, paths, lifecycle).slots[0]
+        return registry.dispatch(request, conn, paths, lifecycle)
     finally:
         conn.close()
 

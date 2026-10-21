@@ -85,7 +85,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision.llm import LLMClient
     from jarvis.execution.mcp_tools import McpServers
-    from jarvis.execution.tools import ToolDefinition, ToolRegistry
+    from jarvis.execution.tools import ToolRegistry
     from jarvis.runtime import JarvisRuntime
     from jarvis.state.decision_snapshot import DecisionFoldState
 
@@ -199,7 +199,7 @@ def _add_microsoft(runtime: JarvisRuntime, recorded: Path) -> None:
     conns._publish()  # noqa: SLF001
 
 
-def _stub(tool: Tool | ToolDefinition) -> Tool | ToolDefinition:
+def _stub(tool: Tool) -> Tool:
     """``tool`` with its handler replaced by a fixed result; schema, risk and flags are kept."""
     note: dict[str, Any] = _STUB_NOTE
     if tool.name.startswith("mcp__microsoft__"):

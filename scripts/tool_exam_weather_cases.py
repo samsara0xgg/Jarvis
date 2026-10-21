@@ -129,7 +129,7 @@ def _result() -> str:
         kit = kit_for(make_key(Path(tmp))[0])
         registry = build_default_registry(weather_lookup=weather_lookup(HOME, kit, ZONE))
         (tool,) = (t for t in registry.get_definitions() if t.name == "weather")
-        reply = dict(tool.handler({}, None))  # type: ignore[arg-type,call-arg,misc]
+        reply = dict(tool.handler({}, None))  # type: ignore[arg-type]
     return json.dumps(reply, ensure_ascii=False)
 
 

@@ -73,7 +73,7 @@ def _dispatch(  # noqa: PLR0913 - the registry, its stores, who calls and what
     lifecycle = ActionLifecycle()
     lifecycle.register(action_id)
     lifecycle.transition(action_id, "authorized")
-    slot = registry.dispatch(request, conn, paths, lifecycle).slots[0]
+    slot = registry.dispatch(request, conn, paths, lifecycle)
     assert slot.tool_output is not None
     assert len(slot.tool_output) <= 4000
     out = json.loads(slot.tool_output)
