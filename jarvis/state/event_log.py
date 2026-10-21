@@ -1679,9 +1679,8 @@ class EventTypeRegistry:
     """Day-1 frozen authority over event-type schemas (spec §5.4).
 
     Backed by a `MappingProxyType[str, EventTypeSchema]` so the registry
-    cannot be mutated at runtime. Day-1 ships in-module; a file-backed
-    `registry.json` at `${JARVIS_RUNTIME_ROOT}/registry.json` (placed by L6)
-    is OPTIONAL Day-1 and deferred — tests stay self-contained.
+    cannot be mutated at runtime. It lives in this module; there is no
+    file-backed copy.
     """
 
     @staticmethod
