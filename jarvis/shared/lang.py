@@ -121,8 +121,7 @@ def variants(key: str, lang: Language | None = None) -> tuple[str, ...]:
 # --- Slow tools (ADR 0115, ADR 0117) -----------------------------------------
 
 # Tools slow enough to name at once, and the ``tool_status.*`` line each shows
-# under the ball. Every tool that is not quiet says a wait line at its dispatch
-# (ADR 0136); the two on LONG_WAIT_TOOLS say the long one (ADR 0117).
+# under the ball.
 # Measured run times (2026-09): web_search 1.9 s, screen_look 3.3 s,
 # refresh_work_state 7.6 s median, daily_work_report 58 s. Everything else on
 # the owner's log is under 0.6 s.
@@ -134,10 +133,6 @@ SLOW_TOOLS: Final[dict[str, str]] = {
     "daily_work_report": "tool_status.report",
     "write_mail_draft": "tool_status.draft",
 }
-
-# The slowest of them (daily_work_report 58 s, refresh_work_state 7.6 s median,
-# p90 13.5 s): their wait line says it will take a while (ADR 0117).
-LONG_WAIT_TOOLS: Final = frozenset({"daily_work_report", "refresh_work_state"})
 
 
 # --- What a confirmed tool does (ADR 0062) ----------------------------------
@@ -167,9 +162,6 @@ _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
         "en": ("remove this plugin's login and saved keys", "Removed"),
     },
 }
-
-CONFIRMED_TOOLS: Final = frozenset(_ACTIONS)
-"""The tools that ask for a confirmation: the ask speaks for them (ADR 0136)."""
 
 
 def spoken_tool_name(tool_name: str) -> str:
@@ -1300,28 +1292,10 @@ VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {
         "zh": ("还在弄，再等一下。", "还没好，再稍等一会儿。", "还在处理，再等等。"),
         "en": ("Still working on it.", "Still on it, one more moment."),
     },
-    # ADR 0117: the same line for LONG_WAIT_TOOLS, which says he can ask something else.
-    "commentary.long_wait": {
-        "zh": ("这个要等一会儿，你可以先问别的。", "这个得花点时间，有别的事可以先问我。", "要等一会儿，你先忙别的也行。"),
-        "en": (
-            "This will take a little while. You can ask me something else meanwhile.",
-            "This one takes a bit. Feel free to ask me something else.",
-        ),
-    },
-    # ADR 0136: the line said at a tool's dispatch, by what the tool does.
+    # ADR 0140: the line of Jev's predicted tool group, said before any tool is called.
     "commentary.tool.web": {
         "zh": ("我搜一下。", "我上网查查。"),
         "en": ("Let me look that up.", "Searching now."),
-    },
-    # The fixed line of a deep web search: it carries the wait, so the model's lead-in does not replace it.
-    "commentary.tool.web_deep": {
-        "zh": ("我认真查一下，大概半分钟。", "这个我仔细查查，要半分钟左右。"),
-        "en": ("Let me look into this properly. About half a minute.", "I'll dig into this. About half a minute."),
-    },
-    "commentary.tool.screen": {"zh": ("我看一下屏幕。",), "en": ("Let me look at your screen.",)},
-    "commentary.tool.records": {
-        "zh": ("我翻一下之前的记录。", "我找找记录。"),
-        "en": ("Let me check our history.",),
     },
     "commentary.tool.mail": {"zh": ("我看一下邮件。",), "en": ("Checking your email.",)},
     "commentary.tool.calendar": {"zh": ("我看一下日程。",), "en": ("Checking your calendar.",)},

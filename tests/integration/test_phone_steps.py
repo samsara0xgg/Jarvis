@@ -19,6 +19,7 @@ that ran none; an answer that copies the line has it cut from the history and th
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from typing import TYPE_CHECKING
@@ -512,12 +513,16 @@ def test_the_history_follows_an_answer_whose_turn_ran_tools_with_its_receipts(
     append_record(host.memory, record_id="u3", source="allen", text="search")
     answer_with_record(host, "T3", "The search failed.")
     contents = [turn["content"] for turn in history_of(host)]
-    assert contents[1].endswith(
-        "Noted.\n[Receipts: ran keep(text=buy milk) (done); ran where_am_i() (done)]",
+    assert re.fullmatch(
+        r"(?s).*Noted\.\n\[Receipts: ran keep\(text=buy milk\) \(r[0-9a-f]{6}, done\); "
+        r"ran where_am_i\(\) \(r[0-9a-f]{6}, done\)\]",
+        contents[1],
     )
     assert contents[3].endswith("You are welcome.")
-    assert contents[5].endswith(
-        "The search failed.\n[Receipts: web_search(query=x) gave error boom (failed)]",
+    assert re.fullmatch(
+        r"(?s).*The search failed\.\n\[Receipts: web_search\(query=x\) gave error boom "
+        r"\(r[0-9a-f]{6}, failed\)\]",
+        contents[5],
     )
     assert sum("[Receipts:" in c for c in contents) == 2
 

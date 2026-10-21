@@ -26,7 +26,6 @@ import pytest
 from fastapi.testclient import TestClient
 from google.transit import gtfs_realtime_pb2
 
-from jarvis.decision.commentary import _dispatch_key
 from jarvis.decision.packet import assemble_packet, format_pending_clarification_note
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
@@ -382,7 +381,6 @@ def test_the_tool_is_quiet_and_model_only() -> None:
     assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert definition.risk_level == "L1"
     assert not definition.requires_confirmation
-    assert _dispatch_key("bus") is None
     assert "Only when he asks" in definition.input_schema["properties"]["pin"]["description"]
     assert "bus" not in {d.name for d in build_default_registry().get_definitions()}
     assert not {"pin_departure", "transit"} & {d.name for d in registry.get_definitions()}

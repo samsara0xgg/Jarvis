@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
     from jarvis.shared import Event
 
+_BLOCK = "<claims></claims>"  # ADR 0320: a reply off the schema opens with its claims block
 _SPOKEN = "今天有三件事。时间我写在屏幕上了。"
 _WRITTEN = '- 10:00 产品会\n- 14:30 评审 "Q3"\nhttps://zoom.us/j/123'
 
@@ -197,7 +198,7 @@ def test_a_structured_answer_speaks_its_spoken_part_and_keeps_written_as_the_doc
     assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
     assert body["text"]["format"]["strict"] is True
     note = json.dumps(body)
-    assert 'a JSON object with \\"spoken\\" and \\"written\\"' in note
+    assert 'a JSON object with \\"claims\\", \\"spoken\\" and \\"written\\"' in note
     assert "<voice></voice>" not in note
 
 
@@ -221,7 +222,7 @@ def test_a_typed_turn_takes_the_spoken_route_in_one_request_and_is_never_played(
     ((path, body),) = peer.requests
     assert path == "/v1/responses"
     assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
-    assert 'a JSON object with \\"spoken\\" and \\"written\\"' in json.dumps(body)
+    assert 'a JSON object with \\"claims\\", \\"spoken\\" and \\"written\\"' in json.dumps(body)
     assert result.response_plan.text == compose_envelope(_SPOKEN, _WRITTEN)
     (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
     assert (emitted["voice_text"], emitted["document_text"]) == (_SPOKEN, _WRITTEN)
@@ -452,7 +453,7 @@ def test_a_preset_chooses_the_reply_shape_of_every_request_of_its_turn(
         else:
             assert body["text"] == {"format": SPOKEN_REPLY_FORMAT}
             assert _SPOKEN_REPLY_NOTE not in sent
-            assert 'a JSON object with \\"spoken\\" and \\"written\\"' in sent
+            assert 'a JSON object with \\"claims\\", \\"spoken\\" and \\"written\\"' in sent
     assert result.response_plan.text == answer
 
 
@@ -471,9 +472,9 @@ def test_a_request_after_a_call_starts_a_new_paragraph(
     line: str,
     answer: str,
 ) -> None:
-    """Anthropic labels no phase: the text before a call and the answer after it are apart."""
+    """What was said before a call stays said, and the answer after it is a paragraph apart."""
     with SpokenPeer(
-        [[("final_answer", line), ("call", "kept")], [("final_answer", answer)]]
+        [[("final_answer", _BLOCK + line), ("call", "kept")], [("final_answer", _BLOCK + answer)]]
     ) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
         result = drive_streaming_turn(
@@ -489,7 +490,10 @@ def test_a_request_after_a_call_starts_a_new_paragraph(
 def test_the_line_before_a_call_goes_out_before_the_call_runs(tmp_path: Path) -> None:
     """Its last mark ends the request: no next character comes to release it, so it is let go."""
     line = "我来查一下你记过什么。"
-    outputs = [[("final_answer", line), ("call", "kept")], [("final_answer", "还没有。")]]
+    outputs = [
+        [("final_answer", _BLOCK + line), ("call", "kept")],
+        [("final_answer", _BLOCK + "还没有。")],
+    ]
     with SpokenPeer(outputs) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-early", "我记过什么"))
@@ -504,9 +508,12 @@ def test_the_line_before_a_call_goes_out_before_the_call_runs(tmp_path: Path) ->
 
 
 def test_what_she_said_before_a_call_is_in_the_next_requests_history(tmp_path: Path) -> None:
-    """Anthropic labels no phase: the line before a call is an answer; the next request has it."""
+    """A line spoken before a call is in the next request's history."""
     line = "我把它理解成社区矫正办公室。先查一下地址。"
-    outputs = [[("final_answer", line), ("call", "kept")], [("final_answer", "在 Quadra St。")]]
+    outputs = [
+        [("final_answer", _BLOCK + line), ("call", "kept")],
+        [("final_answer", _BLOCK + "在 Quadra St。")],
+    ]
     with SpokenPeer(outputs) as peer:
         runtime = _preset_runtime(tmp_path, peer.url, spoken_structured=False)
         drive_streaming_turn(

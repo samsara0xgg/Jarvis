@@ -5,19 +5,17 @@ spoken-route tests: an Anthropic event stream that thinks before it writes, with
 its usage, and the OpenAI /v1/responses peer. Only the model's output is scripted.
 """
 
-# ruff: noqa: RUF001 — fullwidth stops in the scripted answers
+
 from __future__ import annotations
 
 import asyncio
 import functools
 import json
-import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
-from jarvis.decision import _ClaimHold, turn_timing
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.runtime.inherent_loop import _serve_turn_timings
@@ -192,25 +190,15 @@ def test_a_held_answer_names_the_hold_that_delayed_its_first_chunk(tmp_path: Pat
     assert request["first_text_ms"] < 1000  # the request itself went at once
 
 
-def test_a_claim_held_until_the_request_ends_is_counted_until_a_chunk_is_out() -> None:
-    """ADR 0263: a claim waits for its request; a wait after a chunk is out is no hold."""
-    timer = turn_timing.TurnTimer(turn_id="T", channel=None, trigger="x", queue_ms=0)
-    token = turn_timing.bind(timer)
-    out: list[str] = []
-    try:
-        held = _ClaimHold(out.append, lambda: None, 0, judged=True)
-        held.feed("我查了，没有。")
-        time.sleep(0.02)
-        assert out == []
-        held.release()
-        assert out == ["我查了，没有。"]
-        assert timer.holds["claim_hold"] >= 15_000_000
-        timer.mark("first_chunk")
-        turn_timing.hold("surrogate", time.monotonic_ns() - 50_000_000)  # too late to matter
-    finally:
-        turn_timing.release(token)
-    assert set(timer.holds) == {"claim_hold"}
-    assert timer.payload()["held_by"] == "claim_hold"
+def test_a_request_records_when_its_claims_block_closed(tmp_path: Path) -> None:
+    """ADR 0320: speech waits for the block, so the request records when it closed."""
+    with SpokenPeer([[("final_answer", f"<claims></claims>{_ANSWER}")]]) as peer:
+        runtime = spoken_runtime(tmp_path, peer.url)
+        heard = spoken_intent(runtime.conn, "T-block", "我想问一下去学校的公交")
+        drive_streaming_turn(runtime, heard)
+    (request,) = _timing(runtime)["requests"]
+    closed = request["opened_ms"] + request["block_ms"]
+    assert request["first_text_ms"] <= closed <= request["done_ms"]
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, Path]:

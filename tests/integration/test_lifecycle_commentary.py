@@ -28,7 +28,6 @@ from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
     commentary_intent_for,
     commentary_speech_text,
-    lead_in_speech_text,
 )
 from jarvis.decision.packet import assemble_packet
 from jarvis.decision.pre_route import pre_route
@@ -48,7 +47,7 @@ from jarvis.runtime import (
 from jarvis.runtime.daemon import output_watchers
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.shared import Event, lang
-from jarvis.shared.lang import CONFIRMED_TOOLS, LONG_WAIT_TOOLS, SLOW_TOOLS
+from jarvis.shared.lang import SLOW_TOOLS
 from jarvis.shared.realtime import (
     new_response_id,
     stable_response_group_id,
@@ -88,8 +87,7 @@ if TYPE_CHECKING:
 
 _WAIT_ZH: Final = lang.variants("commentary.wait", "zh")
 _WAIT_EN: Final = lang.variants("commentary.wait", "en")
-_LONG_ZH: Final = lang.variants("commentary.long_wait", "zh")
-_LONG_EN: Final = lang.variants("commentary.long_wait", "en")
+_WORK_ZH: Final = lang.t("step.work_state", lang="zh")
 _STILL_ZH: Final = lang.variants("commentary.still", "zh")
 _STILL_EN: Final = lang.variants("commentary.still", "en")
 
@@ -137,21 +135,21 @@ def _utterance_event(*, text: str = "现在几点") -> Event:
     )
 
 
-def test_three_rows_speak_a_long_wait_tools_dispatch_his_words_and_jevs_prediction() -> None:
-    """A long-wait tool's dispatch (the action id is the subject), his words and Jev's group.
+def test_three_rows_speak_a_slow_tools_dispatch_his_words_and_jevs_prediction() -> None:
+    """A slow tool's dispatch (the action id is the subject), his words and Jev's group.
 
     Which phrase the picker takes is the runtime's business; the pin is that
-    the phrase comes from the row's declared pool and nothing else.
+    the phrase comes from the row's declared pool, or for a dispatch is the line it is given.
     """
     assert set(_D6_ROWS) == {"action.dispatched", "utterance.received", "route.tool_predicted"}
     intent = commentary_intent_for(
         _action_event("action.dispatched", action_id="ACT-7"),
-        tool_name="refresh_work_state",
+        tool_line=_WORK_ZH,
         pick=_first,
     )
     assert intent is not None
     assert intent.intent_type == "acknowledge"
-    assert intent.content_hint == _LONG_ZH[0]
+    assert intent.content_hint == _WORK_ZH
     assert intent.subject_ref == "ACT-7"
     assert intent.surface_hint == "speech"
     assert intent.freshness_required is True
@@ -163,72 +161,29 @@ def test_three_rows_speak_a_long_wait_tools_dispatch_his_words_and_jevs_predicti
     assert by_words.content_hint == _WAIT_ZH[0]
 
 
-def test_the_slow_list_feeds_the_status_line_and_the_dispatch_says_what_the_tool_does() -> None:
-    """ADR 0115's slow tools show a status line; each also says its line at dispatch (ADR 0136)."""
+def test_the_slow_list_feeds_the_status_line() -> None:
+    """ADR 0115's slow tools show a status line."""
     assert set(SLOW_TOOLS) == {
         "web_search", "web_fetch", "screen_look", "refresh_work_state", "daily_work_report",
         "write_mail_draft",
     }
     for tool_name in SLOW_TOOLS:
         assert tool_status.plan(tool_name) == (SLOW_TOOLS[tool_name], 0.0)
-        intent = commentary_intent_for(
-            _action_event("action.dispatched"), tool_name=tool_name, pick=_first,
-        )
-        assert intent is not None, tool_name
-        long_wait = tool_name in LONG_WAIT_TOOLS
-        assert (intent.content_hint in _LONG_ZH) == long_wait, tool_name
 
 
 def _tool_pool(key: str, language: lang.Language) -> tuple[str, ...]:
     return lang.variants(f"commentary.tool.{key}", language)
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "key"),
-    [
-        ("web_search", "web"), ("web_fetch", "web"), ("screen_look", "screen"),
-        ("search_records", "records"), ("mcp__gmail__gmail_search", "mail"),
-        ("mcp__microsoft__list_events", "calendar"), ("tool_search", "generic"),
-        ("query_activity", "generic"), ("search_notes", "generic"), ("calendar_list", "generic"),
-    ],
-)
-def test_a_dispatch_says_the_line_of_what_the_tool_does(tool_name: str, key: str) -> None:
-    """The line is the tool's own pool, in the language of his words, and claims no result."""
+@pytest.mark.parametrize("tool_name", ["get_current_time", "keep", "kept", "web_search", None])
+def test_a_dispatch_says_no_line_unless_it_is_given_one(tool_name: str | None) -> None:
+    """The runtime gives a line only for a tool it measured slow (ADR 0320)."""
+    assert tool_name is None or tool_name
     event = _action_event("action.dispatched")
-    texts: tuple[tuple[str, lang.Language], ...] = (
-        ("明天天气怎么样", "zh"), ("What's the weather tomorrow", "en"),
-    )
-    for text, language in texts:
-        pool = _tool_pool(key, language)
-        seen = {
-            intent.content_hint
-            for i in range(len(pool))
-            if (
-                intent := commentary_intent_for(
-                    event, user_text=text, tool_name=tool_name, pick=operator.itemgetter(i),
-                )
-            )
-        }
-        assert seen == set(pool), (tool_name, language)
-        assert all(lead_in_speech_text(line) is not None for line in pool), pool
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "get_current_time", "ask_user", "start_night_run", "end_night_run", "keep",
-        "kept", "dismiss_card", "mcp__hue__hue_set_light", *sorted(CONFIRMED_TOOLS), None,
-    ],
-)
-def test_a_quiet_tool_says_nothing_at_dispatch(tool_name: str | None) -> None:
-    """Its answer follows at once, or it speaks or asks for itself (ADR 0136)."""
-    event = _action_event("action.dispatched")
-    assert commentary_intent_for(event, tool_name=tool_name, pick=_first) is None
-
-
-def test_the_confirmation_tools_are_the_ones_the_action_table_names() -> None:
-    """The quiet set reuses the table of what a confirmed tool does rather than copying it."""
-    assert {"mcp__gmail__gmail_send", "spawn_worker"} <= set(CONFIRMED_TOOLS)
+    assert commentary_intent_for(event, pick=_first) is None
+    given = commentary_intent_for(event, tool_line="查日程", pick=_first)
+    assert given is not None
+    assert given.content_hint == "查日程"
 
 
 @pytest.mark.parametrize(("text", "pool"), [("现在几点", _WAIT_ZH), ("What time is it", _WAIT_EN)])
@@ -248,18 +203,6 @@ def test_the_owners_pool_is_what_the_table_holds() -> None:
     """2026-10-02, Allen: these four in each language, 「马上好」 included."""
     assert _WAIT_ZH == ("稍等。", "等一下。", "正在办。", "马上好。")
     assert _WAIT_EN == ("One moment.", "Hold on.", "On it.", "Almost there.")
-
-
-def test_the_long_wait_pool_and_its_tools_are_what_the_owner_chose() -> None:
-    """2026-10-02, Allen: the two slowest jobs say it will take a while."""
-    assert len(_LONG_ZH) == 3
-    assert all("别的" in line for line in _LONG_ZH)
-    assert _LONG_EN == (
-        "This will take a little while. You can ask me something else meanwhile.",
-        "This one takes a bit. Feel free to ask me something else.",
-    )
-    assert set(LONG_WAIT_TOOLS) == {"daily_work_report", "refresh_work_state"}
-    assert set(SLOW_TOOLS) >= LONG_WAIT_TOOLS
 
 
 @pytest.mark.parametrize(("text", "pool"), [("还没好", _STILL_ZH), ("Is it ready", _STILL_EN)])
@@ -288,7 +231,7 @@ def test_non_mapped_event_types_return_none() -> None:
                        "memo.captured", "gate.evaluated", "action.cancelled",
                        "action.timeout_assumed", "turn.started", "response.completed"):
         event = _action_event(event_type)
-        assert commentary_intent_for(event, tool_name="web_search", pick=_first) is None, event_type
+        assert commentary_intent_for(event, tool_line="x", pick=_first) is None, event_type
 
 
 def test_mapped_row_without_action_id_returns_none() -> None:
@@ -302,13 +245,13 @@ def test_mapped_row_without_action_id_returns_none() -> None:
         source_event_id=None,
         correlation=None,
     )
-    assert commentary_intent_for(event, tool_name="web_search", pick=_first) is None
+    assert commentary_intent_for(event, tool_line="x", pick=_first) is None
 
 
 def test_intent_is_frozen_and_never_an_event() -> None:
     """Spec §3.6.3: PresentationIntent is a contract object, not a log row."""
     intent = commentary_intent_for(
-        _action_event("action.dispatched"), tool_name="daily_work_report", pick=_first,
+        _action_event("action.dispatched"), tool_line="写日报", pick=_first,
     )
     assert intent is not None
     assert tuple(intent.__dataclass_fields__) == (
@@ -448,10 +391,17 @@ def _dispatch(  # noqa: PLR0913 — one keyword per field of the proposal
     action_id: str,
     turn_id: str,
     tool_name: str = "refresh_work_state",
-    lead_in: str | None = None,
     arguments: dict[str, Any] | None = None,
+    seed: bool | None = None,
 ) -> Event:
-    """Emit one tool call's proposal and its dispatch; the dispatch is returned."""
+    """Emit one tool call's proposal and its dispatch; the dispatch is returned.
+
+    The log first holds five finished calls of the tool that took 3 s (``seed``; by default for
+    a tool of the slow list only), the measured time that makes a dispatch speak (ADR 0320).
+    They belong to a turn that never started, so the watcher says nothing for them.
+    """
+    if tool_name in SLOW_TOOLS if seed is None else seed:
+        _finished_calls(conn, tool_name, 3000)
     emit_event(
         conn,
         type="action.proposed",
@@ -462,11 +412,34 @@ def _dispatch(  # noqa: PLR0913 — one keyword per field of the proposal
             "caller_principal": "jarvis_llm",
             "risk_level": "L1",
             **({"arguments": arguments} if arguments is not None else {}),
-            **({"lead_in": lead_in} if lead_in else {}),
         },
         correlation={"action_id": action_id, "turn_id": turn_id},
     )
     return _action_row(conn, "action.dispatched", action_id=action_id, turn_id=turn_id)
+
+
+def _finished_calls(conn: sqlite3.Connection, tool_name: str, took_ms: int, count: int = 5) -> None:
+    """``count`` calls of ``tool_name`` that ended ``took_ms`` after they were dispatched."""
+    for index in range(count):
+        action_id = f"SEED-{tool_name}-{index}-{took_ms}"
+        at = 1_600_000_000_000 + index * 10_000
+        correlation = {"action_id": action_id, "turn_id": "T-seed"}
+        emit_event(
+            conn, type="action.proposed", ts_epoch_ms=at, correlation=correlation,
+            payload={
+                "action_id": action_id, "tool_name": tool_name, "turn_id": "T-seed",
+                "caller_principal": "jarvis_llm", "risk_level": "L1",
+            },
+        )
+        ends = (("action.dispatched", at), ("action.result_observed", at + took_ms))
+        for event_type, when in ends:
+            payload = {"action_id": action_id}
+            if event_type == "action.result_observed":
+                payload["semantics"] = "success"
+            emit_event(
+                conn, type=event_type, payload=payload, ts_epoch_ms=when,
+                correlation={"action_id": action_id},
+            )
 
 
 def opens_chunks_emitted(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -526,7 +499,7 @@ def test_action_row_speaks_one_commentary_run_in_the_turn_group(tmp_path: Path) 
         assert payload["response_id"] == started[0]["response_id"]
         assert payload["response_group_id"] == started[0]["response_group_id"]
     assert len(spoken_phrases(reader)) == 1
-    assert spoken_phrases(reader)[0] in _LONG_ZH
+    assert spoken_phrases(reader)[0] == _WORK_ZH
     assert typed_payloads(reader, "surface.response_open")[0]["attention_channel"] == (
         COMMENTARY_ATTENTION_CHANNEL
     )
@@ -663,7 +636,7 @@ def test_live_pending_confirmation_silences_commentary(tmp_path: Path) -> None:
         assert _count(reader, "surface.response_emitted") == 1
     # `_only_phrase` asserts there is exactly one; the second dispatch spoke and
     # the silenced first one did not take the turn's slot with it.
-    assert only_phrase(reader) in _LONG_ZH
+    assert only_phrase(reader) == _WORK_ZH
     assert typed_payloads(reader, "response.started")[0]["active_subject_ref"] == "ACT-c2"
 
 
@@ -756,18 +729,18 @@ def test_every_phrase_of_the_pool_can_be_heard(
 
 
 @pytest.mark.parametrize(
-    ("transcript", "tool_name", "pool"),
+    ("transcript", "tool_name", "key", "language"),
     [
-        ("Write today's report", "daily_work_report", _LONG_EN),
-        ("把今天的工作报告写一下", "daily_work_report", _LONG_ZH),
-        ("Refresh my work state", "refresh_work_state", _LONG_EN),
-        ("刷新一下工作状态", "refresh_work_state", _LONG_ZH),
+        ("Write today's report", "daily_work_report", "report", "en"),
+        ("把今天的工作报告写一下", "daily_work_report", "report", "zh"),
+        ("Refresh my work state", "refresh_work_state", "work_state", "en"),
+        ("刷新一下工作状态", "refresh_work_state", "work_state", "zh"),
     ],
 )
-def test_a_long_wait_tool_says_one_long_line_in_the_language_allen_used(
-    tmp_path: Path, transcript: str, tool_name: str, pool: tuple[str, ...],
+def test_a_measured_slow_tool_says_its_step_line_in_the_language_allen_used(
+    tmp_path: Path, transcript: str, tool_name: str, key: str, language: lang.Language,
 ) -> None:
-    """2026-09-24 live: an English web search heard "这就去办。"; the long pool follows it too."""
+    """ADR 0320: the dispatch of a tool the log shows slow says the step table's line."""
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -775,51 +748,47 @@ def test_a_long_wait_tool_says_one_long_line_in_the_language_allen_used(
         _dispatch(runtime.conn, action_id="ACT-lang", turn_id="T-lang", tool_name=tool_name)
         _turn_spoke(observer, reader, "T-lang")
 
-    assert only_phrase(reader) in pool
+    assert only_phrase(reader) == lang.t(f"step.{key}", lang=language)
 
 
-def test_a_spoken_turn_hears_the_models_own_line_unless_it_claims_a_result(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("finished", "took_ms", "speaks"),
+    [(5, 2000, True), (20, 2500, True), (4, 9000, False), (5, 1999, False), (0, 0, False)],
+)
+def test_a_dispatch_speaks_only_for_a_tool_with_five_calls_and_a_median_over_the_setting(
+    tmp_path: Path, finished: int, took_ms: int, *, speaks: bool,
 ) -> None:
-    """docs/plans/speak-as-written-proposal.md: the model's line replaces the phrase.
-
-    A line written with a bookkeeping call speaks at the next dispatch that speaks
-    (the 2026-09-30 live run heard it 5 s later, at the first working one); one that
-    already states a result, or runs past one sentence, gives way to the fixed
-    phrase.
-    """
+    """Fewer than 5 finished calls is no measurement; the median must reach ``voice.lead_in_ms``."""
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
-    line = "我查一下明天维多利亚的天气。"
-    cases: list[tuple[str, list[tuple[str, str | None]], str | None]] = [
-        ("T-line", [("refresh_work_state", line)], line),
-        ("T-early", [("get_current_time", line), ("refresh_work_state", None)], line),
-        ("T-claim", [("refresh_work_state", "已经查到了。")], None),
-        ("T-long", [("refresh_work_state", "我查一下" + "明天维多利亚的天气" * 7)], None),
-    ]
     with CommentaryObserver(runtime) as observer:
-        for turn_id, calls, _ in cases:
-            _user_turn(runtime, turn_id, transcript="明天维多利亚天气怎么样")
-            for index, (tool_name, lead_in) in enumerate(calls):
-                _dispatch(
-                    runtime.conn,
-                    action_id=f"ACT-{turn_id}-{index}",
-                    turn_id=turn_id,
-                    tool_name=tool_name,
-                    lead_in=lead_in,
-                )
-            _turn_spoke(observer, reader, turn_id)
+        _user_turn(runtime, "T-med")
+        if finished:
+            _finished_calls(runtime.conn, "calendar_list", took_ms, finished)
+        _dispatch(
+            runtime.conn, action_id="ACT-med", turn_id="T-med", tool_name="calendar_list",
+            seed=False,
+        )
+        observer.quiesce()
+    assert (_count(reader, "response.started") == 1) is speaks
 
-    for turn_id, _, spoken in cases:
-        (payload,) = _commentary_emitted(reader, turn_id)
-        allowed = [spoken] if spoken else _LONG_ZH
-        assert parse_response_channels(payload["text"]).voice in allowed, turn_id
-    subjects = {
-        started["response_group_id"]: started["active_subject_ref"]
-        for started in typed_payloads(reader, "response.started")
-    }
-    # The first call is a quiet tool: its line speaks at the second.
-    assert subjects[stable_response_group_id("T-early")] == "ACT-T-early-1"
+
+def test_the_setting_moves_the_bar_and_the_median_ignores_one_slow_call(tmp_path: Path) -> None:
+    """``voice.lead_in_ms`` is the bar; a median of 20 calls is not moved by one outlier."""
+    runtime = commentary_runtime(tmp_path)
+    reader = _reader(runtime)
+    config = {**runtime.config, "voice": {"lead_in_ms": 500}}
+    runtime = replace(runtime, config=config)
+    with CommentaryObserver(runtime) as observer:
+        _user_turn(runtime, "T-bar")
+        _finished_calls(runtime.conn, "schedule", 600, 4)
+        _finished_calls(runtime.conn, "schedule", 60_000, 1)
+        _dispatch(
+            runtime.conn, action_id="ACT-bar", turn_id="T-bar", tool_name="schedule",
+            seed=False,
+        )
+        observer.quiesce()
+    assert only_phrase(reader) == lang.t("step.calendar", lang="zh")
 
 
 def test_a_second_row_in_the_same_turn_opens_nothing(tmp_path: Path) -> None:
@@ -1133,61 +1102,6 @@ def test_a_typed_turn_and_a_live_turn_hear_nothing(tmp_path: Path) -> None:
         _turn_spoke(observer, reader, "T-voice")
 
 
-def test_the_models_own_line_is_said_at_the_clock_too(tmp_path: Path) -> None:
-    """A line written before a quick call speaks if the answer is still not out at the clock."""
-    runtime = commentary_runtime(tmp_path)
-    reader = _reader(runtime)
-    line = "我看一下现在几点。"
-    with CommentaryObserver(runtime) as observer:
-        _user_turn(runtime, "T-lead")
-        _dispatch(
-            runtime.conn, action_id="ACT-lead", turn_id="T-lead",
-            tool_name="get_current_time", lead_in=line,
-        )
-        observer.advance(_SHIPPED_CLOCK_S)
-        _turn_spoke(observer, reader, "T-lead")
-
-    assert only_phrase(reader) == line
-
-
-def test_a_deep_web_search_says_its_fixed_line_and_a_quick_one_the_web_line() -> None:
-    """The deep line names the wait; only web_search with depth deep says it."""
-    event = _action_event("action.dispatched")
-    texts: tuple[tuple[str, lang.Language], ...] = (
-        ("帮我挑个吸尘器", "zh"), ("Help me pick a vacuum", "en"),
-    )
-    for text, language in texts:
-        pool = _tool_pool("web_deep", language)
-        quick = _tool_pool("web", language)
-        for depth, expected in (("deep", pool), ("quick", quick), (None, quick)):
-            intent = commentary_intent_for(
-                event, user_text=text, tool_name="web_search", tool_depth=depth, pick=_first,
-            )
-            assert intent is not None
-            assert intent.content_hint == expected[0], (depth, language)
-    assert all("半分钟" in line for line in _tool_pool("web_deep", "zh"))
-    other = commentary_intent_for(
-        event, tool_name="web_fetch", tool_depth="deep", pick=_first,
-    )
-    assert other is not None
-    assert other.content_hint == _tool_pool("web", "zh")[0]
-
-
-def test_a_deep_dispatch_keeps_its_fixed_line_over_the_models_lead_in(tmp_path: Path) -> None:
-    """The fixed line carries the wait, so the model's line before the call does not replace it."""
-    runtime = commentary_runtime(tmp_path)
-    reader = _reader(runtime)
-    with CommentaryObserver(runtime) as observer:
-        _user_turn(runtime, "T-deep", transcript="帮我挑个吸尘器")
-        _dispatch(
-            runtime.conn, action_id="ACT-deep", turn_id="T-deep", tool_name="web_search",
-            lead_in="我去搜搜看。", arguments={"query": "吸尘器", "depth": "deep"},
-        )
-        _turn_spoke(observer, reader, "T-deep")
-
-    assert only_phrase(reader) in _tool_pool("web_deep", "zh")
-
-
 def test_a_confirmation_pending_at_the_clock_keeps_it_silent(tmp_path: Path) -> None:
     """The ask owns the surface (ADR-0014), whichever trigger would have spoken."""
     runtime = commentary_runtime(tmp_path)
@@ -1423,7 +1337,7 @@ def test_a_long_wait_tool_speaks_at_dispatch_and_the_follow_ups_still_come(
         observer.advance(_SHIPPED_FOLLOW_UPS_S[0] - _SHIPPED_CLOCK_S)
     lines = _lines(reader, "T-report")
     assert len(lines) == _SHIPPED_MAX_LINES
-    assert lines[0] in _LONG_ZH
+    assert lines[0] == lang.t("step.report", lang="zh")
     assert all(line in _STILL_ZH for line in lines[1:])
 
 
@@ -1443,16 +1357,15 @@ def test_a_quiet_tool_dispatch_says_nothing_before_the_clock(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
-    ("transcript", "key", "language"),
-    [("明天天气怎么样", "web", "zh"), ("What's the weather tomorrow", "web", "en")],
+    ("transcript", "language"),
+    [("明天天气怎么样", "zh"), ("What's the weather tomorrow", "en")],
 )
 def test_a_tool_dispatch_says_its_line_in_his_language_and_the_clock_adds_no_second(
     tmp_path: Path,
     transcript: str,
-    key: str,
     language: lang.Language,
 ) -> None:
-    """ADR 0136: web_search says the web line at dispatch; a later tool and the clock add none."""
+    """ADR 0320: web_search says its step line at dispatch; a later tool and the clock add none."""
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     with CommentaryObserver(runtime) as observer:
@@ -1462,7 +1375,7 @@ def test_a_tool_dispatch_says_its_line_in_his_language_and_the_clock_adds_no_sec
         _dispatch(runtime.conn, action_id="ACT-w2", turn_id="T-web", tool_name="screen_look")
         observer.advance(_SHIPPED_CLOCK_S)  # past the clock
     assert _lines(reader, "T-web") == [only_phrase(reader)]
-    assert only_phrase(reader) in _tool_pool(key, language)
+    assert only_phrase(reader) == lang.t("step.web", lang=language)
     started = typed_payloads(reader, "response.started")
     assert [p["active_subject_ref"] for p in started] == ["ACT-w1"]
 
@@ -1488,24 +1401,6 @@ def test_a_follow_up_keeps_off_a_pending_confirmation(tmp_path: Path) -> None:
         )
         observer.advance(_SHIPPED_FOLLOW_UPS_S[0])
     assert len(_lines(reader, "T-ask2")) == 1
-
-
-def test_the_models_own_line_replaces_the_first_line_only(tmp_path: Path) -> None:
-    """A lead_in is said at the dispatch; the follow-up still comes from the still pool."""
-    runtime = commentary_runtime(tmp_path)
-    reader = _reader(runtime)
-    line = "我看一下现在几点。"
-    with CommentaryObserver(runtime) as observer:
-        _user_turn(runtime, "T-lead2")
-        _dispatch(
-            runtime.conn, action_id="ACT-l2", turn_id="T-lead2",
-            tool_name="calendar_list", lead_in=line,
-        )
-        observer.advance(_SHIPPED_FOLLOW_UPS_S[0])
-        assert len(_lines(reader, "T-lead2")) == _SHIPPED_MAX_LINES
-    lines = _lines(reader, "T-lead2")
-    assert lines[0] == line
-    assert all(item in _STILL_ZH for item in lines[1:])
 
 
 # --- the answer and the line race (live test 2026-10-01, Tbd3d5d36) -------------

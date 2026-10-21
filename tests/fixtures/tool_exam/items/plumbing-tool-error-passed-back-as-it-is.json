@@ -27,7 +27,7 @@
         "request": 1,
         "role": "tool",
         "tool": "schedule",
-        "matches": "^\\{\"error\": \"schedule: action must be one of read, add"
+        "matches": "^\\{\"receipt\": \"r[0-9a-f]{6}\", \"error\": \"schedule: action must be one of read, add"
       }
     ]
   }

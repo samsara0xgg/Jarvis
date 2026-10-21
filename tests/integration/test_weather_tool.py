@@ -20,7 +20,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
-from jarvis.decision.commentary import _dispatch_key
 from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime.home import weather_lookup
 from jarvis.runtime.weatherkit import NOT_SET_UP, WeatherKit
@@ -586,12 +585,6 @@ def test_the_description_offers_here_only_where_a_location_can_be_read(
         "place", "start_date", "end_date", "hourly", "air_quality",
     }
     assert with_here.input_schema["required"] == []
-
-
-def test_the_weather_call_says_no_wait_line() -> None:
-    """A weather call is quiet at dispatch; a search still says its line."""
-    assert _dispatch_key("weather") is None
-    assert _dispatch_key("web_search") == "commentary.tool.web"
 
 
 def test_the_shipped_config_names_the_owners_key_team_and_services_ids_and_the_key_path() -> None:

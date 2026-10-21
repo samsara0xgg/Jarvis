@@ -681,7 +681,7 @@ def test_a_sentence_after_the_first_has_started_speaking_leaves_it_to_barge_in(
 ) -> None:
     """Unchanged: once any of the answer has reached the speaker neither turn is cancelled."""
     with SpokenPeer(
-        [[("final_answer", "第一句。第二句。")], [("final_answer", "好的。")]],
+        [[("final_answer", "<claims></claims>第一句。第二句。")], [("final_answer", "好的。")]],
         hold=True,
     ) as peer:
         runtime = _merge_rig(tmp_path, peer)
@@ -876,7 +876,7 @@ def test_a_sentence_that_goes_on_after_the_first_has_started_to_speak_stops_it(
     """
     answer = "八点二十有一班。"
     with SpokenPeer(
-        [[("final_answer", "我先查一下。再看看。")], [("final_answer", answer)]],
+        [[("final_answer", "<claims></claims>我先查一下。再看看。")], [("final_answer", answer)]],
         hold=True,
     ) as peer:
         runtime = _merge_rig(tmp_path, peer)

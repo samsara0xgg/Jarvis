@@ -1117,6 +1117,12 @@ confirmation:
   words_preset: haiku
   words_timeout_s: 4
 
+# ADR 0320 — a spoken turn says the step table's line for a tool when its call starts, only when
+# that tool's median time over its last 20 finished calls in the log reaches lead_in_ms (and at
+# least 5 finished calls are on the log).  Every other call starts silent.
+voice:
+  lead_in_ms: 2000
+
 # ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has the
 # confirmation outbox adoption switch on.
 realtime:
@@ -1255,9 +1261,9 @@ realtime:
       enabled: false
     # docs/plans/speak-as-written-proposal.md.  spoken_streaming streams every
     # model request of a turn Allen spoke through the Responses API and speaks
-    # the model's own answer sentence by sentence, with no rewrite; its line
-    # before a tool call rides action.proposed as lead_in, which commentary
-    # speaks in place of the fixed line.  Speech starts before the
+    # the model's own answer sentence by sentence, with no rewrite, once the
+    # reply's claims block has passed (ADR 0320); nothing it writes before a tool
+    # call is spoken (a slow tool's line is commentary's).  Speech starts before the
     # answer is complete only with streaming_output.speak_from_segments.
     # first_clause_chars > 0 lets the first thing said end at the first
     # clause end (，；,;) at or past that many
@@ -1265,9 +1271,10 @@ realtime:
     # 0 waits for the sentence's end.  An Anthropic preset takes this route too, over
     # /v1/messages with output_config.format: it labels no line before a call.  structured (ADR 0114, only with
     # spoken_streaming on) sends every request of such a turn with a strict
-    # JSON schema {spoken, written}: the spoken line is streamed and said as
-    # written, the written part (lists, times, links) is for the screen only,
-    # shown under the spoken line.  A preset that says spoken_structured: false
+    # JSON schema {claims, spoken, written}: the claims are checked first, the
+    # spoken line is streamed and said as written, the written part (lists,
+    # times, links) is for the screen only, shown under the spoken line.  A
+    # preset that says spoken_structured: false
     # (the Claude presets, ADR 0241) takes the unstructured reply instead.
     spoken_streaming:
       enabled: false
@@ -1311,25 +1318,21 @@ realtime:
     slow_results:
       enabled: true
   # ADR-0008 Step 5 (D6), as ADR 0116 reshapes it.  With commentary on, a turn
-  # Allen spoke says one short fixed line (a random pick from a small pool, in
-  # the language of his words) when it is taking a while (ADR 0121): 4.0 s after
-  # his words with nothing of the answer started, tool or not, or at the
-  # dispatch of refresh_work_state or daily_work_report (no earlier than 1.5 s
-  # after his words), whose line says it will take a while.  While the answer
-  # still has not started, a follow-up ("still working") at 12 s and at 25 s,
-  # three lines at most per turn.  Never after the answer has started or the
-  # turn has ended (a line emitted but not yet heard is dropped when the answer
-  # starts), never over a pending confirmation, never for a typed or GPT-Live
-  # turn.  It is a
+  # Allen spoke says one short line when it is taking a while (ADR 0121): a fixed
+  # line (a random pick from a small pool, in the language of his words) 8 s after
+  # his words with nothing of the answer started, tool or not; or, at the dispatch
+  # of a tool whose median call time reaches voice.lead_in_ms (no earlier than
+  # 1.5 s after his words), that tool's line from the step table (ADR 0320).  While
+  # the answer still has not started, one follow-up ("still working") at 25 s, two
+  # lines at most per turn.  Never after the answer has started or the turn has
+  # ended (a line emitted but not yet heard is dropped when the answer starts),
+  # never over a pending confirmation, never for a typed or GPT-Live turn.  It is a
   # `phase="commentary"` ResponseRun sharing the turn's response_group_id; the
   # final answer is never dropped or superseded by it.  No model writes the
   # line.  It additionally requires realtime.enabled and downgrades once, with
   # one warning, without it.
   # Off from ADR 0045 to ADR 0116: every lifecycle row spoke, and "结果回来了"
-  # landed with no lead-up whenever a tool finished within a second.  In a
-  # spoken_streaming turn it says the model's own line before the call instead
-  # of the pool, unless that line runs over 60 characters or already claims a
-  # result.
+  # landed with no lead-up whenever a tool finished within a second.
   commentary:
     enabled: true
   # ADR 0122.  When no Tier 0 row matches, ask Jev (TypeSafe's hosted decision

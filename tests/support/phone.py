@@ -1057,8 +1057,12 @@ def logged_tool_call(  # noqa: PLR0913 - one keyword per thing a logged call can
     take: float = 0.15,
     ending: str = "action.result_observed",
     error: str | None = None,
+    receipt: dict[str, Any] | None = None,
 ) -> None:
-    """One tool call as the dispatcher logs it: proposed, running, then its terminal row."""
+    """One tool call as the dispatcher logs it: proposed, running, then its terminal row.
+
+    ``receipt`` is the row form of the call's receipt; without it the row is an old one.
+    """
     conn = open_event_log(host.log)
     action = f"A-{tool}-{time.monotonic_ns()}"
     try:
@@ -1082,9 +1086,11 @@ def logged_tool_call(  # noqa: PLR0913 - one keyword per thing a logged call can
             correlation={"action_id": action, "turn_id": turn_id},
         )
         time.sleep(take)
-        ended = {"action_id": action}
+        ended: dict[str, Any] = {"action_id": action}
         if ending == "action.result_observed":
             ended |= {"semantics": "error" if error else "observation", "tool_output": "{}"}
+            if receipt is not None:
+                ended["receipt"] = receipt
         if error:
             ended["error"] = error
         emit_event(

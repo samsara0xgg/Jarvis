@@ -30,9 +30,10 @@ run in the results file (a run with no menu line before it is read through every
 uses them. An optional ``prompt-patches.json`` (``[{old, new}]``)
 rewrites the logged system prompt the way this checkout's prompt reads (see :func:`patched`).
 
-``run --guards`` applies the decision loop's two turn guards (ADR 0240, the same code) to the first
+``run --guards`` applies the decision loop's two turn guards (the same code) to the first
 response: a call identical to an earlier one in the request's history (with no write since) gets
-the repeat note as its result, or an answer no call backs gets the program's note; either way one
+the repeat note as its result (ADR 0240), or an answer whose claims block fails against the
+receipts the request shows gets the program's note (ADR 0320); either way one
 more request follows, exactly as the runtime would send it, and that one is the step judged. The
 result line keeps both steps (``guarded``: kind, first calls, first text, first usage) and
 ``score`` marks such runs ``(g)``. A response that mixes repeats with a call that would run is
@@ -78,16 +79,11 @@ from jarvis.decision import (
     SPOKEN_REPLY_FORMAT,
     _tool_menu,
 )
+from jarvis.decision import claims as claims_check
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.policy import effective_policy, surface_for
-from jarvis.decision.turn_guards import (
-    TurnCall,
-    calendar_in_view,
-    call_key,
-    repeated_call,
-    ride_stop_in_view,
-    unbacked_claim,
-)
+from jarvis.decision.reaction_markup import split_claims
+from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call
 from jarvis.deployment import RuntimePaths, load_env_file
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
 from jarvis.runtime import register_catalog
@@ -97,6 +93,7 @@ from jarvis.runtime.plugin_connections import PluginConnections, _Active
 from jarvis.runtime.plugins import Plugins
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
+from jarvis.shared.receipts import Receipt, derive
 from jarvis.state.ledger import LedgerSources
 from scripts.replay_decision import _client, replay_once
 
@@ -248,7 +245,7 @@ def structured_presets(config: Path, presets: Sequence[str]) -> dict[str, bool]:
 
 
 _NOTE_STARTS = (
-    'Your reply is a JSON object with "spoken"', "Your reply is spoken aloud as you write it.",
+    'Your reply is a JSON object with "', "Your reply is spoken aloud as you write it.",
 )
 """How either spoken reply note begins, in every version the logged requests carry."""
 
@@ -320,25 +317,6 @@ async def _step(
 _LANGUAGE_LINE = re.compile(r"\[Reply language for this turn: [^\]]+\]")
 
 
-_STATE_HEADER = re.compile(r"\[(?:Current state|State when this was said) \| from the program")
-
-
-def _state_block(request: Mapping[str, Any]) -> str:
-    """The text of the request's last user message that carries a state block, else "".
-
-    That is the turn's own block: earlier ones replayed in the history come before it. A
-    request logged before the calendar line existed has none, so no calendar claim is backed.
-    """
-    for item in reversed(request["input"] if "input" in request else request["messages"]):
-        content = item.get("content") if item.get("role") == "user" else None
-        text = content if isinstance(content, str) else "\n".join(
-            str(part.get("text", "")) for part in content or () if isinstance(part, dict)
-        )
-        if _STATE_HEADER.search(text):
-            return text
-    return ""
-
-
 def _key(args: Any) -> str:  # noqa: ANN401 - a parsed argument object, or the raw text of one
     return call_key(args) if isinstance(args, dict) else str(args)
 
@@ -393,8 +371,46 @@ def _continued(
     return {**request, "messages": [*request["messages"], *turn, *extra]}
 
 
+_HISTORY_RECEIPT = re.compile(
+    r"\((r[0-9a-f]{6}), (?:([a-z_]+:\S+), )?(done|pending|needs_choice|failed)\b",
+)
+
+
+def _shown(
+    request: Mapping[str, Any], read_only: Mapping[str, bool],
+) -> tuple[dict[str, Receipt], list[tuple[str, Receipt]]]:
+    """The receipts the request shows (ADR 0320) and, apart, the ones of this turn's own calls.
+
+    A tool result carries its receipt's id; the exam has no log, so the receipt is derived from
+    the call as it ended. A history line's id is read as that line says it: a change when it
+    names an object, else a read.
+    """
+    earlier, outputs = _history(request)
+    this_turn: list[tuple[str, Receipt]] = []
+    for call, out in zip(earlier, outputs, strict=False):
+        try:
+            body = json.loads(out)
+        except ValueError:
+            continue
+        if isinstance(body, dict) and isinstance(body.get("receipt"), str):
+            args = call["args"] if isinstance(call["args"], dict) else {}
+            code = "error" if _failed(out) else None
+            reads = read_only.get(call["name"], False)
+            this_turn.append((body["receipt"], derive(call["name"], args, reads=reads, code=code)))
+    shown = dict(this_turn)
+    text = json.dumps(request, ensure_ascii=False)
+    for rid, obj, status in _HISTORY_RECEIPT.findall(text):
+        failed = status == "failed"
+        shown.setdefault(rid, Receipt(
+            status, not obj, "history line",
+            object=obj or None, failure="dont_retry" if failed else None,
+        ))
+    return shown, this_turn
+
+
 def _guard(
     request: Mapping[str, Any], line: Mapping[str, Any], read_only: Mapping[str, bool],
+    menu: Collection[str],
 ) -> tuple[str, dict[str, Any]] | None:
     """The guard the loop would apply to a first response, and the request that follows it."""
     turn = _turn_calls(request, read_only)
@@ -404,11 +420,15 @@ def _guard(
         if all(notes):  # one that would run has a result this exam cannot give
             return "repeat", _continued(request, text, calls, [str(n) for n in notes], None)
         return None
-    state = _state_block(request)
-    note = unbacked_claim(
-        text, turn, calendar_seen=calendar_in_view(state), ride_stop_seen=ride_stop_in_view(state),
+    _clean, _emoji, block = split_claims(text)
+    shown, this_turn = _shown(request, read_only)
+    verdicts = claims_check.check(
+        block, shown=shown, offerable=lambda tool: tool in menu and read_only.get(tool, False),
     )
-    return None if note is None else ("unbacked", _continued(request, text, [], [], note))
+    failed = [v for v in verdicts if not v.ok]
+    if not failed:
+        return None
+    return "claims", _continued(request, text, [], [], claims_check.note(failed, this_turn))
 
 
 async def _one(
@@ -417,7 +437,10 @@ async def _one(
 ) -> dict[str, Any]:
     """One run: its first step, then the guard's follow-up when ``--guards`` gave ``read_only``."""
     first = await _step(client, request, catalog, base)
-    guard = None if read_only is None or first["error"] else _guard(request, first, read_only)
+    guard = (
+        None if read_only is None or first["error"]
+        else _guard(request, first, read_only, catalog.keys())
+    )
     if guard is None:
         return first
     kind, followed = guard

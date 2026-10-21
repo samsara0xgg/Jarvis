@@ -317,14 +317,26 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         schema_version=1,
     ),
     # ADR 0240 — a turn guard acted: a call the model repeated was answered with a note
-    # instead of running (`repeat`, with its `tool`), or its answer said something no call did
-    # and went back once (`unbacked`, with what it `said`).
+    # instead of running (`repeat`, with its `tool`).
     EventTypeSchema(
         event_type="turn.guard_fired",
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=("turn_id", "guard"),
-        optional_payload=("tool", "said"),
+        optional_payload=("tool",),
+        schema_version=1,
+    ),
+    # ADR 0320 — a reply's claims block was checked against the receipts: `entries` as written,
+    # each with its verdict (`line`, `kind`, `ok`, `why`), whether the answer was `sent_back`,
+    # and whether the reply had a block at all (`had_block`). `spoken_as_written`: it failed and
+    # was spoken anyway; `ended_in_call` / `stopped_at_call`: the reply went on to a tool call,
+    # and speech stopped there.
+    EventTypeSchema(
+        event_type="answer.claims_checked",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("turn_id", "had_block", "entries", "sent_back"),
+        optional_payload=("spoken_as_written", "ended_in_call", "stopped_at_call"),
         schema_version=1,
     ),
     EventTypeSchema(

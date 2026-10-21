@@ -53,7 +53,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         "spend_cap",
         "dashboard", "agents", "jev_log", "maps", "weather", "voiceprint",
         "tools.web",
-        "tools.screen.vision_preset", "tools.plugins", "tools.mcp", "confirmation",
+        "tools.screen.vision_preset", "tools.plugins", "tools.mcp", "confirmation", "voice",
         "diagnostics.log_llm_io", "dictation.polish_preset", "push", "locate", "session",
         "reply_language",
         "onboarded",

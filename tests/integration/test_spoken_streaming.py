@@ -36,12 +36,13 @@ if TYPE_CHECKING:
 
 
 _LINE = "我看一下你的备忘录。"
+_BLOCK = "<claims></claims>"  # ADR 0320: every answer opens with its claims block
 
 
 def test_the_answer_speaks_sentence_by_sentence_from_one_request(tmp_path: Path) -> None:
     """The first sentence commits while the answer is still open; nothing rewrites it."""
     answer = "我能听见你。今天也辛苦了。"
-    with SpokenPeer([[("final_answer", answer)]], hold=True) as peer:
+    with SpokenPeer([[("final_answer", _BLOCK + answer)]], hold=True) as peer:
         runtime = spoken_runtime(tmp_path, peer.url)
         intent = spoken_intent(runtime.conn, "turn-chat", "你能听见我吗")
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -79,7 +80,7 @@ def test_the_first_clause_is_said_before_the_first_sentence_ends(
     answer = "今天北京是晴天，气温二十度左右。明天也差不多。"
     config = {"spoken_streaming": {"enabled": True, "first_clause_chars": first_clause_chars}}
     chars = Wave4ResponseFlags.from_mapping(config).spoken_first_clause_chars
-    with SpokenPeer([[("final_answer", answer)]], hold=True, hold_at="，.") as peer:
+    with SpokenPeer([[("final_answer", _BLOCK + answer)]], hold=True, hold_at="，.") as peer:
         runtime = spoken_runtime(tmp_path, peer.url)
         flags = replace(runtime.response_flags, spoken_first_clause_chars=chars)
         runtime = replace(runtime, response_flags=flags)
@@ -108,10 +109,12 @@ def test_the_first_clause_is_said_before_the_first_sentence_ends(
         assert chunks == ["今天北京是晴天，气温二十度左右。", "明天也差不多。"]
 
 
-def test_the_line_before_a_call_rides_its_proposal_and_never_streams(tmp_path: Path) -> None:
-    """The ``commentary`` line goes to ``action.proposed`` and back to the model, not a chunk."""
+def test_the_text_before_a_call_is_never_spoken_and_never_goes_back_to_the_model(
+    tmp_path: Path,
+) -> None:
+    """A reply with no block that ends in a call is dropped: not a chunk, not in the history."""
     answer = "你还没有记过备忘录。"
-    outputs = [[("commentary", _LINE), ("call", "kept")], [("final_answer", answer)]]
+    outputs = [[("commentary", _LINE), ("call", "kept")], [("final_answer", _BLOCK + answer)]]
     with SpokenPeer(outputs) as peer:
         runtime = spoken_runtime(tmp_path, peer.url)
         result = drive_streaming_turn(
@@ -119,14 +122,15 @@ def test_the_line_before_a_call_rides_its_proposal_and_never_streams(tmp_path: P
         )
     conn = runtime.conn
     (proposed,) = logged_payloads(conn, "action.proposed")
-    assert (proposed["tool_name"], proposed["lead_in"]) == ("kept", _LINE)
+    assert proposed["tool_name"] == "kept"
+    assert "lead_in" not in proposed
     assert [payload["text"] for payload in logged_payloads(conn, "surface.response_chunk")] == [
         answer
     ]
     assert result.response_plan.text == answer
     assert len(peer.requests) == 2
     second = peer.requests[1][1]["input"]
-    assert {"role": "assistant", "content": _LINE, "phase": "commentary"} in second
+    assert _LINE not in json.dumps(second, ensure_ascii=False)
     assert [item["call_id"] for item in second if item.get("type") == "function_call"] == [
         "call-1",
     ]
@@ -139,27 +143,11 @@ def test_the_line_before_a_call_rides_its_proposal_and_never_streams(tmp_path: P
     assert second[-1]["content"].endswith("\n[Reply language for this turn: Chinese]")
 
 
-def test_a_response_that_ends_on_its_line_gets_one_more_request(tmp_path: Path) -> None:
-    """Asked once more to do what it said; a second line alone is then the answer."""
-    with SpokenPeer([[("commentary", _LINE)], [("commentary", _LINE)]]) as peer:
-        runtime = spoken_runtime(tmp_path, peer.url)
-        result = drive_streaming_turn(
-            runtime, spoken_intent(runtime.conn, "turn-line", "我记过什么")
-        )
-    assert len(peer.requests) == 2
-    assert peer.requests[1][1]["input"][-1] == {
-        "role": "assistant",
-        "content": _LINE,
-        "phase": "commentary",
-    }
-    assert result.response_plan.text == _LINE
-
-
 def test_citation_markup_is_never_spoken(tmp_path: Path) -> None:
     """OpenAI's citation markup goes even when it arrives split across deltas."""
     cite = "\ue200cite\ue202turn0search0\ue202turn0search4\ue201"
     answer = f"这叫瑞利散射。{cite}天空因此是蓝色的。"
-    with SpokenPeer([[("final_answer", answer)]]) as peer:
+    with SpokenPeer([[("final_answer", _BLOCK + answer)]]) as peer:
         runtime = spoken_runtime(tmp_path, peer.url)
         result = drive_streaming_turn(
             runtime, spoken_intent(runtime.conn, "turn-cite", "天空为什么是蓝的")
@@ -174,7 +162,7 @@ def test_an_answer_that_opens_with_markup_is_delivered_whole_unrewritten(tmp_pat
     """Nothing streams past markup, so the answer goes out complete, as written."""
     answer = "**冰**从空气里吸热所以会融化。"
     cite = "\ue200cite\ue202turn0search0\ue201"
-    with SpokenPeer([[("final_answer", answer + cite)]]) as peer:
+    with SpokenPeer([[("final_answer", _BLOCK + answer + cite)]]) as peer:
         runtime = spoken_runtime(tmp_path, peer.url)
         result = drive_streaming_turn(
             runtime, spoken_intent(runtime.conn, "turn-markup", "冰为什么会化")

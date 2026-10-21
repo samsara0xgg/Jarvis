@@ -212,10 +212,10 @@ def test_projections_by_turn_and_by_object_and_old_rows_fold_to_derived(tmp_path
     conn = open_event_log(host.log)
     try:
         by_turn = turn_receipts(conn, ["T1", "T2", "T9"])
-        assert [r.line for r in by_turn["T2"]] == [
+        assert [r.line for _, r in by_turn["T2"]] == [
             "Moved A", "ran keep(text=old row)",
         ]
-        assert [r.derived for r in by_turn["T2"]] == [False, True]
+        assert [r.derived for _, r in by_turn["T2"]] == [False, True]
         assert "T9" not in by_turn
         latest = object_receipts(conn)["thing:aaaaaa"]
         assert (latest.turn_id, latest.tool, latest.receipt.line) == ("T2", "schedule", "Moved A")

@@ -13,8 +13,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from jarvis.shared.receipts import Receipt, said
-from jarvis.shared.steps import Step, StepFold, summarize
+from jarvis.shared.receipts import Receipt, receipt_id, said
+from jarvis.shared.steps import ENDS_ACTION, Step, StepFold, summarize
 from jarvis.state.event_log import turn_action_events, turns_of_events
 
 if TYPE_CHECKING:
@@ -49,8 +49,8 @@ def answer_steps(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[s
 
 def turn_receipts(
     conn: sqlite3.Connection, turn_ids: Iterable[str],
-) -> dict[str, tuple[Receipt, ...]]:
-    """``{turn id: its receipts in call order}`` (ADR 0319), read from the Event Log.
+) -> dict[str, tuple[tuple[str, Receipt], ...]]:
+    """``{turn id: (receipt id, receipt) in call order}`` (ADR 0319, ADR 0320), from the log.
 
     The projection by turn, folded by the same :class:`~jarvis.shared.steps.StepFold` as the
     steps: a call has its receipt once it ended (a call still running has none yet), and an old
@@ -63,10 +63,89 @@ def turn_receipts(
         for step in fold.feed(event):
             last.setdefault(step.turn_id, {})[step.n] = step
     return {
-        turn: tuple(s.receipt for _, s in sorted(by_n.items()) if s.receipt is not None)
+        turn: tuple(
+            (receipt_id(s.action_id), s.receipt)
+            for _, s in sorted(by_n.items())
+            if s.receipt is not None
+        )
         for turn, by_n in last.items()
         if any(s.receipt is not None for s in by_n.values())
     }
+
+
+_ACTION_ENDS = list(ENDS_ACTION)
+
+_SHOWN_WINDOW = 2000
+"""How many of the newest finished calls :func:`receipts_by_id` looks through."""
+
+
+def receipts_by_id(conn: sqlite3.Connection, ids: Iterable[str]) -> dict[str, Receipt]:
+    """``{receipt id: receipt}`` for the ids she was shown (ADR 0320); the newest wins a clash.
+
+    Looks through the newest :data:`_SHOWN_WINDOW` finished calls, which reaches past every turn
+    the history carries, then folds the turns of the ones that match as :func:`turn_receipts`
+    does (so an old row without a receipt gives the same derived one the history line showed). An
+    id that matches none is left out.
+    """
+    wanted = set(ids)
+    if not wanted:
+        return {}
+    rows = conn.execute(
+        "SELECT json_extract(payload_json, '$.action_id') FROM events "
+        "WHERE type IN (SELECT value FROM json_each(?)) ORDER BY id DESC LIMIT ?",
+        (json.dumps(_ACTION_ENDS), _SHOWN_WINDOW),
+    )
+    actions = [str(row[0]) for row in rows if receipt_id(str(row[0])) in wanted]
+    if not actions:
+        return {}
+    turns = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT json_extract(payload_json, '$.turn_id') FROM events "
+            "WHERE type = 'action.proposed' "
+            "AND json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?))",
+            (json.dumps(actions),),
+        )
+        if row[0]
+    ]
+    return {
+        rid: receipt
+        for by_turn in turn_receipts(conn, turns).values()
+        for rid, receipt in by_turn
+        if rid in wanted
+    }
+
+
+_CALL_WINDOW = 20
+"""How many of a tool's newest finished calls :func:`finished_call_ms` reports."""
+
+
+def finished_call_ms(conn: sqlite3.Connection, tool: str) -> list[int]:
+    """How long each of ``tool``'s last 20 finished calls took, newest first (ADR 0320).
+
+    From the call's ``action.dispatched`` row to its ``action.result_observed`` row. A call
+    that was refused or is still running has no pair of rows and is not counted.
+    """
+    proposed = conn.execute(
+        "SELECT json_extract(payload_json, '$.action_id') FROM events "
+        "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.tool_name') = ? "
+        "ORDER BY id DESC LIMIT ?",
+        (tool, _CALL_WINDOW * 3),
+    )
+    ids = [str(row[0]) for row in proposed]
+    at: dict[tuple[str, str], int] = {}
+    for kind, action_id, ts_ms in conn.execute(
+        "SELECT type, json_extract(payload_json, '$.action_id'), ts_epoch_ms FROM events "
+        "WHERE type IN ('action.dispatched', 'action.result_observed') "
+        "AND json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?))",
+        (json.dumps(ids),),
+    ):
+        at[kind, str(action_id)] = int(ts_ms)
+    return [
+        at["action.result_observed", one] - at["action.dispatched", one]
+        for one in ids
+        if ("action.dispatched", one) in at and ("action.result_observed", one) in at
+    ][:_CALL_WINDOW]
 
 
 def answer_receipts(
@@ -74,14 +153,15 @@ def answer_receipts(
 ) -> dict[str, str]:
     """``{answer event uid: its turn's receipts as one line}`` for the answers whose turn has any.
 
-    The line is each receipt's sentence, object and status (:func:`jarvis.shared.receipts.said`),
-    in call order, always in English: the reader is the model (ADR 0319, which replaced the
-    ``[You did: ...]`` of ADR 0267), whatever language he is spoken to in.
+    The line is each receipt's sentence, id, object and status
+    (:func:`jarvis.shared.receipts.said`), in call order, always in English: the reader is the
+    model (ADR 0319, which replaced the ``[You did: ...]`` of ADR 0267), whatever language he is
+    spoken to in.
     """
     turns = turns_of_events(conn, answer_uids)
     by_turn = turn_receipts(conn, set(turns.values()))
     return {
-        uid: "; ".join(said(r) for r in by_turn[turn])
+        uid: "; ".join(said(r, rid) for rid, r in by_turn[turn])
         for uid, turn in turns.items()
         if turn in by_turn
     }

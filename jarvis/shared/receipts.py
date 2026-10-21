@@ -10,6 +10,7 @@ Layer rules: stdlib only.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, get_args
@@ -223,13 +224,23 @@ def only_reads(tool: object, arguments: Mapping[str, Any]) -> bool:
     return bool(getattr(tool, "read_only", False))
 
 
-def said(receipt: Receipt) -> str:
+def receipt_id(action_id: str) -> str:
+    """The id she cites a receipt by (ADR 0320): ``r`` and 6 hex digits of the action id's sha256.
+
+    Worked out when the receipt is shown, never stored in it.
+    """
+    return "r" + hashlib.sha256(action_id.encode()).hexdigest()[:6]
+
+
+def said(receipt: Receipt, rid: str | None = None) -> str:
     """One receipt as the history line and the in-flight note carry it (ADR 0319).
 
-    Its sentence, then in brackets the object (a change) and the status; a read that left rows
-    out adds how many and how to get them. A read says what it covered, never what it found.
+    Its sentence, then in brackets its id (``rid``, when it has one), the object (a change) and
+    the status; a read that left rows out adds how many and how to get them. A read says what it
+    covered, never what it found.
     """
-    inside = ", ".join([receipt.object, receipt.status] if receipt.object else [receipt.status])
+    parts = [*([rid] if rid else []), *([receipt.object] if receipt.object else []), receipt.status]
+    inside = ", ".join(parts)
     if receipt.covered is not None and receipt.covered.more > 0:
         how = f", {receipt.covered.how_more}" if receipt.covered.how_more else ""
         inside += f"; {receipt.covered.more} more not shown{how}"

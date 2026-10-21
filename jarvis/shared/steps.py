@@ -196,6 +196,12 @@ def label(tool: str, arguments: object = None) -> str:
     return f"{name}{_SEP}{detail}" if detail else name
 
 
+def line(tool: str, arguments: object = None, *, language: lang.Language | None = None) -> str:
+    """The step's table name alone, in ``language``: what is said when a slow call starts."""
+    which = kind(tool, arguments)
+    return lang.t("tool_status.generic" if which == "generic" else f"step.{which}", lang=language)
+
+
 def phrase(tool: str, arguments: object = None) -> str:
     """The step in the past tense, for the line under her answer."""
     return lang.t(f"step.{kind(tool, arguments)}.done")
@@ -227,6 +233,8 @@ class Step:
     ended_ms: int | None
     receipt: Receipt | None = None
     """ADR 0319: the call's receipt, once it ended; ``None`` while it runs."""
+    action_id: str = ""
+    """The call's action id: the receipt's id (ADR 0320) is worked out from it."""
 
     def frame(self) -> dict[str, Any]:
         """The ``step`` frame of ``/phone/ws``."""
@@ -291,6 +299,7 @@ class StepFold:
                 "running",
                 event.ts_epoch_ms,
                 None,
+                action_id=action_id,
             )
             self._open[action_id] = step
             return [step]

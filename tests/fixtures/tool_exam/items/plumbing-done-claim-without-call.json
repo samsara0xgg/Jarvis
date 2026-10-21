@@ -7,10 +7,10 @@
   "said": "remember the milk",
   "script": [
     {
-      "text": "Saved, I've noted the milk."
+      "text": "<claims>\ndid r00dead: noted the milk\n</claims>Saved, I've noted the milk."
     },
     {
-      "text": "Sorry, nothing is saved yet."
+      "text": "<claims></claims>Sorry, nothing is saved yet."
     }
   ],
   "expect": {
@@ -19,14 +19,19 @@
       {
         "request": 1,
         "role": "user",
-        "matches": "no tool call did that this turn"
+        "matches": "does not match the receipts"
+      },
+      {
+        "request": 1,
+        "role": "user",
+        "matches": "no such receipt r00dead"
       }
     ],
     "events_after": {
       "must": [
         {
-          "type": "turn.guard_fired",
-          "payload_matches": "unbacked"
+          "type": "answer.claims_checked",
+          "payload_matches": "no such receipt r00dead"
         }
       ],
       "must_not": [

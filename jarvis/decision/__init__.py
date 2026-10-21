@@ -50,6 +50,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.decision import claims as claims_check
 from jarvis.decision import confirm_words
 from jarvis.decision import turn_timing as timing
 from jarvis.decision.attachment_parts import attachment_text, image_parts
@@ -82,7 +83,7 @@ from jarvis.decision.packet import (
 )
 from jarvis.decision.policy import EffectivePolicy, effective_policy, surface_for
 from jarvis.decision.pre_route import SPOKEN_CHANNELS, TYPED_CHANNEL, spoken_turn, typed_turn
-from jarvis.decision.reaction_markup import ReactionFilter, split_reaction
+from jarvis.decision.reaction_markup import ReactionFilter, split_claims
 from jarvis.decision.response_run import ResponseCancelledError, wait_out_hold
 from jarvis.decision.stream_envelope import (
     EnvelopeTail,
@@ -106,16 +107,7 @@ from jarvis.decision.surrogate_route import (
     offered,
 )
 from jarvis.decision.tier0 import render_tier0_response
-from jarvis.decision.turn_guards import (
-    UNBACKED_NOTE,
-    TurnCall,
-    calendar_in_view,
-    call_key,
-    may_claim_done,
-    repeated_call,
-    ride_stop_in_view,
-    unbacked_said,
-)
+from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call
 from jarvis.shared import (
     ActionRequest,
     CallerPrincipal,
@@ -134,7 +126,7 @@ from jarvis.shared.realtime import (
     stable_authorization_identity,
 )
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.shared.receipts import only_reads, said
+from jarvis.shared.receipts import Receipt, derive, only_reads, receipt_id, said
 from jarvis.shared.text import is_english, truncate_utf8
 from jarvis.shared.tool_discovery import native_catalog
 from jarvis.state import reactions
@@ -148,7 +140,7 @@ from jarvis.state.cost_accounting import record_run_cost_once
 from jarvis.state.event_log import emit_event, get_event, iter_events_for_turn
 from jarvis.state.stream_emission import committed_text_prefix
 from jarvis.state.turn_overlap import TurnInFlight, folded_tool_calls, turns_in_flight, words_since
-from jarvis.state.turn_steps import turn_receipts
+from jarvis.state.turn_steps import receipts_by_id, turn_receipts
 
 if TYPE_CHECKING:
     import sqlite3
@@ -789,8 +781,10 @@ class _Scratch:
     # ADR 0240: the calls this turn ran or was refused, in order; a call identical to one
     # of them is not run again.
     calls: list[TurnCall] = field(default_factory=list)
-    # ADR 0240: the turn's one bounce of an answer no call backs has been used.
-    unbacked_bounced: bool = False
+    # ADR 0320: the turn's one bounce of an answer whose claims block failed has been used.
+    claims_bounced: bool = False
+    # ADR 0320: this turn's receipts by the id she cites, in call order.
+    receipts: dict[str, Receipt] = field(default_factory=dict)
     # ADR 0257: the first valid <react> emoji of the turn's replies.
     reaction: str | None = None
 
@@ -804,9 +798,8 @@ _SENT_STATUS_HEADER: Final[str] = (
 # docs/plans/speak-as-written-proposal.md: on the spoken route each sentence is
 # spoken as the model writes it, so the spoken reply comes first and is the
 # answer itself. The length default and the explicit-request override are the
-# ones the spoken-form rewrite prompt carried (ADR 0099); the line before a
-# tool call is spoken when that call is dispatched. It names no tool and gives
-# no example of one, so it cannot invite a call.
+# ones the spoken-form rewrite prompt carried (ADR 0099). It names no tool and
+# gives no example of one, so it cannot invite a call.
 _SPOKEN_REPLY_NOTE: Final[str] = (
     "Your reply is spoken aloud as you write it. Start with the answer itself, in plain "
     "spoken sentences in the language of the user's words: by default at most about 60 "
@@ -816,17 +809,15 @@ _SPOKEN_REPLY_NOTE: Final[str] = (
     "When the answer has "
     "more that belongs on screen (a list, a table, code, links, figures to read), write the "
     "spoken reply inside <voice></voice> and then the full written answer inside "
-    "<document></document>. When you need a tool for what the user asked, first say one "
-    "short line in the language of the user's words saying what you are about to do, then "
-    "call the tool in the same response; never end your turn on that line."
+    "<document></document>."
 )
-# ADR 0114: with ``structured`` the reply is a strict {spoken, written} schema,
-# so the note asks for no tags and the two fields' descriptions carry the rest.
+# ADR 0114: with ``structured`` the reply is a strict {claims, spoken, written}
+# schema, so the note asks for no tags and the fields' descriptions carry the rest.
 # Nothing is said before a call: the model's text before one never reached
 # speech, and under the schema it has no place to go.
 _SPOKEN_REPLY_NOTE_STRUCTURED: Final[str] = (
-    'Your reply is a JSON object with "spoken" and "written"; "spoken" is read aloud as you '
-    'write it. Put the answer itself in "spoken", in plain spoken sentences in the language '
+    'Your reply is a JSON object with "claims", "spoken" and "written"; "spoken" is read aloud '
+    'as you write it. Put the answer itself in "spoken", in plain spoken sentences in the language '
     "of the user's words: by default at most two short sentences, with no lists, headings, "
     "links, code, HTML tags such as <br> or other markup. When the user explicitly asks you "
     "to count, read aloud, tell a story, repeat something verbatim, go into detail or speak "
@@ -837,12 +828,11 @@ _SPOKEN_REPLY_NOTE_STRUCTURED: Final[str] = (
     '"written", shaped as a list, table, code or links, never as a paragraph that carries on '
     'from "spoken"; then "spoken" says the details are on screen; '
     '"written" is empty when there is nothing more, and holds nothing that is not in the '
-    "conversation or a tool result. When you need a tool for what the user asked, call it "
-    "first and answer after its result: the JSON reply ends the turn, so it is never a "
-    "promise to look something up or to do something next."
+    "conversation or a tool result."
 )
 # The text format of every request of a structured spoken turn (Responses API
-# ``text.format``). ``spoken`` comes first: it is what streams into speech.
+# ``text.format``). ``claims`` comes first, so it is judged before a word is
+# spoken (ADR 0320); ``spoken`` next: it is what streams into speech.
 SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
     "type": "json_schema",
     "name": "spoken_reply",
@@ -850,14 +840,23 @@ SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
     "schema": {
         "type": "object",
         "properties": {
+            "claims": {
+                "type": "string",
+                "description": (
+                    "The lines of the answer's claims block, as the prompt describes: one "
+                    "line for each thing the answer says was done, set up, sent, shown, "
+                    "cancelled, looked up or promised for later, with the receipt ids it "
+                    "rests on, and for each lookup or action it offers. An empty string when "
+                    "the answer claims and offers nothing."
+                ),
+            },
             "spoken": {
                 "type": "string",
                 "description": (
                     "The complete spoken answer, in the language of the user's words: plain "
                     "sentences, at most two short sentences unless the user explicitly asked "
                     "to hear more (a story, counting, reading aloud, what happened in a "
-                    "period). When written has details, say they are on screen. It ends "
-                    "the turn: never a promise to check something first."
+                    "period). When written has details, say they are on screen."
                 ),
             },
             "written": {
@@ -870,7 +869,7 @@ SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
                 ),
             },
         },
-        "required": ["spoken", "written"],
+        "required": ["claims", "spoken", "written"],
         "additionalProperties": False,
     },
 }
@@ -1159,7 +1158,7 @@ def _turns_in_flight_line(
             line,
             *(
                 f'Done so far for "{turn.words}": '
-                + "; ".join(said(receipt) for receipt in done[turn.turn_id])
+                + "; ".join(said(receipt, rid) for rid, receipt in done[turn.turn_id])
                 for turn in earlier
                 if turn.turn_id in done
             ),
@@ -1435,11 +1434,14 @@ def _with_reaction(result: DecideResult, scratch: _Scratch) -> DecideResult:
     return replace(result, reaction=scratch.reaction) if scratch.reaction else result
 
 
-def _reply_text(text: str | None, scratch: _Scratch) -> str:
-    """A whole reply without its ``<react>`` tags; the first emoji found stays on the turn."""
-    clean, emoji = split_reaction(text or "")
+def _reply_claims(text: str | None, scratch: _Scratch) -> tuple[str, str | None]:
+    """A whole reply without its ``<react>`` tags and ``<claims>`` block, and that block.
+
+    The first emoji found stays on the turn. The block is None when the reply had none (ADR 0320).
+    """
+    clean, emoji, block = split_claims(text or "")
     scratch.reaction = scratch.reaction or emoji
-    return clean
+    return clean, block
 
 
 # --- surface.user_intent branch --------------------------------------------
@@ -1738,7 +1740,7 @@ def _run_model_path(
 
 
 def _guard_fired(
-    ctx: DecideContext, scratch: _Scratch, guard: Literal["repeat", "unbacked"], **detail: str,
+    ctx: DecideContext, scratch: _Scratch, guard: Literal["repeat"], **detail: str,
 ) -> None:
     """Record that a turn guard (ADR 0240) acted, so the log can count it."""
     scratch.events.append(
@@ -1765,62 +1767,87 @@ def _repeat_refused(
     return repeated
 
 
-def _unbacked_guard_open(ctx: DecideContext, scratch: _Scratch, *, last_request: bool) -> bool:
-    """Whether a turn-ending answer may still be sent back (ADR 0240).
+def _bounce_open(ctx: DecideContext, scratch: _Scratch, *, last_request: bool) -> bool:
+    """Whether an answer whose claims block fails may still be sent back (ADR 0320).
 
-    The bounce is unused, a request is left to run after it, and this is not a correction run
-    (its exposed prefix is fixed).
+    The one bounce is unused, a request is left to run after it, and this is not a correction
+    run (its exposed prefix is fixed).
     """
-    return not scratch.unbacked_bounced and not last_request and ctx.stream_correction is None
+    return not scratch.claims_bounced and not last_request and ctx.stream_correction is None
 
 
-def _claim_hold(
-    ctx: DecideContext, route: RoutineStreamRoute, scratch: _Scratch, speaker: _SegmentSpeaker,
-    *, last_request: bool,
-) -> _ClaimHold:
-    """The hold for one request's answer text (ADR 0263).
-
-    With a write behind it, or no bounce left, no claim can be sent back, so the text goes
-    out as it comes.
-    """
-    judged = _unbacked_guard_open(ctx, scratch, last_request=last_request) and not any(
-        c.ok and not c.read_only for c in scratch.calls
-    )
-    return _ClaimHold(
-        speaker.feed, speaker.flush_ready, route.first_clause_chars, judged=judged,
-    )
+def _menu_names(llm_surface: Sequence[ToolLike], loaded: Collection[str]) -> frozenset[str]:
+    """The tools one request's menu holds (see :func:`_tool_menu`)."""
+    return frozenset(one.name for one in llm_surface if not one.deferred or one.name in loaded)
 
 
-def _bounce_unbacked(  # noqa: PLR0913 - the loop's handles plus the answer and whether a request is left
-    answer: str,
+def _judge_claims(
     ctx: DecideContext,
+    scratch: _Scratch,
+    messages: Sequence[Mapping[str, Any]],
+    menu: Collection[str],
+    block: str | None,
+) -> list[claims_check.Verdict]:
+    """Check an answer's claims block (ADR 0320) against the receipts this request showed her.
+
+    A receipt of this turn is read from the turn; one in a history line or the in-flight note,
+    from the log, newest first.
+    """
+    ids = claims_check.shown_ids(messages)
+    shown = {rid: scratch.receipts[rid] for rid in ids if rid in scratch.receipts}
+    if earlier := ids - shown.keys():
+        shown |= receipts_by_id(ctx.conn, earlier)
+
+    def offerable(tool: str) -> bool:
+        tool_def = _find_tool_def(ctx.tool_registry, tool)
+        return tool in menu and tool_def is not None and only_reads(tool_def, {})
+
+    return claims_check.check(block, shown=shown, offerable=offerable)
+
+
+def _claims_checked(
+    ctx: DecideContext,
+    scratch: _Scratch,
+    verdicts: Sequence[claims_check.Verdict],
+    *,
+    had_block: bool,
+    sent_back: bool,
+    **detail: bool,
+) -> None:
+    """Write the one ``answer.claims_checked`` row of a checked reply (ADR 0320)."""
+    scratch.events.append(
+        emit_event(
+            ctx.conn,
+            type="answer.claims_checked",
+            payload={
+                "turn_id": scratch.turn_id,
+                "had_block": had_block,
+                "entries": [v.to_json() for v in verdicts],
+                "sent_back": sent_back,
+                **detail,
+            },
+            correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+        ),
+    )
+
+
+def _send_back(  # noqa: PLR0913 - the loop's handles plus the answer, its block and the verdicts
     scratch: _Scratch,
     messages: list[dict[str, Any]],
     language_line: str | None,
-    *,
-    last_request: bool,
-) -> bool:
-    """Send a turn-ending answer back once when no call this turn backs what it says (ADR 0240).
-
-    True means the model's answer and the program's note are on ``messages`` and the loop
-    runs one more request. Never on the request the budget allows last (the budget's own
-    answer follows it), and never on a correction run, whose exposed prefix is fixed.
-    """
-    if not _unbacked_guard_open(ctx, scratch, last_request=last_request):
-        return False
-    state = "\n".join(ctx.live_context)
-    said = unbacked_said(
-        answer, scratch.calls, calendar_seen=calendar_in_view(state),
-        ride_stop_seen=ride_stop_in_view(state),
-    )
-    if said is None:
-        return False
-    scratch.unbacked_bounced = True
-    _guard_fired(ctx, scratch, "unbacked", said=said)
-    messages.append(_assistant_text_message(answer))
-    messages.append({"role": "user", "content": UNBACKED_NOTE.format(said=said)})
+    answer: str,
+    block: str | None,
+    verdicts: Sequence[claims_check.Verdict],
+) -> None:
+    """Put the answer and the program's one note on ``messages``; the loop asks once more."""
+    scratch.claims_bounced = True
+    written = answer if block is None else f"<claims>\n{block}\n</claims>\n{answer}"
+    messages.append(_assistant_text_message(written))
+    failed = [v for v in verdicts if not v.ok]
+    messages.append({
+        "role": "user", "content": claims_check.note(failed, list(scratch.receipts.items())),
+    })
     _add_reply_language_note(messages, language_line)
-    return True
 
 
 def _run_tool_use_loop(
@@ -1913,9 +1940,8 @@ def _run_tool_use_loop(
                 # per D4 "further L3 proposals in the same turn get the
                 # synthetic refuse result").
 
-            turn_ending_draft = _turn_ending_draft(
-                ctx, scratch, _reply_text(chat_result.text, scratch),
-            )
+            _reply_claims(chat_result.text, scratch)  # the text before a call is never spoken
+            turn_ending_draft = _turn_ending_draft(ctx, scratch, None)
             if turn_ending_draft is not None:
                 return _finalize_response(turn_ending_draft, packet, ctx, scratch)
 
@@ -1926,11 +1952,20 @@ def _run_tool_use_loop(
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
 
-        answer_text = _reply_text(chat_result.text, scratch)
-        if _bounce_unbacked(
-            answer_text, ctx, scratch, messages, language_line,
-            last_request=iteration >= ctx.max_tool_iterations,
-        ):
+        answer_text, block = _reply_claims(chat_result.text, scratch)
+        verdicts = _judge_claims(
+            ctx, scratch, messages, _menu_names(llm_surface, scratch.loaded_tools), block,
+        )
+        failed = any(not v.ok for v in verdicts)
+        sent_back = failed and _bounce_open(
+            ctx, scratch, last_request=iteration >= ctx.max_tool_iterations,
+        )
+        _claims_checked(
+            ctx, scratch, verdicts, had_block=block is not None, sent_back=sent_back,
+            spoken_as_written=failed and not sent_back,
+        )
+        if sent_back:
+            _send_back(scratch, messages, language_line, answer_text, block, verdicts)
             continue
 
         # LLM returned text -> finalize via Pre-emit Gate.
@@ -2020,11 +2055,32 @@ def _answer_after_tool_budget(
         _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
     )
     _check_response_cancelled(ctx, "after provider response")
-    clean, emoji = split_reaction(chat_result.text or "")
-    scratch.reaction = scratch.reaction or emoji
+    clean, emoji = _wrap_up_claims(ctx, scratch, messages, chat_result.text)
     if emoji is not None and reaction_ok:
-        return clean.strip()
-    return clean.strip() or t("tool_budget.exhausted", lang=scratch.lang)
+        return clean
+    return clean or t("tool_budget.exhausted", lang=scratch.lang)
+
+
+def _wrap_up_claims(
+    ctx: DecideContext,
+    scratch: _Scratch,
+    messages: Sequence[Mapping[str, Any]],
+    text: str | None,
+) -> tuple[str, str | None]:
+    """A last request's answer without its claims block and ``<react>``, and the reply's emoji.
+
+    ADR 0320: the block is checked and recorded. No request follows, so nothing is sent back:
+    a failed check is spoken as written and the row says so. The request could call no tool, so
+    no offer counts as one she should have done instead.
+    """
+    answer, emoji, block = split_claims(text or "")
+    scratch.reaction = scratch.reaction or emoji
+    verdicts = _judge_claims(ctx, scratch, messages, frozenset(), block)
+    _claims_checked(
+        ctx, scratch, verdicts, had_block=block is not None, sent_back=False,
+        spoken_as_written=any(not v.ok for v in verdicts),
+    )
+    return answer.strip(), emoji
 
 
 def _turn_ending_draft(
@@ -2283,19 +2339,15 @@ def _tool_arguments(arguments_json: str) -> dict[str, Any] | str:
     return parsed
 
 
-def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
+def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
     *,
     tool_call: object,
     policy: EffectivePolicy,
     ctx: DecideContext,
     scratch: _Scratch,
     messages: list[dict[str, Any]],
-    lead_in: str | None = None,
 ) -> _DispatchOutcome:
     """Resolve, gate, and dispatch one LLM-proposed tool call.
-
-    ``lead_in`` is the line the model wrote before this call on a spoken turn;
-    it rides ``action.proposed`` for the acknowledge to speak at dispatch.
 
     Returns:
         ``"continue"`` if the tool was dispatched or refused (the loop
@@ -2380,7 +2432,6 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
-            **({"lead_in": lead_in} if lead_in else {}),
         },
         correlation=_action_correlation(action_request),
     )
@@ -2500,31 +2551,39 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     loaded = result.payload.get("loaded_tools") if result.error is None else None
     if isinstance(loaded, list):
         scratch.loaded_tools.update(str(n) for n in loaded)
-    receipt = result.receipt
-    scratch.calls.append(
-        TurnCall(
-            name,
-            receipt.reads_only if receipt is not None else only_reads(tool_def, arguments),
-            ok=receipt.ok if receipt is not None else result.error is None,
-            key=key,
-        ),
+    receipt = result.receipt or derive(
+        name, arguments, reads=only_reads(tool_def, arguments), code=result.error,
     )
+    scratch.calls.append(TurnCall(name, receipt.reads_only, ok=receipt.ok, key=key))
+    rid = receipt_id(action_id)
+    scratch.receipts[rid] = receipt
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
     messages.append(
         _tool_result_message(
             call_id=call_id,
-            content=_render_result_for_llm(result),
-            is_error=receipt is not None and receipt.status == "failed",
+            content=_render_result_for_llm(result, rid),
+            is_error=receipt.status == "failed",
         ),
     )
     return "continue"
 
 
-def _render_result_for_llm(result: RawResult) -> str:
-    """The tool-result message text: the dispatcher's serialized output, else the payload."""
-    return result.tool_output or json.dumps(dict(result.payload))
+def _render_result_for_llm(result: RawResult, rid: str) -> str:
+    """The tool-result message text: the dispatcher's serialized output, else the payload.
+
+    Led by the call's receipt id (ADR 0320), errors included, so she can cite it.
+    """
+    output = result.tool_output or json.dumps(dict(result.payload))
+    try:
+        body = json.loads(output)
+    except ValueError:
+        return output
+    if not isinstance(body, dict):
+        return output
+    body.pop("receipt", None)
+    return json.dumps({"receipt": rid, **body}, ensure_ascii=False)
 
 
 # --- action.result_observed branch -----------------------------------------
@@ -3104,108 +3163,115 @@ def open_prefix_warm(  # noqa: PLR0913 — the next request's whole prefix, plus
 
 @dataclass
 class _SpokenReply:
-    """One streamed request of a spoken turn, by phase, and its calls.
+    """One streamed request of a spoken turn, and its calls.
 
-    ``text`` is the ``commentary`` line; ``answer`` the rest, which went to the speaker as it
-    came. A request that ends in calls echoes both into the history.
+    ``answer`` is the reply's text without its ``<react>`` tags and ``<claims>`` block (on a
+    structured route, the JSON as written). ``spoke`` says the speaker was given any of it.
     """
 
-    text: str = ""
     answer: str = ""
     tool_calls: list[LLMToolCallCompleted] = field(default_factory=list)
     reacted: bool = False  # ADR 0257: this request's reply held a valid <react>
+    spoke: bool = False
+    block: str | None = None  # ADR 0320: the claims block's body; None: no block, or unclosed
+    verdicts: list[claims_check.Verdict] = field(default_factory=list)
+    sent_back: bool = False  # the block failed on an answer that may go back: nothing was spoken
 
 
-# A piece ends at a sentence end (a full-width one, or a full stop followed by a space), or at a
-# clause end once it is as long as the assembler's own cap on a candidate, so a long first
-# sentence still starts speech (ADR 0263).
-_PIECE_END: Final = re.compile(
-    "(?:[\u3002\uff01\uff1f]+[\u201d\u2019\u300d\u300f\uff09)]*|\n+|[.!?]+(?=\\s)\\s*)"
-)
-_FULL_WIDTH_END: Final = frozenset("\u3002\uff01\uff1f")
-_CLOSERS: Final = frozenset("\u201d\u2019\u300d\u300f\uff09)")
-_CLAUSE_END: Final = re.compile("[,;:\u3001\uff0c\uff1b\uff1a]\\s*")
-_PIECE_MAX_CHARS: Final[int] = 60
+class _ClaimsHold:
+    """A reply's text on its way to the speaker, held until its claims block has closed and passed.
 
-
-class _ClaimHold:
-    """An answer's text on its way to the speaker, with every piece that may claim held back.
-
-    ADR 0263: ``unbacked_said`` judges an answer only once it is whole, and what the speaker
-    has been given is spoken. A piece that could claim something was done or looked up
-    (``may_claim_done``) therefore waits here, and so does the text after it, until the
-    request ends and the loop either releases it or, when the answer is sent back, discards it.
-    Pieces before the first such piece go on as they complete.
+    ADR 0320: nothing of an answer is spoken before its block is judged. Once the block closes
+    and passes (or fails with no bounce left, when it is spoken as written) the held text and
+    all that follows go to the speaker as they come. A failed block with a bounce open drops the
+    reply's text. A reply that ends without a closed block is held to its end: dropped if it
+    ends in calls, else checked as an empty block and spoken. A call after a passed block stops
+    the speech there.
     """
 
-    def __init__(
-        self, sink: Callable[[str], None], flush: Callable[[], None], first_clause_chars: int,
-        *, judged: bool,
+    def __init__(  # noqa: PLR0913 - the sink, the judge, the filter and the two facts about the turn
+        self,
+        sink: Callable[[str], None],
+        judge: Callable[[str | None], list[claims_check.Verdict]],
+        react: ReactionFilter,
+        *,
+        structured: bool,
+        bounce_open: bool,
+        on_closed: Callable[[], None],
     ) -> None:
-        """Pass released text to ``sink`` (the speaker's ``feed``); ``flush`` lets it go out.
-
-        With ``judged`` false nothing can be sent back, so every delta goes straight on.
-        """
-        self._judged = judged
+        """Pass released text to ``sink`` (the speaker's ``feed``); ``judge`` checks a block."""
         self._sink = sink
-        self._flush = flush
-        self._first_clause = first_clause_chars
-        self._said = False  # a piece has been passed on
-        self._tail = ""  # an unfinished piece
-        self._held = ""  # from the first piece that may claim
-        self._held_since = 0  # when ``_held`` first had text (monotonic ns), for the turn's timing
-        self._ended = False  # the speaker holds the last piece passed on for one more character
+        self._judge = judge
+        self._react = react
+        self._structured = structured
+        self._bounce_open = bounce_open
+        self._on_closed = on_closed
+        self._state: Literal["waiting", "open", "dropped", "stopped"] = "waiting"
+        self._held = ""
+        self._json: SpokenJsonExtractor | None = None
+        self.had_block = False
+        self.block: str | None = None
+        self.verdicts: list[claims_check.Verdict] = []
+        self.spoke = False
+        self.stopped_at_call = False
+
+    @property
+    def failed(self) -> bool:
+        """Whether the checked block has an entry that fails."""
+        return any(not v.ok for v in self.verdicts)
 
     def feed(self, text: str) -> None:
-        """Take one delta; pass on every piece it completes unless one is held."""
-        if not self._judged:
-            self._sink(text)
-            return
-        self._tail += text
-        while (cut := self._cut()) > 0:
-            self._take(self._tail[:cut])
-            self._tail = self._tail[cut:]
-        # The speaker holds a sentence's end until one more character follows it; the next
-        # piece may not complete for a while, so it is told the sentence is over.
-        if self._ended and self._tail.strip() and not self._held:
-            self._ended = False
-            if self._tail[0] not in _CLOSERS:
-                self._flush()
+        """Take the reply's next text (its react tags and claims block already cut)."""
+        if self._state == "open":
+            self._release(text)
+        elif self._state == "waiting":
+            self._held += text
+            self._look(text)
 
-    def _cut(self) -> int:
-        if end := _PIECE_END.search(self._tail):
-            return end.end()
-        clauses = list(_CLAUSE_END.finditer(self._tail))
-        if self._first_clause and not self._said:
-            return next((c.end() for c in clauses if c.end() >= self._first_clause), 0)
-        return clauses[-1].end() if clauses and len(self._tail) >= _PIECE_MAX_CHARS else 0
+    def _look(self, text: str) -> None:
+        """See whether the block has closed: in the JSON's ``claims`` field, else in the text."""
+        if self._structured and self._json is None and self._held.lstrip().startswith("{"):
+            self._json = SpokenJsonExtractor()
+            text = self._held
+        if self._json is not None:
+            self._json.feed(text)
+            if self._json.claims_done:
+                self._close(self._json.claims)
+        elif self._react.block_closed:
+            self._close(self._react.claims)
 
-    def _take(self, piece: str) -> None:
-        if self._held or may_claim_done(piece):
-            if not self._held:
-                self._held_since = time.monotonic_ns()
-            self._held += piece
-            return
-        self._sink(piece)
-        self._said = True
-        self._ended = not _PIECE_END.search(piece) or piece.rstrip()[-1:] in _FULL_WIDTH_END
+    def _close(self, block: str | None) -> None:
+        self.had_block, self.block = True, block
+        self._on_closed()
+        self.verdicts = self._judge(block)
+        if self.failed and self._bounce_open:
+            self._state, self._held = "dropped", ""
+        else:
+            self._open()
 
-    def close(self) -> None:
-        """The request's text has ended: its last piece is judged like the others."""
-        if self._tail:
-            self._take(self._tail)
-        self._tail = ""
-
-    def release(self) -> None:
-        """The answer stands (or called a tool): pass on what was held."""
+    def _open(self) -> None:
+        self._state = "open"
         held, self._held = self._held, ""
-        if held:
-            timing.hold("claim_hold", self._held_since)
-            self._sink(held)
+        self._release(held)
 
-    def discard(self) -> None:
-        """The answer is sent back: what was held is never spoken."""
-        self._held = ""
+    def _release(self, text: str) -> None:
+        if text:
+            self.spoke = True
+            self._sink(text)
+
+    def call_started(self) -> None:
+        """A tool call follows: what is held is dropped, what was released is where speech stops."""
+        if self._state == "waiting":
+            self._state, self._held = "dropped", ""
+        elif self._state == "open":
+            self._state = "stopped"
+            self.stopped_at_call = True
+
+    def end(self) -> None:
+        """The reply has ended: one with no closed block and no call is checked as empty."""
+        if self._state == "waiting":
+            self.verdicts = self._judge(None)
+            self._open()
 
 
 def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one request, the turn's seams, one event switch
@@ -3215,9 +3281,14 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     scratch: _Scratch,
-    hold: _ClaimHold | None = None,
+    judge: Callable[[str | None], list[claims_check.Verdict]],
+    *,
+    bounce_open: bool = False,
 ) -> _SpokenReply:
-    """Stream one request; answer text reaches the speaker as it arrives, or through ``hold``."""
+    """Stream one request; its text reaches the speaker once ``judge`` has passed its claims block.
+
+    ``bounce_open``: a block that fails is sent back, so the reply's text is dropped unspoken.
+    """
     _check_response_cancelled(ctx, "before provider request")
     if ctx.request_admission is not None:
         ctx.request_admission("decision")
@@ -3246,30 +3317,33 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
         stream.interrupt_when(pending.accepted_early)
     speaker.begin_request()
     reply = _SpokenReply()
-    speak = hold.feed if hold is not None else speaker.feed
-    line_react, answer_react = ReactionFilter(), ReactionFilter()  # ADR 0257: <react> is cut out
+    react = ReactionFilter()  # ADR 0257: <react> is cut out; ADR 0320: so is the claims block
+    hold = _ClaimsHold(
+        speaker.feed,
+        judge,
+        react,
+        structured=route.structured,
+        bounce_open=bounce_open,
+        on_closed=sent.block_closed,
+    )
     failed: LLMResponseFailed | None = None
     try:
         for event in stream:
             sent.seen(event)
             _settle_surrogate(ctx, scratch)
             _check_response_cancelled(ctx, "while streaming")
-            if isinstance(event, LLMTextDelta) and event.phase == "commentary":
-                shown = line_react.feed(event.text)
-                if shown and not reply.text:
-                    record_realtime_trace("spoken_line_first_text", turn_id=scratch.turn_id)
-                reply.text += shown
-            elif isinstance(event, LLMTextDelta):
-                shown = answer_react.feed(event.text)
+            if isinstance(event, LLMTextDelta):
+                shown = react.feed(event.text)
                 if shown and not reply.answer:
                     record_realtime_trace("spoken_answer_first_text", turn_id=scratch.turn_id)
                 reply.answer += shown
-                speak(shown)
+                hold.feed(shown)
             elif isinstance(event, LLMToolCallCompleted):
                 if not reply.tool_calls:
                     record_realtime_trace(
                         "spoken_call_written", turn_id=scratch.turn_id, tool_name=event.name,
                     )
+                    hold.call_started()
                 reply.tool_calls.append(event)
             elif isinstance(event, LLMResponseFailed):
                 failed = event
@@ -3281,19 +3355,26 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
     if failed is not None:
         message = f"spoken stream failed before completion ({failed.error_code})"
         raise RuntimeError(message)
-    reply.text += line_react.finish()
-    if held := answer_react.finish():
+    if held := react.finish():
         reply.answer += held
-        speak(held)
-    if hold is not None:
-        hold.close()
-    emoji = line_react.emoji or answer_react.emoji
+        hold.feed(held)
+    if not reply.tool_calls:
+        hold.end()
+    reply.spoke, reply.block, reply.verdicts = hold.spoke, hold.block, hold.verdicts
+    reply.sent_back = hold.failed and bounce_open and not reply.tool_calls
+    if hold.had_block or not reply.tool_calls:
+        _claims_checked(
+            ctx, scratch, hold.verdicts, had_block=hold.had_block, sent_back=reply.sent_back,
+            spoken_as_written=hold.failed and not bounce_open,
+            ended_in_call=bool(reply.tool_calls), stopped_at_call=hold.stopped_at_call,
+        )
+    emoji = react.emoji
     reply.reacted = emoji is not None
     scratch.reaction = scratch.reaction or emoji
     return reply
 
 
-def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuation, the budget
+def _run_spoken_stream(
     packet: SituationPacket,
     policy: EffectivePolicy,
     ctx: DecideContext,
@@ -3303,38 +3384,36 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     """A turn Allen spoke: every request streams and the answer is spoken as written.
 
     Answer text goes through the envelope, assembler and stream gate under the
-    spoken rule version. The ``commentary`` line before a call rides that
-    call's ``action.proposed`` for the acknowledge to speak at dispatch. A
-    response that ends on such a line with no call gets one more request.
+    spoken rule version, once the reply's claims block has passed (ADR 0320). The text before
+    a call is never spoken; a slow tool's lead-in is the program's (the commentary watcher).
     """
     messages, language_line = _loop_messages(packet, ctx, scratch.lang)
     llm_surface = surface_for(policy, ctx.tool_registry, CallerPrincipal.JARVIS_LLM)
     speaker = _SegmentSpeaker(
         ctx, route, scratch, classifier=SegmentRiskClassifier(rule_version=SPOKEN_RULE_VERSION),
     )
-    line: str | None = None
-    continued = late_noted = False
+    late_noted = False
     for iteration in range(1, ctx.max_tool_iterations + 1):
         tools = _tool_menu(
             llm_surface, scratch.loaded_tools, native=ctx.llm_client.native_tool_search,
         )
+        menu = _menu_names(llm_surface, scratch.loaded_tools)
         last_request = iteration >= ctx.max_tool_iterations
-        hold = _claim_hold(ctx, route, scratch, speaker, last_request=last_request)
         with realtime_trace_context(
             turn_id=scratch.turn_id, request_kind="decision", iteration=iteration,
         ):
-            reply = _stream_spoken_request(ctx, route, speaker, messages, tools, scratch, hold)
-        line = reply.text.strip() or line
+            reply = _stream_spoken_request(
+                ctx, route, speaker, messages, tools, scratch,
+                functools.partial(_judge_claims, ctx, scratch, messages, menu),
+                bounce_open=_bounce_open(ctx, scratch, last_request=last_request),
+            )
         if reply.tool_calls:
-            hold.release()
-            # The line before a call is on screen while the call runs, not when the answer starts.
+            # What was already spoken stays said; a held sentence of it goes out now.
             speaker.end_request()
-            # Whatever she said before the call is in her history, so the next request does not
-            # say it again: Anthropic labels no phase, so that is ``answer``, not ``text``.
-            message = {**_assistant_message_for(reply), "content": reply.text + reply.answer}
-            if message["content"].strip():
-                message["phase"] = "commentary"
-            messages.append(message)
+            messages.append({
+                **_assistant_message_for(reply),
+                "content": reply.answer if reply.spoke else "",
+            })
             for tool_call in reply.tool_calls:
                 _check_response_cancelled(ctx, "before tool proposal")
                 _dispatch_one_tool_call(
@@ -3343,31 +3422,20 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
                     ctx=ctx,
                     scratch=scratch,
                     messages=messages,
-                    lead_in=line,
                 )
-            line = None
-            ending = _turn_ending_draft(ctx, scratch, reply.text)
+            ending = _turn_ending_draft(ctx, scratch, None)
             if ending is not None:
                 return _finish_spoken(packet, ctx, route, speaker, scratch, draft=ending)
             packet = assemble_packet(packet.trigger_event, ctx.conn, ctx.read_snapshot)
             _add_reply_language_note(messages, language_line)
             late_noted = late_noted or _add_late_answer_note(messages, packet, ctx)
             continue
-        if reply.text.strip() and not reply.answer.strip() and not continued:
-            # It said what it would do and stopped: one more request to do it.
-            messages.append({"role": "assistant", "content": reply.text, "phase": "commentary"})
-            continued = True
+        if reply.sent_back:
+            _send_back(
+                scratch, messages, language_line, reply.answer,
+                None if route.structured else reply.block, reply.verdicts,
+            )
             continue
-        # A line with no answer was given its one more request above; an answer is checked here.
-        if _bounce_unbacked(
-            reply.answer.strip(), ctx, scratch, messages, language_line,
-            last_request=last_request,
-        ):
-            hold.discard()  # a claim is never spoken; what came before it already was
-            continue
-        hold.release()
-        if not reply.answer.strip():
-            speaker.feed(reply.text)  # its line was all it said, so that is the answer
         return _finish_spoken(packet, ctx, route, speaker, scratch)
 
     # Tool budget spent (ADR 0030): one more request, without tools, for the answer.
@@ -3375,7 +3443,10 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
     wrap_up = _TOOL_BUDGET_SPOKEN_PROMPT if route.structured else _TOOL_BUDGET_ANSWER_PROMPT
     messages.append({"role": "user", "content": wrap_up})
     try:
-        reply = _stream_spoken_request(ctx, route, speaker, messages, None, scratch)
+        reply = _stream_spoken_request(
+            ctx, route, speaker, messages, None, scratch,
+            functools.partial(_judge_claims, ctx, scratch, messages, frozenset()),
+        )
     except ResponseCancelledError:
         raise
     except Exception:
@@ -3388,15 +3459,12 @@ def _run_spoken_stream(  # noqa: C901 - one request loop: calls, one continuatio
 def _speak_budget_reply(
     speaker: _SegmentSpeaker, reply: _SpokenReply, scratch: _Scratch, *, reaction_ok: bool,
 ) -> None:
-    """What the request after the tool budget adds to speech: its answer, its line, or a limit.
+    """What the request after the tool budget adds to speech: a limit when it said nothing.
 
     A typed turn whose reply is only a ``<react>`` (ADR 0257) is answered, so no limit is said.
     """
-    if not (reply.answer + reply.text).strip():
-        if not (reply.reacted and reaction_ok):
-            speaker.feed(t("tool_budget.exhausted", lang=scratch.lang))
-    elif not reply.answer.strip():
-        speaker.feed(reply.text)
+    if not reply.answer.strip() and not (reply.reacted and reaction_ok):
+        speaker.feed(t("tool_budget.exhausted", lang=scratch.lang))
 
 
 def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may end it
@@ -4574,10 +4642,13 @@ def _answer_after_card(  # noqa: PLR0913 — one keyword per answer-path input.
             )
             continue
         receipt = one.result.receipt
+        rid = receipt_id(one.result.action_id)
+        if receipt is not None:
+            scratch.receipts[rid] = receipt
         messages.append(
             _tool_result_message(
                 call_id=call_id,
-                content=_render_result_for_llm(one.result),
+                content=_render_result_for_llm(one.result, rid),
                 is_error=receipt is not None and receipt.status == "failed",
             ),
         )
@@ -4610,7 +4681,7 @@ def _answer_after_card(  # noqa: PLR0913 — one keyword per answer-path input.
         _emit_cost_recorded(ctx, chat_result, kind="decision", turn_id=scratch.turn_id),
     )
     _check_response_cancelled(ctx, "after provider response")
-    answer = _reply_text(chat_result.text, scratch).strip()
+    answer, _ = _wrap_up_claims(ctx, scratch, messages, chat_result.text)
     return _finalize_response(answer or fallback, packet, ctx, scratch, model_answer=bool(answer))
 
 

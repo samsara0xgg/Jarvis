@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis.decision.commentary import _dispatch_key
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ToolError, build_default_registry
 from jarvis.runtime import _here_location, _transit_places
@@ -169,7 +168,6 @@ def test_the_tool_is_gated_on_the_key_and_is_a_quiet_up_front_model_tool() -> No
     assert not definition.requires_confirmation
     assert not definition.deferred
     assert "school" in definition.description
-    assert _dispatch_key("bus") is None
 
 
 def test_an_unsaved_place_is_a_tool_error_and_sends_nothing(
@@ -276,7 +274,6 @@ def test_where_am_i_reads_the_mac_with_or_without_a_place_and_is_a_quiet_read_on
     assert not definition.requires_confirmation
     assert not definition.deferred
     assert "bus instead" in definition.description
-    assert _dispatch_key("where_am_i") is None
     with pytest.raises(ToolError, match="ask the user where he is"):
         _call({}, here=FixedHere(error=HereUnavailable("no location")), tool="where_am_i")
 

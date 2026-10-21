@@ -313,7 +313,9 @@ def test_a_listed_plugin_is_offered_as_the_brain_offers_it_and_answers_from_the_
     assert line["error"] is None, line["error"]
     listed = line["steps"][0]["calls"][0]
     assert listed["class"] == "recorded"
-    assert json.loads(listed["result"]) == lights
+    seen = json.loads(listed["result"])
+    assert re.fullmatch(r"r[0-9a-f]{6}", seen.pop("receipt"))  # ADR 0320: the id she cites
+    assert seen == lights
     assert line["steps"][1]["calls"][0]["class"] == "recorded"
     assert line["confirmations"] == []
     assert line["built"]["stubbed_providers"] == []

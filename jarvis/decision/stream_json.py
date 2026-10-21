@@ -1,8 +1,8 @@
 """L3 streaming ``{"spoken", "written"}`` reply: spoken flows, written waits (ADR 0114).
 
 On the structured spoken route the model's text is one JSON object whose
-``spoken`` string comes first. The extractor reads it character by character
-and hands out each unescaped ``spoken`` character as soon as it is known, so
+``claims`` string (ADR 0320) and then ``spoken`` string come first. The extractor reads it
+character by character and hands out each unescaped ``spoken`` character as soon as it is known, so
 the assembler downstream sees only the words to be said. ``written`` is
 collected for the screen. A fenced code block inside ``spoken`` is never
 read aloud: it moves to the screen, after ``written``. It never parses the
@@ -39,7 +39,7 @@ class SpokenJsonExtractor:
     """Feed raw deltas of a JSON object; receive the ``spoken`` string's new text.
 
     Only string values are read (the schema has no others); a key other than
-    ``spoken`` and ``written`` is skipped. ``failed`` is set at the first
+    ``claims``, ``spoken`` and ``written`` is skipped. ``failed`` is set at the first
     character the schema cannot produce. A ``written`` value counts only once
     its closing quote has arrived.
     """
@@ -54,6 +54,8 @@ class SpokenJsonExtractor:
         self._spoken: list[str] = []
         self._written: list[str] = []
         self._written_done = ""
+        self._claims: list[str] = []
+        self.claims_done = False  # the ``claims`` string's closing quote has arrived
         self._ticks = 0  # backticks in spoken, held until it is known whether they open a fence
         self._code: list[str] | None = None  # the fenced block being read, while one is open
         self._blocks: list[str] = []  # fenced blocks taken out of spoken
@@ -65,6 +67,11 @@ class SpokenJsonExtractor:
     def spoken(self) -> str:
         """Every unescaped ``spoken`` character handed out so far."""
         return "".join(self._spoken)
+
+    @property
+    def claims(self) -> str:
+        """The ``claims`` value, the lines of the answer's claims block (ADR 0320)."""
+        return "".join(self._claims).strip()
 
     @property
     def written(self) -> str:
@@ -129,6 +136,8 @@ class SpokenJsonExtractor:
             self._end_spoken(emitted)
         if self._target == "written":
             self._written_done = "".join(self._written)
+        if self._target == "claims":
+            self.claims_done = True
         self._state = "after_value"
 
     def _in_structure(self, char: str) -> None:
@@ -155,7 +164,7 @@ class SpokenJsonExtractor:
             self._key += char
 
     def _open_value(self) -> None:
-        self._target = self._key if self._key in {"spoken", "written"} else None
+        self._target = self._key if self._key in {"claims", "spoken", "written"} else None
         if self._target == "spoken":
             self.has_spoken = True
         elif self._target == "written":
@@ -190,6 +199,8 @@ class SpokenJsonExtractor:
                 self._speak(char, emitted)
         elif self._target == "written":
             self._written.append(text)
+        elif self._target == "claims":
+            self._claims.append(text)
 
     def _speak(self, char: str, emitted: list[str]) -> None:
         """One spoken character: three backticks open or close a block that goes to the screen."""

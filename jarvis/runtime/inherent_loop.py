@@ -77,6 +77,7 @@ import secrets
 import signal
 import socket
 import sqlite3
+import statistics
 import threading
 import time
 import uuid
@@ -103,7 +104,6 @@ from jarvis.decision.commentary import (
     COMMENTARY_ATTENTION_CHANNEL,
     commentary_intent_for,
     commentary_speech_text,
-    lead_in_speech_text,
 )
 from jarvis.decision.gates import ResponsePlan, pre_emit_gate
 from jarvis.decision.response_run import (
@@ -246,13 +246,14 @@ from jarvis.runtime.session_compaction import CompactionSweep, preset_context_le
 from jarvis.runtime.setup import Setup
 from jarvis.runtime.spend_cap import SpendCap, SpendCapSettings
 from jarvis.runtime.work_state import auto_refresh
-from jarvis.shared import Event, lang
+from jarvis.shared import Event, lang, steps
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     AlreadyTerminal,
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.text import is_english
 from jarvis.state import (
     footprint,
     phone_track,
@@ -301,6 +302,7 @@ from jarvis.state.projections import (
 )
 from jarvis.state.push_tokens import register_body
 from jarvis.state.turn_overlap import any_turn_in_flight
+from jarvis.state.turn_steps import finished_call_ms
 from jarvis.surface import (
     respeaker_board,
     terminal_listen,
@@ -643,20 +645,21 @@ def _commentary_turn(
 
 _SELECT_ACTION_TOOL_NAME_SQL = (
     "SELECT id, json_extract(payload_json, '$.tool_name'), "
-    "json_extract(payload_json, '$.arguments.depth') FROM events "
+    "json_extract(payload_json, '$.arguments') FROM events "
     "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.action_id') = ? LIMIT 1"
 )
 
+_LEAD_IN_MIN_CALLS: Final = 5
+"""A tool with fewer finished calls in the log than this has no measured time: it says nothing."""
 
-# The turn's latest line before a call, up to the row that speaks (a call's
-# proposal, or the latest row for the clock). It speaks in place of the fixed
-# phrase; a line never spoken at one dispatch (a quiet tool's) speaks at the next.
-_SELECT_LEAD_IN_SQL = (
-    "SELECT json_extract(payload_json, '$.lead_in') FROM events "
-    "WHERE type = 'action.proposed' AND json_extract(payload_json, '$.turn_id') = ? "
-    "AND json_extract(payload_json, '$.lead_in') IS NOT NULL AND id <= ? "
-    "ORDER BY id DESC LIMIT 1"
-)
+_LEAD_IN_DEFAULT_MS: Final = 2000
+
+
+def _lead_in_ms(config: Mapping[str, Any]) -> int:
+    """``voice.lead_in_ms`` (ADR 0320): the median call time from which a tool says its line."""
+    voice = config.get("voice")
+    value = voice.get("lead_in_ms") if isinstance(voice, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else _LEAD_IN_DEFAULT_MS
 
 
 _SELECT_TURN_ENDED_SQL = (
@@ -767,8 +770,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
 ) -> _OpenCommentary:
     """Open one ``phase="commentary"`` run and deliver its single segment.
 
-    ``speech`` is the model's own line before the call when it wrote a usable
-    one, else the intent's fixed phrase.
+    ``speech`` is the intent's phrase as speech.
 
     ``turn_id`` is the action's own turn, so ``response_group_id`` derives to
     that turn's group and voice_media appends the phrase to the lane instead
@@ -829,7 +831,6 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
         turn_id=turn_id,
         subject_ref=intent.subject_ref,
         intent_type=intent.intent_type,
-        model_lead_in=speech != commentary_speech_text(intent),
     )
     # Registered last, once nothing above can still raise: an entry the
     # watcher never receives is an entry no close path can ever unregister,
@@ -863,7 +864,28 @@ def _hold_until(clock: Clock, said_at_ms: int, after_s: float, stop: threading.E
     return not clock.wait(stop, max(said_at_ms / 1000 + after_s - clock.time(), 0.0))
 
 
-def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return per suppression rule
+def _slow_tool_line(
+    runtime: JarvisRuntime, conn: sqlite3.Connection, dispatched: Event, user_text: str,
+) -> str | None:
+    """The step table's line for the tool a dispatch started, only when that tool is slow.
+
+    Slow is a median over its last 20 finished calls in the log that reaches
+    ``voice.lead_in_ms``, with at least :data:`_LEAD_IN_MIN_CALLS` of them (ADR 0320). The line is
+    in his language (that of his words), without a detail.
+    """
+    row = conn.execute(
+        _SELECT_ACTION_TOOL_NAME_SQL, (dispatched.payload.get("action_id"),),
+    ).fetchone()
+    if row is None:
+        return None
+    tool = str(row[1] or "")
+    waits = finished_call_ms(conn, tool)
+    if len(waits) < _LEAD_IN_MIN_CALLS or statistics.median(waits) < _lead_in_ms(runtime.config):
+        return None
+    return steps.line(tool, row[2], language="en" if is_english(user_text) else "zh")
+
+
+def _open_commentary_in_worker_thread(  # noqa: PLR0911 - one early return per suppression rule
     runtime: JarvisRuntime,
     *,
     trigger_event: Event,
@@ -906,31 +928,18 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
         if turn is None:
             return None
         turn_id, user_text, said_at_ms = turn
-        tool_name: str | None = None
-        tool_depth: str | None = None
-        bound_id = _latest_id(conn)
-        if not clock:
-            row = conn.execute(
-                _SELECT_ACTION_TOOL_NAME_SQL, (trigger_event.payload.get("action_id"),),
-            ).fetchone()
-            if row is not None:
-                bound_id, tool_name, tool_depth = row
+        tool_line: str | None = None
+        if trigger_event.type == "action.dispatched":
+            tool_line = _slow_tool_line(runtime, conn, trigger_event, user_text)
         intent = commentary_intent_for(
             trigger_event,
             user_text=user_text,
-            tool_name=tool_name,
-            tool_depth=tool_depth,
+            tool_line=tool_line,
             still=still,
             pick=secrets.choice,
         )
-        if intent is None:  # a quiet tool
+        if intent is None:  # a tool not known to be slow
             return None
-        line = None
-        # The model's own line replaces the first line only, and not a deep search's: that
-        # fixed line carries the wait.
-        if not still and not (tool_name == "web_search" and tool_depth == "deep"):
-            lead_in = conn.execute(_SELECT_LEAD_IN_SQL, (turn_id, bound_id)).fetchone()
-            line = lead_in_speech_text(lead_in[0] if lead_in is not None else None)
         # A quick answer needs no lead-in: give it until the floor to begin. Jev's predicted
         # group (ADR 0140) is a read or a draft, never quick, and speaks at once.
         if trigger_event.type == "action.dispatched" and not _hold_until(
@@ -979,7 +988,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
                 intent=intent,
                 trigger_event=trigger_event,
                 turn_id=turn_id,
-                speech=line or commentary_speech_text(intent),
+                speech=commentary_speech_text(intent),
             )
     finally:
         with contextlib.suppress(sqlite3.Error):

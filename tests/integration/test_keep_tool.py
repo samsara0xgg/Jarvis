@@ -30,7 +30,7 @@ from jarvis.state.memory_db import current_core_memory, open_memory_db
 from scripts import tool_exam
 from tests.support.clock import FakeClock
 from tests.support.model import ScriptedModel, tool_call
-from tests.support.turn_guards import guard_batch, logged_guards, tool_texts
+from tests.support.turn_guards import claims_rows, guard_batch, logged_guards, tool_texts
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -392,14 +392,18 @@ def test_a_model_that_saves_again_with_other_arguments_still_writes_one_item(
         conn.close()
 
 
-def test_an_answer_that_claims_a_save_before_any_call_is_sent_back_to_keep(
+def test_an_answer_that_claims_a_save_with_no_receipt_is_sent_back_to_keep(
     tmp_path: Path, memory_registry: Path,
 ) -> None:
-    """ADR 0240 on the tool: 「记下了」 with nothing kept goes back once, then keep runs."""
-    model = ScriptedModel("记下了。", tool_call("keep", {"text": "明天是我生日"}), "好。")
+    """ADR 0320 on the tool: 「记下了」 citing no receipt goes back once, then keep runs."""
+    model = ScriptedModel(
+        "<claims>\ndid r00dead: saved the note\n</claims>记下了。",
+        tool_call("keep", {"text": "明天是我生日"}),
+        "<claims></claims>好。",
+    )
     _, conn = guard_batch(tmp_path, model)
     try:
-        assert [g["guard"] for g in logged_guards(conn)] == ["unbacked"]
+        assert [row["sent_back"] for row in claims_rows(conn)] == [True, False]
         assert len(model.requests) == 3
         assert _lines(memory_registry) == [
             "明天是我生日",

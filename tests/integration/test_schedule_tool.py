@@ -18,7 +18,6 @@ from zoneinfo import ZoneInfo
 import pytest
 import yaml
 
-from jarvis.decision.commentary import _dispatch_key
 from jarvis.decision.tier0 import (
     load_tier0_table,
     match_tier0,
@@ -1248,7 +1247,6 @@ def test_the_step_label_and_the_dispatch_line_say_calendar() -> None:
     for action in ("add", "move", "done", "paid", "cancel", "confirm", "reopen"):
         assert steps.kind("schedule", {"action": action}) == edit
     assert steps.kind("kept") == "records"
-    assert _dispatch_key("schedule") == _dispatch_key("mcp__microsoft__get-calendar-view")
 
 
 def test_the_booted_runtime_has_the_tool_and_not_the_old_ones(

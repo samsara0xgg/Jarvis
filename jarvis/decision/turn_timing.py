@@ -50,6 +50,7 @@ class RequestTiming:
     first_event_ns: int | None = None
     first_thinking_ns: int | None = None
     first_text_ns: int | None = None
+    block_closed_ns: int | None = None
     done_ns: int | None = None
     thinking_bytes: int | None = None
     tool_call: bool = False
@@ -74,6 +75,11 @@ class RequestTiming:
             self.service_tier = event.service_tier
         elif isinstance(event, LLMToolCallCompleted):
             self.tool_call = True
+
+    def block_closed(self) -> None:
+        """The reply's claims block has closed (ADR 0320): speech may start from here."""
+        if self.block_closed_ns is None:
+            self.block_closed_ns = time.monotonic_ns()
 
     def done(self, handle: object) -> None:
         """The stream is closed: take what the stream itself saw, which is nearer the wire."""
@@ -114,6 +120,7 @@ class RequestTiming:
             "first_event_ms": _ms(t0, self.first_event_ns),
             "first_thinking_ms": _ms(t0, self.first_thinking_ns),
             "first_text_ms": _ms(t0, self.first_text_ns),
+            "block_ms": _ms(self.opened_ns, self.block_closed_ns),
             "done_ms": _ms(t0, self.done_ns),
             "tool_call": self.tool_call,
             "input_tokens": self.input_tokens,
