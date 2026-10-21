@@ -6,7 +6,6 @@
 HOST_SRC holds the host's `jarvis/` package exported from origin/main (run.sh does that with `git archive`); the
 jarvis venv's python runs this. Frames go through the real serve_phone route and PhoneAudioStreamPlayer, with a fake socket.
 """
-# ruff: noqa: S101, T201, D103, ANN, E501, C901, PLR0915
 
 import asyncio
 import json
@@ -57,7 +56,9 @@ def drive(script, *, voice: bool, fail_log: bool = False):
 
     class Voice:
         async def begin(self): calls.append(("begin",))
-        async def stop_playback(self, reason): calls.append(("stop_playback", reason)); return ""
+        async def stop_playback(self, reason):
+            calls.append(("stop_playback", reason))
+            return ""
         async def close(self): ...
     Voice.player = player
 
@@ -73,7 +74,8 @@ def drive(script, *, voice: bool, fail_log: bool = False):
 
     def record_phone_say(device, uid, text, **kw):
         if fail_log:
-            raise sqlite3.OperationalError("disk I/O error")
+            msg = "disk I/O error"
+            raise sqlite3.OperationalError(msg)
         calls.append(("say", device, uid, text, kw))
         return "T" + uid
 

@@ -129,6 +129,24 @@ ignore = [
     "PLR2004",  # magic value comparisons are the assertion target
     "S108",     # /tmp paths in literal test data are not insecure
 ]
+# The iOS voice harness (ios/Tools/voice_harness/run.sh runs it with the Mac's venv) is a
+# standalone check script, not part of the package: it drives the host's phone_link and
+# phone_player through fake sockets, reads their private state to compare it with what the Swift
+# codec decoded, and prints its verdict. It keeps the terse style of such a script, so it takes
+# what `tests/**` takes plus the script-only rules, here and not in a file-level noqa (whose
+# bare "ANN" was never a valid code, so ruff read only the codes before it).
+"ios/Tools/**/*.py" = [
+    "INP001",   # a script, not a package
+    "S101",     # bare asserts are how it fails
+    "T201",     # its result is what it prints
+    "SLF001",   # it compares the host's private player state with the Swift side's
+    "PLR2004",  # magic value comparisons are the assertion target
+    "PT018",    # one assert per frame field, with the frame as its message
+    "ANN",      # fake sockets and cursors, annotated by their use
+    "D1",       # the fakes document themselves by their names
+    "E501",     # one frame comparison per line
+    "ARG005",   # fake callbacks take the host's arguments and ignore them
+]
 # Vendored from jarvis-legacy per ADR-0002 § Reference sources.
 # Upstream-sync only — do not lint-fix in place.
 "jarvis/shared/pricing.py" = ["ALL"]
