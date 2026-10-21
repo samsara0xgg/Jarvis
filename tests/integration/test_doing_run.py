@@ -70,7 +70,6 @@ from jarvis.state.doing import CATEGORIES, CLUE_KINDS, cut, fact_spans
 from jarvis.state.doing_clues import (
     CLUE_TEXT_MAX_CHARS,
     MAX_CLUES_PER_KIND,
-    MAX_WORDS_CLUES,
     Clue,
     gather,
 )
@@ -385,8 +384,8 @@ def test_what_was_said_is_a_clue_of_his_and_of_hers_without_markup_or_notes(worl
     ]
     assert [c.text for c in said[:2]] == ["he: early bird", "she: morning"]
     assert len(said) == 3  # the note, the reaction, a turn of files alone and the outside: none
-    assert said[2].text == "he: " + "长" * (CLUE_TEXT_MAX_CHARS - len("he: ") - 1) + "…"
-    assert len(said[2].text) == CLUE_TEXT_MAX_CHARS
+    assert said[2].text == "he: " + "长" * 300  # whole, past what any other clue may hold
+    assert len(said[2].text) > CLUE_TEXT_MAX_CHARS
 
 
 def test_what_the_work_state_says_he_is_doing_is_a_clue_where_it_changes(world: World) -> None:
@@ -479,8 +478,8 @@ def test_his_answers_are_clues_this_days_and_earlier_ones_near_where_he_stayed(
     ]
 
 
-def test_the_clues_are_bounded_in_number_and_thinned_evenly(world: World) -> None:
-    """The clues are bounded in number and thinned evenly."""
+def test_every_word_is_a_clue_and_other_kinds_are_bounded_and_thinned_evenly(world: World) -> None:
+    """Every word of the day is a clue; another kind is bounded in number and thinned evenly."""
     for n in range(300):
         say_words(
             world.memory, f"b{n}", doing_at(7) + timedelta(seconds=n), "allen", f"line {n:03d}"
@@ -499,12 +498,10 @@ def test_the_clues_are_bounded_in_number_and_thinned_evenly(world: World) -> Non
     found = _clues(world, payments)
     said = [c for c in found if c.kind == "words" and c.text.startswith("he: line")]
     paid = [c for c in found if c.kind == "payment"]
-    assert 0 < len(said) <= MAX_WORDS_CLUES
+    assert [c.text for c in said] == [f"he: line {n:03d}" for n in range(300)]
     assert 0 < len(paid) <= MAX_CLUES_PER_KIND
-    for kept in (said, paid):
-        steps = {b.at_ms - a.at_ms for a, b in pairwise(kept)}
-        assert len(steps) == 1  # every n-th through the day
-    assert said[0].text == "he: line 000"
+    steps = {b.at_ms - a.at_ms for a, b in pairwise(paid)}
+    assert len(steps) == 1  # every n-th through the day
 
 
 def test_a_source_that_fails_leaves_the_rest(
