@@ -28,6 +28,7 @@ from jarvis.surface import inherent_server
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from tests.support.hold import HANG_S
 
 if TYPE_CHECKING:
     import sqlite3
@@ -99,10 +100,23 @@ def _wait_line(conn: sqlite3.Connection, turn_id: str) -> None:
     _emitted(conn, turn_id, f"W-{turn_id}", "commentary", "One moment.")
 
 
-def _script(conn: sqlite3.Connection, text: str, turn_id: str) -> None:
+def _script(
+    conn: sqlite3.Connection, text: str, turn_id: str,
+    parked: threading.Event, release: threading.Event,
+) -> None:
     """What the stand-in pipeline writes for one question, by the words asked."""
     final = f"R-{turn_id}"
     if text == "never":
+        return
+    if text == "answer when released":
+        _wait_line(conn, turn_id)
+        parked.set()
+        release.wait()  # the test lets it answer; `_serving` does at its end
+        _started(conn, turn_id, final, "final")
+        _opened(conn, turn_id, final, "final")
+        _emitted(
+            conn, turn_id, final, "final", ANSWER, document_text=DETAILS, written_apart=True,
+        )
         return
     if text == "wait line then answer":
         _wait_line(conn, turn_id)
@@ -144,6 +158,8 @@ class _Pipeline(threading.Thread):
         super().__init__(daemon=True)
         self.path = path
         self.stop = threading.Event()
+        self.parked = threading.Event()  # a held answer has written its wait line
+        self.release = threading.Event()  # a held answer may go on
         self.channels: dict[str, str] = {}
 
     def run(self) -> None:
@@ -164,7 +180,7 @@ class _Pipeline(threading.Thread):
     def _answer(self, text: str, turn_id: str) -> None:
         conn = open_event_log(self.path)
         try:
-            _script(conn, text, turn_id)
+            _script(conn, text, turn_id, self.parked, self.release)
         finally:
             conn.close()
 
@@ -231,6 +247,7 @@ async def _serving(tmp_path: Path) -> AsyncIterator[tuple[_Daemon, httpx.AsyncCl
             yield daemon, client
     finally:
         daemon.pipeline.stop.set()
+        daemon.pipeline.release.set()
         watcher.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await watcher
@@ -252,17 +269,22 @@ def _quick_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(inherent_server, "_ASK_RECHECK_S", 60.0)
 
 
-def test_the_final_answer_comes_back_the_moment_it_is_written(tmp_path: Path) -> None:
+def test_the_final_answer_comes_back_the_moment_it_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Spoken and written parts of the turn's answer, typed in on the silent channel."""
+    # Neither the wait nor the re-read can end this ask in the time the test allows it, so only
+    # the answer's wake can.
+    monkeypatch.setattr(inherent_server, "_ASK_WAIT_S", 600.0)
 
     async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
-        started = time.monotonic()
-        response = await client.post("/inherent/ask", json={"text": "  plain answer  "})
+        response = await asyncio.wait_for(
+            client.post("/inherent/ask", json={"text": "  plain answer  "}), HANG_S,
+        )
         assert response.status_code == 200, response.text
         body = response.json()
         assert set(body) == {"turn_id", "spoken", "written"}
         assert (body["spoken"], body["written"]) == (ANSWER, "")  # nothing left out by the voice
-        assert time.monotonic() - started < 2  # woken by the answer, not by a poll
         assert daemon.submitted == ["plain answer"]
         assert daemon.intents() == [("cli_stdin", "plain answer")]
         assert daemon.pipeline.channels == {body["turn_id"]: "cli_stdin"}
@@ -296,9 +318,11 @@ def test_no_answer_in_time_is_a_504_with_the_turn_id_and_the_turn_goes_on(
 
     async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
         started = time.monotonic()
-        response = await client.post("/inherent/ask", json={"text": "never"})
+        response = await asyncio.wait_for(
+            client.post("/inherent/ask", json={"text": "never"}), HANG_S,
+        )
         assert response.status_code == 504
-        assert 0.5 <= time.monotonic() - started < 3
+        assert time.monotonic() - started >= 0.5  # it waited its whole line before giving up
         body = response.json()
         assert set(body) == {"turn_id", "detail"}
         assert body["turn_id"]
@@ -335,17 +359,19 @@ def test_a_turn_that_fails_or_is_cancelled_is_a_502_with_the_reason(
 def test_waiting_does_not_hold_the_event_loop(tmp_path: Path) -> None:
     """With an ask pending, other routes answer, and a second ask is answered meanwhile."""
 
-    async def scenario(_daemon: _Daemon, client: httpx.AsyncClient) -> None:
+    async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
         slow = asyncio.create_task(
-            client.post("/inherent/ask", json={"text": "wait line then answer"}),
+            client.post("/inherent/ask", json={"text": "answer when released"}),
         )
-        await asyncio.sleep(0.1)
-        started = time.monotonic()
-        assert (await client.get("/api/health")).json() == {"status": "ok"}
-        quick = await client.post("/inherent/ask", json={"text": "plain answer"})
-        assert quick.json()["spoken"] == ANSWER
-        assert time.monotonic() - started < 0.35  # the slow one is still waiting for its answer
-        assert not slow.done()
+        try:
+            # Its question is in and its answer is held back, so its ask is waiting for it.
+            assert await asyncio.to_thread(daemon.pipeline.parked.wait, HANG_S)
+            assert (await client.get("/api/health")).json() == {"status": "ok"}
+            quick = await client.post("/inherent/ask", json={"text": "plain answer"})
+            assert quick.json()["spoken"] == ANSWER
+            assert not slow.done()  # the slow one is still waiting for its answer
+        finally:
+            daemon.pipeline.release.set()
         assert (await slow).json()["written"] == DETAILS
 
     _run(tmp_path, scenario)
