@@ -21,6 +21,7 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
@@ -31,6 +32,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from jarvis.decision import DEFAULT_MAX_TOOL_ITERATIONS
+from jarvis.decision.jev_oneshot import TOOL_GROUPS
 from jarvis.deployment.models import (
     default_sensevoice_dir,
     default_silero_vad_path,
@@ -54,7 +56,6 @@ from jarvis.state.daily_report import resolve_zone
 from jarvis.state.memory_db import MemorySettings, SessionSettings
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from datetime import tzinfo
 
 LOGGER = logging.getLogger("jarvis.runtime")
@@ -307,6 +308,72 @@ class ToolsSettings:
 
 
 @dataclass(frozen=True)
+class SurrogateRouteSettings:
+    """``realtime.surrogate_route`` (ADR 0122): Jev picks a Tier 0 row for a line, or none."""
+
+    model: str
+    min_confidence: float
+    timeout_ms: int
+    parallel: bool
+    zdr: bool
+
+
+@dataclass(frozen=True)
+class TurnEndAsksSettings:
+    """``agents.turn_end_asks`` (ADR 0125): the bars for a turn's closing question or choice."""
+
+    model: str
+    at: float
+    question_at: float
+    timeout_ms: int
+
+
+@dataclass(frozen=True)
+class VoiceWordsSettings:
+    """``realtime.jev_words`` (ADR 0130): Jev reads the control words said inside a sentence."""
+
+    model: str
+    at: float
+    timeout_ms: int
+    max_chars: int
+
+
+@dataclass(frozen=True)
+class JevOneShotSettings:
+    """``realtime.jev_oneshot`` (ADR 0139, 0140): one request per voice line, and its readers.
+
+    ``relation_at`` and ``tool_at`` are None while that reader is off; ``words_at`` is None
+    while ``realtime.jev_words`` is off, and the words' timeout and length are then their
+    defaults.
+    """
+
+    model: str
+    timeout_ms: int
+    zdr: bool
+    relation_at: float | None
+    window_s: float
+    tool_at: float | None
+    tool_groups: frozenset[str]
+    words_at: float | None
+    words_timeout_ms: int
+    words_max_chars: int
+
+
+@dataclass(frozen=True)
+class JevSettings:
+    """Jev's routes: the decision log (on unless ``jev_log.enabled`` is false) and four routes.
+
+    A route is None while its block is absent or not enabled.
+    """
+
+    log: bool
+    surrogate_route: SurrogateRouteSettings | None
+    turn_end_asks: TurnEndAsksSettings | None
+    voice_words: VoiceWordsSettings | None
+    oneshot: JevOneShotSettings | None
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Everything the runtime reads from its config, parsed once.
 
@@ -348,6 +415,7 @@ class RuntimeConfig:
     voiceprint_gate: bool
     remind_before_min: int
     plan_day_ends: time
+    jev: JevSettings
     raw: Mapping[str, Any]
 
 
@@ -959,6 +1027,158 @@ def _model_path(
     return (config_dir / candidate).resolve()
 
 
+def _bar(value: object) -> float | None:
+    """A confidence bar in (0, 1], or None when it is anything else."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0 < value <= 1:
+        return None
+    return float(value)
+
+
+def _surrogate_route(raw: Mapping[str, Any], config_path: Path) -> SurrogateRouteSettings | None:
+    """``realtime.surrogate_route`` (ADR 0122): off unless enabled; bad values stop the load."""
+    realtime = raw.get("realtime")
+    block = realtime.get("surrogate_route") if isinstance(realtime, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, bar, timeout = block.get("model"), block.get("min_confidence"), block.get("timeout_ms")
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(bar, bool) or not isinstance(bar, int | float) or not 0 < bar <= 1
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+    ):
+        msg = (
+            f"runtime: {config_path} realtime.surrogate_route needs model (text),"
+            " min_confidence (0-1] and timeout_ms (positive int)"
+        )
+        raise RuntimeBootstrapError(msg)
+    return SurrogateRouteSettings(
+        model=model.strip(), min_confidence=float(bar), timeout_ms=timeout,
+        parallel=block.get("parallel") is True, zdr=block.get("zdr") is not False,
+    )
+
+
+def _turn_end_asks(raw: Mapping[str, Any], config_path: Path) -> TurnEndAsksSettings | None:
+    """``agents.turn_end_asks`` (ADR 0125): off unless enabled; bad values stop the load."""
+    agents = raw.get("agents")
+    block = agents.get("turn_end_asks") if isinstance(agents, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, bar, timeout = block.get("model"), block.get("at"), block.get("timeout_ms")
+    question_bar = block.get("question_at")
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(bar, bool) or not isinstance(bar, int | float) or not 0 < bar <= 1
+        or isinstance(question_bar, bool) or not isinstance(question_bar, int | float)
+        or not 0 < question_bar <= bar
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+    ):
+        msg = (
+            f"runtime: {config_path} agents.turn_end_asks needs model (text), at in (0, 1],"
+            " question_at in (0, at] and timeout_ms (positive int)"
+        )
+        raise RuntimeBootstrapError(msg)
+    return TurnEndAsksSettings(
+        model=model.strip(), at=float(bar), question_at=float(question_bar), timeout_ms=timeout,
+    )
+
+
+def _voice_words(raw: Mapping[str, Any], config_path: Path) -> VoiceWordsSettings | None:
+    """``realtime.jev_words`` (ADR 0130): off unless enabled; bad values stop the load."""
+    realtime = raw.get("realtime")
+    block = realtime.get("jev_words") if isinstance(realtime, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    model, bar = block.get("model"), block.get("at")
+    timeout, chars = block.get("timeout_ms"), block.get("max_chars")
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(bar, bool) or not isinstance(bar, int | float) or not 0 < bar <= 1
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+        or isinstance(chars, bool) or not isinstance(chars, int) or chars <= 0
+    ):
+        msg = (
+            f"runtime: {config_path} realtime.jev_words needs model (text), at in (0, 1],"
+            " timeout_ms (positive int) and max_chars (positive int)"
+        )
+        raise RuntimeBootstrapError(msg)
+    return VoiceWordsSettings(
+        model=model.strip(), at=float(bar), timeout_ms=timeout, max_chars=chars,
+    )
+
+
+def _jev_oneshot(raw: Mapping[str, Any], config_path: Path) -> JevOneShotSettings | None:
+    """``realtime.jev_oneshot`` (ADR 0139, 0140): off unless enabled; bad values stop the load.
+
+    It needs ``realtime.surrogate_route`` on (its instant functions and transport bar); the
+    control words need ``realtime.jev_words`` too, and without it the surface asks nothing.
+    """
+    realtime = raw.get("realtime")
+    if not isinstance(realtime, Mapping):
+        return None
+    block = realtime.get("jev_oneshot")
+    if not isinstance(block, Mapping) or block.get("enabled") is not True:
+        return None
+    prefix = f"runtime: {config_path} realtime.jev_oneshot"
+    model, timeout = block.get("model"), block.get("timeout_ms")
+    relation, tool_line = block.get("relation"), block.get("tool_line")
+    words = realtime.get("jev_words")
+    surrogate = realtime.get("surrogate_route")
+    if not isinstance(surrogate, Mapping) or surrogate.get("enabled") is not True:
+        msg = f"{prefix} needs realtime.surrogate_route enabled"
+        raise RuntimeBootstrapError(msg)
+    if (
+        not isinstance(model, str) or not model.strip()
+        or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
+        or not isinstance(relation, Mapping) or not isinstance(tool_line, Mapping)
+    ):
+        msg = f"{prefix} needs model (text), timeout_ms (positive int), relation and tool_line"
+        raise RuntimeBootstrapError(msg)
+    relation_at = _bar(relation.get("at")) if relation.get("enabled") is True else None
+    window = relation.get("window_s")
+    tool_at = _bar(tool_line.get("at")) if tool_line.get("enabled") is True else None
+    groups = tool_line.get("groups")
+    if (
+        (relation.get("enabled") is True and relation_at is None)
+        or isinstance(window, bool) or not isinstance(window, int | float) or window <= 0
+        or (tool_line.get("enabled") is True and tool_at is None)
+        or not isinstance(groups, list) or not all(g in TOOL_GROUPS and g != "none" for g in groups)
+    ):
+        msg = (
+            f"{prefix}.relation needs at in (0, 1] and window_s > 0; .tool_line needs at in"
+            " (0, 1] and groups from the tool group names"
+        )
+        raise RuntimeBootstrapError(msg)
+    words_at = words_timeout = words_chars = None
+    if isinstance(words, Mapping) and words.get("enabled") is True:
+        words_at, words_timeout = _bar(words.get("at")), words.get("timeout_ms")
+        words_chars = words.get("max_chars")
+        if (
+            words_at is None
+            or isinstance(words_timeout, bool) or not isinstance(words_timeout, int)
+            or isinstance(words_chars, bool) or not isinstance(words_chars, int)
+        ):
+            msg = f"{prefix} reads realtime.jev_words at, timeout_ms and max_chars: not valid"
+            raise RuntimeBootstrapError(msg)
+    return JevOneShotSettings(
+        model=model.strip(), timeout_ms=timeout, zdr=block.get("zdr") is not False,
+        relation_at=relation_at, window_s=float(window), tool_at=tool_at,
+        tool_groups=frozenset(groups), words_at=words_at,
+        words_timeout_ms=words_timeout or 800, words_max_chars=words_chars or 24,
+    )
+
+
+def _jev(raw: Mapping[str, Any], config_path: Path) -> JevSettings:
+    """Jev's routes: ``jev_log`` (ADR 0128) is on unless ``enabled: false``, the rest off."""
+    log = raw.get("jev_log")
+    return JevSettings(
+        log=not (isinstance(log, Mapping) and log.get("enabled") is False),
+        surrogate_route=_surrogate_route(raw, config_path),
+        turn_end_asks=_turn_end_asks(raw, config_path),
+        voice_words=_voice_words(raw, config_path),
+        oneshot=_jev_oneshot(raw, config_path),
+    )
+
+
 def load_runtime_config(
     path: Path | None,
     runtime_root: Path,
@@ -1070,5 +1290,6 @@ def parse_runtime_config(
         voiceprint_gate=_switch(_block(raw, "voiceprint"), "gate", where="voiceprint"),
         remind_before_min=_remind_before_min(raw),
         plan_day_ends=day_ends_of(raw.get("day_plan")),
+        jev=_jev(raw, config_path),
         raw=raw,
     )

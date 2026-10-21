@@ -17,10 +17,10 @@ import pytest
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute
 from jarvis.decision.voice_words import VoiceWords, words_state
 from jarvis.runtime.bootstrap.jev import _voice_words
-from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.surface import voice_session
 from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.clock import FakeClock
+from tests.support.runtime_config import runtime_config
 from tests.support.voice_words import LISTENING, LONG_LINE
 
 if TYPE_CHECKING:
@@ -234,17 +234,14 @@ def test_the_speaker_tag_is_the_line_prefix() -> None:
     assert words_state("hello", "", over_her=False).endswith("\nUser: hello")
 
 
-def test_bad_config_stops_boot_and_off_is_none(tmp_path: Path) -> None:
-    """Off or absent is None; a bad value stops boot."""
-    path = tmp_path / "jarvis.yaml"
+def test_off_or_absent_is_none_and_on_builds_the_reader() -> None:
+    """Off or absent is None; a bad value is refused at load (``test_runtime_config``)."""
     good = {"model": "m", "at": 0.95, "timeout_ms": 800, "max_chars": 24}
     clock = FakeClock()
-    off = {"realtime": {"jev_words": {**good, "enabled": False}}}
-    assert _voice_words(off, path, clock) is None
-    assert _voice_words({}, path, clock) is None
-    on = {"realtime": {"jev_words": {**good, "enabled": True}}}
-    assert _voice_words(on, path, clock) is not None
-    for bad in ({"at": 1.5}, {"timeout_ms": 0}, {"max_chars": "x"}, {"model": ""}):
-        block = {**good, **bad, "enabled": True}
-        with pytest.raises(RuntimeBootstrapError):
-            _voice_words({"realtime": {"jev_words": block}}, path, clock)
+
+    def built(config: dict[str, Any]) -> VoiceWords | None:
+        return _voice_words(runtime_config(config).jev.voice_words, clock)
+
+    assert built({"realtime": {"jev_words": {**good, "enabled": False}}}) is None
+    assert built({}) is None
+    assert built({"realtime": {"jev_words": {**good, "enabled": True}}}) is not None

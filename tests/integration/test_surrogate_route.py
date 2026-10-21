@@ -24,6 +24,7 @@ from jarvis.state.event_log import emit_event
 from tests.canary._helpers import repo_root
 from tests.support import surrogate as surrogate_support
 from tests.support.clock import FakeClock
+from tests.support.runtime_config import runtime_config
 from tests.support.surrogate import (
     KEY,
     LLM_ANSWER,
@@ -329,17 +330,17 @@ def test_the_dataset_is_on_unless_the_config_turns_it_off(tmp_path: Path) -> Non
     """``jev_log`` ships on, under the runtime root; ``enabled: false`` builds no writer."""
     import yaml  # noqa: PLC0415 — only this test reads the file
 
-    from jarvis.runtime.bootstrap.jev import _jev_log  # noqa: PLC0415
+    from jarvis.runtime.bootstrap.jev import build_jev_log  # noqa: PLC0415
 
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     assert config["jev_log"] == {"enabled": True}
-    log = _jev_log(config, tmp_path)
+    log = build_jev_log(runtime_config(config).jev, tmp_path)
     assert log is not None
     assert not (tmp_path / "jev").exists()  # made at the first line
     log.append("call", "route", "T1")
     assert len(_logged(tmp_path / "jev" / "decisions.jsonl")) == 1
-    assert _jev_log({}, tmp_path) is not None
-    assert _jev_log({"jev_log": {"enabled": False}}, tmp_path) is None
+    assert build_jev_log(runtime_config({}).jev, tmp_path) is not None
+    assert build_jev_log(runtime_config({"jev_log": {"enabled": False}}).jev, tmp_path) is None
 
 
 def test_a_tier0_regex_match_never_asks_jev(tmp_path: Path, jev: SurrogateJev) -> None:
@@ -454,16 +455,15 @@ def test_the_options_are_the_tier0_rows_that_take_no_argument() -> None:
 
 
 def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
-    """The repo ships it off; an enabled block builds the route, a bad one stops boot."""
+    """The repo ships it off; an enabled block builds the route (a bad one is refused at load)."""
     import yaml  # noqa: PLC0415 — only this test reads the file
 
     from jarvis.runtime.bootstrap.jev import _surrogate_route  # noqa: PLC0415
-    from jarvis.runtime.config import RuntimeBootstrapError  # noqa: PLC0415
 
     path = repo_root() / "config" / "jarvis.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     clock = FakeClock()
-    assert _surrogate_route(config, path, clock) is None
+    assert _surrogate_route(runtime_config(config).jev.surrogate_route, clock) is None
     block = config["realtime"]["surrogate_route"]
     assert (block["model"], block["min_confidence"], block["timeout_ms"]) == (
         "typesafe/jev-1.13",
@@ -471,14 +471,11 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
         400,
     )
     block["enabled"] = True
-    route = _surrogate_route(config, path, clock)
+    route = _surrogate_route(runtime_config(config).jev.surrogate_route, clock)
     assert route is not None
     assert (route.model, route.min_confidence, route.timeout_ms) == ("typesafe/jev-1.13", 0.95, 400)
     assert (route.parallel, route.zdr) == (True, True)
     block["zdr"] = False
-    off = _surrogate_route(config, path, clock)
+    off = _surrogate_route(runtime_config(config).jev.surrogate_route, clock)
     assert off is not None
     assert off.zdr is False
-    block["timeout_ms"] = 0
-    with pytest.raises(RuntimeBootstrapError):
-        _surrogate_route(config, path, clock)

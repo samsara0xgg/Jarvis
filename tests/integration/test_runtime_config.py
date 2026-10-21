@@ -17,7 +17,11 @@ import pytest
 from jarvis.cli import main
 from jarvis.runtime.config import (
     DiagnosticsSettings,
+    JevOneShotSettings,
     RuntimeBootstrapError,
+    SurrogateRouteSettings,
+    TurnEndAsksSettings,
+    VoiceWordsSettings,
     WorkersSettings,
     load_runtime_config,
 )
@@ -517,3 +521,146 @@ def test_a_settings_file_that_is_not_yaml_is_a_refusal_naming_the_file_and_line(
     with pytest.raises(RuntimeBootstrapError, match=named) as caught:
         load_runtime_config(None, root)
     assert "secret-looking-text" not in str(caught.value)
+
+
+def test_jev_ships_with_its_log_on_and_every_route_off(tmp_path: Path) -> None:
+    """ADR 0128: the decision log is on unless switched off; each route needs its own switch."""
+    jev = load_settings(tmp_path, {}).jev
+    assert jev.log is True
+    assert (jev.surrogate_route, jev.turn_end_asks, jev.voice_words, jev.oneshot) == (None,) * 4
+    off = load_settings(tmp_path / "off", {"jev_log": {"enabled": False}}).jev
+    assert off.log is False
+    assert load_settings(tmp_path / "other", {"jev_log": {"enabled": 0}}).jev.log is True
+
+
+def test_an_enabled_jev_route_reads_its_block_over_the_shipped_one(tmp_path: Path) -> None:
+    """ADR 0122, 0125, 0130: a model is stripped, a bar is a float, ``zdr`` is on unless false."""
+    jev = load_settings(tmp_path, {
+        "realtime": {
+            "surrogate_route": {"enabled": True, "model": " m ", "zdr": False, "timeout_ms": 250},
+            "jev_words": {"enabled": True, "at": 1},
+        },
+        "agents": {"turn_end_asks": {"enabled": True, "question_at": 0.5}},
+    }).jev
+    assert jev.surrogate_route == SurrogateRouteSettings(
+        model="m", min_confidence=0.95, timeout_ms=250, parallel=True, zdr=False,
+    )
+    assert jev.turn_end_asks == TurnEndAsksSettings(
+        model="typesafe/jev-1.13", at=0.95, question_at=0.5, timeout_ms=1500,
+    )
+    assert jev.voice_words == VoiceWordsSettings(
+        model="typesafe/jev-1.13", at=1.0, timeout_ms=800, max_chars=24,
+    )
+
+
+def test_the_one_shot_reads_its_readers_and_the_words_it_shares(tmp_path: Path) -> None:
+    """ADR 0139, 0140: a reader that is off has no bar; the words keep their defaults without it."""
+    readers = {"relation": {"enabled": True}, "tool_line": {"enabled": True}}
+    on = load_settings(tmp_path / "on", {"realtime": {
+        "surrogate_route": {"enabled": True}, "jev_words": {"enabled": True},
+        "jev_oneshot": {"enabled": True, **readers},
+    }}).jev.oneshot
+    assert on == JevOneShotSettings(
+        model="typesafe/jev-1.13", timeout_ms=800, zdr=True, relation_at=0.98, window_s=30.0,
+        tool_at=0.95,
+        tool_groups=frozenset({"calendar_todo_read", "mail_read", "web_search", "comms_write"}),
+        words_at=0.95, words_timeout_ms=800, words_max_chars=24,
+    )
+    quiet = load_settings(tmp_path / "quiet", {"realtime": {
+        "surrogate_route": {"enabled": True},
+        "jev_words": {"timeout_ms": 5, "max_chars": 9},
+        "jev_oneshot": {"enabled": True, "zdr": False},
+    }}).jev.oneshot
+    assert quiet is not None
+    assert (quiet.relation_at, quiet.tool_at, quiet.zdr) == (None, None, False)
+    assert (quiet.words_at, quiet.words_timeout_ms, quiet.words_max_chars) == (None, 800, 24)
+
+
+def _jev_block(section: str, name: str, **block: object) -> dict[str, object]:
+    """``section.name`` switched on, with ``block`` over the shipped values."""
+    return {section: {name: {"enabled": True, **block}}}
+
+
+_SURROGATE = r"jarvis\.yaml realtime\.surrogate_route needs model \(text\), min_confidence \(0-1\]"
+_TURN_END = r"jarvis\.yaml agents\.turn_end_asks needs model \(text\), at in \(0, 1\]"
+_WORDS = r"jarvis\.yaml realtime\.jev_words needs model \(text\), at in \(0, 1\]"
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        (_jev_block("realtime", "surrogate_route", model=""), _SURROGATE),
+        (_jev_block("realtime", "surrogate_route", min_confidence=1.5), _SURROGATE),
+        (_jev_block("realtime", "surrogate_route", min_confidence=True), _SURROGATE),
+        (_jev_block("realtime", "surrogate_route", timeout_ms=0), _SURROGATE),
+        (_jev_block("agents", "turn_end_asks", model=" "), _TURN_END),
+        (_jev_block("agents", "turn_end_asks", at=1.5), _TURN_END),
+        (_jev_block("agents", "turn_end_asks", question_at=0.99), _TURN_END),
+        (_jev_block("agents", "turn_end_asks", timeout_ms=1.5), _TURN_END),
+        (_jev_block("realtime", "jev_words", model=""), _WORDS),
+        (_jev_block("realtime", "jev_words", at=1.5), _WORDS),
+        (_jev_block("realtime", "jev_words", timeout_ms=0), _WORDS),
+        (_jev_block("realtime", "jev_words", max_chars="x"), _WORDS),
+    ],
+)
+def test_an_enabled_jev_route_with_a_bad_value_stops_the_load(
+    tmp_path: Path, settings: dict[str, object], message: str,
+) -> None:
+    """A route that is switched on and cannot be built is refused, naming the file."""
+    with pytest.raises(RuntimeBootstrapError, match=message):
+        load_settings(tmp_path, settings)
+
+
+def test_a_jev_route_that_is_off_is_not_read(tmp_path: Path) -> None:
+    """Off unless exactly ``true``: the values of a route that is not on are not checked."""
+    jev = load_settings(tmp_path, {
+        "realtime": {
+            "surrogate_route": {"enabled": False, "timeout_ms": 0},
+            "jev_words": {"enabled": "yes", "at": 9},
+            "jev_oneshot": {"enabled": False, "model": ""},
+        },
+        "agents": {"turn_end_asks": {"timeout_ms": "never"}},
+    }).jev
+    assert (jev.surrogate_route, jev.turn_end_asks, jev.voice_words, jev.oneshot) == (None,) * 4
+
+
+_ONESHOT = r"jarvis\.yaml realtime\.jev_oneshot"
+_ONESHOT_KEYS = (
+    _ONESHOT + r" needs model \(text\), timeout_ms \(positive int\), relation and tool_line"
+)
+_ONESHOT_READERS = (
+    _ONESHOT + r"\.relation needs at in \(0, 1\] and window_s > 0; \.tool_line needs at in"
+    r" \(0, 1\] and groups from the tool group names"
+)
+
+
+@pytest.mark.parametrize(
+    ("block", "message"),
+    [
+        ({"model": ""}, _ONESHOT_KEYS),
+        ({"timeout_ms": 0}, _ONESHOT_KEYS),
+        ({"relation": None}, _ONESHOT_KEYS),
+        ({"relation": {"enabled": True, "at": 1.5}}, _ONESHOT_READERS),
+        ({"relation": {"window_s": 0}}, _ONESHOT_READERS),
+        ({"tool_line": {"enabled": True, "at": 0}}, _ONESHOT_READERS),
+        ({"tool_line": {"groups": ["not_a_group"]}}, _ONESHOT_READERS),
+        ({"tool_line": {"groups": ["none"]}}, _ONESHOT_READERS),
+    ],
+)
+def test_the_one_shot_with_a_bad_value_stops_the_load(
+    tmp_path: Path, block: dict[str, object], message: str,
+) -> None:
+    """ADR 0139: every wrong key of the block is refused, naming the file and the key."""
+    settings = {"realtime": {
+        "surrogate_route": {"enabled": True}, "jev_oneshot": {"enabled": True, **block},
+    }}
+    with pytest.raises(RuntimeBootstrapError, match=message):
+        load_settings(tmp_path, settings)
+
+
+def test_the_one_shot_needs_the_instant_route_on(tmp_path: Path) -> None:
+    """ADR 0139: its instant functions and transport bar are the surrogate route's."""
+    settings = {"realtime": {"jev_oneshot": {"enabled": True}}}
+    needs = r"jarvis\.yaml realtime\.jev_oneshot needs realtime\.surrogate_route enabled"
+    with pytest.raises(RuntimeBootstrapError, match=needs):
+        load_settings(tmp_path, settings)

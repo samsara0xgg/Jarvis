@@ -17,7 +17,7 @@ from jarvis.runtime.bootstrap.day import (
     _doing_schedule,
     _moment,
 )
-from jarvis.runtime.bootstrap.jev import _jev_log
+from jarvis.runtime.bootstrap.jev import build_jev_log
 from jarvis.runtime.bootstrap.places import _here_location, _locator
 from jarvis.runtime.bootstrap.vision import _build_vision_client
 from jarvis.runtime.bus_live import BusLive
@@ -225,5 +225,5 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         weatherkit=weatherkit,
         surroundings=surroundings,
         doing=_doing_schedule(config, memory, paths, device),
-        jev_log=_jev_log(config.raw, paths.root),
+        jev_log=build_jev_log(config.jev, paths.root),
     )

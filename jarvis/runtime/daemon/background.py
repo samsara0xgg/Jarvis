@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from jarvis.deployment.launchd import logs_dir
-from jarvis.runtime.bootstrap.jev import _jev_log
+from jarvis.runtime.bootstrap.jev import build_jev_log
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.daemon.commentary import commentary_watcher
 from jarvis.runtime.daemon.conversation_lines import plan_hooks, say_job_line, say_reminder
@@ -364,7 +364,7 @@ def _start_day_schedules(
                     core_memory=CoreMemorySettings.from_config(
                         runtime.config.raw.get("core_memory"),
                     ),
-                    jev_log=_jev_log(runtime.config.raw, runtime.runtime_paths.root),
+                    jev_log=build_jev_log(runtime.config.jev, runtime.runtime_paths.root),
                     ledger=runtime.ledger,
                 ).run(),
                 name="day_summary_schedule",

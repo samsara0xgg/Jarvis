@@ -181,9 +181,7 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
             partial(open_runtime_event_log, paths.event_log),
             is_idle=partial(_daemon_idle, paths.event_log),
         ),
-        surrogate_route=_surrogate_route(
-            config.raw, config.config_path, clock, features.jev_log,
-        ),
+        surrogate_route=_surrogate_route(config.jev.surrogate_route, clock, features.jev_log),
         memory=memory,
         workers=served.workers,
         plugin_connections=served.plugins,
@@ -216,7 +214,7 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
             ),
         ),
         voice_cues=features.voice_cues,
-        turn_end_asks=_turn_end_asks(config.raw, config.config_path, clock, features.jev_log),
+        turn_end_asks=_turn_end_asks(config.jev.turn_end_asks, clock, features.jev_log),
         job_mail=served.job_mail,
         mail_codes=intakes.mail_codes,
         commitments=intakes.commitments,
@@ -238,9 +236,9 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
             kept=partial(place_state.read_kept, memory.db_path),
             cap_usd=config.maps_monthly_usd,
         ),
-        voice_words=_voice_words(config.raw, config.config_path, clock, features.jev_log),
+        voice_words=_voice_words(config.jev.voice_words, clock, features.jev_log),
         oneshot=_jev_oneshot(
-            config.raw, config.config_path, clock, features.jev_log, tables.tier0,
+            config.jev.oneshot, clock, features.jev_log, tables.tier0,
             _event_emitter(paths.event_log),
         ),
         settings=Settings(

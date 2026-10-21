@@ -22,7 +22,6 @@ from jarvis.decision import decide
 from jarvis.decision.jev_oneshot import JevOneShot, oneshot_state
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute, offered
 from jarvis.runtime.bootstrap.jev import _event_emitter, _jev_oneshot
-from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state.event_log import (
     EventTypeRegistry,
     emit_event,
@@ -33,6 +32,7 @@ from tests.canary._helpers import repo_root
 from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.clock import FakeClock
 from tests.support.routine import drive_streaming_turn
+from tests.support.runtime_config import runtime_config
 from tests.support.spoken import (
     SpokenPeer,
     fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
@@ -579,54 +579,44 @@ def _config(**changes: Any) -> dict[str, Any]:  # noqa: ANN401 - config values
     }
     return {
         "realtime": {
-            "surrogate_route": {"enabled": True},
-            "jev_words": {"enabled": True, "at": 0.95, "timeout_ms": 800, "max_chars": 24},
+            "surrogate_route": {
+                "enabled": True, "model": "m", "min_confidence": 0.95, "timeout_ms": 400,
+            },
+            "jev_words": {
+                "enabled": True, "model": "m", "at": 0.95, "timeout_ms": 800, "max_chars": 24,
+            },
             "jev_oneshot": block,
         },
     }
 
 
-def test_the_block_is_off_unless_enabled_and_bad_values_stop_boot(tmp_path: Path) -> None:
-    """Off or absent is None; every wrong key stops boot with the file named."""
-    path = tmp_path / "jarvis.yaml"
-    assert _jev_oneshot({}, path, FakeClock(), None, TABLE) is None
-    assert _jev_oneshot(_config(enabled=False), path, FakeClock(), None, TABLE) is None
-    built = _jev_oneshot(_config(), path, FakeClock(), None, TABLE)
+def _oneshot(config: dict[str, Any]) -> JevOneShot | None:
+    """What a boot builds of ``config``'s block (a bad one is refused at load)."""
+    return _jev_oneshot(runtime_config(config).jev.oneshot, FakeClock(), None, TABLE)
+
+
+def test_the_block_is_off_unless_enabled() -> None:
+    """Off or absent is None; an enabled block builds the one-shot."""
+    assert _oneshot({}) is None
+    assert _oneshot(_config(enabled=False)) is None
+    built = _oneshot(_config())
     assert built is not None
     assert built.words_enabled
     quiet = _config(relation={"enabled": False, "at": 0.98, "window_s": 30})
-    assert _jev_oneshot(quiet, path, FakeClock(), None, TABLE) is not None
-    bad_blocks = (
-        {"model": ""},
-        {"timeout_ms": 0},
-        {"relation": {"enabled": True, "at": 1.5, "window_s": 30}},
-        {"relation": {"enabled": True, "at": 0.98, "window_s": 0}},
-        {"tool_line": {"enabled": True, "at": 0, "groups": []}},
-        {"tool_line": {"enabled": True, "at": 0.95, "groups": ["not_a_group"]}},
-        {"tool_line": {"enabled": True, "at": 0.95, "groups": ["none"]}},
-    )
-    for bad in bad_blocks:
-        with pytest.raises(RuntimeBootstrapError):
-            _jev_oneshot(_config(**bad), path, FakeClock(), None, TABLE)
-    no_route = _config()
-    no_route["realtime"]["surrogate_route"] = {"enabled": False}
-    with pytest.raises(RuntimeBootstrapError, match="surrogate_route"):
-        _jev_oneshot(no_route, path, FakeClock(), None, TABLE)
+    assert _oneshot(quiet) is not None
 
 
-def test_without_jev_words_the_surface_asks_nothing(tmp_path: Path) -> None:
+def test_without_jev_words_the_surface_asks_nothing() -> None:
     """The control words stay off unless realtime.jev_words is on."""
     config = _config()
     config["realtime"]["jev_words"] = {"enabled": False}
-    built = _jev_oneshot(config, tmp_path / "jarvis.yaml", FakeClock(), None, TABLE)
+    built = _oneshot(config)
     assert built is not None
     assert not built.words_enabled
     assert built.ask("T1", "x", "", False, True) is None  # noqa: FBT003
 
 
-def test_the_shipped_config_has_the_block_off_and_it_boots_when_switched_on(
-    tmp_path: Path,
-) -> None:
+def test_the_shipped_config_has_the_block_off_and_it_boots_when_switched_on() -> None:
     """Every switch ships off; the shipped values are valid as they stand."""
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text("utf-8"))
     block = config["realtime"]["jev_oneshot"]
@@ -637,9 +627,8 @@ def test_the_shipped_config_has_the_block_off_and_it_boots_when_switched_on(
     )
     assert (block["relation"]["at"], block["relation"]["window_s"]) == (0.98, 30)
     assert block["tool_line"]["at"] == 0.95
-    path = tmp_path / "jarvis.yaml"
-    assert _jev_oneshot(config, path, FakeClock(), None, TABLE) is None
+    assert _oneshot(config) is None
     block["enabled"] = block["relation"]["enabled"] = block["tool_line"]["enabled"] = True
     config["realtime"]["surrogate_route"]["enabled"] = True
     config["realtime"]["jev_words"]["enabled"] = True
-    assert _jev_oneshot(config, path, FakeClock(), None, TABLE) is not None
+    assert _oneshot(config) is not None
