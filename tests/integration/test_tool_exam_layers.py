@@ -3,7 +3,7 @@
 The synthetic items in ``tests/fixtures/tool_exam/items`` run through the real dispatcher and the
 real ``decide()`` loop on a booted sandbox runtime, from recordings, at a frozen clock. Their
 shrink-only ``baseline.json`` names the ones that fail today and why they should not (a bus after
-midnight, a weather result with no summary, malformed arguments turned into ``{}``). Around them:
+midnight, a weather result with no summary). Around them:
 the spec's result and error rules on a table of good and bad results, the recorder and replay
 against a local server, and the baseline verdict.
 """
@@ -221,14 +221,17 @@ def test_the_baseline_verdict_names_a_regression_a_fixed_item_and_a_stale_id(
     tmp_path: Path,
 ) -> None:
     """A failure outside the baseline fails; a listed item that passes must leave the list."""
-    shutil.copy(ITEMS / "schedule-write-then-read-rings.json", tmp_path)
-    shutil.copy(ITEMS / "plumbing-malformed-arguments-json.json", tmp_path)
+    copied = Path(shutil.copy(ITEMS / "schedule-write-then-read-rings.json", tmp_path))
+    passing = json.loads(copied.read_text(encoding="utf-8"))
+    # Fails by construction, so the test does not depend on a defect staying unfixed.
+    failing = {**passing, "id": "never-holds", "expect": {"summary_must": ["no tool says this"]}}
+    (tmp_path / "never-holds.json").write_text(json.dumps(failing), encoding="utf-8")
     (tmp_path / "baseline.json").write_text(
         json.dumps(["schedule-write-then-read-rings", "gone-item"]),
         encoding="utf-8",
     )
     lines = exam.verdict(exam.score(tmp_path))
-    assert any(ln.startswith("FAIL plumbing-malformed-arguments-json") for ln in lines)
+    assert any(ln.startswith("FAIL never-holds") for ln in lines)
     assert "schedule-write-then-read-rings: passes now; remove it from the baseline" in lines
     assert "gone-item: no such item; remove it from the baseline" in lines
 
