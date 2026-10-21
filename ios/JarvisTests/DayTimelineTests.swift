@@ -71,8 +71,8 @@ final class DayTimelineTests: XCTestCase {
 
     func testAStayShowsItsHoursAndHowLongAndOneStillOnShowsWhenItBeganAndHowLongSoFar() throws {
         let m = build(TimelineFixture.today(cal))
-        XCTAssertEqual(try entry(m, "stay-1").right, "09:05–11:25 · 2 时 20 分")
-        XCTAssertEqual(try entry(m, "stay-13").right, "18:50 起 · 3 时", "21:50 less 18:50")
+        XCTAssertEqual(try entry(m, "stay-1").right, "09:05–11:25 · 2 小时 20 分")
+        XCTAssertEqual(try entry(m, "stay-13").right, "18:50 起 · 3 小时", "21:50 less 18:50")
         // gone by, the same stay has no length to count
         XCTAssertEqual(build(TimelineFixture.today(cal), now: nil).entries.first { $0.id == "stay-13" }?.right, "18:50 起")
     }
@@ -80,7 +80,7 @@ final class DayTimelineTests: XCTestCase {
     func testAStayThatBeganTheEveningBeforeSaysSo() throws {
         let r = try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(-120)), "end_ms": \#(at(120)), "place": "Home"}"#)
         let e = build(r).entries[0]
-        XCTAssertEqual(e.right, "昨天 22:00–02:00 · 4 时")
+        XCTAssertEqual(e.right, "昨天 22:00–02:00 · 4 小时")
         XCTAssertEqual(e.t0, -120)
     }
 
@@ -91,7 +91,7 @@ final class DayTimelineTests: XCTestCase {
         let drive = try entry(m, "move-3"), walk = try entry(m, "move-4")
         XCTAssertEqual([drive.title, walk.title], ["开车", "步行"], "the Mac's word for it")
         XCTAssertEqual([drive.symbol, walk.symbol], ["car.fill", "figure.walk"])
-        XCTAssertEqual([drive.right, walk.right], ["1 时 40 分", "10 分"])
+        XCTAssertEqual([drive.right, walk.right], ["1 小时 40 分", "10 分钟"])
         XCTAssertEqual(drive.time, "11:25")
         let r = try reply(#"{"id": "a", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(10)), "end_ms": \#(at(40)), "activity": "running"}, {"id": "b", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(50)), "end_ms": \#(at(80)), "activity": "cycling"}"#)
         XCTAssertEqual(build(r, now: nil).entries.map(\.title), ["跑步", "骑车"])
@@ -105,7 +105,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(ride.detail, "Hillside Centre → UVic Exchange")
         XCTAssertEqual(ride.base, TLMetrics.rowDetail, "the stops have a line of their own, so they are not cut off")
         XCTAssertEqual(ride.symbol, "bus.fill")
-        XCTAssertEqual(ride.right, "29 分")
+        XCTAssertEqual(ride.right, "29 分钟")
         XCTAssertEqual(ride.more, ["实时：BC Transit", "下车了"], "that the bus was followed live and how it ended, when it is opened: the stops are in its line")
         XCTAssertEqual(try entry(m, "ride-12").more.last, "过了要下的站，就算到了")
         // a ride whose other stop is not known yet gives the one it knows; one that knows no stop has no second line
@@ -126,7 +126,7 @@ final class DayTimelineTests: XCTestCase {
         let sleep = try entry(build(TimelineFixture.today(cal)), "sleep-0")
         XCTAssertEqual(sleep.title, "睡觉")
         XCTAssertEqual(sleep.detail, "00:55–09:05")
-        XCTAssertEqual(sleep.right, "8 时 5 分", "the minutes he was asleep")
+        XCTAssertEqual(sleep.right, "8 小时 5 分", "the minutes he was asleep")
         XCTAssertEqual(sleep.symbol, "moon.fill")
     }
 
@@ -157,7 +157,7 @@ final class DayTimelineTests: XCTestCase {
         let e = try entry(m, "event-demo-1")
         XCTAssertEqual(e.title, "陶艺课")
         XCTAssertEqual(e.detail, "邮件 · 还没确认 · Studio 4", "where it came from, that it is not his yet, and where: the Mac's words")
-        XCTAssertEqual(e.right, "还有 10 分", "within two hours it says how long until it")
+        XCTAssertEqual(e.right, "还有 10 分钟", "within two hours it says how long until it")
         XCTAssertTrue(e.later)
         XCTAssertEqual(try entry(m, "event-demo-2").detail, "日历 · ECS 123", "no source is his calendar")
         let r = try reply(#"{"id": "event-p", "lane": "you", "kind": "event", "state": "next", "start_ms": \#(at(1400)), "end_ms": \#(at(1430)), "title": "Counselling", "private": true, "place": "Clinic"}"#)
@@ -192,13 +192,13 @@ final class DayTimelineTests: XCTestCase {
         let m = build(r)
         XCTAssertEqual(m.entries[0].title, "在 Mac 上工作")
         XCTAssertEqual(m.entries[0].detail, "Jarvis · Xcode", "the top project and the top app")
-        XCTAssertEqual(m.entries[0].right, "活跃 1 时 53 分", "the time he was at it")
-        XCTAssertEqual(m.entries[0].more, ["活跃 1 时 53 分 · 共 2 时 13 分"], "and the stretch it spans, when it is opened")
+        XCTAssertEqual(m.entries[0].right, "活跃 1 小时 53 分", "the time he was at it")
+        XCTAssertEqual(m.entries[0].more, ["活跃 1 小时 53 分 · 共 2 小时 13 分"], "and the stretch it spans, when it is opened")
         XCTAssertEqual(m.entries[0].work?.projects, [TLTop(name: "Jarvis", minutes: 113, share: 1)])
         XCTAssertEqual(m.entries[0].work?.apps, [TLTop(name: "Xcode", minutes: 40, share: 1)])
         XCTAssertEqual(m.entries[1].title, "在 Mac 上工作")
         XCTAssertNil(m.entries[1].detail)
-        XCTAssertEqual(m.entries[1].right, "30 分", "no active time: the stretch")
+        XCTAssertEqual(m.entries[1].right, "30 分钟", "no active time: the stretch")
     }
 
     func testAPaymentIsNamedForWhoGotTheMoneySaysWhatItWasForAndShowsWhatItCameTo() throws {
@@ -259,12 +259,12 @@ final class DayTimelineTests: XCTestCase {
 
     func testTheDaysNumbersAreChipsInAFixedOrderAndOnlyTheOnesThatAreNotNothing() throws {
         let m = build(TimelineFixture.today(cal))
-        XCTAssertEqual(chips(m), ["睡 8:05", "路上 3:04", "运动 35 分", "Mac 2:20", "通话 18 分", "和她 2 次", "花 $12.40", "照片 1"])
+        XCTAssertEqual(chips(m), ["睡 8小时5分", "路上 3小时4分", "运动 35分钟", "Mac 2小时20分", "通话 18分钟", "和她 2 次", "花 $12.40", "照片 1"])
         XCTAssertEqual(m.chips.map(\.lens), TLLens.allCases)
-        XCTAssertEqual(m.chips[3].value, "2:20", "the Mac is the time he was at it (42 and 98 minutes), not the 2:55 the blocks span, and not the sessions of Claude Code in it")
+        XCTAssertEqual(m.chips[3].value, "2小时20分", "the Mac is the time he was at it (42 and 98 minutes), not the 2:55 the blocks span, and not the sessions of Claude Code in it")
         // a call of 35 minutes is minutes; a day of places alone has no numbers at all
         let r = try reply(#"{"id": "c1", "lane": "you", "kind": "call", "state": "done", "start_ms": \#(at(600)), "end_ms": \#(at(635)), "app": "FaceTime"}, {"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800))}"#)
-        XCTAssertEqual(chips(build(r)), ["通话 35 分"])
+        XCTAssertEqual(chips(build(r)), ["通话 35分钟"])
         XCTAssertTrue(build(try reply(#"{"id": "s1", "lane": "you", "kind": "stay", "state": "done", "start_ms": \#(at(700)), "end_ms": \#(at(800))}"#)).chips.isEmpty)
         XCTAssertTrue(build(try reply("")).chips.isEmpty)
     }
@@ -272,8 +272,8 @@ final class DayTimelineTests: XCTestCase {
     func testTheTimeChipsCountWhatIsStillGoingUpToNowAndTheNightAsHeSleptIt() throws {
         // the night is the minutes the brain says he slept, else its span; a ride that has begun and not ended is counted to now (21:50)
         let r = try reply(#"{"id": "r", "lane": "you", "kind": "ride", "state": "now", "start_ms": \#(at(1290)), "end_ms": null, "route": "12"}, {"id": "n", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(-30)), "end_ms": \#(at(420)), "minutes": 400}, {"id": "n2", "lane": "you", "kind": "sleep", "state": "done", "start_ms": \#(at(900)), "end_ms": \#(at(930))}"#)
-        XCTAssertEqual(chips(build(r)), ["睡 7:10", "路上 20 分"])
-        XCTAssertEqual(chips(build(r, now: nil)), ["睡 7:10"], "another day: the ride has no end and no length")
+        XCTAssertEqual(chips(build(r)), ["睡 7小时10分", "路上 20分钟"])
+        XCTAssertEqual(chips(build(r, now: nil)), ["睡 7小时10分"], "another day: the ride has no end and no length")
     }
 
     func testSpendingIsMoneyOutInTheCurrencyHePaidInMostAndAnotherCurrencyAddsAnEllipsis() throws {
@@ -344,7 +344,7 @@ final class DayTimelineTests: XCTestCase {
     }
 
     func testDurationsAreInMinutesThenHoursAndMinutes() {
-        XCTAssertEqual([0, 40, 59, 60, 100, 120, 485].map(tlDur), ["0 分", "40 分", "59 分", "1 时", "1 时 40 分", "2 时", "8 时 5 分"])
+        XCTAssertEqual([0, 40, 59, 60, 100, 120, 485].map(tlDur), ["0 分钟", "40 分钟", "59 分钟", "1 小时", "1 小时 40 分", "2 小时", "8 小时 5 分"])
     }
 
     func testRowsHaveTheHeightsTheListIsLaidOutWithAndTheOffsetsAddUp() throws {
@@ -607,20 +607,20 @@ final class DayTimelineTests: XCTestCase {
 
     func testAFingerOnAStayReadsItsHoursAndLengthAndWhatElseWentOnThen() {
         let r = build(TimelineFixture.today(cal)).readout(at: 615)
-        XCTAssertEqual(r.head, "家 · 09:05–11:25 · 2 时 20 分")
+        XCTAssertEqual(r.head, "家 · 09:05–11:25 · 2 小时 20 分")
         XCTAssertEqual(r.second, "Claude Code · 接上天气和身体数据 · 明天下午有什么安排？", "the session and the talk that cover 10:15, Claude Code first; the Mac work 15 minutes on is too far")
         XCTAssertNotNil(r.hue)
         XCTAssertTrue(r.strong, "a place he keeps")
         XCTAssertFalse(r.ahead)
         let night = build(TimelineFixture.today(cal)).readout(at: 500)
-        XCTAssertEqual(night.head, "睡觉 · 00:55–09:05 · 8 时 5 分", "08:20: the night, with the hours it really had, though the bar shows only the end of it")
-        XCTAssertEqual(night.second, "深睡 1:55 · REM 2:00 · 醒 2 次", "08:20: the stages of the night he was in")
+        XCTAssertEqual(night.head, "睡觉 · 00:55–09:05 · 8 小时 5 分", "08:20: the night, with the hours it really had, though the bar shows only the end of it")
+        XCTAssertEqual(night.second, "深睡 1小时55分 · REM 2小时 · 醒 2 次", "08:20: the stages of the night he was in")
     }
 
     func testTheHeadGivesWayAtItsNameAndNeverAtItsHours() {
         let m = build(TimelineFixture.today(cal))
         XCTAssertEqual(m.readout(at: 615).name, "家")
-        XCTAssertEqual(m.readout(at: 615).tail, " · 09:05–11:25 · 2 时 20 分")
+        XCTAssertEqual(m.readout(at: 615).tail, " · 09:05–11:25 · 2 小时 20 分")
         XCTAssertEqual(m.readout(at: 1335).name, "还没到")
         XCTAssertEqual(m.readout(at: 1335).tail, "")
     }
@@ -629,9 +629,9 @@ final class DayTimelineTests: XCTestCase {
         let m = DayTimelineModel.build(TimelineFixture.yesterday(cal), now: nil)
         XCTAssertNil(m.seg(at: 1000))
         let r = m.readout(at: 1000)
-        XCTAssertEqual(r.head, "没有记录 · 16:20–17:30 · 1 时 10 分")
+        XCTAssertEqual(r.head, "没有记录 · 16:20–17:30 · 1 小时 10 分")
         XCTAssertNil(r.hue)
-        XCTAssertEqual(m.readout(at: 900).head, "UVic · 08:55–16:20 · 7 时 25 分")
+        XCTAssertEqual(m.readout(at: 900).head, "UVic · 08:55–16:20 · 7 小时 25 分")
         XCTAssertNil(m.lit(at: 1000), "nothing is lit in a hole: the stay before it is over")
         XCTAssertEqual(m.entry(at: 1000)?.title, "UVic", "though the list rests on it")
         XCTAssertEqual(m.lit(at: 900)?.title, "UVic")
@@ -639,7 +639,7 @@ final class DayTimelineTests: XCTestCase {
 
     func testAFingerOnATripReadsTheTripAndSaysWhenNothingElseWasThere() {
         let r = build(TimelineFixture.today(cal)).readout(at: 720)
-        XCTAssertEqual(r.head, "开车 · 11:25–13:05 · 1 时 40 分")
+        XCTAssertEqual(r.head, "开车 · 11:25–13:05 · 1 小时 40 分")
         XCTAssertEqual(r.second, "这段时间没有别的记录")
         XCTAssertEqual(r.hue, TLPaint.trip)
         XCTAssertTrue(r.elsewhere.isEmpty, "a reminder that rang at 09:20 is hours away")
@@ -647,14 +647,14 @@ final class DayTimelineTests: XCTestCase {
 
     func testAFingerOnTheMinuteOfAPaymentReadsThePlaceItWasAtAndThePayment() {
         let r = build(TimelineFixture.today(cal)).readout(at: 800)
-        XCTAssertEqual(r.head, "A&W · 13:15–13:55 · 40 分")
+        XCTAssertEqual(r.head, "A&W · 13:15–13:55 · 40 分钟")
         XCTAssertEqual(r.second, "A&W · $12.40")
         XCTAssertFalse(r.strong, "a place he does not keep")
     }
 
     func testAtMostTwoThingsAreToldAndTheMostTellingComeFirst() {
         let r = build(TimelineFixture.today(cal)).readout(at: 1245)
-        XCTAssertEqual(r.head, "家 · 18:50 起 · 3 时", "a stay still going has its start and how long so far")
+        XCTAssertEqual(r.head, "家 · 18:50 起 · 3 小时", "a stay still going has its start and how long so far")
         XCTAssertEqual(r.elsewhere, ["Jarvis · Xcode", "Claude Code · 论文第三章的数据", "和她说话 · 14 句"], "Mac work, Claude Code, then the talk: all cover 20:45")
         XCTAssertEqual(r.second, "Jarvis · Xcode · Claude Code · 论文第三章的数据", "the phone says the first two")
         XCTAssertEqual(r.elsewhere.count, 3)
@@ -688,10 +688,10 @@ final class DayTimelineTests: XCTestCase {
             {"id": "b", "lane": "you", "kind": "move", "state": "done", "start_ms": \#(at(760)), "end_ms": \#(at(800)), "activity": "walking"}
             """#))
         let r = m.readout(at: 730)
-        XCTAssertEqual(r.head, "没有记录 · 11:40–12:40 · 1 时")
+        XCTAssertEqual(r.head, "没有记录 · 11:40–12:40 · 1 小时")
         XCTAssertNil(r.hue)
         XCTAssertEqual(r.second, "这段时间没有别的记录")
-        XCTAssertEqual(m.readout(at: 400).head, "没有记录 · 06:00–10:00 · 4 时", "before the first stretch: from the bar's start")
+        XCTAssertEqual(m.readout(at: 400).head, "没有记录 · 06:00–10:00 · 4 小时", "before the first stretch: from the bar's start")
     }
 
     func testAMinuteOffTheBarIsTheStartOrTheEndOfItAndNoHoleEndsBeforeItBegins() throws {
@@ -699,7 +699,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(m.span.lowerBound, 480, "the made-up day's bar starts at 08:00, though its night began at 00:55")
         XCTAssertEqual([m.onBar(30), m.onBar(480), m.onBar(900), m.onBar(1440), m.onBar(1500), m.onBar(.infinity), m.onBar(-.infinity)], [480, 480, 900, 1440, 1440, 1440, 480])
         XCTAssertEqual(m.readout(at: 30), m.readout(at: 480), "00:30 is not on the bar: a finger there reads where the bar starts")
-        XCTAssertEqual(m.readout(at: 30).head, "睡觉 · 00:55–09:05 · 8 时 5 分", "and not a hole from 08:00 back to 00:55")
+        XCTAssertEqual(m.readout(at: 30).head, "睡觉 · 00:55–09:05 · 8 小时 5 分", "and not a hole from 08:00 back to 00:55")
         XCTAssertEqual(m.readout(at: 1500), m.readout(at: 1440))
         // every minute from before the bar to after it, on every made-up day, with and without a now: a hole's hours run forward
         func clock(_ s: Substring) -> Int { (Int(s.prefix(2)) ?? -1) * 60 + (Int(s.suffix(2)) ?? -1) }

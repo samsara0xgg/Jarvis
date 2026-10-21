@@ -109,7 +109,7 @@ struct TLRowView: View, Equatable {
                 .padding(.leading, TLColumns.text - TLColumns.centre - 4)
             if e.lit { TLRowStar(hers: e.hers).frame(width: 13, height: 13).padding(.leading, 6).transition(.opacity) }
             Spacer(minLength: 10)
-            Text(e.right).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize().layoutPriority(1)
+            Text(e.right).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize().layoutPriority(1)
         }
         .animation(tlStarFade(reduce: reduce), value: e.lit)
         .frame(height: e.base)
@@ -117,7 +117,7 @@ struct TLRowView: View, Equatable {
 
     private var nowLine: some View {
         HStack(spacing: 10) {
-            Text(e.title).font(AT.mono(11)).foregroundStyle(warm).fixedSize()
+            Text(e.title).font(tlFigures(11.5)).foregroundStyle(warm).fixedSize()
             Rectangle().fill(warm.opacity(0.85)).frame(height: 1)
         }
         .frame(maxHeight: .infinity)
@@ -146,7 +146,7 @@ struct TLRowView: View, Equatable {
             }
             .padding(.leading, TLColumns.text - TLColumns.centre - TLColumns.bead / 2).padding(.top, titleTop)
             Spacer(minLength: 8)
-            Text(e.right).font(AT.mono(11.5)).foregroundStyle(e.strongRight ? ink : muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, titleTop)
+            Text(e.right).font(tlFigures(11.5)).foregroundStyle(e.strongRight ? ink : muted).lineLimit(1).fixedSize().frame(height: 18).padding(.top, titleTop)
         }
         .opacity(e.later ? 0.62 : 1)
     }
@@ -307,7 +307,7 @@ private struct TLPreview: View {
                     if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(muted).lineLimit(4) }
                 }
                 Spacer(minLength: 6)
-                Text(e.right).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
+                Text(e.right).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
             }
             TLOpenView(e: e, tl: tl, engine: engine, interactive: false)
         }

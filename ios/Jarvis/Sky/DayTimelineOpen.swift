@@ -94,7 +94,7 @@ struct TLOpenView: View {
                     if let d = l.detail { Text(d).font(.system(size: 11.5)).foregroundStyle(muted).lineLimit(1) }
                 }
                 Spacer(minLength: 6)
-                Text(l.right).font(AT.mono(11.5)).foregroundStyle(l.strong ? ink : muted).lineLimit(1).fixedSize()
+                Text(l.right).font(tlFigures(11.5)).foregroundStyle(l.strong ? ink : muted).lineLimit(1).fixedSize()
             }
             .frame(minHeight: 36)
             if let a = l.attachment { TLPicture(attachment: a, tall: 150).padding(.bottom, 4) }
@@ -120,7 +120,7 @@ struct TLOpenView: View {
             } else if x == nil {
                 Text("这次对话的字还没读到，打开对话可以看全部").font(.system(size: 13)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
             }
-            if let n = e.turns { Text("共 \(n) 句").font(AT.mono(11.5)).foregroundStyle(muted) }
+            if let n = e.turns { Text("共 \(n) 句").font(tlFigures(11.5)).foregroundStyle(muted) }
         }
     }
 
@@ -154,7 +154,7 @@ struct TLOpenView: View {
                     HStack(spacing: 8) {
                         Text(t.name).font(.system(size: 13)).foregroundStyle(ink.opacity(0.88)).lineLimit(1)
                         Spacer(minLength: 6)
-                        Text(tlDur(t.minutes)).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
+                        Text(tlDur(t.minutes)).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -204,7 +204,7 @@ struct TLOpenView: View {
                     if !meta.isEmpty { Text(meta).font(.system(size: 11.5)).foregroundStyle(muted).lineLimit(1) }
                 }
                 Spacer(minLength: 6)
-                Text(s.right).font(AT.mono(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
+                Text(s.right).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
                 if s.recap != nil {
                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(faint).rotationEffect(.degrees(shown ? 90 : 0))
                 }

@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 
 // The columns of a row, and whether its own words are cut short at the right of them. A row with nothing more to say still opens when they are, to say them whole; one that fits does
@@ -10,9 +11,14 @@ enum TLColumns {
     static let words = TLLayout.barW - text
 }
 
-/// how wide a line is in the system font at a size, which is what the list's own text is set in
-func tlWidth(_ s: String, size: Double, weight: UIFont.Weight = .regular, mono: Bool = false) -> Double {
-    let font = mono ? UIFont.monospacedSystemFont(ofSize: size, weight: weight) : UIFont.systemFont(ofSize: size, weight: weight)
+/// A length, a count or a value with its words (`1 小时 40 分`, `还有 10 分钟`, `14 条`, `等你`): the system font with its figures all one width, so that a column of them lines up, and no
+/// spacing added (Chinese set in a monospaced face, or spaced out, reads as a row of boxes). Clock times alone keep the monospaced face.
+func tlFigures(_ size: Double, weight: Font.Weight = .medium) -> Font { .system(size: size, weight: weight).monospacedDigit() }
+
+/// how wide a line is in the system font at a size, which is what the list's own text is set in (`mono`: in the monospaced face of a clock; `figures`: as `tlFigures` sets it)
+func tlWidth(_ s: String, size: Double, weight: UIFont.Weight = .regular, mono: Bool = false, figures: Bool = false) -> Double {
+    let font = mono ? UIFont.monospacedSystemFont(ofSize: size, weight: weight)
+        : figures ? UIFont.monospacedDigitSystemFont(ofSize: size, weight: weight) : UIFont.systemFont(ofSize: size, weight: weight)
     return Double((s as NSString).size(withAttributes: [.font: font]).width)
 }
 
@@ -22,7 +28,7 @@ extension TLEntry {
         switch kind {
         case .stay, .now, .pause, .segment: return false
         default:
-            let room = TLColumns.words - 8 - tlWidth(right, size: 11.5, weight: .medium, mono: true)
+            let room = TLColumns.words - 8 - tlWidth(right, size: 11.5, weight: .medium, figures: true)
             return tlWidth(title, size: 15) + (waiting ? 46 : 0) > room || (detail.map { tlWidth($0, size: 12) > room } ?? false)
         }
     }

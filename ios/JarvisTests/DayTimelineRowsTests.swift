@@ -45,7 +45,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let m = build(r, now: nil)
         XCTAssertEqual(m.entries.map(\.kind), [.trip, .pause, .trip, .pause, .trip, .stay, .trip, .stay, .trip, .stay, .stay, .stay, .trip])
         let a = try entry(m, "A"), b = try entry(m, "B")
-        XCTAssertEqual([a.title, b.title], ["停了 7 分", "停了 8 分"])
+        XCTAssertEqual([a.title, b.title], ["停了 7 分钟", "停了 8 分钟"])
         XCTAssertEqual([a.detail, b.detail], [nil, "Shell"], "what the phone called it, if it did")
         XCTAssertEqual(a.time, "10:10")
         XCTAssertFalse(a.opens, "nothing to open on a stop")
@@ -58,7 +58,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(m.entries.filter { $0.kind == .stay }.map(\.id), ["C", "D", "E", "F", "G"])
         // the bar still shows where he stopped, and a finger there reads it
         XCTAssertTrue(m.segs.contains { $0.id == "A" })
-        XCTAssertEqual(m.readout(at: 613).head, "没名字的地方 · 10:10–10:17 · 7 分")
+        XCTAssertEqual(m.readout(at: 613).head, "没名字的地方 · 10:10–10:17 · 7 分钟")
     }
 
     func testAStopStillGoingIsNeverARowOfTheTrip() throws {
@@ -76,7 +76,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(m.entries.filter { $0.ride }.count, 2)
         XCTAssertEqual(m.segs.filter { if case .place = $0.kind { return true }; return false }.count, 15, "the bar still has all fifteen places")
         XCTAssertEqual(m.entries.filter { $0.kind == .stay && $0.kept }.map(\.title), ["家", "UVic", "家"])
-        XCTAssertEqual(m.entries.filter { $0.kind == .pause }.map(\.title), ["停了 7 分", "停了 8 分", "停了 9 分", "停了 9 分"])
+        XCTAssertEqual(m.entries.filter { $0.kind == .pause }.map(\.title), ["停了 7 分钟", "停了 8 分钟", "停了 9 分钟", "停了 9 分钟"])
         XCTAssertEqual(m.entries.filter { $0.kind == .pause }.map(\.detail), [nil, "Yates St", nil, "Beach Dr"])
         // every leg and every stop is on a rail, and a run of them is one rail with a blank above its first row
         XCTAssertTrue(m.entries.filter { $0.kind == .trip || $0.kind == .pause }.allSatisfy { $0.rail == .trip })
@@ -95,7 +95,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertTrue(m.segs.isEmpty)
         XCTAssertEqual(m.chips.map { $0.word + " " + $0.value }, ["和她 3 次"])
         XCTAssertEqual(m.span, 360...DAY, "no night: 06:00")
-        XCTAssertEqual(m.readout(at: 780).head, "没有记录 · 06:00–24:00 · 18 时")
+        XCTAssertEqual(m.readout(at: 780).head, "没有记录 · 06:00–24:00 · 18 小时")
         XCTAssertEqual(m.readout(at: 780).second, "和她说话 · 12 句")
     }
 
@@ -262,21 +262,21 @@ final class DayTimelineRowsTests: XCTestCase {
         ].joined(separator: ","))
         let m = build(r)
         func right(_ id: String) throws -> String { try entry(m, id).right }
-        XCTAssertEqual(try right("e1"), "还有 5 分")
-        XCTAssertEqual(try right("e2"), "还有 30 分")
-        XCTAssertEqual(try right("e3"), "还有 1 时 10 分")
-        XCTAssertEqual(try right("e4"), "还有 2 时", "two hours on the dot")
-        XCTAssertEqual(try right("e5"), "8 分", "a minute beyond: its own length")
-        XCTAssertEqual(try right("rem"), "还有 30 分")
+        XCTAssertEqual(try right("e1"), "还有 5 分钟")
+        XCTAssertEqual(try right("e2"), "还有 30 分钟")
+        XCTAssertEqual(try right("e3"), "还有 1 小时 10 分")
+        XCTAssertEqual(try right("e4"), "还有 2 小时", "two hours on the dot")
+        XCTAssertEqual(try right("e5"), "8 分钟", "a minute beyond: its own length")
+        XCTAssertEqual(try right("rem"), "还有 30 分钟")
         XCTAssertEqual(try right("dep"), "22:00 出门", "a bus keeps its own words")
         XCTAssertEqual(m.entries.filter(\.soon).map(\.id), ["e1", "e2", "rem", "e3", "e4"], "within two hours, in the order of the day; the bus keeps its own words")
         XCTAssertTrue(try entry(m, "e5").later && !(try entry(m, "e5").soon))
         // it counts up to the next minute, never down to zero
-        XCTAssertEqual(try entry(build(r, now: 1310.4), "e1").right, "还有 5 分", "4.6 minutes is 5")
-        XCTAssertEqual(try entry(build(r, now: 1314.5), "e1").right, "还有 1 分", "half a minute is a minute")
+        XCTAssertEqual(try entry(build(r, now: 1310.4), "e1").right, "还有 5 分钟", "4.6 minutes is 5")
+        XCTAssertEqual(try entry(build(r, now: 1314.5), "e1").right, "还有 1 分钟", "half a minute is a minute")
         // what is over, and another day, say nothing of the kind
         XCTAssertFalse(try entry(build(r, now: nil), "e1").soon)
-        XCTAssertEqual(try entry(build(r, now: nil), "e1").right, "25 分")
+        XCTAssertEqual(try entry(build(r, now: nil), "e1").right, "25 分钟")
         XCTAssertFalse(try entry(build(r, now: 1400), "e1").later)
     }
 
@@ -310,12 +310,12 @@ final class DayTimelineRowsTests: XCTestCase {
         let g = try entry(m, "code-group-s1")
         XCTAssertEqual(g.title, "Claude Code · 3 个会话")
         XCTAssertEqual(g.detail, "T3 · T2", "the two newest")
-        XCTAssertEqual(g.right, "1 时 10 分", "the union of 610–660 and 670–690, not the sum of the three")
+        XCTAssertEqual(g.right, "1 小时 10 分", "the union of 610–660 and 670–690, not the sum of the three")
         XCTAssertEqual(g.sessions.map(\.title), ["T1", "T2", "T3"])
         XCTAssertEqual(g.sessions.map(\.account), ["A", "B", "A"])
         XCTAssertEqual(g.sessions.map(\.project), ["Jarvis", "Jarvis", "Jarvis"])
         XCTAssertEqual(g.sessions.map(\.recap), ["做完了", nil, nil])
-        XCTAssertEqual(g.sessions.map(\.right), ["30 分", "30 分", "20 分"])
+        XCTAssertEqual(g.sessions.map(\.right), ["30 分钟", "30 分钟", "20 分钟"])
         XCTAssertEqual(g.sessions.map(\.time), ["10:10", "10:30", "11:10"])
         XCTAssertTrue(g.holdsSessions && g.opens)
         XCTAssertEqual(g.lens, .work)
@@ -323,7 +323,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(g.symbol, "terminal.fill")
         XCTAssertEqual(m.marks(of: .work), [TLMark(t0: 610, t1: 640), TLMark(t0: 630, t1: 660), TLMark(t0: 670, t1: 690), TLMark(t0: 810, t1: 830), TLMark(t0: 950, t1: 970)])
         let one = try entry(m, "code-s4"), alone = try entry(m, "code-s5")
-        XCTAssertEqual([one.title, one.detail, one.right], ["T4", "Jarvis · A", "20 分"])
+        XCTAssertEqual([one.title, one.detail, one.right], ["T4", "Jarvis · A", "20 分钟"])
         XCTAssertFalse(one.holdsSessions)
         XCTAssertEqual([one.group, alone.group], ["s2", nil], "one in a place is that place's row; one in no place stands alone")
         XCTAssertEqual(try entry(m, "code-s4").sessions.count, 1)
@@ -440,9 +440,9 @@ final class DayTimelineRowsTests: XCTestCase {
         let m = build(TimelineFixture.today(cal))
         let sleep = try XCTUnwrap(try entry(m, "sleep-0").sleep)
         XCTAssertEqual([sleep.deep, sleep.core, sleep.rem, sleep.awake], [115, 232, 120, 2])
-        XCTAssertEqual(sleep.summary, "深睡 1:55 · 核心 3:52 · REM 2:00 · 醒 2 次")
-        XCTAssertEqual(sleep.short, "深睡 1:55 · REM 2:00 · 醒 2 次")
-        XCTAssertEqual(try entry(m, "sleep-0").glance, "深睡 1:55 · REM 2:00 · 醒 2 次")
+        XCTAssertEqual(sleep.summary, "深睡 1小时55分 · 核心 3小时52分 · REM 2小时 · 醒 2 次")
+        XCTAssertEqual(sleep.short, "深睡 1小时55分 · REM 2小时 · 醒 2 次")
+        XCTAssertEqual(try entry(m, "sleep-0").glance, "深睡 1小时55分 · REM 2小时 · 醒 2 次")
         XCTAssertEqual(sleep.stages.count, 12)
         XCTAssertEqual(sleep.stages.first, TLStage(kind: .core, t0: 55, t1: 100), "the night's own stretch: the time in bed before it is cut")
         XCTAssertEqual(sleep.stages.last, TLStage(kind: .awake, t0: 530, t1: 545))
@@ -450,7 +450,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let r = try reply(item("n", "sleep", 100, 200, #""stages": [{"stage": "deep", "start_ms": \#(at(60)), "end_ms": \#(at(130))}, {"stage": "rem", "start_ms": \#(at(190)), "end_ms": \#(at(260))}, {"stage": "levitating", "start_ms": \#(at(130)), "end_ms": \#(at(140))}, {"stage": "awake", "start_ms": \#(at(250)), "end_ms": \#(at(260))}]"#))
         let n = try XCTUnwrap(try entry(build(r, now: nil), "n").sleep)
         XCTAssertEqual([n.deep, n.rem, n.awake], [30, 10, 0])
-        XCTAssertEqual(n.summary, "深睡 30 分 · REM 10 分")
+        XCTAssertEqual(n.summary, "深睡 30分钟 · REM 10分钟")
         XCTAssertEqual(n.stages, [TLStage(kind: .deep, t0: 100, t1: 130), TLStage(kind: .unspecified, t0: 130, t1: 190), TLStage(kind: .rem, t0: 190, t1: 200)], "cut to the night, and what no stage covers said so")
         // no stages: no hypnogram and nothing to add to the readout
         let none = try entry(build(try reply(item("n", "sleep", 100, 200)), now: nil), "n")
@@ -463,7 +463,7 @@ final class DayTimelineRowsTests: XCTestCase {
     func testAWorkoutIsNamedForWhatItWasAndSaysOnlyWhatIsThere() throws {
         let m = build(TimelineFixture.today(cal))
         let w = try entry(m, "workout-demo-1")
-        XCTAssertEqual([w.title, w.symbol, w.detail, w.right, w.time], ["跑步", "figure.run", "3.2 公里 · 240 千卡 · 平均心率 142", "35 分", "17:00"])
+        XCTAssertEqual([w.title, w.symbol, w.detail, w.right, w.time], ["跑步", "figure.run", "3.2 公里 · 240 千卡 · 平均心率 142", "35 分钟", "17:00"])
         XCTAssertEqual(w.glance, "跑步 · 3.2 公里")
         XCTAssertEqual(w.lens, .workout)
         XCTAssertEqual(w.group, "stay-9", "the school's, as he was there")
@@ -544,7 +544,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(w.work?.projects, [TLTop(name: "Jarvis", minutes: 100, share: 1), TLTop(name: "论文", minutes: 30, share: 0.3)])
         XCTAssertEqual(w.work?.apps, [TLTop(name: "Xcode", minutes: 67, share: 1)])
         XCTAssertEqual([w.work?.active, w.work?.total], [130, 130])
-        XCTAssertEqual(w.more, ["活跃 2 时 10 分 · 共 2 时 10 分"])
+        XCTAssertEqual(w.more, ["活跃 2 小时 10 分 · 共 2 小时 10 分"])
     }
 
     func testWorkListsTheFiveBiggestOfEachAndTheStayIsOnTheMapOnlyWhereTheCoordinatesAre() throws {
@@ -569,7 +569,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(home.title, "我的家")
         XCTAssertEqual(home.more, ["12 Example St, Town", "常去的地方 · 我的家"])
         XCTAssertEqual(home.place?.keptName, "我的家")
-        XCTAssertEqual(home.head, "我的家 · 09:05–11:25 · 2 时 20 分")
+        XCTAssertEqual(home.head, "我的家 · 09:05–11:25 · 2 小时 20 分")
         XCTAssertEqual(home.barName, "我的家")
         XCTAssertEqual(try entry(m, "stay-13").title, "我的家", "every stay in that place")
         XCTAssertEqual(try entry(m, "stay-9").title, "UVic", "and no other")
@@ -639,8 +639,8 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(try e("odd-stay").actions, [.ask, .mark, .sayWhat], "nothing to show of it: only her, and its star")
         XCTAssertEqual([try e("odd-work").title, try e("odd-work").detail], ["在 Mac 上工作", "Xcode"])
         XCTAssertEqual(try e("odd-work").work?.apps, [TLTop(name: "Xcode", minutes: 1, share: 0)])
-        XCTAssertEqual(try e("odd-sleep").right, "1 时 30 分", "no minutes: the span")
-        XCTAssertEqual(try e("odd-sleep").sleep?.summary, "深睡 20 分", "of the stages, the one that was one")
+        XCTAssertEqual(try e("odd-sleep").right, "1 小时 30 分", "no minutes: the span")
+        XCTAssertEqual(try e("odd-sleep").sleep?.summary, "深睡 20分钟", "of the stages, the one that was one")
         XCTAssertEqual([try e("odd-pay").title, try e("odd-pay").right], ["付款", ""])
         XCTAssertNil(try e("odd-talk").detail)
         XCTAssertEqual(try e("odd-rem").title, "提醒")
@@ -653,12 +653,12 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertFalse(try e("odd-event").waiting)
         XCTAssertEqual([try e("odd-dep").title, try e("odd-dep").right], ["公交", ""])
         XCTAssertEqual(try e("odd-call").title, "通话")
-        XCTAssertEqual([try e("odd-claude").title, try e("odd-claude").right], ["Claude 对话", "10 分"])
+        XCTAssertEqual([try e("odd-claude").title, try e("odd-claude").right], ["Claude 对话", "10 分钟"])
         XCTAssertEqual([try e("odd-day").title, try e("odd-day").detail], ["Claude 日报", nil])
         XCTAssertEqual(try e("odd-money").right, "", "an amount too big to be an amount is none")
         XCTAssertEqual(try e("odd-lat").place?.onMap, false)
         XCTAssertEqual(try e("twice").kind, .stay)
-        XCTAssertEqual(try e("odd-huge").right, "活跃 1 时 40 分" == "" ? "" : try e("odd-huge").right)
+        XCTAssertEqual(try e("odd-huge").right, "活跃 1 小时 40 分" == "" ? "" : try e("odd-huge").right)
     }
 
     func testATimeThatIsNotATimeReadsAsMidnightAndANumberThatIsNotANumberIsZero() {
@@ -671,8 +671,8 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(clock(1440), "00:00")
         XCTAssertEqual([tlEnd(1440), tlEnd(1439), tlEnd(1560), tlEnd(0)], ["24:00", "23:59", "次日 02:00", "00:00"])
         XCTAssertEqual([tlInt(.nan), tlInt(.infinity), tlInt(1e300), tlInt(-1e300), tlInt(2.5), tlInt(-2.5), tlInt(3.4)], [0, 0, 1_000_000_000, -1_000_000_000, 3, -3, 3])
-        XCTAssertEqual(tlDur(-5), "0 分")
-        XCTAssertEqual(tlHM(-5), "0 分")
+        XCTAssertEqual(tlDur(-5), "0 分钟")
+        XCTAssertEqual(tlHM(-5), "0分钟")
         XCTAssertEqual(tlGroup(Int.min), "-9,223,372,036,854,775,808")
         XCTAssertEqual(tlMoney(Int.min, "CAD"), "-$92,233,720,368,547,758.08")
     }
@@ -764,7 +764,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let m = build(r, now: nil)
         let sleep = try XCTUnwrap(try entry(m, "n").sleep)
         XCTAssertEqual([sleep.deep, sleep.core, sleep.rem, sleep.awake], [20, 70, 60, 1], "an hour seen twice is an hour, and two awake stages that overlap are one time awake")
-        XCTAssertEqual(sleep.summary, "深睡 20 分 · 核心 1:10 · REM 1:00 · 醒 1 次")
+        XCTAssertEqual(sleep.summary, "深睡 20分钟 · 核心 1小时10分 · REM 1小时 · 醒 1 次")
         XCTAssertEqual(sleep.stages, [TLStage(kind: .core, t0: 840, t1: 890), TLStage(kind: .deep, t0: 890, t1: 910), TLStage(kind: .core, t0: 910, t1: 930), TLStage(kind: .inBed, t0: 930, t1: 935),
                                       TLStage(kind: .awake, t0: 935, t1: 945), TLStage(kind: .inBed, t0: 945, t1: 960), TLStage(kind: .rem, t0: 960, t1: 1020), TLStage(kind: .inBed, t0: 1020, t1: 1040)])
     }

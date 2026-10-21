@@ -791,7 +791,7 @@ private struct TLWaitingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 0) {
-                Text("等你").font(AT.mono(12)).foregroundStyle(amber).frame(width: 40, height: 18, alignment: .leading)
+                Text("等你").font(tlFigures(12, weight: .semibold)).foregroundStyle(amber).frame(width: 40, height: 18, alignment: .leading)
                 MarkShape(kd: .wait).frame(width: 16, height: 16).frame(width: 22, height: 18)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card.title).font(.system(size: 15)).foregroundStyle(amber).lineLimit(1).frame(height: 18, alignment: .leading)

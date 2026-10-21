@@ -344,7 +344,7 @@ struct TLChips: View, Equatable {
         HStack(spacing: 5) {
             Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(color.color).frame(width: 12)
             Text(word).font(.system(size: 11.5)).foregroundStyle(ink.opacity(0.86))
-            Text(value).font(AT.mono(11.5)).foregroundStyle(ink)
+            Text(value).font(tlFigures(11.5)).foregroundStyle(ink)
         }
         .fixedSize()
         .padding(.horizontal, 9).frame(height: TLLayout.chipsH)

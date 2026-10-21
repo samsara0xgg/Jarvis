@@ -59,18 +59,15 @@ enum TLMetrics {
     static let gap = 12.0
 }
 
-/// 1 时 40 分, 40 分: the length of a span in the list
+/// 1 小时 40 分, 2 小时, and under an hour 18 分钟: the length of a span, never with a clock's colon
 func tlDur(_ minutes: Int) -> String {
     let m = max(0, minutes)
-    if m < 60 { return "\(m) 分" }
-    return m % 60 == 0 ? "\(m / 60) 时" : "\(m / 60) 时 \(m % 60) 分"
+    if m < 60 { return "\(m) 分钟" }
+    return m % 60 == 0 ? "\(m / 60) 小时" : "\(m / 60) 小时 \(m % 60) 分"
 }
 
-/// 7:50, 1:05, and under an hour 18 分: a length as the chips and the bar write it
-func tlHM(_ minutes: Int) -> String {
-    let m = max(0, minutes)
-    return m < 60 ? "\(m) 分" : "\(m / 60):" + String(format: "%02d", m % 60)
-}
+/// 7小时50分, 35分钟: a length where room is short (the day's numbers, a line of sleep's stages): the same words without their spaces
+func tlHM(_ minutes: Int) -> String { tlDur(minutes).replacingOccurrences(of: " ", with: "") }
 
 /// 12,345: a whole number with its thousands told
 func tlGroup(_ n: Int) -> String {

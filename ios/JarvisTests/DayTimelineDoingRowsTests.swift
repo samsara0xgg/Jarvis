@@ -82,7 +82,7 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertEqual([d1.title, d2.title, d3.title, d4.title, d5.title, d6.title], ["起床吃早饭", "做 Jarvis", "不知道在干嘛", "27 路", "吃午饭", "歇会儿"],
                        "a model's phrase or his own answer as given, the program's words as the rows say them, and none: 不知道在干嘛")
         XCTAssertEqual([d1.unknown, d3.unknown, d4.unknown], [false, true, false], "only the one with no words is muted")
-        XCTAssertEqual([d1.right, d2.right, d3.right, d4.right, d5.right, d6.right], ["2 时", "3 时", "40 分", "30 分", "40 分", "1 时 10 分"], "how long; the last goes on to now")
+        XCTAssertEqual([d1.right, d2.right, d3.right, d4.right, d5.right, d6.right], ["2 小时", "3 小时", "40 分钟", "30 分钟", "40 分钟", "1 小时 10 分"], "how long; the last goes on to now")
         XCTAssertTrue(d6.going)
         XCTAssertEqual(d1.detail, "家", "the place the brain points to; none when it points to none")
         XCTAssertEqual(d2.detail, "家 · 不太确定", "and not sure when the brain says so")
@@ -94,9 +94,9 @@ final class DayTimelineDoingRowsTests: XCTestCase {
 
     func testThePageOfARowSaysItsHoursHowLongAndWhere() throws {
         let m = try day()
-        XCTAssertEqual(try entry(m, "d2").pageLine, "09:00–12:00 · 3 时 · 家 · 不太确定")
-        XCTAssertEqual(try entry(m, "d4").pageLine, "12:40–13:10 · 30 分", "no place: the hours and the length")
-        XCTAssertEqual(try entry(m, "d6").pageLine, "13:50 起 · 1 时 10 分", "a stretch that goes on says when it began")
+        XCTAssertEqual(try entry(m, "d2").pageLine, "09:00–12:00 · 3 小时 · 家 · 不太确定")
+        XCTAssertEqual(try entry(m, "d4").pageLine, "12:40–13:10 · 30 分钟", "no place: the hours and the length")
+        XCTAssertEqual(try entry(m, "d6").pageLine, "13:50 起 · 1 小时 10 分", "a stretch that goes on says when it began")
     }
 
     func testTheCountsAreThePicturesPaymentsCallsAndMessagesInsideInThatOrder() throws {
@@ -131,10 +131,10 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         let m = DayTimelineModel.build(r, now: 900)
         XCTAssertEqual(m.entries.map(\.id), ["a", "now"])
         XCTAssertEqual(try entry(m, "a").t1, 900)
-        XCTAssertEqual(try entry(m, "a").right, "8 时")
+        XCTAssertEqual(try entry(m, "a").right, "8 小时")
         let other = DayTimelineModel.build(r, now: nil)
         XCTAssertEqual(other.entries.map(\.id), ["a", "b"], "on another day they are as long as they are")
-        XCTAssertEqual([try entry(other, "a").right, try entry(other, "b").right], ["9 时", "55 分"])
+        XCTAssertEqual([try entry(other, "a").right, try entry(other, "b").right], ["9 小时", "55 分钟"])
     }
 
     // MARK: opened
@@ -146,7 +146,7 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertEqual(d2.lines.map(\.id), ["w1", "pic1", "c1"], "the work block, the picture and the session by when they began; the stay and the talk are left out, an id that is not among the day's items is skipped, and one listed twice is once")
         XCTAssertEqual(d2.lines.map(\.title), ["在 Mac 上工作", "照片", "接上天气"])
         XCTAssertEqual(d2.lines[0].detail, "Jarvis · Xcode", "as its row says it")
-        XCTAssertEqual(d2.lines[0].right, "活跃 1 时 40 分", "it began and ended inside the stretch: what its row says")
+        XCTAssertEqual(d2.lines[0].right, "活跃 1 小时 40 分", "it began and ended inside the stretch: what its row says")
         XCTAssertEqual(d2.lines[1].right, "10:00", "a moment has its time")
         XCTAssertEqual(d2.lines[1].attachment, "pic-1", "and the picture its thumbnail")
         XCTAssertNil(try entry(m, "d1").note)
@@ -156,10 +156,10 @@ final class DayTimelineDoingRowsTests: XCTestCase {
     func testALastingItemThatRunsBeyondTheStretchShowsItsLengthInsideIt() throws {
         let m = try day()
         let a = try entry(m, "d2").lines.first { $0.id == "c1" }, b = try entry(m, "d3").lines.first { $0.id == "c1" }
-        XCTAssertEqual(a?.right, "1 时 10 分", "10:50 to 12:20, the stretch ends at 12:00: 70 minutes of it")
-        XCTAssertEqual(b?.right, "20 分", "and the same session in the next: 12:00 to 12:20")
+        XCTAssertEqual(a?.right, "1 小时 10 分", "10:50 to 12:20, the stretch ends at 12:00: 70 minutes of it")
+        XCTAssertEqual(b?.right, "20 分钟", "and the same session in the next: 12:00 to 12:20")
         XCTAssertEqual(try entry(m, "d3").lines.map(\.id), ["c1"])
-        XCTAssertEqual(try entry(m, "d2").lines.first { $0.id == "w1" }?.right, "活跃 1 时 40 分", "one that does not run beyond is told as its row tells it")
+        XCTAssertEqual(try entry(m, "d2").lines.first { $0.id == "w1" }?.right, "活跃 1 小时 40 分", "one that does not run beyond is told as its row tells it")
     }
 
     func testTheKindsOfTheDevicesAreLinesWithTheirOwnWords() throws {
@@ -167,11 +167,11 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         let d6 = try entry(m, "d6")
         XCTAssertEqual(d6.lines.map(\.id), ["scr1", "med1", "rem-rang", "msg1", "pc1", "call1"], "by when they began; the reminder that rang is a row of its own too, and is in its stretch")
         let by = Dictionary(uniqueKeysWithValues: d6.lines.map { ($0.id, $0) })
-        XCTAssertEqual([by["scr1"]?.title, by["scr1"]?.detail, by["scr1"]?.right], ["用 iPhone", "微信 22 分 · Safari 8 分", "30 分"], "phone use: the device, the apps and minutes")
-        XCTAssertEqual([by["med1"]?.title, by["med1"]?.detail, by["med1"]?.right], ["Music", "歌名 · 歌手", "25 分"], "media: the app and the top title")
-        XCTAssertEqual([by["msg1"]?.title, by["msg1"]?.detail, by["msg1"]?.right], ["Mia", "发 3 · 收 5", "15 分"], "messages: the conversation, what he sent and what came")
-        XCTAssertEqual([by["pc1"]?.title, by["pc1"]?.detail, by["pc1"]?.right], ["Mia", "打出 · Phone", "10 分"], "a call on the phone: the person, which way, how long")
-        XCTAssertEqual([by["call1"]?.title, by["call1"]?.right], ["通话 · FaceTime", "15 分"], "a call on the Mac has no person: the app and how long")
+        XCTAssertEqual([by["scr1"]?.title, by["scr1"]?.detail, by["scr1"]?.right], ["用 iPhone", "微信 22 分钟 · Safari 8 分钟", "30 分钟"], "phone use: the device, the apps and minutes")
+        XCTAssertEqual([by["med1"]?.title, by["med1"]?.detail, by["med1"]?.right], ["Music", "歌名 · 歌手", "25 分钟"], "media: the app and the top title")
+        XCTAssertEqual([by["msg1"]?.title, by["msg1"]?.detail, by["msg1"]?.right], ["Mia", "发 3 · 收 5", "15 分钟"], "messages: the conversation, what he sent and what came")
+        XCTAssertEqual([by["pc1"]?.title, by["pc1"]?.detail, by["pc1"]?.right], ["Mia", "打出 · Phone", "10 分钟"], "a call on the phone: the person, which way, how long")
+        XCTAssertEqual([by["call1"]?.title, by["call1"]?.right], ["通话 · FaceTime", "15 分钟"], "a call on the Mac has no person: the app and how long")
         XCTAssertEqual([by["rem-rang"]?.title, by["rem-rang"]?.detail, by["rem-rang"]?.right], ["吃药", "响过了", "14:10"])
         XCTAssertEqual(by["scr1"]?.symbol, "iphone")
     }
@@ -270,13 +270,13 @@ final class DayTimelineDoingRowsTests: XCTestCase {
     func testAFingerOnTheBarReadsWhatHeWasDoingItsHoursAndLength() throws {
         let m = try day()
         let r = m.readout(at: 600)
-        XCTAssertEqual(r.head, "做 Jarvis · 09:00–12:00 · 3 时")
+        XCTAssertEqual(r.head, "做 Jarvis · 09:00–12:00 · 3 小时")
         XCTAssertEqual(r.hue, RGB(91, 140, 255))
         XCTAssertTrue(r.strong)
         let hole = m.readout(at: 730)
-        XCTAssertEqual(hole.head, "不知道在干嘛 · 12:00–12:40 · 40 分")
+        XCTAssertEqual(hole.head, "不知道在干嘛 · 12:00–12:40 · 40 分钟")
         XCTAssertNil(hole.hue)
-        XCTAssertEqual(m.readout(at: 880).head, "歇会儿 · 13:50 起 · 1 时 10 分", "the one that goes on")
+        XCTAssertEqual(m.readout(at: 880).head, "歇会儿 · 13:50 起 · 1 小时 10 分", "the one that goes on")
         XCTAssertTrue(m.readout(at: 600).elsewhere.contains { $0.hasPrefix("Jarvis") }, "what else was going on is still told")
     }
 
