@@ -28,6 +28,11 @@ _TABLE_DIR: Final = "ios/Jarvis/App"
 # A file that mixes such lists with screen words stays on _LEGACY until the words move out.
 _MATCHERS: Final[dict[str, str]] = {}
 
+# DEBUG-only made-up days whose place and event names stand in for what the brain would send.
+_SAMPLES: Final[dict[str, str]] = {
+    "ios/Jarvis/Sky/FootprintFixture.swift": "the footprint page's made-up day (places, event title)",
+}
+
 # Files that held a Chinese literal when the table began (sorted, one path per line). Take a file
 # off this list in the commit that moves its words into the table.
 _LEGACY: Final = """
@@ -233,7 +238,7 @@ def test_scanner_reads_swift_literals() -> None:
 def test_cjk_swift_literals_only_in_words_table() -> None:
     """Every Swift file with a Chinese literal is the table, a matcher or on the shrinking list."""
     held = _holders()
-    allowed = set(_LEGACY) | set(_MATCHERS)
+    allowed = set(_LEGACY) | set(_MATCHERS) | set(_SAMPLES)
     stray = [f"{rel}:{lines[0]}" for rel, lines in held.items() if rel not in allowed]
     assert not stray, (
         "Chinese string literal outside the phone's words table (ADR 0325). Put the words in"
