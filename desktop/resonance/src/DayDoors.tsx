@@ -68,11 +68,21 @@ export function DoorDetail({ title, body, back, prev, next, t }: { title: string
 // ---- the marks, on the bar ----
 type Axis = { t0: number; t1: number };
 // A point is 3 px wide over the track's whole height; a span is a 6 px bar in one of three lanes; a level is the area under a line over the track, and the last value carried on dashed to `until`.
+// A line that goes past the bar's start or end is cut there, at the height it has at that moment (not folded onto the edge as a wall); one wholly off the bar is not drawn.
 const LANE_TOP = [2, 9, 16];
 function Level({ m, bar, className }: { m: Extract<BarMark, { kind: 'level' }>; bar: Axis; className: string }) {
-  const pts = [...m.points].sort((a, b) => a.at - b.at);
-  if (!pts.length) return null;
-  const W = 1000, H = 24, x = (ms: number) => (clamp(fOf(bar, ms), 0, 1) * W).toFixed(1), y = (v: number) => (1 + (H - 1) * (1 - clamp(v, 0, 1))).toFixed(1), last = pts[pts.length - 1];
+  const all = [...m.points].sort((a, b) => a.at - b.at);
+  if (!all.length) return null;
+  const first = all[0], last = all[all.length - 1];
+  if (last.at < bar.t0 || first.at > bar.t1) return null;
+  const heightAt = (ms: number) => {
+    const i = all.findIndex(p => p.at > ms);
+    if (i < 0) return last.value;
+    const p = all[i - 1], q = all[i];
+    return p.value + (q.value - p.value) * (ms - p.at) / (q.at - p.at);
+  };
+  const pts = [...first.at < bar.t0 ? [{ at: bar.t0, value: heightAt(bar.t0) }] : [], ...all.filter(p => p.at >= bar.t0 && p.at <= bar.t1), ...last.at > bar.t1 ? [{ at: bar.t1, value: heightAt(bar.t1) }] : []];
+  const W = 1000, H = 24, x = (ms: number) => (clamp(fOf(bar, ms), 0, 1) * W).toFixed(1), y = (v: number) => (1 + (H - 1) * (1 - clamp(v, 0, 1))).toFixed(1);
   const line = pts.map(p => `${x(p.at)},${y(p.value)}`).join(' ');
   return <svg className={`dt-mk-lv is-${m.tone}${className}`} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
     <polygon className="dt-lv-fill" points={`${x(pts[0].at)},${H} ${line} ${x(last.at)},${H}`}/>
