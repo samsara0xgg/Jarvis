@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the author check reads every commit the push or pull request adds
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.32"
@@ -39,6 +41,11 @@ jobs:
         run: .venv/bin/mypy --strict jarvis tests scripts tools
       - name: ADRs
         run: .venv/bin/python scripts/check_adrs.py
+      - name: Authors
+        run: >-
+          scripts/check_commit_authors.sh
+          "${{ github.event.pull_request.base.sha || github.event.before }}"
+          "${{ github.event.pull_request.head.sha || github.sha }}"
 
   tests:
     name: tests (TZ=${{ matrix.tz }})
