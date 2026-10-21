@@ -24,6 +24,7 @@ from jarvis.decision.day_prose import build_day_prose_messages, check_day_prose
 from jarvis.execution.job_ledger_tool import build_record_application_tool
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings, ProseSettings
+from jarvis.shared import lang
 from jarvis.state import core_memory, reminders, things
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import add_application, list_applications
@@ -61,6 +62,7 @@ from tests.support.ledger import (
 from tests.support.prompt_assembly import drive_one_turn
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -80,9 +82,9 @@ def test_standing_text_computes_days_job_hunt_and_notes(tmp_path: Path) -> None:
     assert "Application confirmed (2): Acme Robotics (Pat Lee), Gamma Inc (Pat Lee)" in hunt
     assert "Interview mail (1): Delta Corp (Pat Lee)" in hunt
     assert (
-        "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 Pacific" in hunt
+        "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 [upcoming;"
+        in hunt
     )
-    assert "[upcoming;" in hunt
     assert "Beta Labs" not in hunt
     # As of now it counts today's mail too; the standing text carries no job hunt at all.
     now_hunt = job_hunt_text(src, NOW)
@@ -97,6 +99,145 @@ def test_standing_text_computes_days_job_hunt_and_notes(tmp_path: Path) -> None:
     later = standing_text(src, MIDNIGHT, notes_as_of=NOW)
     assert "Talked about: resume polish" in later
     assert "The day: He shipped the ledger and went to bed." in later
+
+
+@pytest.fixture
+def zh_words() -> Iterator[None]:
+    """His language is Chinese: what a model reads must still come out English."""
+    before = lang.language()
+    lang.set_language("zh")
+    yield
+    lang.set_language(before)
+
+
+_EASTERN_RANGE = "Tuesday, October 13, 2026 2:00 PM - 2:45 PM ET"
+_TWICE = "Wednesday, October 14, 2026 10:00 AM PDT (1:00 PM EDT)"
+
+
+def _invitations(src: LedgerSources, as_of: datetime) -> dict[str, str]:
+    """Block D's invitation line of each company that has one."""
+    return {
+        line.split(" (", 1)[0].strip(): line
+        for line in job_hunt_text(src, as_of).splitlines()
+        if "latest dated invitation" in line
+    }
+
+
+@pytest.mark.usefixtures("zh_words")
+def test_an_invitation_time_read_two_ways_shows_both_with_what_the_mail_said(
+    tmp_path: Path,
+) -> None:
+    """ADR 0368: both readings in his zone, the range's end on each, the mail's words quoted."""
+    src = ledger_world(tmp_path)
+    said = "Thursday, November 12, 2026 10:00 AM - 10:30 AM PST"
+    write_mail(
+        src.memory_db, "p1", ledger_at(6, 12), kind="interview", company="Echo Systems",
+        role="Co-op", event_at="2026-11-12T10:00-07:00", event_later_at="2026-11-12T11:00-07:00",
+        event_text=said,
+    )
+
+    line = _invitations(src, NOW)["Echo Systems"]
+
+    both = lang.t(
+        "job.when.two", lang="en", first="10:00-10:30", later="11:00-11:30",
+        said="10:00 AM - 10:30 AM PST",
+    )
+    assert line == (
+        f"  Echo Systems (Co-op): latest dated invitation Thu 2026-11-12 at {both} "
+        f"[upcoming; local time; from the mail, received 10-06 12:00; the mail text says: {said}]"
+    )
+
+
+def test_a_dated_interview_mail_of_today_is_the_same_line_in_the_today_block(
+    tmp_path: Path,
+) -> None:
+    """Block E carries the invitation line of today's mail as block D writes it."""
+    src = ledger_world(tmp_path)
+    write_mail(
+        src.memory_db, "t1", ledger_at(8, 11, 45), kind="interview", company="Hotel Systems",
+        role="Co-op", event_at="2026-11-12T10:00-07:00", event_later_at="2026-11-12T11:00-07:00",
+        event_text="Thursday, November 12, 2026 10:00 AM PST",
+    )
+
+    line = _invitations(src, NOW)["Hotel Systems"]
+
+    both = lang.t("job.when.two", lang="en", first="10:00", later="11:00", said="10:00 AM PST")
+    assert f"latest dated invitation Thu 2026-11-12 at {both} [upcoming;" in line
+    assert line in today_text(src, NOW).splitlines()
+
+
+def test_an_eastern_time_shows_converted_and_a_time_said_twice_is_no_range(tmp_path: Path) -> None:
+    """2 pm ET is 11:00 in his zone, not 14:00 Pacific; ``10:00 AM PDT (1:00 PM EDT)`` is 10:00."""
+    src = ledger_world(tmp_path)
+    for mid, company, event_at, said in (
+        ("e1", "Foxtrot Ltd", "2026-10-13T11:00-07:00", _EASTERN_RANGE),
+        ("e2", "Golf Works", "2026-10-14T10:00-07:00", _TWICE),
+    ):
+        write_mail(
+            src.memory_db, mid, ledger_at(6, 12), kind="interview", company=company,
+            role="Intern", event_at=event_at, event_text=said,
+        )
+
+    lines = _invitations(src, NOW)
+
+    assert lines["Foxtrot Ltd"] == (
+        "  Foxtrot Ltd (Intern): latest dated invitation Tue 2026-10-13 at 11:00-11:45 "
+        "[upcoming; local time; from the mail, received 10-06 12:00; the mail text says: "
+        f"{_EASTERN_RANGE}]"
+    )
+    assert "Wed 2026-10-14 at 10:00 [upcoming; local time;" in lines["Golf Works"]
+
+
+def test_a_range_is_shown_only_when_the_words_make_a_clear_one(tmp_path: Path) -> None:
+    """Two clocks joined by a dash, to or until, the end within half a day after the start."""
+    src = ledger_world(tmp_path)
+    rows = (  # the company, what the mail said, the time stored, and what the line shows
+        ("Hotel Works", "Friday, October 9, 2026 3:00 PM to 3:45 PM PDT", "15:00", "15:00-15:45"),
+        ("India Works", "Friday, October 9, 2026 10 AM until 10:30 AM PDT", "10:00", "10:00-10:30"),
+        ("Juliet Works", "Friday, October 9, 2026 9:00 AM - 11:00 PM PDT", "09:00", "09:00"),
+        ("Kilo Works", "Friday, October 9, 2026 2:00 PM - 1:00 PM PDT", "14:00", "14:00"),
+        ("Lima Works", "Friday, October 9, 2026 10:00 AM PDT, or 1:00 PM PDT", "10:00", "10:00"),
+    )
+    for n, (company, said, start, _) in enumerate(rows):
+        write_mail(
+            src.memory_db, f"r{n}", ledger_at(6, 12), kind="interview", company=company,
+            role="Intern", event_at=f"2026-10-09T{start}-07:00", event_text=said,
+        )
+
+    lines = _invitations(src, NOW)
+
+    for company, said, _, shown in rows:
+        assert f"Fri 2026-10-09 at {shown} [upcoming; local time;" in lines[company], said
+
+
+def test_an_invitation_is_upcoming_until_its_later_reading_has_passed(tmp_path: Path) -> None:
+    """At 10:30 the 10:00 reading is over but the 11:00 one is not: it is still upcoming."""
+    src = ledger_world(tmp_path)
+    write_mail(
+        src.memory_db, "p1", ledger_at(6, 12), kind="interview", company="Echo Systems",
+        role="Co-op", event_at="2026-11-12T10:00-07:00", event_later_at="2026-11-12T11:00-07:00",
+        event_text="Thursday, November 12, 2026 10:00 AM PST",
+    )
+    for hour, minute, state in ((9, 59, "upcoming"), (10, 30, "upcoming"), (11, 1, "past")):
+        as_of = datetime(2026, 11, 12, hour, minute, tzinfo=ZONE)
+        assert f"[{state}; local time;" in _invitations(src, as_of)["Echo Systems"]
+
+
+def test_a_store_made_before_the_later_reading_still_gives_the_invitation_line(
+    tmp_path: Path,
+) -> None:
+    """A reader that opens the store before any writer has added the column loses nothing."""
+    src = ledger_world(tmp_path)
+    with closing(sqlite3.connect(src.memory_db)) as conn, conn:
+        conn.execute("ALTER TABLE job_mail DROP COLUMN event_later_at")
+
+    hunt = job_hunt_text(src, MIDNIGHT)
+
+    assert (
+        "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 [upcoming;"
+        in hunt
+    )
+    assert "Application confirmed (2): Acme Robotics (Pat Lee), Gamma Inc (Pat Lee)" in hunt
 
 
 def test_a_day_that_ran_past_midnight_stops_at_its_real_end_from_five(tmp_path: Path) -> None:

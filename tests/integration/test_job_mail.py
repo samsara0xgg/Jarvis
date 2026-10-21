@@ -2618,6 +2618,7 @@ def test_an_application_carries_its_timeline_interview_and_links(
         "join_url": "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x",
         "location": None,
         "interviewers": ["Jill Crowe"],
+        "later_at": None,
     }
     assert one["links"] == {
         "portal_url": "https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome",
@@ -2649,6 +2650,64 @@ _WINTER_AT = "2026-11-12T10:00-07:00"
 _WINTER_LATER = "2026-11-12T11:00-07:00"
 
 
+def test_an_application_carries_both_readings_of_its_interview_time(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """``next_event_later_at`` and ``interview["later_at"]`` sit beside the earlier reading."""
+    h = job_harness(tmp_path, jev, [])
+    h.clock.set(_WINTER_NOON)
+    _stored(h, "a1", "Acme", "QA Co-op", "receipt", timedelta(days=10))
+    _stored(h, "a2", "Acme", "QA Co-op", "interview", timedelta(days=5), event_at=_WINTER_AT)
+    h.sql("UPDATE job_mail SET event_later_at = ? WHERE message_id = 'a2'", _WINTER_LATER)
+    _stored(h, "b1", "Beta", "", "interview", timedelta(days=5), event_at="2026-11-13T09:00-07:00")
+    _stored(h, "c1", "Gamma", "", "interview", timedelta(days=5), event_at="2026-11-09T10:00-07:00")
+    h.sql("UPDATE job_mail SET event_later_at = '2026-11-09T11:00-07:00' WHERE message_id = 'c1'")
+    h.client.post(
+        "/inherent/jobs/applications", json={"company": "Hand", "applied_at": "2026-09-12"}
+    )
+
+    apps = _apps(h)
+
+    acme = apps[("Acme", "QA Co-op")]
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, _WINTER_LATER)
+    assert acme["interview"] is not None
+    assert (acme["interview"]["at"], acme["interview"]["later_at"]) == (_WINTER_AT, _WINTER_LATER)
+    beta = apps[("Beta", "")]  # one reading: nothing beside it
+    assert (beta["next_event_at"], beta["next_event_later_at"]) == ("2026-11-13T09:00-07:00", None)
+    assert beta["interview"] is not None
+    assert beta["interview"]["later_at"] is None
+    gamma = apps[("Gamma", "")]  # the interview was yesterday: nothing ahead; it keeps its own
+    assert (gamma["next_event_at"], gamma["next_event_later_at"]) == (None, None)
+    assert gamma["interview"] is not None
+    assert (gamma["interview"]["at"], gamma["interview"]["later_at"]) == (
+        "2026-11-09T10:00-07:00",
+        "2026-11-09T11:00-07:00",
+    )
+    hand = apps[("Hand", "")]
+    assert (hand["next_event_at"], hand["next_event_later_at"]) == (None, None)
+
+
+def test_the_newest_mail_with_the_time_decides_whether_it_reads_two_ways(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """A later mail that spells its zone out leaves one reading, whatever the first one said."""
+    h = job_harness(tmp_path, jev, [])
+    h.clock.set(_WINTER_NOON)
+    _stored(h, "a1", "Acme", "QA", "interview", timedelta(days=5), event_at=_WINTER_AT)
+    _stored(h, "a2", "Acme", "QA", "interview", timedelta(days=2), event_at=_WINTER_AT)
+    h.sql("UPDATE job_mail SET event_later_at = ? WHERE message_id = 'a1'", _WINTER_LATER)
+
+    acme = _apps(h)[("Acme", "QA")]
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, None)
+    assert acme["interview"]["later_at"] is None
+
+    h.sql("UPDATE job_mail SET event_later_at = NULL WHERE message_id = 'a1'")
+    h.sql("UPDATE job_mail SET event_later_at = ? WHERE message_id = 'a2'", _WINTER_LATER)
+    acme = _apps(h)[("Acme", "QA")]
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, _WINTER_LATER)
+    assert acme["interview"]["later_at"] == _WINTER_LATER
+
+
 def test_a_store_made_before_the_later_reading_gets_its_column_and_keeps_its_rows(
     tmp_path: Path, jev: JobJev
 ) -> None:
@@ -2659,8 +2718,9 @@ def test_a_store_made_before_the_later_reading_gets_its_column_and_keeps_its_row
     h.sql("ALTER TABLE job_mail DROP COLUMN event_later_at")
     assert "event_later_at" not in {row[1] for row in h.sql("PRAGMA table_info(job_mail)")}
 
-    assert _apps(h)[("Acme", "QA Co-op")]["next_event_at"] == _WINTER_AT
+    acme = _apps(h)[("Acme", "QA Co-op")]
 
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, None)
     assert h.sql("SELECT event_at, event_later_at FROM job_mail") == [(_WINTER_AT, None)]
 
 
@@ -3054,11 +3114,15 @@ _JOIN = "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x"
 _OLD_ACTION = "job-interview-reminders"
 
 
-def _reminding(
+def _reminding(  # noqa: PLR0913 - the invitation's time and sentence, the clock, the settings
     tmp_path: Path,
     jev: JobJev,
     *,
     event_text: str = _RANGE,
+    event_at: str = _INTERVIEW,
+    later_at: str = "",
+    now: datetime = _TUE_NOON,
+    body: str | None = _TEAMS_INVITE,
     **settings: Any,  # noqa: ANN401
 ) -> JobHarness:
     """A harness with interview things on, a fixed clock and Reliable Controls' invitation."""
@@ -3071,7 +3135,7 @@ def _reminding(
         **settings,
     )
     assert h.job.interviews is not None
-    h.clock.set(_TUE_NOON)
+    h.clock.set(now)
     _stored(
         h,
         "m-rc",
@@ -3079,18 +3143,19 @@ def _reminding(
         "Firmware QA",
         "interview",
         timedelta(days=4),
-        event_at=_INTERVIEW,
+        event_at=event_at,
     )
-    h.sql("UPDATE job_mail SET event_text = ?", event_text)
-    job_ledger.record_decision(
-        h.db,
-        "m-rc",
-        "body",
-        "job",
-        NOW,
-        head={"received_at": NOW.isoformat()},
-        body_excerpt=_TEAMS_INVITE,
-    )
+    h.sql("UPDATE job_mail SET event_text = ?, event_later_at = ?", event_text, later_at or None)
+    if body is not None:  # None: the body was not kept, only the stored sentence is left
+        job_ledger.record_decision(
+            h.db,
+            "m-rc",
+            "body",
+            "job",
+            NOW,
+            head={"received_at": NOW.isoformat()},
+            body_excerpt=body,
+        )
     return h
 
 
@@ -3171,6 +3236,129 @@ def test_an_interview_with_no_end_has_none_and_the_words_are_english_in_english(
     evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
     assert evening.text == "Tomorrow 13:00 Interview: Reliable Controls — Firmware QA · Teams"
     assert before.text == "13:00 Interview: Reliable Controls — Firmware QA · Teams"
+
+
+def _winter(
+    tmp_path: Path, jev: JobJev, *, later_at: str = _WINTER_LATER, kept: bool = True
+) -> JobHarness:
+    """An invitation for "10 am PST" on a Thursday in November, two days ahead."""
+    body = _TEAMS_INVITE.replace("Thursday, October 8, 2026 2:00 PM (PDT)", _WINTER_TEXT)
+    return _reminding(
+        tmp_path,
+        jev,
+        event_text=_WINTER_TEXT,
+        event_at=_WINTER_AT,
+        later_at=later_at,
+        now=_WINTER_NOON,
+        body=body if kept else None,
+    )
+
+
+def _two_times(said: str = "10:00 AM - 10:30 AM PST") -> str:
+    """The note on a thing whose time reads two ways: the table's sentence with both clocks."""
+    return lang.t(
+        "job.thing.note", when=lang.t("job.when.two", first="10:00", later="11:00", said=said)
+    )
+
+
+def test_a_time_read_two_ways_starts_the_thing_at_the_earlier_and_names_both(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """ADR 0368: it starts at the earlier reading, its note names both, its rings count from it."""
+    h = _winter(tmp_path, jev)
+
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert (one.start_at, one.end_at) == ("2026-11-12T10:00:00-07:00", "2026-11-12T10:30:00-07:00")
+    assert one.note == _two_times()
+    assert one.rings == ("-1d@20:00", "-30m")
+    evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
+    assert evening.due_at_ms == _utc("2026-11-11T20:00:00-07:00")
+    assert before.due_at_ms == _utc("2026-11-12T09:30:00-07:00")
+    app = _apps(h)[("Reliable Controls", "Firmware QA")]
+    assert app["reminders"]["at"] == "2026-11-12T10:00:00-07:00"
+    h.job.remind()
+    assert (len(_things(h)), len(_rung(h)), len(_things(h)[0].history)) == (1, 2, 1)
+
+
+def test_a_time_read_one_way_leaves_the_things_note_empty(tmp_path: Path, jev: JobJev) -> None:
+    """No second reading, no note: what the thing said before this change is what it says."""
+    h = _winter(tmp_path, jev, later_at="")
+
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert (one.start_at, one.note) == ("2026-11-12T10:00:00-07:00", "")
+
+
+def test_the_second_reading_added_to_an_armed_interview_reaches_its_thing(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """Armed with one reading, then repaired offline: the same thing gains the note and no ring."""
+    h = _winter(tmp_path, jev, later_at="", kept=False)
+    h.job.remind()
+    (before,) = _things(h)
+    armed = {r.reminder_id for r in _rung(h)}
+    assert before.note == ""
+
+    assert repair(h.db, "ledger_only", clock=h.clock) == 1
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert one.thing_id == before.thing_id
+    assert one.note == _two_times()
+    assert (one.start_at, one.end_at) == (before.start_at, before.end_at)
+    assert {r.reminder_id for r in _rung(h) if r.pending} == armed  # no ring was moved or re-set
+    assert h.gmail.calls == []
+
+
+def test_the_things_note_follows_the_readings_but_never_replaces_his_own(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """The note this pass wrote goes when the time reads one way again; his own words stay."""
+    h = _winter(tmp_path, jev)
+    h.job.remind()
+    h.sql("UPDATE job_mail SET event_later_at = NULL")
+    h.job.remind()
+    (one,) = _things(h)
+    assert one.note == ""  # the note this pass wrote is taken back
+
+    h = _winter(tmp_path / "his", jev, later_at="")
+    h.job.remind()
+    (made,) = _things(h)
+    with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
+        things.change(
+            conn,
+            made.thing_id,
+            {"note": "bring the portfolio"},
+            by="him",
+            evidence="said so",
+            zone=_VANCOUVER,
+            now=_WINTER_NOON,
+        )
+    h.sql("UPDATE job_mail SET event_later_at = ?", _WINTER_LATER)
+    h.job.remind()
+    (one,) = _things(h)
+    assert one.note == "bring the portfolio"
+
+
+def test_a_note_this_pass_wrote_in_the_other_language_is_still_its_own(
+    tmp_path: Path, jev: JobJev, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """His language changed since the note was written: it is still this pass's to take back."""
+    monkeypatch.setattr(lang, "_current", "zh")
+    h = _winter(tmp_path, jev)
+    h.job.remind()
+    (written,) = _things(h)
+    assert written.note == _two_times()
+    monkeypatch.setattr(lang, "_current", "en")
+    h.sql("UPDATE job_mail SET event_later_at = NULL")
+
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert one.note == ""
 
 
 def test_event_minutes_reads_only_a_clear_range() -> None:

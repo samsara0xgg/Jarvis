@@ -544,6 +544,14 @@ def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
     return upcoming[0] if upcoming else None
 
 
+def _later_reading(mails: Sequence[sqlite3.Row], at: str | None) -> str | None:
+    """The later reading (ADR 0368) of the event at ``at``, from the newest mail with that time.
+
+    ``mails`` are a company's, oldest first, as :func:`_interview_step` takes them.
+    """
+    return next((m["event_later_at"] for m in reversed(mails) if at and m["event_at"] == at), None)
+
+
 def _mail_view(m: sqlite3.Row) -> dict[str, Any]:
     return {
         "message_id": m["message_id"],
@@ -687,6 +695,7 @@ def _interview(
         return None
     return {
         "at": step["at"] if step else None,
+        "later_at": _later_reading(mails, step["at"]) if step else None,
         **{
             name: said.get(name) or ([] if name == "interviewers" else None)
             for name in _INTERVIEW_FIELDS
@@ -747,6 +756,7 @@ def _mail_application(
         "applied_at": applied_at,
         "last_at": newest["received_at"],
         "next_event_at": upcoming,
+        "next_event_later_at": _later_reading(mails, upcoming),
         "count": len(mails),
         "mails": [_mail_view(m) for m in reversed(mails)],
         "timeline": _timeline(applied_at, mails, step),
@@ -776,7 +786,7 @@ def _applications(
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT message_id, thread_id, received_at, subject, kind, company, role, event_at,"
-            " event_text"
+            " event_text, event_later_at"
             " FROM job_mail WHERE deleted = 0",
         ).fetchall()
         mine = conn.execute("SELECT * FROM job_application").fetchall()
@@ -826,6 +836,7 @@ def _applications(
             "applied_at": row["applied_at"],
             "last_at": row["updated_at"],
             "next_event_at": None,
+            "next_event_later_at": None,
             "count": 0,
             "mails": [],
             "timeline": [
@@ -856,7 +867,10 @@ def list_applications(
 ) -> list[dict[str, Any]]:
     """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
 
-    Newest activity first within a status. Hidden applications are left out.
+    Newest activity first within a status. Hidden applications are left out. Where the mail's
+    zone label reads two ways (ADR 0368), ``next_event_at`` and ``interview["at"]`` are the
+    earlier reading and ``next_event_later_at`` and ``interview["later_at"]`` the later; else
+    those are None.
     """
     shown = [app for app in _applications(path, now, is_ats, details) if not app.pop("hidden")]
     return sorted(

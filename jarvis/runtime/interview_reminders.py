@@ -27,7 +27,7 @@ from datetime import time as time_of_day
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision import job_mail as triage
-from jarvis.shared import lang
+from jarvis.shared import lang, zone_label
 from jarvis.shared.clock import system_zone, zone_key
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
@@ -72,6 +72,12 @@ def _at(text: object) -> datetime | None:
 def _span(one: things.Thing) -> tuple[datetime | None, datetime | None]:
     """When a thing starts and ends, as instants, so two spellings of one moment are the same."""
     return _at(one.start_at) if one.start_at else None, _at(one.end_at) if one.end_at else None
+
+
+def _wrote_note(note: str) -> bool:
+    """Whether a note is one this pass wrote (``job.thing.note``, in either language)."""
+    wordings = (text.partition("{when}") for text in lang.TEXT["job.thing.note"].values())
+    return any(note.startswith(head) and note.endswith(tail) for head, _, tail in wordings)
 
 
 def _he_closed(one: things.Thing) -> bool:
@@ -217,6 +223,8 @@ class InterviewReminders:
             name: getattr(want, name) for name in ("title", "place", "link", "rings")
             if getattr(want, name) != getattr(one, name)
         }
+        if want.note != one.note and (not one.note or _wrote_note(one.note)):
+            fields["note"] = want.note  # a note of his own is never replaced
         if fields:
             one = things.change(conn, one.thing_id, fields, **write)
         held[app["id"]] = one
@@ -270,12 +278,24 @@ class InterviewReminders:
         """The thing an application's next interview is, with the evidence and mail it came from.
 
         Its title is the interview and who it is with; its place is how it is held (the platform
-        online, the address on site); its end is the invitation's range when it names one.
+        online, the address on site); its end is the invitation's range when it names one. It
+        starts at ``at``, the earlier reading, and its note names both when the mail's zone label
+        reads two ways (ADR 0368).
         """
         interview = app.get("interview") or {}
         mail = next((m for m in app["mails"] if _at(m["event_at"]) == at), None)
-        minutes = triage.event_minutes(mail["event_text"] or "") if mail else None
+        said = (mail["event_text"] or "") if mail else ""
+        minutes = triage.event_minutes(said)
         local = at.astimezone(self._clock.zone)
+        later = _at(app.get("next_event_later_at"))
+        note = (
+            lang.t(
+                "job.thing.note",
+                when=zone_label.when_text(local, later, self._clock.zone, sentence=said),
+            )
+            if later is not None
+            else ""
+        )
         title = (
             lang.t("job.thing.title_role", company=app["company"], role=app["role"])
             if app["role"]
@@ -292,7 +312,7 @@ class InterviewReminders:
                 (local + timedelta(minutes=minutes)).isoformat(timespec="seconds")
                 if minutes else ""
             ),
-            place=place or "", link=interview.get("join_url") or "",
+            place=place or "", link=interview.get("join_url") or "", note=note,
             rings=(
                 f"-1d@{self._settings.evening_at:%H:%M}", f"-{self._settings.before_min}m",
             ),
