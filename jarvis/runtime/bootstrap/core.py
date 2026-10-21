@@ -7,6 +7,7 @@ the boot's :class:`~contextlib.ExitStack` the call that closes it (ADR 0372).
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import sqlite3
 import time
@@ -20,7 +21,7 @@ from jarvis.execution.path_resolver import FileTargetsConfigError, configure_fil
 from jarvis.runtime.bootstrap.devices import _settings_drift
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.shared import lang, llm_io_log
-from jarvis.shared.clock import SystemClock, ZoneError
+from jarvis.shared.clock import SystemClock, ZoneError, zone_data_problem
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import places as place_state
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
     from jarvis.runtime.settings_owner import SettingsDrift
     from jarvis.shared.device_link import DeviceLink
     from jarvis.state.memory_db import MemorySettings
+
+LOGGER = logging.getLogger(__name__)
 
 _IDLE_WORKING_WINDOW_MS: Final[int] = 5 * 60 * 1000
 _IDLE_QUIET_MS: Final[int] = 15 * 1000
@@ -112,7 +115,9 @@ def open_core(config: RuntimeConfig, paths: RuntimePaths, stack: ExitStack) -> C
     """Check the boot can start, then open the Event Log and the memory store.
 
     The prompt file and the zone database are checked first, so a boot that cannot succeed opens
-    nothing. The Event Log connection is closed by ``stack`` if a later stage fails.
+    nothing. A tz database too old for the rule of BC's clocks (:func:`zone_data_problem`) is one
+    error in the log and the boot goes on: his own zone passed the check above. The Event Log
+    connection is closed by ``stack`` if a later stage fails.
     """
     if not config.prompt_path.is_file():
         msg = f"runtime: prompt file {config.prompt_path} does not exist"
@@ -123,6 +128,8 @@ def open_core(config: RuntimeConfig, paths: RuntimePaths, stack: ExitStack) -> C
     except ZoneError as exc:
         msg = f"runtime: {exc}"
         raise RuntimeBootstrapError(msg) from exc
+    if (stale := zone_data_problem()) is not None:
+        LOGGER.error("runtime: %s", stale)
 
     install_process_globals(config, paths)
     conn = open_event_log(paths.event_log)
