@@ -4,15 +4,19 @@ Every ``poll_s`` the brain lists the mail of the last ``window_min`` minutes thr
 ``gmail`` MCP client (``gmail_search`` and ``gmail_get`` only: nothing is ever changed), finds a
 code with :func:`find_code` (local rules, no model) and asks the terminal's hidden ``copy_code``
 operation to put it on the clipboard and show a system notification. The code is never stored
-and never logged; each mail is handled once.
+and never logged. A mail a code was copied from is recorded in the event log (its id and its
+sender's domain), so it is copied at most once across restarts (ADR 0369); a mail with no code is
+remembered in memory only.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import subprocess
+import time
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,9 +27,13 @@ from jarvis.runtime.home import MAIL_SERVER, _letter, mail_body
 from jarvis.runtime.job_mail import gmail_read
 from jarvis.shared import lang
 from jarvis.shared.device_link import COPY_CODE, DeviceCallError
+from jarvis.state import mail_codes as copies
+from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Callable
+    from pathlib import Path
 
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.shared.device_link import DeviceLink
@@ -43,6 +51,7 @@ _NOTIFY: Final = (
     "end run"
 )
 _TIMEOUT_S: Final = 5.0
+_LOG_WAIT_S: Final = 5.0
 
 # --- finding the code ---------------------------------------------------------------
 
@@ -238,12 +247,16 @@ class MailCodes:
     """The poller; built once at boot, started by the daemon."""
 
     def __init__(
-        self, settings: MailCodesSettings, connections: PluginConnections,
+        self, settings: MailCodesSettings, connections: PluginConnections, event_log: Path,
         device: DeviceLink | None = None,
     ) -> None:
-        """``device`` is the link to the terminal; ``None`` copies on this machine."""
+        """``event_log`` holds the record of the mails a code was copied from (ADR 0369).
+
+        ``device`` is the link to the terminal; ``None`` copies on this machine.
+        """
         self._settings = settings
         self._connections = connections
+        self._event_log = event_log
         self._device = device
         self._seen: dict[str, None] = {}
         self._last_error = ""
@@ -275,26 +288,33 @@ class MailCodes:
             "query": _QUERY.format(epoch=int((now - window).timestamp())),
             "maxResults": _SEARCH_LIMIT,
         })
+        listed = [str(head["id"]) for head in reply.get("messages") or []]
+        if not listed:
+            return 0
         sent = 0
-        for head in reply.get("messages") or []:
-            message_id = str(head["id"])
-            if message_id in self._seen:
-                continue
-            try:
-                message = gmail_read(
-                    servers, "gmail_get", {"messageId": message_id, "format": "full"},
-                )
-            except Exception:  # noqa: BLE001 - tried again next cycle while it is in the window
-                LOGGER.warning("mail codes: cannot read %s", message_id, exc_info=True)
-                continue
-            sent += self._handle(message_id, message, now, window)
+        with contextlib.closing(self._log()) as conn:
+            # Before any mail is read, whatever run of the brain it was: a mail a code was copied
+            # from is not read again (ADR 0369). A log that cannot be read ends the cycle here.
+            copied = copies.copied_among(conn, listed)
+            for message_id in listed:
+                if message_id in self._seen or message_id in copied:
+                    continue
+                try:
+                    message = gmail_read(
+                        servers, "gmail_get", {"messageId": message_id, "format": "full"},
+                    )
+                except Exception:  # noqa: BLE001 - tried again next cycle while it is in the window
+                    LOGGER.warning("mail codes: cannot read %s", message_id, exc_info=True)
+                    continue
+                sent += self._handle(conn, message_id, message, now - window)
         return sent
 
     def _handle(
-        self, message_id: str, message: dict[str, Any], now: datetime, window: timedelta,
+        self, conn: sqlite3.Connection, message_id: str, message: dict[str, Any],
+        cutoff: datetime,
     ) -> int:
         letter = _letter(message)
-        if letter["received"] and datetime.fromisoformat(letter["received"]) < now - window:
+        if letter["received"] and datetime.fromisoformat(letter["received"]) < cutoff:
             self._remember(message_id)
             return 0
         code = find_code(letter["subject"], mail_body(str(message.get("body") or "")))
@@ -314,6 +334,12 @@ class MailCodes:
             self._remember(message_id)
             return 0
         self._remember(message_id)
+        try:
+            copies.record_copy(conn, message_id, domain)
+        except Exception:  # the code is copied: a restart inside the window could copy it again
+            LOGGER.exception(
+                "mail codes: the copy of %s from %s is not recorded", message_id, domain,
+            )
         LOGGER.info("mail codes: handed over the code in %s from %s", message_id, domain)
         return 1
 
@@ -329,4 +355,7 @@ class MailCodes:
         self._seen[message_id] = None
         while len(self._seen) > _SEEN_KEEP:
             del self._seen[next(iter(self._seen))]
+
+    def _log(self) -> sqlite3.Connection:
+        return open_runtime_event_log(self._event_log, deadline=time.monotonic() + _LOG_WAIT_S)
 

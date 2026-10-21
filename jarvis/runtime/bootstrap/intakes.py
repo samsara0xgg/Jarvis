@@ -78,10 +78,11 @@ def _job_mail(  # noqa: PLR0913 - the settings, its collaborators, the clock and
 
 
 def _mail_codes(
-    settings: MailCodesSettings | None, connections: PluginConnections, device: DeviceLink | None,
+    settings: MailCodesSettings | None, connections: PluginConnections, event_log: Path,
+    device: DeviceLink | None,
 ) -> MailCodes | None:
     """``mail_codes`` (ADR 0266): the poller, or None while off."""
-    return None if settings is None else MailCodes(settings, connections, device)
+    return None if settings is None else MailCodes(settings, connections, event_log, device)
 
 
 def _commitments(
@@ -164,7 +165,7 @@ def build_intakes(
 ) -> Intakes:
     """Build the mail and record intakes over the started plugin connections."""
     memory = core.memory
-    mail_codes = _mail_codes(config.mail_codes, connections, core.device)
+    mail_codes = _mail_codes(config.mail_codes, connections, paths.event_log, core.device)
     commitments = _commitments(
         config.commitments, connections, memory.db_path, paths.event_log,
         lambda preset: build_analyst(

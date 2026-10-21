@@ -1383,6 +1383,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # A verification code was copied from a mail (ADR 0369): the mail's id and its sender's domain,
+    # never the code (ADR 0266). `jarvis.state.mail_codes` writes it and asks which of a list of
+    # mails have one, so the poller copies no mail's code twice, across restarts.
+    EventTypeSchema(
+        event_type="mail.code_copied",
+        owner_layer="L2",
+        actor="jarvis_runtime",
+        required_payload=("message_id", "sender_domain"),
+        optional_payload=(),
+        schema_version=1,
+    ),
     # His things (ADR 0299): the ledger is a fold over these six types (`jarvis.state.things`). An
     # `added` carries the whole thing; `changed`, `moved`, `closed` and `reopened` each carry
     # who wrote them (`by`), the words or record that proved it (`evidence`, `ref`) and only what
