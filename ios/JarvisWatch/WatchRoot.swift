@@ -2,7 +2,8 @@ import SwiftUI
 import WatchKit
 
 /// The watch app: one vertical scroll (home, then the list), the screens it opens, and the talk laid over all of it.
-/// Everything grows out of her and goes back into her: 0.3 s, no bounce.
+/// Everything grows out of her and goes back into her: 0.3 s, no bounce. She is one view over all of it, which moves and resizes from the ring to the corner, to the middle of a
+/// talk and to the corner of her answer.
 struct WatchRoot: View {
     private static let grow = Animation.smooth(duration: 0.3)
     private static let cornerAt: CGFloat = 90          // points of scroll for her to travel from the middle to the corner
@@ -52,8 +53,9 @@ struct WatchRoot: View {
             // one layer for the whole talk: it grows in once and goes once, and only its content changes from step to step (a transition on the switch itself would take the
             // layer out and back at every step, showing the home between)
             if phase != .idle {
-                ZStack { Color.black.ignoresSafeArea(); talk }.transition(.scale(scale: 0.4).combined(with: .opacity))
+                ZStack { Color.black.ignoresSafeArea(); talk }.transition(.opacity)          // a fade: she is what grows, not a square over the round ring
             }
+            ZStack { her }.ignoresSafeArea()          // she is placed in screen coordinates, the ones her place is measured in (`.global`)
         }
         .animation(Self.grow, value: phase)
         .onChange(of: model.day) { old, new in
@@ -95,26 +97,44 @@ struct WatchRoot: View {
             }
         }
         .ignoresSafeArea()
-        .overlay { ZStack { if !inList { her } }.ignoresSafeArea() }          // she is placed in screen coordinates, the ones her place is measured in (`.global`)
         .task(id: told) { if told != nil { try? await Task.sleep(for: .seconds(4)); if !Task.isCancelled { withAnimation(Self.grow) { told = nil } } } }
         .animation(Self.grow, value: told)
-        .toolbar { if inList { WatchCornerHer(face: .rest, primary: true) } }
-        .toolbar(inList ? .visible : .hidden, for: .navigationBar)
+        .toolbar {
+            if inList && phase == .idle { WatchCornerHer(face: .rest, primary: true) }
+            else if phase != .idle { ToolbarItem(placement: .topBarTrailing) { Color.clear.frame(width: 28, height: 28) } }          // her answer puts her in this corner: the time keeps out of her way from the talk's start, so the bar does not change under the answer's move
+        }
+        .toolbar(inList || phase != .idle ? .visible : .hidden, for: .navigationBar)
     }
 
-    /// She: the ball in the middle of the ring; as the list scrolls up she shrinks into the top-right corner, and grows back at the top.
+    /// She: the ball in the middle of the ring; as the list scrolls up she shrinks into the top-right corner, and grows back at the top. In a talk she goes to its middle, and with
+    /// her answer to the top-right corner. At rest in the list or on a pushed screen the system's corner item carries her, and this one is not shown.
     private var her: some View {
-        let p = min(1, scroll / Self.cornerAt)
-        let corner = CGPoint(x: WKInterfaceDevice.current().screenBounds.width - 32.5, y: 35)          // where the system puts a 28 pt top-trailing item
-        let at = CGPoint(x: herHome.midX + (corner.x - herHome.midX) * p, y: herHome.midY + (corner.y - herHome.midY) * p)
-        let d = 80 + (28 - 80) * p
-        return Button { model.startTalk() } label: {
-            HerSprite(face: aodFace, size: d, paused: aodFace == .doze).frame(width: max(d, 44), height: max(d, 44)).contentShape(Circle())
+        let screen = WKInterfaceDevice.current().screenBounds.size
+        let corner = CGPoint(x: screen.width - 32.5, y: 35)          // where the system puts a 28 pt top-trailing item
+        let middle = CGPoint(x: screen.width / 2, y: screen.height / 2 - WatchTalkView.herLift)
+        let p = path.isEmpty ? min(1, scroll / Self.cornerAt) : 1
+        let (at, d, face): (CGPoint, CGFloat, HerFace) = switch phase {
+        case .idle: (CGPoint(x: herHome.midX + (corner.x - herHome.midX) * p, y: herHome.midY + (corner.y - herHome.midY) * p), 80 + (28 - 80) * p, aodFace)
+        case .listening: (middle, 80, .listen)
+        case .thinking: (middle, 80, .think)
+        case .answer: (corner, 28, .talk)
+        case .failed: (middle, 80, .rest)
+        }
+        let shown = phase != .idle || (!inList && path.isEmpty && herHome != .zero)
+        let b = Button {
+            switch phase {
+            case .idle, .answer: model.startTalk()
+            case .listening: model.endTalk()
+            case .thinking: model.cancelTalk()
+            case .failed: model.talk = .idle
+            }
+        } label: {
+            HerSprite(face: face, size: d, paused: face == .doze).frame(width: max(d, 44), height: max(d, 44)).contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .handGestureShortcut(.primaryAction)
-        .position(at)
-        .opacity(herHome == .zero ? 0 : 1)
+        return Group { if phase == .idle { b.handGestureShortcut(.primaryAction) } else { b } }          // in a talk its own screen answers the double tap
+            .position(at)
+            .opacity(shown ? 1 : 0).allowsHitTesting(shown)
     }
 
     @Environment(\.isLuminanceReduced) private var aod
@@ -150,7 +170,7 @@ struct WatchRoot: View {
         case .idle: EmptyView()
         case .listening(let h), .thinking(let h):           // one view for both: his words stay where they are while she goes from listening to thinking
             let listening = phase == .listening
-            WatchTalkView(face: listening ? .listen : .think, heard: h, placeholder: listening ? Words.Watch.listening : Words.Watch.thinking) {
+            WatchTalkView(heard: h, placeholder: listening ? Words.Watch.listening : Words.Watch.thinking) {
                 if listening { model.endTalk() } else { model.cancelTalk() }
             }
         case .answer(let spoken, let written, let card):
@@ -158,6 +178,7 @@ struct WatchRoot: View {
                 model.answer(id, action)
                 model.talk = .idle
             }, dismiss: { model.talk = .idle })
+            .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.25)), removal: .opacity))          // her words come once she has reached her corner, not under her on her way
         case .failed(let reason): WatchFailedView(reason: reason) { model.talk = .idle }
         }
     }

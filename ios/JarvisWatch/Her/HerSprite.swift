@@ -13,6 +13,7 @@ struct HerSprite: View {
     @State private var from: HerFace?
     @State private var fadeStart = Date.distantPast
     private let fade = 0.2
+    private static let base: CGFloat = 80                // her biggest on the watch
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / (from == nil ? face.clip.fps : 30), paused: paused)) { tl in
@@ -21,7 +22,11 @@ struct HerSprite: View {
                 if let from, k < 1 { frame(from, tl.date).opacity(1 - k) }
                 frame(face, tl.date).opacity(from == nil ? 1 : k)
             }
+            .transaction { $0.animation = nil }          // a new frame or face is never animated (an animated image change is a crossfade left behind where she was)
         }
+        // drawn at one size and scaled: while she moves and resizes, the scale is what animates, and the frames stay one picture
+        .frame(width: Self.base, height: Self.base)
+        .scaleEffect(size / Self.base)
         .frame(width: size, height: size)
         .onChange(of: face) { old, _ in from = old; fadeStart = .now }
         .task(id: face) { try? await Task.sleep(for: .seconds(fade)); from = nil }
@@ -31,7 +36,7 @@ struct HerSprite: View {
         let c = f.clip, i = Int(date.timeIntervalSinceReferenceDate * c.fps) % c.frames
         return Image("her-\(f.rawValue)-\(String(format: "%02d", i))")
             .resizable().interpolation(.high)
-            .frame(width: size * c.margin, height: size * c.margin)
+            .frame(width: Self.base * c.margin, height: Self.base * c.margin)
             .allowsHitTesting(false)
     }
 }
