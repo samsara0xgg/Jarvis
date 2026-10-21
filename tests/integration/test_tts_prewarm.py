@@ -102,7 +102,11 @@ def test_the_next_spare_reads_the_language_of_the_last_answer(tmp_path: Path) ->
         with _CallbackPump(player):
             for turn, response_id in enumerate(("R1", "R2"), start=1):
                 pipeline.hold_output(held=True)
-                _wait_until(lambda n=turn: provider.actions.count("connect") == n)
+
+                def spare_connected(n: int = turn) -> bool:
+                    return provider.actions.count("connect") == n
+
+                _wait_until(spare_connected)
                 pipeline.hold_output(held=False)
                 rows = _emit_response(
                     conn, response_id=response_id, group_id=f"G{turn}", turn_id=f"T{turn}",

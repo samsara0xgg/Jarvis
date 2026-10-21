@@ -14,6 +14,8 @@ from jarvis.surface.sentence_splitter import split_into_sentences
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from jarvis.surface.cli import ResponsePlanLike
+
 _STORY = (
     "Mara found a brass compass in her grandfather’s attic. Its needle pointed not north, "
     "but toward whatever someone had lost. She followed it through town.\n\n"
@@ -41,7 +43,7 @@ def test_streamed_chunks_on_the_wire_keep_the_space(tmp_path: Path) -> None:
     conn = open_event_log(tmp_path / "chunks.db")
     try:
         cli_render._emit_response_chunks(  # noqa: SLF001 - the one emitter of non-streamed chunks
-            conn, turn_id="T", response_plan=cast("cli_render.ResponsePlanLike", _Plan(_STORY)),
+            conn, turn_id="T", response_plan=cast("ResponsePlanLike", _Plan(_STORY)),
             binding=LegacyPresentationBinding(response_id="R", response_group_id="G"),
             channel="both", phase="final",
         )

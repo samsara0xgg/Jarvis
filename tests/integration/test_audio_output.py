@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -43,7 +45,7 @@ def _default(
 
 
 # A default input with the same name as the AirPods, and a speaker that is not the default.
-NOISE = [
+NOISE: list[dict[str, Any]] = [
     {"_name": "Allen's AirPods Pro", "coreaudio_device_transport": BT},
     {
         "_name": "MacBook Pro Speakers",
@@ -71,7 +73,7 @@ CASES = [
 @pytest.fixture
 def probe(monkeypatch: pytest.MonkeyPatch) -> Callable[[Any], None]:
     """Set what ``system_profiler`` answers (text, or an exception to raise); no cache."""
-    monkeypatch.setattr(audio_output.sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(audio_output, "_cache", None)
     monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: None)  # not an aggregate
 
@@ -143,7 +145,7 @@ def test_off_the_mac_is_not_private(
 ) -> None:
     """No other OS has a probe; it is never private."""
     probe(_profile(_default("Allen's AirPods Pro", BT)))
-    monkeypatch.setattr(audio_output.sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "linux")
     assert audio_output.current_output()["private"] is False
 
 
@@ -162,7 +164,7 @@ def test_the_answer_is_cached_for_two_seconds_unless_fresh(
     assert audio_output.current_output()["private"] is True  # still the cached look
     assert audio_output.current_output(fresh=True)["private"] is False
     assert audio_output.current_output()["private"] is False  # a fresh look refreshes the cache
-    monkeypatch.setattr(audio_output.time, "monotonic", lambda: 1e9)
+    monkeypatch.setattr(time, "monotonic", lambda: 1e9)
     monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("A", BT)))
     assert audio_output.current_output()["private"] is True  # the cache expired
 

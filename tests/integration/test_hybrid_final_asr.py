@@ -501,11 +501,12 @@ def test_each_finished_pass_is_announced_even_when_its_entry_was_dropped_meanwhi
     """ADR 0145: the captions use a pass for the audio up to a pause after Allen kept speaking."""
     told: list[tuple[str, int, str]] = []
     gate = threading.Event()
-    ears = _hybrid(_sensevoice("zh"), zh=_whisper("你好吗", gate=gate))
+    whisper = _whisper("你好吗", gate=gate)
+    ears = _hybrid(_sensevoice("zh"), zh=whisper)
     ears.on_prepared_text(lambda *heard: told.append(heard))
     audio = _audio(2.0)
     ears.prepare("U1", audio, 2.0)
-    _wait_until(lambda: ears._whisper_zh.peak == 1)  # the pass is running
+    _wait_until(lambda: whisper.peak == 1)  # the pass is running
     ears.discard("U1")  # he spoke again: nobody will collect it
     gate.set()
     _wait_until(lambda: told == [("U1", len(audio), "你好吗。")])
@@ -519,7 +520,11 @@ def test_a_pass_with_no_words_or_a_failing_listener_costs_nothing() -> None:
     ears.prepare("U1", _audio(2.0), 2.0)
     assert ears.recognize_prepared("U1", _audio(2.0), 2.0).text == ""
     ears = _hybrid(_sensevoice("zh"), zh=_whisper("好"))
-    ears.on_prepared_text(lambda *_heard: 1 / 0)
+
+    def failing_listener(*_heard: object) -> None:
+        raise ZeroDivisionError
+
+    ears.on_prepared_text(failing_listener)
     ears.prepare("U2", _audio(2.0), 2.0)
     assert ears.recognize_prepared("U2", _audio(2.0), 2.0).text == "好。"
     assert told == []
@@ -597,9 +602,12 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
         else:
             time.sleep(0.3)  # nothing settles it; give a pass the time it would need
         frames(10_000, 6)  # more words after it; captions move on with each frame
-        _wait_until(
-            lambda: frames(10_000, 1) or "尾" in partials()[-1]["text"], timeout_s=5,
-        )
+
+        def more_words_shown() -> bool:
+            frames(10_000, 1)
+            return "尾" in partials()[-1]["text"]
+
+        _wait_until(more_words_shown, timeout_s=5)
     finally:
         assert session.close().definitively_closed
 

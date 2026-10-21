@@ -42,6 +42,9 @@ from tests.integration.test_wave4a_response_run import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from jarvis.decision import DecideContext, DecideResult
+    from jarvis.shared import Event
+
 
 def test_a_turn_still_thinking_is_stopped_by_its_turn(tmp_path: Path) -> None:
     """``turn_id`` cancels that turn's open runs whole, and only that turn's."""
@@ -84,7 +87,12 @@ def test_a_stop_before_the_run_opens_still_stops_the_turn(
     runtime = _make_runtime(tmp_path, lifecycle=True, cancel=True)
     intent = _emit_intent(runtime.conn, "T-early", "Explain how a transformer works.")
     asked: list[str] = []
-    _script_decide(monkeypatch, lambda *_a, **_k: asked.append("decide"))
+
+    def decide_is_never_asked(_trigger: Event, _ctx: DecideContext) -> DecideResult:
+        asked.append("decide")
+        raise AssertionError
+
+    _script_decide(monkeypatch, decide_is_never_asked)
     try:
         outcome = make_turn_cancel_callable(runtime)("T-early", "user_stop")
         with pytest.raises(ResponseCancelledError):

@@ -1258,6 +1258,7 @@ def test_echo_cancellation_follows_the_microphone_each_open_without_a_player_reb
 
     def heard() -> np.ndarray:
         epoch = ingress.stream_epoch
+        assert epoch is not None
         for _ in range(3):  # past the canceller's 10 ms lead
             backend.emit(epoch=epoch, value=1000)
         return np.frombuffer(_read_frames(capture, 3)[-1].pcm16_mono, dtype="<i2")

@@ -64,17 +64,18 @@ def _capability(
 # --- coordinator ---------------------------------------------------------------
 
 
-def _coordinator(
+def _coordinator(  # noqa: PLR0913 - each switch is one independent scenario of the same rig
     actions: list[str],
     monkeypatch: pytest.MonkeyPatch,
     *,
     nothing_playing: bool = True,
     allen_talking: bool = False,
     speaker_closes: bool = True,
+    parked: bool = False,
 ) -> inherent_loop._VoicePowerCoordinator:
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     ingress = session.ingress
-    ingress.capability = _capability(_LOST, 3)
+    ingress.capability = _capability(_PARKED, 4) if parked else _capability(_LOST, 3)
     ingress.capture_active = allen_talking
 
     def _stop_input(**_kwargs: object) -> voice_backend.BackendStopResult:
@@ -103,6 +104,7 @@ def _coordinator(
         return voice_tts.PlayerStartResult("started", 2, "stream_started")
 
     media = MagicMock()
+    media.is_output_active.return_value = False
     media.hold_for_devices.side_effect = _hold
     player = media.player
     player.stop.side_effect = _stop_output
@@ -162,15 +164,19 @@ def test_a_wake_that_left_the_microphone_parked_re_reads_and_wakes_again(
 ) -> None:
     """Awake but parked: speaker closed, PortAudio anew, devices set, then the wake runs again."""
     actions: list[str] = []
-    coordinator = _coordinator(actions, monkeypatch)
-    coordinator._session.ingress.capability = _capability(_PARKED, 4)
+    coordinator = _coordinator(actions, monkeypatch, parked=True)
     woke = inherent_loop._VoicePowerTransition(
         voice_backend.BackendStartResult(voice_backend.BackendStartStatus.STARTED, 5, None),
         voice_media.MediaPowerTransitionResult("resumed", 2, "fresh"),
         0.0,
         0.0,
     )
-    monkeypatch.setattr(coordinator, "_wake", lambda: actions.append("woke") or woke)
+
+    def _wake() -> inherent_loop._VoicePowerTransition:
+        actions.append("woke")
+        return woke
+
+    monkeypatch.setattr(coordinator, "_wake", _wake)
     outcome = coordinator.refresh_devices(input_device="reSpeaker", output_device="Speakers")
     assert actions == [
         "speaker closed", "devices re-read", "speaker=Speakers", "microphone=reSpeaker", "woke",
@@ -181,13 +187,14 @@ def test_a_wake_that_left_the_microphone_parked_re_reads_and_wakes_again(
 def test_nothing_is_touched_while_the_mac_sleeps(monkeypatch: pytest.MonkeyPatch) -> None:
     """From the sleep notice until a wake has run, the watch is not quiet and a refresh skips."""
     actions: list[str] = []
-    coordinator = _coordinator(actions, monkeypatch)
-    coordinator._session.ingress.capability = _capability(_PARKED, 4)
-    coordinator._media.is_output_active.return_value = False
+    coordinator = _coordinator(actions, monkeypatch, parked=True)
     coordinator.before_sleep()
     actions.clear()
-    assert coordinator.asleep
-    assert not coordinator.quiet()
+    # Read into locals: mypy would keep a checked property's value through the later calls.
+    asleep_at_first = coordinator.asleep
+    quiet_while_asleep = coordinator.quiet()
+    assert asleep_at_first
+    assert not quiet_while_asleep
     assert coordinator.refresh_devices(input_device=None, output_device=None) == "skipped:asleep"
     assert actions == []
 
@@ -197,9 +204,10 @@ def test_nothing_is_touched_while_the_mac_sleeps(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(coordinator, "_wake", _wake_into_a_new_sleep)
     coordinator.on_wake()
-    assert coordinator.asleep
+    asleep_after_the_interrupted_wake = coordinator.asleep
     monkeypatch.setattr(coordinator, "_wake", lambda: None)
     coordinator.on_wake()
+    assert asleep_after_the_interrupted_wake
     assert not coordinator.asleep
     assert coordinator.quiet()
 

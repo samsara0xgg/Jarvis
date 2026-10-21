@@ -259,7 +259,7 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     (lane,) = ingress.lanes
     while lane.frames <= PRE_ROLL_FRAMES:  # the mic has been on for a while before the tap
         time.sleep(0.01)
-    before = lane.frames
+    frames_before = lane.frames
     lines = _dictate(client, context, meanwhile=meanwhile)
     assert seen == {"active": True, "second": 409}
     levels = [line["level"] for line in lines[:-2]]
@@ -274,7 +274,7 @@ def test_dictation_streams_levels_then_the_polished_words(tmp_path: Path) -> Non
     # The ears got the last half second before the request, then every frame after it, no gap.
     numbers = [array("h", heard[0][i : i + 1024])[0] for i in range(0, len(heard[0]), 1024)]
     assert numbers == list(range(numbers[0], numbers[0] + len(numbers)))
-    assert before - PRE_ROLL_FRAMES <= numbers[0] < before
+    assert frames_before - PRE_ROLL_FRAMES <= numbers[0] < frames_before
     # One lane for the daemon's life: still listening for the next pre-roll.
     assert len(ingress.lanes) == 1
     assert not lane.closed

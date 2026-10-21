@@ -102,9 +102,9 @@ def main() -> int:
     }
     player: AudioStreamPlayer
     if args.backend == "python":
-        player = AudioStreamPlayer(blocksize=2048, latency=0.12, **common)  # type: ignore[arg-type]
+        player = AudioStreamPlayer(blocksize=2048, latency=0.12, **common)
     else:
-        player = NativeAudioStreamPlayer(**common)  # type: ignore[arg-type]
+        player = NativeAudioStreamPlayer(**common)
     started = player.start()
     if not started.started:
         print(f"start failed: {started.status} {started.reason}")

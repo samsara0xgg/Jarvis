@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_ledger, voice_media, voice_tts
@@ -36,14 +36,14 @@ class _Wire:
     """What the companion would receive: voice phases in the order they were sent."""
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, dict[str, object]]] = []
+        self.sent: list[tuple[str, dict[str, Any]]] = []
         self._lock = threading.Lock()
 
     def broadcast_voice_sync(self, phase: str, *, turn_id: str, **payload: object) -> None:
         with self._lock:
             self.sent.append((phase, {"turn_id": turn_id, **payload}))
 
-    def playing(self) -> list[dict[str, object]]:
+    def playing(self) -> list[dict[str, Any]]:
         with self._lock:
             return [payload for phase, payload in self.sent if phase == "playing"]
 

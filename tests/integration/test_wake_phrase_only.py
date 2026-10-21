@@ -197,7 +197,7 @@ def test_after_a_bare_wake_the_next_utterance_commits_without_a_second_wake(
             wake_engine=wake_engine,
             vad=voice_audio.SileroVad(mode="record"),
             pipeline=pipeline,
-            broadcaster=voice,  # type: ignore[arg-type]
+            broadcaster=voice,
             output_active=lambda: False,
             wake_threshold=0.5,
             config=replace(
