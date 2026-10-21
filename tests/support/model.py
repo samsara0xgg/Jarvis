@@ -117,6 +117,12 @@ class Call:
     name: str
     arguments: Mapping[str, Any] = field(default_factory=dict)
     call_id: str | None = None
+    raw: str | None = None  # the arguments exactly as the model sent them, which need not be JSON
+
+    @property
+    def arguments_json(self) -> str:
+        """What goes out as the call's ``arguments``: ``raw`` when given, else ``arguments``."""
+        return json.dumps(dict(self.arguments)) if self.raw is None else self.raw
 
 
 @dataclass(frozen=True)
@@ -334,7 +340,7 @@ class ScriptedModel:
             text=step.text,
             tool_calls=tuple(
                 ToolCall(
-                    call.call_id or f"call-{index}", call.name, json.dumps(dict(call.arguments))
+                    call.call_id or f"call-{index}", call.name, call.arguments_json
                 )
                 for index, call in enumerate(step.calls)
             ),
@@ -462,7 +468,7 @@ async def _chunks(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
         for start in range(0, len(step.text), size):
             yield chunk({"content": step.text[start : start + size]})
     for index, call in enumerate(step.calls):
-        function = {"name": call.name, "arguments": json.dumps(dict(call.arguments))}
+        function = {"name": call.name, "arguments": call.arguments_json}
         yield chunk(
             {
                 "tool_calls": [
@@ -517,7 +523,7 @@ async def _response_events(step: Reply | Failure) -> AsyncIterator[Mapping[str, 
         yield {
             "type": "response.function_call_arguments.delta",
             "item_id": call_item["id"],
-            "delta": json.dumps(dict(call.arguments)),
+            "delta": call.arguments_json,
         }
         yield {"type": "response.output_item.done", "output_index": index, "item": call_item}
         index += 1

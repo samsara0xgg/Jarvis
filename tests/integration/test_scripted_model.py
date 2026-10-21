@@ -77,6 +77,17 @@ def test_a_reply_can_call_tools_and_say_nothing() -> None:
     ]
 
 
+def test_a_call_can_carry_arguments_that_are_not_json_and_an_empty_string_stays_empty() -> None:
+    """A call cut off mid-arguments reaches a chat as the string it was; a stream fails on it."""
+    cut, empty = Call("kept", raw='{"page": 2'), Call("kept", raw="")
+    result = ScriptedModel(Reply(calls=(cut, empty))).chat(messages=_MESSAGES, system="s")
+    assert [c.arguments_json for c in result.tool_calls] == ['{"page": 2', ""]
+    events, _ = _events(ScriptedModel(Reply(calls=(cut,))))
+    failed = [e for e in events if isinstance(e, LLMResponseFailed)]
+    assert [e.error_code for e in failed] == ["JSONDecodeError"]
+    assert not [e for e in events if isinstance(e, LLMToolCallCompleted)]
+
+
 def test_a_reply_without_usage_reports_none_and_a_failure_raises_what_it_holds() -> None:
     """The cost is unknown, not zero, and the error is the test's own."""
     model = ScriptedModel(Reply("ok", usage=None), Failure(TimeoutError("slow")))
