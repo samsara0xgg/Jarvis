@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from datetime import time as clock
 from typing import TYPE_CHECKING, Any, Final
@@ -19,7 +20,9 @@ from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.mail_codes import MailCodes, MailCodesSettings
 from jarvis.runtime.things_ledger import ThingsLedger
+from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.runtime.turn_things import TurnThings, TurnThingsSettings
+from jarvis.runtime.work_state import build_analyst
 from jarvis.state import imports
 
 if TYPE_CHECKING:
@@ -27,6 +30,9 @@ if TYPE_CHECKING:
     from datetime import tzinfo
     from pathlib import Path
 
+    from jarvis.deployment import RuntimePaths
+    from jarvis.runtime.bootstrap.core import Core
+    from jarvis.runtime.config import RuntimeConfig
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.runtime.work_state import LLMAnalyst
@@ -311,3 +317,57 @@ def _interview_reminders(block: object, config_path: Path) -> InterviewSettings 
         msg = f"{where}.before_min must be a whole number of minutes from 1 to 1440"
         raise RuntimeBootstrapError(msg)
     return InterviewSettings(evening, minutes)
+
+
+@dataclass(frozen=True)
+class Intakes:
+    """The pollers and passes that read his mail and records into the ledgers.
+
+    Built, not started: the daemon starts them, so a failure after this stage leaves nothing
+    running.
+    """
+
+    mail_codes: MailCodes | None
+    commitments: CommitmentIntake | None
+    claude_daily: ClaudeDailyIntake
+    things_ledger: ThingsLedger
+    things_mirror: ThingsMirror
+    turn_things: TurnThings | None
+
+
+def build_intakes(
+    config: RuntimeConfig, paths: RuntimePaths, core: Core, connections: PluginConnections,
+) -> Intakes:
+    """Build the mail and record intakes over the started plugin connections."""
+    memory = core.memory
+    mail_codes = _mail_codes(config.raw, config.config_path, connections, core.device)
+    commitments = _commitments(
+        config.raw, config.config_path, connections, memory.db_path, paths.event_log,
+        lambda preset: build_analyst(
+            config.raw,
+            preset,
+            pricing_path=config.pricing_path,
+            account_cost=True,
+            kind="commitments",
+        ),
+    )
+    claude_daily = _claude_daily(
+        config.raw, config.config_path, connections, memory.db_path, paths.root,
+    )
+    things_ledger = _things_ledger(
+        paths.event_log, memory.db_path, config.zone, config.remind_before_min,
+    )
+    things_mirror = ThingsMirror(connections, paths.event_log, config.zone)
+    turn_things = _turn_things(
+        config.raw, config.config_path, memory.db_path, paths.event_log, config.zone,
+        lambda preset: build_analyst(
+            config.raw,
+            preset,
+            pricing_path=config.pricing_path,
+            account_cost=True,
+            kind="turn_things",
+        ),
+    )
+    return Intakes(
+        mail_codes, commitments, claude_daily, things_ledger, things_mirror, turn_things,
+    )

@@ -9,9 +9,9 @@ sibling-isolation contract via Protocols.
 Responsibilities (Day-1):
 
 1. :func:`jarvis.runtime.bootstrap.app.bootstrap_runtime_app` — assemble the
-   frozen :class:`JarvisRuntime` from the parsed config (the package
-   :mod:`jarvis.runtime.bootstrap`). No LLM call happens during
-   bootstrap.
+   frozen :class:`JarvisRuntime` from the parsed config, in stages that clean up after
+   themselves (the package :mod:`jarvis.runtime.bootstrap`, ADR 0372). No LLM call happens
+   during bootstrap.
 2. The turn lives in :mod:`jarvis.runtime.turn` (ADR 0371): this module
    holds only the public types it shares with bootstrap, :class:`JarvisRuntime`
    and :class:`RunTurnResult`.

@@ -66,7 +66,7 @@ from jarvis.execution.tools import (
     make_screen_capture,
 )
 from jarvis.runtime import audio_output
-from jarvis.runtime.bootstrap.catalog import _install_open_path
+from jarvis.runtime.bootstrap.core import _install_open_path
 from jarvis.runtime.bootstrap.devices import _audio_devices, _default_audio_device
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.devices import (
