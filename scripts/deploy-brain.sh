@@ -6,6 +6,12 @@
 #
 # Runs on the Pi, in ~/jarvis-brain. One deploy at a time (flock on ~/.jarvis/deploy.lock); a
 # second one exits at once. The checkout only fast-forwards; uv sync runs only when uv.lock moved.
+# Before anything restarts, `jarvis serve --check-config` loads ~/.jarvis's config the way the unit
+# will (the new code, settings.yaml and the Settings store over the shipped file; ADR 0370). A
+# config it refuses puts the checkout (and the venv, if uv.lock had moved) back where it was and
+# exits 1 without restarting: the old brain keeps running. --dry-run runs the same check on the new
+# tree exported to a temporary directory with the same venv, so the checkout does not move; when
+# uv.lock changed the venv lacks the new dependencies, so it says the config was not checked.
 # The restart waits, up to 30 minutes, until no turn in the last 60 s and no restart in the last
 # 5 minutes. Between 04:00 and 23:30 it does not restart while today has no plan, since a fresh
 # start would draft one at once and push it to his phone (ADR 0288). The code stays pulled when it
@@ -46,6 +52,21 @@ rows = c.execute("SELECT payload_json FROM events WHERE type IN ('plan.drafted',
 print("yes" if any(sys.argv[2] in (d.get("day"), d.get("date")) for d in map(json.loads, (r[0] for r in rows))) else "no")
 EOF
 }
+# Whether the config loads the way jarvis-brain.service will load it: the unit's environment, the
+# venv's interpreter, run from the tree $1 (so its code, not the checkout's, is imported). Prints
+# the check's output; fails when the config is refused. `-m` puts the working directory first on
+# sys.path, ahead of the editable install. $2... are extra environment assignments.
+check_config() {
+    local tree=$1
+    shift
+    (cd "$tree" && env JARVIS_RUNTIME_ROOT="$HOME/.jarvis" SQLITE_TMPDIR=/tmp "$@" \
+        "$REPO/.venv/bin/python" -m jarvis serve --check-config 2>&1)
+}
+# The line that says why: the loader's own, since a warning can come before it; the last line when
+# there is none (an interpreter that cannot start). At most 300 characters; never a key.
+refusal_of() {
+    { printf '%s\n' "$1" | grep -m1 '^jarvis serve: ' || printf '%s\n' "$1" | tail -n 1; } | cut -c1-300
+}
 restart_age_s() {
     local since up
     since=$(systemctl --user show jarvis-brain -p ActiveEnterTimestampMonotonic --value)
@@ -58,15 +79,39 @@ old=$(git rev-parse --short HEAD)
 new=$(git rev-parse --short origin/main)
 git merge-base --is-ancestor HEAD origin/main || { echo "deploy: $old does not fast-forward to $new" >&2; exit 1; }
 if [ "$DRY" = 1 ]; then
+    config="config ok"
+    if ! git diff --quiet HEAD origin/main -- uv.lock; then
+        config="config not checked (uv.lock changed: the new dependencies are not installed yet)"
+    else
+        tree=$(mktemp -d "${TMPDIR:-/tmp}/deploy-check.XXXXXX")
+        trap 'rm -rf "$tree"' EXIT
+        git archive origin/main jarvis config prompts data | tar -x -C "$tree"
+        if ! out=$(check_config "$tree" PYTHONDONTWRITEBYTECODE=1); then
+            echo "deploy: $old -> $new refused: config does not parse ($(refusal_of "$out"))" >&2
+            exit 1
+        fi
+    fi
     echo "dry-run: $old -> $new ($(git rev-list --count HEAD..origin/main) commits)," \
          "uv.lock $(git diff --quiet HEAD origin/main -- uv.lock && echo same || echo changed)," \
-         "quiet $(quiet_s) s, last restart $(restart_age_s) s ago, plan today: $(has_plan)"
+         "$config, quiet $(quiet_s) s, last restart $(restart_age_s) s ago, plan today: $(has_plan)"
     exit 0
 fi
 
+old_head=$(git rev-parse HEAD)
 git merge -q --ff-only origin/main
-if ! git diff --quiet "$old" HEAD -- uv.lock; then
+lock_moved=0
+git diff --quiet "$old_head" HEAD -- uv.lock || lock_moved=1
+if [ "$lock_moved" = 1 ]; then
     "$HOME/.local/bin/uv" sync -q --frozen --inexact --no-build
+fi
+if ! out=$(check_config "$REPO"); then
+    git reset -q --hard "$old_head"
+    if [ "$lock_moved" = 1 ]; then
+        "$HOME/.local/bin/uv" sync -q --frozen --inexact --no-build \
+            || echo "deploy: warning: uv sync back to $old failed" >&2
+    fi
+    echo "deploy: $old -> $new refused: config does not parse ($(refusal_of "$out"))" >&2
+    exit 1
 fi
 
 now=$(date +%H%M)

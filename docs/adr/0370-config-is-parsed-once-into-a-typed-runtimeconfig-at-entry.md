@@ -102,6 +102,11 @@ Tests that build a runtime by hand pass `runtime_config(mapping)` (`tests/suppor
 instead of a dict, and change a section with `reconfigure`; a test of a refused value goes through
 `load_runtime_config`, not through the private parser.
 
+`serve --check-config` and `terminal --check-config` load the config through `load_runtime_config`
+and nothing else of the entry point, so a deploy can refuse a root whose settings the stricter parse
+rejects before it restarts; they cover the load, not the feature builders listed above, which still
+validate when bootstrap assembles them.
+
 L6's launchd agent still finds the repo root itself: its install and status commands do not load a
 config, and `deployment` cannot import `runtime`. Passing the root in would make every launchd
 command load the config first, which is not a small change.
