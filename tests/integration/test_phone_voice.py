@@ -254,7 +254,7 @@ def test_a_barge_in_is_a_discard_and_the_heard_prefix_freezes_after_the_phones_a
             audible = interrupted["estimated_audible_samples"]
             assert at_discard - PRESENTATION_DELAY_NS * RATE // 10**9 - 64 <= audible <= at_discard
             assert interrupted["heard_text"] == first
-            assert host.barges == ["iphone"]
+            assert host.barged() == ["iphone"]  # her generation is cancelled once the sound is
             assert "surface.playback_completed" not in host.playback("R-long")
         finally:
             phone.close()

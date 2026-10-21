@@ -642,6 +642,7 @@ class VoiceHost:
         self.phone_provider = VoiceSpeechProvider(script=_speak32)
         self.mac_provider = VoiceSpeechProvider()
         self.barges: list[str] = []
+        self._barged = threading.Condition()
         self.cancels: list[tuple[str, str]] = []
         self.voices: list[Any] = []
         self.hub: PhoneHub | None = None
@@ -665,8 +666,20 @@ class VoiceHost:
         )
 
     def _barge(self, device: str) -> str:
-        self.barges.append(device)
+        with self._barged:
+            self.barges.append(device)
+            self._barged.notify_all()
         return "cancelled"
+
+    def barged(self, count: int = 1, timeout_s: float = 15.0) -> list[str]:
+        """The devices whose answer was cancelled by a barge, once ``count`` have been.
+
+        The hook runs on a worker after the actor has settled the interruption, so a check made
+        when the interrupted row appears waits for the arrival instead of racing it.
+        """
+        with self._barged:
+            self._barged.wait_for(lambda: len(self.barges) >= count, timeout_s)
+            return list(self.barges)
 
     def _cancel(self, turn: str, reason: str) -> str:
         self.cancels.append((turn, reason))
