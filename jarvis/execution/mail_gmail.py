@@ -302,6 +302,25 @@ class Mailbox:
             size=size,
         )
 
+    def labels(self, ids: Sequence[str]) -> dict[str, frozenset[str]]:
+        """The labels each message holds now (``UNREAD``, ``INBOX``…), read in parallel."""
+        if not ids:
+            return {}
+
+        def one(message: str) -> tuple[str, frozenset[str] | None]:
+            try:
+                small = self.ask(
+                    "gmail_get", {"messageId": message, "format": "minimal"}, message=message,
+                )
+            except ToolError as exc:
+                if exc.code == "not_found":
+                    return message, None
+                raise
+            return message, frozenset(str(label) for label in small.get("labelIds") or ())
+
+        with ThreadPoolExecutor(min(len(ids), _WORKERS), thread_name_prefix="mail-label") as pool:
+            return {message: held for message, held in pool.map(one, ids) if held is not None}
+
     def envelope(self, message: str) -> Envelope | None:
         """One message's headers from its raw message (bulk and automated marks, its To).
 
