@@ -1,0 +1,585 @@
+{
+  "route": "GET /inherent/day",
+  "direction": "brain -> client",
+  "description": "One day from `date` (default today in the owner's zone `tz`) between `start_ms` and `end_ms`, as of `now_ms`. `items` are the facts, by start then id, each in a `lane` (you, her) with a `kind` and the fields of that kind, `state` done, now or next and `end_ms` null while it lasts; `labels` are the day's all-day events; `missing` names the sources that could not be read, whose items are not there. `spans` (ADR 0302) cut the day by what he was doing, where he was, what he used and his body, each with `title`, `category`, `basis`, `confidence`, `clues`, `question` (null, or `{id, text, options}` that `POST /inherent/day/answer` answers) and the `item_ids` it is made of; `coverage` says how much of his waking time they account for. `line` and `highlights` are the day's words to him and his marks; `summary` is the phone's steps and heart numbers (null when unreadable); `weather` is the day's card or null. A client keeps what it does not know: new kinds and fields come.",
+  "now_ms": 1792013400000,
+  "exact": ["basis", "category", "confidence", "date", "kind", "lane", "state", "tz"],
+  "examples": {
+    "full": {
+      "date": "2026-10-14",
+      "tz": "America/Vancouver",
+      "start_ms": 1791961200000,
+      "end_ms": 1792047600000,
+      "now_ms": 1792013400000,
+      "items": [
+        {
+          "id": "sleep-1",
+          "lane": "you",
+          "kind": "sleep",
+          "start_ms": 1791959400000,
+          "end_ms": 1791985800000,
+          "state": "done",
+          "minutes": 440,
+          "stages": [
+            {
+              "stage": "core",
+              "start_ms": 1791959400000,
+              "end_ms": 1791985800000
+            }
+          ]
+        },
+        {
+          "id": "stay-home",
+          "lane": "you",
+          "kind": "stay",
+          "start_ms": 1791985800000,
+          "end_ms": 1791991200000,
+          "state": "done",
+          "lat": 48.46,
+          "lng": -123.31,
+          "accuracy_m": 65.0,
+          "place": "Home"
+        },
+        {
+          "id": "walk-1",
+          "lane": "you",
+          "kind": "move",
+          "start_ms": 1791991200000,
+          "end_ms": 1791992100000,
+          "state": "done",
+          "activity": "walking"
+        },
+        {
+          "id": "stay-cafe",
+          "lane": "you",
+          "kind": "stay",
+          "start_ms": 1791992100000,
+          "end_ms": 1791993900000,
+          "state": "done",
+          "lat": 48.46,
+          "lng": -123.31,
+          "accuracy_m": 65.0,
+          "place": "Corner Cafe"
+        },
+        {
+          "id": "commitment-c0ffee00000040008000000000000001@2026-10-14",
+          "lane": "you",
+          "kind": "event",
+          "start_ms": 1791993600000,
+          "end_ms": 1791995400000,
+          "state": "done",
+          "title": "Standup",
+          "source": "outlook",
+          "confirmed": true,
+          "private": false,
+          "place": ""
+        },
+        {
+          "id": "work-1791994200000",
+          "lane": "you",
+          "kind": "work",
+          "start_ms": 1791994200000,
+          "end_ms": 1792004400000,
+          "state": "done",
+          "active_s": 10200,
+          "projects": [
+            {
+              "name": "jarvis",
+              "seconds": 8400
+            }
+          ],
+          "apps": [
+            {
+              "name": "Ghostty",
+              "seconds": 8400
+            },
+            {
+              "name": "Chrome",
+              "seconds": 1800
+            }
+          ]
+        },
+        {
+          "id": "talk-1791994500000",
+          "lane": "her",
+          "kind": "talk",
+          "start_ms": 1791994500000,
+          "end_ms": 1791994500000,
+          "state": "done",
+          "turns": 1
+        },
+        {
+          "id": "stay-library",
+          "lane": "you",
+          "kind": "stay",
+          "start_ms": 1791994800000,
+          "end_ms": null,
+          "state": "now",
+          "lat": 48.46,
+          "lng": -123.31,
+          "accuracy_m": 65.0,
+          "place": "UVic Library"
+        },
+        {
+          "id": "reminder-1",
+          "lane": "her",
+          "kind": "reminder",
+          "start_ms": 1791997200000,
+          "end_ms": null,
+          "state": "done",
+          "text": "stand up",
+          "fired": true,
+          "acknowledged": false
+        },
+        {
+          "id": "call-1792008000000",
+          "lane": "you",
+          "kind": "call",
+          "start_ms": 1792008000000,
+          "end_ms": 1792009800000,
+          "state": "done",
+          "app": "Zoom"
+        },
+        {
+          "id": "reminder-2",
+          "lane": "her",
+          "kind": "reminder",
+          "start_ms": 1792017000000,
+          "end_ms": null,
+          "state": "next",
+          "text": "stand up",
+          "fired": false,
+          "acknowledged": false
+        }
+      ],
+      "labels": [
+        {
+          "title": "Reading week",
+          "source": "outlook",
+          "confirmed": true,
+          "private": false,
+          "place": "",
+          "id": "commitment-c0ffee00000040008000000000000002@2026-10-12"
+        }
+      ],
+      "missing": [],
+      "screen_synced_ms": {},
+      "line": {
+        "text": "A quiet morning, mostly at the library.",
+        "draft": true,
+        "written_at": "2026-10-14T14:30:00-07:00"
+      },
+      "highlights": [
+        {
+          "id": "stay-cafe",
+          "label": "Best flat white",
+          "by": "him"
+        },
+        {
+          "id": "stay-library",
+          "label": "The long stretch at the library",
+          "by": "her"
+        }
+      ],
+      "spans": [
+        {
+          "id": "sleep-1",
+          "lane": "body",
+          "kind": "sleep",
+          "start_ms": 1791959400000,
+          "end_ms": 1791985800000,
+          "title": null,
+          "detail": null,
+          "category": "sleep",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["sleep-1"]
+        },
+        {
+          "id": "doing-1791985800000",
+          "lane": "doing",
+          "kind": "unknown",
+          "start_ms": 1791985800000,
+          "end_ms": 1791991200000,
+          "title": null,
+          "detail": null,
+          "category": "home",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-home"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "stay-home",
+          "lane": "place",
+          "kind": "stay",
+          "start_ms": 1791985800000,
+          "end_ms": 1791991200000,
+          "title": "Home",
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-home"]
+        },
+        {
+          "id": "doing-1791991200000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1791991200000,
+          "end_ms": 1791992100000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": {
+            "id": "q:doing-1791991200000",
+            "text": "What were you working on?",
+            "options": ["The thesis", "Jarvis", "Something else"]
+          },
+          "place_id": null,
+          "item_ids": ["walk-1"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "walk-1",
+          "lane": "place",
+          "kind": "walk",
+          "start_ms": 1791991200000,
+          "end_ms": 1791992100000,
+          "title": null,
+          "detail": null,
+          "category": "commute",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["walk-1"]
+        },
+        {
+          "id": "doing-1791992100000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1791992100000,
+          "end_ms": 1791994200000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [
+            {
+              "kind": "calendar",
+              "at_ms": 1791993600000,
+              "text": "Standup (09:00-09:30)"
+            },
+            {
+              "kind": "words",
+              "at_ms": 1791994500000,
+              "text": "he: x"
+            }
+          ],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-cafe", "commitment-c0ffee00000040008000000000000001@2026-10-14"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "stay-cafe",
+          "lane": "place",
+          "kind": "stay",
+          "start_ms": 1791992100000,
+          "end_ms": 1791993900000,
+          "title": "Corner Cafe",
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-cafe"]
+        },
+        {
+          "id": "doing-1791994200000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1791994200000,
+          "end_ms": 1791994800000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["commitment-c0ffee00000040008000000000000001@2026-10-14", "work-1791994200000", "talk-1791994500000"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "work-1791994200000",
+          "lane": "use",
+          "kind": "work",
+          "start_ms": 1791994200000,
+          "end_ms": 1792004400000,
+          "title": "jarvis",
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["work-1791994200000"]
+        },
+        {
+          "id": "talk-1791994500000",
+          "lane": "use",
+          "kind": "talk",
+          "start_ms": 1791994500000,
+          "end_ms": 1791994500000,
+          "title": null,
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["talk-1791994500000"]
+        },
+        {
+          "id": "doing-1791994800000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1791994800000,
+          "end_ms": 1792004400000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["commitment-c0ffee00000040008000000000000001@2026-10-14", "work-1791994200000", "stay-library", "reminder-1"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "stay-library",
+          "lane": "place",
+          "kind": "stay",
+          "start_ms": 1791994800000,
+          "end_ms": null,
+          "title": "UVic Library",
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-library"]
+        },
+        {
+          "id": "doing-1792004400000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1792004400000,
+          "end_ms": 1792008000000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-library"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "call-1792008000000",
+          "lane": "use",
+          "kind": "call",
+          "start_ms": 1792008000000,
+          "end_ms": 1792009800000,
+          "title": "Zoom",
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "high",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["call-1792008000000"]
+        },
+        {
+          "id": "doing-1792008000000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1792008000000,
+          "end_ms": 1792009800000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-library", "call-1792008000000"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        },
+        {
+          "id": "doing-1792009800000",
+          "lane": "doing",
+          "kind": "doing",
+          "start_ms": 1792009800000,
+          "end_ms": 1792013400000,
+          "title": "Work on it",
+          "detail": null,
+          "category": "work",
+          "basis": "inferred",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": ["stay-library"],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        }
+      ],
+      "coverage": {
+        "waking_start_ms": 1791985800000,
+        "waking_end_ms": 1792013400000,
+        "waking_ms": 27600000,
+        "filled_ms": 22200000
+      },
+      "summary": {
+        "steps": 6200,
+        "resting_hr": null,
+        "hrv": null
+      },
+      "weather": null
+    },
+    "bare": {
+      "date": "2026-10-14",
+      "tz": "America/Vancouver",
+      "start_ms": 1791961200000,
+      "end_ms": 1792047600000,
+      "now_ms": 1792013400000,
+      "items": [],
+      "labels": [],
+      "missing": ["mac", "talks"],
+      "screen_synced_ms": {},
+      "line": null,
+      "highlights": [],
+      "spans": [
+        {
+          "id": "doing-1791982800000",
+          "lane": "doing",
+          "kind": "unknown",
+          "start_ms": 1791982800000,
+          "end_ms": 1792013400000,
+          "title": null,
+          "detail": null,
+          "category": "unknown",
+          "basis": "observed",
+          "confidence": "low",
+          "confirmed": false,
+          "clues": [],
+          "question": null,
+          "place_id": null,
+          "item_ids": [],
+          "attention": {
+            "front_ms": 0,
+            "threads": [],
+            "rows": [],
+            "alongside": []
+          }
+        }
+      ],
+      "coverage": {
+        "waking_start_ms": 1791982800000,
+        "waking_end_ms": 1792013400000,
+        "waking_ms": 30600000,
+        "filled_ms": 0
+      },
+      "summary": {
+        "steps": null,
+        "resting_hr": null,
+        "hrv": null
+      },
+      "weather": null
+    }
+  }
+}
