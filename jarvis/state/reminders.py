@@ -7,6 +7,7 @@ followed. ``keep`` (L4) and the daemon's tick (runtime) read the same fold.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
@@ -15,6 +16,7 @@ from jarvis.state.event_log import emit_event, iter_events_of_types
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Iterable
     from datetime import datetime
 
 TYPES: Final[tuple[str, ...]] = (
@@ -74,6 +76,33 @@ def fold(conn: sqlite3.Connection, *, until_ms: int | None = None) -> dict[str, 
         else:
             one.acknowledged = True
     return found
+
+
+def scheduled_by_actions(
+    conn: sqlite3.Connection, action_ids: Iterable[str],
+) -> list[tuple[int, Reminder]]:
+    """``(log row id, reminder)`` of each reminder the actions scheduled, in scheduling order.
+
+    What became of a reminder afterwards is not read: the reminder is as it was scheduled.
+    """
+    scheduled: list[tuple[int, Reminder]] = []
+    for row_id, payload_json in conn.execute(
+        "SELECT id, payload_json FROM events WHERE type = 'reminder.scheduled' "
+        "AND json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?)) "
+        "ORDER BY id",
+        (json.dumps(list(action_ids)),),
+    ):
+        payload = json.loads(payload_json)
+        scheduled.append((
+            int(row_id),
+            Reminder(
+                str(payload["reminder_id"]),
+                int(payload["due_at_epoch_ms"]),
+                str(payload["due_at_local"]),
+                str(payload["text"]),
+            ),
+        ))
+    return scheduled
 
 
 def pending(conn: sqlite3.Connection) -> list[Reminder]:

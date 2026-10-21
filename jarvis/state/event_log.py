@@ -2188,8 +2188,19 @@ def emit_event(  # noqa: PLR0913 — one keyword per Event column; spec §5.1 sh
 # --- Reading helpers ---------------------------------------------------------
 
 
-def _row_to_event(row: tuple[Any, ...]) -> Event:
-    """Hydrate one SELECT row into a frozen Event dataclass."""
+EVENT_COLUMNS: Final[str] = (
+    "id, event_uid, type, schema_version, ts_epoch_ms, payload_json, source_event_id, "
+    "correlation_json"
+)
+"""The columns :func:`row_to_event` reads, in its order: a query that hydrates selects these."""
+
+
+def row_to_event(row: tuple[Any, ...]) -> Event:
+    """Hydrate one row of :data:`EVENT_COLUMNS` into a frozen Event dataclass.
+
+    The one decoding of an ``events`` row; a reader outside this module asks for the rows it
+    wants through a named query and never decodes one itself.
+    """
     (
         _id,
         event_uid,
@@ -2218,7 +2229,7 @@ def _row_to_event(row: tuple[Any, ...]) -> Event:
 # Read-side SELECT statements. Literal strings (not composed) — ruff S608 is a
 # false positive against parameterized queries; we keep these as full literals
 # so static scanners stay happy and so the column order is obvious next to
-# `_row_to_event`.
+# `row_to_event`.
 _SELECT_ALL_ORDERED_SQL: Final[str] = (
     "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
     "payload_json, source_event_id, correlation_json "
@@ -2247,7 +2258,7 @@ def iter_events(conn: sqlite3.Connection) -> Iterator[Event]:
     """
     cursor = conn.execute(_SELECT_ALL_ORDERED_SQL)
     for row in cursor:
-        yield _row_to_event(row)
+        yield row_to_event(row)
 
 
 def iter_events_after(
@@ -2263,7 +2274,7 @@ def iter_events_after(
     """
     cursor = conn.execute(_SELECT_RANGE_ORDERED_SQL, (after_id, up_to_id))
     for row in cursor:
-        yield row[0], _row_to_event(row)
+        yield row[0], row_to_event(row)
 
 
 def latest_id(conn: sqlite3.Connection) -> int:
@@ -2305,7 +2316,7 @@ def fetch_events_after(
     placeholders = ",".join("?" * len(event_types))
     sql = _SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE.format(placeholders=placeholders)
     cursor = conn.execute(sql, (after_id, *event_types))
-    return [(int(row[0]), _row_to_event(row)) for row in cursor]
+    return [(int(row[0]), row_to_event(row)) for row in cursor]
 
 
 def iter_events_of_types(
@@ -2335,7 +2346,7 @@ def iter_events_of_types(
         params.append(since_epoch_ms)
     cursor = conn.execute(sql + " ORDER BY id ASC", params)
     for row in cursor:
-        yield _row_to_event(row)
+        yield row_to_event(row)
 
 
 def get_event(conn: sqlite3.Connection, event_uid: str) -> Event | None:
@@ -2344,7 +2355,7 @@ def get_event(conn: sqlite3.Connection, event_uid: str) -> Event | None:
     row = cursor.fetchone()
     if row is None:
         return None
-    return _row_to_event(row)
+    return row_to_event(row)
 
 
 def iter_events_for_turn(
@@ -2368,7 +2379,7 @@ def iter_events_for_turn(
         (turn_id, json.dumps(selected)),
     )
     for row in cursor:
-        yield _row_to_event(row)
+        yield row_to_event(row)
 
 
 _STEP_TURN_ROWS: Final = (
@@ -2405,7 +2416,7 @@ def turn_action_events(conn: sqlite3.Connection, turn_ids: Iterable[str]) -> lis
             "json_extract(payload_json, '$.action_id') IN (SELECT value FROM json_each(?))",
             (ending, actions),
         ).fetchall()
-    return [_row_to_event(row) for row in sorted(rows, key=lambda row: row[0])]
+    return [row_to_event(row) for row in sorted(rows, key=lambda row: row[0])]
 
 
 def turns_of_events(conn: sqlite3.Connection, event_uids: Iterable[str]) -> dict[str, str]:
@@ -2510,6 +2521,7 @@ def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
 
 
 __all__ = [
+    "EVENT_COLUMNS",
     "MAC_NODE",
     "PHONE_VOICE_CHANNEL",
     "CommittedEventBus",
@@ -2533,6 +2545,7 @@ __all__ = [
     "iter_events_of_types",
     "latest_id",
     "open_event_log",
+    "row_to_event",
     "turn_intent_channel",
     "turn_origin",
 ]
