@@ -572,9 +572,6 @@ def _real_pipeline_callable(tmp_path: Path) -> Callable[[bytes, str, str, str], 
         voice_pipeline.VoicePipeline(
             conn_factory=lambda: open_event_log(log_path),
             recognizer=_StubRecognizer(),
-            normalizer=voice_asr.AsrNormalizer(
-                corrections=[], aliases={}, fuzzy_enabled=False,
-            ),
             broadcaster=None,
             artifacts_dir=tmp_path,
         ),

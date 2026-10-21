@@ -386,7 +386,6 @@ def _pipeline(tmp_path: Path, recognizer: Any) -> voice_pipeline.VoicePipeline: 
     return voice_pipeline.VoicePipeline(
         conn_factory=lambda: open_event_log(tmp_path / "events.db"),
         recognizer=recognizer,
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=None,
     )
@@ -430,7 +429,6 @@ def test_the_session_prepares_each_pause_discards_on_speech_and_commits_the_prep
     pipeline = _SpyPipeline(
         conn_factory=lambda: open_event_log(tmp_path / "events.db"),
         recognizer=_hybrid(_sensevoice("zh"), zh=zh),
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=None,
     )
@@ -549,7 +547,6 @@ def test_the_captions_show_the_prepared_pass_as_settled_and_the_rest_as_tail(
     pipeline = voice_pipeline.VoicePipeline(
         conn_factory=lambda: open_event_log(tmp_path / "events.db"),
         recognizer=_hybrid(sensevoice, zh=_whisper("whisper words")) if hybrid else sensevoice,
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=None,
     )

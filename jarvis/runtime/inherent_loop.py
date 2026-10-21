@@ -2899,9 +2899,7 @@ def _build_voice_pipeline(
 
     ADR-0005 §4.2 / §5.1 — the pipeline runs on the wake or PTT worker
     thread, never the event loop, so the conn factory MUST open a new
-    SQLite connection per call (``check_same_thread`` invariant). The
-    L3 normalizer ships empty-population by default; config-driven
-    aliases / corrections land in a follow-up.
+    SQLite connection per call (``check_same_thread`` invariant).
 
     A voice terminal (ADR 0172) has no log of its own to commit to: it passes ``emit``, which
     sends the utterance to the brain, and the audio it keeps stays on its own disk.
@@ -2916,11 +2914,6 @@ def _build_voice_pipeline(
         model_dir=sensevoice_dir, language=str(pinned or "") or None,
     )
     recognizer = _final_recognizer(runtime, sensevoice)
-    normalizer = voice_asr.AsrNormalizer(
-        corrections=[],
-        aliases={},
-        fuzzy_enabled=False,
-    )
     db_path = runtime.runtime_paths.event_log
     memory = runtime.memory
     artifacts_dir = memory.audio_dir if memory is not None and memory.retain_audio else None
@@ -2928,7 +2921,6 @@ def _build_voice_pipeline(
         conn_factory=None if emit is not None else lambda: open_runtime_event_log(db_path),
         emit=emit,
         recognizer=recognizer,
-        normalizer=normalizer,
         broadcaster=broadcaster,
         artifacts_dir=artifacts_dir,
         cues=runtime.voice_cues,

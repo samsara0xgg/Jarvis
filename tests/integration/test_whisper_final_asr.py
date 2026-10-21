@@ -289,7 +289,6 @@ def test_a_one_word_card_answer_becomes_a_turn(whisper: _Whisper, tmp_path: Path
     pipeline = voice_pipeline.VoicePipeline(
         conn_factory=lambda: open_event_log(tmp_path / "events.db"),
         recognizer=ears,
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=None,
     )
@@ -308,7 +307,7 @@ def test_his_first_words_after_a_quiet_spell_warm_whisper_once(whisper: _Whisper
     """言文 c257562: idle 20 s, one silent pass starts when he starts talking; no second one."""
     ears, _partials = _final()
     pipeline = voice_pipeline.VoicePipeline(
-        conn_factory=MagicMock(), recognizer=ears, normalizer=MagicMock(), broadcaster=None,
+        conn_factory=MagicMock(), recognizer=ears, broadcaster=None,
         artifacts_dir=None,
     )
     whisper.release.clear()

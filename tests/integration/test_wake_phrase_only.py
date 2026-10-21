@@ -44,7 +44,6 @@ def _pipeline(tmp_path: Path, text: str) -> voice_pipeline.VoicePipeline:
     return voice_pipeline.VoicePipeline(
         conn_factory=lambda: open_event_log(tmp_path / "events.db"),
         recognizer=recognizer,
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=tmp_path,
     )

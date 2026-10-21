@@ -499,7 +499,6 @@ def test_the_audio_is_written_after_the_utterance_is_sent_under_the_name_it_carr
     monkeypatch.setattr(voice_artifact_store, "persist", slow_persist)
     pipeline = voice_pipeline.VoicePipeline(
         emit=emit, recognizer=_Recognizer(),
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None, artifacts_dir=tmp_path / "audio",
     )
     started = time.monotonic()

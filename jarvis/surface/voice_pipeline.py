@@ -2,7 +2,7 @@
 
 Owns the wake/PTT mutex (``VOICE_INPUT_LOCK``) so the two input paths
 cannot double-capture the default mic (ADR-0005 §8 fix #2). Calls
-recognize -> empty-check -> normalize -> optional artifact write ->
+recognize -> empty-check -> optional artifact write ->
 ``emit_event("utterance.received", ...)`` per spec §3.6.1.
 
 Layer rules: imports only stdlib, ``jarvis.shared``, ``jarvis.state.event_log``,
@@ -105,7 +105,6 @@ class VoicePipeline:
         *,
         conn_factory: Callable[[], sqlite3.Connection] | None = None,
         recognizer: voice_asr.AsrRecognizer,
-        normalizer: voice_asr.AsrNormalizer,
         broadcaster: _BroadcasterProtocol | None,
         artifacts_dir: Path | None,
         sample_rate_hz: int = 16000,
@@ -126,7 +125,6 @@ class VoicePipeline:
         self._emit = emit
         self._conn_factory = conn_factory
         self._recognizer = recognizer
-        self._normalizer = normalizer
         self._broadcaster = broadcaster
         self._artifacts_dir = artifacts_dir
         self._sample_rate_hz = sample_rate_hz
@@ -198,12 +196,10 @@ class VoicePipeline:
         No words when nothing in it is speech; the caller judges the joined stretches as a whole.
         """
         if recognizer is not None:
-            heard = voice_asr.dictation_text(audio_bytes, recognizer, rehear_among=rehear_among)
-            return heard._replace(text=self._normalizer.normalize(heard.text))
+            return voice_asr.dictation_text(audio_bytes, recognizer, rehear_among=rehear_among)
         if voice_asr.too_quiet_for_speech(audio_bytes):
             return voice_asr.DictationHeard("", "")
-        text = self._normalizer.normalize(self.partial_text(audio_bytes))
-        return voice_asr.DictationHeard(text, "")
+        return voice_asr.DictationHeard(self.partial_text(audio_bytes), "")
 
     def _judge[T](
         self,
@@ -271,7 +267,7 @@ class VoicePipeline:
                 endpointed utterance); the PTT path does not, so an unsupplied
                 id is minted here — one press-to-release is one utterance.
             endpoint_reason: Optional typed acoustic endpoint reason.
-            before_emit: Called with the normalized transcript and the utterance's
+            before_emit: Called with the transcript and the utterance's
                 voiceprint (ADR 0286, ``None`` without one) once it is
                 accepted, before ``utterance.received`` is written:
                 conversation mode drops the unspoken answer to Allen's
@@ -283,7 +279,7 @@ class VoicePipeline:
                 then sends it and raises :class:`UtteranceJudgedError` for words
                 that are no turn. Without ``emit`` the mapping is added to the
                 committed payload.
-            on_judged: ``(normalized, verdict)`` once the brain has judged the
+            on_judged: ``(words, verdict)`` once the brain has judged the
                 words ``before_emit`` described, ``"turn"`` included. It carries
                 out the verdict and raises :class:`VoicePipelineAbsorbedError`
                 for words that are no turn, as ``before_emit`` does.
@@ -377,24 +373,21 @@ class VoicePipeline:
                 msg = f"wake phrase only for turn_id={turn_id}: {tr.text!r}"
                 raise VoicePipelineWakeOnlyError(msg, heard=tr.text)
 
-            # 3. Normalize BEFORE emit — ADR §8 fix #1 (spec §3.6.2).
-            normalized = self._normalizer.normalize(said)
-
             voiceprint = None if embedding is None else embedding()
             judge: Mapping[str, object] | None = None
             if before_emit is not None:
                 judge = self._judge(
-                    lambda: before_emit(normalized, voiceprint), turn_id=turn_id,
+                    lambda: before_emit(said, voiceprint), turn_id=turn_id,
                     broadcast=broadcast,
                 )
 
-            # 4. Audio retention for memory.db (None = off): the utterance names the file,
+            # 3. Audio retention for memory.db (None = off): the utterance names the file,
             # which is written after it is sent (ADR 0277).
             artifact_ref = voice_artifact_store.planned_ref(turn_id, self._artifacts_dir)
 
-            # 5. Emit utterance.received via fresh connection (worker thread).
+            # 4. Emit utterance.received via fresh connection (worker thread).
             payload: dict[str, object] = {
-                "transcript": normalized,
+                "transcript": said,
                 "turn_id": turn_id,
                 "channel": channel,
                 "language": language,
@@ -434,9 +427,9 @@ class VoicePipeline:
                 try:
                     ev = self._emit(payload, {"turn_id": turn_id})
                 except UtteranceJudgedError as judged:
-                    self._judged(on_judged, normalized, judged.verdict, turn_id, broadcast)
+                    self._judged(on_judged, said, judged.verdict, turn_id, broadcast)
                     raise  # unreachable: _judged absorbs every verdict but "turn"
-                self._judged(on_judged, normalized, "turn", turn_id, broadcast)
+                self._judged(on_judged, said, "turn", turn_id, broadcast)
             else:
                 assert self._conn_factory is not None  # noqa: S101 — the constructor ensures it.
                 with contextlib.closing(self._conn_factory()) as worker_conn:
@@ -462,7 +455,7 @@ class VoicePipeline:
                 event_uid=ev.event_uid,
                 measurement_boundary="durable_utterance_received_commit",
             )
-            # 6. Wake-path UI notify (PTT path passes broadcast=False so
+            # 5. Wake-path UI notify (PTT path passes broadcast=False so
             # Swift drives the card from the HTTP response, not WS).
             # Wire field is "text" to match the PTT HTTP contract
             # (inherent_server.py maps transcript -> text) and the Swift
@@ -470,7 +463,7 @@ class VoicePipeline:
             # this rename the Swift card sees text=nil and falls into
             # the "no speech" branch even when ASR transcribed cleanly.
             if broadcast and self._broadcaster is not None:
-                accepted_payload: dict[str, object] = {"text": normalized}
+                accepted_payload: dict[str, object] = {"text": said}
                 if tr.emotion:
                     accepted_payload["emotion"] = tr.emotion
                 self._broadcaster.broadcast_voice_sync(
@@ -484,7 +477,7 @@ class VoicePipeline:
     def _judged(
         self,
         on_judged: Callable[[str, str], None] | None,
-        normalized: str,
+        words: str,
         verdict: str,
         turn_id: str,
         broadcast: bool,  # noqa: FBT001 - run_turn's own flag
@@ -497,7 +490,7 @@ class VoicePipeline:
             if verdict != "turn":
                 raise VoicePipelineAbsorbedError(verdict)
 
-        self._judge(lambda: act(normalized), turn_id=turn_id, broadcast=broadcast)
+        self._judge(lambda: act(words), turn_id=turn_id, broadcast=broadcast)
 
 
 __all__ = [

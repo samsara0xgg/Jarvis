@@ -371,7 +371,6 @@ def test_the_ears_hear_a_stretch_with_whisper_and_skip_a_quiet_one() -> None:
     pipe = voice_pipeline.VoicePipeline(
         conn_factory=lambda: None,  # type: ignore[arg-type,return-value]
         recognizer=_Ear("sensevoice"),
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=None,
     )

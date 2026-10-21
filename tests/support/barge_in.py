@@ -102,7 +102,6 @@ class BargeInRig:
             conn_factory=None if emit else (lambda: open_event_log(self.db)),
             emit=emit,
             recognizer=self.asr,
-            normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
             broadcaster=self,
             artifacts_dir=None,
             cues=cues,

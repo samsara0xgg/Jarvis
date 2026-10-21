@@ -525,7 +525,6 @@ def _terminal_pipeline(
 
     return voice_pipeline.VoicePipeline(
         recognizer=_Asr(embedder.order),
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None, artifacts_dir=None, emit=emit,
         voiceprints=embedder,  # type: ignore[arg-type]
     )

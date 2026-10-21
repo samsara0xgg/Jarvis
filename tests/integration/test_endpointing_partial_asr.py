@@ -782,7 +782,6 @@ def test_late_partial_revision_is_discarded_and_only_final_text_is_committed(
     pipeline = voice_pipeline.VoicePipeline(
         conn_factory=lambda: open_event_log(db_path),
         recognizer=recognizer,
-        normalizer=voice_asr.AsrNormalizer(corrections=[], aliases={}, fuzzy_enabled=False),
         broadcaster=None,
         artifacts_dir=tmp_path,
     )
