@@ -469,10 +469,15 @@ def _check_config(
             f"jarvis {entry}: {t('cli.config_refused', lang=system_language(), reason=reason)}\n",
         )
         return 1
-    good = t(
-        "cli.config_ok", lang=config.language, config=config.config_path, root=root,
-        role=config.role,
-    )
+    if entry == "terminal":  # the terminal ignores the role, so its line does not name one
+        good = t(
+            "cli.terminal_config_ok", lang=config.language, config=config.config_path, root=root,
+        )
+    else:
+        good = t(
+            "cli.config_ok", lang=config.language, config=config.config_path, root=root,
+            role=config.role,
+        )
     sys.stdout.write(f"jarvis {entry}: {good}\n")
     return 0
 

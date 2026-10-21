@@ -71,7 +71,10 @@ def test_an_accepted_config_prints_one_line_and_leaves_the_root_alone(
     assert main([*ENTRIES[entry], "--check-config", "--runtime-root", str(root)]) == 0
 
     out, err = capsys.readouterr()
-    line = t("cli.config_ok", lang="zh", config=SHIPPED, root=root.resolve(), role="all")
+    if entry == "serve":
+        line = t("cli.config_ok", lang="zh", config=SHIPPED, root=root.resolve(), role="all")
+    else:
+        line = t("cli.terminal_config_ok", lang="zh", config=SHIPPED, root=root.resolve())
     assert out == f"jarvis {entry}: {line}\n"
     assert not err
     assert _snapshot(root) == before
@@ -140,6 +143,19 @@ def test_the_accepted_line_is_in_the_configs_language(
 
     line = t("cli.config_ok", lang=language, config=SHIPPED, root=root.resolve(), role="brain")
     assert capsys.readouterr().out == f"jarvis serve: {line}\n"
+
+
+@pytest.mark.parametrize("language", ["zh", "en"])
+def test_the_terminals_accepted_line_names_no_role(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], language: Language,
+) -> None:
+    """The terminal runs the same whatever ``runtime.role`` says, so its line does not claim one."""
+    root = _root(tmp_path, f"language: {language}\nruntime:\n  role: brain\n")
+
+    assert main(["terminal", "--check-config", "--runtime-root", str(root)]) == 0
+
+    line = t("cli.terminal_config_ok", lang=language, config=SHIPPED, root=root.resolve())
+    assert capsys.readouterr().out == f"jarvis terminal: {line}\n"
 
 
 def test_the_terminal_check_validates_the_brain_address_but_reads_no_token(
