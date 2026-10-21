@@ -28,10 +28,11 @@ from __future__ import annotations
 import copy
 import json
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
-from jarvis.decision.llm import ChatResult, LLMClient, Provider, ToolCall
+from jarvis.decision.llm import ChatResult, LLMClient, Provider, ToolCall, UsageStatus
 from jarvis.decision.llm_session import LLMPresetSnapshot, LLMRequestClient, LLMSessionFactory
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 
@@ -73,6 +74,31 @@ class DecisionClient(Protocol):
     @property
     def last_output_tokens(self) -> int | None:
         """Completion tokens of the most recent ``chat``."""
+        ...
+
+    @property
+    def last_llm_request_id(self) -> str | None:
+        """The identity minted for the most recent ``chat`` before it went out, failed or not."""
+        ...
+
+    @property
+    def last_usage_status(self) -> UsageStatus:
+        """How complete the most recent ``chat``'s usage is; ``unavailable`` if it failed."""
+        ...
+
+    @property
+    def last_cache_read_tokens(self) -> int | None:
+        """Cache-read tokens of the most recent ``chat``."""
+        ...
+
+    @property
+    def last_cache_write_tokens(self) -> int | None:
+        """Cache-write tokens of the most recent ``chat``."""
+        ...
+
+    @property
+    def last_metadata(self) -> Mapping[str, Any]:
+        """What the most recent ``chat`` is known by: provider, model, request id, usage."""
         ...
 
     def request_tier(self, service_tier: str | None) -> str | None:
@@ -275,6 +301,7 @@ class ScriptedModel:
         self.native_tool_search = native_tool_search
         self._script = _Script(steps, otherwise)
         self._last_usage: Usage | None = None
+        self._last_request_id: str | None = None
         self.uploads: list[tuple[str, int, str]] = []
         self.deleted_files: list[str] = []
 
@@ -305,6 +332,41 @@ class ScriptedModel:
         """Completion tokens the last ``chat`` reported, or ``None`` if it reported none."""
         return self._last_usage.output_tokens if self._last_usage else None
 
+    @property
+    def last_llm_request_id(self) -> str | None:
+        """The identity minted for the latest ``chat``, which a failed ``chat`` has too."""
+        return self._last_request_id
+
+    @property
+    def last_usage_status(self) -> UsageStatus:
+        """``provider_final`` when the latest ``chat`` reported usage, else ``unavailable``."""
+        return "provider_final" if self._last_usage else "unavailable"
+
+    @property
+    def last_cache_read_tokens(self) -> int | None:
+        """Cache-read tokens the latest ``chat`` reported, or ``None`` if it reported none."""
+        return self._last_usage.cache_read_tokens if self._last_usage else None
+
+    @property
+    def last_cache_write_tokens(self) -> int | None:
+        """Cache-write tokens the latest ``chat`` reported, or ``None`` if it reported none."""
+        return self._last_usage.cache_write_tokens if self._last_usage else None
+
+    @property
+    def last_metadata(self) -> Mapping[str, Any]:
+        """The latest ``chat``'s identity and usage, in the keys the real client keeps."""
+        return {
+            "provider": self.provider,
+            "response_id": None,
+            "preset": self.active_preset,
+            "model": self.model,
+            "streaming": False,
+            "llm_request_id": self._last_request_id,
+            "usage_status": self.last_usage_status,
+            "cache_read_tokens": self.last_cache_read_tokens,
+            "cache_write_tokens": self.last_cache_write_tokens,
+        }
+
     def request_tier(self, service_tier: str | None) -> str | None:  # noqa: ARG002
         """No tier is sent: only OpenAI's own host gets one, and this is not it."""
         return None
@@ -331,6 +393,8 @@ class ScriptedModel:
         service_tier: str | None = None,
     ) -> ChatResult:
         """Answer one request with the next step."""
+        self._last_usage = None  # as the real client resets its per-call state on entry
+        request_id = self._last_request_id = "LLM" + uuid.uuid4().hex  # minted before sending
         step = self._script.answer(
             Request(
                 "chat",
@@ -362,6 +426,7 @@ class ScriptedModel:
             tokens_out=usage.output_tokens if usage else 0,
             cache_read_in=usage.cache_read_tokens if usage else 0,
             cache_write_in=usage.cache_write_tokens if usage else 0,
+            llm_request_id=request_id,
             usage_status="provider_final" if usage else "unavailable",
         )
 

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.decision import decide
+from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMRequestClient, LLMSessionFactory
 from jarvis.decision.llm_stream import (
@@ -109,6 +110,40 @@ def test_the_last_usage_is_what_the_client_reports_after_a_chat() -> None:
         (None, None),
         (100, 7),
     )
+
+
+def test_a_request_has_its_identity_before_it_is_answered_and_a_failed_one_keeps_it() -> None:
+    """The cost guard bills a failed request by the identity minted for it, with no usage."""
+    model = ScriptedModel(Reply("ok", usage=Usage(5, 2)), Failure(TimeoutError("slow")))
+    before = model.last_llm_request_id
+    result = model.chat(messages=_MESSAGES, system="s")
+    first = model.last_llm_request_id
+    assert before is None
+    assert first == result.llm_request_id
+    assert (model.last_usage_status, model.last_metadata["llm_request_id"]) == (
+        "provider_final",
+        first,
+    )
+    with pytest.raises(TimeoutError, match="slow"):
+        model.chat(messages=_MESSAGES, system="s")
+    assert model.last_llm_request_id not in (None, first)
+    assert (model.last_input_tokens, model.last_output_tokens) == (None, None)
+    assert (model.last_usage_status, model.last_cache_read_tokens) == ("unavailable", None)
+
+
+def test_the_cost_guard_bills_a_failed_scripted_request_as_an_error(tmp_path: Path) -> None:
+    """A request that raised is one `cost.recorded` row, named by the id its client minted."""
+    conn = open_event_log(tmp_path / "log.db")
+    model = ScriptedModel(Failure(TimeoutError("slow")))
+    with pytest.raises(TimeoutError, match="slow"):
+        CostRecorder(conn, pricing_table={}).chat(
+            model.as_llm_client(), messages=_MESSAGES, system="s", kind="decision", turn_id="T-err",
+        )
+    (row,) = conn.execute("SELECT payload_json FROM events WHERE type = 'cost.recorded'")
+    payload = json.loads(row[0])
+    assert (payload["disposition"], payload["error_code"]) == ("error", "TimeoutError")
+    assert payload["llm_request_id"] == model.last_llm_request_id
+    conn.close()
 
 
 def test_asking_past_the_script_fails_the_test_and_says_which_request() -> None:
