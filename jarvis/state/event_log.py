@@ -1215,6 +1215,20 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    EventTypeSchema(
+        # ADR 0321 — the closed-choice reading of his words against a waiting card, one per
+        # reading. `utterance_uid` is the `event_uid` of the user's words; `verdict` is one of
+        # accept / reject / change / unrelated / not_sure; `preset` and `latency_ms` say how
+        # it was read; `error` names the failure when there was one (the verdict is then
+        # not_sure). It changes no confirmation state: the answer, if any, is the
+        # `confirmation.accepted` / `confirmation.rejected` that follows.
+        event_type="confirmation.words_classified",
+        owner_layer="L3",
+        actor="jarvis_runtime",
+        required_payload=("confirmation_id", "utterance_uid", "verdict", "preset", "latency_ms"),
+        optional_payload=("error",),
+        schema_version=1,
+    ),
     # ADR 0066: the model's `ask_user` card — a question and one to four
     # fields. The newest one is the only card; `surface.clarified` (Allen
     # filled it in) or `surface.dismissed` (its close button) naming its id closes it.

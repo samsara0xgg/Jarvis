@@ -649,6 +649,9 @@ class JarvisRuntime:
     llm_session_factory: LLMSessionFactory
     tier0_table: Tier0Table = ()
     confirm_grammar_table: ConfirmGrammarTable = ()
+    # ADR 0321: a fresh client on the ``confirmation.words_preset`` for each reading of his
+    # words against a waiting card; ``None`` where that preset is missing.
+    confirmation_words: Callable[[], LLMClient] | None = None
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     response_flags: Wave4ResponseFlags = field(default_factory=Wave4ResponseFlags)
     response_runs: ResponseRunRegistry | None = None
@@ -1001,6 +1004,41 @@ def _observer_poll_interval_s(config: Mapping[str, Any]) -> float:
     return _positive_float(
         block.get("poll_interval_s"), _FALLBACK_OBSERVER_POLL_INTERVAL_S,
     )
+
+
+_FALLBACK_CONFIRMATION_WORDS_PRESET: Final = "haiku"
+_FALLBACK_CONFIRMATION_WORDS_TIMEOUT_S: Final = 4.0
+
+
+def _confirmation_words_client(config: Mapping[str, Any]) -> Callable[[], LLMClient] | None:
+    """ADR 0321: the client that reads his words against a waiting card, one per reading.
+
+    ``confirmation.words_preset`` (default ``haiku``) and ``confirmation.words_timeout_s``
+    (default 4): one attempt, no retry, so a slow provider leaves the card waiting for its
+    button. A missing preset reads nothing: such words run as an ordinary turn.
+    """
+    block = config.get("confirmation")
+    block = block if isinstance(block, Mapping) else {}
+    name = str(block.get("words_preset") or _FALLBACK_CONFIRMATION_WORDS_PRESET)
+    llm_block = config.get("llm")
+    presets = llm_block.get("presets") if isinstance(llm_block, Mapping) else None
+    preset = presets.get(name) if isinstance(presets, Mapping) else None
+    if not isinstance(preset, Mapping):
+        LOGGER.warning("confirmation: llm.presets.%s missing; no words read against a card", name)
+        return None
+    factory = LLMSessionFactory(
+        {
+            "provider": "openai",
+            "presets": {name: dict(preset)},
+            "default_preset": name,
+            "timeout_s": _positive_float(
+                block.get("words_timeout_s"), _FALLBACK_CONFIRMATION_WORDS_TIMEOUT_S,
+            ),
+            "max_retries": 0,
+        },
+    )
+    snapshot = factory.snapshot()
+    return lambda: factory.create(snapshot, response_id=new_response_id())
 
 
 def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
@@ -3476,6 +3514,7 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         ),
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
+        confirmation_words=_confirmation_words_client(full_config),
         wave1_features=wave1_features,
         response_flags=response_flags,
         llm_session_factory=llm_session_factory,
@@ -5168,6 +5207,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
+            words_client=runtime.confirmation_words,
             wave1_features=runtime.wave1_features,
             history=memory_context.history if memory_context is not None else (),
             time_note=memory_context.now if memory_context is not None else None,

@@ -17,7 +17,7 @@ from tests.support.model import Call, Reply, ScriptedModel
 from tests.support.plugin_approval import Paths, say
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from jarvis.decision.llm import LLMClient
     from jarvis.execution.mcp_tools import McpServers
@@ -56,6 +56,8 @@ def context(
     servers: McpServers,
     llm: ScriptedModel,
     spec: Mapping[str, Mapping[str, Any]],
+    *,
+    words: ScriptedModel | None = None,
 ) -> DecideContext:
     """A real ``decide()`` context over the registry, the stand-in server and a fresh log."""
     registry = build_default_registry(confirmation_dispatch_outbox=True)
@@ -63,6 +65,9 @@ def context(
         registry.register(one)
     paths = Paths(event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts")
     paths.artifacts_root.mkdir(parents=True, exist_ok=True)
+    reader: Callable[[], LLMClient] | None = (
+        None if words is None else (lambda: cast("LLMClient", words))
+    )
     return DecideContext(
         conn=open_event_log(paths.event_log),
         runtime_paths=cast("RuntimePathsLike", paths),
@@ -72,6 +77,7 @@ def context(
         system_prompt="stub system prompt",
         confirm_grammar_table=load_confirm_grammar(REPO / "config" / "confirm_grammar.yaml"),
         wave1_features=Wave1FeatureFlags(confirmation_dispatch_outbox=True),
+        words_client=reader,
     )
 
 
@@ -108,9 +114,10 @@ def asked(
     tmp_path: Path,
     servers: McpServers,
     llm: ScriptedModel,
+    words: ScriptedModel | None = None,
 ) -> tuple[DecideContext, str]:
     """Turn 1: the model asks for three lights off at once; returns the context and her words."""
-    ctx = context(tmp_path, servers, llm, lights(prompting()))
+    ctx = context(tmp_path, servers, llm, lights(prompting()), words=words)
     return ctx, say(ctx, "把灯都关了", "T1")
 
 

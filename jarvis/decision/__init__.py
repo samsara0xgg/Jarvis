@@ -50,6 +50,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
+from jarvis.decision import confirm_words
 from jarvis.decision import turn_timing as timing
 from jarvis.decision.attachment_parts import attachment_text, image_parts
 from jarvis.decision.confirm_grammar import ConfirmGrammarHit, match_confirm_grammar
@@ -684,6 +685,10 @@ class DecideContext:
     # ADR 0223: the words of his latest earlier turn that had any. A turn that came with files
     # and no words of its own is answered in this one's language.
     last_words: str = ""
+    # ADR 0321: a fresh client on the fast preset that reads words the grammar did not match
+    # against a waiting card, with its own timeout. ``None`` reads nothing: such words run as
+    # an ordinary turn and the card keeps waiting for its button.
+    words_client: Callable[[], LLMClient] | None = None
 
 
 @dataclass(frozen=True)
@@ -1518,6 +1523,8 @@ def _handle_utterance(
         transcript_raw = trigger.payload.get("transcript", "")
         transcript = transcript_raw if isinstance(transcript_raw, str) else ""
         grammar_hit = match_confirm_grammar(transcript, ctx.confirm_grammar_table)
+        if grammar_hit is None:
+            grammar_hit = _words_against_card(pending_slot, transcript, trigger, ctx, scratch)
         if grammar_hit is not None:
             if grammar_hit.decision == "yes":
                 return _handle_confirmation_accepted(
@@ -4081,6 +4088,72 @@ def _record_confirmation_answer(
         source_event_id=_latest_event_uid_of_type(ctx.conn, event_type="confirmation.requested"),
         correlation=correlation,
     )
+
+
+# ADR 0321: words the grammar did not match answer like a grammar hit when the closed-choice
+# reading of them is accept or reject; the rule id says it was that reading.
+_WORDS_ACCEPT: Final[ConfirmGrammarHit] = ConfirmGrammarHit(
+    rule_id="words_classifier", decision="yes",
+)
+_WORDS_REJECT: Final[ConfirmGrammarHit] = ConfirmGrammarHit(
+    rule_id="words_classifier", decision="no",
+)
+
+
+def _words_against_card(
+    slot: PendingConfirmationSlot,
+    transcript: str,
+    trigger: Event,
+    ctx: DecideContext,
+    scratch: _Scratch,
+) -> ConfirmGrammarHit | None:
+    """Read words the grammar did not match against the waiting card (ADR 0321).
+
+    One closed-choice request on the fast preset sees his words and the card's question lines
+    and nothing else. ``accept`` and ``reject`` answer the card; ``change``, ``unrelated``,
+    ``not_sure``, a timeout or an error answer nothing, so his words run as an ordinary turn
+    and the card keeps waiting for its button. Every reading is an event.
+    """
+    if ctx.words_client is None or not transcript.strip():
+        return None
+    client = ctx.words_client()
+    request = confirm_words.build_request(
+        transcript, [str(call.get("question", "")) for call in slot.calls],
+    )
+    started = time.monotonic()
+    verdict: confirm_words.Verdict = "not_sure"
+    error: str | None = None
+    try:
+        result = CostRecorder(ctx.conn, pricing_table=_pricing_table()).chat(
+            client,
+            messages=request.messages,
+            system=request.system,
+            tools=request.tools,
+            tool_choice=request.tool_choice,
+            kind="confirmation_words",
+            turn_id=scratch.turn_id,
+        )
+        verdict = confirm_words.verdict_of(result)
+    except Exception as exc:  # noqa: BLE001 — a timeout or any provider failure leaves the card waiting.
+        LOGGER.warning("decide(): reading words against a card failed: %s", type(exc).__name__)
+        error = type(exc).__name__
+    scratch.events.append(
+        emit_event(
+            ctx.conn,
+            type="confirmation.words_classified",
+            payload={
+                "confirmation_id": slot.confirmation_id,
+                "utterance_uid": trigger.event_uid,
+                "verdict": verdict,
+                "preset": client.active_preset or "",
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                **({"error": error} if error is not None else {}),
+            },
+            source_event_id=trigger.event_uid,
+            correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
+        ),
+    )
+    return {"accept": _WORDS_ACCEPT, "reject": _WORDS_REJECT}.get(verdict)
 
 
 # ADR 0062: a card's button answers like a grammar hit; the rule id says which.

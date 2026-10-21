@@ -1111,6 +1111,11 @@ tools:
 # 不用碰代码。
 confirmation:
   ttl_ms: 600000
+  # ADR 0321: words the yes/no grammar does not match, said within ttl_ms of the card, are read
+  # once against it on this preset (accept / reject / change / unrelated / not sure). One
+  # attempt; a failure or a slow answer leaves the card waiting for its button.
+  words_preset: haiku
+  words_timeout_s: 4
 
 # ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has the
 # confirmation outbox adoption switch on.
