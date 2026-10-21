@@ -840,6 +840,59 @@ def test_one_live_time_per_bus_in_the_answer_the_card_row_and_the_pin(
     assert (trip["departs_at_ms"], trip["bus_trip_id"]) == (local_ms(17, 12), "T26")
 
 
+DAY_MS = 24 * 3_600_000
+
+
+@pytest.mark.parametrize(
+    ("predicted_ms", "start_date", "departs", "source"),
+    [
+        (local_ms(17, 15), "", "tomorrow (Wed), 5:12 pm", "scheduled"),
+        (local_ms(17, 15), "20261006", "tomorrow (Wed), 5:12 pm", "scheduled"),
+        (local_ms(17, 15) + DAY_MS, "", "tomorrow (Wed), 5:15 pm", "live"),
+        (local_ms(17, 15) + DAY_MS, "20261007", "tomorrow (Wed), 5:15 pm", "live"),
+    ],
+    ids=["today's, undated", "today's, dated", "tomorrow's, undated", "tomorrow's, dated"],
+)
+def test_a_prediction_counts_for_its_own_service_day_not_for_the_same_trip_on_another(  # noqa: PLR0913 - the case's columns.
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    predicted_ms: int, start_date: str, departs: str, source: str,
+) -> None:
+    """ADR 0342: a trip runs every day under one id; asked at 4:30 pm for tomorrow's 5:12 pm bus.
+
+    The feed's prediction for today's run of that trip is not tomorrow's bus's time. A prediction
+    dated with its start_date counts on that day; an undated one only near the bus's scheduled time.
+    """
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "41:12"))))
+    feed = realtime(("T26", "B1", predicted_ms), start_date=start_date)
+    live = _live(tmp_path, _trip("T26", "26", "17:12:00", "17:32:00"), feed=lambda: feed)
+    out = _call(
+        {"to": "home", "at": "2026-10-07 17:00"}, here=fix_with(), bus_live=live,
+        now=datetime(2026, 10, 6, 16, 30, tzinfo=ZONE),
+    )
+    leg = out["options"][0]["legs"][0]
+    assert (leg["departs"], leg["source"]) == (departs, source)
+
+
+def test_the_next_bus_of_tomorrow_does_not_take_todays_run_of_its_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the last 26 today the timetable's next is tomorrow's first, the 6:00 am trip.
+
+    The feed still holds this morning's run of it, three minutes late: not tomorrow's time.
+    """
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "17:12"))))
+    feed = realtime(("T26first", "B1", local_ms(6, 3)))
+    live = _live(
+        tmp_path, _trip("T26", "26", "17:12:00", "17:32:00"),
+        _trip("T26first", "26", "06:00:00", "06:20:00"), feed=lambda: feed,
+    )
+    out = _call({"to": "home"}, here=fix_with(), bus_live=live)
+    assert [(o["legs"][0]["departs"], o["legs"][0]["source"]) for o in out["options"]] == [
+        ("5:12 pm", "scheduled"), ("tomorrow (Wed), 6:00 am", "scheduled"),
+    ]
+    assert [r["bus_trip_id"] for r in _card()["options"]] == ["T26", "T26first"]
+
+
 def test_with_no_later_bus_from_google_the_next_is_the_timetables_on_the_same_stop_and_way(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

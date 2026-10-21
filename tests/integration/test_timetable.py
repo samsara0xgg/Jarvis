@@ -151,10 +151,17 @@ def test_a_late_bus_is_matched_by_its_live_time(tmp_path: Path) -> None:
     assert table.match_leg("7", board, alight, around) is None
     late = _local_ms(day, "9:50")
     found = table.match_leg(
-        "7", board, alight, around, lambda trip, _stop: late if trip == "out1" else None,
+        "7", board, alight, around, lambda call: late if call.trip_id == "out1" else None,
     )
     assert found is not None
     assert found.board.trip_id == "out1"
+    # The callback is asked about the call on its own service day: a prediction made for the
+    # same trip on another day is not this day's bus.
+    other_day = date(2026, 10, 10)
+    assert table.match_leg(
+        "7", board, alight, around,
+        lambda call: late if (call.trip_id, call.day) == ("out1", other_day) else None,
+    ) is None
 
 
 def test_an_export_without_calendars_runs_every_trip_every_day(tmp_path: Path) -> None:

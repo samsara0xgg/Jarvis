@@ -100,8 +100,8 @@ class BusTimes(Protocol):
         """The timetable store for the newest export."""
         ...
 
-    def live_at(self, feed: Any, trip_id: str, stop_id: str) -> int | None:  # noqa: ANN401
-        """When the feed says ``trip_id`` leaves ``stop_id`` (epoch ms), None when it is silent."""
+    def live_at(self, feed: Any, call: Call) -> int | None:  # noqa: ANN401
+        """When the feed says ``call``'s bus leaves its stop (epoch ms), None when it is silent."""
         ...
 
 

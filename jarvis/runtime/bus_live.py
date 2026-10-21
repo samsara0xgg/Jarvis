@@ -67,34 +67,44 @@ def _download_static(dest: Path) -> None:
         shutil.copyfileobj(reply, out)
 
 
-def live_departure(feed: gtfs_realtime_pb2.FeedMessage, trip_id: str, stop_id: str) -> int | None:
-    """When the feed says ``trip_id`` leaves ``stop_id`` (epoch ms), else when it arrives."""
+def _predicted_at(
+    feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
+) -> tuple[int, int] | None:
+    """``(arrive, depart)`` in epoch ms, when the feed says ``call``'s bus reaches and leaves.
+
+    A trip runs every day under one id, so only a prediction for the call's own service day counts:
+    one the feed dates with that day's ``start_date``, or an undated one within
+    :data:`~jarvis.state.timetable.LIVE_SLACK_MS` of the call's scheduled time. A stop the feed
+    gives one time for has it for both.
+    """
+    day = f"{call.day:%Y%m%d}"
     for entity in feed.entity:
         update = entity.trip_update
-        if not entity.HasField("trip_update") or update.trip.trip_id != trip_id:
+        if not entity.HasField("trip_update") or update.trip.trip_id != call.trip_id:
+            continue
+        if update.trip.start_date and update.trip.start_date != day:
             continue
         for one in update.stop_time_update:
-            if one.stop_id != stop_id:
+            arrive, depart = int(one.arrival.time) * 1000, int(one.departure.time) * 1000
+            if one.stop_id != call.stop_id or not (arrive or depart):
                 continue
-            event = one.departure if one.HasField("departure") else one.arrival
-            if event.time:
-                return int(event.time) * 1000
+            if update.trip.start_date or (
+                abs((depart or arrive) - call.depart_ms) <= timetable.LIVE_SLACK_MS
+            ):
+                return arrive or depart, depart or arrive
     return None
 
 
-def live_arrival(feed: gtfs_realtime_pb2.FeedMessage, trip_id: str, stop_id: str) -> int | None:
-    """When the feed says ``trip_id`` reaches ``stop_id`` (epoch ms), else when it leaves."""
-    for entity in feed.entity:
-        update = entity.trip_update
-        if not entity.HasField("trip_update") or update.trip.trip_id != trip_id:
-            continue
-        for one in update.stop_time_update:
-            if one.stop_id != stop_id:
-                continue
-            event = one.arrival if one.HasField("arrival") else one.departure
-            if event.time:
-                return int(event.time) * 1000
-    return None
+def live_departure(feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
+    """When the feed says ``call``'s bus leaves its stop (epoch ms), else when it arrives."""
+    found = _predicted_at(feed, call)
+    return None if found is None else found[1]
+
+
+def live_arrival(feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
+    """When the feed says ``call``'s bus reaches its stop (epoch ms), else when it leaves."""
+    found = _predicted_at(feed, call)
+    return None if found is None else found[0]
 
 
 class BusLive:
@@ -180,11 +190,9 @@ class BusLive:
 
     # --- the realtime feed --------------------------------------------------------------
 
-    def live_at(
-        self, feed: gtfs_realtime_pb2.FeedMessage, trip_id: str, stop_id: str,
-    ) -> int | None:
-        """When the feed says ``trip_id`` leaves ``stop_id`` (epoch ms), None when it is silent."""
-        return live_departure(feed, trip_id, stop_id)
+    def live_at(self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
+        """When the feed says ``call``'s bus leaves its stop (epoch ms), None when it is silent."""
+        return live_departure(feed, call)
 
     def snapshot(self) -> gtfs_realtime_pb2.FeedMessage:
         """The realtime feed, downloaded and parsed once, for lookups to share."""
@@ -208,18 +216,14 @@ class BusLive:
         table = self.table()
         found = table.match_leg(
             route, board, alight, around_ms,
-            None if feed is None else lambda trip, stop: live_departure(feed, trip, stop),
+            None if feed is None else lambda call: live_departure(feed, call),
         )
         if found is None:
             return None
         return timetable.Timed(
             found,
-            None if feed is None else live_departure(
-                feed, found.board.trip_id, found.board.stop_id,
-            ),
-            None if feed is None else live_arrival(
-                feed, found.alight.trip_id, found.alight.stop_id,
-            ),
+            None if feed is None else live_departure(feed, found.board),
+            None if feed is None else live_arrival(feed, found.alight),
         )
 
     def following(
@@ -244,8 +248,8 @@ class BusLive:
             if end is not None:
                 return timetable.Timed(
                     timetable.Match(nxt, end),
-                    None if feed is None else live_departure(feed, nxt.trip_id, nxt.stop_id),
-                    None if feed is None else live_arrival(feed, nxt.trip_id, end.stop_id),
+                    None if feed is None else live_departure(feed, nxt),
+                    None if feed is None else live_arrival(feed, end),
                 )
             run, day = nxt.trip_id, nxt.day
         return None
@@ -269,17 +273,19 @@ class BusLive:
     ) -> tuple[str, int] | None:
         """``(trip_id, live departure ms)`` of the bus on ``route`` at ``stop``, or None.
 
-        With ``trip_id`` (the trip the pin was matched to, ADR 0342) that trip alone is read: a
-        trip the feed has stopped covering gives None. Without one, the trip whose timetable (or
-        live) time is closest to ``around_ms``, and no more than ten minutes from it. ``feed`` is a
-        :meth:`snapshot` shared by several lookups; without it the feed is downloaded for this
-        one. Network and file errors propagate.
+        With ``trip_id`` (the trip the pin was matched to, ADR 0342) that trip alone is read, on
+        the service day whose time is nearest ``around_ms``: a trip the feed has stopped covering
+        gives None. Without one, the trip whose timetable (or live) time is closest to
+        ``around_ms``, and no more than ten minutes from it. ``feed`` is a :meth:`snapshot` shared
+        by several lookups; without it the feed is downloaded for this one. Network and file
+        errors propagate.
         """
         feed = feed if feed is not None else self.snapshot()
         if trip_id is not None:
             table = self.table()
             for near, _ in table.stops_near(stop, STOP_RADIUS_M):
-                if (at := live_departure(feed, trip_id, near.stop_id)) is not None:
+                call = table.call_near(trip_id, near.stop_id, around_ms)
+                if call is not None and (at := live_departure(feed, call)) is not None:
                     return trip_id, at
             return None
         return _closest(self._stop_times(route, stop, around_ms, feed))
