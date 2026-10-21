@@ -15,7 +15,6 @@ struct TLTopView: View {
     @Binding var byPlace: Bool                  // the bar is drawn from where he was and not from what he was doing: the switch at its right end
     var loading = false                         // the day is being asked for: its bar is an empty track with a soft light going along it
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @GestureState private var touching = false                                       // a finger is on the bar
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
     @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
@@ -61,7 +60,7 @@ struct TLTopView: View {
                         .id(byPlace).transition(barSwap)          // the other drawing of the day comes in over the one that goes
                 }
                 .animation(holding ? .easeOut(duration: 0.08) : .easeInOut(duration: 0.15), value: holding)       // the hairline and its time come and go with the finger
-                .gesture(scrubGesture(m, bar))
+                .modifier(TLBarScrub(span: m.span, changed: { t, x in scrubbed(t, x, m, bar) }, ended: lifted))
                 .accessibilityElement().accessibilityLabel("一天的概览")
                 .accessibilityHint("拖动可以翻到那个时间，上下滑动一段一段地看")
                 .accessibilityValue(tl.scrub != nil ? said.map(spoken) ?? "" : "")
@@ -93,11 +92,6 @@ struct TLTopView: View {
         .onChange(of: tl.tidied) { _, s in if s != nil { holdGhost() } }
         .onChange(of: tl.reply?.serial) { _, _ in releaseGhost() }
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
-        .onChange(of: touching) { _, on in
-            guard !on else { return }
-            lastStretch = nil
-            withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
-        }
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? TLMotion.reducedFade : 0.3) : 0.06), value: ui.tlHome)
@@ -125,23 +119,7 @@ struct TLTopView: View {
     }
 
     /// the minute under his finger in words, where her sentence is: the stretch with its hours and length, under it what else was going on
-    private func readout(_ r: TLReadout) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 7) {
-                Circle().fill((r.hue ?? RGB(196, 204, 238)).color(r.hue == nil ? 0 : r.strong ? 1 : 0.5)).frame(width: 8, height: 8)
-                    .overlay(Circle().stroke(ink.opacity(r.hue == nil ? 0.4 : 0), lineWidth: 1))
-                HStack(spacing: 0) {
-                    Text(r.name).lineLimit(1)
-                    Text(r.tail).fixedSize().layoutPriority(1)
-                }
-                .font(.system(size: 15, weight: .semibold)).foregroundStyle(ink)
-            }
-            .frame(height: 19, alignment: .leading)
-            Text(r.second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
-        }
-        .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
-        .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
-    }
+    private func readout(_ r: TLReadout) -> some View { TLReadoutLines(r: r, second: r.second) }
 
     /// the minute under VoiceOver's step as it is said: the stretch, and what else was going on
     private func spoken(_ r: TLReadout) -> String { r.head + "，" + r.second }
@@ -167,17 +145,17 @@ struct TLTopView: View {
     }
 
     /// a finger on the bar: the list follows it, with a tick of the phone for each stretch of the bar (`bar`, the day as the bar draws it) it crosses
-    private func scrubGesture(_ m: DayTimelineModel, _ bar: DayTimelineModel) -> some Gesture {
-        let lo = m.span.lowerBound, w = m.span.upperBound - lo
-        return DragGesture(minimumDistance: 0)
-            .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away (a call, the app leaving), which lets the readout go
-            .onChanged { v in
-                let t = lo + clamp(v.location.x / TLLayout.barW, 0, 1) * w
-                tl.follow(t, in: m)
-                tl.finger = TLGaze.bar(x: v.location.x)
-                let s = bar.stretch(at: t)
-                if lastStretch != s { lastStretch = s; Haptic.selection() }
-            }
+    private func scrubbed(_ t: Double, _ x: Double, _ m: DayTimelineModel, _ bar: DayTimelineModel) {
+        tl.follow(t, in: m)
+        tl.finger = TLGaze.bar(x: x)
+        let s = bar.stretch(at: t)
+        if lastStretch != s { lastStretch = s; Haptic.selection() }
+    }
+
+    /// the finger lifted, or was taken away
+    private func lifted() {
+        lastStretch = nil
+        withAnimation(.easeOut(duration: 0.2)) { tl.follow(nil, in: nil) }
     }
 
     /// The other drawing of the bar arrives faster than the one it replaces leaves (140 ms, 280 ms), so that the two never both stand half faded and the bar dips in between: the new one is
@@ -188,6 +166,50 @@ struct TLTopView: View {
 
     /// another day's bar comes in from the way time goes, a hair, as the list does
     private var barTransition: AnyTransition { TLMotion.page(slide: TLMotion.barSlide * Double(tl.slide), reduce: reduce) }
+}
+
+/// A finger on the day bar: the minute under it (the bar is `TLLayout.barW` wide and covers `span`) on every move, and a call when it lifts or is taken away (a call, the app leaving).
+/// The home timeline and the footprint page each give it what they do with the minute.
+struct TLBarScrub: ViewModifier {
+    let span: ClosedRange<Double>
+    let changed: (_ minute: Double, _ x: Double) -> Void
+    let ended: () -> Void
+    @GestureState private var touching = false
+
+    /// the minute at `x` points from the bar's left edge, kept on the bar
+    static func minute(x: Double, span: ClosedRange<Double>) -> Double { span.lowerBound + clamp(x / TLLayout.barW, 0, 1) * (span.upperBound - span.lowerBound) }
+
+    func body(content: Content) -> some View {
+        content
+            .gesture(DragGesture(minimumDistance: 0)
+                .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away, which lets the readout go
+                .onChanged { v in changed(Self.minute(x: v.location.x, span: span), v.location.x) })
+            .onChange(of: touching) { _, on in if !on { ended() } }
+    }
+}
+
+/// The two lines that say the minute under a finger: the stretch with its hours and length (the name gives way when it is too long), and a line of what else. They follow the finger at once.
+struct TLReadoutLines: View {
+    let r: TLReadout
+    let second: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 7) {
+                Circle().fill((r.hue ?? RGB(196, 204, 238)).color(r.hue == nil ? 0 : r.strong ? 1 : 0.5)).frame(width: 8, height: 8)
+                    .overlay(Circle().stroke(ink.opacity(r.hue == nil ? 0.4 : 0), lineWidth: 1))
+                HStack(spacing: 0) {
+                    Text(r.name).lineLimit(1)
+                    Text(r.tail).fixedSize().layoutPriority(1)
+                }
+                .font(.system(size: 15, weight: .semibold)).foregroundStyle(ink)
+            }
+            .frame(height: 19, alignment: .leading)
+            Text(second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
+        }
+        .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
+        .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
+    }
 }
 
 /// 在干嘛 | 在哪: what the day bar is drawn from, a small switch in the margin at the bar's right end. 干嘛 is the bar of what he was doing (the default), 在哪 the bar of the places he stayed
@@ -272,19 +294,30 @@ extension StarUI {
 
 // MARK: - the day's numbers
 
+/// a number of a page of its own (the footprint's distance and top speed) in the look of the day's numbers; nothing is brought forward by pressing it
+struct TLPlainChip: Equatable, Identifiable {
+    var symbol: String
+    var color: RGB
+    var word: String
+    var value: String
+    var id: String { word }
+}
+
 /// The row of the day's numbers under the hours: a chip for each, pressing one brings that kind forward (and pressing it again lets it go). Sideways when there are more than fit.
 struct TLChips: View, Equatable {
     let chips: [TLChip]
     let health: [TLBody]                // what Health reported, after them
     let active: TLLens?
+    var extra: [TLPlainChip] = []       // a page's own numbers, after the chips and before what Health reported
     let toggle: (TLLens) -> Void
 
-    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active }
+    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(chips) { c in chip(c) }
+                ForEach(extra) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
                 if !health.isEmpty { TLBodyValues(values: health).padding(.leading, chips.isEmpty ? 0 : 8) }        // after the numbers, quiet
             }
             .padding(.horizontal, 30)
@@ -298,21 +331,23 @@ struct TLChips: View, Equatable {
 
     private func chip(_ c: TLChip) -> some View {
         let on = active == c.lens
-        return Button { toggle(c.lens) } label: {
-            HStack(spacing: 5) {
-                Image(systemName: c.lens.symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(c.lens.color.color).frame(width: 12)
-                Text(c.word).font(.system(size: 11.5)).foregroundStyle(ink.opacity(0.86))
-                Text(c.value).font(AT.mono(11.5)).foregroundStyle(ink)
-            }
-            .fixedSize()
-            .padding(.horizontal, 9).frame(height: TLLayout.chipsH)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(on ? 0.13 : 0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink.opacity(on ? 0.6 : 0), lineWidth: 1))
-            .animation(.easeOut(duration: 0.15), value: on)
-        }
+        return Button { toggle(c.lens) } label: { face(c.lens.symbol, c.lens.color, c.word, c.value, on: on) }
         .buttonStyle(PressScale())
         .accessibilityLabel(c.word + " " + c.value)
         .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    private func face(_ symbol: String, _ color: RGB, _ word: String, _ value: String, on: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(color.color).frame(width: 12)
+            Text(word).font(.system(size: 11.5)).foregroundStyle(ink.opacity(0.86))
+            Text(value).font(AT.mono(11.5)).foregroundStyle(ink)
+        }
+        .fixedSize()
+        .padding(.horizontal, 9).frame(height: TLLayout.chipsH)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(on ? 0.13 : 0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ink.opacity(on ? 0.6 : 0), lineWidth: 1))
+        .animation(.easeOut(duration: 0.15), value: on)
     }
 }
 
