@@ -31,7 +31,8 @@ from fastapi.testclient import TestClient
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime import _locate_places, _places_block
+from jarvis.runtime.bootstrap.day import _places_block
+from jarvis.runtime.bootstrap.places import _locate_places
 from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.locate import HerePolicy

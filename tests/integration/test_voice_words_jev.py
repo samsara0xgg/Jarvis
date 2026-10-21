@@ -16,7 +16,7 @@ import pytest
 
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute
 from jarvis.decision.voice_words import VoiceWords, words_state
-from jarvis.runtime import _voice_words
+from jarvis.runtime.bootstrap.jev import _voice_words
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.surface import voice_session
 from tests.support.barge_in import LONG, SHORT, BargeInRig

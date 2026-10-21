@@ -24,7 +24,7 @@ from jarvis.execution.mcp_oauth import _Listener
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool
-from jarvis.runtime import mcp_login
+from jarvis.runtime.commands import mcp_login
 from jarvis.runtime.config import load_runtime_config
 from jarvis.shared import CallerPrincipal
 from tests.support import mcp as mcp_support

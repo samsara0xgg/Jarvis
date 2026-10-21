@@ -14,7 +14,7 @@ import pytest
 
 from jarvis.execution import transit_tool
 from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime import _here_location
+from jarvis.runtime.bootstrap.places import _here_location
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.here import HereUnavailable
 from jarvis.state.event_log import iter_events_of_types, open_event_log

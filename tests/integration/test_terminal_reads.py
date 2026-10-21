@@ -25,7 +25,7 @@ import pytest
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime import _reads_connected
+from jarvis.runtime.bootstrap.day import _reads_connected
 from jarvis.runtime.daily_report import DailyReportService, DailySchedule
 from jarvis.runtime.terminal import _Watched
 from jarvis.runtime.work_state import WorkStateService

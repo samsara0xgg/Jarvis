@@ -81,6 +81,20 @@ def write_setting(settings_path: Path, key: str, value: str) -> None:
     staged.replace(settings_path)
 
 
+def save_language(settings_path: Path, code: str) -> lang.Language:
+    """Switch every fixed sentence to ``code`` now and keep it in ``settings.yaml``.
+
+    Only the top-level ``language:`` line changes (or is appended); the rest
+    of the user's file, comments included, stays as written.
+    """
+    chosen = lang.normalize(code)
+    if chosen is None:
+        msg = f"language must be one of {', '.join(lang.LANGUAGES)}"
+        raise ValueError(msg)
+    write_setting(settings_path, "language", chosen)
+    return lang.set_language(chosen)
+
+
 def _clean_name(value: object) -> str:
     """A name as typed: one line, 1 to 40 characters."""
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > _MAX_NAME:

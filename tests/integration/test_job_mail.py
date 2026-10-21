@@ -32,9 +32,10 @@ from jarvis.decision.attention import (
     rule_judge_v1,
 )
 from jarvis.execution.tools import ToolError
-from jarvis.runtime import _job_mail, audio_output
+from jarvis.runtime import audio_output
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.audio_output import TerminalOutput
+from jarvis.runtime.bootstrap.intakes import _job_mail
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.conversation_lines import say_job_line
 from jarvis.runtime.daemon.routes import job_mail_deps

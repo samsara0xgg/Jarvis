@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import save_language
+from jarvis.runtime.setup import save_language
 from jarvis.shared import lang
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app

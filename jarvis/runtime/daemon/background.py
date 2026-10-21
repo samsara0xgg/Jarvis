@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from jarvis.deployment.launchd import logs_dir
-from jarvis.runtime import _jev_log
+from jarvis.runtime.bootstrap.jev import _jev_log
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.daemon.commentary import commentary_watcher
 from jarvis.runtime.daemon.conversation_lines import plan_hooks, say_job_line, say_reminder

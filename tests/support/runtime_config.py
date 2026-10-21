@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from jarvis.deployment import bootstrap_runtime
-from jarvis.runtime import bootstrap_runtime_app, load_runtime_env_and_trace
+from jarvis.runtime.bootstrap.app import bootstrap_runtime_app
+from jarvis.runtime.bootstrap.core import load_runtime_env_and_trace
 from jarvis.runtime.config import RuntimeConfig, load_runtime_config, parse_runtime_config
 
 if TYPE_CHECKING:

@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from jarvis import runtime as jarvis_runtime
 from jarvis.deployment import RuntimePaths
+from jarvis.runtime.bootstrap.core import load_runtime_env_and_trace
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
@@ -88,7 +88,7 @@ def test_runtime_refuses_event_log_as_trace_destination(
         RuntimeBootstrapError,
         match="must not target the production Event Log",
     ):
-        jarvis_runtime._configure_realtime_trace_export(paths)  # noqa: SLF001
+        load_runtime_env_and_trace(paths)
     assert not event_log.exists()
 
 

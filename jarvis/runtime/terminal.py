@@ -65,12 +65,9 @@ from jarvis.execution.tools import (
     build_default_registry,
     make_screen_capture,
 )
-from jarvis.runtime import (
-    _audio_devices,
-    _default_audio_device,
-    _install_open_path,
-    audio_output,
-)
+from jarvis.runtime import audio_output
+from jarvis.runtime.bootstrap.catalog import _install_open_path
+from jarvis.runtime.bootstrap.devices import _audio_devices, _default_audio_device
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.devices import (
     MIC_RETRY_S,

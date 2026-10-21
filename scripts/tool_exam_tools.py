@@ -783,7 +783,7 @@ def sandbox(
     real_root: Path | None = None,
 ) -> Iterator[Box]:
     """Boot the runtime on a copy of his data at the item's moment, with the providers recorded."""
-    import jarvis.runtime as runtime_module  # noqa: PLC0415
+    from jarvis.runtime.bootstrap import app as boot_module  # noqa: PLC0415
 
     tmp = Path(tempfile.mkdtemp(prefix="tool-exam-"))
     root = tmp / "root"
@@ -798,7 +798,7 @@ def sandbox(
         with (
             _environment(item, tmp, recording, live=live),
             time_machine.travel(moment, tick=False) as clock,
-            patch.object(runtime_module, "_start_locating_places", lambda *_: None),
+            patch.object(boot_module, "_start_locating_places", lambda *_: None),
         ):
             runtime = boot_runtime(root)
             if runtime.runtime_paths.root != root.resolve() and runtime.runtime_paths.root != root:

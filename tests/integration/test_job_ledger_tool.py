@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo
 
 from jarvis.execution.job_ledger_tool import MAX_APPLICATIONS, build_job_ledger_tool
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry
-from jarvis.runtime import _job_mail, _register_job_ledger
+from jarvis.runtime.bootstrap.catalog import _register_job_ledger
+from jarvis.runtime.bootstrap.intakes import _job_mail
 from jarvis.shared import CallerPrincipal
 from tests.support import job_mail as job_mail_support
 from tests.support.clock import FakeClock

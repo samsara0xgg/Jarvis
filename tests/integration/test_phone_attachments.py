@@ -40,7 +40,8 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.deployment import bootstrap_runtime, data
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _shares_line
+from jarvis.runtime import JarvisRuntime
+from jarvis.runtime.bootstrap.day import _shares_line
 from jarvis.runtime.daemon import retention, routes
 from jarvis.runtime.turn.context import live_lines
 from jarvis.runtime.turn.finish import record_words

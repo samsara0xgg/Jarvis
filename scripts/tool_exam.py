@@ -86,7 +86,7 @@ from jarvis.decision.reaction_markup import split_claims
 from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call
 from jarvis.deployment import RuntimePaths, load_env_file
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
-from jarvis.runtime import register_catalog
+from jarvis.runtime.bootstrap.catalog import register_catalog
 from jarvis.runtime.config import WorkersSettings
 from jarvis.runtime.dashboard import ViewState
 from jarvis.runtime.plugin_catalog import read_package

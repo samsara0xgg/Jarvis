@@ -329,7 +329,7 @@ def test_the_dataset_is_on_unless_the_config_turns_it_off(tmp_path: Path) -> Non
     """``jev_log`` ships on, under the runtime root; ``enabled: false`` builds no writer."""
     import yaml  # noqa: PLC0415 — only this test reads the file
 
-    from jarvis.runtime import _jev_log  # noqa: PLC0415
+    from jarvis.runtime.bootstrap.jev import _jev_log  # noqa: PLC0415
 
     config = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
     assert config["jev_log"] == {"enabled": True}
@@ -457,7 +457,7 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     """The repo ships it off; an enabled block builds the route, a bad one stops boot."""
     import yaml  # noqa: PLC0415 — only this test reads the file
 
-    from jarvis.runtime import _surrogate_route  # noqa: PLC0415
+    from jarvis.runtime.bootstrap.jev import _surrogate_route  # noqa: PLC0415
     from jarvis.runtime.config import RuntimeBootstrapError  # noqa: PLC0415
 
     path = repo_root() / "config" / "jarvis.yaml"

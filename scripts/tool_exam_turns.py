@@ -60,7 +60,7 @@ import yaml
 
 from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.execution.tools import Tool
-from jarvis.runtime import _all_mcp_servers, _plugins
+from jarvis.runtime.commands import _all_mcp_servers, _plugins
 from jarvis.runtime.plugin_catalog import credential_fields, read_package
 from jarvis.runtime.turn.drive import drive_turn
 from jarvis.surface.cli import emit_surface_user_intent

@@ -12,7 +12,7 @@ import pytest
 
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
-from jarvis.runtime import _build_vision_client
+from jarvis.runtime.bootstrap.vision import _build_vision_client
 from jarvis.state.event_log import open_event_log
 
 if TYPE_CHECKING:

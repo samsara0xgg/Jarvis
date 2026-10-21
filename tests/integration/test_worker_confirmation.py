@@ -25,7 +25,7 @@ from jarvis.decision import (
 from jarvis.decision.confirm_grammar import load_confirm_grammar
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime import _register_workers
+from jarvis.runtime.bootstrap.catalog import _register_workers
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.model import ScriptedModel, tool_call

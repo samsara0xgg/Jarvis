@@ -20,7 +20,7 @@ import yaml
 
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.tools import Tool, ToolError
-from jarvis.runtime import _claude_daily
+from jarvis.runtime.bootstrap.intakes import _claude_daily
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state import imports

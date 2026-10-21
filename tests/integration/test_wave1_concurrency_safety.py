@@ -20,7 +20,7 @@ from jarvis.decision import DecideContext, decide
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import VisionCallError, _LLMVisionClient
+from jarvis.runtime.bootstrap.vision import VisionCallError, _LLMVisionClient
 from jarvis.shared.realtime import (
     AlreadyConsumed,
     AlreadyTerminal,

@@ -51,16 +51,17 @@ import uuid
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import patch
 
 import yaml
 
 import jarvis
-import jarvis.runtime as runtime_module
 from jarvis.decision import DecideContext, _tool_menu, decide
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.deployment import load_env_file
 from jarvis.execution.tools import Tool, _device_proxy, release_turn_actions
+from jarvis.runtime.bootstrap import app as boot_module
 from jarvis.runtime.plugin_catalog import PluginPackage
 from jarvis.runtime.plugin_connections import _Active
 from jarvis.runtime.plugins import Plugins
@@ -234,7 +235,7 @@ def _boot(work: Path, recorded: Path, pushes: list[dict[str, str | None]]) -> Ja
         raise SystemExit(msg)
     os.environ["JARVIS_RUNTIME_ROOT"] = str(work)
     # No geocoding at boot: the places in the copy are located already.
-    runtime_module._start_locating_places = lambda *_: None  # noqa: SLF001
+    patch.object(boot_module, "_start_locating_places", lambda *_: None).start()  # for the process
     runtime = boot_runtime(work)
     if runtime.runtime_paths.root != work or runtime.memory is None or not (
         runtime.memory.db_path.is_relative_to(work)

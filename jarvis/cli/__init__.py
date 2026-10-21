@@ -50,14 +50,10 @@ from jarvis.deployment import (
 )
 from jarvis.deployment.models import default_meaning_dir, fetch_meaning_model
 from jarvis.deployment.process_lock import ProcessLockHeld
-from jarvis.runtime import (
-    bootstrap_runtime_app,
-    import_exports,
-    load_runtime_env_and_trace,
-    mcp_login,
-    open_voiceprints,
-    parse_response_channels,
-)
+from jarvis.runtime import parse_response_channels
+from jarvis.runtime.bootstrap.app import bootstrap_runtime_app
+from jarvis.runtime.bootstrap.core import load_runtime_env_and_trace
+from jarvis.runtime.commands import import_exports, mcp_login, open_voiceprints
 from jarvis.runtime.config import (
     RuntimeBootstrapError,
     RuntimeConfig,

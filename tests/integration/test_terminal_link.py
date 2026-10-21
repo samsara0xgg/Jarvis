@@ -38,7 +38,8 @@ from jarvis.execution.tools import (
     build_default_registry,
     make_screen_capture,
 )
-from jarvis.runtime import _sound_output, audio_output
+from jarvis.runtime import audio_output
+from jarvis.runtime.bootstrap.devices import _sound_output
 from jarvis.runtime.night_run import NightRun, NightSettings
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.terminal import _declared, make_executor

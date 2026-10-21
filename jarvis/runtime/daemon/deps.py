@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 from jarvis.deployment import inherent_v2_token_matches, models
 from jarvis.deployment.launchd import supervised
-from jarvis.runtime import JarvisRuntime, save_language
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import section_caps
 from jarvis.runtime.daemon import submissions
@@ -52,7 +51,7 @@ from jarvis.runtime.daemon.routes import (
 from jarvis.runtime.doing_answers import DoingAnswers
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.memory_page import MemoryPage
-from jarvis.runtime.setup import Setup
+from jarvis.runtime.setup import Setup, save_language
 from jarvis.runtime.turn.cancel import make_response_cancel_callable, make_turn_cancel_callable
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.imports import IMPORTS_DIRNAME
@@ -69,6 +68,7 @@ from jarvis.surface.usage_observer import (
 )
 
 if TYPE_CHECKING:
+    from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.daemon.voice_boot import Voice
     from jarvis.runtime.daemon.voice_wiring import VoiceKnobs
     from jarvis.runtime.spend_cap import SpendCapSettings

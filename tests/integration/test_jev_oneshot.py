@@ -21,7 +21,7 @@ import yaml
 from jarvis.decision import decide
 from jarvis.decision.jev_oneshot import JevOneShot, oneshot_state
 from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute, offered
-from jarvis.runtime import _event_emitter, _jev_oneshot
+from jarvis.runtime.bootstrap.jev import _event_emitter, _jev_oneshot
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state.event_log import (
     EventTypeRegistry,
