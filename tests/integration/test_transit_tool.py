@@ -532,6 +532,29 @@ def test_the_answer_puts_up_one_bus_card_that_a_newer_answer_replaces(
     assert slot().clarification_id != first.clarification_id
 
 
+def test_an_answer_for_another_day_leaves_nothing_to_pin_until_one_for_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0343: tomorrow's times are said, not offered; `pin` says so and takes no older list."""
+
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        tomorrow = body["departureTime"] > "2026-10-07"  # 17:00 on the 7th is 00:00Z on the 8th
+        return routes_with(_placed(bus_route("26", "41:12" if tomorrow else "17:12")))
+
+    _serve(monkeypatch, answer=answer)
+    offers = TransitOffers()
+    _call({"to": "home"}, here=fix_with(), offers=offers)
+    out = _call({"to": "home", "at": "2026-10-07 17:00"}, here=fix_with(), offers=offers)
+    assert out["options"][0]["legs"][0]["departs"] == "tomorrow (Wed), 5:12 pm"
+    with pytest.raises(ToolError, match="The last list was for tomorrow") as caught:
+        _call({"pin": [1]}, offers=offers)
+    assert caught.value.code == "no_plan"
+    assert "cannot be pinned" in str(caught.value)
+    assert list(iter_events_of_types(_LOG["conn"], ("departure.pinned",))) == []
+    _call({"to": "home"}, here=fix_with(), offers=offers)  # today's list is pinnable again
+    assert _call({"pin": [1]}, offers=offers)["pinned"] is True
+
+
 def _times(seen: list[Any]) -> list[str | None]:
     """The departureTime of each TRANSIT request made, in order."""
     bodies = [json.loads(s[0].data) for s in seen]
