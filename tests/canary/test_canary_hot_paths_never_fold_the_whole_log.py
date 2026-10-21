@@ -26,9 +26,16 @@ _WHOLE_LOG_READS: Final[frozenset[str]] = frozenset(
     {"rebuild_projections", "iter_events"},
 )
 
+# The daemon's per-turn and per-audio code lives here, one module per concern.
+_DAEMON_MODULES: Final[tuple[str, ...]] = tuple(
+    path.relative_to(repo_root()).as_posix()
+    for path in sorted((repo_root() / "jarvis/runtime/daemon").glob("*.py"))
+)
+
 _HOT_PATH_MODULES: Final[tuple[str, ...]] = (
     "jarvis/runtime/__init__.py",
     "jarvis/runtime/inherent_loop.py",
+    *_DAEMON_MODULES,
     "jarvis/runtime/decision_state.py",
     "jarvis/decision/__init__.py",
     "jarvis/decision/packet.py",
@@ -58,6 +65,7 @@ def _called_names(source_path: str) -> Counter[str]:
 
 def test_hot_path_modules_do_not_fold_the_whole_log() -> None:
     """Only the allowlisted fallback call remains, with exactly the allowed count."""
+    assert "jarvis/runtime/daemon/intent_pump.py" in _HOT_PATH_MODULES
     found = {
         (module, name): count
         for module in _HOT_PATH_MODULES
