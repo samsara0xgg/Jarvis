@@ -14,6 +14,8 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+import anthropic  # noqa: F401 - the first request of a process imports the SDKs; not in a timing
+import openai  # noqa: F401
 import pytest
 
 from jarvis.decision.surrogate_route import SurrogateRoute
