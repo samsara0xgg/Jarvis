@@ -1,1 +1,1 @@
-"""The daemon's code, one module per concern."""
+"""The daemon's code, one module per concern (ADR 0339)."""
