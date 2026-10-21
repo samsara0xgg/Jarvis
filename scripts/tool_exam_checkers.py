@@ -571,21 +571,27 @@ def weather_rest_of_today(
     recording: Recording | None,
     out: Mapping[str, Any],
 ) -> list[str]:
-    """The result carries every hour left today, each with its recorded chance of rain.
+    """The result carries every hour left today whole, and keeps the morning apart from them.
 
     The whole day's chance includes the morning that has passed, so it is not the answer: the hours
-    from now to midnight are, with the peak among them.
+    from now to midnight are, each with its recorded chance and the peak among them as
+    ``rest_of_today``; the rain since midnight is ``earlier_today``, added up from the same rows.
     """
     zone, now = ZoneInfo(item.get("zone") or "UTC"), _now(item)
+    this_hour = now.replace(minute=0, second=0, microsecond=0)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     expected: dict[str, int] = {}
+    earlier: dict[datetime, float] = {}
     for body in _bodies(recording, "weatherkit.apple.com"):
         for row in body.get("forecastHourly", {}).get("hours", ()):
             start = datetime.fromisoformat(row["forecastStart"]).astimezone(zone)
-            if now.replace(minute=0, second=0, microsecond=0) <= start < midnight:
-                expected[f"{start:%Y-%m-%d %H:%M}"] = math.floor(
+            if this_hour <= start < midnight:
+                expected[f"today {start:%H:%M}"] = math.floor(
                     row["precipitationChance"] * 100 + 0.5
                 )
+            elif today <= start < this_hour:
+                earlier[start] = row.get("precipitationAmount", 0)
     if not expected:
         return ["the recording holds no hour left today"]
     got = {r["at"]: r.get("rain_chance_pct") for r in out.get("hourly") or ()}
@@ -595,6 +601,13 @@ def weather_rest_of_today(
         for at, pct in expected.items()
         if at in got and got[at] != pct
     ]
+    peak = (out.get("rest_of_today") or {}).get("max_chance_pct")
+    if peak != (top := max(expected.values())):
+        problems.append(f"the peak of the hours left is {top}, the result: {peak}")
+    fell = round(sum(earlier.values()), 1)
+    said = (out.get("earlier_today") or {}).get("rain_mm", 0)
+    if abs(said - fell) > 0.05:  # noqa: PLR2004 - a rounding step
+        problems.append(f"{fell} mm fell before now, the result says {said}")
     return problems
 
 

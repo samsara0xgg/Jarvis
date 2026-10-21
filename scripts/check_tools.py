@@ -80,7 +80,6 @@ PRE_STANDARD: dict[str, frozenset[str]] = {
         "set_voice": "long the-user undescribed",
         "show_on_dashboard": "long undescribed",
         "start_night_run": "the-user",
-        "weather": "long the-user",
     }.items()
 }
 

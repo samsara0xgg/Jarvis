@@ -26,8 +26,9 @@ from jarvis.execution.speakable import resolve_when
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK, HOURLY_MAX_DAYS
 from jarvis.runtime.daily_report import PLAN_SERVER
+from jarvis.runtime.weather_day import fit
 from jarvis.runtime.weather_place import ALTERNATIVES, Spot, country_of, get_json, locate
-from jarvis.runtime.weatherkit import NOT_SET_UP, home_line
+from jarvis.runtime.weatherkit import NOT_SET_UP, day_rows, home_line
 from jarvis.runtime.weatherkit import report as wk_report
 from jarvis.shared import lang
 from jarvis.state.daily_contract import DailyError
@@ -283,7 +284,7 @@ def weather_lookup(
                 result["air_quality"] = {
                     "unavailable": "not read for these days; its forecast reaches only a few days",
                 }
-        return result
+        return fit(result)
 
     return lookup
 
@@ -349,12 +350,8 @@ class Home:
             float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
             country=place.get("country_code") or country_of(self._zone_name), first=day, last=day,
         )
-        answer = wk_report(
-            body, str(place.get("name") or "home"), self._zone_name, first=day, last=day,
-            whole=False, hourly=False, now=kit.clock(), alerts_asked=False,
-        )
-        row: dict[str, Any] = answer["days"][0]
-        return row
+        today = datetime.fromtimestamp(kit.clock(), self._zone).date()
+        return day_rows(body, ZoneInfo(self._zone_name), first=day, last=day, today=today)[0]
 
     def day_weather_card(self, day: date) -> dict[str, Any] | None:
         """The weather of ``day`` for the day line.
