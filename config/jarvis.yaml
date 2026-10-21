@@ -1112,8 +1112,8 @@ tools:
 confirmation:
   ttl_ms: 600000
 
-# ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has all four
-# adoption switches on (transaction, terminal CAS, confirmation outbox, exactly-once cost).
+# ADR-0006/0008 Wave 1 safety primitives: concurrency_safety below has both
+# adoption switches on (confirmation outbox, exactly-once cost).
 realtime:
   enabled: true
   # ADR 0151.  Apple SoundAnalysis listens to the mic audio the voice session already
@@ -1444,8 +1444,7 @@ realtime:
     input_backlog_s: 0.5
     input_chunk_ms: 100
   # The speech path: the one media actor that plays every answer.  It needs
-  # realtime.enabled plus the transactional append and lifecycle terminal CAS
-  # switches above; without them, or when this block is invalid, the boot is
+  # realtime.enabled; without it, or when this block is invalid, the boot is
   # text-only.
   streaming_output:
     canonical_sample_rate_hz: 48000
@@ -1495,8 +1494,8 @@ realtime:
     # helper streams back the blocks it renders as the canceller's far end.
     native_player: false
   # ADR-0006 Step 5. The one input owner: it listens for the wake word and
-  # for conversation. It additionally requires the Wave-1
-  # transactional/terminal switches above and a live Wave-2 StreamingTTSPipeline.
+  # for conversation. It additionally requires a live Wave-2 streaming media
+  # actor.
   # Failed validation, or a failed or uncertain device open, keeps only text and
   # whole-WAV PTT upload for that boot, so no second input owner can appear.
   # Off, the boot listens to nothing.
