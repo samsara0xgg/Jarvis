@@ -187,7 +187,7 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         pricing_path=config.pricing_path,
         account_cost=True,
     )
-    rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
+    rides = Rides(paths.event_log, bus_live, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
         None if core.phone_events is None
         else _locator(config.locate, core.locate_waits, clock)

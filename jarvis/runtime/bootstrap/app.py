@@ -234,7 +234,7 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
         leg_planner=None if not features.maps_key else partial(
             build_leg_planner, features.maps_key, features.kept_places,
             kept=partial(place_state.read_kept, memory.db_path),
-            cap_usd=config.maps_monthly_usd,
+            cap_usd=config.maps_monthly_usd, bus_live=features.bus_live,
         ),
         voice_words=_voice_words(config.jev.voice_words, clock, features.jev_log),
         oneshot=_jev_oneshot(

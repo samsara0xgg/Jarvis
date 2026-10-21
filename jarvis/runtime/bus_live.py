@@ -180,6 +180,12 @@ class BusLive:
 
     # --- the realtime feed --------------------------------------------------------------
 
+    def live_at(
+        self, feed: gtfs_realtime_pb2.FeedMessage, trip_id: str, stop_id: str,
+    ) -> int | None:
+        """When the feed says ``trip_id`` leaves ``stop_id`` (epoch ms), None when it is silent."""
+        return live_departure(feed, trip_id, stop_id)
+
     def snapshot(self) -> gtfs_realtime_pb2.FeedMessage:
         """The realtime feed, downloaded and parsed once, for lookups to share."""
         feed = gtfs_realtime_pb2.FeedMessage()
@@ -337,6 +343,10 @@ class BusLive:
         if self._table is None:
             return None
         return self._table.stop_name(stop_id) or None
+
+    def headsign(self, trip_id: str) -> str:
+        """Where a trip is going, from the timetable; empty when it has none. Errors propagate."""
+        return self.table().headsign_of(trip_id)
 
     def trip_stops(self, trip_id: str, service_date: str | None = None) -> list[StopTime]:
         """The stops of a trip in order, with their scheduled times on ``service_date``.

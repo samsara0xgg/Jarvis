@@ -163,7 +163,7 @@ def route_day(
         if item.route is None and not same:
             origin = previous or "home"
             try:
-                answer = plan_leg(origin, item.place, day=day.isoformat(), arrive_by=item.start)
+                answer = plan_leg(origin, item.place, arrive_by=f"{day.isoformat()} {item.start}")
                 done[n] = replace(item, route=_route(origin, answer))
             except Exception as exc:  # noqa: BLE001 - a plan without a leg beats no plan.
                 LOGGER.info("plan: no leg to %s: %s: %s", item.title, type(exc).__name__, exc)
@@ -436,7 +436,7 @@ class PlanWatch:
                 with self._open_leg(f"plan-{run.day}-{one.key}") as plan_leg:
                     if plan_leg is not None:
                         answer = plan_leg(
-                            origin, item.place, day=run.day.isoformat(), arrive_by=item.start,
+                            origin, item.place, arrive_by=f"{run.day.isoformat()} {item.start}",
                         )
                         leg_now = _route(origin, answer)
             except Exception as exc:  # noqa: BLE001 - she is asked with the old leg alone.

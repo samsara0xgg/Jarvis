@@ -30,7 +30,6 @@ from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import device_tools
 from jarvis.runtime.bootstrap.day import _highlight_marks, _wire_plan_reader
 from jarvis.runtime.bootstrap.intakes import _job_mail, _mail_reply
-from jarvis.runtime.bootstrap.places import _live_departure
 from jarvis.runtime.config import Role, RuntimeBootstrapError, WebToolsSettings, WorkersSettings
 from jarvis.runtime.daily_report import DailyReportService, past_day_answer
 from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewState
@@ -379,7 +378,7 @@ def serve_tools(
         transit_offers=features.transit_offers,
         clock=clock,
         here=features.here,
-        bus_live=_live_departure(features.bus_live),
+        bus_live=features.bus_live,
         ride_control=features.rides.control(),
         highlight_marker=_highlight_marks(config, memory, paths, device).mark,
         plan_day_ends=config.plan_day_ends,

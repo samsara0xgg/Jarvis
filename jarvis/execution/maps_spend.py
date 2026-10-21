@@ -1,9 +1,10 @@
-"""ADR 0283: what the Google map calls cost, counted per request, and the monthly stop.
+"""ADR 0283, 0347: what the Google map calls cost, counted per request, and the monthly stop.
 
-Every paid request (Places and Routes) is priced from :data:`PRICE_USD` and recorded as one
-``maps.spend_recorded`` row per SKU, so the month's spend is a sum over the event log and survives
-a restart. (Not ``cost.recorded``: only L3 emits that, canary ``cost_recorded_l3_only``.) Near
-:data:`STOP_AT` of the cap a paid call is refused with a plain reason she can say.
+Every paid request (Places and Routes) is recorded as one ``maps.spend_recorded`` row per SKU. The
+month's spend is what Google bills: per SKU, the requests past its free monthly usage at its price,
+summed over the event log, so it survives a restart. (Not ``cost.recorded``: only L3 emits that,
+canary ``cost_recorded_l3_only``.) Near :data:`STOP_AT` of the cap a paid call is refused with a
+plain reason she can say.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections import Counter
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
 
@@ -29,28 +31,47 @@ DEFAULT_MONTHLY_USD: Final = 10.0
 STOP_AT: Final = 0.9
 """Paid calls stop once this share of the month's cap is spent."""
 
-# USD per request, from Google Maps Platform's price list as remembered at the March 2025 pricing
-# change (per 1000 requests, first tier, free monthly allowance ignored, so the count runs high).
-# No network from here to re-read the page: where a SKU was not certain the higher figure is used.
+FREE_ESSENTIALS: Final = 10_000
+FREE_PRO: Final = 5_000
+FREE_ENTERPRISE: Final = 1_000
+"""Google's free monthly usage per SKU, by the SKU's tier (since March 2025)."""
+
+
+@dataclass(frozen=True)
+class Sku:
+    """What one billable request of a SKU costs, and how many a month Google does not bill."""
+
+    price_usd: float
+    free: int
+
+
+# Google Maps Platform's price list as remembered at the March 2025 pricing change, first tier. No
+# network from here to re-read the page: where a SKU was not certain the higher price and the
+# smaller free usage are used, so the count runs high rather than low.
 #   Places API (New): Text Search and Nearby Search at the Enterprise tier (rating, price level,
-#   opening hours and phone are Enterprise fields) 35; Place Details with reviews (Enterprise +
-#   Atmosphere) 25; Place Details with name and address only (Pro) 17.
-#   Geocoding API (reverse, ADR 0284): 5 per thousand requests.
+#   opening hours and phone are Enterprise fields) 35 per thousand; Text Search with only name,
+#   address, point and viewport (Pro) 32; Place Details with reviews (Enterprise + Atmosphere)
+#   25; Place Details with name and address only (Pro) 17.
+#   Geocoding API (reverse, ADR 0284): 5 per thousand requests, Essentials.
 #   Routes: TRANSIT counted at Pro, 10, because it was not certain whether transit is billed at
-#   Essentials; DRIVE and WALK with the default routing preference are Essentials, 5.
-PRICE_USD: Final[dict[str, float]] = {
-    "places.text_search.enterprise": 0.035,
-    "places.nearby_search.enterprise": 0.035,
-    "places.details.enterprise_atmosphere": 0.025,
-    "places.details.pro": 0.017,
-    "geocoding.reverse": 0.005,
-    "routes.transit.pro": 0.010,
-    "routes.basic.essentials": 0.005,
+#   Essentials; DRIVE and WALK with the default routing preference and one route matrix element
+#   are Essentials, 5.
+SKUS: Final[dict[str, Sku]] = {
+    "places.text_search.enterprise": Sku(0.035, FREE_ENTERPRISE),
+    "places.text_search.pro": Sku(0.032, FREE_PRO),
+    "places.nearby_search.enterprise": Sku(0.035, FREE_ENTERPRISE),
+    "places.details.enterprise_atmosphere": Sku(0.025, FREE_ENTERPRISE),
+    "places.details.pro": Sku(0.017, FREE_PRO),
+    "geocoding.reverse": Sku(0.005, FREE_ESSENTIALS),
+    "routes.transit.pro": Sku(0.010, FREE_PRO),
+    "routes.basic.essentials": Sku(0.005, FREE_ESSENTIALS),
+    "routes.matrix.essentials": Sku(0.005, FREE_ESSENTIALS),
 }
 _BILLING_ZONE: Final = ZoneInfo("America/Los_Angeles")  # Google bills by Pacific time.
 _MONTH_SQL: Final = (
-    "SELECT COALESCE(SUM(json_extract(payload_json, '$.cost_usd')), 0) FROM events "
-    "WHERE type = 'maps.spend_recorded' AND ts_epoch_ms >= ?"
+    "SELECT json_extract(payload_json, '$.sku'),"
+    " COALESCE(SUM(json_extract(payload_json, '$.requests')), 0) FROM events "
+    "WHERE type = 'maps.spend_recorded' AND ts_epoch_ms >= ? GROUP BY 1"
 )
 
 
@@ -60,12 +81,20 @@ def _month_start_ms(now: datetime) -> int:
 
 
 def month_spent(conn: sqlite3.Connection, now: datetime) -> float:
-    """USD recorded for map calls since the first of the month ``now`` falls in, Pacific time."""
-    return float(conn.execute(_MONTH_SQL, (_month_start_ms(now),)).fetchone()[0])
+    """USD Google bills for map calls since the first of the month ``now`` falls in, Pacific time.
+
+    Per SKU, the requests past its free monthly usage at its price (ADR 0347); a SKU the table no
+    longer knows is not priced.
+    """
+    total = 0.0
+    for sku, requests in conn.execute(_MONTH_SQL, (_month_start_ms(now),)):
+        if (known := SKUS.get(str(sku))) is not None:
+            total += max(0, int(requests) - known.free) * known.price_usd
+    return total
 
 
 def guard(conn: sqlite3.Connection, cap_usd: float, now: datetime) -> None:
-    """Refuse a paid map call once the month's spend is near the cap; a cap of 0 or less is off.
+    """Refuse a paid map call once the month's billed spend is near the cap; 0 or less is off.
 
     Raises ``ToolError`` (code ``spend_cap``) whose message she can pass on as it is.
     """
@@ -74,7 +103,7 @@ def guard(conn: sqlite3.Connection, cap_usd: float, now: datetime) -> None:
     spent = month_spent(conn, now)
     if spent >= STOP_AT * cap_usd:
         msg = (
-            f"Map lookups are paused: this month they have cost about ${spent:.2f} of the"
+            f"Map lookups are paused: this month Google has billed about ${spent:.2f} of the"
             f" ${cap_usd:.2f} monthly limit. Tell him, and that they start again next month or"
             " when he raises the limit (maps.monthly_usd). Do not guess places or times."
         )
@@ -96,7 +125,7 @@ def record(ctx: ToolContext, skus: Iterable[str], now: datetime | None = None) -
                 payload={
                     "sku": sku,
                     "requests": count,
-                    "cost_usd": round(PRICE_USD[sku] * count, 6),
+                    "cost_usd": round(SKUS[sku].price_usd * count, 6),
                     "action_id": ctx.action_id,
                 },
                 correlation={"turn_id": turn} if turn else None,
@@ -106,4 +135,4 @@ def record(ctx: ToolContext, skus: Iterable[str], now: datetime | None = None) -
             LOGGER.exception("maps spend: could not record %d x %s", count, sku)
 
 
-__all__ = ["DEFAULT_MONTHLY_USD", "PRICE_USD", "STOP_AT", "guard", "month_spent", "record"]
+__all__ = ["DEFAULT_MONTHLY_USD", "SKUS", "STOP_AT", "Sku", "guard", "month_spent", "record"]

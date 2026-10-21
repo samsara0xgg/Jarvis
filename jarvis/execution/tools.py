@@ -93,7 +93,7 @@ if TYPE_CHECKING:
     from jarvis.execution.highlight_tool import HighlightMarker
     from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
-    from jarvis.execution.transit_tool import TransitOffers
+    from jarvis.execution.transit_tool import BusTimes, TransitOffers
     from jarvis.execution.weather_tool import WeatherRequest
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
@@ -3607,7 +3607,7 @@ _OFF_MENU_DAILY: Final[frozenset[str]] = frozenset(
 """ADR 0247: the daily-loop tools no turn needs by default; ``tool_search`` finds them."""
 
 
-def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
+def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -3633,7 +3633,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     transit_api_key: str | None = None,
     transit_places: Callable[[], Mapping[str, str]] | None = None,
     transit_offers: TransitOffers | None = None,
-    bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
+    bus_live: BusTimes | None = None,
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
     maps_monthly_usd: float = 10.0,
@@ -3733,8 +3733,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         ring_before_min: `commitments.remind_before_min` — how long before it a thing he goes to
             rings, when `schedule` adds one and `remind` is left out.
         transit_offers: where `bus` leaves its options, for the chat card (ADR 0205) and `pin`.
-        bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
-            a route `bus` is asked about.
+        bus_live: BC Transit's timetable and realtime feed (`runtime.bus_live.BusLive`), for the
+            times `bus` gives and the next buses at a stop.
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
             has boarded, gets off at a stop, or is off the bus, and how his ride is going; gives
             `bus` its `ride` and `get_off`. `None` leaves them out of its answers.
@@ -3819,6 +3819,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
+    from jarvis.execution import maps_spend  # noqa: PLC0415 — same cycle.
     from jarvis.execution.bus_tool import build_bus_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.highlight_tool import build_highlight_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.keep_tool import build_keep_tools  # noqa: PLC0415 — same cycle.
@@ -3827,6 +3828,7 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     from jarvis.execution.map_tool import build_map_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.place_reader import PlaceReader  # noqa: PLC0415 — same cycle.
     from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.places_api import PlaceBook  # noqa: PLC0415 — same cycle.
     from jarvis.execution.plan_tool import build_plan_tool  # noqa: PLC0415 — same cycle.
@@ -3844,14 +3846,26 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup, here),
         *build_picture_tool(vision_client, memory_db_path),
-        *(() if memory_db_path is None else build_place_tools(memory_db_path)),
+        *(() if memory_db_path is None else build_place_tools(
+            memory_db_path,
+            PlaceReader(
+                transit_api_key, found_places, saved=transit_places or dict,
+                kept=lambda: read_kept(memory_db_path),
+                before_request=lambda ctx: maps_spend.guard(
+                    ctx.conn, maps_monthly_usd, ctx.clock.now(),
+                ),
+            ),
+        )),
         *build_bus_tool(
             transit_api_key, transit_places or dict,
             offers=transit_offers, bus_live=bus_live, control=ride_control,
             kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
             cap_usd=maps_monthly_usd, book=found_places,
         ),
-        *build_map_tool(transit_api_key, maps_monthly_usd, found_places),
+        *build_map_tool(
+            transit_api_key, maps_monthly_usd, found_places, places=transit_places,
+            kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
+        ),
         *build_where_tool(here, surroundings),
         *build_highlight_tool(highlight_marker),
     ):

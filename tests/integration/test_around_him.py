@@ -325,14 +325,14 @@ def test_near_the_cap_no_request_is_made_and_the_fix_still_comes_with_the_reason
     """9.5 of 10 spent: both parts refused with the cap's plain reason; kept place still there."""
     world = World(tmp_path, cap=10.0)
     places.save(world.db, name="Home", lat=HERE[0], lng=HERE[1], origin="user")
-    maps_spend.PRICE_USD["test.spend"] = 9.5
+    maps_spend.SKUS["test.spend"] = maps_spend.Sku(9.5, 0)
     try:
         maps_spend.record(
             tool_context(world.log, "A-seed", clock=world.clock), ["test.spend"],
         )
         out = world.ask()
     finally:
-        maps_spend.PRICE_USD.pop("test.spend", None)
+        maps_spend.SKUS.pop("test.spend", None)
 
     assert google.seen == []
     assert out["lat"] == HERE[0]
@@ -409,10 +409,10 @@ def test_the_line_never_asks_google_and_shows_only_what_is_free_until_something_
     assert world.costs() == []
 
 
-def test_the_line_names_the_street_and_the_probable_place_and_moves_with_him(
+def test_the_line_names_the_street_and_the_places_he_may_be_at_and_moves_with_him(
     world: World, google: Google,
 ) -> None:
-    """After a lookup: street, and the nearest place once he has stayed ten minutes.
+    """After a lookup: street, and the places within reach once he has stayed ten minutes.
 
     A small step changes nothing, a new spot with nothing held shows nothing, and no line costs
     a request.
@@ -422,14 +422,40 @@ def test_the_line_names_the_street_and_the_probable_place_and_moves_with_him(
     world.ask()
     spent = len(google.seen)
 
-    assert world.lines() == ["Around him: Fort St & Douglas St; maybe at Shop 1."]
+    assert world.lines() == ["Around him: Fort St & Douglas St; may be at Shop 1 or Shop 2."]
 
     world.fix(0, at=_east(25))  # a step of 25 m: the same cell
-    assert world.lines() == ["Around him: Fort St & Douglas St; maybe at Shop 1."]
+    assert world.lines() == ["Around him: Fort St & Douglas St; may be at Shop 1 or Shop 2."]
 
     world.fix(0, at=_east(400))  # a new spot, nothing held for it
     assert world.lines() == []
     assert len(google.seen) == spent
+
+
+def test_exactly_one_place_within_reach_is_named_as_the_place_he_is_at(
+    world: World, google: Google,
+) -> None:
+    """One candidate within his fix's reach: 'maybe at'; the others are too far to be guessed."""
+    google.nearby = {"places": [_shop(1, 8), _shop(2, 200)]}
+    for ago in (30, 20, 10, 1):
+        world.fix(ago)
+    world.ask()
+
+    assert world.lines() == ["Around him: Fort St & Douglas St; maybe at Shop 1."]
+
+
+def test_with_several_places_in_reach_at_most_three_are_the_places_he_may_be_at(
+    world: World, google: Google,
+) -> None:
+    """Four shops within reach: the three nearest are named, none is chosen."""
+    google.nearby = {"places": [_shop(1, 8), _shop(2, 20), _shop(3, 35), _shop(4, 45)]}
+    for ago in (30, 20, 10, 1):
+        world.fix(ago)
+    world.ask()
+
+    assert world.lines() == [
+        "Around him: Fort St & Douglas St; may be at Shop 1, Shop 2 or Shop 3.",
+    ]
 
 
 def test_a_short_stop_gives_the_street_alone(world: World) -> None:

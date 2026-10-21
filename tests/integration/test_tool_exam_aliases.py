@@ -222,7 +222,7 @@ BUS = dict.fromkeys(
     ("transit", "pin_departure", "watch_for_boarding", "start_ride", "set_ride_stop", "end_ride"),
     "bus",
 )
-NOT_A_PLAN = ['"ride"', '"pin"', '"get_off"']
+NOT_A_PLAN = ['"ride"', '"pin"']
 RIDE = [{"ride": "start"}, {"ride": "watch"}]
 
 
@@ -243,6 +243,8 @@ RIDE = [{"ride": "start"}, {"ride": "watch"}]
          (True, "pass")),
         ({"ok": ["transit"], "args_must_not": {"transit": NOT_A_PLAN}},
          ("bus", {"ride": "end"}), (False, "FAIL(bus~args)")),
+        ({"ok": ["transit"], "args_must_not": {"transit": NOT_A_PLAN}},
+         ("bus", {"ride": "get_off", "stop": "Gum"}), (False, "FAIL(bus~args)")),
         # args_must: a ride case passes only a call that starts or watches a ride.
         ({"ok": ["start_ride", "text"], "args_must": {"bus": RIDE}}, ("bus", {"ride": "start"}),
          (True, "pass")),

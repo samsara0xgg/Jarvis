@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from jarvis.runtime.bus_live import BusLive
     from jarvis.runtime.config import (
         LocateSettings,
     )
@@ -34,15 +33,6 @@ def _locator(settings: LocateSettings, waits: LocateWaits, clock: Clock) -> Loca
     return Locator(
         waits, clock, socket_wait_s=settings.socket_wait_s, push_wait_s=settings.push_wait_s,
     )
-
-
-def _live_departure(live: BusLive) -> Callable[[str, tuple[float, float], int], int | None]:
-    """BC Transit's live departure (epoch ms) of a route at a stop, for the `bus` tool."""
-    def departure(route: str, stop: tuple[float, float], around_ms: int) -> int | None:
-        found = live.departure(route, stop, around_ms)
-        return found[1] if found else None
-
-    return departure
 
 
 def _here_location(role: str) -> Callable[[], dict[str, Any]] | None:

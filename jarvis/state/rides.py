@@ -1,11 +1,12 @@
 """The bus ride Allen is on, folded from the event log (ADR 0224).
 
-There is no rides table: a ride is the ``ride.started`` event, changed by ``ride.alight_set`` and
-``ride.warned`` and closed by ``ride.ended``. At most one ride is active; starting another closes
-the older (``replaced``). The boarding watch (``ride.watched``) and the questions the brain asked
-him (``ride.candidate_offered`` and its answer) are events too, so a restart forgets nothing and a
-trip is asked about once. Every writer passes the time it means, so a clock that is not the wall
-clock (a test's) keeps the log consistent. Nothing here calls the network.
+There is no rides table: a ride is the ``ride.started`` event, changed by ``ride.alight_set``,
+``ride.warned`` and ``ride.moved`` (it was on the wrong trip) and closed by ``ride.ended``. At
+most one ride is active; starting another closes the older (``replaced``). The boarding watch
+(``ride.watched``) and the questions the brain asked him (``ride.candidate_offered`` and its
+answer) are events too, so a restart forgets nothing and a trip is asked about once. Every writer
+passes the time it means, so a clock that is not the wall clock (a test's) keeps the log
+consistent. Nothing here calls the network.
 """
 
 from __future__ import annotations
@@ -25,8 +26,9 @@ ANSWERED: Final = "ride.candidate_answered"
 STARTED: Final = "ride.started"
 ALIGHT_SET: Final = "ride.alight_set"
 WARNED: Final = "ride.warned"
+MOVED: Final = "ride.moved"
 ENDED: Final = "ride.ended"
-TYPES: Final = (WATCHED, OFFERED, ANSWERED, STARTED, ALIGHT_SET, WARNED, ENDED)
+TYPES: Final = (WATCHED, OFFERED, ANSWERED, STARTED, ALIGHT_SET, WARNED, MOVED, ENDED)
 
 SOURCES: Final = ("tapped", "said", "pin")
 """How a ride began: he tapped the boarding question, said so, or said so and the bus was found
@@ -60,6 +62,7 @@ class Ride:
     service_date: str | None = None
     scheduled_end_ms: int | None = None
     device: str | None = None
+    headsign: str | None = None
     warned: bool = False
     ended_at_ms: int | None = None
     end_reason: str | None = None
@@ -106,14 +109,15 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
-def _emit(conn: sqlite3.Connection, kind: str, payload: dict[str, Any], at_ms: int) -> None:
-    emit_event(conn, type=kind, payload=payload, ts_epoch_ms=at_ms)
+def _emit(conn: sqlite3.Connection, kind: str, payload: dict[str, Any], at_ms: int) -> str:
+    """Append one event; its id is what an undo of the change reverses."""
+    return emit_event(conn, type=kind, payload=payload, ts_epoch_ms=at_ms).event_uid
 
 
 def fold(conn: sqlite3.Connection, since_ms: int) -> list[Ride]:
     """The rides started at or after ``since_ms`` (and the events after them), in start order."""
     found: dict[str, Ride] = {}
-    for event in iter_events_of_types(conn, (STARTED, ALIGHT_SET, WARNED, ENDED),
+    for event in iter_events_of_types(conn, (STARTED, ALIGHT_SET, WARNED, MOVED, ENDED),
                                       since_epoch_ms=since_ms):
         p = event.payload
         if event.type == STARTED:
@@ -131,6 +135,10 @@ def fold(conn: sqlite3.Connection, since_ms: int) -> list[Ride]:
             one.alight_seq = p.get("alight_seq")
         elif event.type == WARNED:
             one.warned = True
+        elif event.type == MOVED:
+            one.trip_id, one.vehicle_id = p["trip_id"], p.get("vehicle_id")
+            one.headsign, one.service_date = p.get("headsign"), p.get("service_date")
+            one.scheduled_end_ms = p.get("scheduled_end_ms")
         else:
             one.ended_at_ms, one.end_reason = event.ts_epoch_ms, str(p["reason"])
     return list(found.values())
@@ -173,13 +181,18 @@ def watch(conn: sqlite3.Connection, now_ms: int) -> Watch | None:
     return found if found is not None and found.until_ms > now_ms else None
 
 
-def write_watch(conn: sqlite3.Connection, *, destination: str, until_ms: int, at_ms: int) -> str:
-    """Append ``ride.watched``: look for him boarding until ``until_ms``. Returns the watch id."""
+def write_watch(
+    conn: sqlite3.Connection, *, destination: str, until_ms: int, at_ms: int,
+) -> tuple[str, str]:
+    """Append ``ride.watched``: look for him boarding until ``until_ms``.
+
+    Returns the watch id and the event's id.
+    """
     watch_id = new_id("watch")
-    _emit(conn, WATCHED, {
+    event = _emit(conn, WATCHED, {
         "watch_id": watch_id, "destination": destination, "until_ms": until_ms,
     }, at_ms)
-    return watch_id
+    return watch_id, event
 
 
 def write_offer(  # noqa: PLR0913 - one keyword per payload field.
@@ -201,23 +214,23 @@ def write_answer(conn: sqlite3.Connection, candidate_id: str, answer: str, at_ms
     _emit(conn, ANSWERED, {"candidate_id": candidate_id, "answer": answer}, at_ms)
 
 
-def write_start(conn: sqlite3.Connection, ride: Ride) -> None:
+def write_start(conn: sqlite3.Connection, ride: Ride) -> str:
     """Append ``ride.started`` for ``ride`` (its ``started_at_ms`` is the event's time).
 
-    Any ride still active is closed first with ``replaced``.
+    Any ride still active is closed first with ``replaced``. Returns the event's id.
     """
     for older in fold(conn, ride.started_at_ms - LOOKBACK_MS):
         if older.active:
             write_end(conn, older.ride_id, "replaced", ride.started_at_ms)
-    _emit(conn, STARTED, {k: getattr(ride, k) for k in _START_FIELDS}, ride.started_at_ms)
+    return _emit(conn, STARTED, {k: getattr(ride, k) for k in _START_FIELDS}, ride.started_at_ms)
 
 
 def write_alight(  # noqa: PLR0913 - one keyword per payload field.
     conn: sqlite3.Connection, ride_id: str, *, stop: str, stop_id: str | None, seq: int | None,
     at_ms: int,
-) -> None:
-    """Append ``ride.alight_set``: the stop he gets off at."""
-    _emit(conn, ALIGHT_SET, {
+) -> str:
+    """Append ``ride.alight_set``: the stop he gets off at. Returns the event's id."""
+    return _emit(conn, ALIGHT_SET, {
         "ride_id": ride_id, "alight_stop": stop, "alight_stop_id": stop_id, "alight_seq": seq,
     }, at_ms)
 
@@ -227,6 +240,20 @@ def write_warned(conn: sqlite3.Connection, ride_id: str, at_ms: int) -> None:
     _emit(conn, WARNED, {"ride_id": ride_id}, at_ms)
 
 
-def write_end(conn: sqlite3.Connection, ride_id: str, reason: str, at_ms: int) -> None:
-    """Append ``ride.ended`` with one of :data:`END_REASONS`."""
-    _emit(conn, ENDED, {"ride_id": ride_id, "reason": reason}, at_ms)
+def write_moved(  # noqa: PLR0913 - one keyword per payload field.
+    conn: sqlite3.Connection, ride_id: str, *, trip_id: str, vehicle_id: str | None,
+    headsign: str | None, service_date: str | None, scheduled_end_ms: int | None, at_ms: int,
+) -> str:
+    """Append ``ride.moved``: the ride was on the wrong trip and follows this one now.
+
+    Returns the event's id.
+    """
+    return _emit(conn, MOVED, {
+        "ride_id": ride_id, "trip_id": trip_id, "vehicle_id": vehicle_id, "headsign": headsign,
+        "service_date": service_date, "scheduled_end_ms": scheduled_end_ms,
+    }, at_ms)
+
+
+def write_end(conn: sqlite3.Connection, ride_id: str, reason: str, at_ms: int) -> str:
+    """Append ``ride.ended`` with one of :data:`END_REASONS`. Returns the event's id."""
+    return _emit(conn, ENDED, {"ride_id": ride_id, "reason": reason}, at_ms)

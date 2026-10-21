@@ -2,8 +2,9 @@
 
 The real tools run through ``ToolRegistry.dispatch`` onto a real event log; the real ``Reminders``
 tick and ``Departures`` fold that log under a fake clock, and the real ``/inherent/notices`` routes
-serve and unpin it. Google's answer is hand-built; BC Transit's feed and static export are tiny
-hand-built bytes. No network.
+serve and unpin it. Google's answers are hand-built; BC Transit's feed is hand-built bytes and its
+export a small synthetic one (``tests/support/gtfs.py``) in which each Google bus is a trip
+(ADR 0342). No network.
 """
 
 # ruff: noqa: RUF001 - the reminder text is Chinese, as the daemon says it.
@@ -16,7 +17,6 @@ import os
 import threading
 import time
 import urllib.request
-import zipfile
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -44,6 +44,7 @@ from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarifica
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
+from tests.support import gtfs
 from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:
@@ -54,6 +55,13 @@ ZONE = ZoneInfo("America/Vancouver")
 NOW = datetime(2026, 10, 7, 17, 0, tzinfo=ZONE)
 STOP = (48.4600, -123.3100)
 LAT_LNG = {"latitude": STOP[0], "longitude": STOP[1]}
+ALIGHT = (48.4700, -123.3100)  # where the bus lets him off
+# What the place search finds for "Mayfair Mall", by hand.
+MAYFAIR = {"places": [{
+    "id": "mayfair-mall-made-up-id", "displayName": {"text": "Mayfair Mall"},
+    "formattedAddress": "Mayfair Mall, Victoria, BC",
+    "location": {"latitude": 48.4410, "longitude": -123.3700},
+}]}
 
 
 def minutes_between(first: str, second: str) -> int:
@@ -86,7 +94,12 @@ def _google(depart: str = "17:05", route: str = "28", walk: int = 3) -> dict[str
                                             "location": {"latLng": LAT_LNG},
                                         },
                                         "departureTime": at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                        "arrivalStop": {"name": "Home stop"},
+                                        "arrivalStop": {
+                                            "name": "Home stop",
+                                            "location": {"latLng": {
+                                                "latitude": ALIGHT[0], "longitude": ALIGHT[1],
+                                            }},
+                                        },
                                         "arrivalTime": (at + timedelta(minutes=15)).strftime(
                                             "%Y-%m-%dT%H:%M:%SZ"
                                         ),
@@ -104,16 +117,32 @@ def _google(depart: str = "17:05", route: str = "28", walk: int = 3) -> dict[str
 
 
 def _static(path: Path) -> None:
-    """A tiny static export: BOMs as BC Transit ships them, two routes, one stop here, one far."""
-    files = {
-        "routes.txt": "route_id,route_short_name\n1,28\n2,12\n",
-        "trips.txt": "route_id,trip_id\n1,T28a\n1,T28b\n2,T12a\n",
-        "stops.txt": "stop_id,stop_name,stop_lat,stop_lon\n"
-        f"S1,Shelbourne Pear,{STOP[0] + .0002},{STOP[1]}\nS2,Far,48.5,-123.4\n",
-    }
-    with zipfile.ZipFile(path, "w") as archive:
-        for name, text in files.items():
-            archive.writestr(name, "﻿" + text)
+    """The export: each Google bus of these tests is a trip, at the stop here and his stop.
+
+    A trip leaves the stop here (22 m from Google's) at a Google bus's minute and reaches his stop
+    15 minutes on. T12a is only in the live feed; one stop is far off.
+    """
+    def trip(trip_id: str, route: str, departs: str) -> gtfs.TripSpec:
+        arrives = f"{_local(departs) + timedelta(minutes=15):%H:%M}"
+        return gtfs.TripSpec(
+            trip_id, route, (("S1", f"{departs}:00"), ("S3", f"{arrives}:00")),
+            headsign="Downtown",
+        )
+
+    gtfs.write(path, gtfs.Export(
+        (
+            gtfs.StopSpec("S1", "Shelbourne Pear", STOP[0] + .0002, STOP[1]),
+            gtfs.StopSpec("S2", "Far", 48.5, -123.4),
+            gtfs.StopSpec("S3", "Home stop", *ALIGHT),
+        ),
+        (
+            trip("T28a", "28", "17:05"), trip("T28c", "28", "17:10"),
+            trip("T28d", "28", "17:13"), trip("T28b", "28", "17:15"),
+            trip("T12b", "12", "17:18"), trip("T12c", "12", "17:20"),
+            trip("T12d", "12", "17:25"), trip("T12e", "12", "17:30"),
+            gtfs.TripSpec("T12a", "12", ()),
+        ),
+    ))
 
 
 def _feed(*trips: tuple[str, str, str, int]) -> bytes:
@@ -135,15 +164,6 @@ class _World:
         self.conn = open_event_log(self.paths.event_log)
         self.offers = TransitOffers()
         self.fake = FakeClock(NOW)
-        self.registry = build_default_registry(
-            clock=self.fake,
-            transit_api_key="not-a-key",
-            transit_places=lambda: {"home": "48.48,-123.38"},
-            transit_offers=self.offers,
-        )
-        self.lifecycle = ActionLifecycle()
-        self.n = 0
-        self.clock = NOW.astimezone(UTC)
         self.google: dict[str, Any] = _google()
         self.feed = b""
         self.feed_calls = 0
@@ -152,6 +172,18 @@ class _World:
         cache.mkdir()
         _static(cache / "bctransit-gtfs.zip")
         self.live = BusLive(cache, feed=self._serve_feed, download=lambda _p: None)
+        # The tool reads the same export and feed; only the pin's refresh downloads are counted.
+        answers = BusLive(cache, feed=lambda: self.feed, download=lambda _p: None)
+        self.registry = build_default_registry(
+            clock=self.fake,
+            transit_api_key="not-a-key",
+            transit_places=lambda: {"home": "48.48,-123.38"},
+            transit_offers=self.offers,
+            bus_live=answers,
+        )
+        self.lifecycle = ActionLifecycle()
+        self.n = 0
+        self.clock = NOW.astimezone(UTC)
         self.said: list[str] = []
         self.reminders = Reminders(
             self.paths.event_log,
@@ -162,11 +194,12 @@ class _World:
         self.reminders.may_speak = lambda: True
         self.reminders.say = self.said.append
         self.departures = self.reminders.departures
-        monkeypatch.setattr(
-            urllib.request,
-            "urlopen",
-            lambda *_a, **_k: io.BytesIO(json.dumps(self.google).encode()),
-        )
+        monkeypatch.setattr(urllib.request, "urlopen", self._google_answers)
+
+    def _google_answers(self, request: urllib.request.Request, **_k: object) -> io.BytesIO:
+        """The place search finds Mayfair Mall; every Routes request gets ``self.google``."""
+        places = request.full_url.startswith("https://places.googleapis.com/")
+        return io.BytesIO(json.dumps(MAYFAIR if places else self.google).encode())
 
     @property
     def local_now(self) -> datetime:
@@ -209,8 +242,8 @@ class _World:
         self.local_now = _local(hhmm)
         self.clock = self.local_now.astimezone(UTC)
 
-    def look_up(self, to: str = "home") -> None:
-        self.call("bus", {"from": "Mayfair Mall", "to": to})
+    def look_up(self, to: str = "home", at: str | None = None) -> None:
+        self.call("bus", {"from": "Mayfair Mall", "to": to, **({"at": at} if at else {})})
 
     def pin(self, leave: str | None = None, departs: str | None = None) -> dict[str, Any]:
         """Option 1 of the last list; with times, of a fresh list of one bus leaving then.
@@ -265,6 +298,7 @@ def test_a_pin_is_an_event_and_a_reminder_at_the_leave_time(world: _World) -> No
     )
     assert (trip["stop_lat"], trip["stop_lng"], trip["to"]) == (*STOP, "home")
     assert trip["leave_at_ms"] == int(_local("17:02").timestamp() * 1000)
+    assert trip["bus_trip_id"] == "T28a"  # the timetable's trip, which the refresh follows
     (ring,) = world.pending()
     assert ring.reminder_id == pinned["reminder_id"]
     assert ring.due_at_ms == trip["leave_at_ms"]
@@ -327,7 +361,8 @@ def test_the_tool_refuses_a_past_leave_time_and_an_option_the_list_lacks(world: 
     assert "bus(to=...)" in gone["error"]
     unknown = world.call("bus", {"pin": [4]})
     assert unknown["code"] == "not_found"
-    assert "There is no option 4: the last list has option 1" in unknown["error"]
+    # The run-for bus, then the timetable's next 28 (ADR 0343): two options.
+    assert "There is no option 4: the last list has option 1-2" in unknown["error"]
     assert world.call("bus", {"pin": [1, 2, 3, 4]})["code"] == "invalid_arguments"
     assert world.call("bus", {"pin": ["soon"]})["code"] == "invalid_arguments"
     assert world.call("bus", {"pin": [1], "to": "home"})["code"] == "invalid_arguments"
@@ -376,13 +411,12 @@ def test_pinning_the_same_option_twice_pins_once_and_rings_once(world: _World) -
 
 
 def test_the_tool_is_quiet_and_model_only() -> None:
-    """The tool is quiet and model only; `pin` is asked for by voice, never offered."""
+    """The tool is quiet and model only, and the old pin and transit tools are gone."""
     registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
     (definition,) = (d for d in registry.get_definitions() if d.name == "bus")
     assert definition.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
     assert definition.risk_level == "L1"
     assert not definition.requires_confirmation
-    assert "Only when he asks" in definition.input_schema["properties"]["pin"]["description"]
     assert "bus" not in {d.name for d in build_default_registry().get_definitions()}
     assert not {"pin_departure", "transit"} & {d.name for d in registry.get_definitions()}
 
@@ -541,10 +575,14 @@ def test_a_day_old_export_answers_at_once_while_the_new_one_downloads(tmp_path: 
 # --- ADR 0203: the card under the notch ------------------------------------------------
 
 
-def _answer(world: _World, *legs: tuple[str, str]) -> None:
-    """The next ``transit`` answer has one option per ``(first bus departs, route)``."""
-    world.google = {"routes": [r for at, route in legs for r in _google(at, route)["routes"]]}
-    world.look_up("Mayfair Mall")
+def _answer(world: _World, *legs: tuple[str, str], at: str | None = None) -> None:
+    """The next ``bus`` answer from Google's buses ``(first bus departs, route)``.
+
+    Leaving now it lists the first bus he can catch and the one after (ADR 0343); ``at`` lists
+    every bus Google gave, up to three.
+    """
+    world.google = {"routes": [r for when, route in legs for r in _google(when, route)["routes"]]}
+    world.look_up("Mayfair Mall", at)
 
 
 def _slot(world: _World) -> PendingClarification:
@@ -570,7 +608,7 @@ def _take(world: _World, action: str, **more: str | int) -> Any:  # noqa: ANN401
 
 def test_an_answer_serves_one_row_per_option_and_drops_the_past(world: _World) -> None:
     """Each option is a row; a row whose leave time has passed goes, the rest keep their index."""
-    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:18", "12"))
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:18", "12"), at="17:00")
     offer = _offer(world)
     assert offer["id"].startswith("offer-")
     rows = [
@@ -645,12 +683,10 @@ def test_a_stale_offer_or_row_pins_nothing(world: _World) -> None:
 
 
 def test_the_schema_does_not_ask_to_pin() -> None:
-    """The card offers the pin; the model pins only when he asks by voice."""
+    """The card offers the pin; neither the tool nor its `pin` text asks her to offer one."""
     registry = build_default_registry(transit_api_key="not-a-key", transit_places=dict)
     (definition,) = (d for d in registry.get_definitions() if d.name == "bus")
     pin = definition.input_schema["properties"]["pin"]["description"]
-    assert "never offer" in pin
-    assert "already has a button per bus" in pin
     assert "ask him" not in definition.description
     assert "says yes" not in pin
 
@@ -667,7 +703,7 @@ def test_next_bus_takes_a_later_option_of_the_last_answer(world: _World) -> None
     (after,) = world.pending()
     assert after.reminder_id != before.reminder_id
     assert after.due_at_ms == int(_local("17:12").timestamp() * 1000)
-    # Again: the 12 is another route, so there is no later 28.
+    # Again: the answer has no later 28 (leaving now, it listed the 17:05 and the one after).
     again = _take(world, "next").json()
     assert again["reason"] == "no_later"
     assert again["departure"]["departs"] == "17:15"
@@ -675,6 +711,12 @@ def test_next_bus_takes_a_later_option_of_the_last_answer(world: _World) -> None
 
 def test_next_bus_falls_back_to_the_live_feed(world: _World) -> None:
     """Without a later option the feed's next trip at the matched stop is pinned, times shifted."""
+    # Google gives no drop-off point, so the bus is not matched to a trip of the timetable and the
+    # answer lists no bus after it.
+    world.google["routes"][0]["legs"][0]["steps"][1]["transitDetails"]["stopDetails"][
+        "arrivalStop"
+    ].pop("location")
+    world.look_up()
     world.pin()
     world.feed = _feed(
         ("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 0), ("T12a", "S1", "17:08", 0),
@@ -805,7 +847,7 @@ def test_a_newer_answer_starts_a_new_set(world: _World) -> None:
 
 def test_three_trips_is_the_most(world: _World) -> None:
     """A fourth catchable trip is refused with ToolError full; the card says so in `reason`."""
-    _answer(world, ("17:05", "28"), ("17:10", "28"), ("17:15", "28"))
+    _answer(world, ("17:05", "28"), ("17:10", "28"), ("17:15", "28"), at="17:00")
     assert world.call("bus", {"pin": [1, 2, 3]})["pinned"]
     assert world.call("bus", {"pin": [1, 2, 3, 4]})["code"] == "invalid_arguments"
     one = departures_state.current(world.conn)
@@ -1006,13 +1048,19 @@ def test_voice_can_pin_several_options_and_a_single_number_pins_one(world: _Worl
 
 
 def test_a_late_card_keeps_its_after_midnight_row_and_an_unkept_day_is_gone(world: _World) -> None:
-    """A row past midnight belongs to the next day."""
+    """A row past midnight belongs to the next day: its epoch time says so (ADR 0343)."""
     made = _local("23:50")
+
+    def row(index: int, leave: datetime) -> dict[str, Any]:
+        return {
+            "index": index, "leave_at": f"{leave:%H:%M}", "leave_ms": int(leave.timestamp() * 1000),
+        }
+
     trip = {
         "offer_id": "offer-late",
         "to": "home",
         "made_at": made.isoformat(timespec="minutes"),
-        "options": [{"index": 0, "leave_at": "23:55"}, {"index": 1, "leave_at": "00:10"}],
+        "options": [row(0, _local("23:55")), row(1, _local("00:10") + timedelta(days=1))],
     }
     world.local_now = made + timedelta(minutes=15)
     shown = live_card(trip, world.local_now)

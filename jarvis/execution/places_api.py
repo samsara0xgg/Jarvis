@@ -33,7 +33,8 @@ EVENT_TYPE: Final = "map.places_found"
 _ESSENTIAL_FIELDS: Final = ("id", "displayName", "formattedAddress", "location", "googleMapsUri")
 _ENTERPRISE_FIELDS: Final = (
     "rating", "userRatingCount", "priceLevel", "nationalPhoneNumber",
-    "currentOpeningHours.openNow", "currentOpeningHours.weekdayDescriptions",
+    "currentOpeningHours.openNow", "currentOpeningHours.weekdayDescriptions", "businessStatus",
+    "currentOpeningHours.nextOpenTime", "currentOpeningHours.nextCloseTime",
 )
 # Text and Nearby Search: Enterprise tier, because rating, price level, hours and phone are.
 SEARCH_MASK: Final = ",".join(f"places.{f}" for f in (*_ESSENTIAL_FIELDS, *_ENTERPRISE_FIELDS))
@@ -49,12 +50,18 @@ DETAILS_MASK: Final = ",".join((
     "reviews.rating", "reviews.text", "reviews.relativePublishTimeDescription",
 ))
 # Name and address of a place by id: Pro tier (displayName is a Pro field).
-NAME_MASK: Final = "id,displayName,formattedAddress,location"
+NAME_MASK: Final = "id,displayName,formattedAddress,location,viewport"
+# What the place reader asks a Text Search for (ADR 0346): only name, address, point and bounds,
+# which is the Pro tier.
+READER_MASK: Final = ",".join(
+    f"places.{f}" for f in ("id", "displayName", "formattedAddress", "location", "viewport")
+)
 
 SKU_TEXT: Final = "places.text_search.enterprise"
 SKU_NEARBY: Final = "places.nearby_search.enterprise"
 SKU_DETAILS: Final = "places.details.enterprise_atmosphere"
 SKU_NAME: Final = "places.details.pro"
+SKU_TEXT_PRO: Final = "places.text_search.pro"
 
 _COMPASS: Final = (
     "north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west",
@@ -132,10 +139,35 @@ def circle(lat: float, lng: float, radius_m: float) -> dict[str, Any]:
 
 def text_search(
     api_key: str, body: Mapping[str, Any], meter: list[str],
+    *, mask: str = SEARCH_MASK, sku: str = SKU_TEXT,
 ) -> list[dict[str, Any]]:
-    """Text Search: the places Google found for ``body`` (``textQuery`` and optional bias)."""
-    found = _call(api_key, "places:searchText", SEARCH_MASK, SKU_TEXT, meter, body)
+    """Text Search: the places Google found for ``body`` (``textQuery`` and optional bias).
+
+    ``mask`` and its ``sku`` default to the search tier that says hours, rating and phone.
+    """
+    found = _call(api_key, "places:searchText", mask, sku, meter, body)
     return [p for p in found.get("places", []) if isinstance(p, dict)]
+
+
+def bounds_of(raw: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+    """A place's viewport as ``(low lat, low lng, high lat, high lng)``, or None without one."""
+    view = raw.get("viewport")
+    try:
+        low, high = view["low"], view["high"]  # type: ignore[index]
+        return (
+            float(low["latitude"]), float(low["longitude"]),
+            float(high["latitude"]), float(high["longitude"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def rectangle(bounds: tuple[float, float, float, float]) -> dict[str, Any]:
+    """A Places API rectangle from ``(low lat, low lng, high lat, high lng)``."""
+    return {"rectangle": {
+        "low": {"latitude": bounds[0], "longitude": bounds[1]},
+        "high": {"latitude": bounds[2], "longitude": bounds[3]},
+    }}
 
 
 def nearby_search(
@@ -247,7 +279,25 @@ def turn_places(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
 
 
 __all__ = [
-    "AROUND_MASK", "DETAILS_MASK", "EVENT_TYPE", "NAME_MASK", "SEARCH_MASK", "PlaceBook",
-    "announce", "circle", "details", "distance_and_direction", "name_of", "nearby_around",
-    "nearby_search", "on_map", "price_word", "text_search", "turn_places",
+    "AROUND_MASK",
+    "DETAILS_MASK",
+    "EVENT_TYPE",
+    "NAME_MASK",
+    "READER_MASK",
+    "SEARCH_MASK",
+    "SKU_TEXT_PRO",
+    "PlaceBook",
+    "announce",
+    "bounds_of",
+    "circle",
+    "details",
+    "distance_and_direction",
+    "name_of",
+    "nearby_around",
+    "nearby_search",
+    "on_map",
+    "price_word",
+    "rectangle",
+    "text_search",
+    "turn_places",
 ]

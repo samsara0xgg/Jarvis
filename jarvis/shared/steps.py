@@ -93,7 +93,7 @@ _KIND: Final[dict[str, str]] = {
     "record_application": "jobs",
     "show_on_dashboard": "dashboard",
 }
-_RIDE_ARGUMENTS: Final = frozenset({"pin", "ride", "get_off"})
+_RIDE_ARGUMENTS: Final = frozenset({"pin", "ride"})
 _HIDDEN: Final = frozenset(
     {"tool_search", "get_current_time", "ask_user", "dismiss_card"},
 )
