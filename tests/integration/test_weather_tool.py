@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from jarvis.execution.tools import ToolError, build_default_registry
-from jarvis.runtime.home import weather_lookup
+from jarvis.runtime.home import Home, weather_lookup
 from jarvis.runtime.weatherkit import NOT_SET_UP, WeatherKit
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.here import Coarse, HereUnavailable
@@ -34,11 +34,14 @@ from tests.integration.weatherkit_world import (
     Net,
     b64,
     config,
+    drizzle_before_dawn,
     kit_for,
     make_key,
+    rain_all_day,
 )
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere, mac_reading
+from tests.support.home_routes import Connections
 from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 
@@ -103,7 +106,7 @@ def _query(url: str) -> dict[str, str]:
 def test_no_arguments_is_one_weatherkit_request_for_home_and_the_whole_answer(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """One request: current, hourly, daily, next hour and alerts; the model's answer from it."""
+    """One request: current, hours from midnight, daily, next hour and alerts; today in parts."""
     net = Net(monkeypatch)
     report = _call(kit_for(key[0]))
     assert net.hosts() == ["weatherkit.apple.com"]
@@ -116,29 +119,30 @@ def test_no_arguments_is_one_weatherkit_request_for_home_and_the_whole_answer(
     assert query["countryCode"] == "CA"
     assert query["timezone"] == ZONE
     assert "timeout=6.0" in net.asked[0]
-    assert set(report) == {
-        "place", "timezone", "now", "today", "tomorrow", "next_hours", "next_hour", "alerts",
-        "attribution",
-    }
+    assert list(report) == [
+        "summary", "place", "timezone", "now", "earlier_today", "rest_of_today", "tonight",
+        "whole_day", "tomorrow", "next_hours", "next_hour", "alerts", "attribution",
+    ]
     assert report["place"] == "home"
     assert report["now"] == {
         "temp_c": 11.0, "feels_c": 9.5, "condition": "cloudy", "humidity_pct": 80,
         "wind_kmh": 14.0, "gust_kmh": 30.0, "wind_from": "NW", "precip_mm_h": 0.2,
         "uv_index": 1,
     }
-    assert report["today"] | {"date": "d"} == {
-        "date": "d", "high_c": 15.0, "low_c": 8.0, "condition": "rain", "rain_chance_pct": 70,
-        "precip_mm": 3.5, "snow_cm": 0.0, "wind_kmh": 25.0, "uv_index_max": 3,
-        "sunrise": "07:30", "sunset": "19:00",
+    assert report["whole_day"] == {
+        "day": "today (Wed)", "date": _day(0), "high_c": 15.0, "low_c": 8.0,
+        "condition": "rain", "rain_chance_pct": 70, "precip_mm": 3.5, "snow_cm": 0.0,
+        "wind_kmh": 25.0, "uv_index_max": 3, "sunrise": "07:30", "sunset": "19:00",
     }
+    assert report["tomorrow"]["day"] == "tomorrow (Thu)"
     assert report["tomorrow"]["date"] == _day(1)
     hours = report["next_hours"]
-    assert len(hours) == 12
+    assert [row["at"] for row in hours[:7]] == [f"today {h:02d}:00" for h in range(9, 15)] + [
+        "today 15:00",
+    ]
     assert hours[0]["condition"] == "cloudy"  # the first hour is the current reading
     assert hours[1]["condition"] == "drizzle"
-    assert set(hours[0]) == {
-        "at", "temp_c", "feels_c", "condition", "rain_chance_pct", "precip_mm", "wind_kmh",
-    }
+    assert set(hours[0]) == {"at", "temp_c", "condition", "rain_chance_pct", "precip_mm"}
     assert report["attribution"] == {
         "provider": "Apple Weather", "url": "https://weatherkit.apple.com/legal-attribution.html",
     }
@@ -311,11 +315,11 @@ def test_days_from_seven_back_to_nine_ahead_are_read_and_others_are_refused_unto
     """A range gets its days; 8 back, past nine ahead, or backwards, is refused clearly."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
-    report = _call(kit, {"when": f"{_day(0)} to {_day(9)}"})
+    report = _call(kit, {"when": f"{_day(0)} to {_day(5)}"})
     query = _query(net.asked[0])
     assert query["dailyStart"].endswith(("T07:00:00Z", "T08:00:00Z"))
-    assert "today" not in report
-    assert [d["date"] for d in report["days"]] == [_day(n) for n in range(10)]
+    assert report["whole_day"]["date"] == _day(0)  # today is in parts, the others are days
+    assert [d["date"] for d in report["days"]] == [_day(n) for n in range(1, 6)]
     assert "next_hours" not in report
     assert "next_hour" in report  # the range holds today
     later = _call(kit, {"when": _day(3)})
@@ -355,12 +359,13 @@ def test_a_request_of_days_all_past_asks_for_the_daily_forecast_alone_and_answer
     query = _query(net.asked[0])
     assert query["dataSets"] == "forecastDaily"
     assert not {"hourlyStart", "hourlyEnd", "countryCode"} & set(query)
-    assert set(report) == {"place", "timezone", "days", "attribution"}
+    assert set(report) == {"summary", "place", "timezone", "days", "attribution"}
     assert [d["date"] for d in report["days"]] == [_day(-3), _day(-2), _day(-1)]
     assert report["days"][0]["high_c"] == 15.0
     assert report["days"][0]["precip_mm"] == 3.5
     mixed = _call(kit, {"when": f"{_day(-1)} to {_day(1)}"})
-    assert [d["date"] for d in mixed["days"]] == [_day(-1), _day(0), _day(1)]
+    assert [d["date"] for d in mixed["days"]] == [_day(-1), _day(1)]
+    assert mixed["whole_day"]["date"] == _day(0)
     assert {"now", "next_hour", "alerts"} <= set(mixed)
     assert "dailyStart" in _query(net.asked[-1])
     assert "forecastHourly" in _query(net.asked[-1])["dataSets"]
@@ -385,13 +390,14 @@ def test_hourly_rows_cover_the_days_asked_and_air_quality_adds_aqi_rows(
     report = _call(kit, {"when": "tomorrow", "hourly": True, "air_quality": True})
     rows = report["hourly"]
     assert len(rows) == 24
-    assert {row["at"][:10] for row in rows} == {_day(1)}
+    assert {row["at"].split(" ")[0] for row in rows} == {"tomorrow"}
     assert net.hosts() == ["weatherkit.apple.com", "air-quality-api.open-meteo.com"]
     assert f"start_date={_day(1)}&end_date={_day(1)}" in net.asked[1]
     assert report["air_quality"]["now"] == {"us_aqi": 42, "pm2_5_ugm3": 8.5, "pm10_ugm3": 12.0}
     assert [d["date"] for d in report["air_quality"]["days"]] == [_day(1)]
-    default = _call(kit, {"hourly": True})  # no dates: the rest of today and all of tomorrow
-    assert default["hourly"][-1]["at"].startswith(_day(1))
+    default = _call(kit, {"hourly": True})  # no dates: the rest of today and then tomorrow
+    assert default["hourly"][0]["at"] == "today 09:00"
+    assert default["hourly"][-1]["at"].startswith("tomorrow ")
     assert "next_hours" not in default
     assert "air_quality" not in default
     with pytest.raises(ToolError, match="at most 3 days"):
@@ -465,7 +471,7 @@ def test_the_forecast_stands_when_the_air_quality_cannot_be_read(
     """Air quality down or out of its reach: the weather comes back, the air marked unavailable."""
     Net(monkeypatch, down=("air-quality-api.open-meteo.com",))
     result = _call(kit_for(key[0]), {"air_quality": True})
-    assert "today" in result
+    assert "whole_day" in result
     assert "unavailable" in result["air_quality"]
 
 
@@ -555,11 +561,12 @@ def test_his_words_are_read_in_the_places_own_calendar_by_the_runtime_clock(
     assert _day_in("Asia/Tokyo", 0) == "2026-10-22"
     home = _call(kit, {"when": "today"})
     tokyo = _call(kit, {"place": "35.69,139.69", "when": "today"})
-    assert [d["date"] for d in home["days"]] == ["2026-10-21"]
-    assert [d["date"] for d in tokyo["days"]] == ["2026-10-22"]
+    assert home["whole_day"]["date"] == "2026-10-21"
+    assert tokyo["whole_day"]["date"] == "2026-10-22"
+    assert tokyo["whole_day"]["day"] == "today (Thu)"
     assert [d["date"] for d in _call(kit, {"place": "35.69,139.69", "when": "tomorrow"})["days"]] \
         == ["2026-10-23"]
-    assert _call(kit, {"place": "35.69,139.69"})["today"]["date"] == "2026-10-22"
+    assert _call(kit, {"place": "35.69,139.69"})["whole_day"]["date"] == "2026-10-22"
 
 
 def test_words_the_resolver_cannot_read_and_the_old_date_arguments_are_refused_untouched(
@@ -693,6 +700,159 @@ def test_a_name_that_is_only_a_comma_is_not_found(
     assert net.asked == []
 
 
+@pytest.mark.parametrize(
+    ("args", "start", "end"),
+    [
+        pytest.param(
+            {}, "2026-10-21T07:00:00Z", "2026-10-23T07:00:00Z",
+            id="no days: today's midnight to the end of tomorrow",
+        ),
+        pytest.param(
+            {"when": "today"}, "2026-10-21T07:00:00Z", "2026-10-22T14:00:00Z",
+            id="today: on to tomorrow 7:00, so that tonight is whole",
+        ),
+        pytest.param(
+            {"when": "today to Friday"}, "2026-10-21T07:00:00Z", "2026-10-24T07:00:00Z",
+            id="a range from today: today's midnight to the end of the last day",
+        ),
+        pytest.param(
+            {"when": "yesterday to tomorrow"}, "2026-10-21T07:00:00Z", "2026-10-23T07:00:00Z",
+            id="a range into the past: today's midnight, not yesterday's",
+        ),
+        pytest.param(
+            {"when": "Saturday"}, "2026-10-24T07:00:00Z", "2026-10-25T07:00:00Z",
+            id="a later day: that day's own hours",
+        ),
+        pytest.param(
+            {"when": "tomorrow", "hourly": True}, "2026-10-22T07:00:00Z", "2026-10-23T07:00:00Z",
+            id="tomorrow by the hour",
+        ),
+        pytest.param(
+            {"place": "35.69,139.69"}, "2026-10-21T15:00:00Z", "2026-10-23T15:00:00Z",
+            id="Tokyo: its own midnight, which is Thursday's",
+        ),
+    ],
+)
+def test_the_hours_start_at_the_places_midnight_when_the_days_include_today(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+    args: dict[str, Any], start: str, end: str,
+) -> None:
+    """What fell earlier is added up from the hours, so they begin at the day's own midnight."""
+    net = Net(monkeypatch)
+    _call(kit_for(key[0]), args)
+    query = _query(net.asked[0])
+    assert (query["hourlyStart"], query["hourlyEnd"]) == (start, end)
+
+
+def test_the_homes_line_and_the_tool_without_days_are_one_request(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Both ask for today and tomorrow of the same place: the held answer serves the second."""
+    net = Net(monkeypatch)
+    kit = kit_for(key[0])
+    home = Home(Connections(None), (ZONE, ZoneInfo(ZONE)), PLACE, weatherkit=kit)  # type: ignore[arg-type]
+    assert home.weather() is not None
+    _call(kit)
+    assert len(net.asked) == 1
+    assert _query(net.asked[0])["hourlyStart"] == "2026-10-21T07:00:00Z"
+
+
+def test_drizzle_before_dawn_is_over_and_the_answer_says_no_more_rain_today(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """The morning of the audit: the day row still says rain, the parts and the line say not."""
+    Net(monkeypatch, hours=drizzle_before_dawn)
+    report = _call(kit_for(key[0]))
+    assert report["summary"] == (
+        "home: 11° and cloudy now; about 1 mm fell before 7:00; no more rain today;"
+        " tonight's low 6° at 6:00, dry; tomorrow (Thu): rain, 16°/9°, rain 70% (about 3.5 mm)."
+    )
+    assert report["earlier_today"] == {
+        "rain_mm": 1.0, "from": "4:00", "until": "7:00", "condition": "drizzle",
+    }
+    assert report["rest_of_today"] == {
+        "max_chance_pct": 0, "rain_mm": 0.0, "note": "no more rain expected today",
+    }
+    assert report["tonight"]["low_c"] == 6.0
+    assert report["tonight"]["low_at"] == "6:00"
+    assert report["whole_day"]["rain_chance_pct"] == 70  # the whole day's row, named as such
+
+
+@pytest.mark.parametrize(
+    ("hour", "day", "begins"),
+    [
+        pytest.param(9, 21, "19:00", id="in the morning tonight is 19:00 to 7:00"),
+        pytest.param(21, 21, "now", id="at 21:10 it has begun"),
+        pytest.param(3, 22, "now", id="at 3:10 it is the night that began yesterday"),
+    ],
+)
+def test_tonight_is_asked_in_the_morning_and_in_the_night_alike(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+    hour: int, day: int, begins: str,
+) -> None:
+    """The low and its hour come from the hours of 19:00 to 7:00, or those left of them."""
+    Net(monkeypatch, hours=drizzle_before_dawn)
+    kit = kit_for(key[0])
+    kit.clock = datetime(2026, 10, day, hour, 10, tzinfo=ZoneInfo(ZONE)).timestamp
+    report = _call(kit)
+    assert report["tonight"]["from"] == begins
+    assert (report["tonight"]["to"], report["tonight"]["low_at"]) == ("7:00", "6:00")
+
+
+def test_every_day_row_names_its_day_and_the_hours_name_theirs(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """``today (Wed)``, ``tomorrow (Thu)``, ``yesterday (Tue)``, else ``Sat Oct 24``."""
+    Net(monkeypatch)
+    kit = kit_for(key[0])
+    assert [d["day"] for d in _call(kit, {"when": "this weekend"})["days"]] == [
+        "Sat Oct 24", "Sun Oct 25",
+    ]
+    assert _call(kit, {"when": "yesterday"})["days"][0]["day"] == "yesterday (Tue)"
+    assert _call(kit, {"when": "next Friday"})["days"][0]["day"] == "Fri Oct 30"
+    hourly = _call(kit, {"when": "tomorrow to Saturday", "hourly": True})["hourly"]
+    assert {row["at"].split(" ")[0] for row in hourly} <= {"tomorrow", "Fri", "Sat"}
+
+
+def test_a_full_day_of_rain_still_answers_in_under_four_thousand_characters(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Every field present, rain every hour, rain now, a warning: nothing is left out."""
+    Net(monkeypatch, hours=rain_all_day, minutes="raining")
+    here = FixedHere(mac_reading(lat=48.45, lng=-123.37, place="Government St, Victoria"))
+    kit = kit_for(key[0])
+    for args in ({}, {"place": "here"}):
+        report = _call(kit, args, here=here)
+        assert len(json.dumps(report, ensure_ascii=False)) <= 4000
+        assert "left_out" not in report
+
+
+def test_a_range_too_long_to_say_is_cut_at_whole_days_and_says_how_to_get_the_rest(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Today and nine days: the later days go whole, counted, with how to ask for them."""
+    Net(monkeypatch, hours=rain_all_day)
+    report = _call(kit_for(key[0]), {"when": f"{_day(0)} to {_day(9)}", "air_quality": True})
+    assert len(json.dumps(report, ensure_ascii=False)) <= 4000
+    shown = [d["date"] for d in report["days"]]
+    assert shown == [_day(n) for n in range(1, len(shown) + 1)]
+    assert len(shown) + report["left_out"]["days"] == 9
+    assert "narrower `when`" in report["see_more"]
+
+
+def test_hours_without_days_are_cut_at_the_end_and_say_so(
+    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+) -> None:
+    """Today's rest and tomorrow by the hour is more than fits: the last hours go, counted."""
+    Net(monkeypatch, hours=rain_all_day)
+    report = _call(kit_for(key[0]), {"hourly": True})
+    assert len(json.dumps(report, ensure_ascii=False)) <= 4000
+    rows = report["hourly"]
+    assert rows[0]["at"] == "today 09:00"
+    assert len(rows) + report["left_out"]["hourly"] == 39  # 15 hours left today and 24 tomorrow
+    assert "narrower `when`" in report["see_more"]
+
+
 def test_the_key_is_never_in_a_result_or_a_log_line(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
     caplog: pytest.LogCaptureFixture,
@@ -739,7 +899,7 @@ def test_the_tool_is_on_the_models_menu_up_front_read_only_and_only_with_a_locat
     assert definition.read_only
     assert not definition.requires_confirmation
     assert not definition.deferred
-    for word in ("web_search", "next_hour", "alerts", "Apple Weather", "9 days", "7 days"):
+    for word in ("web_search", "where_am_i", "warnings", "9 ahead", "7 days back", "summary line"):
         assert word in definition.description
     assert "weather" not in {d.name for d in build_default_registry().get_definitions()}
     assert weather_lookup(None, None, ZONE) is None
@@ -751,14 +911,14 @@ def test_the_tool_is_on_the_models_menu_up_front_read_only_and_only_with_a_locat
 def test_the_description_offers_here_only_where_a_location_can_be_read(
     key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """``here`` is in the text and the schema only with a Mac or phone location reader."""
+    """``here`` is in the place's text only with a Mac or phone location reader."""
     lookup = weather_lookup(PLACE, kit_for(key[0]), ZONE)
     plain = build_default_registry(weather_lookup=lookup)
     located = build_default_registry(weather_lookup=lookup, here=FixedHere())
     (without,) = (d for d in plain.get_definitions() if d.name == "weather")
     (with_here,) = (d for d in located.get_definitions() if d.name == "weather")
-    assert '"here"' not in without.description
-    assert '"here"' in with_here.description
+    assert '"here"' not in without.input_schema["properties"]["place"]["description"]
+    assert '"here"' in with_here.input_schema["properties"]["place"]["description"]
     assert set(with_here.input_schema["properties"]) == {
         "place", "when", "hourly", "air_quality",
     }

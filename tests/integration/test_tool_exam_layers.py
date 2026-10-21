@@ -3,7 +3,7 @@
 The synthetic items in ``tests/fixtures/tool_exam/items`` run through the real dispatcher and the
 real ``decide()`` loop on a booted sandbox runtime, from recordings, at a frozen clock. Their
 shrink-only ``baseline.json`` names the ones that fail today and why they should not (a bus after
-midnight, a weather result with no summary). Around them:
+midnight). Around them:
 the spec's result and error rules on a table of good and bad results, the recorder and replay
 against a local server, and the baseline verdict.
 """
@@ -231,19 +231,30 @@ def _weather(**changes: Any) -> dict[str, Any]:  # noqa: ANN401
     """The rest-of-today fixture's result, then ``changes``."""
     item = json.loads((ITEMS / "weather-rest-of-today.json").read_text(encoding="utf-8"))
     hours = [
-        {"at": f"2026-10-12 {h:02d}:00", "rain_chance_pct": pct}
+        {"at": f"today {h:02d}:00", "rain_chance_pct": pct}
         for h, pct in zip(range(14, 24), (5, 5, 5, 20, 40, 45, 30, 10, 10, 10), strict=True)
     ]
-    return {"item": item, "out": {"hourly": hours, **changes}}
+    parts = {"rest_of_today": {"max_chance_pct": 45}, "earlier_today": {"rain_mm": 3.6}}
+    return {"item": item, "out": {"hourly": hours, **parts, **changes}}
 
 
 CHECKS = [
     ("weather_rest_of_today", {}, []),
-    ("weather_rest_of_today", {"hourly": []}, ["hour 2026-10-12 14:00 is missing"]),
+    ("weather_rest_of_today", {"hourly": []}, ["hour today 14:00 is missing"]),
     (
         "weather_rest_of_today",
-        {"hourly_pct": {"2026-10-12 19:00": 80}},
-        ["hour 2026-10-12 19:00: rain chance 80, recorded 45"],
+        {"hourly_pct": {"today 19:00": 80}},
+        ["hour today 19:00: rain chance 80, recorded 45"],
+    ),
+    (
+        "weather_rest_of_today",
+        {"rest_of_today": {"max_chance_pct": 80}},  # the whole day's chance, not the hours left
+        ["the peak of the hours left is 45, the result: 80"],
+    ),
+    (
+        "weather_rest_of_today",
+        {"earlier_today": {"rain_mm": 0.0}},
+        ["3.6 mm fell before now, the result says 0.0"],
     ),
 ]
 
@@ -332,11 +343,15 @@ def test_an_unknown_op_is_a_failure_of_the_item_not_a_crash() -> None:
 
 def test_a_held_set_is_reported_by_id_alone(tmp_path: Path) -> None:
     """The failure's reason would quote the item, so the held set's verdict does not carry it."""
-    shutil.copy(ITEMS / "weather-rest-of-today.json", tmp_path)
-    shutil.copy(ITEMS / "weather-rest-of-today.recording.json", tmp_path)
+    passing = json.loads(
+        (ITEMS / "schedule-write-then-read-rings.json").read_text(encoding="utf-8"),
+    )
+    # Fails by construction, so the test does not depend on a defect staying unfixed.
+    failing = {**passing, "id": "never-holds", "expect": {"summary_must": ["no tool says this"]}}
+    (tmp_path / "never-holds.json").write_text(json.dumps(failing), encoding="utf-8")
     result = exam.score(tmp_path)
-    assert exam.verdict(result, detail=False) == ["FAIL weather-rest-of-today"]
-    assert exam.verdict(result)[0].startswith("FAIL weather-rest-of-today: ")
+    assert exam.verdict(result, detail=False) == ["FAIL never-holds"]
+    assert exam.verdict(result)[0].startswith("FAIL never-holds: ")
 
 
 def test_a_provider_call_the_recording_lacks_fails_the_item(tmp_path: Path) -> None:

@@ -19,39 +19,13 @@ DAYS_AHEAD: Final = 9
 DAYS_BACK: Final = 7
 HOURLY_MAX_DAYS: Final = 3
 _DESCRIPTION: Final = (
-    "The weather from Apple Weather at any place, from 7 days back to 9 days ahead, in one call:"
-    " one call answers the whole question, so do not call it again for the same place."
-    " Use it for every weather question: now, today, tonight, tomorrow, a weekday or the weekend,"
-    " a day gone by, rain, wind, UV, sunrise and sunset, warnings, at home or anywhere else. The"
-    " result has `now` (temperature, feels-like, wind, humidity, rain rate); `today` and"
-    " `tomorrow`, or `days` when dates were asked (high and low, conditions, chance and amount"
-    " of rain or snow, wind, UV index, sunrise and sunset); `next_hours`, the next 12 hours, or"
-    " `hourly`;"
-    " `next_hour`, minute-by-minute rain for the next 60 minutes (is it dry or raining now, when"
-    ' rain starts_at or stops_at, peak intensity: use it for "will it rain soon", "when does it'
-    ' start or stop raining", "do I need an umbrella now"); `alerts`, the official warnings in'
-    " force or coming (headline, severity, area, effective, expires, source; [] means none: use"
-    " it for any question about warnings, storms, heat or snowfall alerts); and `attribution`."
-    " Leave place out for the user's home."
-    " Otherwise pass the place exactly as he names it (a city, area or landmark, in his own"
-    " language, without extra words), and pass it again whenever he corrects or changes the"
-    " place of an earlier answer: never state one place's weather from another place's result."
-    "{here} With no `when` you get now, today, tomorrow and the next 12 hours: that answers"
-    " now, today, tonight and tomorrow. For any other day or days, past or later, pass `when` in"
-    " his words (tomorrow, Saturday, this weekend, next Friday, the 25th, 2026-10-25, two of"
-    " these joined by to): the tool works out the dates in the place's own calendar. A past day"
-    " gives its daily figures only: no now, hours or alerts. Set hourly only when he wants"
-    " hour-by-hour rows for those days (today or later, up to 3 days), and air_quality for US"
-    " AQI, PM2.5 and PM10. Days from 7 back to 9 ahead are all one call; earlier or later ones"
-    " are not available: say so, or use web_search. If other places share the name, the result"
-    " lists them: mention it when it matters, and pass the coordinates given as place to read one"
-    " of them. Times are the place's local time; the weather is Apple Weather, which you may name."
-    " If it returns an error, say what failed, then use web_search or tell him it is"
-    " unavailable."
-)
-_HERE: Final = (
-    ' Pass place "here" for where he is right now (his location is read for it, and the result'
-    " says whose report it was)."
+    "Use it for any question about the weather outside: now, today, tonight, rain, wind,"
+    " warnings, UV, sunrise and sunset or air quality, at his home or any place he names, for any"
+    " day from 7 days back to 9 ahead. Not for days outside that range, climate or weather news"
+    " (web_search), or for where he is (where_am_i). It returns a summary line, now, today in"
+    " parts (what fell since midnight, the rest of the day, tonight), tomorrow or the days he"
+    " asked for, hourly rows, the next hour's rain, official warnings and the place's own time"
+    " zone."
 )
 
 
@@ -120,7 +94,8 @@ def build_weather_tool(
         "place": {
             "type": "string",
             "description": (
-                "The place as he names it; leave out for his home."
+                "The place in his words (a city, an area, a landmark, Vancouver, BC); leave out"
+                " for his home. Another place of the same name: the use_place the result gave."
                 + (' "here" for where he is now.' if here is not None else "")
             ),
         },
@@ -134,16 +109,20 @@ def build_weather_tool(
         },
         "hourly": {
             "type": "boolean",
-            "description": "Hour-by-hour rows for the days asked; only when he wants them.",
+            "description": (
+                "Hour-by-hour rows for the days asked, today or later, up to 3 days; only when"
+                " he wants them."
+            ),
         },
-        "air_quality": {"type": "boolean", "description": "Also US AQI, PM2.5 and PM10."},
+        "air_quality": {
+            "type": "boolean",
+            "description": "Also US AQI, PM2.5 and PM10 for the days asked; only when he asks.",
+        },
     }
     return (
         Tool(
             name="weather",
-            description=_DESCRIPTION.format(
-                here=_HERE if here is not None else ""
-            ),
+            description=_DESCRIPTION,
             input_schema={"type": "object", "properties": properties, "required": []},
             handler=weather,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),

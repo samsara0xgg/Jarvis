@@ -29,8 +29,10 @@ from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
+from jarvis.execution.speakable import day_name
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
+from jarvis.runtime.weather_day import NIGHT_TO, first_line, horizon, hours_of, split
 from jarvis.surface.apns import ProviderToken, load_signing_key
 
 if TYPE_CHECKING:
@@ -53,7 +55,8 @@ _REFUSED: Final = 401
 _NEXT_HOUR_MIN: Final = 60
 _HOME_STEP_H: Final = 3
 _HOME_HOURS: Final = 4
-_REPORT_HOURS: Final = 12
+_FULL_ROWS: Final = 6
+"""The next hours are given in full this far, then every second one (ADR 0355)."""
 _COMPASS: Final = (
     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW",
     "NNW",
@@ -163,23 +166,29 @@ class WeatherKit:
     ) -> dict[str, Any]:
         """WeatherKit's answer for ``first`` to ``last`` (the place's own days); raises ToolError.
 
-        Daily rows for those days, hourly rows from now (or ``first``) to the end of ``last``,
-        the current conditions, the next hour's minutes and, when ``country`` is known, alerts.
-        Days all before today get the daily rows alone: nothing live applies to them.
+        Daily rows for those days, the current conditions, the next hour's minutes and, when
+        ``country`` is known, alerts. The hourly rows start at the place's midnight when the days
+        include today (ADR 0355: what fell earlier today is added up from them) and run to the
+        end of ``last``, or to the end of tonight if that is later; for days all ahead they cover
+        those days. Days all before today get the daily rows alone: nothing live applies to them.
         """
         tz = ZoneInfo(zone)
         now = self.clock()
+        today = datetime.fromtimestamp(now, tz)
         begin = datetime.combine(first, day_start(), tz)
         end = datetime.combine(last + timedelta(days=1), day_start(), tz)
         query = {"timezone": zone, "dailyStart": _utc(begin), "dailyEnd": _utc(end)}
-        if last < datetime.fromtimestamp(now, tz).date():
+        if last < today.date():
             query["dataSets"] = "forecastDaily"
         else:
-            hourly = max(begin, datetime.fromtimestamp(now // 3600 * 3600, tz))
+            hourly, through = begin, end
+            if first <= today.date():
+                hourly = datetime.combine(today.date(), day_start(), tz)
+                through = max(end, datetime.combine(today.date() + timedelta(days=1), NIGHT_TO, tz))
             sets = ["currentWeather", "forecastHourly", "forecastDaily", "forecastNextHour"]
             query["dataSets"] = ",".join([*sets, "weatherAlerts"] if country else sets)
             query["hourlyStart"] = _utc(hourly)
-            query["hourlyEnd"] = _utc(max(end, hourly + timedelta(hours=1)))
+            query["hourlyEnd"] = _utc(max(through, hourly + timedelta(hours=1)))
             if country:
                 query["countryCode"] = country
         url = f"{ENDPOINT}/en/{latitude}/{longitude}?{urlencode(query, safe=',:/')}"
@@ -266,10 +275,12 @@ def _now(current: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _day(row: Mapping[str, Any], zone: ZoneInfo) -> dict[str, Any]:
+def _day(row: Mapping[str, Any], zone: ZoneInfo, today: date) -> dict[str, Any]:
     daytime = row.get("daytimeForecast") or {}
+    day = _when(row["forecastStart"], zone).date()
     return {
-        "date": _when(row["forecastStart"], zone).date().isoformat(),
+        "day": day_name(day, today),
+        "date": day.isoformat(),
         "high_c": _num(row.get("temperatureMax")),
         "low_c": _num(row.get("temperatureMin")),
         "condition": words(row.get("conditionCode", "")),
@@ -283,15 +294,42 @@ def _day(row: Mapping[str, Any], zone: ZoneInfo) -> dict[str, Any]:
     }
 
 
-def _hour(row: Mapping[str, Any], zone: ZoneInfo, code: str | None = None) -> dict[str, Any]:
+def day_rows(
+    body: Mapping[str, Any], zone: ZoneInfo, *, first: date, last: date, today: date,
+) -> list[dict[str, Any]]:
+    """The daily rows for ``first`` to ``last``, each named by its day (``today (Wed)``).
+
+    Raises:
+        ToolError: WeatherKit holds none of the days.
+    """
+    found = (_day(row, zone, today) for row in body.get("forecastDaily", {}).get("days", ()))
+    rows = [one for one in found if first <= date.fromisoformat(one["date"]) <= last]
+    if not rows:
+        msg = (
+            f"weather: WeatherKit has no forecast for {first.isoformat()} to {last.isoformat()}"
+            f" (it covers {DAYS_BACK} days before today, {today.isoformat()}, to {DAYS_AHEAD}"
+            " days after it); use web_search for other dates"
+        )
+        raise ToolError(msg, code="invalid_arguments")
+    return rows
+
+
+def _at(at: datetime, today: date) -> str:
+    """``today 14:00``, ``tomorrow 01:00``, else ``Sat 14:00``."""
+    name = {0: "today", 1: "tomorrow", -1: "yesterday"}.get((at.date() - today).days)
+    return f"{name or at.strftime('%a')} {at:%H:%M}"
+
+
+def _hour(
+    hour: tuple[datetime, Mapping[str, Any]], today: date, code: str | None = None,
+) -> dict[str, Any]:
+    at, row = hour
     return {
-        "at": _when(row["forecastStart"], zone).strftime("%Y-%m-%d %H:%M"),
+        "at": _at(at, today),
         "temp_c": _num(row.get("temperature")),
-        "feels_c": _num(row.get("temperatureApparent")),
         "condition": words(row.get("conditionCode", "") if code is None else code),
         "rain_chance_pct": _pct(row.get("precipitationChance")),
         "precip_mm": _num(row.get("precipitationAmount")),
-        "wind_kmh": _num(row.get("windSpeed")),
     }
 
 
@@ -348,56 +386,79 @@ def alerts(
     ]
 
 
+def _hour_rows(
+    rows: list[tuple[datetime, Mapping[str, Any]]], stamp: datetime, current: Mapping[str, Any],
+    *, thin: bool,
+) -> list[dict[str, Any]]:
+    """Hour rows, the one of this hour with the current conditions.
+
+    ``thin`` leaves out every second hour after the first :data:`_FULL_ROWS`.
+    """
+    this_hour = stamp.replace(minute=0, second=0, microsecond=0).timestamp()
+    kept = [*rows[:_FULL_ROWS], *rows[_FULL_ROWS::2]] if thin else rows
+    now_code = current.get("conditionCode")
+    return [
+        _hour(hour, stamp.date(), now_code if hour[0].timestamp() == this_hour else None)
+        for hour in kept
+    ]
+
+
 def report(  # noqa: PLR0913 - what the tool answers with: the answer and what was asked of it.
     body: Mapping[str, Any], label: str, zone_name: str, *,
     first: date, last: date, whole: bool, hourly: bool, now: float, alerts_asked: bool,
 ) -> dict[str, Any]:
-    """What the model's ``weather`` tool answers with (ADR 0285): plain words, local times.
+    """What the model's ``weather`` tool answers with (ADR 0285, 0355): plain words, local times.
 
-    ``whole`` is a request with no days: ``today``, ``tomorrow`` and the next 12 hours; else
-    ``days`` (``first`` to ``last``). ``hourly`` puts every hour of those days in place of the
-    next 12. The next hour's minutes come with the current day; alerts and attribution always,
-    except that days all before today give ``days`` and the attribution alone (no ``now``).
-    ``alerts_asked`` is whether the request carried a country, and so asked for alerts.
+    It opens with ``summary``, a line written from the figures. When the days include today they
+    come with today in parts (``earlier_today``, ``rest_of_today``, ``tonight``) added up from the
+    hourly rows, and the daily row of today as ``whole_day``. ``whole`` is a request with no
+    days: today, ``tomorrow`` and ``next_hours`` (from this hour to the end of tonight, thinned);
+    else the other days are ``days`` (``first`` to ``last``). ``hourly`` gives every hour of the
+    days asked (from this hour on, for today) as ``hourly`` instead. The next hour's minutes come
+    with the current day; alerts and attribution always, except that days all before today give
+    ``days`` and the attribution alone (no ``now``). ``alerts_asked`` is whether the request
+    carried a country, and so asked for alerts.
 
     Raises:
         ToolError: WeatherKit holds none of the days asked.
     """
     zone = ZoneInfo(zone_name)
-    today = datetime.fromtimestamp(now, zone).date()
-    days = [
-        d for d in (_day(row, zone) for row in body.get("forecastDaily", {}).get("days", ()))
-        if first <= date.fromisoformat(d["date"]) <= last
-    ]
-    if not days:
-        msg = (
-            f"weather: WeatherKit has no forecast for {first.isoformat()} to {last.isoformat()}"
-            f" (it covers {DAYS_BACK} days before today, {today.isoformat()}, to {DAYS_AHEAD}"
-            " days after it); use web_search for other dates"
-        )
-        raise ToolError(msg, code="invalid_arguments")
+    stamp = datetime.fromtimestamp(now, zone)
+    today = stamp.date()
+    rows = day_rows(body, zone, first=first, last=last, today=today)
+    hours = hours_of(body, zone)
     current = body.get("currentWeather") or {}
     past = last < today
     out: dict[str, Any] = {"place": label, "timezone": zone_name}
     if not past:
         out["now"] = _now(current)
-    out |= {"today": days[0], "tomorrow": days[1] if len(days) > 1 else None} if whole \
-        else {"days": days}
-    rows = body.get("forecastHourly", {}).get("hours", ())
+    parts: dict[str, Any] = {}
+    if first <= today <= last:
+        parts = split(hours, stamp, words)
+        out |= parts
+        out["whole_day"] = next(row for row in rows if row["date"] == today.isoformat())
+    others = [row for row in rows if row["date"] != today.isoformat()]
+    if whole:
+        if others:
+            out["tomorrow"] = others[0]
+    elif others:
+        out["days"] = others
+    this_hour = stamp.replace(minute=0, second=0, microsecond=0).timestamp()
+    coming = [h for h in hours if h[0].timestamp() >= this_hour]
     if hourly:
-        out["hourly"] = [_hour(row, zone) for row in rows]
+        shown = [h for h in coming if first <= h[0].date() <= last]
+        out["hourly"] = _hour_rows(shown, stamp, current, thin=False)
     elif whole:
-        live = [row for row in rows if _when(row["forecastStart"], zone).timestamp() + 3600 > now]
-        out["next_hours"] = [
-            _hour(row, zone, current.get("conditionCode") if i == 0 else None)
-            for i, row in enumerate(live[:_REPORT_HOURS])
-        ]
+        ahead = [h for h in coming if h[0] < horizon(stamp)]
+        out["next_hours"] = _hour_rows(ahead, stamp, current, thin=True)
     if first <= today <= last:
         out["next_hour"] = next_hour(body, zone, now)
     if not past:
         out["alerts"] = alerts(body, zone, asked=alerts_asked)
     out["attribution"] = ATTRIBUTION
-    return out
+    gone = [(row, date.fromisoformat(row["date"]) < today) for row in others]
+    asked_now = out.get("now") if first <= today <= last else None
+    return {"summary": first_line(label, asked_now, parts, gone), **out}
 
 
 def home_line(body: Mapping[str, Any], zone_name: str, now: float) -> dict[str, Any]:

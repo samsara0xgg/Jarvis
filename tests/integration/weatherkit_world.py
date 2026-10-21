@@ -24,9 +24,13 @@ from jarvis.runtime.weatherkit import WeatherKit
 from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import pytest
+
+type HourProfile = Callable[[datetime], dict[str, Any]]
+"""Fields of the hourly row that begins at a local time, laid over the default row."""
 
 KEY_ID = "ABC123DEFG"
 TEAM_ID = "3MEBVQ3N3U"
@@ -109,12 +113,36 @@ def _parse(text: str) -> datetime:
     return datetime.fromisoformat(text)
 
 
+def drizzle_before_dawn(at: datetime) -> dict[str, Any]:
+    """Today's drizzle from 4:00 to 7:00 (1 mm in all), dry after, the low 6° at 6:00.
+
+    The days after today are dry and cloudy; the daily rows still say rain, as a day row does.
+    """
+    today = at.date() == NOW.astimezone(at.tzinfo).date()
+    amount = {4: 0.4, 5: 0.3, 6: 0.3}.get(at.hour, 0.0) if today else 0.0
+    return {
+        "conditionCode": "Drizzle" if amount else "Cloudy",
+        "precipitationAmount": amount, "precipitationChance": 0.9 if amount else 0.0,
+        "temperature": 6.0 + abs(at.hour - 6) / 2,
+    }
+
+
+def rain_all_day(at: datetime) -> dict[str, Any]:
+    """Rain every hour, at its worst: every field of every row is there to be written."""
+    return {
+        "conditionCode": "HeavyRain", "precipitationAmount": 1.2, "precipitationChance": 0.9,
+        "temperature": 8.0 + abs(at.hour - 6) / 3,
+    }
+
+
 def weatherkit_body(
     query: dict[str, str], *, minutes: str = "dry-then-rain", warned: bool = True,
+    hours: HourProfile | None = None,
 ) -> dict[str, Any]:
     """The WeatherKit answer for ``query``; ``minutes`` is one of dry-then-rain, raining, none.
 
     With ``warned`` False no alert is in force, and WeatherKit leaves the set out of its answer.
+    ``hours`` sets the fields of each hourly row from its local start.
     """
     zone = ZoneInfo(query["timezone"])
     sets = query["dataSets"].split(",")
@@ -144,17 +172,18 @@ def weatherkit_body(
             day = nxt
         body["forecastDaily"] = {"days": days}
     if "forecastHourly" in sets:
-        hours: list[dict[str, Any]] = []
+        hourly_rows: list[dict[str, Any]] = []
         at = h0
         while at < h1:
-            hours.append({
+            row = {
                 "forecastStart": _z(at), "conditionCode": "Drizzle",
                 "precipitationAmount": 0.1, "precipitationChance": 0.4,
                 "temperature": 10.0 + at.astimezone(zone).hour / 4, "temperatureApparent": 9.0,
                 "windSpeed": 12.0,
-            })
+            }
+            hourly_rows.append(row | (hours(at.astimezone(zone)) if hours else {}))
             at += timedelta(hours=1)
-        body["forecastHourly"] = {"hours": hours}
+        body["forecastHourly"] = {"hours": hourly_rows}
     if "forecastNextHour" in sets and minutes != "none":
         start = NOW.replace(second=0)
         rows: list[dict[str, Any]] = []
@@ -207,14 +236,16 @@ def _series(query: dict[str, str]) -> dict[str, Any]:
 class Net:
     """The network, faked: records every request, answers from the query, fails on request."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one switch for each thing the fake network can do
         self, monkeypatch: pytest.MonkeyPatch, *, down: tuple[str, ...] = (),
         refuse: int | None = None, minutes: str = "dry-then-rain", warned: bool = True,
+        hours: HourProfile | None = None,
     ) -> None:
         """Replace ``urlopen``; ``down`` lists hosts that time out, ``refuse`` an HTTP status."""
         self.asked: list[str] = []
         self.headers: list[dict[str, str]] = []
         self.down, self.refuse, self.minutes, self.warned = down, refuse, minutes, warned
+        self.hours = hours
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen)
 
     def _urlopen(self, target: Any, *, timeout: float) -> io.BytesIO:  # noqa: ANN401
@@ -231,7 +262,9 @@ class Net:
                 raise urllib.error.HTTPError(
                     url, self.refuse, "refused", {}, io.BytesIO(b'{"reason":"NOT_ENABLED"}'),  # type: ignore[arg-type]
                 )
-            body = weatherkit_body(query, minutes=self.minutes, warned=self.warned)
+            body = weatherkit_body(
+                query, minutes=self.minutes, warned=self.warned, hours=self.hours,
+            )
         elif host.startswith("geocoding"):
             found = next(  # the geocoder does not mind the case of a name
                 one for (name, language), one in GEOCODED.items()
