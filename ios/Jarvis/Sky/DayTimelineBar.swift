@@ -229,12 +229,18 @@ enum TLGeo {
     }
 }
 
+/// How wide the day's bar is drawn: the phone's list width, or the iPad's whole top band (Pad/PadHome.swift sets it).
+extension EnvironmentValues {
+    @Entry var tlBarWidth: Double = TLLayout.barW
+}
+
 // MARK: - the track
 
 /// The ground the bar's stretches lie on. While the day is being asked for it is all there is, and a soft band of light goes along it (it is still under Reduce Motion); nothing spins.
 struct TLTrack: View {
     var loading = false
     var reduce = false
+    @Environment(\.tlBarWidth) private var bw
     @State private var sweeping = false
     private let band = 96.0, period = 1.8, sweep = 1.4          // a pass takes 1.4 s, easing in and out, and the track rests for 0.4 s before the next: the band goes on past the end for the rest
 
@@ -244,12 +250,12 @@ struct TLTrack: View {
                 if loading && !reduce {
                     LinearGradient(colors: [.clear, Color.white.opacity(0.07), .clear], startPoint: .leading, endPoint: .trailing)
                         .frame(width: band)
-                        .offset(x: sweeping ? -band + (TLLayout.barW + band) * period / sweep : -band)
+                        .offset(x: sweeping ? -band + (bw + band) * period / sweep : -band)
                         .onAppear { withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: false)) { sweeping = true } }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
-            .frame(width: TLLayout.barW, height: TLLayout.barH)
+            .frame(width: bw, height: TLLayout.barH)
             .allowsHitTesting(false)
     }
 }
@@ -270,7 +276,8 @@ struct TLBarView: View {
     var ghost: TLBarScene?                  // the drawing the bar had before a tidied day came in, over the new one until it has faded (`ghostGone`)
     var ghostGone = false
 
-    private let bw = TLLayout.barW, bh = TLLayout.barH
+    @Environment(\.tlBarWidth) private var bw
+    private let bh = TLLayout.barH
 
     var body: some View {
         let rects = TLGeo.rects(scene.pieces, span: scene.span, width: bw, height: bh)
@@ -312,7 +319,7 @@ struct TLBarView: View {
     private func ghostLayer(_ g: TLBarScene) -> some View {
         ZStack(alignment: .topLeading) {
             BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, span: g.span, width: bw, height: bh)).equatable()
-            TLBarLabels(scene: g, reduce: reduce).equatable()
+            TLBarLabels(scene: g, reduce: reduce, bw: bw).equatable()
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
         .opacity(ghostGone ? 0 : 1)
@@ -321,7 +328,7 @@ struct TLBarView: View {
 
     // MARK: words and stars
 
-    private var labels: some View { TLBarLabels(scene: scene, reduce: reduce).equatable() }
+    private var labels: some View { TLBarLabels(scene: scene, reduce: reduce, bw: bw).equatable() }
 
     /// what is planned, on the part of the bar that has not happened: an event is a dashed box over its time, a reminder or a bus a tick. They are views and not paint, so that one he says
     /// is not his goes with a fade.
@@ -360,9 +367,13 @@ struct TLBarView: View {
         .allowsHitTesting(false)
     }
 
-    /// the hours under the bar, the last one ending where the bar ends
+    /// the hours under the bar: every three on the phone, every one on a bar wide enough to name them all (the iPad's); the last one ends where the bar ends
+    private var ticks: [Int] {
+        guard bw >= 600 else { return scene.ticks }
+        return Array(Int((scene.span.lowerBound / 60).rounded(.up))...24)
+    }
     private var hours: some View {
-        ForEach(scene.ticks, id: \.self) { h in
+        ForEach(ticks, id: \.self) { h in
             Text(String(format: "%02d", h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
                 .offset(x: x(Double(h * 60)) - (h == 24 ? 12 : 6), y: bh + 4)
         }
@@ -372,7 +383,7 @@ struct TLBarView: View {
     /// The sun rising and setting, in the row of the hours (no words): where its small glyph overlaps no hour's label, a hair of a tick under the bar at its minute and a sun on the horizon
     /// under it; where it would, only a warm tick 1 x 4 pt hanging under the bar. The hours always win.
     private var sunMarks: some View {
-        let centres = scene.ticks.map { x(Double($0 * 60)) - ($0 == 24 ? 6 : 0) }
+        let centres = ticks.map { x(Double($0 * 60)) - ($0 == 24 ? 6 : 0) }
         let marks = [scene.sun?.rise.map { ($0, "sunrise.fill") }, scene.sun?.set.map { ($0, "sunset.fill") }].compactMap { $0 }
             .filter { $0.0 >= scene.span.lowerBound && $0.0 <= scene.span.upperBound }
         return ZStack(alignment: .topLeading) {
@@ -453,9 +464,10 @@ struct TLBarView: View {
 private struct TLBarLabels: View, Equatable {
     let scene: TLBarScene
     let reduce: Bool
+    var bw = TLLayout.barW
 
     var body: some View {
-        let bw = TLLayout.barW, bh = TLLayout.barH
+        let bh = TLLayout.barH
         let placed = TLBarLabel.placed(scene, width: bw)
         return ZStack(alignment: .topLeading) {
             ForEach(placed) { l in
@@ -526,10 +538,10 @@ private struct TLNowGlow: UIViewRepresentable {
 /// It is a fixed gradient that slides, so the sweep costs nothing to draw on every frame.
 private struct GrowMask: View {
     let shown: Bool
+    @Environment(\.tlBarWidth) private var w
     private let edge = 28.0
 
     var body: some View {
-        let w = TLLayout.barW
         LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: w / (w + edge)), .init(color: .clear, location: 1)],
                        startPoint: .leading, endPoint: .trailing)
             .frame(width: w + edge, height: TLLayout.barH + 40)          // taller than the bar: the stars and the line for now stand outside it

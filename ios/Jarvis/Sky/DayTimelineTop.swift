@@ -178,15 +178,16 @@ struct TLBarScrub: ViewModifier {
     let changed: (_ minute: Double, _ x: Double) -> Void
     let ended: () -> Void
     @GestureState private var touching = false
+    @Environment(\.tlBarWidth) private var width
 
-    /// the minute at `x` points from the bar's left edge, kept on the bar
-    static func minute(x: Double, span: ClosedRange<Double>) -> Double { span.lowerBound + clamp(x / TLLayout.barW, 0, 1) * (span.upperBound - span.lowerBound) }
+    /// the minute at `x` points from the left edge of a bar `width` wide, kept on the bar
+    static func minute(x: Double, span: ClosedRange<Double>, width: Double = TLLayout.barW) -> Double { span.lowerBound + clamp(x / width, 0, 1) * (span.upperBound - span.lowerBound) }
 
     func body(content: Content) -> some View {
         content
             .gesture(DragGesture(minimumDistance: 0)
                 .updating($touching) { _, on, _ in on = true }          // goes back to false when the touch ends or is taken away, which lets the readout go
-                .onChanged { v in changed(Self.minute(x: v.location.x, span: span), v.location.x) })
+                .onChanged { v in changed(Self.minute(x: v.location.x, span: span, width: width), v.location.x) })
             .onChange(of: touching) { _, on in if !on { ended() } }
     }
 }
@@ -195,6 +196,7 @@ struct TLBarScrub: ViewModifier {
 struct TLReadoutLines: View {
     let r: TLReadout
     let second: String
+    @Environment(\.tlBarWidth) private var width
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -210,7 +212,7 @@ struct TLReadoutLines: View {
             .frame(height: 19, alignment: .leading)
             Text(second).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading)
         }
-        .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
+        .frame(width: width, height: TLLayout.lineH, alignment: .topLeading)
         .contentTransition(.identity)           // the words follow the finger at once: a change of them is not a fade of its own, which would show the last stretch's words through the new ones
     }
 }
@@ -239,9 +241,10 @@ struct TLChips: View, Equatable {
     let active: TLLens?
     var extra: [TLPlainChip] = []       // a page's own numbers, after the chips and before what Health reported
     var lead: [TLPlainChip] = []        // a page's own, before the chips
+    var width = W                       // the row's width: the phone's, or the iPad's top band
     let toggle: (TLLens) -> Void
 
-    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra && a.lead == b.lead }
+    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra && a.lead == b.lead && a.width == b.width }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -254,9 +257,9 @@ struct TLChips: View, Equatable {
             .padding(.horizontal, 30)
             .frame(height: TLLayout.chipsHit)
         }
-        .frame(width: W, height: TLLayout.chipsHit)
+        .frame(width: width, height: TLLayout.chipsHit)
         // a chip going off the side goes softly
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / W), .init(color: .black, location: 1 - 24 / W), .init(color: .clear, location: 1)],
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 24 / width), .init(color: .black, location: 1 - 24 / width), .init(color: .clear, location: 1)],
                              startPoint: .leading, endPoint: .trailing))
     }
 

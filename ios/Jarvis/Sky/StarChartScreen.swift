@@ -19,7 +19,8 @@ private func monoF(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font {
 }
 
 struct StarChartScreen: View {
-    @State private var engine = StarEngine()
+    @State private var engine: StarEngine
+    init(engine: StarEngine) { _engine = State(initialValue: engine) }
 
     var body: some View {
         GeometryReader { geo in

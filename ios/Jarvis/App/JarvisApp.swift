@@ -18,7 +18,7 @@ struct JarvisApp: App {
         #endif
     }
     var body: some Scene {
-        WindowGroup { StarChartScreen().voiceEntry().task { Task { await Words.shared.refresh() }; Waiting.shared.start(); JarvisActivity.shared.start(); RideLiveActivity.shared.showDebug(); LifelogUploader.shared.kick(foreground: true) } }
+        WindowGroup { HomeRoot().voiceEntry().task { Task { await Words.shared.refresh() }; Waiting.shared.start(); JarvisActivity.shared.start(); RideLiveActivity.shared.showDebug(); LifelogUploader.shared.kick(foreground: true) } }
             .onChange(of: BrainLink.shared.hasToken) { _, paired in
                 // frames queued before pairing go out now, and the phone asks to be notified (once)
                 if paired { Task { await Reporter.shared.flush() }; Task { await PushRegistry.shared.start() }; JarvisActivity.shared.start() }

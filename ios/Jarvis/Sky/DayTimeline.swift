@@ -669,7 +669,7 @@ private struct Swiped: ViewModifier {
     }
 }
 
-private struct TLList: View {
+struct TLList: View {
     let model: DayTimelineModel
     let engine: StarEngine
     let tl: TimelineState

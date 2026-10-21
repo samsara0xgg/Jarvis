@@ -126,7 +126,6 @@ struct HerArc: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var tl: TimelineState { ui.tl }
-    private static let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)      // as the chat's tapback bar (Sky/StarTapback.swift)
 
     var body: some View {
         let items = tl.herItems
@@ -191,15 +190,27 @@ struct HerArc: View {
             .accessibilityHidden(!tl.arcOpen)
     }
 
-    /// the symbol on top, the word under it, on the chat's dark frosted ground
     private func face(_ item: TLHerMenu.Item, lit: Bool) -> some View {
-        let working = item.kind == .tidy && tl.tidy == .running && !reduce
+        TLHerTile(title: item.title, symbol: item.symbol, enabled: item.enabled, lit: lit, working: item.kind == .tidy && tl.tidy == .running && !reduce)
+    }
+}
+
+/// One of her cards: the symbol on top, the word under it, on the chat's dark frosted ground. The iPad's menu (Pad/PadHer.swift) wears the same tiles.
+struct TLHerTile: View {
+    let title: String
+    let symbol: String
+    var enabled = true
+    var lit = false
+    var working = false                 // what it starts is under way: the symbol pulses
+    private static let navy = Color(red: 8 / 255, green: 10 / 255, blue: 24 / 255)      // as the chat's tapback bar (Sky/StarTapback.swift)
+
+    var body: some View {
         let shape = RoundedRectangle(cornerRadius: TLArc.corner, style: .continuous)
-        return VStack(spacing: 4) {
-            Image(systemName: item.symbol).font(.system(size: 18)).symbolEffect(.pulse, options: .repeating, isActive: working)
-            Text(item.title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
+        VStack(spacing: 4) {
+            Image(systemName: symbol).font(.system(size: 18)).symbolEffect(.pulse, options: .repeating, isActive: working)
+            Text(title).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
         }
-        .foregroundStyle(SetColor.ink.opacity(item.enabled ? 0.95 : 0.45))
+        .foregroundStyle(SetColor.ink.opacity(enabled ? 0.95 : 0.45))
         .frame(width: TLArc.tile, height: TLArc.tile)
         .background(shape.fill(Color.white.opacity(lit ? 0.14 : 0)))
         .background(shape.fill(.ultraThinMaterial)).background(shape.fill(Self.navy.opacity(0.8)))
