@@ -43,6 +43,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -85,6 +86,16 @@ from jarvis.state.device_tokens import (
     pair_device,
     paired_devices,
     unpair_device,
+)
+from jarvis.state.log_invariants import (
+    DEFAULT_EXAMPLES,
+    DEFAULT_SINCE_DAYS,
+    EVENT_LOG_FILENAME,
+    MAX_SINCE_DAYS,
+    LogCheckError,
+    LogReport,
+    check_event_log,
+    iso,
 )
 from jarvis.state.plugin_settings import local_key
 from jarvis.state.voiceprint import seed_study
@@ -1280,6 +1291,88 @@ def _main_voiceprint(argv: list[str]) -> int:
     return 0
 
 
+def _since_days(text: str) -> float:
+    """``--since-days``: a number of days above 0 and at most ``MAX_SINCE_DAYS``."""
+    try:
+        days = float(text)
+    except ValueError:
+        days = math.nan
+    if not 0 < days <= MAX_SINCE_DAYS:
+        message = f"must be a number above 0 and at most {MAX_SINCE_DAYS:g}"
+        raise argparse.ArgumentTypeError(message)
+    return days
+
+
+def _render_log_report(report: LogReport) -> str:
+    """The check as text: each invariant, its count and a few ids; never a payload."""
+    lines = [
+        f"event log: {report.event_log}",
+        f"window: {iso(report.since_ms)} .. {iso(report.until_ms)}, {report.events} events",
+    ]
+    for one in report.results:
+        count = f": {one.violations} violation(s)" if one.violations else ""
+        lines.append(f"{one.status.upper():9} {one.name}{count}")
+        if one.status == "violated":
+            lines.append(f"          rule: {one.rule}")
+            lines.append(f"          see: {one.ref}")
+        for example in one.examples:
+            note = f" ({example.note})" if example.note else ""
+            lines.append(f"          event {example.event_id} at {iso(example.ts_epoch_ms)}{note}")
+        if one.detail:
+            lines.append(f"          {one.detail}")
+    lines.append(
+        f"result: {len(report.violated)} of {len(report.results)} invariants violated"
+        if report.violated
+        else f"result: clean, {len(report.results)} invariants"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _main_check_log(argv: list[str]) -> int:
+    """`jarvis check-log`: ask the real event log what the spec and the code promise about it.
+
+    Read-only (the log opens ``mode=ro``), takes no daemon lock, prints ids, types, counts and
+    timestamps and never payload text. Exit 0: clean; 1: an invariant is violated; 2: usage
+    error, or the log cannot be opened.
+    """
+    parser = argparse.ArgumentParser(
+        prog=f"{_PROG} check-log",
+        description="Check the invariants of a runtime root's event log, read-only.",
+    )
+    parser.add_argument(
+        "--runtime-root", type=Path, default=None,
+        help=(
+            "Root holding mac_events.db: the live one or a backup copy (default: "
+            f"$JARVIS_RUNTIME_ROOT or {DEFAULT_RUNTIME_ROOT_LITERAL})."
+        ),
+    )
+    parser.add_argument(
+        "--since-days", type=_since_days, default=DEFAULT_SINCE_DAYS,
+        help=f"Days of the log, back from its newest event (default {DEFAULT_SINCE_DAYS:g}).",
+    )
+    parser.add_argument(
+        "--examples", type=int, default=DEFAULT_EXAMPLES, choices=range(21), metavar="N",
+        help=f"Example event ids per violated invariant, 0-20 (default {DEFAULT_EXAMPLES}).",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the report as one JSON object.")
+    args = parser.parse_args(argv)
+    root = _resolve_runtime_root(args.runtime_root)
+    try:
+        report = check_event_log(
+            root / EVENT_LOG_FILENAME, root, since_days=args.since_days,
+            max_examples=args.examples,
+        )
+    except LogCheckError as exc:
+        sys.stderr.write(f"jarvis check-log: {exc}\n")
+        if args.json:
+            sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
+        return 2
+    sys.stdout.write(
+        json.dumps(report.to_dict(), indent=2) + "\n" if args.json else _render_log_report(report)
+    )
+    return 1 if report.violated else 0
+
+
 def _main_devices(command: str, argv: list[str]) -> int:
     """ADR 0170, on the brain: `pair <name>`, `unpair <name>` and `devices`."""
     parser = argparse.ArgumentParser(
@@ -1344,6 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
         "meaning-model": _main_meaning_model,
         "import": _main_import,
         "voiceprint": _main_voiceprint,
+        "check-log": _main_check_log,
         "terminal": _main_terminal,
         "terminal-agent": _main_terminal_agent,
     }
