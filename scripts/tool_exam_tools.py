@@ -23,9 +23,11 @@ An item (JSON, one per file) holds his words and the moment, place and data they
 - ``ride``: optional, a followed bus ride he is on at ``at``:
   ``{route, trip_id, stops: [{seq, stop_id, name, lat, lng}]}``; the follower's timetable for the
   trip is those stops.
-- ``setup``: earlier calls, ``[{tool, args}]``, made through the same dispatcher.
+- ``setup``: earlier calls, ``[{tool, args, after_s?}]``, made through the same dispatcher;
+  ``after_s`` lets that many seconds of the frozen clock pass after the call.
 - ``recording``: path (relative to the item's directory) of what each provider answered, or null.
-  A provider call the recording lacks fails the item.
+  A provider call the recording lacks fails the item. A request the recording holds more than once
+  is answered by each in order, the last one every time after: a read that works, then fails.
 - ``expect``:
   - ``summary_must[]`` / ``summary_must_not[]``: regexes on the result's ``summary`` (an
     error's text).
@@ -277,6 +279,7 @@ class Recording:
         self.data.update(data or {})
         for entry in self.data["http"]:  # a hand-written entry gives its request body, not a hash
             entry.setdefault("body_sha", _hash(entry.get("request", "").encode()))
+        self._asked: dict[tuple[str, str, str], int] = {}
 
     @classmethod
     def load(cls, path: Path) -> Recording:
@@ -294,11 +297,20 @@ class Recording:
         return list(self.data["env"])
 
     def http(self, method: str, url: str, body: bytes) -> dict[str, Any] | None:
-        """The recorded HTTP exchange for this request, or None."""
+        """The recorded HTTP exchange for this request, or None.
+
+        A request recorded more than once gets each exchange in turn as it is asked again, and the
+        last one from then on.
+        """
         want = (method.upper(), scrub_url(url), _hash(body))
-        return next(
-            (e for e in self.data["http"] if (e["method"], e["url"], e["body_sha"]) == want), None
-        )
+        found: list[dict[str, Any]] = [
+            e for e in self.data["http"] if (e["method"], e["url"], e["body_sha"]) == want
+        ]
+        if not found:
+            return None
+        asked = self._asked.get(want, 0)
+        self._asked[want] = asked + 1
+        return found[min(asked, len(found) - 1)]
 
     def mcp(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
         """The recorded MCP tool call, or None."""
@@ -649,7 +661,7 @@ class Box:
     root: Path
     item: Item
     clock: Any
-    """The frozen clock; ``clock.shift(seconds=n)`` lets time pass between two calls."""
+    """The frozen clock; ``clock.shift(n)`` lets ``n`` seconds pass between two calls."""
     uncut: list[str] = field(default_factory=list)
     """The tables of the copied databases the cut at ``at`` could not handle."""
 
@@ -1099,8 +1111,7 @@ def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
     signal.alarm(ITEM_TIMEOUT_S)
     try:
         with transport, sandbox(item, recording) as box:
-            for step in item.raw.get("setup") or ():
-                dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+            _setup(box, item)
             after = int(
                 box.runtime.conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
             )
@@ -1115,6 +1126,14 @@ def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
         signal.signal(signal.SIGALRM, previous)
     failures += [f"provider call missing from the recording: {m}" for m in transport.misses]
     return failures
+
+
+def _setup(box: Box, item: Item) -> None:
+    """The item's earlier calls, in order; time passes after a step that says so (``after_s``)."""
+    for step in item.raw.get("setup") or ():
+        dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+        if step.get("after_s"):
+            box.clock.shift(step["after_s"])
 
 
 def _judge(  # noqa: PLR0913 - one result against everything the item expects
@@ -1242,8 +1261,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     recording = Recording({"settings": _snapshot_settings(args.root)})
     transport = _Transport(recording, live=True)
     with transport, sandbox(item, recording, live=True, real_root=args.root.expanduser()) as box:
-        for step in item.raw.get("setup") or ():
-            dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+        _setup(box, item)
         raw = dispatch(box, item.raw["tool"], item.raw.get("args") or {}, item.raw.get("said", ""))
     target = args.item.with_name(f"{args.item.stem}.recording.json")
     recording.save(target, transport.secrets)
