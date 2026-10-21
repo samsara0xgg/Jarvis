@@ -31,6 +31,7 @@ def raw(  # noqa: PLR0913 — the parts of a message, each optional.
     headers: Mapping[str, str] | None = None,
     attachments: Sequence[tuple[str, str, bytes]] = (),
     flowed: bool = False,
+    message_id: str = "<m1@example.com>",
 ) -> bytes:
     """One message: ``plain``, ``html`` or both (as an alternative), then ``attachments``."""
     msg = EmailMessage(policy=default)
@@ -40,7 +41,7 @@ def raw(  # noqa: PLR0913 — the parts of a message, each optional.
         msg["Cc"] = cc
     msg["Subject"] = subject
     msg["Date"] = date
-    msg["Message-ID"] = "<m1@example.com>"
+    msg["Message-ID"] = message_id
     for name, value in (headers or {}).items():
         msg[name] = value
     if plain is not None and html is not None:
