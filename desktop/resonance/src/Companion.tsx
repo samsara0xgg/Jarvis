@@ -509,7 +509,7 @@ export function Companion() {
     if (voice !== 'off') { setVoice('thinking'); after(700, () => { setVoice('speaking'); say(answer, () => listen(false)); }); return; }
     after(700, () => say(answer, () => after(1800, () => setReply({ text: '' }))));
   };
-  // Typed text goes to the daemon like the capsule's; the answer comes back on the same link as a voice turn's.
+  // Typed text goes to the daemon; the answer comes back on the same link as a voice turn's.
   const submit = (text: string) => link.current?.submit(text).catch(() => dispatch({ type: 'phase', phase: 'error' }));
   // Typed in the Dashboard: it is a line of the conversation under her too, above its answer.
   const ask = (text: string) => { dispatch({ type: 'you', text, at: Date.now() }); return submit(text); };

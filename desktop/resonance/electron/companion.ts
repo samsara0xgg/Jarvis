@@ -13,7 +13,7 @@ import { AGENTS_PORT, setupAgents } from './agentsWindow.js';
 import { setupDashboard } from './dashboardWindow.js';
 import { demoBanner } from './demoBanner.js';
 // The companion: 星核, who lives beside the notch, with her Dashboard. She talks to the daemon on
-// JARVIS_INHERENT_BRIDGE_PORT like the capsule does; the daemon owns mic and speaker, so she never
+// JARVIS_INHERENT_BRIDGE_PORT; the daemon owns mic and speaker, so she never
 // records audio or plays speech herself. `--demo` runs her on the built-in demo data instead.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -376,7 +376,7 @@ function companion(shown?: () => void) {
     const sender = mine(event);
     if (!sender || typeof enabled !== 'boolean') return;
     if (sender !== win) { if (enabled) { sender.focus(); sender.webContents.focus(); } return; }
-    // Key focus without activating the app, the same handshake as the capsule composer.
+    // Key focus without activating the app.
     win.setFocusable(enabled);
     if (enabled) { win.focus(); win.webContents.focus(); }
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
