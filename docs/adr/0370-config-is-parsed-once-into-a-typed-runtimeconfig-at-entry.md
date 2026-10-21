@@ -35,8 +35,9 @@ what a lower layer needs is handed to it as plain values.
 ## Decision
 
 `jarvis.runtime.config.load_runtime_config` parses and validates the merged config once, at the
-entry point, into a frozen `RuntimeConfig` that is passed down; no code below an entry point reads
-the mapping key by key.
+entry point, into a frozen `RuntimeConfig` that is passed down. A setting that has a field is read
+from the field; the serve, terminal and CLI entry points take the `RuntimeConfig` instead of a
+dict, and read `raw` only for what is listed below.
 
 The tree is frozen dataclasses with the defaults the readers had. It owns the single repo root,
 the pricing path, the owner's zone, the role's overrides (ADR 0170) and the response-flag graph,
@@ -44,7 +45,24 @@ each resolved once. Entry order is: lay out the root, load its environment, pars
 resources. A refused value raises before the Event Log is opened or a thread started. `raw`, the
 merged mapping, stays on the tree for what addresses settings by key path (the Settings page, ADR
 0227's drift check) and for blocks whose own layer parses them whole (`llm`, the voice stack's
-knobs); it is not a second way to read a setting that has a typed field.
+knobs, `tools.mcp` and `tools.plugins`, the `open_path` bookmarks); it is not a second way to read
+a setting that has a typed field.
+
+Moved into the tree: the role, listen addresses and hosts, language, assistant name, models, the
+memory and session blocks, `realtime` (switches, flag graph, pump bounds, service tier, ambient
+sounds), `confirmation`, `voice`, `llm` tool-iteration bounds, `observer`, `supervisor`,
+`work_state`, `daily_report`, `locate`, `home.weather`, `transit`, `maps`, `dashboard`,
+`diagnostics`, `voiceprint.gate`, `commitments.remind_before_min`, `day_plan.day_ends` and the
+built-in `tools` (web, screen, vault, workers). Each keeps the default, the error text and the
+exception type it had: `RuntimeBootstrapError` for a refused value, `TypeError` for the two bool
+switches that always raised it, `ValueError` for the timesink path and the zone name.
+
+Not moved: the feature blocks `bootstrap_runtime_app` hands whole to a builder that parses and
+builds in one function (`jev_log`, `realtime.surrogate_route`, `job_mail`, `mail_reply`,
+`turn_things`, `turn_end_asks`, `voice_words`, `claude_daily`, `commitments`, the Jev one-shot
+tables, `moment`, `push`, `weatherkit`, `night`, `projects`, `ledger`, `doing`, `highlight`,
+`about`). Each of those is its own owner's parse; moving one means splitting it into a parser on the
+tree and a builder, with its tests, which is the next step of this ADR and not a precondition of it.
 
 Secrets are not in the tree: a key is resolved from the environment where the thing that needs it
 is built.
@@ -77,11 +95,13 @@ where before only the daemon applied it.
 
 A new setting is a field on the tree and a line in its parser; a reader that goes to `raw` for
 a key that has a field is a defect a review should catch, and the remaining `raw` readers are the
-ones that address by key path or hand a block to its layer.
+ones that address by key path, hand a block to its layer, or are the unmoved feature builders
+listed under Decision.
 
 Tests that build a runtime by hand pass `runtime_config(mapping)` (`tests/support/runtime_config.py`)
 instead of a dict, and change a section with `reconfigure`; a test of a refused value goes through
 `load_runtime_config`, not through the private parser.
 
-L6's launchd agent still finds the repo root itself: it runs before any config exists, when it
-writes the plist that starts the daemon.
+L6's launchd agent still finds the repo root itself: its install and status commands do not load a
+config, and `deployment` cannot import `runtime`. Passing the root in would make every launchd
+command load the config first, which is not a small change.
