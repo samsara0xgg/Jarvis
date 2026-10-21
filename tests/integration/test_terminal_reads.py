@@ -13,9 +13,10 @@ from __future__ import annotations
 import dataclasses
 import functools
 import hashlib
+import itertools
 import json
 import sqlite3
-import time
+import threading
 from contextlib import closing
 from datetime import UTC, datetime
 from datetime import time as dtime
@@ -45,6 +46,7 @@ from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.state.work_state import gather_evidence
 from jarvis.surface import terminal_link
 from tests.support.daily_report import DAY, NOW, TZ, ZONE, CannedReporter, git_repo, one_item
+from tests.support.hold import HANG_S
 from tests.support.runtime_config import boot_runtime
 from tests.support.terminal import Brain, Terminal, commit_file, log_rows, make_repo, wait_for
 from tests.support.timesink import add_capture, add_event, add_span, source
@@ -554,8 +556,11 @@ def test_the_work_states_head_check_comes_from_the_terminal_and_never_fails_with
     assert service._checked is before  # noqa: SLF001
 
 
-def _rounds(spans: list[tuple[float, float]]) -> int:
-    """The longest chain of calls where each began after the one before it was answered."""
+def _rounds(spans: list[tuple[int, int]]) -> int:
+    """The longest chain of calls where each began after the one before it was answered.
+
+    Each span is the call's (begun, answered) in the order the link saw things happen.
+    """
     depth: list[int] = []
     ordered = sorted(spans)
     for start, _ in ordered:
@@ -571,18 +576,28 @@ def test_a_brains_work_state_refresh_reads_the_terminal_in_two_rounds_not_seven(
 
     Each read waits one link round trip (80 ms through a relay), so a refresh that asks
     them in series waits seven of them; asked together only the snapshot ``open`` that the
-    queries follow stands alone.
+    queries follow stands alone. The link holds a read until every read of its round is in
+    flight (the repository list and the head check start with ``open``; the four queries need
+    its snapshot), so a refresh that asks them one after another never fills a round.
     """
-    spans: list[tuple[float, float]] = []
+    spans: list[tuple[int, int]] = []
     asked: list[tuple[str, str]] = []
+    order = itertools.count()
+    with_open = threading.Barrier(3, timeout=HANG_S)
+    after_open = threading.Barrier(4, timeout=HANG_S)
+    rounds = {
+        "open": with_open, "repos": with_open, "head": with_open,
+        "query_spans": after_open, "query_captures": after_open, "query_state": after_open,
+        "search_captures": after_open,
+    }
 
     def slow_link(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
-        start = time.monotonic()
-        time.sleep(0.05)  # the link's round trip
+        begun = next(order)
+        rounds[arguments["fn"]].wait()  # nothing is answered before the whole round is asked
         try:
             return rig.device(op, arguments, target)
         finally:
-            spans.append((start, time.monotonic()))
+            spans.append((begun, next(order)))
             asked.append((op, arguments["fn"]))
 
     memory = tmp_path / "memory.db"
