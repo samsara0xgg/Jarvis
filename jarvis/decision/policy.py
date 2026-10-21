@@ -292,6 +292,12 @@ def validate_requires_confirmation(
     """
     threshold_rank = risk_rank(confirmation_threshold)
     for tool in tool_defs:
+        if getattr(tool, "effect", None) is not None:
+            # ADR 0361: a call's own effect decides, so the tool's flag must not say otherwise.
+            if tool.requires_confirmation:
+                msg = f"tool {tool.name!r} declares an effect per call and requires_confirmation"
+                raise PolicyConsistencyError(msg)
+            continue
         expected = risk_rank(tool.risk_level) >= threshold_rank
         if tool.requires_confirmation != expected:
             msg = (

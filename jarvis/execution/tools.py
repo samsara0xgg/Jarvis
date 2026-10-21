@@ -67,7 +67,15 @@ from jarvis.shared import (
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.clock import Clock, SystemClock
 from jarvis.shared.device_link import DeviceCallError
-from jarvis.shared.receipts import FailureKind, Receipt, derive, failure_kind, only_reads
+from jarvis.shared.receipts import (
+    Completed,
+    FailureKind,
+    Receipt,
+    call_asks,
+    derive,
+    failure_kind,
+    only_reads,
+)
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -368,6 +376,12 @@ class Tool:
     """Deferred tools whose job this one now does, each with how to call this one instead
     (``{"mcp__gmail__gmail_search": "mail(query=...)"}``). While this tool is on the menu,
     ``tool_search`` loads none of them and says to call this one (ADR 0242)."""
+    effect: Callable[[Mapping[str, Any]], RiskLevel] | None = None
+    """The level of a call with these arguments (ADR 0361), for a tool whose calls differ: L0, L1
+    or L3. ``risk_level`` is then the highest of them. ``None``: one level for every call."""
+    complete: Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]] | None = None
+    """Before a call that needs a card is frozen (ADR 0361): the full arguments it will run
+    with, or a :class:`ToolError` saying why it cannot. It only reads."""
 
 
 def tool(  # noqa: PLR0913 — one keyword per Tool field.
@@ -3299,6 +3313,32 @@ class ToolRegistry:
                 t for t in self._tools.values() if caller_principal in t.allowed_callers
             )
 
+    def complete(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        turn_id: str | None = None,
+    ) -> Completed:
+        """The full arguments a call that needs a card will run with (ADR 0361).
+
+        A tool with no completion gives its arguments as they are. A completion that raises
+        :class:`ToolError` comes back as the failure it names; it only reads, so nothing was done.
+        """
+        with self._lock:
+            tool_def = self._tools.get(tool_name)
+        if tool_def is None or tool_def.complete is None:
+            return Completed(arguments)
+        ctx = ToolContext(
+            conn, runtime_paths, "", self._clock, None,
+            None if self._here is None else self._here.bind(turn_id),
+        )
+        try:
+            return Completed(dict(tool_def.complete(arguments, ctx)))
+        except ToolError as exc:
+            return Completed(None, str(exc), exc.code, exc.kind)
+
     def dispatch(
         self,
         action_request: ActionRequest,
@@ -3332,7 +3372,7 @@ class ToolRegistry:
         return or its raised error into the one `RawResult`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
-        if tool_def.requires_confirmation and not _leased(
+        if call_asks(tool_def, action_request.arguments) and not _leased(
             action_request, int(self._clock.time() * 1000),
         ):
             tool_def = replace(tool_def, handler=_refuse_unleased)  # ADR 0321, I7

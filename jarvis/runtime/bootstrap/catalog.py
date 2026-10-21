@@ -38,6 +38,7 @@ from jarvis.runtime.home import Home, mail_summarizer, mail_text, weather_lookup
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.work_state import build_analyst
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.receipts import call_asks
 from jarvis.state import embedding
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME
 from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
@@ -447,6 +448,10 @@ def load_tables(config: RuntimeConfig, registry: ToolRegistry) -> Tables:
             requires_confirmation_tool_names=frozenset(
                 t.name for t in regex_router_tools if t.requires_confirmation
             ),
+            # ADR 0361: a tool whose calls differ is checked against each row's fixed arguments.
+            asks_for_args={
+                t.name: partial(call_asks, t) for t in regex_router_tools if t.effect is not None
+            },
         )
     except Tier0ConfigError as exc:
         msg = f"runtime: {tier0_path} invalid: {exc}"
