@@ -218,25 +218,3 @@ def test_the_streaming_task_start_names_the_language(
     started = asyncio.run(_body())
     assert started["event"] == "task_start"
     assert started["language_boost"] == boost
-
-
-@pytest.mark.parametrize(
-    ("text", "boost"), [(_AMBIGUOUS_ENGLISH, "English"), (_CHINESE, "Chinese")],
-)
-def test_the_legacy_task_start_names_the_language_of_its_text(text: str, boost: str) -> None:
-    """The one-shot client knows its text, so the text picks the language."""
-    async def _body() -> dict[str, object]:
-        ws = FakeWebSocket()
-        ws.audio_gate.set()
-
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
-            del additional_headers
-            return ws
-
-        with patch.object(voice_tts, "_ws_connect", side_effect=_connect):
-            await voice_tts.MiniMaxWSClient(api_key="key").synthesize(text)
-        return ws.sent[0]
-
-    started = asyncio.run(_body())
-    assert started["event"] == "task_start"
-    assert started["language_boost"] == boost

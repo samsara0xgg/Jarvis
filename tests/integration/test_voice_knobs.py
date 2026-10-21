@@ -189,23 +189,3 @@ def test_an_unchanged_spare_is_kept() -> None:
         return count
 
     assert asyncio.run(_body()) == 1
-
-
-def test_the_one_shot_task_start_reads_the_holder_too() -> None:
-    """The one-shot client reads the holder at its task start."""
-    async def _body() -> dict[str, Any]:
-        ws = FakeWebSocket()
-        ws.audio_gate.set()
-
-        async def _connect(_url: str, *, additional_headers: dict[str, str]) -> FakeWebSocket:
-            del additional_headers
-            return ws
-
-        voice = VoiceSettings()
-        voice.set_current(50, 0.8)
-        with patch.object(voice_tts, "_ws_connect", side_effect=_connect):
-            await _client(voice).synthesize("Hello.")
-        return ws.sent[0]
-
-    setting = asyncio.run(_body())["voice_setting"]
-    assert (setting["vol"], setting["speed"]) == (0.5, 0.8)

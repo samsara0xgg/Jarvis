@@ -511,11 +511,8 @@ class _VoiceKnobs:
     # and resampled to the device rate via soxr on the way out.
     tts_sample_rate_in_hz: int = 32000
     tts_connect_timeout_s: float = voice_tts.DEFAULT_TTS_CONNECT_TIMEOUT_S
-    tts_task_start_timeout_s: float = voice_tts.DEFAULT_TTS_TASK_START_TIMEOUT_S
     tts_first_chunk_timeout_s: float = voice_tts.DEFAULT_TTS_FIRST_CHUNK_TIMEOUT_S
     tts_between_chunk_timeout_s: float = voice_tts.DEFAULT_TTS_BETWEEN_CHUNK_TIMEOUT_S
-    tts_total_timeout_s: float = voice_tts.DEFAULT_TTS_TOTAL_TIMEOUT_S
-    tts_session_close_timeout_s: float = voice_tts.DEFAULT_TTS_SESSION_CLOSE_TIMEOUT_S
     vad_profiles: Mapping[str, voice_audio.VadThresholds] = dataclasses.field(
         default_factory=_default_vad_profiles,
     )
@@ -713,20 +710,11 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
         tts_connect_timeout_s=_knob_number(
             values, "tts_connect_timeout_s", d.tts_connect_timeout_s,
         ),
-        tts_task_start_timeout_s=_knob_number(
-            values, "tts_task_start_timeout_s", d.tts_task_start_timeout_s,
-        ),
         tts_first_chunk_timeout_s=_knob_number(
             values, "tts_first_chunk_timeout_s", d.tts_first_chunk_timeout_s,
         ),
         tts_between_chunk_timeout_s=_knob_number(
             values, "tts_between_chunk_timeout_s", d.tts_between_chunk_timeout_s,
-        ),
-        tts_total_timeout_s=_knob_number(
-            values, "tts_total_timeout_s", d.tts_total_timeout_s,
-        ),
-        tts_session_close_timeout_s=_knob_number(
-            values, "tts_session_close_timeout_s", d.tts_session_close_timeout_s,
         ),
         vad_profiles=_vad_profiles(values.get("vad")),
     )
@@ -2830,12 +2818,11 @@ def _tts_volume_kwargs(realtime: Mapping[str, Any]) -> dict[str, Any]:
     return {} if tts_volume is None else {"volume": tts_volume}
 
 
-def _minimax_client(  # noqa: PLR0913 - the one place the client's knobs are applied
+def _minimax_client(
     knobs: _VoiceKnobs,
     api_key: str,
     volume_kwargs: Mapping[str, Any],
     *,
-    sample_rate_out: int,
     recorder: voice_artifact_store.TtsRecorder | None,
     voice_settings: VoiceSettings | None,
 ) -> voice_tts.MiniMaxWSClient:
@@ -2847,13 +2834,9 @@ def _minimax_client(  # noqa: PLR0913 - the one place the client's knobs are app
         primary_endpoint=knobs.tts_primary_endpoint,
         fallback_endpoint=knobs.tts_fallback_endpoint,
         sample_rate_in=knobs.tts_sample_rate_in_hz,
-        sample_rate_out=sample_rate_out,
         connect_timeout_s=knobs.tts_connect_timeout_s,
-        task_start_timeout_s=knobs.tts_task_start_timeout_s,
         first_chunk_timeout_s=knobs.tts_first_chunk_timeout_s,
         between_chunk_timeout_s=knobs.tts_between_chunk_timeout_s,
-        total_timeout_s=knobs.tts_total_timeout_s,
-        session_close_timeout_s=knobs.tts_session_close_timeout_s,
         recorder=recorder,
         voice_settings=voice_settings,
         **volume_kwargs,
@@ -2967,8 +2950,7 @@ def _build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
         if remote is not None
         else _minimax_client(
             knobs, api_key or "", volume_kwargs,
-            sample_rate_out=output_sample_rate_hz, recorder=recorder,
-            voice_settings=runtime.voice_settings,
+            recorder=recorder, voice_settings=runtime.voice_settings,
         )
     )
     if not (
@@ -3125,7 +3107,6 @@ def _build_brain_voice(
     )
     client = _minimax_client(
         knobs, api_key, _tts_volume_kwargs(realtime),
-        sample_rate_out=voice_media.StreamingMediaConfig().canonical_sample_rate_hz,
         recorder=recorder,
         voice_settings=runtime.voice_settings,
     )
@@ -3377,8 +3358,7 @@ def _build_phone_speech(
     ) -> voice_media.StreamingTTSPipeline | None:
         provider = _minimax_client(
             knobs, api_key, volume_kwargs,
-            sample_rate_out=PHONE_SAMPLE_RATE_HZ, recorder=None,
-            voice_settings=runtime.voice_settings,
+            recorder=None, voice_settings=runtime.voice_settings,
         )
         try:
             return voice_media.StreamingTTSPipeline(

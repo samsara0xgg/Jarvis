@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from unittest.mock import patch
-
-import pytest
 
 from jarvis.surface import voice_tts
 
@@ -204,79 +201,6 @@ def test_output_stop_final_cas_is_atomic_against_repeated_stop() -> None:
             assert results[0].definitively_closed
             assert stream.stop_calls == 1
             assert stream.close_calls == 1
-
-
-def test_minimax_total_deadline_bounds_a_stuck_connect() -> None:
-    """The concrete provider owns a total deadline above per-message waits."""
-    async def _never_connect(
-        _url: str,
-        *,
-        additional_headers: dict[str, str],
-    ) -> object:
-        del additional_headers
-        await asyncio.Event().wait()
-        return object()
-
-    async def _body() -> float:
-        client = voice_tts.MiniMaxWSClient(
-            api_key="integration-key",
-            connect_timeout_s=1.0,
-            total_timeout_s=0.03,
-        )
-        started_at = time.monotonic()
-        with (
-            patch.object(voice_tts, "_ws_connect", side_effect=_never_connect),
-            pytest.raises(voice_tts.MiniMaxUnavailableError),
-        ):
-            await client.synthesize("deadline")
-        client.request_close()
-        return time.monotonic() - started_at
-
-    assert asyncio.run(_body()) < 0.5
-
-
-def test_minimax_request_close_cancels_and_closes_active_session() -> None:
-    """Provider close cancels its task and runs the WebSocket close finally."""
-    handshake_waiting = asyncio.Event()
-    connection_closed = asyncio.Event()
-
-    class _HangingConnection:
-        def __init__(self) -> None:
-            self.recv_count = 0
-
-        async def recv(self) -> str:
-            self.recv_count += 1
-            if self.recv_count == 1:
-                return '{"event":"connected_success"}'
-            handshake_waiting.set()
-            await asyncio.Event().wait()
-            return ""
-
-        async def send(self, _message: str) -> None:
-            await asyncio.sleep(0)
-
-        async def close(self) -> None:
-            connection_closed.set()
-
-    async def _body() -> None:
-        connection = _HangingConnection()
-        client = voice_tts.MiniMaxWSClient(
-            api_key="integration-key",
-            total_timeout_s=5.0,
-        )
-        with patch.object(
-            voice_tts,
-            "_ws_connect",
-            return_value=connection,
-        ):
-            synth_task = asyncio.create_task(client.synthesize("cancel"))
-            await asyncio.wait_for(handshake_waiting.wait(), timeout=1.0)
-            client.request_close()
-            with pytest.raises(asyncio.CancelledError):
-                await synth_task
-        assert connection_closed.is_set()
-
-    asyncio.run(_body())
 
 
 def test_a_configured_device_that_will_not_resolve_fails_closed_by_name() -> None:

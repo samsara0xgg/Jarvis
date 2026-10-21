@@ -1203,19 +1203,16 @@ realtime:
   tts_model: speech-2.8-turbo
   tts_primary_endpoint: https://api-uw.minimax.io
   tts_fallback_endpoint: https://api.minimax.chat
-  # The rate MiniMax is asked to produce; resampled via soxr to the output rate,
-  # which is streaming_output.canonical_sample_rate_hz below and is written in
-  # exactly that one place.
+  # The rate MiniMax is asked to produce; the media actor resamples it to the output
+  # rate, which is streaming_output.canonical_sample_rate_hz below and is written
+  # in exactly that one place.
   tts_sample_rate_in_hz: 32000
   # MiniMax deadlines, in seconds.  Every one of them fails the request closed
   # rather than hanging a response; raise them for a slow link, not to paper
   # over a dead endpoint.
   tts_connect_timeout_s: 3.0
-  tts_task_start_timeout_s: 3.0
   tts_first_chunk_timeout_s: 8.0
   tts_between_chunk_timeout_s: 5.0
-  tts_total_timeout_s: 30.0
-  tts_session_close_timeout_s: 1.0
   # Silero VAD profiles, read by both input owners.  "record" is the profile
   # every capture uses; "tts" runs while Jarvis is speaking
   # (single_audio_ingress.output_active_vad_mode), stricter so a quiet sound
