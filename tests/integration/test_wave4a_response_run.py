@@ -52,8 +52,6 @@ from jarvis.execution.tools import (
 )
 from jarvis.runtime import (
     JarvisRuntime,
-    _wave4_response_activation,
-    _wave4_response_flags,
     drive_turn,
     make_response_cancel_callable,
 )
@@ -86,6 +84,7 @@ from tests.support.response_run import (
     rows_of,
     seed_started,
 )
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -1063,10 +1062,10 @@ def test_realtime_parent_disabled_keeps_the_streaming_switches_off() -> None:
     """``realtime.enabled: false`` short-circuits the whole Wave-4A graph."""
     config = realtime_config(enabled=False)
     config["realtime"]["response"]["routine_streaming"] = {"enabled": True}
-    activation = _wave4_response_activation(config)
+    activation = runtime_config(config).realtime.response
     assert activation.flags.all_disabled
     assert activation.reason == "realtime_parent_disabled"
-    assert _wave4_response_flags({}).all_disabled
+    assert runtime_config({}).realtime.response.flags.all_disabled
 
 
 def _unused_iterator() -> Iterator[int]:  # pragma: no cover - typing import anchor

@@ -75,7 +75,6 @@ from jarvis.runtime import (
     _screen_tools_config,
     _timesink_db_path,
     _timesink_poll_interval_s,
-    _wave4_response_flags,
     audio_output,
 )
 from jarvis.runtime.config import RuntimeBootstrapError
@@ -646,7 +645,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     broadcaster.attach_loop(asyncio.get_running_loop())
     seat = _Seat(
         speaking.config,
-        _wave4_response_flags(speaking.config.raw),
+        speaking.config.realtime.response.flags,
         _SeatPaths(journal.path, speaking.runtime_root),
         journal.conn,
         speaking.config.memory,

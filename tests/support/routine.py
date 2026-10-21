@@ -16,7 +16,7 @@ from jarvis.decision.pre_route import load_tool_cues
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
+from jarvis.runtime import JarvisRuntime, drive_turn
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.runtime_config import runtime_config
@@ -65,15 +65,16 @@ def routine_runtime(
         "timeout_s": 5,
         "max_retries": 0,
     }
+    parsed = runtime_config(config, root=tmp_path)
     return JarvisRuntime(
-        config=runtime_config(config, root=tmp_path),
+        config=parsed,
         runtime_paths=paths,
         conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
         llm_client=LLMClient(llm_config),
         system_prompt="",
-        response_flags=_wave4_response_flags(config),
+        response_flags=parsed.realtime.response.flags,
         llm_session_factory=LLMSessionFactory(llm_config),
         response_runs=ResponseRunRegistry(),
         committed_event_bus=CommittedEventBus(),

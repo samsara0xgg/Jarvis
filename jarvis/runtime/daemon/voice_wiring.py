@@ -609,7 +609,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
             recorder=recorder, voice_settings=runtime.voice_settings,
         )
     )
-    if not (realtime.get("enabled") is True and provider.streaming_candidate_count > 0):
+    if not (runtime.config.realtime.enabled and provider.streaming_candidate_count > 0):
         LOGGER.warning(
             "streaming speech cannot run (realtime.enabled is off, or no TTS endpoint is "
             "configured); this boot will not speak.",
@@ -777,7 +777,7 @@ def single_ingress_activation(
             capable=False,
             reason="feature_disabled",
         )
-    if realtime.get("enabled") is not True:
+    if not runtime.config.realtime.enabled:
         return SingleIngressActivation(
             requested=True,
             capable=False,

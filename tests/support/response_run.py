@@ -19,7 +19,7 @@ from jarvis.decision.response_run import (
 )
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
+from jarvis.runtime import JarvisRuntime, drive_turn
 from jarvis.shared.realtime import stable_response_group_id
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
@@ -129,15 +129,16 @@ def make_runtime(
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
     config = realtime_config(cancel_timeout_ms=cancel_timeout_ms)
+    parsed = runtime_config(config, root=tmp_path)
     return JarvisRuntime(
-        config=runtime_config(config, root=tmp_path),
+        config=parsed,
         runtime_paths=paths,
         conn=conn,
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        response_flags=_wave4_response_flags(config),
+        response_flags=parsed.realtime.response.flags,
         llm_session_factory=ScriptedSessions(model, LLM_CONFIG),
         response_runs=ResponseRunRegistry(),
         committed_event_bus=CommittedEventBus(),

@@ -35,6 +35,8 @@ from jarvis.deployment.models import (
 )
 from jarvis.runtime.settings import SETUP_VOICES, apply_settings
 from jarvis.shared import lang
+from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
+from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.memory_db import MemorySettings, SessionSettings
 
@@ -83,6 +85,37 @@ class ModelPaths:
 
 
 @dataclass(frozen=True)
+class ResponseActivation:
+    """ADR-0008 Step 2's flag graph, resolved.
+
+    ``flags`` is what runs, ``requested`` what the file asked for. ``reason`` is ``validated``,
+    ``not_requested`` or ``realtime_parent_disabled`` (a streaming switch asked for while
+    ``realtime.enabled`` is not true, so ``flags`` is all off).
+    """
+
+    flags: Wave4ResponseFlags
+    requested: Wave4ResponseFlags
+    reason: str
+
+
+@dataclass(frozen=True)
+class RealtimeSettings:
+    """The ``realtime`` block's switches and bounds; its voice knobs stay in ``raw``.
+
+    ``enabled`` is the parent switch (exactly ``true``). ``cancel_timeout_ms`` is the cancel
+    connection's SQLite ``busy_timeout``: how long a contended terminal CAS waits, never an
+    in-flight provider call. ``input_*`` bound the intent pump (``realtime.input``).
+    """
+
+    enabled: bool
+    wave1: Wave1FeatureFlags
+    response: ResponseActivation
+    cancel_timeout_ms: int
+    input_queue_capacity: int
+    input_max_concurrent_turns: int
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Everything the runtime reads from its config, parsed once.
 
@@ -106,6 +139,7 @@ class RuntimeConfig:
     models: ModelPaths
     memory: MemorySettings
     session: SessionSettings
+    realtime: RealtimeSettings
     raw: Mapping[str, Any]
 
 
@@ -242,6 +276,87 @@ def _owner_zone(raw: Mapping[str, Any]) -> tzinfo | None:
         raise ValueError(message) from exc
 
 
+_FALLBACK_CANCEL_TIMEOUT_MS: Final = 500
+_FALLBACK_INPUT_QUEUE_CAPACITY: Final = 8
+_FALLBACK_INPUT_MAX_CONCURRENT_TURNS: Final = 2
+
+
+def _positive_int(block: object, *, key: str, fallback: int, where: str) -> int:
+    """``<where>.<key>`` as a positive int; anything else is ``fallback``, with one warning."""
+    value = block.get(key) if isinstance(block, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if value is not None:
+            LOGGER.warning(
+                "%s.%s=%r is not a positive int; using %d", where, key, value, fallback,
+            )
+        return fallback
+    return value
+
+
+def _response_activation(realtime: dict[str, Any]) -> ResponseActivation:
+    """Resolve the ADR-0008 Step 2 flag graph in exactly one place.
+
+    Every precondition for the Wave-4A switches lives here rather than being re-derived at each
+    combination point, which is what made the flags drift (the Wave 0-3 audit). One rule: a
+    ``routine_streaming``, ``spoken_streaming`` or ``lifecycle_commentary`` request while
+    ``realtime.enabled`` is not true downgrades the graph to all off, with one warning and one
+    ``response_activation_downgraded`` trace point per load. The ResponseRun lifecycle and the
+    cancel seam are no switches (ADR 0332): bootstrap builds both for every runtime.
+    """
+    response, commentary = realtime.get("response"), realtime.get("commentary")
+    requested = Wave4ResponseFlags.from_mapping(
+        response if isinstance(response, dict) else None,
+        commentary=commentary if isinstance(commentary, dict) else None,
+    )
+    if realtime.get("enabled") is not True:
+        if requested.all_disabled:
+            return ResponseActivation(Wave4ResponseFlags(), requested, "not_requested")
+        reason = "realtime_parent_disabled"
+        LOGGER.warning(
+            "realtime.response downgraded (%s): requested routine_streaming=%s "
+            "spoken_streaming=%s lifecycle_commentary=%s; effective all off",
+            reason, requested.routine_streaming, requested.spoken_streaming,
+            requested.lifecycle_commentary,
+        )
+        record_realtime_trace(
+            "response_activation_downgraded",
+            reason=reason,
+            requested=(
+                f"routine_streaming={requested.routine_streaming},"
+                f"spoken_streaming={requested.spoken_streaming},"
+                f"lifecycle_commentary={requested.lifecycle_commentary}"
+            ),
+        )
+        return ResponseActivation(Wave4ResponseFlags(), requested, reason)
+    return ResponseActivation(
+        requested, requested, "not_requested" if requested.all_disabled else "validated",
+    )
+
+
+def _realtime(realtime: dict[str, Any]) -> RealtimeSettings:
+    """The ``realtime`` block's switches (``realtime`` is the block, made a dict)."""
+    enabled = realtime.get("enabled") is True
+    safety = realtime.get("concurrency_safety")
+    return RealtimeSettings(
+        enabled=enabled,
+        wave1=Wave1FeatureFlags.from_mapping(safety if isinstance(safety, dict) else None)
+        if enabled else Wave1FeatureFlags(),
+        response=_response_activation(realtime),
+        cancel_timeout_ms=_positive_int(
+            realtime.get("response"), key="cancel_timeout_ms", fallback=_FALLBACK_CANCEL_TIMEOUT_MS,
+            where="realtime.response",
+        ),
+        input_queue_capacity=_positive_int(
+            realtime.get("input"), key="queue_capacity", fallback=_FALLBACK_INPUT_QUEUE_CAPACITY,
+            where="realtime.input",
+        ),
+        input_max_concurrent_turns=_positive_int(
+            realtime.get("input"), key="max_concurrent_turns",
+            fallback=_FALLBACK_INPUT_MAX_CONCURRENT_TURNS, where="realtime.input",
+        ),
+    )
+
+
 def _model_path(
     raw: Mapping[str, Any], *, key: str, config_dir: Path, fallback: Path,
 ) -> Path:
@@ -374,5 +489,6 @@ def parse_runtime_config(
         ),
         memory=MemorySettings.from_config(raw.get("memory"), runtime_root=runtime_root),
         session=SessionSettings.from_config(raw.get("session")),
+        realtime=_realtime(realtime),
         raw=raw,
     )

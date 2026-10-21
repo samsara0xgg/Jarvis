@@ -26,7 +26,7 @@ import jarvis.state.event_log as event_log_module
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
+from jarvis.runtime import JarvisRuntime, drive_turn
 from jarvis.shared import Event
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
@@ -112,15 +112,16 @@ def test_on_word_thinks_its_own_turn_only(
     # would be waited out in real time.
     config = realtime_config(answer_hold_s=0)
     model = ScriptedModel(otherwise="好的。")
+    parsed = runtime_config(config, root=tmp_path)
     runtime = JarvisRuntime(
-        config=runtime_config(config, root=tmp_path),
+        config=parsed,
         runtime_paths=paths,
         conn=conn,
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        response_flags=_wave4_response_flags(config),
+        response_flags=parsed.realtime.response.flags,
         llm_session_factory=ScriptedSessions(model, _LLM),
         committed_event_bus=CommittedEventBus(),
         think_mode=load_think_mode(_LLM),

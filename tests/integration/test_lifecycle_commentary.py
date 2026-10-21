@@ -37,7 +37,6 @@ from jarvis.decision.response_run import (
 )
 from jarvis.runtime import (
     JarvisRuntime,
-    _wave4_response_activation,
     drive_turn,
     inherent_loop,
     make_barge_in_interrupt_callable,
@@ -77,7 +76,7 @@ from tests.support.media import (
     terminal_rows,
 )
 from tests.support.media import media_config as _media_config
-from tests.support.runtime_config import reconfigure
+from tests.support.runtime_config import reconfigure, runtime_config
 
 if TYPE_CHECKING:
     import sqlite3
@@ -299,19 +298,19 @@ def test_shipped_config_turns_commentary_on() -> None:
     """ADR 0116: the shipped switch is on, so a slow turn says its wait line."""
     shipped = yaml.safe_load((repo_root() / "config" / "jarvis.yaml").read_text())
     assert shipped["realtime"]["commentary"] == {"enabled": True}
-    assert _wave4_response_activation(shipped).flags.lifecycle_commentary is True
+    assert runtime_config(shipped).realtime.response.flags.lifecycle_commentary is True
 
 
 def test_commentary_requires_realtime_enabled() -> None:
     """The parent switch off downgrades the whole graph, commentary included."""
-    activation = _wave4_response_activation(_config(enabled=False, commentary=True))
+    activation = runtime_config(_config(enabled=False, commentary=True)).realtime.response
     assert activation.reason == "realtime_parent_disabled"
     assert activation.flags.lifecycle_commentary is False
 
 
 def test_commentary_validates_with_its_precondition() -> None:
     """The precondition met: the switch survives the graph."""
-    activation = _wave4_response_activation(_config(enabled=True, commentary=True))
+    activation = runtime_config(_config(enabled=True, commentary=True)).realtime.response
     assert activation.reason == "validated"
     assert activation.flags.lifecycle_commentary is True
 
@@ -320,7 +319,7 @@ def test_non_boolean_truthy_never_enables_commentary() -> None:
     """Fail-closed `is True`, the same rule every other realtime flag uses."""
     config = _config(enabled=True, commentary=True)
     config["realtime"]["commentary"] = {"enabled": "yes"}  # type: ignore[index]
-    assert _wave4_response_activation(config).flags.lifecycle_commentary is False
+    assert runtime_config(config).realtime.response.flags.lifecycle_commentary is False
 
 
 # --- observer harness ------------------------------------------------------

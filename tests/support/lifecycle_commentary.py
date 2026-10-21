@@ -15,7 +15,7 @@ import pytest
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _wave4_response_activation, inherent_loop
+from jarvis.runtime import JarvisRuntime, inherent_loop
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import fetch_events_after, open_event_log
 from jarvis.surface.cli import parse_response_channels
@@ -74,15 +74,16 @@ def commentary_runtime(
     model = ScriptedModel(otherwise=FINAL_ANSWER) if model is None else model
     paths = bootstrap_runtime(tmp_path)
     config = _observer_config(commentary=commentary)
+    parsed = runtime_config(config, root=tmp_path)
     return JarvisRuntime(
-        config=runtime_config(config, root=tmp_path),
+        config=parsed,
         runtime_paths=paths,
         conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(),
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        response_flags=_wave4_response_activation(config).flags,
+        response_flags=parsed.realtime.response.flags,
         llm_session_factory=ScriptedSessions(model, _LLM_CONFIG),
         response_runs=ResponseRunRegistry(),
         committed_event_bus=CommittedEventBus(),

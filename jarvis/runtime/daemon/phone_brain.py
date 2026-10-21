@@ -92,7 +92,7 @@ def build_phone_speech(
     except ValueError as exc:
         LOGGER.warning("realtime.streaming_output config invalid (%s); a phone gets no voice.", exc)
         return None
-    if realtime.get("enabled") is not True:
+    if not runtime.config.realtime.enabled:
         LOGGER.warning("streaming speech is off; a phone gets no voice.")
         return None
     config = dataclasses.replace(

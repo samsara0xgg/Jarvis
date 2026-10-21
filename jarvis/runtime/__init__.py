@@ -363,12 +363,6 @@ _FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
 # rather than importing ``packet.DEFAULT_OBSERVER_POLL_INTERVAL_S``).
 _FALLBACK_CONFIRMATION_TTL_MS: int = 600_000
 
-# ADR-0008 §6 `realtime.response.cancel_timeout_ms` default. Implemented as
-# the cancel connection's SQLite `busy_timeout`, so it bounds how long the
-# terminal CAS waits for a contended writer — never an in-flight provider
-# call, which has no cancellation seam until ADR-0008 Step 6.
-_FALLBACK_CANCEL_TIMEOUT_MS: int = 500
-
 # Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
 # key `screen_look` reads for its one vision call when the config's
 # `tools.screen` block doesn't override it.
@@ -949,147 +943,6 @@ def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode |
     except ThinkModeConfigError as exc:
         msg = f"runtime: {config_path} {exc}"
         raise RuntimeBootstrapError(msg) from exc
-
-
-def _wave1_feature_flags(config: Mapping[str, Any]) -> Wave1FeatureFlags:
-    """Parse opt-in Wave 1 adoption flags; missing/malformed means all off."""
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping) or realtime.get("enabled") is not True:
-        return Wave1FeatureFlags()
-    safety = realtime.get("concurrency_safety")
-    return Wave1FeatureFlags.from_mapping(safety if isinstance(safety, Mapping) else None)
-
-
-@dataclass(frozen=True)
-class _Wave4ResponseActivation:
-    """Validated Wave-4A activation decision; the whole flag graph, once."""
-
-    flags: Wave4ResponseFlags
-    requested: Wave4ResponseFlags
-    reason: str
-
-
-def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActivation:
-    """Resolve the ADR-0008 Step 2 flag graph in exactly one place.
-
-    Every precondition for the Wave-4A switches lives here rather than being
-    re-derived at each combination point — that ad-hoc ladder is the root
-    cause of the flag drift the Wave 0-3 audit found. One rule, at most one
-    downgrade per boot, with one warning and one
-    ``response_activation_downgraded`` trace point: ``routine_streaming``,
-    ``spoken_streaming`` or ``lifecycle_commentary`` requested while
-    ``realtime`` is absent, not a mapping, or ``realtime.enabled`` is not True.
-    The ResponseRun lifecycle and the cancel seam are no switches (ADR 0332):
-    bootstrap builds both for every runtime.
-    """
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping):
-        return _Wave4ResponseActivation(
-            flags=Wave4ResponseFlags(),
-            requested=Wave4ResponseFlags(),
-            reason="not_requested",
-        )
-    response_raw = realtime.get("response")
-    commentary_raw = realtime.get("commentary")
-    requested = Wave4ResponseFlags.from_mapping(
-        response_raw if isinstance(response_raw, Mapping) else None,
-        commentary=commentary_raw if isinstance(commentary_raw, Mapping) else None,
-    )
-    if realtime.get("enabled") is not True:
-        if not requested.all_disabled:
-            return _downgraded_response_activation(requested)
-        return _Wave4ResponseActivation(
-            flags=Wave4ResponseFlags(),
-            requested=requested,
-            reason="not_requested",
-        )
-
-    return _Wave4ResponseActivation(
-        flags=requested,
-        requested=requested,
-        reason="validated" if not requested.all_disabled else "not_requested",
-    )
-
-
-def _downgraded_response_activation(requested: Wave4ResponseFlags) -> _Wave4ResponseActivation:
-    """Log and trace the one downgrade, then return the safe (all off) flag set.
-
-    A downgrade never *enables* a switch the config left off.
-    """
-    reason = "realtime_parent_disabled"
-    LOGGER.warning(
-        "realtime.response downgraded (%s): requested routine_streaming=%s "
-        "spoken_streaming=%s lifecycle_commentary=%s; effective all off",
-        reason,
-        requested.routine_streaming,
-        requested.spoken_streaming,
-        requested.lifecycle_commentary,
-    )
-    record_realtime_trace(
-        "response_activation_downgraded",
-        reason=reason,
-        requested=(
-            f"routine_streaming={requested.routine_streaming},"
-            f"spoken_streaming={requested.spoken_streaming},"
-            f"lifecycle_commentary={requested.lifecycle_commentary}"
-        ),
-    )
-    return _Wave4ResponseActivation(
-        flags=Wave4ResponseFlags(), requested=requested, reason=reason,
-    )
-
-
-def _wave4_response_flags(config: Mapping[str, Any]) -> Wave4ResponseFlags:
-    """Return the validated Wave-4A flags for ``config``."""
-    return _wave4_response_activation(config).flags
-
-
-def _positive_int(
-    config: Mapping[str, Any],
-    *,
-    section: str,
-    key: str,
-    fallback: int,
-) -> int:
-    """Read one positive int from ``realtime.<section>.<key>``; fail closed."""
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping):
-        return fallback
-    block = realtime.get(section)
-    if not isinstance(block, Mapping):
-        return fallback
-    value = block.get(key)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        if value is not None:
-            LOGGER.warning(
-                "realtime.%s.%s=%r is not a positive int; using %d",
-                section,
-                key,
-                value,
-                fallback,
-            )
-        return fallback
-    return value
-
-
-def _cancel_timeout_ms(config: Mapping[str, Any]) -> int:
-    """Read ``realtime.response.cancel_timeout_ms``; fail closed to 500 ms."""
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping):
-        return _FALLBACK_CANCEL_TIMEOUT_MS
-    response = realtime.get("response")
-    if not isinstance(response, Mapping):
-        return _FALLBACK_CANCEL_TIMEOUT_MS
-    value = response.get("cancel_timeout_ms")
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        if value is not None:
-            LOGGER.warning(
-                "realtime.response.cancel_timeout_ms=%r is not a positive int; using %d",
-                value,
-                _FALLBACK_CANCEL_TIMEOUT_MS,
-            )
-        return _FALLBACK_CANCEL_TIMEOUT_MS
-    return value
 
 
 def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
@@ -2813,7 +2666,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     lang.set_language(config.language)
     log_llm_io = diagnostics_flag(config.raw, "log_llm_io")
     llm_io_log.configure(logs_dir(paths.root) / "llm-io.jsonl" if log_llm_io else None)
-    wave1_features = _wave1_feature_flags(config.raw)
+    wave1_features = config.realtime.wave1
     (
         web_search_max_results,
         web_fetch_max_bytes,
@@ -3093,19 +2946,13 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     llm_client = LLMClient(llm_config)
     think_mode = _think_mode(llm_config, config_path)
 
-    # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
-    #     here; every downstream site reads the validated result. Every
+    # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph was resolved once, when the
+    #     config was parsed; every downstream site reads the validated result. Every
     #     runtime gets the session factory and the cancel registry (ADR 0332).
-    response_activation = _wave4_response_activation(config.raw)
-    response_flags = response_activation.flags
-    realtime_raw = config.raw.get("realtime")
+    response_flags = config.realtime.response.flags
     # The bus is gated on `realtime.enabled` rather than a Wave-4A switch so
     # Waves 4B/4C reuse this same line. It is inert while nobody subscribes.
-    committed_event_bus = (
-        CommittedEventBus()
-        if isinstance(realtime_raw, Mapping) and realtime_raw.get("enabled") is True
-        else None
-    )
+    committed_event_bus = CommittedEventBus() if config.realtime.enabled else None
     llm_session_factory = LLMSessionFactory(llm_config)
     response_runs = ResponseRunRegistry()
 
@@ -3528,7 +3375,7 @@ def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact o
     meaning: a contended ``BEGIN IMMEDIATE`` gives up after that many
     milliseconds, no terminal is written, and the caller may retry.
     """
-    cancel_timeout_ms = _cancel_timeout_ms(runtime.config.raw)
+    cancel_timeout_ms = runtime.config.realtime.cancel_timeout_ms
     event_log_path = runtime.runtime_paths.event_log
     committed_event_bus = runtime.committed_event_bus
     registry = runtime.response_runs

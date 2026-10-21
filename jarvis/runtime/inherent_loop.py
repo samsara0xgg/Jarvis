@@ -126,7 +126,6 @@ from jarvis.runtime import (
     _event_action_id,
     _jev_log,
     _new_turn_id,
-    _positive_int,
     _timesink_db_path,
     device_voice,
     make_barge_in_interrupt_callable,
@@ -3373,18 +3372,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             await _start_intent_pump(
                 runtime,
                 poll_interval_s=poll_interval_s,
-                queue_capacity=_positive_int(
-                    runtime.config.raw,
-                    section="input",
-                    key="queue_capacity",
-                    fallback=8,
-                ),
-                max_concurrent_turns=_positive_int(
-                    runtime.config.raw,
-                    section="input",
-                    key="max_concurrent_turns",
-                    fallback=2,
-                ),
+                queue_capacity=runtime.config.realtime.input_queue_capacity,
+                max_concurrent_turns=runtime.config.realtime.input_max_concurrent_turns,
             ),
         )
         watchers.append(
