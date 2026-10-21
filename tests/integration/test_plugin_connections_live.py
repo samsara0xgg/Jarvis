@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from jarvis.decision.llm import LLMClient, load_llm_config
+from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import load_env_file
 from jarvis.runtime import JarvisRuntime, drive_turn, run_turn
 from jarvis.state.event_log import get_event
@@ -23,14 +24,16 @@ def test_conversation_opens_plugin_and_resumes_with_live_tool(
     write_package(tmp_path, "echo", ECHO)
     fx = ToolWorld(tmp_path / "runtime", tools=())
     service = make_service(tmp_path, fx)
+    llm_config = load_llm_config(Path("config/jarvis.yaml"))
     runtime = JarvisRuntime(
         config={},
         runtime_paths=fx.paths,
         conn=fx.conn,
         tool_registry=fx.registry,
         lifecycle=fx.lifecycle,
-        llm_client=LLMClient(load_llm_config(Path("config/jarvis.yaml"))),
+        llm_client=LLMClient(llm_config),
         system_prompt=Path("prompts/jarvis_v1.md").read_text(),
+        llm_session_factory=LLMSessionFactory(llm_config),
         plugin_connections=service,
     )
     try:

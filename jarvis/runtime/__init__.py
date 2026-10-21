@@ -644,6 +644,7 @@ class JarvisRuntime:
         llm_client: L3 multi-provider LLM client.
         system_prompt: Rendered system prompt string (verbatim
             content of ``prompts/jarvis_v1.md``).
+        llm_session_factory: mints each ResponseRun's immutable request client (ADR 0332).
         tier0_table: Spec §17 Tier 0 whitelist loaded from
             ``config/tier0_patterns.yaml``; empty tuple = Tier 0
             disabled.
@@ -672,11 +673,11 @@ class JarvisRuntime:
     lifecycle: ActionLifecycle
     llm_client: LLMClient
     system_prompt: str
+    llm_session_factory: LLMSessionFactory
     tier0_table: Tier0Table = ()
     confirm_grammar_table: ConfirmGrammarTable = ()
     wave1_features: Wave1FeatureFlags = field(default_factory=Wave1FeatureFlags)
     response_flags: Wave4ResponseFlags = field(default_factory=Wave4ResponseFlags)
-    llm_session_factory: LLMSessionFactory | None = None
     response_runs: ResponseRunRegistry | None = None
     committed_event_bus: CommittedEventBus | None = None
     # ADR 0164 — the one decision-snapshot cache every turn thread shares by reference
@@ -3697,8 +3698,8 @@ def _start_drive_turn_response(
     user_intent_event: Event,
     turn_id: str,
     correction: StreamCorrection | None = None,
-) -> tuple[ResponseRun, ResponseTerminalizer, RoutineStreamRoute | None] | None:
-    """Open one durable ResponseRun for this turn, or ``None`` without a session factory.
+) -> tuple[ResponseRun, ResponseTerminalizer, RoutineStreamRoute | None]:
+    """Open one durable ResponseRun for this turn.
 
     ``runtime`` here is ``drive_turn``'s own runtime — in the daemon that is
     the ``dataclasses.replace(conn=worker_conn)`` copy, so the run's
@@ -3712,9 +3713,6 @@ def _start_drive_turn_response(
     under ``spoken_stream_policy`` first (a typed one is never played, ADR 0181).
     Every other turn (and every correction run) keeps ``legacy_full_text_policy``.
     """
-    if runtime.llm_session_factory is None:
-        return None
-
     response_id = new_response_id()
     think = runtime.think_mode
     preset = think.preset_for(runtime.conn, user_intent_event) if think else None
@@ -5046,8 +5044,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
     # decide loop so the per-run request client, the terminal owner and the
-    # L5 ids all name the same response. Returns None for a runtime without a
-    # session factory (a hand-built one), and every use below is guarded on that None.
+    # L5 ids all name the same response. A continuation resumes the run it
+    # suspended with.
     run_pair = None if continuation is not None else _start_drive_turn_response(
         runtime,
         user_intent_event=user_intent_event,
@@ -5303,9 +5301,6 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     turn_id=effective_turn_id,
                     correction=correction,
                 )
-                if replacement is None:  # pragma: no cover - bootstrap always builds the factory
-                    msg = "drive_turn: correction run requires an LLM session factory"
-                    raise RuntimeBootstrapError(msg)  # noqa: TRY301
                 run, terminalizer, _ = replacement
                 decide_ctx = replace(
                     decide_ctx,

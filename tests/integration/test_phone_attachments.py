@@ -36,6 +36,7 @@ import yaml
 
 from jarvis.decision import DecideContext, LifecycleLike, RuntimePathsLike, ToolRegistryLike, decide
 from jarvis.decision.llm import LLMClient, _messages_to_responses_input
+from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.deployment import bootstrap_runtime, data
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
@@ -637,7 +638,7 @@ def _runtime(tmp_path: Path, config: dict[str, Any]) -> JarvisRuntime:
     return JarvisRuntime(
         config=config, runtime_paths=paths, conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(), lifecycle=ActionLifecycle(),
-        llm_client=LLMClient(llm), system_prompt="",
+        llm_client=LLMClient(llm), system_prompt="", llm_session_factory=LLMSessionFactory(llm),
         attachments=Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME),
     )
 

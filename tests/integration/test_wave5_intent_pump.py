@@ -25,6 +25,7 @@ import httpx
 import openai
 import pytest
 
+from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, WaitingTurn, inherent_loop
@@ -73,6 +74,7 @@ def _make_runtime(tmp_path: Path) -> JarvisRuntime:
         lifecycle=ActionLifecycle(),
         llm_client=None,  # type: ignore[arg-type]
         system_prompt="",
+        llm_session_factory=LLMSessionFactory({}),
     )
 
 

@@ -881,8 +881,10 @@ def test_a_saved_picture_starts_uploading_at_once_and_the_next_render_finds_its_
     tmp_path: Path,
 ) -> None:
     """POST /inherent/attachments starts the upload; a picture only, once, and not a refusal."""
-    client = FilesClient()
-    holder: Any = SimpleNamespace(picture_files=None, llm_session_factory=None, llm_client=client)
+    model = ScriptedModel(provider="anthropic")
+    holder: Any = SimpleNamespace(
+        picture_files=None, llm_session_factory=sessions(model), llm_client=model,
+    )
     d = attachments_daemon(
         tmp_path,
         saved=lambda ref: inherent_loop._start_upload(holder, ref),  # noqa: SLF001
@@ -896,7 +898,7 @@ def test_a_saved_picture_starts_uploading_at_once_and_the_next_render_finds_its_
     settle(files)
 
     assert (picture.status_code, text.status_code, refused.status_code) == (200, 200, 415)
-    assert client.uploads == [("IMG_1.png", len(PNG), "image/png")], "only the picture, only once"
+    assert model.uploads == [("IMG_1.png", len(PNG), "image/png")], "only the picture, only once"
     assert d.store.file_id(picture.json()["id"]) == "file_001"
 
 
@@ -916,15 +918,17 @@ def test_a_failing_start_never_fails_the_upload_route(tmp_path: Path) -> None:
 
 def test_no_upload_starts_when_the_default_preset_is_not_anthropics(world: World) -> None:
     """The head start is for Claude's Files API only."""
-    client = FilesClient("openai")
+    model = ScriptedModel()
     files = PictureFiles(world.store)
-    runtime: Any = SimpleNamespace(picture_files=files, llm_session_factory=None, llm_client=client)
+    runtime: Any = SimpleNamespace(
+        picture_files=files, llm_session_factory=sessions(model, "openai"), llm_client=model,
+    )
     picture = world.store.save(PNG, "IMG_1.png", images_ok=True)
 
     inherent_loop._start_upload(runtime, picture)  # noqa: SLF001
 
     assert not files._inflight  # noqa: SLF001
-    assert client.uploads == []
+    assert model.uploads == []
 
 
 def test_a_render_waits_for_a_running_upload_within_the_bound_and_uses_it(world: World) -> None:

@@ -2118,9 +2118,6 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     disposition to record.
     """
     factory = runtime.llm_session_factory
-    if factory is None:  # pragma: no cover - bootstrap always builds the factory
-        msg = "lifecycle commentary requires the ResponseRun session factory"
-        raise RuntimeError(msg)
     response_id = new_response_id()
     snapshot = factory.snapshot(None)
     run = start_response_run(
@@ -2593,8 +2590,6 @@ def _say_conversation_line(
     the capture thread that heard the words must not wait on SQLite.
     """
     factory = runtime.llm_session_factory
-    if factory is None:
-        return
     try:
         conn = open_runtime_event_log(runtime.runtime_paths.event_log)
         try:
@@ -5930,9 +5925,7 @@ def _default_anthropic(factory: LLMSessionFactory) -> LLMClient | None:
 
 def _upload_client(runtime: JarvisRuntime) -> LLMClient | None:
     """The client that uploads pictures: on the default preset, when that is Anthropic's."""
-    if runtime.llm_session_factory is not None:
-        return _default_anthropic(runtime.llm_session_factory)
-    return runtime.llm_client if runtime.llm_client.provider == "anthropic" else None
+    return _default_anthropic(runtime.llm_session_factory)
 
 
 def _start_upload(runtime: JarvisRuntime, ref: AttachmentRef) -> None:
@@ -5947,8 +5940,6 @@ def _files_client(runtime: JarvisRuntime) -> LLMClient | None:
     if runtime.llm_client.provider == "anthropic":
         return runtime.llm_client
     factory = runtime.llm_session_factory
-    if factory is None:
-        return None
     for name, spec in runtime.llm_client.get_presets().items():
         if str(spec.get("provider", "")).lower() == "anthropic":
             return factory.create(factory.snapshot(name), response_id="pictures")
