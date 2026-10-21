@@ -17,7 +17,7 @@ import pytest
 from jarvis.decision.tier0 import load_tier0_table
 from tests.canary._helpers import repo_root
 from tests.support.clock import FakeClock
-from tests.support.net import start_http_server, stop_http_server
+from tests.support.net import reply_stays_alive, start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     import sqlite3
@@ -72,22 +72,16 @@ class SurrogateJev:
                     outer.requests.append(body)
                     outer.headers.append(dict(self.headers))
                     outer._arrived.notify_all()
-                outer.take_its_time()
-                if outer.mode == "trickle":
-                    # Every read lands inside the phase timeout; the whole never ends in time.
-                    self.send_response(200)
-                    self.send_header("Content-Length", "100")
-                    self.end_headers()
-                    for _ in range(30):
-                        self.wfile.write(b" ")
-                        self.wfile.flush()
-                        outer.clock.advance(0.1)
-                    outer.released.wait(_GUARD_S)  # the reply never ends, as far as the call goes
-                    return
                 if outer.mode in ("error", "no_route"):
+                    outer.take_its_time()
                     self.send_response(500 if outer.mode == "error" else 404)
                     self.end_headers()
                     return
+                with reply_stays_alive(self):
+                    outer.take_its_time()
+                    if outer.mode == "trickle":
+                        outer.trickle()
+                        return
                 body = (
                     b"not json"
                     if outer.mode == "garbage"
@@ -103,11 +97,10 @@ class SurrogateJev:
                         }
                     ).encode()
                 )
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except OSError:  # the client gave up on a slow call
+                    return
                 if outer.on_answered is not None:
                     outer.on_answered()
 
@@ -126,6 +119,16 @@ class SurrogateJev:
             self.clock.advance(self.delay_s)
         if self.caller_gives_up:
             self.clock.wait_until(lambda: self.clock.parked == 0, "the caller to give up")
+
+    def trickle(self) -> None:
+        """A reply that never ends and never goes quiet; the caller's deadline is the only end.
+
+        Once the caller waits on the clock, the 3 s the reply would have taken pass on it. Nothing
+        else moves the clock, so the call is cut at its own deadline however late the caller came.
+        """
+        self.clock.wait_until(lambda: self.clock.blocked >= 1, "the caller to wait on the clock")
+        self.clock.advance(3.0)
+        self.released.wait(_GUARD_S)
 
     def arrived(self, count: int, timeout_s: float = 5.0) -> list[dict[str, Any]]:
         """The requests once ``count`` have arrived.

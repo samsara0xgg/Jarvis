@@ -30,7 +30,7 @@ from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.support.claude_board import NOW_MS, board_home, noop
 from tests.support.clock import FakeClock
-from tests.support.net import start_http_server, stop_http_server
+from tests.support.net import reply_stays_alive, start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -63,8 +63,10 @@ class _Jev:
             def do_POST(self) -> None:
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 outer.requests.append(request)
-                if outer.hold:
-                    outer.release.wait(_GUARD_S)
+                held = outer.hold  # a test may end the hold while this call is in it
+                if held:
+                    with reply_stays_alive(self, outer.status):
+                        outer.release.wait(_GUARD_S)
                 text = request["state"]
                 odds = (
                     0.96 if "Which one" in text else 0.949 if "borderline" in text
@@ -73,10 +75,11 @@ class _Jev:
                 body = json.dumps(
                     {"answers": {"asks": {"noul": odds}}, "usage": {"cost": 0.00003}}
                 ).encode()
-                self.send_response(outer.status)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                with contextlib.suppress(BrokenPipeError):  # the client gave up on a slow call
+                if not held:  # a held reply was started, and its status sent, while it waited
+                    self.send_response(outer.status)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                with contextlib.suppress(OSError):  # the client gave up on a slow call
                     self.wfile.write(body)
 
             def log_message(self, *_args: object) -> None:

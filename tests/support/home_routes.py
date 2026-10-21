@@ -16,7 +16,7 @@ from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import Home
 from tests.support.clock import FakeClock
-from tests.support.net import start_http_server, stop_http_server
+from tests.support.net import reply_stays_alive, start_http_server, stop_http_server
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -235,8 +235,10 @@ class HomeJev:
                 with outer._arrived:
                     outer.requests.append(request)
                     outer._arrived.notify_all()
-                if outer.hold:
-                    outer.release.wait(_GUARD_S)
+                held = outer.hold  # a test may end the hold while this call is in it
+                if held:
+                    with reply_stays_alive(self, outer.status):
+                        outer.release.wait(_GUARD_S)
                 subject = request["state"].split("Subject: ", 1)[1]
                 reply, junk = outer.odds[subject]
                 answers: dict[str, Any] = {"reply": {"noul": reply}, "junk": {"noul": junk}}
@@ -257,10 +259,11 @@ class HomeJev:
                         "probabilities": {outer.category: 0.9},
                     }
                 body = json.dumps({"answers": answers, "usage": {"cost": 0.00001}}).encode()
-                self.send_response(outer.status)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                with contextlib.suppress(BrokenPipeError):  # the client gave up on a slow call
+                if not held:  # a held reply was started, and its status sent, while it waited
+                    self.send_response(outer.status)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                with contextlib.suppress(OSError):  # the client gave up on a slow call
                     self.wfile.write(body)
 
             def log_message(self, *_args: object) -> None:

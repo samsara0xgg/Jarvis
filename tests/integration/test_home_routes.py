@@ -591,7 +591,7 @@ def test_mail_reply_slow_answers_wait_only_the_deadline(jev: HomeJev) -> None:
     jev.hold = True
     client = _with_jev(jev.reply(timeout_ms=150))
     assert set(jev.clock.pass_deadline_of(0.15, lambda: _marks(client)).values()) == {None}
-    assert len(jev.arrived(6)) == 6
+    assert len(jev.arrived(4)) >= 4  # the route's four workers each hold a letter; two wait behind
     jev.hold = False
     jev.release.set()  # the abandoned calls are answered now, and dropped
     assert _marks(client)["199a1c0d4101"] == "yes"
