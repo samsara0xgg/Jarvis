@@ -8,17 +8,21 @@ ids, as a sleep across midnight shows on both days. An answer about one of them 
 day it belongs to.
 
 Each stretch the page shows also tells where his attention went in it (ADR 0314,
-:func:`jarvis.state.attention.within`); a planned one, which has not happened, tells nothing.
+:func:`jarvis.state.attention.within`), by the threads its keys were told to serve (ADR 0315);
+a planned one, which has not happened, tells nothing.
 
 Layer rules: runtime may wire across layers.
 """
 
 from __future__ import annotations
 
+import logging
+from contextlib import closing
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from jarvis.state import attention
+from jarvis.state.attention import Thread
 from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.doing import (
     DOING_KINDS,
@@ -30,6 +34,7 @@ from jarvis.state.doing import (
     read_doing,
     waking_window,
 )
+from jarvis.state.memory_db import attention_threads, open_memory_db
 
 if TYPE_CHECKING:
     import sqlite3
@@ -39,6 +44,8 @@ if TYPE_CHECKING:
 
     from jarvis.state.attention import Piece
     from jarvis.state.day_line import DayLine, DaySources
+
+LOGGER = logging.getLogger(__name__)
 
 
 def lane_line(
@@ -80,6 +87,8 @@ class DayDoing(NamedTuple):
     start_ms: int
     pieces: list[Piece]
     """Where his attention was through the stretches the page shows."""
+    threads: dict[str, Thread]
+    """What the keys told so far served (ADR 0315)."""
 
     def before(self) -> list[dict[str, Any]]:
         """The day before's doing spans that run past this day's start, by start."""
@@ -98,7 +107,7 @@ class DayDoing(NamedTuple):
             {
                 **s, "item_ids": [i for i in s["item_ids"] if i in ids],
                 "attention": None if s["kind"] == PLANNED_KIND
-                else attention.within(self.pieces, s["start_ms"], s["end_ms"], {}),
+                else attention.within(self.pieces, s["start_ms"], s["end_ms"], self.threads),
             }
             for s in (*self.before(), *self.own.doing.served)
         ]
@@ -135,13 +144,25 @@ def read_day_doing(  # noqa: PLR0913 — the stores, the day, its line and the c
         prior = Lane(before, before_items, read_doing(
             memory_db, before.isoformat(), before_items, before_start, before_end, now_ms,
         ))
-    told = DayDoing(own, prior, start_ms, [])
+    told = DayDoing(own, prior, start_ms, [], _threads(memory_db))
     shown = [s for s in (*told.before(), *own.doing.served) if s["kind"] != PLANNED_KIND]
     if not shown:
         return told
     return told._replace(pieces=attention.read(
         sources, min(s["start_ms"] for s in shown), max(s["end_ms"] for s in shown),
     ))
+
+
+def _threads(memory_db: Path | None) -> dict[str, Thread]:
+    """What each key told so far served; none when the store cannot be read, logged."""
+    if memory_db is None or not memory_db.is_file():
+        return {}
+    try:
+        with closing(open_memory_db(memory_db)) as conn:
+            return {key: Thread(*told) for key, told in attention_threads(conn).items()}
+    except Exception:
+        LOGGER.exception("doing: what the keys of his attention served could not be read")
+        return {}
 
 
 __all__ = ["DayDoing", "Lane", "lane_line", "reach_past_start", "read_day_doing"]

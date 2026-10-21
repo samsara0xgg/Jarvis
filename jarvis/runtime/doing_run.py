@@ -28,6 +28,15 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
+from jarvis.decision.attention_threads import (
+    ThreadBrief,
+    known_threads,
+    read_threads,
+    untold,
+)
+from jarvis.decision.attention_threads import (
+    build_messages as build_thread_messages,
+)
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.doing_run import (
     Brief,
@@ -40,13 +49,21 @@ from jarvis.decision.doing_run import (
 from jarvis.runtime.doing_day import lane_line, reach_past_start
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
+from jarvis.state import attention
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
 from jarvis.state.doing import cut, fact_spans, his_facts, waking_window
 from jarvis.state.doing_clues import HIS_WORDS, gather
 from jarvis.state.doing_signals import foreground
 from jarvis.state.doing_signals import gather as gather_signals
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.state.memory_db import append_doing_run, latest_doing_run, local_now, open_memory_db
+from jarvis.state.memory_db import (
+    append_attention_threads,
+    append_doing_run,
+    attention_threads,
+    latest_doing_run,
+    local_now,
+    open_memory_db,
+)
 from jarvis.state.picture_notes import last_words
 
 if TYPE_CHECKING:
@@ -59,6 +76,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "doing_run"
+THREADS_KIND: Final[str] = "attention_threads"
 DEFAULT_PRESET: Final[str] = "haiku-bg"
 SHORT_EVERY: Final[timedelta] = timedelta(hours=2)
 """A day is written at most this often, however often its inputs change, unless he asks."""
@@ -81,6 +99,11 @@ class DoingSettings:
     prompt: str
     clock_drafts: bool = False
     """Today is also written on the clock every two hours, not only when he asks (ADR 0311)."""
+    threads_prompt: str | None = None
+    """What the model is told when it says what new keys of his attention served (ADR 0315);
+    None: no key is told, and each stays its own thread."""
+    threads_preset: str | None = None
+    """The model that tells keys; None: the writer's."""
 
     @classmethod
     def from_config(cls, raw: object) -> DoingSettings | None:
@@ -91,10 +114,15 @@ class DoingSettings:
         if not (isinstance(prompt, str) and prompt.strip()):
             LOGGER.warning("doing needs a prompt; what he was doing is not written")
             return None
+        threads_prompt, threads_preset = raw.get("threads_prompt"), raw.get("threads_preset")
         return cls(
             preset=preset if isinstance(preset, str) and preset.strip() else DEFAULT_PRESET,
             prompt=prompt.strip(),
             clock_drafts=raw.get("clock_drafts") is True,
+            threads_prompt=threads_prompt.strip()
+            if isinstance(threads_prompt, str) and threads_prompt.strip() else None,
+            threads_preset=threads_preset
+            if isinstance(threads_preset, str) and threads_preset.strip() else None,
         )
 
 
@@ -198,6 +226,67 @@ def store_run(memory_db: Path, brief: Brief, composed: Composed) -> str:
     )
 
 
+def read_thread_brief(brief: Brief, sources: DaySources, memory_db: Path) -> ThreadBrief | None:
+    """The keys of ``brief``'s waking window nobody told yet, as the model is shown them (0315).
+
+    None when there is none to ask about.
+    """
+    pieces = attention.read(sources, brief.waking.start_ms, brief.waking.end_ms)
+    with closing(open_memory_db(memory_db)) as conn:
+        told = attention_threads(conn)
+    asked = untold(pieces, told)
+    if not asked:
+        return None
+    names = {p.key: p.name for p in pieces}
+    shown = {key: names.get(key) or " ".join(key.split("|")[1:]).strip() for key in told}
+    projects = sorted({
+        (str(item.get("project") or ""), str(item.get("title") or ""))
+        for item in brief.items if item["kind"] == "code" and item.get("project")
+    })
+    return ThreadBrief(
+        day=brief.day, language=brief.language, zone=brief.zone, asked=asked,
+        known=known_threads(told, shown), projects=projects,
+    )
+
+
+class Told(NamedTuple):
+    """What the model said new keys served, or why none of it may be stored (ADR 0315)."""
+
+    threads: dict[str, tuple[str | None, str | None]] | None
+    why: str
+    model: str | None
+    tokens_in: int
+    tokens_out: int
+
+
+def compose_threads(
+    brief: ThreadBrief, settings: DoingSettings, client: LLMClient, cost_recorder: CostRecorder,
+) -> Told:
+    """Ask the model what ``brief``'s keys served, and gate it; a refused answer is asked again.
+
+    Blocking; a call that raises propagates, with nothing stored.
+    """
+    if settings.threads_prompt is None:
+        msg = "keys are told only with doing.threads_prompt"
+        raise ValueError(msg)
+    messages = build_thread_messages(brief)
+    why, model, spent_in, spent_out = "", None, 0, 0
+    for _attempt in range(_ATTEMPTS):
+        result = cost_recorder.chat(
+            client, messages=messages, system=settings.threads_prompt, tools=None,
+            tool_choice=None, kind=THREADS_KIND, turn_id=None,
+        )
+        model = result.model_used or client.model
+        spent_in, spent_out = spent_in + result.tokens_in, spent_out + result.tokens_out
+        found = read_threads(result.text, result.finish_reason, brief)
+        if not isinstance(found, str):
+            return Told(found, "", model, spent_in, spent_out)
+        why = found
+        LOGGER.warning("attention threads: %s rejected (%s)", brief.day, why)
+        messages = asked_again(messages, result.text, why)
+    return Told(None, why, model, spent_in, spent_out)
+
+
 class DoingSchedule:
     """Folds today and the last days every ``poll_s``; writes a day when its inputs changed."""
 
@@ -212,10 +301,12 @@ class DoingSchedule:
         pricing_table: Mapping[str, Mapping[str, float]],
         poll_s: float = 300.0,
         client: LLMClient | None = None,
+        threads_client: LLMClient | None = None,
     ) -> None:
         """Bind the stores and the knobs; nothing runs until :meth:`run`.
 
-        ``client`` stands in for the one built from ``settings.preset`` on first use.
+        ``client`` stands in for the one built from ``settings.preset`` on first use, and
+        ``threads_client`` for the one built from ``settings.threads_preset``.
         """
         self._settings = settings
         self._sources = sources
@@ -225,6 +316,7 @@ class DoingSchedule:
         self._pricing_table = pricing_table
         self._poll_s = poll_s
         self._client = client
+        self._threads_client = threads_client
         self._looked: dict[str, datetime] = {}
         self._writing = threading.Lock()
         """One day is written at a time: the clock's pass and his asking never write two runs."""
@@ -306,6 +398,7 @@ class DoingSchedule:
             self._client = build_compact_client(self._llm_config, self._settings.preset)
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
             recorder = CostRecorder(conn, pricing_table=self._pricing_table)
+            self._tell_threads(brief, recorder)
             composed = compose_run(writing, self._settings, self._client, recorder)
         if composed.spans is None:
             return f"rejected ({composed.why})"
@@ -314,6 +407,29 @@ class DoingSchedule:
         questions = sum(span["question"] is not None for span in spans)
         kind = "final" if brief.final else "short" if writing.kept else "draft"
         return f"landed ({kind}, {len(spans)} spans, {questions} questions)"
+
+    def _tell_threads(self, brief: Brief, recorder: CostRecorder) -> None:
+        """Before a run, have the day's new keys told (ADR 0315); a failure only logs."""
+        if self._settings.threads_prompt is None:
+            return
+        try:
+            asked = read_thread_brief(brief, self._sources, self._memory_db)
+            if asked is None:
+                return
+            if self._threads_client is None:
+                self._threads_client = build_compact_client(
+                    self._llm_config, self._settings.threads_preset or self._settings.preset,
+                )
+            told = compose_threads(asked, self._settings, self._threads_client, recorder)
+            if told.threads is None:
+                LOGGER.warning("attention threads: %s not told (%s)", brief.day, told.why)
+                return
+            append_attention_threads(
+                self._memory_db, told.threads, origin="model", model=told.model, day=brief.day,
+            )
+            LOGGER.info("attention threads: %s told %d keys", brief.day, len(told.threads))
+        except Exception:
+            LOGGER.exception("attention threads: %s failed; its keys stay as they are", brief.day)
 
     async def run(self) -> None:
         """The loop; a failed pass is logged and the next one tries again."""
@@ -334,10 +450,14 @@ __all__ = [
     "KIND",
     "RECENT_DAYS",
     "SHORT_EVERY",
+    "THREADS_KIND",
     "Composed",
     "DoingSchedule",
     "DoingSettings",
+    "Told",
     "compose_run",
+    "compose_threads",
     "read_brief",
+    "read_thread_brief",
     "store_run",
 ]

@@ -139,6 +139,17 @@ CREATE TABLE IF NOT EXISTS doing_answers (
     ts       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS doing_answers_day ON doing_answers (day);
+CREATE TABLE IF NOT EXISTS attention_threads (
+    id       TEXT PRIMARY KEY,
+    key      TEXT NOT NULL,
+    thread   TEXT,
+    category TEXT,
+    origin   TEXT NOT NULL,
+    model    TEXT,
+    day      TEXT NOT NULL,
+    ts       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attention_threads_key ON attention_threads (key);
 CREATE TABLE IF NOT EXISTS core_memory (
     id       TEXT PRIMARY KEY,
     ts       TEXT NOT NULL,
@@ -203,7 +214,8 @@ CREATE INDEX IF NOT EXISTS voiceprints_mic ON voiceprints (device, mic, id);
 # ``PRAGMA user_version`` (ADR 0068). 0 is a file from before the stamp, same
 # schema as 1; a file above this was written by a newer Jarvis and is refused.
 # ``sent``, ``record_attachments`` (ADR 0255), ``day_summaries``, ``day_experience`` (ADR 0280),
-# ``core_memory``, ``day_highlight_marks``, ``doing_runs`` and ``doing_answers`` (ADR 0302), the
+# ``core_memory``, ``day_highlight_marks``, ``doing_runs`` and ``doing_answers`` (ADR 0302),
+# ``attention_threads`` (ADR 0315), the
 # places tables (ADR 0234), ``import_entries``
 # (ADR 0259), ``meaning_vectors`` (ADR 0260) and ``voiceprints`` (ADR 0286) are additive: an
 # older opener ignores them, so they need no new version. So are the
@@ -1681,6 +1693,46 @@ def latest_doing_run(conn: sqlite3.Connection, day: str) -> DoingRun | None:
     )
 
 
+THREAD_ORIGINS: Final = ("model", "him")
+"""Who said what a key served: a model, or he did; his word wins whenever it was given."""
+
+
+def append_attention_threads(
+    path: Path, told: Mapping[str, tuple[str | None, str | None]], *, origin: str,
+    model: str | None, day: str,
+) -> None:
+    """Append what each key of ``told`` served, as (thread, category) (ADR 0315).
+
+    A thread of None says the key serves what is around it. Rows are never rewritten: the newest
+    of a key is the one read, his over a model's.
+    """
+    if origin not in THREAD_ORIGINS:
+        msg = f"origin must be one of {', '.join(THREAD_ORIGINS)}, not {origin!r}"
+        raise ValueError(msg)
+    ts = iso_seconds(local_now())
+    with closing(open_memory_db(path)) as conn, conn:
+        conn.executemany(
+            "INSERT INTO attention_threads (id, key, thread, category, origin, model, day, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (f"thread:{uuid.uuid4().hex}", key, thread, category, origin, model, day, ts)
+                for key, (thread, category) in told.items()
+            ],
+        )
+
+
+def attention_threads(conn: sqlite3.Connection) -> dict[str, tuple[str | None, str | None]]:
+    """What each key told so far served, as (thread, category): his newest word, else a model's."""
+    told: dict[str, tuple[str | None, str | None]] = {}
+    rows = conn.execute(
+        "SELECT key, thread, category FROM attention_threads "
+        "ORDER BY origin = 'him', rowid",
+    )
+    for key, thread, category in rows:
+        told[str(key)] = (thread, category)
+    return told
+
+
 class DoingAnswer(NamedTuple):
     """What he said a stretch of time was (ADR 0302): by time, not by the span's id.
 
@@ -1898,6 +1950,7 @@ def spoken_between(
 __all__ = [
     "DAY_SUMMARIES_CONTEXT",
     "DEFAULT_SEARCH_LIMIT",
+    "THREAD_ORIGINS",
     "CompactionRange",
     "DayLineRow",
     "DoingAnswer",
@@ -1910,6 +1963,7 @@ __all__ = [
     "Record",
     "SessionSettings",
     "VerbatimStats",
+    "append_attention_threads",
     "append_day_draft",
     "append_day_prose",
     "append_day_summary",
@@ -1919,6 +1973,7 @@ __all__ = [
     "append_nightly_core_memory",
     "append_record",
     "append_summary",
+    "attention_threads",
     "brief_note",
     "compaction_range",
     "core_memory_pending_days",
