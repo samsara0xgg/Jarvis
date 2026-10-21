@@ -1,6 +1,6 @@
 """SQLite/thread barriers for response cancellation and worker continuations."""
 
-# ruff: noqa: ANN401, SLF001 - instrument real provider, terminal, and watcher boundaries
+# ruff: noqa: ANN401 - instrument real provider, terminal, and watcher boundaries
 
 from __future__ import annotations
 
@@ -23,10 +23,9 @@ from jarvis.execution import tools as execution_tools
 from jarvis.runtime import (
     _start_drive_turn_response,
     drive_turn,
-    inherent_loop,
     make_response_cancel_callable,
 )
-from jarvis.runtime.daemon import intent_pump
+from jarvis.runtime.daemon import intent_pump, sweep
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
 from tests.support.model import Pause, ScriptedModel, tool_call
@@ -161,7 +160,7 @@ async def _held_terminal_scenario(  # noqa: PLR0915 - live-turn and orphan watch
         seen_live.set()
         return real_live()
 
-    monkeypatch.setattr(inherent_loop, "live_action_ids", live)
+    monkeypatch.setattr(sweep, "live_action_ids", live)
     driven: list[str] = []
     original_drive = intent_pump.drive_turn_in_worker_thread
 
@@ -169,9 +168,9 @@ async def _held_terminal_scenario(  # noqa: PLR0915 - live-turn and orphan watch
         driven.append(kwargs["user_intent_event"].event_uid)
         return original_drive(*args, **kwargs)
 
-    monkeypatch.setattr(inherent_loop, "_drive_turn_in_worker_thread", watch_drive)
+    monkeypatch.setattr(sweep, "drive_turn_in_worker_thread", watch_drive)
     watcher = asyncio.create_task(
-        inherent_loop._system_trigger_watcher(
+        sweep.system_trigger_watcher(
             runtime,
             anchor_id=0,
             anchored=asyncio.Event(),

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from jarvis.decision import decide
 from jarvis.decision.gates import attention_policy
 from jarvis.decision.packet import assemble_packet
-from jarvis.runtime.inherent_loop import _system_trigger_event
+from jarvis.runtime.daemon.sweep import system_trigger_event
 from jarvis.shared import Event
 from jarvis.state.event_log import emit_event, open_event_log
 
@@ -81,7 +81,7 @@ def test_decide_keeps_reconciliation_turns_in_queue_review(tmp_path: Path) -> No
             payload={"action_id": "A_orphan_001", "reason": "budget_exceeded"},
             correlation={"turn_id": "T_orphan_000"},
         )
-        result = decide(_system_trigger_event(terminal), ctx)
+        result = decide(system_trigger_event(terminal), ctx)
         assert result.attention_channel == "queue_review", (
             "A sweep-driven reconciliation turn routed to "
             f"{result.attention_channel!r}: it would speak into an empty room."

@@ -12,7 +12,7 @@ Two filters, one key. This canary pins all three parts:
 1. ``_wait_for_next_trigger`` takes ``action_ids`` and tests membership
    against it before returning a row — the turn accepts only actions it
    dispatched.
-2. ``_system_trigger_watcher`` skips rows whose action_id IS in
+2. ``system_trigger_watcher`` skips rows whose action_id IS in
    ``live_action_ids()`` — the exact complement.
 3. Both read the action_id through the same ``_event_action_id`` helper.
    Two hand-rolled extractors that disagree (correlation-only here,
@@ -35,11 +35,11 @@ import ast
 from tests.canary._helpers import parse, repo_root
 
 _RUNTIME_RELPATH: str = "jarvis/runtime/__init__.py"
-_INHERENT_LOOP_RELPATH: str = "jarvis/runtime/inherent_loop.py"
+_SWEEP_RELPATH: str = "jarvis/runtime/daemon/sweep.py"
 
 _WAITER_FN: str = "_wait_for_next_trigger"
 _DRIVE_TURN_FN: str = "drive_turn"
-_SYSTEM_WATCHER_FN: str = "_system_trigger_watcher"
+_SYSTEM_WATCHER_FN: str = "system_trigger_watcher"
 _ACTION_IDS_PARAM: str = "action_ids"
 _ACTION_ID_EXTRACTOR: str = "_event_action_id"
 _LIVE_SET_CALL: str = "live_action_ids"
@@ -163,11 +163,11 @@ def test_canary_drive_turn_scopes_the_waiter_to_its_own_actions() -> None:
 
 
 def test_canary_system_watcher_takes_only_the_complement() -> None:
-    """``_system_trigger_watcher`` MUST skip rows a live turn already owns."""
-    module = parse(repo_root() / _INHERENT_LOOP_RELPATH)
+    """``system_trigger_watcher`` MUST skip rows a live turn already owns."""
+    module = parse(repo_root() / _SWEEP_RELPATH)
     watcher = _find_function_def(module, name=_SYSTEM_WATCHER_FN)
     assert watcher is not None, (
-        f"{_INHERENT_LOOP_RELPATH} must define {_SYSTEM_WATCHER_FN!r} "
+        f"{_SWEEP_RELPATH} must define {_SYSTEM_WATCHER_FN!r} "
         "(ADR-0009 D4 — orphan terminal events need a consumer, or the sweep "
         "emits into the void and no Limitation claim is ever folded)."
     )

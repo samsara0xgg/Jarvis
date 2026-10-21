@@ -28,8 +28,8 @@ import pytest
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, WaitingTurn, inherent_loop
-from jarvis.runtime.daemon import intent_pump
+from jarvis.runtime import JarvisRuntime, WaitingTurn
+from jarvis.runtime.daemon import intent_pump, sweep
 from jarvis.runtime.daemon.intent_pump import (
     IntentPumpBoot,
     boot_intent_pump_in_thread,
@@ -39,7 +39,7 @@ from jarvis.runtime.daemon.intent_pump import (
     start_intent_pump,
 )
 from jarvis.runtime.daemon.output_watchers import response_watcher
-from jarvis.runtime.inherent_loop import _system_trigger_watcher
+from jarvis.runtime.daemon.sweep import system_trigger_watcher
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.input_claim import (
@@ -715,11 +715,11 @@ def test_a_failed_check_mid_batch_does_not_drop_the_rest(runtime: JarvisRuntime)
 
     async def _body() -> None:
         with (
-            patch.object(inherent_loop, "_drive_turn_in_worker_thread", side_effect=_record),
-            patch.object(inherent_loop, "trigger_was_consumed", side_effect=_locked_once),
-            patch.object(inherent_loop, "_WATCHER_RETRY_S", 0.01),
+            patch.object(sweep, "drive_turn_in_worker_thread", side_effect=_record),
+            patch.object(sweep, "trigger_was_consumed", side_effect=_locked_once),
+            patch.object(sweep, "WATCHER_RETRY_S", 0.01),
         ):
-            task = asyncio.create_task(_system_trigger_watcher(
+            task = asyncio.create_task(system_trigger_watcher(
                 runtime, anchor_id=0, anchored=asyncio.Event(), poll_interval_s=0.001,
             ))
             try:

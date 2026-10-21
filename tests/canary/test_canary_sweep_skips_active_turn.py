@@ -38,7 +38,7 @@ from tests.canary._helpers import parse, repo_root
 
 _SLEEP_WAKE_RELPATH: str = "jarvis/deployment/sleep_wake.py"
 _RUNTIME_RELPATH: str = "jarvis/runtime/__init__.py"
-_INHERENT_LOOP_RELPATH: str = "jarvis/runtime/inherent_loop.py"
+_SWEEP_RELPATH: str = "jarvis/runtime/daemon/sweep.py"
 
 _SWEEP_FN: str = "sweep_overdue_actions"
 _DRIVE_TURN_FN: str = "drive_turn"
@@ -174,10 +174,10 @@ def test_canary_drive_turn_releases_live_actions_in_a_finally() -> None:
 
 def test_canary_sweep_reads_the_active_set_fresh_per_pass() -> None:
     """The sweep's caller MUST pass a live CALL, not a captured snapshot."""
-    module = parse(repo_root() / _INHERENT_LOOP_RELPATH)
+    module = parse(repo_root() / _SWEEP_RELPATH)
     runner = _find_function_def(module, name=_RUN_SWEEP_FN)
     assert runner is not None, (
-        f"{_INHERENT_LOOP_RELPATH} must define {_RUN_SWEEP_FN!r} — the single "
+        f"{_SWEEP_RELPATH} must define {_RUN_SWEEP_FN!r} — the single "
         "chokepoint both the bootstrap sweep and the periodic task go "
         "through, so neither can drift from the freshness rule."
     )
