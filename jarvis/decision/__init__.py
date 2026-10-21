@@ -2318,6 +2318,17 @@ def _run_tier0_path(
     )
 
 
+def _tool_arguments(arguments_json: str) -> dict[str, Any] | str:
+    """The arguments a tool call sent, or why they are not a JSON object (none sent: ``{}``)."""
+    try:
+        parsed = json.loads(arguments_json or "{}")
+    except (TypeError, ValueError) as exc:
+        return f"arguments were not valid JSON: {exc}"
+    if not isinstance(parsed, dict):
+        return "arguments were not a JSON object"
+    return parsed
+
+
 def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
     *,
     tool_call: object,
@@ -2345,11 +2356,15 @@ def _dispatch_one_tool_call(  # noqa: PLR0913, PLR0915 — single-pass orchestra
     """
     name = getattr(tool_call, "name", "")
     call_id = getattr(tool_call, "call_id", "")
-    arguments_json = getattr(tool_call, "arguments_json", "{}")
-    try:
-        arguments: dict[str, Any] = json.loads(arguments_json or "{}")
-    except (TypeError, ValueError):
-        arguments = {}
+    arguments = _tool_arguments(getattr(tool_call, "arguments_json", "{}"))
+    if isinstance(arguments, str):
+        # A call cut off mid-arguments asked for nothing that can be run: it is not proposed or
+        # dispatched, and the model is told why, as for an unknown tool, so it can call again.
+        LOGGER.warning("decide(): a call to %s was not run: %s", name, arguments)
+        messages.append(
+            _tool_result_message(call_id=call_id, content=json.dumps({"error": arguments}))
+        )
+        return "continue"
 
     # 1. Tool definition lookup.
     tool_def = _find_tool_def(ctx.tool_registry, name)
