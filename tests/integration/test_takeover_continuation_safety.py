@@ -18,8 +18,6 @@ import pytest
 
 import jarvis.runtime as runtime_module
 from jarvis.decision import DecideContext, _append_cost_recorded
-from jarvis.decision.llm import ChatResult, ToolCall
-from jarvis.decision.llm_session import LLMRequestClient
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.execution import tools as execution_tools
 from jarvis.runtime import (
@@ -30,6 +28,7 @@ from jarvis.runtime import (
 )
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
+from tests.support.model import Pause, ScriptedModel, tool_call
 from tests.support.response_run import (
     drive_turn_on_own_connection,
     emit_intent,
@@ -42,36 +41,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_cancel_wins_against_late_provider_tool_batch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cancel_wins_against_late_provider_tool_batch(tmp_path: Path) -> None:
     """Real runtime/L3 drops late tools while retaining the provider's cost."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
-    intent = emit_intent(runtime.conn, "cancel-late-tools", "我记过什么")
     entered = threading.Event()
     release = threading.Event()
-    calls: list[int] = []
-
-    def chat(_self: LLMRequestClient, **_kwargs: Any) -> ChatResult:
-        calls.append(1)
-        entered.set()
-        assert release.wait(5)
-        return ChatResult(
-            text=None,
-            tool_calls=(
-                ToolCall(call_id="memo-call", name="kept", arguments_json="{}"),
-            ),
-            finish_reason="tool_calls",
-            input_tokens=10,
-            output_tokens=5,
-            raw={},
-            tokens_in=10,
-            tokens_out=5,
-            model_used="gpt-fast",
-        )
-
-    monkeypatch.setattr(LLMRequestClient, "chat", chat)
+    model = ScriptedModel(Pause(entered, release, tool_call("kept", call_id="memo-call")))
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, model=model)
+    intent = emit_intent(runtime.conn, "cancel-late-tools", "我记过什么")
     cancel = make_response_cancel_callable(runtime)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
@@ -89,7 +65,7 @@ def test_cancel_wins_against_late_provider_tool_batch(
             release.set()
         with pytest.raises(ResponseCancelledError):
             future.result(timeout=5)
-    assert calls == [1]
+    assert len(model.requests) == 1
     assert event_count(runtime.conn, "cost.recorded") == 1
     assert event_count(runtime.conn, "action.dispatched") == 0
     assert event_count(runtime.conn, "surface.response_emitted") == 0

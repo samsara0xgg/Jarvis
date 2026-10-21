@@ -14,8 +14,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis import decision
-from jarvis.decision.llm import ChatResult
-from jarvis.decision.llm_session import LLMRequestClient
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.runtime import make_response_cancel_callable
 from jarvis.shared.realtime import AuthorizedDispatch
@@ -23,6 +21,7 @@ from jarvis.state import authorized_dispatch_outbox as outbox
 from jarvis.state.event_log import open_event_log
 from tests.support.concurrency import confirmation_candidate, seed_accepted_confirmation
 from tests.support.response_run import (
+    answering,
     drive_turn_on_own_connection,
     emit_intent,
     event_count,
@@ -98,26 +97,21 @@ def test_cancel_during_pricing_prevents_provider_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Real drive_turn must not enter chat after cancellation won during setup."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    model = answering()
+    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, model=model)
     runtime = replace(runtime, wave1_features=replace(
         runtime.wave1_features, exactly_once_cost_accounting=True,
     ))
     intent = emit_intent(runtime.conn, "pricing-cancel", "现在时间")
     entered, release = threading.Event(), threading.Event()
     original_pricing = decision._pricing_table
-    calls: list[int] = []
 
     def pricing() -> Any:
         entered.set()
         assert release.wait(5)
         return original_pricing()
 
-    def chat(_self: LLMRequestClient, **_kwargs: Any) -> ChatResult:
-        calls.append(1)
-        return _chat_result()
-
     monkeypatch.setattr(decision, "_pricing_table", pricing)
-    monkeypatch.setattr(LLMRequestClient, "chat", chat)
     cancel = make_response_cancel_callable(runtime)
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -131,17 +125,9 @@ def test_cancel_during_pricing_prevents_provider_admission(
                 release.set()
             with pytest.raises(ResponseCancelledError):
                 future.result(timeout=5)
-        assert calls == []
+        assert model.requests == []
         assert event_count(runtime.conn, "response.request_admitted") == 0
         assert event_count(runtime.conn, "cost.recorded") == 0
         assert event_count(runtime.conn, "surface.response_emitted") == 0
     finally:
         runtime.conn.close()
-
-
-def _chat_result() -> ChatResult:
-    return ChatResult(
-        text='{"verdict":"ok","reasons":[]}', tool_calls=(), finish_reason="stop",
-        input_tokens=10, output_tokens=5, raw={}, tokens_in=10, tokens_out=5,
-        model_used="gpt-fast",
-    )
