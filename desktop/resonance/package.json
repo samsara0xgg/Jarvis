@@ -3,14 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/companion.js",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build && tsc -p tsconfig.electron.json && node scripts/build-native.mjs",
     "start": "npm run build && electron .",
-    "lab": "npm run build && electron . --lab",
-    "dashboard": "npm run build && electron . --dashboard",
-    "workspace-preview": "npm run build && node scripts/launch-workspace-preview.mjs",
     "companion": "npm run build && electron dist-electron/companion.js",
     "verify": "npm run build && node scripts/verify-all.mjs",
     "package": "npm run build && node scripts/package.mjs"

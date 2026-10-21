@@ -1,17 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 contextBridge.exposeInMainWorld('jarvis', {
   placement: () => ipcRenderer.invoke('placement'),
-  dock: (enabled: boolean) => ipcRenderer.invoke('dock', enabled),
   onPlacement: (callback: (placement: { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number }) => void) => {
     const listener = (_: unknown, placement: { docked: boolean; topInset: number; surfaceWidth: number; compactWidth: number; notchWidth: number }) => callback(placement);
     ipcRenderer.on('placement', listener);
     return () => ipcRenderer.removeListener('placement', listener);
-  },
-  onIslandHover: (callback: (inside: boolean) => void) => {
-    const listener = (_: unknown, inside: boolean) => callback(inside);
-    ipcRenderer.on('island-hover', listener);
-    ipcRenderer.send('track-island');
-    return () => ipcRenderer.removeListener('island-hover', listener);
   },
   onCursor: (callback: (point: { x: number; y: number }) => void) => {
     const listener = (_: unknown, point: { x: number; y: number }) => callback(point);
@@ -46,9 +39,7 @@ contextBridge.exposeInMainWorld('jarvis', {
     ipcRenderer.send('dashboard-message-ready');
     return () => ipcRenderer.removeListener('dashboard-message', listener);
   },
-  layout: (mode: string, height: number, surface?: { x: number; y: number; width: number; height: number }) => ipcRenderer.send('layout', { mode, height, surface }),
   focus: (enabled: boolean) => ipcRenderer.invoke('focus-input', enabled),
-  hide: () => ipcRenderer.send('hide'),
   quit: () => ipcRenderer.send('quit'),
   copy: (text: string) => ipcRenderer.invoke('copy', text),
   openCodex: (threadId: string) => ipcRenderer.invoke('open-codex', threadId),
@@ -86,7 +77,6 @@ contextBridge.exposeInMainWorld('jarvis', {
   usageBalance: (service: string, usd: number) => ipcRenderer.invoke('usage-balance', service, usd),
   tokenUsage: (refresh = false) => ipcRenderer.invoke('token-usage', refresh),
   plugins: (operation: string, data: Record<string, unknown> = {}) => ipcRenderer.invoke('plugins', operation, data),
-  drag: (phase: 'start' | 'move' | 'end', point?: { x: number; y: number }) => ipcRenderer.send('drag', { phase, point }),
   passthrough: (enabled: boolean) => ipcRenderer.send('passthrough', enabled),
   awake: (on: boolean) => ipcRenderer.send('awake', on),
   material: (rects: unknown[], strength: number) => ipcRenderer.send('material', { rects, strength }),

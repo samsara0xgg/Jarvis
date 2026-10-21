@@ -5,7 +5,6 @@ dist-electron/
 dist-native/
 build/
 .electron-profile/
-.electron-profile-dashboard-lab/
 
 # User recordings and local visual/audio investigation are not source assets.
 references/

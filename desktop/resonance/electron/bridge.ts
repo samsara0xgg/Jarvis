@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { hostKey } from './agents/key.js';
 import { tokenUsage } from './tokenUsage.js';
 // The daemon-facing IPC every Resonance window shares: plugin operations, opening a Codex
-// thread, and Codex thread titles. The design lab and verification runs stay offline.
+// thread, and Codex thread titles. The demo (`lab`) stays offline.
 let codexTitles: Record<string, string> = {};
 let codexTitlesAt = 0;
 // The Usage page names a service; only these pages open. The renderer never passes a URL.
@@ -34,8 +34,8 @@ export function sendDaemonKey(target: Electron.Session) {
   });
 }
 // `lang`: the window's interface language right now (the renderer reports it); the errors it shows are in it.
-export function registerDaemonBridge(win: BrowserWindow, { lab = false, verification = false, trustedWindows = () => [win], lang = () => 'en' }: {
-  lab?: boolean; verification?: boolean; trustedWindows?: () => BrowserWindow[]; lang?: () => 'en' | 'zh';
+export function registerDaemonBridge(win: BrowserWindow, { lab = false, trustedWindows = () => [win], lang = () => 'en' }: {
+  lab?: boolean; trustedWindows?: () => BrowserWindow[]; lang?: () => 'en' | 'zh';
 } = {}) {
   const say = (en: string, zh: string) => lang() === 'zh' ? zh : en;
   sendDaemonKey(win.webContents.session);
@@ -47,13 +47,12 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (!fromThisWindow(event)) throw new Error('无效的插件窗口'); // a window that is not ours, never one a person reads; scripts/verify-dashboard-window.mjs asserts it
     const operations = ['read', 'icon', 'open', 'connect', 'cancel', 'reopen', 'disable', 'approval'];
     if (!operations.includes(operation) || !data || typeof data !== 'object' || Array.isArray(data)) throw new Error(say('That plugin action isn’t recognized.', '无效的插件操作'));
-    const testPort = verification ? process.env.RESONANCE_PLUGIN_TEST_PORT : undefined;
     // The demo polls 'read' every 1.5 s; an empty list keeps the console quiet. Anything else says why it cannot run.
     if (lab && operation === 'read') return { plugins: [], request: null };
-    if (lab || (verification && (!testPort || testPort === '8006'))) throw new Error(say('This preview is not connected to the plugin service.', '此预览没有连接插件服务'));
-    const port = testPort ?? process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
+    if (lab) throw new Error(say('This preview is not connected to the plugin service.', '此预览没有连接插件服务'));
+    const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
     if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) throw new Error(say('The plugin service port is invalid.', '插件服务端口无效'));
-    const root = (verification ? process.env.RESONANCE_PLUGIN_TEST_ROOT : undefined) ?? process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
+    const root = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
     let token: string;
     try { token = JSON.parse(await readFile(path.join(root, 'plugin-access.json'), 'utf8')).token; }
     catch { throw new Error(say('The plugin service isn’t ready. Make sure Jarvis is updated and running.', '插件服务尚未就绪，请确认 Jarvis 后台已更新并启动')); }
@@ -77,21 +76,21 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
   });
   ipcMain.handle('open-account', async (event, service) => {
     if (!fromThisWindow(event) || typeof service !== 'string' || !Object.hasOwn(ACCOUNT_PAGES, service)) return false;
-    if (verification || lab) return false;
+    if (lab) return false;
     try { await shell.openExternal(ACCOUNT_PAGES[service]); return true; }
     catch { return false; }
   });
   // A Mail row opens its letter in Gmail's default account: the renderer names a message id, never a URL.
   ipcMain.handle('open-mail', async (event, id) => {
     if (!fromThisWindow(event) || typeof id !== 'string' || !/^[0-9a-z]{1,64}$/i.test(id)) return false;
-    if (verification || lab) return false;
+    if (lab) return false;
     try { await shell.openExternal(`https://mail.google.com/mail/u/0/#all/${id}`); return true; }
     catch { return false; }
   });
   // A link in her words opens in the browser: any http(s) address, nothing else (no file:, no app schemes).
   ipcMain.handle('open-url', async (event, url) => {
     if (!fromThisWindow(event) || typeof url !== 'string' || !/^https?:\/\//i.test(url) || url.length >= 4096) return false;
-    if (verification || lab) return false;
+    if (lab) return false;
     try { await shell.openExternal(url); return true; }
     catch { return false; }
   });
@@ -101,7 +100,7 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (!fromThisWindow(event) || typeof url !== 'string' || url.length >= 4096 || typeof requestId !== 'string' || requestId.length > 64) return false;
     let link: URL;
     try { link = new URL(url); } catch { return false; }
-    if (link.protocol !== 'https:' || verification || lab) return false;
+    if (link.protocol !== 'https:' || lab) return false;
     if (again !== true && openedLogins.has(requestId)) return false;
     openedLogins.add(requestId);
     try { await shell.openExternal(link.href); return true; }
@@ -110,7 +109,7 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
   // A Usage page write (ADR 0048/0065): main reads the desktop credential and posts to the
   // daemon; the renderer only names what to do.
   const usagePost = async (route: string, body: Record<string, unknown>, failed: string) => {
-    if (lab || verification) throw new Error('This preview is not connected to Jarvis');
+    if (lab) throw new Error('This preview is not connected to Jarvis');
     const port = process.env.JARVIS_INHERENT_BRIDGE_PORT ?? '8006';
     const root = process.env.JARVIS_RUNTIME_ROOT ?? path.join(homedir(), '.jarvis');
     let token: unknown;
@@ -151,13 +150,13 @@ export function registerDaemonBridge(win: BrowserWindow, { lab = false, verifica
     if (!fromThisWindow(event) || typeof threadId !== 'string'
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) return false;
     // An OS handoff is not proof that the target conversation was displayed.
-    if (verification || lab) return false;
+    if (lab) return false;
     try { await shell.openExternal(`codex://threads/${threadId}`); return true; }
     catch { return false; }
   });
   ipcMain.handle('codex-titles', async (event, ids) => {
     if (!fromThisWindow(event) || !Array.isArray(ids) || ids.length > 10000 || !ids.every(id => typeof id === 'string')) return {};
-    if (verification || lab) return {};
+    if (lab) return {};
     if (Date.now() - codexTitlesAt > 10000) {
       try {
         const lines = await readFile(path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'session_index.jsonl'), 'utf8');
