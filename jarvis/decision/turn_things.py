@@ -421,13 +421,19 @@ def _due(value: object, reading: _Reading) -> str:
 
 
 def _key(start_at: str, on_day: str, due: str) -> tuple[str, str | int]:
-    """A time as an instant or a day, so two spellings of one moment are the same."""
+    """A time as an instant or a day, so two spellings of one moment are the same.
+
+    A start and a due at the same instant are one moment, and so are a day and a date-only due:
+    whether it is to go to or be done by, it is the same thing at the same time.
+    """
     if start_at:
-        return "start", int(datetime.fromisoformat(start_at).timestamp())
+        return "at", int(datetime.fromisoformat(start_at).timestamp())
     if on_day:
         return "day", on_day
     if due:
-        return "due", due if _DAY.fullmatch(due) else int(datetime.fromisoformat(due).timestamp())
+        return ("day", due) if _DAY.fullmatch(due) else (
+            "at", int(datetime.fromisoformat(due).timestamp())
+        )
     return "none", ""
 
 

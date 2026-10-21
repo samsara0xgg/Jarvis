@@ -373,6 +373,11 @@ def test_the_extractor_names_the_instructions() -> None:
             _NEW_KEPT | {"start_at": "", "on_day": "2026-10-15"}, True,
         ),
         ([("added", {"start_at": DENTIST})], {"action": "paid", "thing": "x"}, False),
+        # her tool kept it as an hour, the pass reads it as a time to be done by: one moment
+        ([("added", {"start_at": DENTIST})], _NEW_KEPT | {"start_at": "", "due": DENTIST}, True),
+        ([("added", {"due": "2026-10-15"})], _NEW_KEPT | {"start_at": "", "on_day": "2026-10-15"},
+         True),
+        ([("added", {"due": "2026-10-15"})], _NEW_KEPT, False),
     ],
 )
 def test_a_timed_new_thing_her_tool_wrote_in_the_turn_is_made_already(
