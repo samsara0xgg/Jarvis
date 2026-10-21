@@ -10,7 +10,9 @@ from fastapi.testclient import TestClient
 from jarvis.state.device_tokens import device_token_matches, pair_device
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from tests.support.day_highlights import visit_row
 from tests.support.ledger import ledger_at
 from tests.support.terminal import REMOTE

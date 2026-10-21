@@ -36,7 +36,8 @@ from jarvis.runtime.setup import KEY_ENVS, Setup
 from jarvis.shared import lang
 from jarvis.state.memory_db import open_memory_db
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 if TYPE_CHECKING:
     from pathlib import Path

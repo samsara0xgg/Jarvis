@@ -13,13 +13,14 @@ import uvicorn
 
 from jarvis.state.device_tokens import device_token_matches
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.surface.inherent_server import create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.guards import require_local_key
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
     from jarvis.runtime import JarvisRuntime
-    from jarvis.surface.inherent_server import InherentDeps
+    from jarvis.surface.inherent_server.deps import InherentDeps
 
 
 class Server(uvicorn.Server):

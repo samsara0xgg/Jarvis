@@ -3,7 +3,7 @@ import Foundation
 import Observation
 import UIKit
 
-// What waits on the owner (docs/spec.html `GET /inherent/waiting`, jarvis/surface/inherent_server.py `waiting`): a confirmation card, an ask card,
+// What waits on the owner (docs/spec.html `GET /inherent/waiting`, jarvis/surface/inherent_server/waiting.py): a confirmation card, an ask card,
 // reminders and job-mail alerts, a plugin's sign-in, and the prompts Claude Code holds. Each is a card on the day screen with its own buttons;
 // answering goes to that card's own route. While the app is open the brain is asked every few seconds, which also keeps Claude Code's prompts held for the phone.
 

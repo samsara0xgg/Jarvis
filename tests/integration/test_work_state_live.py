@@ -22,7 +22,8 @@ from jarvis.decision.llm import LLMClient
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.state.work_state import current_state
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.work_state import WorkStateRig
 
 pytestmark = pytest.mark.live_llm

@@ -21,7 +21,7 @@ from jarvis.state.input_submission_inbox import (
     submit_text_once,
 )
 from jarvis.surface.cli import emit_surface_user_intent
-from jarvis.surface.inherent_server import InputSubmissionOutcome
+from jarvis.surface.inherent_server.v2 import InputSubmissionOutcome
 from jarvis.surface.terminal_events import BrainEvents, phone_turn_id
 
 if TYPE_CHECKING:

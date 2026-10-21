@@ -28,7 +28,9 @@ from jarvis.shared.lang import t
 from jarvis.state import event_log
 from jarvis.surface import usage_observer
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.usage_observer import UsageObserver, UsageSnapshot, usage_history
 from tests.support.clock import DEFAULT_ZONE, FakeClock
 from tests.support.terminal import brain_log

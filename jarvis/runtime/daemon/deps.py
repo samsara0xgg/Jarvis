@@ -59,7 +59,9 @@ from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
 from jarvis.state.push_tokens import register_body
 from jarvis.surface import respeaker_board
 from jarvis.surface.device_pairing import DevicePairing, brain_urls
-from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, manager_authorize
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import manager_authorize
+from jarvis.surface.inherent_server.v2 import InherentV2Deps
 from jarvis.surface.usage_observer import (
     UsageObserver,
     latest_usage,

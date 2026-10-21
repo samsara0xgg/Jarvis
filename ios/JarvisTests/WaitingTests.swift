@@ -1,7 +1,7 @@
 import XCTest
 @testable import Jarvis
 
-/// `GET /inherent/waiting` as the brain writes it (jarvis/surface/inherent_server.py `waiting`, claude_hooks.py, plugin_connections.py), and the answer each button makes.
+/// `GET /inherent/waiting` as the brain writes it (jarvis/surface/inherent_server/waiting.py, claude_hooks.py, plugin_connections.py), and the answer each button makes.
 final class WaitingTests: XCTestCase {
     private func cards(_ json: String) -> [WaitingCard] { WaitingCards.parse(Data(json.utf8)) ?? [] }
     private func body(_ r: (path: String, body: [String: Any])?) -> NSDictionary { (r?.body ?? [:]) as NSDictionary }

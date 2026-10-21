@@ -17,7 +17,8 @@ from fastapi.testclient import TestClient
 from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.surface import respeaker_board
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 if TYPE_CHECKING:
     from pathlib import Path

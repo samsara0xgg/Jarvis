@@ -39,7 +39,8 @@ from jarvis.state.event_log import emit_event
 from jarvis.surface import voice_ducking
 from jarvis.surface.agent_host import host_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.canary._helpers import repo_root
 from tests.support.net import start_http_server, stop_http_server
 from tests.support.night import ZONE, FakeMacPower, NightFixture, night_ms

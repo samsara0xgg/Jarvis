@@ -52,7 +52,8 @@ from jarvis.state.event_log import (
     open_event_log,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from jarvis.surface.terminal_voice import RESPONSE_ROW_TYPES
 from tests.support.phone import RATE, VoiceHost, answer_rows
 from tests.support.previous_answer import next_turn_line

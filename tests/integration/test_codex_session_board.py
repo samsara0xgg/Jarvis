@@ -15,7 +15,8 @@ from jarvis.shared.lang import t
 from jarvis.surface import codex_sessions
 from jarvis.surface.codex_sessions import settle_codex_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -39,7 +40,7 @@ def test_activity_retention_and_turn_identity_over_http() -> None:
     client = TestClient(create_app(InherentDeps(
         submit_callable=_noop, broadcaster=InherentBroadcaster(),
     )))
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1000):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1000):
         for index in range(12):
             assert client.post("/inherent/codex-hook", json={
                 "session_id": str(index), "hook_event_name": "UserPromptSubmit",
@@ -48,7 +49,7 @@ def test_activity_retention_and_turn_identity_over_http() -> None:
         rows = client.get("/inherent/codex-sessions").json()["sessions"]
         assert len(rows) == 12
         original = next(r for r in rows if r["session_id"] == "0")["turn_started_ms"]
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1001):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1001):
         for event in ["PermissionRequest", "PostToolUse", "Stop", "SessionEnd"]:
             client.post("/inherent/codex-hook", json={
                 "session_id": "0", "hook_event_name": event,
@@ -59,7 +60,7 @@ def test_activity_retention_and_turn_identity_over_http() -> None:
         assert row["state"] == "finished"
         assert row["last_message"] == "done"
         assert row["turn_started_ms"] == original
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1002):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1002):
         client.post("/inherent/codex-hook", json={
             "session_id": "0", "hook_event_name": "UserPromptSubmit", "prompt": "scenario",
         })
@@ -69,7 +70,7 @@ def test_activity_retention_and_turn_identity_over_http() -> None:
         client.post("/inherent/codex-hook", json={
             "session_id": "0", "hook_event_name": "Stop",
         })
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1002 + 86400):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1002 + 86400):
         rows = client.get("/inherent/codex-sessions").json()["sessions"]
         assert len(rows) == 11
         assert all(r["state"] == "running" for r in rows)
@@ -114,7 +115,7 @@ def test_rollout_settles_what_hooks_miss(sessions: Path) -> None:
         rows = client.get("/inherent/codex-sessions").json()["sessions"]
         return next(r for r in rows if r["session_id"] == sid)
 
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1000):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1000):
         hook("auto", auto, "PermissionRequest")
         hook("mine", mine, "PermissionRequest")
         assert row("auto")["state"] == "running"
@@ -122,7 +123,7 @@ def test_rollout_settles_what_hooks_miss(sessions: Path) -> None:
     # No Stop arrives: an interrupt, or a Stop handler Codex skips.
     _rollout_line(auto, 1001, "task_complete", turn_id="t1", last_agent_message="Pushed.")
     _rollout_line(mine, 1001, "turn_aborted", turn_id="t1", reason="interrupted")
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1002):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1002):
         assert (row("auto")["state"], row("auto")["last_message"]) == ("finished", "Pushed.")
         assert (row("mine")["state"], row("mine")["detail"]) == ("idle", t("codex.turn_stopped"))
         # A new prompt is not closed by the end of the turn before it.
@@ -148,14 +149,14 @@ def test_codex_question_waits_on_allen_until_he_writes(sessions: Path) -> None:
     def row() -> dict[str, object]:
         return dict(client.get("/inherent/codex-sessions").json()["sessions"][0])
 
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1000):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1000):
         hook("UserPromptSubmit", prompt="polish the app")
     _rollout_line(
         path, 1001, "function_call", entry_type="response_item", call_id="c1",
         name="request_user_input_async",
         arguments=json.dumps({"questions": [{"title": "Web prototype or SwiftUI?"}]}),
     )
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1002):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1002):
         assert (row()["state"], row()["detail"]) == ("needs_input", asked)
         # Codex keeps working; its tool calls neither answer nor hide the question,
         # not even once the call has scrolled out of the rollout's tail.
@@ -164,12 +165,12 @@ def test_codex_question_waits_on_allen_until_he_writes(sessions: Path) -> None:
                       output="x" * 300_000)
         assert (row()["state"], row()["detail"]) == ("needs_input", asked)
     _rollout_line(path, 1003, "task_complete", turn_id="t1", last_agent_message="Went with web.")
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1004):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1004):
         assert (row()["state"], row()["last_message"]) == ("needs_input", "Went with web.")
     # His answer, as Codex records any message he sends in the thread.
     _rollout_line(path, 1005, "task_started", turn_id="t2")
     _rollout_line(path, 1005, "item_completed", item={"type": "UserMessage"})
-    with patch("jarvis.surface.inherent_server.time.time", return_value=1006):
+    with patch("jarvis.surface.inherent_server.agents.time.time", return_value=1006):
         assert (row()["state"], row()["detail"]) == ("running", "")
 
 

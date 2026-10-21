@@ -25,7 +25,9 @@ from jarvis.runtime.daemon.voice_wiring import build_voice_pipeline_callable
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.v2 import InherentV2Deps
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
 if TYPE_CHECKING:

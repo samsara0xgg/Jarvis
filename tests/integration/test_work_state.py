@@ -32,7 +32,8 @@ from jarvis.state.work_state import (
     save_state,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from jarvis.surface.timesink_observer import TimesinkObserver, latest_observation
 from tests.support.timesink import add_capture, add_span, source
 from tests.support.tool_world import ToolWorld

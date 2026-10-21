@@ -29,7 +29,7 @@ from jarvis.runtime.settings_owner import (
     terminal_report,
 )
 from jarvis.state.device_tokens import pair_device, unpair_device
-from jarvis.surface.inherent_server import _notices_for
+from jarvis.surface.inherent_server.notices import notices_for
 from jarvis.surface.terminal_link import (
     SETTINGS_NOTICE,
     TerminalHub,
@@ -148,8 +148,8 @@ def test_a_difference_becomes_one_card_for_that_device_and_nothing_changes_by_it
 
     # only the device it belongs to is shown it (ADR 0218); every other reads none
     body = {"notices": [card, {"id": "j", "device": None}]}
-    assert [n["id"] for n in _notices_for(body, "macbook")["notices"]] == [card["id"], "j"]
-    assert [n["id"] for n in _notices_for(body, "iphone")["notices"]] == ["j"]
+    assert [n["id"] for n in notices_for(body, "macbook")["notices"]] == [card["id"], "j"]
+    assert [n["id"] for n in notices_for(body, "iphone")["notices"]] == ["j"]
 
     # a reconnect with the same files does not raise it again, once it is dismissed
     assert drift.act(card["id"], "dismissed", None) is False

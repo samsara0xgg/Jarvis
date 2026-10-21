@@ -24,10 +24,12 @@ from jarvis.runtime.daemon import live_backend, output_watchers
 from jarvis.runtime.turn.start import new_turn_id
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.plugin_settings import local_key_matches
-from jarvis.surface import inherent_server
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server import ask as ask_route
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from tests.support.hold import HANG_S
 
 if TYPE_CHECKING:
@@ -265,8 +267,8 @@ def _run(tmp_path: Path, scenario: Callable[[_Daemon, httpx.AsyncClient], Any]) 
 @pytest.fixture(autouse=True)
 def _quick_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Seconds, not the route's 25; no safety re-read, so only the watcher's wake can answer."""
-    monkeypatch.setattr(inherent_server, "_ASK_WAIT_S", 5.0)
-    monkeypatch.setattr(inherent_server, "_ASK_RECHECK_S", 60.0)
+    monkeypatch.setattr(ask_route, "_ASK_WAIT_S", 5.0)
+    monkeypatch.setattr(ask_route, "_ASK_RECHECK_S", 60.0)
 
 
 def test_the_final_answer_comes_back_the_moment_it_is_written(
@@ -275,7 +277,7 @@ def test_the_final_answer_comes_back_the_moment_it_is_written(
     """Spoken and written parts of the turn's answer, typed in on the silent channel."""
     # Neither the wait nor the re-read can end this ask in the time the test allows it, so only
     # the answer's wake can.
-    monkeypatch.setattr(inherent_server, "_ASK_WAIT_S", 600.0)
+    monkeypatch.setattr(ask_route, "_ASK_WAIT_S", 600.0)
 
     async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
         response = await asyncio.wait_for(
@@ -296,7 +298,7 @@ def test_a_wait_line_is_not_the_answer_and_its_cancel_is_not_a_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """"One moment." shares the turn; the ask waits for the final run and its written part."""
-    monkeypatch.setattr(inherent_server, "_ASK_RECHECK_S", 0.05)
+    monkeypatch.setattr(ask_route, "_ASK_RECHECK_S", 0.05)
 
     async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
         started = time.monotonic()
@@ -314,7 +316,7 @@ def test_no_answer_in_time_is_a_504_with_the_turn_id_and_the_turn_goes_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The question stays in the log under the id the 504 names."""
-    monkeypatch.setattr(inherent_server, "_ASK_WAIT_S", 0.5)
+    monkeypatch.setattr(ask_route, "_ASK_WAIT_S", 0.5)
 
     async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
         started = time.monotonic()
@@ -344,7 +346,7 @@ def test_a_turn_that_fails_or_is_cancelled_is_a_502_with_the_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, reason: str,
 ) -> None:
     """`response.failed` never reaches the socket, so the short re-read is what finds that one."""
-    monkeypatch.setattr(inherent_server, "_ASK_RECHECK_S", 0.05)
+    monkeypatch.setattr(ask_route, "_ASK_RECHECK_S", 0.05)
 
     async def scenario(daemon: _Daemon, client: httpx.AsyncClient) -> None:
         response = await client.post("/inherent/ask", json={"text": text})

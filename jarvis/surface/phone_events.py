@@ -1,9 +1,9 @@
 """ADR 0197: the events a paired phone reports, and the strict check of what each one carries.
 
 A phone wakes for a few seconds at a time, so it sends what it sensed as one batch of event frames
-in a single ``POST /inherent/device/events`` (the route of :mod:`jarvis.surface.inherent_server`)
-under its device token. A frame has the shape of the ``/terminal/ws`` event frame
-(:mod:`jarvis.surface.terminal_events`) and nothing more::
+in a single ``POST /inherent/device/events`` (the route of
+:mod:`jarvis.surface.inherent_server.phone`) under its device token. A frame has the shape of the
+``/terminal/ws`` event frame (:mod:`jarvis.surface.terminal_events`) and nothing more::
 
     {"event_uid": "<32 hex>", "event_type": "phone.location_observed",
      "ts_epoch_ms": 1700000000000, "payload": {...}}

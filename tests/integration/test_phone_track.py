@@ -29,7 +29,9 @@ from jarvis.state.lifelog import LIFELOG_DIRNAME, Lifelog
 from jarvis.state.phone_track import COLUMNS
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
 from jarvis.surface.terminal_events import BrainEvents
 from tests.support.terminal import brain_log

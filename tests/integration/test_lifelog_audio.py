@@ -42,7 +42,9 @@ from jarvis.state.lifelog import (
 )
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
@@ -268,7 +270,7 @@ def test_each_piece_and_each_refusal_is_one_log_line_without_its_bytes(
     """Kept, kept again and refused each leave one line naming the device, never the audio."""
     d = _daemon(tmp_path)
 
-    with caplog.at_level("INFO", logger="jarvis.surface.inherent_server"):
+    with caplog.at_level("INFO", logger="jarvis.surface.inherent_server.lifelog"):
         d.put(CAF)
         d.put(CAF)
         d.put(WAV, "other")

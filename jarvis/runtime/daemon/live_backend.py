@@ -18,7 +18,7 @@ from jarvis.state.input_submission_inbox import SubmissionKey, submit_text_once
 from jarvis.state.memory_db import MemorySettings, SessionSettings, append_record, brief_note
 from jarvis.state.turn_outcome import Answered, Failed, turn_outcome
 from jarvis.surface import voice_live
-from jarvis.surface.inherent_server import AskOutcome
+from jarvis.surface.inherent_server.ask import AskOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Callable

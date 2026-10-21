@@ -29,7 +29,8 @@ from jarvis.state import NewerDataError
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.net import free_port
 from tests.support.runtime_config import runtime_config
 from tests.support.stepped_sleep import SteppedSleep

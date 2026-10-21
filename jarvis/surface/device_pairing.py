@@ -3,8 +3,8 @@
 Four routes on the brain's server. ``POST /inherent/devices/pairing`` mints a code for a device
 name, and the owner's screen shows it as a QR; the new device trades it for its own token at
 ``POST /inherent/devices/claim``, the one route a peer without a token reaches (the middleware in
-:mod:`jarvis.surface.inherent_server` opens exactly that path). ``GET /inherent/devices`` and
-``DELETE /inherent/devices/{name}`` list and unpair. The code logic is
+:mod:`jarvis.surface.inherent_server.guards` opens exactly that path). ``GET /inherent/devices``
+and ``DELETE /inherent/devices/{name}`` list and unpair. The code logic is
 :class:`jarvis.state.device_tokens.PairingCodes`; this module is only HTTP.
 """
 
@@ -56,9 +56,9 @@ class DevicePairing:
 def brain_urls(addresses: Iterable[str], hosts: Iterable[str], port: int) -> tuple[str, ...]:
     """The base URLs that reach this brain and pass its Host check, addresses first.
 
-    The Host check (:func:`jarvis.surface.inherent_server.require_local_key`) accepts a request
-    only when the part of its ``Host`` header before the first ``:`` is a local name or one of
-    ``hosts``. So a URL is listed only when its host is in ``hosts``: a listen address that is
+    The Host check (:func:`jarvis.surface.inherent_server.guards.require_local_key`) accepts a
+    request only when the part of its ``Host`` header before the first ``:`` is a local name or one
+    of ``hosts``. So a URL is listed only when its host is in ``hosts``: a listen address that is
     not also a listen host would be refused with 400, and an IPv6 literal can never match
     because the check cuts it at its first colon. A listed address must also be one the brain
     listens on.

@@ -26,7 +26,8 @@ from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.runtime.bootstrap.jev import _turn_end_asks
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.canary._helpers import repo_root
 from tests.support.claude_board import NOW_MS, board_home, noop
 from tests.support.clock import FakeClock

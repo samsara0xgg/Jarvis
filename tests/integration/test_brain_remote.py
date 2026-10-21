@@ -31,12 +31,10 @@ from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state.device_tokens import device_token_matches
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import (
-    InherentDeps,
-    InherentV2Deps,
-    create_app,
-    require_local_key,
-)
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
+from jarvis.surface.inherent_server.v2 import InherentV2Deps
 from tests.support.brain_role import brain_runtime
 from tests.support.local_key_guard import KEYLESS, guard_client, status_of
 
@@ -224,7 +222,7 @@ def test_every_refusal_is_logged_with_why_and_never_the_token(
     client, key, _ = _remote(tmp_path)
     token = _pair(tmp_path, "phone", capsys)
     host = {"Host": "jarvis"}
-    with caplog.at_level("WARNING", logger="jarvis.surface.inherent_server"):
+    with caplog.at_level("WARNING", logger="jarvis.surface.inherent_server.guards"):
         for headers in (
             {},
             {"Authorization": token},

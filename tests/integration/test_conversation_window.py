@@ -21,7 +21,8 @@ from fastapi.testclient import TestClient
 
 from jarvis.state.memory_db import conversation_rows, open_memory_db
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 if TYPE_CHECKING:
     from pathlib import Path

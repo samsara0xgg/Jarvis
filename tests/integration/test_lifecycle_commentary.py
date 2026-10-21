@@ -56,7 +56,8 @@ from jarvis.state.event_log import emit_event, fetch_events_after, iter_events, 
 from jarvis.surface import voice_media
 from jarvis.surface.cli import parse_response_channels
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.canary._helpers import repo_root
 from tests.support.lifecycle_commentary import (
     CommentaryObserver,

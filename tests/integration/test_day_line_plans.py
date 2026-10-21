@@ -42,7 +42,8 @@ from jarvis.state import departures, things
 from jarvis.state.day_line import DayLine, day_window, fold_day, parse_day
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.day_line import (
     MINUTE,
     Row,

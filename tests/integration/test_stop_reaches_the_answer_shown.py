@@ -25,7 +25,8 @@ from jarvis.runtime.turn.drive import drive_turn
 from jarvis.state.event_log import open_event_log
 from jarvis.state.turn_facts import turn_over_or_answering
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.media import CallbackPump, FakeProvider, RecordingBroadcaster, submit_response
 from tests.support.model import ScriptedModel
 from tests.support.response_run import emit_intent, make_runtime, open_run

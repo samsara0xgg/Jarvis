@@ -33,14 +33,18 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import (
+from jarvis.surface.inherent_server.controls import (  # noqa: TC001 — FastAPI reads the route's annotations at runtime.
     ControlsRequest,
+)
+from jarvis.surface.inherent_server.dictation import (
     DictationRequest,
     DictationRoutes,
-    SettingsRequest,
     dictation_stream,
-    register_night_routes,
-    require_local_key,
+)
+from jarvis.surface.inherent_server.guards import require_local_key
+from jarvis.surface.inherent_server.night import register_night_routes
+from jarvis.surface.inherent_server.settings import (  # noqa: TC001 — FastAPI reads the route's annotations at runtime.
+    SettingsRequest,
 )
 from jarvis.surface.terminal_link import (
     MAX_FRAME_CHARS,
@@ -52,7 +56,7 @@ from jarvis.surface.terminal_link import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
-    from jarvis.surface.inherent_server import NightRoutes
+    from jarvis.surface.inherent_server.night import NightRoutes
     from jarvis.surface.voice_controls import VoiceControls
 
 LOGGER = logging.getLogger("jarvis.surface.terminal_ui")

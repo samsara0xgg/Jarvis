@@ -32,7 +32,8 @@ from jarvis.state import things
 from jarvis.state.daily_report import save_report
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.integration.weatherkit_world import NOW, Net, kit_for, make_key
 from tests.support import home_routes as home_routes_support
 from tests.support.home_routes import (

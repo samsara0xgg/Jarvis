@@ -41,7 +41,8 @@ from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_audio, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.canary._helpers import repo_root
 from tests.support.voice_input import EnergySession
 

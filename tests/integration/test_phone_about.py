@@ -39,7 +39,9 @@ from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
 from tests.support.day_line import health, load_rows, minutes_ms

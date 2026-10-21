@@ -13,7 +13,8 @@ from fastapi.testclient import TestClient
 from jarvis.execution.tools import ToolRegistry
 from jarvis.state.event_log import emit_event
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support import plugin_connections as plugin_connections_support
 from tests.support.mcp import ECHO
 from tests.support.mcp import (

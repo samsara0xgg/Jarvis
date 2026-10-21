@@ -46,7 +46,8 @@ from jarvis.state import job_ledger, things
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.canary._helpers import repo_root
 from tests.support import job_mail as job_mail_support
 from tests.support.attention import attention_rows

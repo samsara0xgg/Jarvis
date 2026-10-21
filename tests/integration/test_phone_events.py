@@ -40,7 +40,9 @@ from jarvis.state.phone_track import FIX_COLUMNS
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface import phone_events
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.phone_events import (
     PHONE_EVENT_TYPES,
     PHONE_EVENTS_PATH,

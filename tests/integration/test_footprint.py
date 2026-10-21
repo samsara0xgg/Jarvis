@@ -47,7 +47,9 @@ from jarvis.state.memory_db import open_memory_db
 from jarvis.state.phone_track import SIMULATED
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.phone_events import MAX_BATCH_BYTES, MAX_BATCH_FRAMES, PHONE_EVENTS_PATH
 from jarvis.surface.terminal_events import BrainEvents
 from tests.support.clock import FakeClock

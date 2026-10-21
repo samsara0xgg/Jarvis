@@ -13,7 +13,8 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from jarvis.surface.voice_controls import VoiceControls
 from jarvis.surface.voice_tts import AudioStreamPlayer
 

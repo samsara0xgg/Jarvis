@@ -49,7 +49,9 @@ from jarvis.state.event_log import (
 )
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, REPLACED_CLOSE_CODE, PhoneHub
 from jarvis.surface.phone_player import PCM16
 from jarvis.surface.terminal_events import BrainEvents

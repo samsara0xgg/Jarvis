@@ -64,7 +64,8 @@ from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started, open_response_runs
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.hold import HANG_S
 from tests.support.model import Failure, Pause, ScriptedModel
 from tests.support.response_run import (

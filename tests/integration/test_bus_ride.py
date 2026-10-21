@@ -62,7 +62,8 @@ from jarvis.surface.apns import (
     ride_activity_payload,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.clock import FakeClock
 from tests.support.transit import TRANSIT_NOW
 

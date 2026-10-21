@@ -14,7 +14,8 @@ from jarvis.shared import lang
 from jarvis.state import job_ledger
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 if TYPE_CHECKING:
     from pathlib import Path

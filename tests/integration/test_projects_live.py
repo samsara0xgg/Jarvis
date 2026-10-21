@@ -23,7 +23,8 @@ from jarvis.runtime.work_state import build_analyst
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.projects import parse_catalog
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 pytestmark = pytest.mark.live_llm
 

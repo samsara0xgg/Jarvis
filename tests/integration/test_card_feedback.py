@@ -22,7 +22,8 @@ from jarvis.runtime.card_feedback import KINDS, CardFeedback
 from jarvis.runtime.daemon.routes import card_act
 from jarvis.shared import lang
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.attention import attention_rows
 
 if TYPE_CHECKING:

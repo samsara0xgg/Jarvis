@@ -18,7 +18,8 @@ from fastapi.testclient import TestClient
 from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.surface import voice_tts
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.settings import DEVICES, YAML
 
 if TYPE_CHECKING:

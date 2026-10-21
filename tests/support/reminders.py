@@ -19,7 +19,8 @@ from jarvis.state import reminders as reminder_state
 from jarvis.state import things
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.clock import FakeClock
 
 if TYPE_CHECKING:

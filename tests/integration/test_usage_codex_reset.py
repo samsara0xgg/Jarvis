@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 from jarvis.surface import usage_observer
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping

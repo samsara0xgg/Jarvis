@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 from jarvis.state import quiet_mode
 from jarvis.surface import voice_asr
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from jarvis.surface.voice_controls import VoiceControls
 from tests.support.answer_hold import AcceptingPipeline
 from tests.support.conversation_mode import ModeSession

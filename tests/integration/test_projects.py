@@ -19,7 +19,8 @@ from jarvis.runtime.config import load_runtime_config
 from jarvis.runtime.projects import ProjectsService
 from jarvis.state.projects import Project, parse_catalog
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support import projects as projects_support
 from tests.support.projects import NOW, SHORT, ZONE, ProjectsRig, project_of, span
 from tests.support.timesink import source

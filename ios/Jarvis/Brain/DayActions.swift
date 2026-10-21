@@ -1,7 +1,7 @@
 // words: legacy
 import Foundation
 
-// What he can do to a row of the day on the brain (ADR 0296, jarvis/surface/inherent_server.py): mark an item as what mattered (`POST /inherent/day/highlight`), say that an event his mail
+// What he can do to a row of the day on the brain (ADR 0296, jarvis/surface/inherent_server/): mark an item as what mattered (`POST /inherent/day/highlight`), say that an event his mail
 // made is his or is not (`POST /inherent/commitments/{hex}`), keep a place he was at under a name of his (`POST /inherent/memory/places`), say what he was doing in a stretch of the
 // day (`POST /inherent/day/answer`, ADR 0302) and have the day tidied (`POST /inherent/day/tidy`, ADR 0310). Each answers by its status. A 404 that
 // is the route's own (no such item, no such commitment) is told from the framework's, which a brain without the route gives (`{"detail": "Not Found"}`): that one is no answer.

@@ -20,7 +20,8 @@ from jarvis.runtime.turn.context import live_lines
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:

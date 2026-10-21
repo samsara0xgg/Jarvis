@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 // Talking to the brain from the phone: pictures and files up (`POST /inherent/attachments`), words with them (`POST /inherent/submit`),
-// the conversation back (`GET /inherent/conversation`). The shapes are docs/spec.html (ADR 0211) and jarvis/surface/inherent_server.py.
+// the conversation back (`GET /inherent/conversation`). The shapes are docs/spec.html (ADR 0211) and jarvis/surface/inherent_server/.
 
 /// A file that came with a row of his (ADR 0255): `kind` is "image" or "text"; `gone` once the brain's 30 days are over and the file is swept.
 struct RowAttachment: Equatable {

@@ -29,7 +29,8 @@ from jarvis.runtime.daemon.listen_ports import make_cancel_voice_runs
 from jarvis.state.event_log import emit_event, latest_id, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
 from jarvis.surface.voice_controls import VoiceControls
 from tests.support.barge_in import BargeInRig
 from tests.support.media import (

@@ -32,7 +32,9 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface import terminal_events, terminal_link, usage_observer
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import (
     MAX_EVENT_CHARS,
