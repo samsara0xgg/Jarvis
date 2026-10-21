@@ -384,7 +384,9 @@ def newest(  # noqa: PLR0913 — the source, a window, the kinds and how the sca
     newest revision has no text are included. Finding the newest of every row reads every key of
     the source, hundreds of thousands for TimeSink; ``by_prefix`` limits that read to the keys
     that start ``<kind>:`` (what a terminal ships, ADR 0294) for the ``kinds`` asked, an index
-    range instead of a scan, and gives the same rows when every such key does.
+    range instead of a scan, and gives the same rows when every such key does. With both ends
+    of a window only the rows with a revision inside it are read, each newest found by its key:
+    a row whose newest revision is in the window has one there.
     """
     row = f"substr(key, 1, length(key) - {REVISION_SUFFIX})"
     held = ["source = ?"]
@@ -392,16 +394,30 @@ def newest(  # noqa: PLR0913 — the source, a window, the kinds and how the sca
     if by_prefix and kinds:
         held.append(f"({' OR '.join('(key >= ? AND key < ?)' for _ in kinds)})")
         params.extend(bound for one in kinds for bound in (f"{one}:", f"{one};"))
-    newest_of_each = (
-        f"SELECT max(rowid) FROM import_entries WHERE {' AND '.join(held)} GROUP BY {row}"  # noqa: S608 - constant expressions
-    )
-    clauses = [f"rowid IN ({newest_of_each})"]
+    window: list[str] = []
+    bounds: list[int] = []
     if start_ms is not None:
-        clauses.append("at_ms >= ?")
-        params.append(start_ms)
+        window.append("at_ms >= ?")
+        bounds.append(start_ms)
     if end_ms is not None:
-        clauses.append("at_ms < ?")
-        params.append(end_ms)
+        window.append("at_ms < ?")
+        bounds.append(end_ms)
+    if start_ms is not None and end_ms is not None:
+        touched = (
+            f"SELECT DISTINCT {row} AS r FROM import_entries INDEXED BY import_entries_at "  # noqa: S608 - constant expressions
+            f"WHERE {' AND '.join(window + held)}"
+        )
+        newest_of_each = (
+            "SELECT (SELECT max(rowid) FROM import_entries WHERE source = ? AND key >= r || ':' "  # noqa: S608 - constant expressions
+            f"AND key < r || ';' AND length(key) = length(r) + {REVISION_SUFFIX}) FROM ({touched})"
+        )
+        params = [source, *bounds, *params]
+    else:
+        newest_of_each = (
+            f"SELECT max(rowid) FROM import_entries WHERE {' AND '.join(held)} GROUP BY {row}"  # noqa: S608 - constant expressions
+        )
+    clauses = [f"rowid IN ({newest_of_each})", *window]
+    params.extend(bounds)
     if kinds:
         clauses.append(f"kind IN ({', '.join('?' * len(kinds))})")
         params.extend(kinds)

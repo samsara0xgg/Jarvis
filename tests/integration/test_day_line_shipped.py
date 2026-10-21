@@ -27,6 +27,7 @@ from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
 from jarvis.state.doing import read_doing
 from jarvis.state.event_log import open_event_log
+from jarvis.state.import_parsers import Parsed
 from jarvis.state.ledger import TerminalScreen
 from jarvis.state.shipments import Shipments
 from jarvis.surface.mac_ship import ShipConfig, Shipper
@@ -145,6 +146,40 @@ def test_a_revised_row_counts_once_with_its_newest_end(tmp_path: Path) -> None:
     assert [(i["kind"], i["start_ms"], i["end_ms"]) for i in line.items] == [
         ("work", _ms(start_ms, 540), _ms(start_ms, 670)),
     ]
+
+
+def test_a_window_reads_each_row_it_touches_at_its_newest_revision(tmp_path: Path) -> None:
+    """Bounded at both ends, newest reads only rows with a revision inside, with the same answer.
+
+    A row whose newest revision moved into the window is in it; one whose newest moved out is not,
+    though an older revision is still inside; a longer row id is never read as another revision.
+    """
+    revisions = [  # (row, revision, minute of at_ms), oldest first
+        ("span:1", "a", 600), ("span:1", "b", 600),
+        ("span:2", "a", 480), ("span:2", "b", 630),
+        ("span:3", "a", 640), ("span:3", "b", 780),
+        ("span:6", "a", 645), ("span:6", "b", 660), ("span:6:x", "c", 800),
+        ("span:4", "a", 420),
+        ("callSpan:5", "a", 610),
+    ]
+    with closing(imports.open_shipped(tmp_path / "imports")) as conn:
+        imports.add_entries(conn, "digest", [
+            Parsed("timesink", f"{row}:{rev * 12}", "0", minute * MINUTE, "UTC",
+                   row.split(":")[0], "", {"rev": rev})
+            for row, rev, minute in revisions
+        ], imports.Counts())
+        start, end = 540 * MINUTE, 720 * MINUTE
+        for kinds, by_prefix in ((("span",), True), (("span",), False), ((), False)):
+            bounded = imports.newest(
+                conn, "timesink", start_ms=start, end_ms=end, kinds=kinds, by_prefix=by_prefix,
+            )
+            whole = imports.newest(conn, "timesink", kinds=kinds, by_prefix=by_prefix)
+            assert bounded == [e for e in whole if start <= e.at_ms < end]
+            assert [(e.kind, e.at_ms // MINUTE, e.fields["rev"]) for e in bounded] == [
+                ("span", 600, "b"),
+                *([("callSpan", 610, "a")] if not kinds else []),
+                ("span", 630, "b"), ("span", 660, "b"),
+            ]
 
 
 def test_the_live_read_is_preferred_and_the_shipped_one_fills_in_when_it_has_nothing(
