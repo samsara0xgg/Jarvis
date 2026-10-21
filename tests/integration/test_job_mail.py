@@ -3257,7 +3257,11 @@ def _winter(
 def _two_times(said: str = "10:00 AM - 10:30 AM PST") -> str:
     """The note on a thing whose time reads two ways: the table's sentence with both clocks."""
     return lang.t(
-        "job.thing.note", when=lang.t("job.when.two", first="10:00", later="11:00", said=said)
+        "job.thing.note",
+        when=lang.t(
+            "job.when.two", first="10:00", later="11:00", said=said,
+            zones=lang.t("job.zones.pacific"),
+        ),
     )
 
 
