@@ -218,23 +218,16 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
     )
 
 
-def record_pre_emit_token(
-    state: SurfaceState,  # noqa: ARG001 — kept for API symmetry; SurfaceState is immutable so this is effectively a constructor wrapper that documents the lifecycle.
-    response_hash: str,
-) -> SurfaceState:
-    """Record the Pre-emit Gate token on the surface state.
+def record_pre_emit_token(response_hash: str) -> SurfaceState:
+    """Record the Pre-emit Gate token on a fresh surface state.
 
-    Returns a fresh frozen :class:`SurfaceState` (no in-place
-    mutation). The composition root calls this with the
-    ``ResponsePlan.response_hash`` returned by
+    Returns a new frozen :class:`SurfaceState`. The composition root calls
+    this with the ``ResponsePlan.response_hash`` returned by
     :func:`jarvis.decision.decide` immediately before passing the
     plan to :func:`jarvis.surface.cli_render.render_response`.
 
-    The ``state`` argument is accepted for API symmetry with the
-    ``state -> state`` style used across :class:`SurfaceState`
-    mutators; the previous token (if any) is intentionally discarded
-    because a new approved plan supersedes whatever was on the
-    surface.
+    A new approved plan supersedes whatever token was on the surface, so
+    there is no previous state to carry over.
     """
     return SurfaceState(last_gate_response_hash=response_hash)
 

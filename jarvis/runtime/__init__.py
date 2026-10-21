@@ -291,7 +291,6 @@ from jarvis.state.voiceprint import VoiceprintBook
 from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
     PreEmitTokenError,
-    SurfaceState,
     emit_surface_user_intent,
     parse_response_channels,
     record_pre_emit_token,
@@ -5505,8 +5504,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         # SurfaceState is allocated fresh per turn (spec §3.6.7 — local
         # surface state owns no truth and doesn't survive across turns)
         # and discarded once render_response returns the cleared state.
-        surface_state = SurfaceState(last_gate_response_hash=None)
-        primed_state = record_pre_emit_token(surface_state, response_plan.response_hash)
+        primed_state = record_pre_emit_token(response_plan.response_hash)
 
         # ADR-0008 D1 — generation completion, not physical delivery, is the
         # ResponseRun's terminal condition, so the terminal is written BEFORE

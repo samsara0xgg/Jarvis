@@ -29,7 +29,7 @@ from jarvis.runtime import (
 )
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface import voice_media
-from jarvis.surface.cli import SurfaceState, parse_response_channels, record_pre_emit_token
+from jarvis.surface.cli import parse_response_channels, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
 from tests.support.media import (
     CallbackPump,
@@ -478,7 +478,7 @@ def test_delivery_terminal_only_binds_the_run_without_the_streaming_flag(tmp_pat
         runtime = routine_runtime(tmp_path, provider.url)
         user_intent(runtime.conn, "turn-bind")
     plan = _plan(_ANSWER)
-    state = record_pre_emit_token(SurfaceState(last_gate_response_hash=None), plan.response_hash)
+    state = record_pre_emit_token(plan.response_hash)
     _, event = render_response(
         state,
         plan,
@@ -499,7 +499,7 @@ def test_delivery_terminal_only_binds_the_run_without_the_streaming_flag(tmp_pat
     assert not logged_rows(runtime.conn, "surface.response_open", "surface.response_chunk")
     with pytest.raises(ValueError, match="response ids"):
         render_response(
-            record_pre_emit_token(SurfaceState(last_gate_response_hash=None), plan.response_hash),
+            record_pre_emit_token(plan.response_hash),
             plan,
             conn=runtime.conn,
             turn_id="turn-bind",

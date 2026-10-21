@@ -315,7 +315,7 @@ from jarvis.surface import (
     voice_wake,
 )
 from jarvis.surface.claude_sessions import ClaudeSessions
-from jarvis.surface.cli import SurfaceState, emit_surface_user_intent, record_pre_emit_token
+from jarvis.surface.cli import emit_surface_user_intent, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
 from jarvis.surface.device_pairing import DevicePairing, brain_urls
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -2326,10 +2326,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     plan = pre_emit_gate(speech)
     _emit_pre_emit_verdict(conn, plan=plan, turn_id=turn_id)
     render_response(
-        record_pre_emit_token(
-            SurfaceState(last_gate_response_hash=None),
-            plan.response_hash,
-        ),
+        record_pre_emit_token(plan.response_hash),
         plan,
         conn=conn,
         turn_id=turn_id,
@@ -2811,9 +2808,7 @@ def _say_conversation_line(
             _commentary_terminalizer(runtime).complete(run.facts, response_hash=plan.response_hash)
             run.mark("completed")
             render_response(
-                record_pre_emit_token(
-                    SurfaceState(last_gate_response_hash=None), plan.response_hash,
-                ),
+                record_pre_emit_token(plan.response_hash),
                 plan,
                 conn=conn,
                 turn_id=turn_id,
