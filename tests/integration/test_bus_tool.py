@@ -4,7 +4,9 @@ A scripted story against the real registry: Google Routes served by hand (no net
 follower that is a recorder with canned answers, a real event log for the pin and its reminder.
 Each row of ``STORY`` is a call and what must come back; the rows run in order, so the list a plan
 made is what the next row pins and starts. The follower's own behaviour (feeds, ending rules, the
-Live Activity) is `test_bus_ride`, which calls the same tool over the real follower.
+Live Activity) is `test_bus_ride`, which calls the same tool over the real follower. The board
+(ADR 0344) reads a real ``BusLive`` over a small synthetic export, and every call's receipt
+(ADR 0319) is read from its ``action.result_observed`` row.
 """
 
 from __future__ import annotations
@@ -19,9 +21,11 @@ from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.bus_tool import RideControl
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.execution.transit_tool import TransitOffers
+from jarvis.runtime.bus_live import BusLive
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state import departures
 from jarvis.state.event_log import iter_events_of_types, open_event_log
+from tests.support import gtfs
 from tests.support.transit import (
     FAKE_KEY,
     PLACES,
@@ -34,27 +38,43 @@ from tests.support.transit import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from jarvis.shared.here import HereReading
+
+    Where = Callable[[], tuple[float, float] | None]
 
 ROUTES = routes_with(bus_route("26", "17:12"), bus_route("28", "17:20"))
 """Now is 17:00: the 26 leaves at 17:12 (walk 4: leave 17:08) and the 28 at 17:20 (leave 17:16)."""
 
 
+RIDE_ID = "ride-3fa91c02"
+"""The follower's ride; she sees it as ``ride:3fa91c02``."""
+
+
 @dataclass
 class Follower:
-    """A ride follower that records its calls and answers like the runtime's, from one script."""
+    """A ride follower that records its calls and answers like the runtime's, from one script.
+
+    Each change it makes answers with the event that made it (``ev1``, ``ev2`` ...), as
+    ``jarvis.runtime.rides`` does, so a receipt's undo can be checked against it.
+    """
 
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     route: str | None = None
     stop: str | None = None
+    events: int = 0
+
+    def _event(self) -> str:
+        self.events += 1
+        return f"ev{self.events}"
 
     def ride(self) -> dict[str, Any]:
         """The runtime's description of the ride (ids and epoch times included)."""
         return {
-            "ride_id": "ride-1", "route": self.route, "board_stop": "Alder St",
+            "ride_id": RIDE_ID, "route": self.route, "headsign": "Downtown",
+            "board_stop": "Alder St",
             "alight_stop": self.stop, "alight_known": self.stop is not None,
             "next_stop": "Cedar Ave", "stops_left": 3 if self.stop else None,
             "minutes_to_alight": 12 if self.stop else None,
@@ -67,27 +87,28 @@ class Follower:
     def watch(self, place: str) -> dict[str, Any]:
         """``bus(ride="watch")``."""
         self.calls.append(("watch", (place,)))
-        return {"watching": True, "minutes": 45, "note": "if his phone moves with a bus ..."}
+        return {"watching": True, "minutes": 45, "watch_id": "watch-5b2e7d10",
+                "event_uid": self._event(), "note": "if his phone moves with a bus ..."}
 
     def start(
         self, route: str | None, place: str | None, vehicle: str | None,
-        _here: HereReading | None = None,
+        _here: HereReading | None, _where: Where,
     ) -> dict[str, Any]:
         """``bus(ride="start")``: begin, or say it already has."""
         self.calls.append(("start", (route, place, vehicle)))
         if self.route is not None:
             return {"started": False, "already_riding": True, **self.ride()}
         self.route, self.stop = route, "Fir Lane" if place else None
-        return {"started": True, **self.ride()}
+        return {"started": True, "event_uid": self._event(), **self.ride()}
 
-    def set_stop(self, words: str) -> dict[str, Any]:
-        """``bus(get_off=...)``: ambiguous for "e", else set."""
+    def set_stop(self, words: str, _here: HereReading | None, _where: Where) -> dict[str, Any]:
+        """``bus(ride="get_off", stop=...)``: ambiguous for "e", else set."""
         self.calls.append(("set_stop", (words,)))
         if words == "e":
             return {"set": False, "ambiguous": True, "candidates": ["Elm Cres", "Fir Lane"],
                     "note": "ask which stop he means"}
         self.stop = "Gum St"
-        return {"set": True, **self.ride()}
+        return {"set": True, "event_uid": self._event(), **self.ride()}
 
     def end(self) -> dict[str, Any]:
         """``bus(ride="end")``."""
@@ -95,7 +116,8 @@ class Follower:
         if self.route is None:
             return {"ended": False, "note": "no ride is active"}
         gone, self.route, self.stop = self.route, None, None
-        return {"ended": True, "route": gone}
+        return {"ended": True, "route": gone, "headsign": "Downtown", "ride_id": RIDE_ID,
+                "event_uid": self._event()}
 
     def status(self) -> dict[str, Any] | None:
         """``bus()``: the ride, None when there is none."""
@@ -115,6 +137,7 @@ class World:
     follower: Follower = field(default_factory=Follower)
     offers: TransitOffers = field(default_factory=TransitOffers)
     seen: list[Any] = field(default_factory=list)
+    bus_live: BusLive | None = None
     n: int = 0
 
     def __post_init__(self) -> None:
@@ -125,6 +148,7 @@ class World:
         self.registry = build_default_registry(
             transit_api_key=FAKE_KEY, transit_places=lambda: PLACES, transit_offers=self.offers,
             clock=transit_clock(), here=fix_with(), ride_control=self.follower.control(),
+            bus_live=self.bus_live,
         )
 
     def call(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +169,11 @@ class World:
         """The ``departure.pinned`` payloads in the log."""
         return [dict(e.payload) for e in iter_events_of_types(self.conn, ("departure.pinned",))]
 
+    def receipt(self) -> dict[str, Any]:
+        """The last call's receipt, as the dispatcher logged it in ``action.result_observed``."""
+        *_, last = iter_events_of_types(self.conn, ("action.result_observed",))
+        return dict(last.payload["receipt"])
+
 
 @pytest.fixture
 def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
@@ -157,13 +186,17 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
 # (what the row shows, arguments, the summary must start with, keys the answer must have,
 #  the error code instead, calls the follower must have got since the last row)
 Row = tuple[str, dict[str, Any], str, tuple[str, ...], str, list[tuple[str, tuple[Any, ...]]]]
+NO_RIDE: list[tuple[str, tuple[Any, ...]]] = [("status", ()), ("status", ())]
+"""``bus()`` off a ride reads the ride twice: for the no-argument answer, then whether the times
+asked are the ride's own (ADR 0344)."""
 STORY: list[Row] = [
     (
         "no ride and no arguments: the next buses home, numbered, the sentence first",
         {},
-        "To home, option 1: leave 5:08 pm (in 8 min), take the 26 from Stop of 26 at 5:12 pm,"
-        " arrive 5:32 pm (24 min). 2 options are listed.",
-        ("options", "from", "to"), "", [("status", ())],
+        "To home, option 1: leave 5:08 pm (in 8 min), take the 26 from Stop of 26 at 5:12 pm"
+        " (in 12 min) (scheduled), arrive 5:32 pm (24 min). Then option 2: the 28 from"
+        " Stop of 28 at 5:20 pm (in 20 min) (scheduled), arrive 5:40 pm.",
+        ("options", "from", "to"), "", NO_RIDE,
     ),
     (
         "pin an option that is not on the list: what happened and what to do",
@@ -185,41 +218,41 @@ STORY: list[Row] = [
     (
         "he boarded the bus he was told about: option 1 is route 26 to where it was planned",
         {"ride": "start", "option": 1},
-        "On the 26 from Alder St; next stop Cedar Ave. He gets off at Fir Lane: 3 stops left,"
-        " about 5:12 pm (in 12 min).",
+        "On the 26 toward Downtown from Alder St; next stop Cedar Ave. He gets off at Fir Lane:"
+        " 3 stops left, about 5:12 pm (in 12 min).",
         ("started", "route", "alight_stop"), "", [("start", ("26", "home", None))],
     ),
     (
         "no arguments on a ride: how it is going, no ids",
         {},
-        "On the 26 from Alder St; next stop Cedar Ave. He gets off at Fir Lane: 3 stops left,"
-        " about 5:12 pm (in 12 min).",
+        "On the 26 toward Downtown from Alder St; next stop Cedar Ave. He gets off at Fir Lane:"
+        " 3 stops left, about 5:12 pm (in 12 min).",
         ("next_stop", "stops_left", "credit"), "", [("status", ())],
     ),
     (
         "starting again while riding changes nothing and says so",
         {"ride": "start", "route": "26"},
-        "Already following this ride; nothing changed. On the 26 from Alder St;",
+        "Already following this ride; nothing changed. On the 26 toward Downtown from Alder St;",
         ("already_riding",), "", [("start", ("26", None, None))],
     ),
     (
         "his stop is named: set, and he is warned before it",
-        {"get_off": "Gum"},
-        "Set. On the 26 from Alder St; next stop Cedar Ave. He gets off at Gum St:"
-        " 3 stops left, about 5:12 pm (in 12 min). The bus position and the arrival at his stop"
-        " are live from BC Transit. He is warned one stop before it.",
+        {"ride": "get_off", "stop": "Gum"},
+        "Set. On the 26 toward Downtown from Alder St; next stop Cedar Ave. He gets off at Gum"
+        " St: 3 stops left, about 5:12 pm (in 12 min). The bus position and the arrival at his"
+        " stop are live from BC Transit. He is warned one stop before it.",
         ("set", "alight_stop"), "", [("set_stop", ("Gum",))],
     ),
     (
         "a name that fits two stops: ask which",
-        {"get_off": "e"},
+        {"ride": "get_off", "stop": "e"},
         "More than one stop matches: Elm Cres, Fir Lane. Ask him which, then call",
         ("candidates",), "", [("set_stop", ("e",))],
     ),
     (
         "he got off",
         {"ride": "end"},
-        "Stopped following the 26.",
+        "Stopped following the 26 toward Downtown.",
         ("ended",), "", [("end", ())],
     ),
     (
@@ -238,7 +271,7 @@ STORY: list[Row] = [
         "no ride again: no arguments is the buses home once more",
         {},
         "To home, option 1:",
-        ("options",), "", [("status", ())],
+        ("options",), "", NO_RIDE,
     ),
 ]
 
@@ -256,7 +289,9 @@ def test_the_story_runs_row_by_row(world: World) -> None:
         assert out["summary"].startswith(summary), (label, out["summary"])
         for key in keys:
             assert key in out, (label, key)
-        assert not {"ride_id", "eta_ms", "started_at_ms", "pin_id", "offer_id"} & out.keys(), label
+        assert not {
+            "ride_id", "eta_ms", "started_at_ms", "pin_id", "offer_id", "event_uid", "watch_id",
+        } & out.keys(), label
         assert "cursor" not in json.dumps(out), label
         assert len(json.dumps(out)) <= 4000, label
         assert world.follower.calls[before:] == calls, label
@@ -271,8 +306,11 @@ def test_the_story_runs_row_by_row(world: World) -> None:
         ({"pin": []}, "invalid_arguments", "pin takes one to 3"),
         ({"pin": [1, 2, 3, 4]}, "invalid_arguments", "pin takes one to 3"),
         ({"pin": [0]}, "invalid_arguments", "pin must be a whole number from 1"),
-        ({"get_off": "Gum", "ride": "end"}, "invalid_arguments", "ride=end takes no other"),
-        ({"ride": "fly"}, "invalid_arguments", "ride must be start, watch or end"),
+        ({"stop": "Gum", "ride": "end"}, "invalid_arguments", "ride=end takes no other"),
+        ({"ride": "fly"}, "invalid_arguments", "ride must be start, watch, end or get_off"),
+        ({"ride": "get_off"}, "invalid_arguments", "ride=get_off takes stop="),
+        ({"ride": "get_off", "to": "home"}, "invalid_arguments", "ride=get_off takes stop="),
+        ({"stop": "Gum", "to": "home"}, "invalid_arguments", "so not both"),
         ({"ride": "watch"}, "invalid_arguments", "ride=watch needs to="),
         ({"ride": "start", "pin": [1]}, "invalid_arguments", "ride=start takes option="),
         ({"ride": "start", "option": 1, "route": "7"}, "invalid_arguments", "not both"),
@@ -280,7 +318,11 @@ def test_the_story_runs_row_by_row(world: World) -> None:
         ({"option": 1}, "invalid_arguments", "option goes with ride=start"),
         ({"vehicle_id": "v1"}, "invalid_arguments", "vehicle_id goes with ride=start"),
         ({"cursor": "x"}, "invalid_arguments", "cursor is not an argument"),
-        ({"destination": "home"}, "invalid_arguments", "to=, at= and route="),
+        ({"destination": "home"}, "invalid_arguments", "The arguments are arrive_by, at, from,"),
+        # The arguments that left with ADR 0343-0346 say where they went.
+        ({"get_off": "Gum"}, "invalid_arguments", 'get_off is ride="get_off", stop=<stop>'),
+        ({"day": "tomorrow"}, "invalid_arguments", "day is at=, which takes a local date"),
+        ({"place_id": "ChIJx"}, "invalid_arguments", "place_id is to=, which takes a place_id"),
     ],
 )
 def test_a_mistake_says_what_it_was_and_the_way_out(
@@ -333,12 +375,14 @@ def test_with_no_stop_set_the_ride_offers_where_the_last_plan_lets_him_off(world
     world.offers.alights[("26", "Stop of 26")] = ("UVic Exchange", 48.47, -123.31)
     world.call({"ride": "start", "route": "26"})  # no destination: his stop is not set
     out = world.call({})
-    assert out["summary"].startswith("On the 26 from Alder St; next stop Cedar Ave. Where he gets")
+    assert out["summary"].startswith(
+        "On the 26 toward Downtown from Alder St; next stop Cedar Ave. Where he gets",
+    )
     assert out["summary"].endswith(
         "The last plan, to home, lets him off the 26 at UVic Exchange;"
-        " set it with bus(get_off=...) if he takes that."
+        " set it with bus(ride='get_off', stop=...) if he takes that."
     )
-    world.call({"get_off": "Gum"})
+    world.call({"ride": "get_off", "stop": "Gum"})
     assert "The last plan" not in world.call({})["summary"]
 
 
@@ -349,7 +393,8 @@ def test_a_newer_plan_renumbers_the_list_and_a_pin_takes_the_new_first(world: Wo
     held = departures.active(world.conn, local_ms(17, 0))
     assert held is not None
     assert [t.first_route for t in held.trips] == ["26"]
-    world.call({"to": "UVic", "route": "28"})  # a new list: the 28 first, then the 26
+    # A new list: the 28 first, then the 26. Home is a point, so no place search is needed.
+    world.call({"to": "home", "route": "28"})
     assert world.call({"pin": [1]})["summary"].startswith("Pinned on the notch: the 28 from")
     held = departures.active(world.conn, local_ms(17, 0))
     assert held is not None
@@ -357,10 +402,159 @@ def test_a_newer_plan_renumbers_the_list_and_a_pin_takes_the_new_first(world: Wo
 
 
 def test_the_menu_entry_is_short_first_sentence_says_when_and_nothing_pages(world: World) -> None:
-    """Description about 600 characters, led by when to use it; no cursor anywhere."""
+    """Description about 600 characters: when to use it, then when not; no cursor anywhere."""
     (definition,) = (d for d in world.registry.get_definitions() if d.name == "bus")
     assert len(definition.description) <= 650
-    assert definition.description.startswith("Use for anything about the bus")
-    assert "not for where he is" in definition.description.split(".")[0]
+    when, not_for, *_ = definition.description.split(". ")
+    assert when.startswith("Use for anything about the bus")
+    assert not_for.startswith("Not for where he is")
     assert "cursor" not in json.dumps(definition.input_schema)
     assert definition.input_schema["additionalProperties"] is False
+
+
+# --- receipts (ADR 0319) ---------------------------------------------------------------------
+
+
+def test_each_ride_change_names_the_ride_and_the_event_an_undo_reverses(world: World) -> None:
+    """A ride write is ``ride:<short id>`` (a watch ``watch:``) with the follower's event as undo.
+
+    A repeat changes nothing, so it has no undo; a question back and a refusal touch no object.
+    """
+    rows: list[tuple[dict[str, Any], str, str | None, str | None]] = [
+        ({"ride": "start", "route": "26", "to": "home"}, "done", "ride:3fa91c02", "ev1"),
+        ({"ride": "start", "route": "26"}, "done", "ride:3fa91c02", None),  # already riding
+        ({"ride": "get_off", "stop": "e"}, "needs_choice", None, None),
+        ({"ride": "get_off"}, "failed", None, None),
+        ({"ride": "get_off", "stop": "Gum"}, "done", "ride:3fa91c02", "ev2"),
+        ({"ride": "end"}, "done", "ride:3fa91c02", "ev3"),
+        ({"ride": "end"}, "done", None, None),  # nothing was ended
+        ({"ride": "watch", "to": "campus"}, "done", "watch:5b2e7d10", "ev4"),
+    ]
+    for args, status, touched, undo in rows:
+        world.call(args)
+        receipt = world.receipt()
+        assert (receipt["status"], receipt["reads_only"]) == (status, False), args
+        assert (receipt.get("object"), receipt.get("undo")) == (touched, undo), args
+
+
+def test_a_pin_names_itself_and_undoes_by_its_event_and_a_repeat_has_no_undo(
+    world: World,
+) -> None:
+    """``pin:<short id>`` with the ``departure.pinned`` event as undo; pinning it again has none."""
+    world.call({"to": "home"})
+    world.call({"pin": [1]})
+    first = world.receipt()
+    (pinned,) = iter_events_of_types(world.conn, ("departure.pinned",))
+    short = str(pinned.payload["pin_id"]).removeprefix(departures.ID_PREFIX)
+    assert (first["status"], first["reads_only"]) == ("done", False)
+    assert (first["object"], first["undo"]) == (f"pin:{short}", pinned.event_uid)
+    world.call({"pin": [1]})
+    again = world.receipt()
+    assert again["object"] == f"pin:{short}"
+    assert "undo" not in again
+
+
+def test_the_times_and_the_ride_are_reads_that_say_what_they_covered(world: World) -> None:
+    """The times name Google and BC Transit, the window and the options shown; the ride its feed."""
+    world.call({"to": "home"})
+    times = world.receipt()
+    assert times["reads_only"] is True
+    assert not {"object", "undo"} & times.keys()
+    assert times["covered"] == {
+        "sources": ["Google Routes", "BC Transit timetable", "BC Transit live"],
+        "window": "buses from now", "shown": 2, "more": 0, "how_more": "",
+    }
+    world.call({"ride": "start", "route": "26"})
+    world.call({})
+    ride = world.receipt()
+    assert ride["reads_only"] is True
+    assert ride["covered"]["sources"] == ["BC Transit live", "BC Transit timetable"]
+    assert (ride["covered"]["window"], ride["covered"]["shown"]) == ("the ride now", 1)
+
+
+# --- the next buses at a stop (ADR 0344) -----------------------------------------------------
+
+# Here is the Mac's fix, 48.46, -123.31. Two stops of the 7 are within 300 m of it, one is 2 km
+# away; the 7 runs both ways, the 9 calls at the nearer stop only.
+BOARD = gtfs.Export(
+    stops=(
+        gtfs.StopSpec("S1", "Ring Rd at Oak St", 48.4609, -123.31, "10001"),  # 100 m
+        gtfs.StopSpec("S2", "Oak St at Elm Ave", 48.46, -123.3125),  # 184 m
+        gtfs.StopSpec("S3", "Ring Rd at Pine St", 48.48, -123.31),  # 2.2 km
+    ),
+    trips=(
+        gtfs.TripSpec("T7a", "7", (("S1", "17:10:00"), ("S3", "17:20:00")), headsign="Downtown"),
+        gtfs.TripSpec("T7c", "7", (("S1", "17:40:00"), ("S3", "17:50:00")), headsign="Downtown"),
+        gtfs.TripSpec(
+            "T7b", "7", (("S3", "17:05:00"), ("S2", "17:12:00"), ("S1", "17:15:00")),
+            direction=1, headsign="Harbour",
+        ),
+        gtfs.TripSpec(
+            "T7d", "7", (("S3", "17:35:00"), ("S2", "17:42:00"), ("S1", "17:45:00")),
+            direction=1, headsign="Harbour",
+        ),
+        gtfs.TripSpec("T9a", "9", (("S1", "17:20:00"),), headsign="Uplands"),
+    ),
+)
+
+
+@pytest.fixture
+def board(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
+    """The world at 17:00 with a real ``BusLive`` over ``BOARD``; the live feed is empty."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    gtfs.write(cache / "bctransit-gtfs.zip", BOARD)
+    live = BusLive(cache, feed=lambda: b"", download=lambda _p: None)
+    made = World(tmp_path, seen=serve_routes(monkeypatch, answer=ROUTES), bus_live=live)
+    yield made
+    made.conn.close()
+
+
+def test_a_route_alone_is_its_next_buses_both_ways_at_his_stops_within_300_m(
+    board: World,
+) -> None:
+    """``route=`` with no destination: the next buses of that route at the stops near Here.
+
+    Stops within 300 m, nearest first; two buses per direction with their headsigns; from the
+    timetable alone, with no Google request.
+    """
+    out = board.call({"route": "7"})
+    assert out["summary"].startswith(
+        "Next at Ring Rd at Oak St (100 m away): the 7 toward Downtown at 5:10 pm (scheduled);"
+    )
+    assert [(s["stop"], s["metres"]) for s in out["stops"]] == [
+        ("Ring Rd at Oak St", 100), ("Oak St at Elm Ave", 184),
+    ]
+    near, other = out["stops"]
+    assert [(b["headsign"], b["departs"]) for b in near["buses"]] == [
+        ("Downtown", "5:10 pm"), ("Harbour", "5:15 pm"), ("Downtown", "5:40 pm"),
+        ("Harbour", "5:45 pm"),
+    ]
+    assert [b["headsign"] for b in other["buses"]] == ["Harbour", "Harbour"]
+    assert {b["route"] for s in out["stops"] for b in s["buses"]} == {"7"}
+    assert {b["source"] for s in out["stops"] for b in s["buses"]} == {"scheduled"}
+    assert board.seen == []
+    receipt = board.receipt()
+    assert (receipt["status"], receipt["reads_only"]) == ("done", True)
+    assert receipt["covered"]["sources"] == ["BC Transit timetable", "BC Transit live"]
+    assert receipt["covered"]["shown"] == 6
+
+
+def test_a_stop_name_that_fits_several_stops_asks_which_nearest_first(board: World) -> None:
+    """``stop=`` naming two stops reads no buses: it asks which, each candidate with its distance.
+
+    The call only reads (``bus(stop=...)`` is a read, ADR 0319), and its receipt says so.
+    """
+    out = board.call({"stop": "Ring Road"})
+    assert out["summary"].startswith(
+        "More than one stop matches: Ring Rd at Oak St, Ring Rd at Pine St. Ask him which",
+    )
+    assert out["candidates"] == [
+        {"stop": "Ring Rd at Oak St", "metres": 100},
+        {"stop": "Ring Rd at Pine St", "metres": 2224},
+    ]
+    assert "stops" not in out
+    assert board.seen == []
+    receipt = board.receipt()
+    assert receipt["status"] == "needs_choice"
+    assert receipt["reads_only"] is True

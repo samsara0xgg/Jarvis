@@ -1560,7 +1560,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=(
             "pin_id", "tid", "reminder_id", "ring", "leave_at_ms", "departs_at_ms", "arrive_at",
         ),
-        optional_payload=(),
+        optional_payload=("bus_trip_id",),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -1606,8 +1606,18 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(
             "trip_id", "vehicle_id", "board_stop", "board_stop_id", "alight_stop",
             "alight_stop_id", "alight_seq", "destination", "pin_tid", "service_date",
-            "scheduled_end_ms", "device",
+            "scheduled_end_ms", "device", "headsign",
         ),
+        schema_version=1,
+    ),
+    # ADR 0344: the ride followed the wrong trip; it follows this one now (his stop is served by
+    # it and not by the first, and one bus of it is near him).
+    EventTypeSchema(
+        event_type="ride.moved",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("ride_id", "trip_id"),
+        optional_payload=("vehicle_id", "headsign", "service_date", "scheduled_end_ms"),
         schema_version=1,
     ),
     EventTypeSchema(

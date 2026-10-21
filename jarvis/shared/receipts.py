@@ -193,7 +193,8 @@ _IMPOSSIBLE: Final = frozenset({
 })
 _RETRY_OTHER_ARGS: Final = frozenset({
     "invalid_arguments", "not_found", "no_resolved_target", "file_not_found", "target_not_found",
-    "no_such_stop", "no_item", "empty_text", "empty_message", "empty_ids", "too_long",
+    "no_such_stop", "stop_passed", "no_item", "empty_text", "empty_message", "empty_ids",
+    "too_long",
     "invalid_time", "time_in_past", "too_far_ahead", "bad_cwd", "cwd_not_allowed", "secret_field",
     "no_plan",
 })

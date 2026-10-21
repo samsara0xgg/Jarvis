@@ -432,7 +432,8 @@ def test_the_conversation_row_of_her_answer_carries_the_places_it_showed(tmp_pat
         ("bus", {}, "Checking transit", "查公交"),
         ("bus", {"pin": [1]}, "Following the bus", "跟进公交"),
         ("bus", {"ride": "start", "route": "28"}, "Following the bus", "跟进公交"),
-        ("bus", {"get_off": "Fir Lane"}, "Following the bus", "跟进公交"),
+        ("bus", {"ride": "get_off", "stop": "Fir Lane"}, "Following the bus", "跟进公交"),
+        ("bus", {"stop": "Fir Lane"}, "Checking transit", "查公交"),
         (
             "mcp__microsoft__get-calendar-view",
             {

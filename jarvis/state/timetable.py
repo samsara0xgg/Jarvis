@@ -379,6 +379,14 @@ class Timetable:
             ).fetchall()
         return {str(t): sys.intern(str(r)) for t, r in rows}
 
+    def headsign_of(self, trip_id: str) -> str:
+        """A trip's headsign (where it is going), empty when the export has none."""
+        with self._db() as db:
+            row = db.execute(
+                "SELECT headsign FROM trips WHERE trip_id = ?", (trip_id,),
+            ).fetchone()
+        return "" if row is None else str(row[0])
+
     def trip_stops(self, trip_id: str, day: date) -> list[StopTime]:
         """A trip's stops in order, each with its scheduled time on service day ``day``."""
         with self._db() as db:

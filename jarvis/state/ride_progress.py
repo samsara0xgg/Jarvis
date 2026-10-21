@@ -18,6 +18,8 @@ from itertools import pairwise
 from typing import TYPE_CHECKING, Final
 
 from jarvis.shared.geo import metres
+from jarvis.shared.rounding import arrival_ms
+from jarvis.state import stop_finder
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -34,8 +36,6 @@ ALIGN_MS: Final = 20_000
 """How far outside the vehicle's recorded positions a fix may be and still be compared."""
 STOPPED_AT: Final = 1
 """GTFS-realtime ``current_status``: the vehicle is at ``stop_id`` (0 incoming, 2 in transit)."""
-NEAR_STOP_M: Final = 800.0
-"""A place is a stop's neighbour when it is no farther than a walk from it."""
 
 type Sample = tuple[int, float, float]
 """``(epoch ms, lat, lng)`` of a vehicle, in time order."""
@@ -150,21 +150,22 @@ def left_at(fixes: Sequence[Fix], samples: Sequence[Sample]) -> int | None:
     return None
 
 
-def nearest_stop(stops: Sequence[StopTime], place: tuple[float, float]) -> StopTime | None:
-    """The stop closest to ``place``, if it is within a walk of it."""
+def nearest_stop(
+    stops: Sequence[StopTime], place: tuple[float, float], within: float = stop_finder.NEAR_M,
+) -> StopTime | None:
+    """The stop closest to ``place``, if it is within ``within`` metres of it (ADR 0344)."""
     best = min(stops, key=lambda s: metres((s.lat, s.lng), place), default=None)
-    if best is None or metres((best.lat, best.lng), place) > NEAR_STOP_M:
+    if best is None or metres((best.lat, best.lng), place) > within:
         return None
     return best
 
 
 def stop_named(stops: Sequence[StopTime], words: str) -> list[StopTime]:
-    """The stops whose name holds ``words`` (any case); an exact name alone when there is one."""
-    wanted = words.casefold().strip()
-    if not wanted:
-        return []
-    exact = [s for s in stops if s.name.casefold() == wanted]
-    return exact or [s for s in stops if wanted in s.name.casefold()]
+    """The stops whose name holds every word of ``words``; those named just that when there are."""
+    hits = stop_finder.matching(stops, words, lambda s: s.name)
+    asked = stop_finder.words(words)
+    exact = [s for s in hits if stop_finder.words(s.name) == asked]
+    return exact or hits
 
 
 def next_index(stops: Sequence[StopTime], vehicle: Vehicle | None, now_ms: int) -> int:
@@ -211,7 +212,7 @@ def progress(  # noqa: PLR0913 - the trip, his stop, the bus, the prediction and
     late = 0
     if nxt < len(stops) and stops[nxt].stop_id in predicted:
         late = predicted[stops[nxt].stop_id] - stops[nxt].sched_ms
-    eta = predicted.get(stop.stop_id, stop.sched_ms + late)
+    eta = arrival_ms(predicted.get(stop.stop_id, stop.sched_ms + late))  # one rounding (ADR 0342)
     minutes = max(0, math.ceil((eta - now_ms) / 60_000))
     return Progress(
         name, goal - nxt + 1, eta, minutes, passed=False, position_live=live,

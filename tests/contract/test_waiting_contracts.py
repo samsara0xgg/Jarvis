@@ -94,10 +94,16 @@ def _ask(log: Path, args: dict[str, Any]) -> None:
 
 def _bus_card(log: Path) -> None:
     """The bus card as ``bus`` puts it up: the offer the real ``TransitOffers`` keeps."""
+    zone = ZoneInfo(WORLD_ZONE)
+    day = datetime.fromtimestamp(WORLD_NOW_MS / 1000, zone).date()
+
+    def local(hhmm: str) -> datetime:
+        return datetime.combine(day, datetime.strptime(hhmm, "%H:%M").time(), zone)  # noqa: DTZ007
+
     options = [
         {
-            "leave_at": leave, "arrive_at": arrive,
-            "legs": [{"route": route, "board_stop": stop, "departs": departs}],
+            "leave": local(leave), "arrive": local(arrive),
+            "legs": [{"route": route, "board_stop": stop, "departs": local(departs)}],
         }
         for leave, arrive, route, stop, departs in (
             ("09:12", "09:41", "14", "Hillside Mall", "09:15"),

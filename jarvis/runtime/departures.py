@@ -26,6 +26,7 @@ from jarvis.execution.transit_tool import (
     pin_trips,
     ring,
 )
+from jarvis.shared.rounding import departure_ms
 from jarvis.state import departures as folded
 from jarvis.state import reminders
 from jarvis.state.event_log import open_runtime_event_log
@@ -261,11 +262,10 @@ class Departures:
             for t in one.trips
             if (t.first_route, t.board_stop) == (trip.first_route, trip.board_stop)
         )
-        after = datetime.fromtimestamp(line / 1000, _ZONE)
         if later := self.offers.later(
-            trip.first_route, trip.board_stop, after, self.now().astimezone(_ZONE),
+            trip.first_route, trip.board_stop, line, self._now_ms(),
         ):
-            return int(later[0].timestamp() * 1000), int(later[1].timestamp() * 1000), later[2]
+            return later
         if self.live is None or trip.stop_lat is None or trip.stop_lng is None:
             return None
         mine = self._live.get(trip.tid) if one.pin_id == self._pin else None
@@ -279,7 +279,7 @@ class Departures:
             return None
         if found is None:
             return None
-        departs = round(found[1] / _MS_PER_MIN) * _MS_PER_MIN
+        departs = departure_ms(found[1])
         shift = departs - trip.departs_at_ms
         return trip.leave_at_ms + shift, departs, _shifted(trip, departs, shift)
 
@@ -352,7 +352,7 @@ class Departures:
                         trip.first_route,
                         (trip.stop_lat, trip.stop_lng),
                         trip.departs_at_ms,
-                        mine.trip_id,
+                        trip.bus_trip_id or mine.trip_id,
                         feed,
                     )
                 except Exception:  # noqa: BLE001 - the static export or zip trouble means stale.
@@ -361,8 +361,9 @@ class Departures:
             if found is None:
                 continue
             mine.trip_id, mine.checked_ms = found[0], now_ms
-            # The minute it will leave; seconds would move the pin on every wobble of the feed.
-            departs = round(found[1] / _MS_PER_MIN) * _MS_PER_MIN
+            # The minute it will leave, rounded down like every departure (ADR 0342); seconds
+            # would move the pin on every wobble of the feed.
+            departs = departure_ms(found[1])
             shift = departs - trip.departs_at_ms
             if shift:
                 mine.delay_min += shift // _MS_PER_MIN

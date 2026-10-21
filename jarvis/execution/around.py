@@ -48,6 +48,7 @@ _MIN_ACCURACY_M: Final = 20.0
 _PAST_STAY_M: Final = 60.0
 _DWELL_LOOKBACK_MS: Final = 6 * 3_600_000
 _GUESS_AFTER_MIN: Final = 10
+_MAYBE_AT: Final = 3
 _LINE_CHARS: Final = 160
 
 _NOTE: Final = (
@@ -255,8 +256,9 @@ class Surroundings:
         """The state block's line for ``point``; no request is ever made.
 
         The street or intersection and the place he is at, from what is held for this position:
-        his kept place, else the nearest place when he has stayed here for ten minutes. Where
-        nothing is held, only the kept place; None when there is not even that.
+        his kept place, else, when he has stayed here for ten minutes, the one place within his
+        fix's reach or, with several, up to three he may be at. Where nothing is held, only the
+        kept place; None when there is not even that.
         """
         kept_all = [] if self._memory_db is None else places.read_kept(self._memory_db)
         inside = places.containing(kept_all, *point)
@@ -272,8 +274,11 @@ class Surroundings:
             and stayed >= _GUESS_AFTER_MIN
         ):
             near, _ = _ranked(held.nearby, point, accuracy_m, None)
-            if near:
-                where = f"maybe at {near[0]['name']}"
+            names = [c["name"] for c in near[:_MAYBE_AT]]
+            if len(near) == 1:
+                where = f"maybe at {names[0]}"
+            elif near:
+                where = f"may be at {', '.join(names[:-1])} or {names[-1]}"
         parts = [p for p in (street, where) if p]
         return f"Around him: {'; '.join(parts)}."[:_LINE_CHARS] if parts else None
 

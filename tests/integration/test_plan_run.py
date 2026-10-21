@@ -270,7 +270,7 @@ def test_outing_soon_is_asked_with_the_weather_and_the_leg_read_again(tmp_path: 
     assert facts["leg_now"]["line"] == "28"
     (action_id, args, kwargs), = asked
     assert (action_id, args) == (f"plan-{DAY}-outing_soon:p9", ("Home", "Clinic"))
-    assert kwargs == {"day": DAY.isoformat(), "arrive_by": "14:00"}
+    assert kwargs == {"arrive_by": f"{DAY.isoformat()} 14:00"}
     assert rig.told == []  # silent: nothing said, nothing pushed
     assert rig.pushed == []
 
@@ -669,8 +669,9 @@ def test_route_legs_plans_a_leg_for_each_move_to_another_place(rig: Rig) -> None
 
     @contextmanager
     def open_leg(_action: str) -> Iterator[Any]:
-        def plan_leg(origin: str, dest: str, *, day: str, arrive_by: str) -> dict[str, Any]:
-            calls.append((origin, dest, day, arrive_by))
+        def plan_leg(origin: str, dest: str, *, arrive_by: str) -> dict[str, Any]:
+            day, _, start = arrive_by.partition(" ")
+            calls.append((origin, dest, day, start))
             if dest == "Nowhere":
                 msg = "not_found"
                 raise ToolError(msg)

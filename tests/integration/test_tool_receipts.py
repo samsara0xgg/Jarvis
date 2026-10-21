@@ -149,7 +149,8 @@ def test_bus_and_schedule_say_per_call_whether_they_only_read() -> None:
     bus = build_bus_tool("key", dict)[0]
     schedule = build_schedule_tool(30)[0]
     assert only_reads(bus, {"to": "campus"})
-    assert not only_reads(bus, {"get_off": "Main St"})
+    assert only_reads(bus, {"stop": "Main St"})
+    assert not only_reads(bus, {"ride": "get_off", "stop": "Main St"})
     assert only_reads(schedule, {"action": "read"})
     assert not only_reads(schedule, {"action": "add"})
 

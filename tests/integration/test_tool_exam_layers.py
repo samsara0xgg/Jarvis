@@ -332,11 +332,11 @@ def test_an_unknown_op_is_a_failure_of_the_item_not_a_crash() -> None:
 
 def test_a_held_set_is_reported_by_id_alone(tmp_path: Path) -> None:
     """The failure's reason would quote the item, so the held set's verdict does not carry it."""
-    shutil.copy(ITEMS / "bus-after-midnight.json", tmp_path)
-    shutil.copy(ITEMS / "bus-after-midnight.recording.json", tmp_path)
+    shutil.copy(ITEMS / "weather-rest-of-today.json", tmp_path)
+    shutil.copy(ITEMS / "weather-rest-of-today.recording.json", tmp_path)
     result = exam.score(tmp_path)
-    assert exam.verdict(result, detail=False) == ["FAIL bus-after-midnight"]
-    assert exam.verdict(result)[0].startswith("FAIL bus-after-midnight: ")
+    assert exam.verdict(result, detail=False) == ["FAIL weather-rest-of-today"]
+    assert exam.verdict(result)[0].startswith("FAIL weather-rest-of-today: ")
 
 
 def test_a_provider_call_the_recording_lacks_fails_the_item(tmp_path: Path) -> None:

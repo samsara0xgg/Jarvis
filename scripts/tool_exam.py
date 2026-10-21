@@ -189,7 +189,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
                 transit_api_key="x", transit_places=lambda: {"home": "home"},
                 transit_offers=stub, here=stub,
-                bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
+                bus_live=stub, ride_control=stub, highlight_marker=stub,
                 device_link=lambda *_: {},
             ),
             # A brain's terminals declare every operation here (ADR 0225): offer them all.
