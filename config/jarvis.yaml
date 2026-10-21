@@ -824,22 +824,22 @@ commitments:
   preset: haiku-bg
   remind_before_min: 60
 
-# ADR 0300 — what he says and shows in a turn.  After each record of his is answered (typed, spoken,
-# live voice, phone), one background call to the llm preset below reads it with the few messages
-# before it, her answer, the notes of its pictures, the open items of the ledger of his things
-# (ADR 0299), today's plan, what her tools wrote to the ledger in that turn and his local time.  It
-# returns what the record changes in the ledger (a new item, a move, done, paid, cancelled,
-# confirmed) and what he says he did or is doing; the program writes only what a verbatim quote of
-# his words or of a picture note backs, as the pass, with the quote as the evidence.  A record with
-# pictures waits for their notes or their window.  Each record's row in memory.db keeps what the
-# model was given and said, and scripts/turn_things_replay.py runs the pass over a past stretch on
-# a scratch copy.  At start and every ten minutes the records of the last day with no row are
-# read, and on a first start those of the last backfill_days.  His words, her answer and the
-# picture notes go to the preset's provider, so it is off here; the Pi turns it on in its own
+# ADR 0300, 0328, 0329, 0331 — what he says and shows in a turn.  After each record of his is answered
+# (typed, spoken, live voice, phone), one background call to the llm preset below reads it with the
+# few messages before it, her answer, the notes of its pictures, the open items of the ledger of his
+# things (ADR 0299), today's plan, what her tools wrote to the ledger in that turn and his local
+# time.  It returns what the record changes in the ledger (a new item, a move, done, paid,
+# cancelled, confirmed), each citing the numbered lines of his words or picture notes that make it
+# so; the program copies those lines as the evidence and writes as the pass, and sets no rings.  A
+# record with pictures waits for their notes or their window.  Each record's row in memory.db keeps
+# what the model was given and said, and scripts/turn_things_replay.py runs the pass over a past
+# stretch on a scratch copy.  At start and every ten minutes the records of the last day with no
+# row are read, and on a first start those of the last backfill_days.  His words, her answer and
+# the picture notes go to the preset's provider, so it is off here; the Pi turns it on in its own
 # settings.
 turn_things:
   enabled: false
-  preset: haiku-bg
+  preset: sonnet
   backfill_days: 7
 
 # ADR 0295 — the nightly letter on his claude.ai chats.  A scheduled task in Claude (in the cloud,

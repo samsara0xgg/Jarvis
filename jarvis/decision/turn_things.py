@@ -51,8 +51,6 @@ _SENTENCE_END: Final[re.Pattern[str]] = re.compile(
 not, and after a Latin full stop that a space follows."""
 _MAX_LINES: Final[int] = 6
 """How many lines one action may cite."""
-_REMIND_MAX: Final[int] = 7 * 24 * 60
-"""The earliest a ring may come before its thing, in minutes."""
 
 INSTRUCTIONS: Final[str] = """\
 You read one message that Allen sent to his assistant, with the messages before it, and answer \
@@ -75,8 +73,6 @@ An action is one change to the list of his things:
  "place": where, only if he said or showed it ("new" only),
  "start_at", "end_at", "on_day", "due": when ("new" and "move"),
  "weekly_until": the last day of a thing that repeats every week ("new" only),
- "remind": only if he asks to be reminded or told: the whole minutes before the time he wants \
-it, such as [60]; [] when he does not say how early ("new" only),
  "private": true for counselling, therapy, mental health, legal and medical matters, else false \
 ("new" only),
  "occurrence": one date of a thing that repeats every week, when the action is about that date \
@@ -121,8 +117,7 @@ class Action:
     """One checked action. ``thing`` is the full id of the open thing; empty for a new one.
 
     ``quote`` is his cited lines as the program copied them, ``source`` ``picture`` when a note's
-    line is among them, else ``said``; ``remind`` is None when he did not ask to be told, () when
-    he did without saying how early; times are ISO with an offset (or a date), empty for none.
+    line is among them, else ``said``; times are ISO with an offset (or a date), empty for none.
     """
 
     action: str
@@ -139,8 +134,6 @@ class Action:
     due: str = ""
     weekly_until: str = ""
     occurrence: str = ""
-    remind: tuple[int, ...] | None = None
-    """Minutes before its time he asked to be told; () for when he did not say; None: not asked."""
     private: bool = False
 
 
@@ -351,19 +344,6 @@ def _cited(raw: Mapping[str, Any], reading: _Reading) -> tuple[str, str]:
     return quote, source
 
 
-def _remind(raw: Mapping[str, Any]) -> tuple[int, ...] | None:
-    """What ``remind`` asks for: whole minutes before, () for no lead given, None for none."""
-    value = raw.get("remind")
-    if value is None:
-        return None
-    if not isinstance(value, list) or any(
-        isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= _REMIND_MAX for n in value
-    ):
-        msg = "remind is not a list of whole minutes"
-        raise _Drop(msg)
-    return tuple(dict.fromkeys(value))
-
-
 def _text(value: object, limit: int, what: str) -> str:
     """A line of at most ``limit`` characters; empty for none."""
     if value is None or value == "":
@@ -529,7 +509,7 @@ def _action(raw: object, reading: _Reading) -> Action:  # noqa: C901, PLR0912 - 
             name, quote, sure, source=source, kind=str(kind), title=title,
             place=_text(raw.get("place"), _PLACE_CHARS, "place"), start_at=when.start_at,
             end_at=when.end_at, on_day=when.on_day, due=when.due, weekly_until=when.weekly_until,
-            remind=_remind(raw), private=private,
+            private=private,
         )
     if not sure:
         msg = "he did not say or show it plainly"

@@ -1,7 +1,7 @@
 r"""Replay the post-turn pass (ADR 0300) over a past stretch, on a scratch copy.
 
     .venv/bin/python -m scripts.turn_things_replay --event-log EVENTS.db --memory MEMORY.db
-        --since 2026-10-13 [--until 2026-10-19] [--live] [--preset haiku-bg]
+        --since 2026-10-13 [--until 2026-10-19] [--live] [--preset sonnet]
         [--config config/jarvis.yaml] [--zone America/Vancouver] [--out DIR]
 
 ``EVENTS.db`` and ``MEMORY.db`` are copies of the brain's event log and memory.db; the script
@@ -56,7 +56,6 @@ CHARS_PER_TOKEN = 3.0
 """A rough, high-side guess for mixed English and Chinese."""
 _NOTHING = '{"actions": []}'
 _SECOND = timedelta(seconds=1)
-_RING_BEFORE_MIN = 60  # commitments.remind_before_min's default; rings change no line here
 
 
 def refuse_live(*paths: Path) -> None:
@@ -137,9 +136,7 @@ def replay(  # noqa: PLR0913 - the two stores, the stretch, the model and where 
     copy = scratch / "memory.db"
     _copy_memory(memory, copy)
     settings = runtime.TurnThingsSettings(1, "replay")
-    pass_ = runtime.TurnThings(
-        settings, copy, scratch / "events.db", ask, zone, ring_before_min=_RING_BEFORE_MIN,
-    )
+    pass_ = runtime.TurnThings(settings, copy, scratch / "events.db", ask, zone)
     marks.queue(copy, since, from_rowid=marks.rowid_since(copy, since))
     with closing(sqlite3.connect(f"file:{event_log}?mode=ro", uri=True)) as source:
         events = [
@@ -191,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--since", type=datetime.fromisoformat, required=True)
     parser.add_argument("--until", type=datetime.fromisoformat, default=None)
     parser.add_argument("--live", action="store_true", help="call the preset's real model")
-    parser.add_argument("--preset", default="haiku-bg")
+    parser.add_argument("--preset", default="sonnet")
     parser.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
     parser.add_argument("--zone", default=local_zone())
     parser.add_argument("--out", type=Path, default=None)

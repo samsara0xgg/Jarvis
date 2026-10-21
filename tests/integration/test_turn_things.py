@@ -6,8 +6,8 @@ that answers canned JSON (no key, no network, no provider). The examples are inv
 - the model's answer: each shape of action that is kept or dropped, and why;
 - the pass: a go thing with a time, a thing marked paid, a line that is not his, a close that names
   no open thing, a new thing already past, her tool having written it already, unsure and stated;
-- cited lines, rings and private (ADR 0329): his lines are numbered and copied as the evidence, a
-  new thing rings only when he asked to be told, and a private one is written private;
+- cited lines and private (ADR 0329, 0331): his lines are numbered and copied as the evidence, a
+  private thing is written private, and a thing the pass adds never rings;
 - no doings: what he says he did is read only as the actions it makes (ADR 0328);
 - when a record is read: after her answer, a picture waits for its note or its window, an
   unanswered record waits, live-voice rows are covered, a first start reads seven days back, the
@@ -40,7 +40,7 @@ from jarvis.shared import lang
 from jarvis.state import picture_notes, plan, things
 from jarvis.state import turn_things as marks
 from jarvis.state.attachments import AttachmentRef
-from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
+from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.memory_db import open_memory_db
 from scripts import turn_things_replay
 from tests.support.runtime_log import RuntimeLog
@@ -89,10 +89,10 @@ def _turn(words: str = _WORDS, notes: tuple[str, ...] = (_NOTE,), answer: str = 
 
 
 def _said(fields: dict[str, Any]) -> dict[str, Any]:
-    """The fields that say something: an empty text, no remind and not private are not given."""
+    """The fields that say something: an empty text and not private are not given."""
     return {
         k: v for k, v in fields.items()
-        if v != "" and not (k == "remind" and v is None) and not (k == "private" and v is False)
+        if v != "" and not (k == "private" and v is False)
     }
 
 
@@ -158,10 +158,9 @@ _NEW_KEPT = {
         (_actions(_with(_NEW, lines=["m2", "p1"])), [
             _NEW_KEPT | {"quote": f"{_NOTE} \u2026 {_DENTIST_LINE}", "source": "picture"},
         ], None),
-        # what he asked to be told, and a private thing
-        (_actions(_with(_NEW, remind=[60, 10, 60])), [_NEW_KEPT | {"remind": (60, 10)}], None),
-        (_actions(_with(_NEW, remind=[])), [_NEW_KEPT | {"remind": ()}], None),
+        # a private thing; whether to tell him is not the pass's to say
         (_actions(_with(_NEW, private=True)), [_NEW_KEPT | {"private": True}], None),
+        (_actions(_with(_NEW, remind=[60])), [_NEW_KEPT], None),
         ("```json\n" + json.dumps(_actions(_NEW)) + "\n```", [_NEW_KEPT], None),
         # a new thing that does not pass
         (_actions(_with(_NEW, lines=["m9"])), [], "'m9' is not one of his lines"),
@@ -172,9 +171,6 @@ _NEW_KEPT = {
         (_actions(_with(_NEW, lines=None, quote="dentist tomorrow at 3pm")), [], "cites none"),
         (_actions(_with(_NEW, lines=["m1", "m2", "m3", "m4", "m5", "p1", "m1"])), [],
          "more than 6"),
-        (_actions(_with(_NEW, remind=["soon"])), [], "remind"),
-        (_actions(_with(_NEW, remind=[-5])), [], "remind"),
-        (_actions(_with(_NEW, remind=60)), [], "remind"),
         (_actions(_with(_NEW, private="yes")), [], "private"),
         (_actions(_with(_NEW, start_at="2026-10-13T15:00:00")), [], "already past"),
         (_actions(_with(_NEW, start_at="2026-10-14T13:59:00")), [], "already past"),
@@ -497,7 +493,6 @@ class _Model:
 def _pass(log: _Log, model: _Model, clock: list[datetime], days: int = 7) -> TurnThings:
     one = TurnThings(
         TurnThingsSettings(days, "haiku-bg"), log.memory, log.paths.event_log, model, ZONE,
-        ring_before_min=60,
     )
     one.now = lambda: clock[0]
     return one
@@ -693,78 +688,10 @@ def test_what_the_pass_wrote_is_in_the_event_log_with_his_quote_and_the_record(l
 
     (made,) = things.fold(log.conn).values()
     assert (made.source, made.source_ref, made.added_by) == ("said", record, "pass")
-    assert made.rings == ()  # a pass makes no rings: a thing he did not ask to be told about
+    assert made.rings == ()  # a pass makes no rings (ADR 0331): telling him is hers to set
     (step,) = made.history
     assert (step.what, step.by, step.evidence, step.ref) == ("added", "pass", words, record)
     assert log.verdicts() == {record: ("written", 0)}
-
-
-@pytest.mark.parametrize(
-    ("asked", "rings"),
-    [
-        ({}, ()),
-        ({"remind": []}, ("-60m",)),
-        ({"remind": [15, 1440]}, ("-15m", "-1440m")),
-        ({"remind": [], "sure": False}, ()),
-        ({"remind": [], "kind": "do"}, ("-0m",)),
-        ({"remind": [], "kind": "do", "start_at": None, "due": "2026-10-15T15:00:00"}, ("-0m",)),
-        ({"remind": [30], "start_at": None, "on_day": "2026-10-15"}, ("-1d@20:00",)),
-        ({"remind": [], "kind": "do", "start_at": None, "due": "2026-10-15"}, ("-1d@20:00",)),
-        ({"remind": [], "start_at": None}, ()),
-    ],
-)
-def test_a_new_thing_rings_only_when_he_asked_to_be_told(
-    log: _Log, asked: dict[str, Any], rings: tuple[str, ...],
-) -> None:
-    """Asked without how early, it rings as her tool would; a whole day, the evening before."""
-    words = "Dentist tomorrow at 3pm"
-    model = _Model({words: _actions(_with(_NEW, quote=words, **asked))})
-    log.turn(words)
-
-    assert _pass(log, model, [SAID + 60 * SECOND]).poll_once() == 1
-
-    (made,) = things.fold(log.conn).values()
-    assert made.rings == rings
-
-
-@pytest.mark.parametrize(
-    ("hers", "rings"),
-    [
-        # she set it in the turn at the minute the pass's ring would ring: it rings once
-        ([(datetime(2026, 10, 15, 14, 0, 30, tzinfo=ZONE), 10 * SECOND, False)], ()),
-        # at another minute, after her answer, or cancelled: the pass's ring stays
-        ([(datetime(2026, 10, 15, 14, 30, tzinfo=ZONE), 10 * SECOND, False)], ("-60m",)),
-        ([(datetime(2026, 10, 15, 14, 0, tzinfo=ZONE), 30 * SECOND, False)], ("-60m",)),
-        ([(datetime(2026, 10, 15, 14, 0, tzinfo=ZONE), 10 * SECOND, True)], ("-60m",)),
-    ],
-)
-def test_a_ring_she_set_in_the_turn_is_not_set_again(
-    log: _Log, hers: list[tuple[datetime, timedelta, bool]], rings: tuple[str, ...],
-) -> None:
-    """He says yes to her offer and she sets it: the pass's thing does not ring that minute too."""
-    words = "Dentist tomorrow at 3pm"
-    model = _Model({words: _actions(_with(_NEW, quote=words, remind=[]))})
-    log.turn(words)
-    for due, after, cancelled in hers:
-        rid = f"reminder-{len(hers)}{int(after.total_seconds())}"
-        emit_event(
-            log.conn, type="reminder.scheduled", ts_epoch_ms=int((SAID + after).timestamp() * 1000),
-            payload={
-                "reminder_id": rid, "due_at_epoch_ms": int(due.timestamp() * 1000),
-                "due_at_local": due.isoformat(), "text": "Dentist", "action_id": "act1",
-            },
-        )
-        if cancelled:
-            emit_event(
-                log.conn, type="reminder.cancelled",
-                payload={"reminder_id": rid, "action_id": "act2"},
-                ts_epoch_ms=int((SAID + after).timestamp() * 1000) + 1,
-            )
-
-    assert _pass(log, model, [SAID + 60 * SECOND]).poll_once() == 1
-
-    (made,) = things.fold(log.conn).values()
-    assert made.rings == rings
 
 
 def test_a_private_thing_is_kept_private(log: _Log) -> None:
@@ -1217,7 +1144,6 @@ def test_a_pass_with_no_model_reads_nothing(log: _Log) -> None:
     log.turn("I paid the rent")
     tt = TurnThings(
         TurnThingsSettings(7, "gone"), log.memory, log.paths.event_log, None, ZONE,
-        ring_before_min=60,
     )
     tt.now = lambda: SAID + 60 * SECOND
 
@@ -1435,9 +1361,9 @@ def test_a_bad_value_stops_the_boot(
         bootstrap_runtime_app(runtime_root=root)
 
 
-def test_the_shipped_config_has_the_pass_off_and_on_the_background_preset() -> None:
+def test_the_shipped_config_has_the_pass_off_and_on_sonnet() -> None:
     """``config/jarvis.yaml``: his words go to the provider, so the pass is off until he says so."""
     shipped = Path(__file__).resolve().parents[2] / "config" / "jarvis.yaml"
     config = yaml.safe_load(shipped.read_text(encoding="utf-8"))
-    assert config["turn_things"] == {"enabled": False, "preset": "haiku-bg", "backfill_days": 7}
-    assert "haiku-bg" in config["llm"]["presets"]
+    assert config["turn_things"] == {"enabled": False, "preset": "sonnet", "backfill_days": 7}
+    assert config["llm"]["presets"]["sonnet"]["model"].startswith("claude-sonnet-")

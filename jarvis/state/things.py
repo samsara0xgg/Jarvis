@@ -1011,11 +1011,6 @@ def _ring_slots(
                 yield rid, one, slot, _ring_due(slot, ring, zone)
 
 
-def ring_dues(one: Thing, zone: tzinfo) -> list[int]:
-    """When each ring of ``one`` goes off, in ms, for every time it happens that is not closed."""
-    return [due for *_, due in _ring_slots((one,), zone)]
-
-
 def _wanted(
     things: Iterable[Thing], zone: tzinfo,
 ) -> dict[str, tuple[int, str]]:
