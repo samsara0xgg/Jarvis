@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.decision import moment as rules
 from jarvis.runtime.moment import Moment, MomentSettings
-from tests.support.job_mail import JobHarness, JobJev, job_harness
+from tests.support.job_mail import NOW, JobHarness, JobJev, job_harness
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,7 +31,8 @@ _EVENT = (
 CHROME = "com.google.Chrome"
 
 
-T0 = datetime.now(UTC).replace(microsecond=0)
+T0 = NOW
+"""The instant spans are placed against: the one the job mail harness believes it is."""
 
 
 def _text(moment: datetime) -> str:

@@ -19,17 +19,16 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from datetime import time as clock
+from datetime import time as time_of_day
 from typing import TYPE_CHECKING, Any, Final
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jarvis.decision import job_mail as triage
 from jarvis.shared import lang
+from jarvis.shared.clock import system_zone, zone_key
 from jarvis.state import job_ledger as ledger
 from jarvis.state import reminders as reminder_state
 from jarvis.state import things
@@ -39,6 +38,8 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
+
+    from jarvis.shared.clock import Clock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,17 +53,13 @@ _LOG_WAIT_S: Final[float] = 5.0
 class InterviewSettings:
     """The ``job_mail.interview_reminders`` block of ``config/jarvis.yaml`` once validated."""
 
-    evening_at: clock
+    evening_at: time_of_day
     before_min: int
 
 
 def local_zone() -> str:
     """The machine's IANA zone name (``TZ``, else the ``/etc/localtime`` link), or ``UTC``."""
-    name = os.environ.get("TZ") or os.path.realpath("/etc/localtime").partition("zoneinfo/")[2]
-    try:
-        return ZoneInfo(name).key if name else "UTC"
-    except (ZoneInfoNotFoundError, ValueError, OSError):
-        return "UTC"
+    return zone_key(system_zone()) or "UTC"
 
 
 def _at(text: object) -> datetime | None:
@@ -90,12 +87,20 @@ def _he_cancelled(one: things.Thing) -> bool:
 class InterviewReminders:
     """The reconciler and the user's cancel; built once beside the job-mail poller."""
 
-    def __init__(self, settings: InterviewSettings, db: Path, event_log: Path) -> None:
-        """``db`` is memory.db (the job ledger), ``event_log`` the log the things are written to."""
+    def __init__(
+        self, settings: InterviewSettings, db: Path, event_log: Path, clock: Clock,
+    ) -> None:
+        """``db`` is memory.db (the job ledger), ``event_log`` the log the things are written to.
+
+        ``clock`` is the runtime's: its zone is his, where an interview's time of day is read.
+        """
         self._settings, self._db, self._event_log = settings, db, event_log
         self._lock = threading.Lock()
-        self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
-        self.zone = local_zone()
+        self._clock = clock
+
+    def now(self) -> datetime:
+        """The wall time, aware, in UTC."""
+        return self._clock.now().astimezone(UTC)
 
     # --- the pass ------------------------------------------------------------------------
 
@@ -131,7 +136,7 @@ class InterviewReminders:
             if one.state == "open":
                 things.close(
                     conn, one.thing_id, "cancelled", why="cancelled on the Jobs card", by="him",
-                    evidence=one.title, ref=app_id, zone=ZoneInfo(self.zone), now=self.now(),
+                    evidence=one.title, ref=app_id, zone=self._clock.zone, now=self.now(),
                 )
 
     def views(self) -> dict[str, dict[str, Any]]:
@@ -194,7 +199,7 @@ class InterviewReminders:
         """Make the application's thing say the interview: add it, move it, or change its words."""
         want, evidence, ref = self._thing(app, at)
         write: dict[str, Any] = {
-            "by": "mail", "evidence": evidence, "ref": ref, "zone": ZoneInfo(self.zone), "now": now,
+            "by": "mail", "evidence": evidence, "ref": ref, "zone": self._clock.zone, "now": now,
         }
         one = held.get(app["id"])
         if one is not None and one.state != "open":
@@ -226,7 +231,7 @@ class InterviewReminders:
             return
         things.close(
             conn, one.thing_id, "cancelled", why="the interview is no longer on", by="mail",
-            evidence=one.title, ref=one.source_ref, zone=ZoneInfo(self.zone), now=now,
+            evidence=one.title, ref=one.source_ref, zone=self._clock.zone, now=now,
         )
 
     def _carry_over(
@@ -246,7 +251,7 @@ class InterviewReminders:
         one = held.get(app_id)
         if one is not None and one.state == "open":
             write: dict[str, Any] = {
-                "evidence": one.title, "ref": app_id, "zone": ZoneInfo(self.zone), "now": now,
+                "evidence": one.title, "ref": app_id, "zone": self._clock.zone, "now": now,
             }
             if row["outlook_id"] and one.outlook_id != row["outlook_id"]:
                 one = things.change(
@@ -270,7 +275,7 @@ class InterviewReminders:
         interview = app.get("interview") or {}
         mail = next((m for m in app["mails"] if _at(m["event_at"]) == at), None)
         minutes = triage.event_minutes(mail["event_text"] or "") if mail else None
-        local = at.astimezone(ZoneInfo(self.zone))
+        local = at.astimezone(self._clock.zone)
         title = (
             lang.t("job.thing.title_role", company=app["company"], role=app["role"])
             if app["role"]

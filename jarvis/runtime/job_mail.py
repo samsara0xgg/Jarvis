@@ -15,7 +15,6 @@ import asyncio
 import dataclasses
 import logging
 import os
-import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parseaddr
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.plugin_connections import PluginConnections
+    from jarvis.shared.clock import Clock
     from jarvis.shared.device_link import DeviceLink
 
 LOGGER = logging.getLogger(__name__)
@@ -124,7 +124,7 @@ class JobMail:
         db_path: Path,
         judge: Judge,
         *,
-        zone: tzinfo,
+        clock: Clock,
         moment: Moment | None = None,
         timesink_path: Path | None = None,
         device: DeviceLink | None = None,
@@ -132,13 +132,13 @@ class JobMail:
     ) -> None:
         """``route`` carries Jev's model and timeout; ``db_path`` is memory.db.
 
-        ``zone`` is the owner's (``work_state.timezone``): a time a letter gives with no zone of its
-        own is his clock there. ``judge`` decides how loudly each typed letter reaches Allen
-        (ADR 0155). ``moment`` holds alerts while Allen is in a call or away and is stored with
-        each decision; ``timesink_path`` is where the ledger's time column is read (ADR 0161),
-        or, on a brain, ``device`` is the link to the terminal whose TimeSink it is (ADR 0170).
-        ``event_log`` is the log the interview things are written to (ADR 0186, 0299); with none
-        they are off.
+        ``clock`` is the runtime's; its zone is the owner's (``work_state.timezone``): a time a
+        letter gives with no zone of its own is his clock there. ``judge`` decides how loudly each
+        typed letter reaches Allen (ADR 0155). ``moment`` holds alerts while Allen is in a call or
+        away and is stored with each decision; ``timesink_path`` is where the ledger's time column
+        is read (ADR 0161), or, on a brain, ``device`` is the link to the terminal whose TimeSink
+        it is (ADR 0170). ``event_log`` is the log the interview things are written to
+        (ADR 0186, 0299); with none they are off.
         """
         self.moment = moment
         self.timesink_path = timesink_path
@@ -147,23 +147,24 @@ class JobMail:
         self._judge = judge
         self._connections = connections
         self._db = db_path
-        self._zone = zone
+        self._clock = clock
+        self._zone = clock.zone
         self._jev = triage.JobMailJev(
             route,
             header_skip_at=settings.header_skip_at,
             body_min=settings.body_min,
             max_body_chars=settings.max_body_chars,
             max_calls_per_day=settings.max_calls_per_day,
-            zone=zone,
+            clock=clock,
         )
         self._route = route
         self._last_spoke: float | None = None
         self._warned: set[str] = set()
-        self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
         self.interviews: InterviewReminders | None = None
         if settings.interview_reminders is not None and event_log is not None:
-            self.interviews = InterviewReminders(settings.interview_reminders, db_path, event_log)
-            self.interviews.now = lambda: self.now()  # noqa: PLW0108 - a test swaps self.now later
+            self.interviews = InterviewReminders(
+                settings.interview_reminders, db_path, event_log, clock,
+            )
         self._failures = 0
         self._last_ok = self.now()
         # Wired by the daemon: the quiet level now, whether speaking is allowed (speech not
@@ -195,12 +196,16 @@ class JobMail:
             LOGGER.info("job mail cancelled")
             raise
 
+    def now(self) -> datetime:
+        """The wall time, aware, in UTC: what every row and window here is stamped with."""
+        return self._clock.now().astimezone(UTC)
+
     def repair(self) -> int:
         """Run the repair pass over the ledger; a failure is logged and never stops the poller."""
         try:
             settings = self._settings
             changed = repair(
-                self._db, settings.linkedin_alerts, settings.exclude_domains, zone=self._zone,
+                self._db, settings.linkedin_alerts, settings.exclude_domains, clock=self._clock,
             )
         except Exception:
             LOGGER.exception("job mail: the ledger repair failed; the poller goes on")
@@ -340,7 +345,7 @@ class JobMail:
     def _settle(self, servers: McpServers, ids: list[str], now: datetime) -> int:
         verdicts: dict[str, str] = {}
         chances: dict[str, float] = {}  # Jev's probability that a letter is job mail
-        heads = self._heads(servers, ids, verdicts)
+        heads = self._heads(servers, ids, verdicts, self.now())
         bodies = self._bodies(servers, heads)  # one full read of every letter, kept locally
         snap = _Snapper(self, now, bodies)
 
@@ -475,7 +480,7 @@ class JobMail:
 
     def _pack_situation(self, now: datetime, quiet: str) -> dict[str, Any]:
         """What the judge sees besides the mail: the hour, the quiet level and the moment."""
-        local = now.astimezone()
+        local = now.astimezone(self._zone)
         situation: dict[str, Any] = {
             "hour": local.hour,
             "weekday": local.weekday(),
@@ -492,13 +497,15 @@ class JobMail:
         return None if self.moment is None else self.moment.snapshot()
 
     @staticmethod
-    def _heads(servers: McpServers, ids: list[str], verdicts: dict[str, str]) -> list[triage.Head]:
+    def _heads(
+        servers: McpServers, ids: list[str], verdicts: dict[str, str], now: datetime,
+    ) -> list[triage.Head]:
         """The header of each letter; one that cannot be read is an error and the rest go on."""
         heads = []
         for message_id in ids:
             args = {"messageId": message_id, "format": "metadata"}
             try:
-                heads.append(_head(gmail_read(servers, "gmail_get", args)))
+                heads.append(_head(gmail_read(servers, "gmail_get", args), now))
             except Exception:  # noqa: BLE001 - one unreadable letter must not stop the others
                 LOGGER.warning("job mail: cannot read the header of %s", message_id, exc_info=True)
                 verdicts[message_id] = "error"
@@ -581,7 +588,7 @@ class JobMail:
             LOGGER.exception("job mail: the spoken line failed")
             ledger.note_delivery(self._db, head.message_id, "suppressed", now)
             return
-        self._last_spoke = time.monotonic()
+        self._last_spoke = self._clock.monotonic()
         ledger.mark_spoken(self._db, alert_id)
         ledger.note_delivery(self._db, head.message_id, "spoken", now)
 
@@ -604,7 +611,7 @@ class JobMail:
             LOGGER.info("job mail: not spoken, Allen is %s", reason)
             return False
         gap = self._settings.speak_gap_s
-        rested = self._last_spoke is None or time.monotonic() - self._last_spoke >= gap
+        rested = self._last_spoke is None or self._clock.monotonic() - self._last_spoke >= gap
         if not (self._settings.speak and quiet == "off" and self.may_speak() and rested):
             return False
         device = self.output(fresh=True)
@@ -643,7 +650,7 @@ class JobMail:
             now,
         )
         # ADR 0160: the health card keeps a snapshot too, so his answer is logged like any other.
-        local = now.astimezone()
+        local = now.astimezone(self._zone)
         pack = attention.ContextPack(
             "job_health",
             ledger.HEALTH_ID,
@@ -738,7 +745,7 @@ class JobMail:
         now = self.now()
         servers = self._connections.client_for(MAIL_SERVER)
         args = {"messageId": message_id, "format": "metadata"}
-        head = _head(gmail_read(servers, "gmail_get", args))
+        head = _head(gmail_read(servers, "gmail_get", args), now)
         text = self._read_body(servers, message_id)
         body = (text or "")[: self._settings.max_body_chars]
         found = None if text is None else self._jev.types([(head, body)])[head.message_id]
@@ -764,7 +771,7 @@ class JobMail:
 
 
 def repair(
-    db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = (), *, zone: tzinfo,
+    db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = (), *, clock: Clock,
 ) -> int:
     """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
 
@@ -778,9 +785,10 @@ def repair(
     a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
     touched by the routing rules. An interview or offer row's event time is read again from its
     kept body and replaced when the body names one; a bare time there is the owner's clock in
-    ``zone``.
+    ``clock``'s zone.
     """
     changed = 0
+    now = clock.now().astimezone(UTC)
     for row in ledger.mail_rows(db):
         message_id, subject = row["message_id"], row["subject"] or ""
         name, domain = row["sender_name"] or "", row["sender_domain"] or ""
@@ -798,7 +806,7 @@ def repair(
                 if value != (row[field] or "")
             }
         )
-        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, zone):
+        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, clock.zone):
             changed += 1
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
@@ -806,7 +814,7 @@ def repair(
                 domain, exclude_domains
             ) and not triage.is_application_sent(domain, subject)
             if not row["deleted"] and (kept_out or triage.is_social(domain, subject)):
-                _hold_back(db, row, _EXCLUDE_JUDGE if kept_out else _RULE_JUDGE)
+                _hold_back(db, row, _EXCLUDE_JUDGE if kept_out else _RULE_JUDGE, now)
                 fixes["deleted"], quiet = 1, True
             elif row["kind"] == "job_other" and triage.is_account_notice(subject):
                 fixes["kind"], quiet = triage.ACCOUNT_KIND, True
@@ -841,9 +849,8 @@ def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> boo
     return True
 
 
-def _hold_back(db: Path, row: Mapping[str, Any], judge: str) -> None:
+def _hold_back(db: Path, row: Mapping[str, Any], judge: str, now: datetime) -> None:
     """Show a ledger row in the held-back list: a ``not_job`` verdict and the rule's decision."""
-    now = datetime.now(UTC)
     head = {
         "received_at": row["received_at"] or "",
         "name": row["sender_name"] or "",
@@ -965,14 +972,17 @@ def _known_reaction(reaction: str | None) -> bool:
     return reaction in _REACTIONS
 
 
-def _head(message: Mapping[str, Any]) -> triage.Head:
-    """A ``gmail_get`` metadata answer as a header; the address goes to the snapshot alone."""
+def _head(message: Mapping[str, Any], now: datetime) -> triage.Head:
+    """A ``gmail_get`` metadata answer as a header; the address goes to the snapshot alone.
+
+    A letter with no date is received ``now``.
+    """
     one = _letter(message)
     _name, address = parseaddr(str(message.get("from") or ""))
     return triage.Head(
         message_id=one["id"],
         thread_id=one["thread_id"],
-        received_at=one["received"] or datetime.now(UTC).isoformat(),
+        received_at=one["received"] or now.isoformat(),
         name="" if one["from"] == address else one["from"],
         domain=address.rpartition("@")[2].lower(),
         subject=one["subject"],

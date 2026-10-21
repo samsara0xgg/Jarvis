@@ -32,7 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from pathlib import Path
 
-NOW = datetime.now(UTC)
+NOW = datetime(2026, 9, 30, 17, 30, tzinfo=UTC)
+"""The moment job mail believes it is in every test: a fixed instant, not the day the suite runs."""
 
 
 OWNER_ZONE = ZoneInfo("America/Vancouver")
@@ -203,6 +204,9 @@ class JobJev:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.status = 200
+        self.timeout_ms = 5000
+        self.answering = threading.Event()
+        self.answering.set()  # clear it and no reply ends until it is set again
         self._lock = threading.Lock()
         outer = self
 
@@ -216,6 +220,7 @@ class JobJev:
                 header, body = ANSWERS[subject]
                 odds = header if key == "job" else body
                 assert odds is not None, f"{subject!r} was not to be read in full"
+                outer.answering.wait(timeout=30)  # a guard against a test that never sets it
                 top = max(odds, key=lambda name: odds[name])
                 answer = {
                     "type": "choice",
@@ -235,12 +240,12 @@ class JobJev:
 
         self.server = start_http_server(Handler)
 
-    def route(self) -> SurrogateRoute:
+    def route(self, clock: FakeClock) -> SurrogateRoute:
         return SurrogateRoute(
             model="typesafe/jev-1.13",
             min_confidence=1.0,
-            timeout_ms=5000,
-            clock=FakeClock(),
+            timeout_ms=self.timeout_ms,
+            clock=clock,
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
         )
 
@@ -336,16 +341,17 @@ class JobHarness:
     ) -> None:
         self.db = tmp_path / "memory.db"
         self.jev, self.gmail, self.outlook = jev, gmail, outlook
+        self.clock = FakeClock(NOW, zone=OWNER_ZONE)
         self.event_log = bootstrap_runtime(tmp_path / "runtime").event_log
         open_event_log(self.event_log).close()
         connections: Any = Connections(gmail, outlook)  # JobMail only asks it for client_for
         self.job = JobMail(
             settings,
-            jev.route(),
+            jev.route(self.clock),
             connections,
             self.db,
             judge,
-            zone=OWNER_ZONE,
+            clock=self.clock,
             event_log=self.event_log,
         )
         self.quiet = "off"
@@ -411,6 +417,7 @@ def jev() -> Iterator[JobJev]:
     """A fake Jev endpoint for the test's life."""
     fake = JobJev()
     yield fake
+    fake.answering.set()
     stop_http_server(fake.server)
 
 

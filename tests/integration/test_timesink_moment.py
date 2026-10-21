@@ -534,8 +534,8 @@ def test_the_ledger_shows_time_per_company_and_the_other_job_sites(
     tmp_path: Path, jev: JobJev, store: FakeTimeSink
 ) -> None:
     """The ledger shows time per company and the other job sites."""
-    now = datetime.now(UTC).replace(microsecond=0)
     h = moment_harness(tmp_path, jev, store)
+    now = h.clock.utc_now().replace(microsecond=0)  # the time job mail reads the ledger at
     h.job.poll_once()
     # Ten minutes on LinkedIn jobs with Northwind in the title; 90 s of a company's own career site
     # (Helix, by its mail domain); 30 s on a Workday host that names CGI; 60 s on an unnamed ATS.

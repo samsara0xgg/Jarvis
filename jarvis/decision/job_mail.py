@@ -16,21 +16,23 @@ import itertools
 import logging
 import re
 import threading
-from concurrent.futures import Future, wait
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from jarvis.decision.attention import ContextPack
+from jarvis.decision.surrogate_route import await_replies
 from jarvis.shared import lang
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from concurrent.futures import Future
     from datetime import tzinfo
 
     from jarvis.decision.surrogate_route import Reply, SurrogateRoute
+    from jarvis.shared.clock import Clock
 
 LOGGER = logging.getLogger(__name__)
 
@@ -141,7 +143,7 @@ def body_state(head: Head, body: str, max_chars: int) -> str:
 class JobMailJev:
     """Jev's two questions over letters, with a daily cap on calls."""
 
-    def __init__(  # noqa: PLR0913 - the transport, the four knobs of the block and the zone
+    def __init__(  # noqa: PLR0913 - the transport, the four knobs of the block and the clock
         self,
         route: SurrogateRoute,
         *,
@@ -149,14 +151,16 @@ class JobMailJev:
         body_min: float,
         max_body_chars: int,
         max_calls_per_day: int,
-        zone: tzinfo,
+        clock: Clock,
     ) -> None:
         """``route`` is the transport; its ``timeout_ms`` bounds one batch's wait.
 
-        ``zone`` is the owner's: a time a letter gives with no zone is read as his clock.
+        ``clock`` is the runtime's; its zone is the owner's: a time a letter gives with no zone
+        is read as his clock.
         """
         self._route = route
-        self._zone = zone
+        self._clock = clock
+        self._zone = clock.zone
         self._skip_at = header_skip_at
         self._body_min = body_min
         self._max_chars = max_body_chars
@@ -221,7 +225,7 @@ class JobMailJev:
                 if top == _NOT_JOB
                 else (top if probabilities[top] >= self._body_min else "job_other")
             )
-            facts = extract(head, body, self._zone)
+            facts = extract(head, body, self._zone, self._clock.now())
             digest = kind == "job_other" and is_alert_digest(head.name, head.domain, head.subject)
             if kind == "job_other" and is_account_notice(head.subject):
                 kind = ACCOUNT_KIND
@@ -243,7 +247,7 @@ class JobMailJev:
         return out
 
     def _roll(self) -> None:
-        today = datetime.now().astimezone().date()
+        today = self._clock.now().date()
         with self._lock:
             if today != self._day:
                 self._day, self._calls = today, 0
@@ -263,7 +267,7 @@ class JobMailJev:
             with self._lock:
                 self._calls += 1
             sent[message_id] = future
-        done, _late = wait(sent.values(), timeout=self._route.timeout_ms / 1000)
+        done = await_replies(self._clock, list(sent.values()), self._route.timeout_ms / 1000)
         keys = {message_id: key for message_id, _s, key, _i, _c in batch}
         out: dict[str, dict[str, float] | None] = {message_id: None for message_id, *_ in batch}
         for message_id, future in sent.items():
@@ -825,12 +829,15 @@ def event_minutes(sentence: str) -> int | None:
     return None
 
 
-def extract(head: Head, body: str, zone: tzinfo) -> Facts:
-    """The company, role and event of a letter, read locally; the event time is in ``zone``."""
+def extract(head: Head, body: str, zone: tzinfo, now: datetime) -> Facts:
+    """The company, role and event of a letter, read locally; the event time is in ``zone``.
+
+    A letter whose date cannot be read was received ``now``.
+    """
     try:
         received = datetime.fromisoformat(head.received_at)
     except ValueError:
-        received = datetime.now(UTC)
+        received = now
     text, at = event_of(body, received, zone)
     company = company_of(head.name, head.domain, head.subject, body)
     return Facts(company, role_of(head.subject, body, company), text, at)

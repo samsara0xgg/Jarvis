@@ -1828,7 +1828,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the clock and t
         model=model.strip(), min_confidence=1.0, timeout_ms=timeout, clock=clock, log=log,
     )
     return JobMail(
-        settings, route, connections, db_path, rule_judge_v1, zone=clock.zone,
+        settings, route, connections, db_path, rule_judge_v1, clock=clock,
         moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
     )
 

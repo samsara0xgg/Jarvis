@@ -354,7 +354,6 @@ def test_one_waiting_alert_is_a_card_and_old_ones_are_dropped(tmp_path: Path, je
 
 def _pending(h: JobHarness, kinds: list[str], *, level: str, age: timedelta) -> None:
     """One job_mail row and one pending alert per kind, all made ``age`` before NOW (the clock)."""
-    h.job.now = lambda: NOW
     made = NOW - age
     for i, kind in enumerate(kinds):
         row = {
@@ -371,7 +370,6 @@ def _pending(h: JobHarness, kinds: list[str], *, level: str, age: timedelta) -> 
 
 def _thread_mails(h: JobHarness, mails: list[dict[str, Any]], *, age: timedelta) -> None:
     """One job_mail row and one pending alert per dict (company, thread, kind, role, event...)."""
-    h.job.now = lambda: NOW
     made = NOW - age
     for i, mail in enumerate(mails):
         row = {"message_id": f"g-{i}", "subject": "s", "role": "", **mail}
@@ -852,12 +850,12 @@ def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
             "role": role,
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 4  # the account notice was right already
+    assert repair(h.db, "ledger_only", clock=h.clock) == 4  # the account notice was right already
     assert {
         key: tuple(rest) for key, *rest in h.sql("SELECT message_id, company, role FROM job_mail")
     } == {key: after for key, *_mid, after in rows}
     assert [one["company"] for one in h.ledger()] == ["Reliable Controls", "CGI"]
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
+    assert repair(h.db, "ledger_only", clock=h.clock) == 0
     assert h.gmail.calls == []
 
 
@@ -941,7 +939,7 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
 
     assert {"old1", "old2", "m-alert", "m-hiring"} <= pending()
 
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) > 0
+    assert repair(h.db, "ledger_only", clock=h.clock) > 0
     assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'old1'") == [(1,)]
     assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'old2'") == [(0,)]  # flagged
     assert h.sql("SELECT verdict, p_job FROM job_seen WHERE message_id = 'old1'") == [
@@ -956,12 +954,12 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
     assert h.sql("SELECT kind FROM job_mail WHERE message_id = 'm-account'") == [("other",)]
     assert not pending() & {"old1", "m-alert", "m-hiring", "m-account"}  # done, not deleted
     assert pending() >= {"old2", "m-inmail"}
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0  # a second run changes nothing
+    assert repair(h.db, "ledger_only", clock=h.clock) == 0  # a second run changes nothing
 
     # With card_sound the digests keep their alerts.
     keep = job_harness(tmp_path / "keep", jev, LINKEDIN, linkedin_alerts="card_sound")
     keep.job.poll_once()
-    repair(keep.db, "card_sound", zone=OWNER_ZONE)
+    repair(keep.db, "card_sound", clock=keep.clock)
     assert {m for (m,) in keep.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")} == {
         "m-alert",
         "m-hiring",
@@ -1041,9 +1039,9 @@ def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
         job_ledger.create_alert(h.db, key, "speak", "t", "l", NOW)
     job_ledger.add_flag(h.db, "old2", NOW)
 
-    repair(h.db, "ledger_only", zone=OWNER_ZONE)  # nothing excluded: nothing is hidden
+    repair(h.db, "ledger_only", clock=h.clock)  # nothing excluded: nothing is hidden
     assert h.sql("SELECT deleted FROM job_mail") == [(0,), (0,)]
-    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) > 0
+    assert repair(h.db, "ledger_only", ("linkedin.com",), clock=h.clock) > 0
     assert h.sql("SELECT message_id, deleted FROM job_mail ORDER BY message_id") == [
         ("old1", 1),
         ("old2", 0),
@@ -1055,7 +1053,7 @@ def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
     assert [one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]] == [
         "old1"
     ]
-    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) == 0  # idempotent
+    assert repair(h.db, "ledger_only", ("linkedin.com",), clock=h.clock) == 0  # idempotent
 
 
 def test_flagging_a_hidden_social_mail_brings_it_back_to_the_ledger(
@@ -1226,6 +1224,24 @@ def test_a_jev_failure_is_an_error_retried_three_times_then_kept(
     assert h.job.poll_once() == 0
     assert len(jev.requests) == asked
     assert h.sql("SELECT * FROM job_mail") == []
+
+
+def test_a_jev_that_has_not_answered_by_its_timeout_leaves_the_letter_for_the_next_cycle(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """A reply that does not come inside ``timeout_ms`` of the clock is an error, not a hang."""
+    jev.timeout_ms = 600_000  # ten minutes: only the clock passing them can end the wait
+    h = job_harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-offer"])
+    jev.answering.clear()
+
+    assert h.clock.pass_deadline_of(600.0, h.job.poll_once) == 1
+
+    assert h.sql("SELECT verdict, tries FROM job_seen") == [("error", 1)]
+    assert h.sql("SELECT * FROM job_mail") == []
+    jev.answering.set()
+    assert h.job.poll_once() == 1
+    (stored,) = h.sql("SELECT kind FROM job_mail")
+    assert stored == ("offer",)
 
 
 def test_only_gmail_search_and_get_can_be_called() -> None:
@@ -1759,7 +1775,7 @@ def test_a_down_mail_channel_raises_one_alert_and_recovery_is_silent(
     assert h.sql("SELECT state FROM job_alert") == [("done",)]
     assert h.notices() == []
 
-    h.job.now = lambda: NOW + timedelta(hours=13)
+    h.clock.set(NOW + timedelta(hours=13))
     h.gmail.search_failures = 3
     for _ in range(3):
         fail()
@@ -1800,7 +1816,7 @@ def test_two_hours_without_a_good_cycle_is_down_even_after_one_failure(
     """Two hours without a good cycle is down even after one failure."""
     h = job_harness(tmp_path, jev, [])
     h.gmail.search_failures = 1
-    h.job.now = lambda: NOW + timedelta(hours=3)
+    h.clock.set(NOW + timedelta(hours=3))
     with pytest.raises(ToolError):
         h.job.poll_once()
     (note,) = h.notices()
@@ -2176,7 +2192,7 @@ def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cam
     )
     job_ledger.add_flag(h.db, "flagged", NOW)
 
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) > 0
+    assert repair(h.db, "ledger_only", clock=h.clock) > 0
     assert h.sql("SELECT company, role, deleted FROM job_mail WHERE message_id = 'cambio'") == [
         ("Cambio Earth", "QA & Test Automation Developer Co-op", 0)
     ]
@@ -2191,7 +2207,7 @@ def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cam
     }
     pending = {m for (m,) in h.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")}
     assert pending == {"cambio", "flagged"}  # the hidden row's alert ended as done
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
+    assert repair(h.db, "ledger_only", clock=h.clock) == 0
     assert h.gmail.calls == []
 
 
@@ -2254,13 +2270,13 @@ def test_a_linkedin_application_sent_mail_is_job_mail_and_the_rest_of_linkedin_i
             "role": "",
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) > 0
+    assert repair(h.db, "ledger_only", ("linkedin.com",), clock=h.clock) > 0
     assert h.sql("SELECT message_id, company, deleted FROM job_mail ORDER BY message_id") == [
         ("m-sent", "Cambio Earth", 0),
         ("old1", "Cambio Earth", 0),
         ("old2", "LinkedIn", 1),
     ]
-    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) == 0
+    assert repair(h.db, "ledger_only", ("linkedin.com",), clock=h.clock) == 0
 
 
 def _stored(  # noqa: PLR0913 - a ledger row's fields
@@ -2385,13 +2401,13 @@ def test_the_repair_pass_clears_a_role_that_is_the_company_and_cleans_a_kept_one
             "role": role,
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) > 0
+    assert repair(h.db, "ledger_only", clock=h.clock) > 0
     assert h.sql("SELECT message_id, company, role FROM job_mail ORDER BY message_id") == [
         ("a", "Later", ""),
         ("b", "Planview", ""),
         ("c", "RV Tech", "Software Engineering Intern"),
     ]
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
+    assert repair(h.db, "ledger_only", clock=h.clock) == 0
 
 
 def test_reliable_controls_mails_are_one_application_and_an_ats_name_joins_by_role(
@@ -2765,13 +2781,13 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
         job_ledger.record_decision(
             h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=text
         )
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 2  # fix and none
+    assert repair(h.db, "ledger_only", clock=h.clock) == 2  # fix and none
     assert h.sql("SELECT message_id, event_at, event_text FROM job_mail ORDER BY message_id") == [
         ("fix", "2026-10-08T13:00-07:00", "Thursday October 8th, 1:00pm - 2:00pm"),
         ("none", None, None),  # the rules read no time from the body: the quoted one goes
         ("other", wrong, "Sent: Friday, October 2, 2026 4:45 PM"),  # not interview or offer
     ]
-    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
+    assert repair(h.db, "ledger_only", clock=h.clock) == 0
     assert h.gmail.calls == []
 
 
@@ -2906,8 +2922,7 @@ def _reminding(
         **settings,
     )
     assert h.job.interviews is not None
-    h.job.now = lambda: _TUE_NOON.astimezone(UTC)
-    h.job.interviews.zone = "America/Vancouver"
+    h.clock.set(_TUE_NOON)
     _stored(
         h,
         "m-rc",
@@ -3077,7 +3092,7 @@ def test_a_rejected_or_hidden_application_cancels_its_thing(tmp_path: Path, jev:
     # An interview whose time has passed is not undone.
     past = _reminding(tmp_path / "past", jev)
     past.job.remind()
-    past.job.now = lambda: datetime(2026, 10, 9, 9, 0, tzinfo=UTC)
+    past.clock.set(datetime(2026, 10, 9, 9, 0, tzinfo=UTC))
     past.job.remind()
     (done,) = _things(past)
     assert (done.state, len(done.history)) == ("open", 1)
@@ -3086,7 +3101,7 @@ def test_a_rejected_or_hidden_application_cancels_its_thing(tmp_path: Path, jev:
 def test_a_ring_already_past_is_skipped_not_set_late(tmp_path: Path, jev: JobJev) -> None:
     """Mail read after 20:00 the evening before: only the 30-minute ring is set."""
     h = _reminding(tmp_path, jev)
-    h.job.now = lambda: datetime(2026, 10, 7, 21, 0, tzinfo=_VANCOUVER).astimezone(UTC)
+    h.clock.set(datetime(2026, 10, 7, 21, 0, tzinfo=_VANCOUVER))
 
     h.job.remind()
 
@@ -3096,7 +3111,7 @@ def test_a_ring_already_past_is_skipped_not_set_late(tmp_path: Path, jev: JobJev
     h.job.remind()
     assert len(_rung(h)) == 1
 
-    h.job.now = lambda: datetime(2026, 10, 8, 12, 45, tzinfo=_VANCOUVER).astimezone(UTC)
+    h.clock.set(datetime(2026, 10, 8, 12, 45, tzinfo=_VANCOUVER))
     h.job.remind()  # the 30 minute mark has gone too: nothing to set, the thing stays
     assert len(_rung(h)) == 1
     assert len(_things(h)) == 1
