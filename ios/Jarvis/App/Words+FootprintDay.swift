@@ -13,6 +13,8 @@ extension Words {
             default: nil
             }
         }
+        /// the button that opens the calendar to go to another day
+        static var pickDay: String { Words.pick(zh: "换一天", en: "Pick a day") }
         static var unnamedPlace: String { Words.pick(zh: "没名字的地方", en: "Unnamed place") }
         /// a day's one outing when the brain could not work out how fast he went
         static func summaryOneBare(title: String, distance: String) -> String {

@@ -95,6 +95,8 @@ struct FootprintDayPage: View {
                 FootprintDayLegend().offset(x: 30, y: Y.legend)
                 FootprintDayHead(ui: ui, back: back).offset(x: 60, y: Y.head)
                     .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
+                FootprintDayPicker(ui: ui).offset(x: W - 30 - 36, y: Y.head + 4)          // 36 pt, centred on the head's row
+                    .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
                 Group {
                     FootprintDayLine(ui: ui, summary: content.summary, bar: built?.bar(places: byPlace), model: model).offset(x: 30, y: Y.line)
                     if let built {

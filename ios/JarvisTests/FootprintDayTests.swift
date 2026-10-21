@@ -98,6 +98,12 @@ final class FootprintDayTests: XCTestCase {
         XCTAssertTrue(FootprintDayContent.heldLine(m, minute: 10 * 60, elsewhere: "x").hasPrefix("10:00"), "at a place: the time, then its name")
     }
 
+    func testADatePickedIsTheDayNumberTheTimelineCountsFromItsFirstDay() {
+        XCTAssertEqual(FootprintDayPicker.day(of: Cal.cur.date(0)), 0)
+        XCTAssertEqual(FootprintDayPicker.day(of: Cal.cur.date(-9).addingTimeInterval(13 * 3600)), -9, "any hour of the day is the day")
+        XCTAssertEqual(FootprintDayPicker.day(of: Cal.cur.date(3)), 3)
+    }
+
     func testRowsOfHomeKeepTheirHeightsAndTheNewFieldsAreOff() {
         let e = TLEntry(id: "a", kind: .pause, t0: 0, title: "t")
         XCTAssertEqual(e.height, TLMetrics.row)
