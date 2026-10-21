@@ -934,7 +934,8 @@ def test_idle_overflow_recovers_and_active_overflow_marks_discontinuity() -> Non
     assert epoch is not None
     for value in range(8):
         backend.emit(epoch=epoch, value=value)
-    wait_until_true(lambda: capture.overflow_count > 0)
+    # Every frame past the first two overflows the ring, so six overflows mean all eight landed.
+    wait_until_true(lambda: capture.overflow_count == 6)
     idle_frames = _read_frames(capture, 2)
     assert idle_frames[0].discontinuity_before
     assert [np.frombuffer(frame.pcm16_mono, dtype="<i2")[0] for frame in idle_frames] == [
