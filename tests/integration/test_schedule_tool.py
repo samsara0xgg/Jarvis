@@ -1300,7 +1300,7 @@ def _receipt(world: _World, out: Mapping[str, Any]) -> dict[str, Any]:
     (receipt,) = [
         event.payload["receipt"]
         for event in iter_events_of_types(world.conn, ("action.result_observed",))
-        if event.correlation.get("action_id") == out["_action_id"]
+        if (event.correlation or {}).get("action_id") == out["_action_id"]
     ]
     return cast("dict[str, Any]", receipt)
 
