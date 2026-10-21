@@ -26,10 +26,17 @@ from jarvis.execution.speakable import resolve_when
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK, HOURLY_MAX_DAYS
 from jarvis.runtime.daily_report import PLAN_SERVER
-from jarvis.runtime.weather_day import fit
+from jarvis.runtime.weather_day import fit, padded
 from jarvis.runtime.weather_held import Held
-from jarvis.runtime.weather_place import ALTERNATIVES, Spot, country_of, get_json, locate
-from jarvis.runtime.weatherkit import NOT_SET_UP, Unavailable, day_rows, home_line
+from jarvis.runtime.weather_place import (
+    ALTERNATIVES,
+    Spot,
+    country_of,
+    get_json,
+    locate,
+    spot_at,
+)
+from jarvis.runtime.weatherkit import NOT_SET_UP, Unavailable, day_rows, home_line, outing
 from jarvis.runtime.weatherkit import alerts as wk_alerts
 from jarvis.runtime.weatherkit import report as wk_report
 from jarvis.shared import lang
@@ -371,6 +378,77 @@ class Home:
         )
         today = datetime.fromtimestamp(kit.clock(), self._zone).date()
         return day_rows(body, ZoneInfo(self._zone_name), first=day, last=day, today=today)[0]
+
+    def _home_spot(self) -> Spot | None:
+        """The home as a weather spot; None without a place."""
+        place = self._weather_at
+        if place is None:
+            return None
+        return Spot(
+            float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"),
+            self._zone_name, place.get("country_code") or country_of(self._zone_name),
+        )
+
+    def plan_weather(self, day: date) -> dict[str, Any] | None:
+        """``day`` at home as a plan reads its weather (ADR 0355); None without a place or key.
+
+        Today comes in parts: ``now``, what fell since midnight, what is left of the day, tonight
+        and the whole day's row. Another day is its row alone. It reads the request the tool makes
+        with no days, so one answer serves the home, the model and the plan. Clocks are
+        ``HH:MM``, as a plan says them.
+
+        Raises:
+            ToolError: WeatherKit did not answer or holds no forecast for the day.
+        """
+        home, kit = self._home_spot(), self._weatherkit
+        if home is None or kit is None:
+            return None
+        now = kit.clock()
+        today = datetime.fromtimestamp(now, self._zone).date()
+        if day != today:
+            row = self.day_weather(day)
+            return None if row is None else {"at": home.label, "whole_day": row}
+        body = kit.read(
+            home.latitude, home.longitude, zone=self._zone_name, country=home.country,
+            first=today, last=today + timedelta(days=1),
+        )
+        full = wk_report(
+            body, home.label, self._zone_name, first=today, last=today, whole=False,
+            hourly=False, now=now, alerts=None,
+        )
+        parts = ("now", "earlier_today", "rest_of_today", "tonight", "whole_day")
+        said: dict[str, Any] = padded(
+            {"at": home.label, **{name: full[name] for name in parts if name in full}},
+        )
+        return said
+
+    def outing_weather(
+        self, point: tuple[float, float] | None, start: datetime, end: datetime,
+    ) -> dict[str, Any] | None:
+        """The weather of ``start`` to ``end`` at ``point`` (None: the home) as a plan reads it.
+
+        The hours of an outing at its own place (ADR 0355): the read of the day it begins and the
+        next, the days the tool reads with no days, so two outings at one place are one request and
+        an outing at home's position is the request of :meth:`plan_weather`. Clocks are ``HH:MM``
+        in the zone of ``start``. None without a place or key, or when WeatherKit's answer holds
+        none of those hours.
+
+        Raises:
+            ToolError: WeatherKit did not answer.
+        """
+        home, kit = self._home_spot(), self._weatherkit
+        if home is None or kit is None:
+            return None
+        spot = home if point is None else spot_at(point, f"{point[0]},{point[1]}", home)
+        zone_name = str(spot.zone or home.zone)
+        zone = ZoneInfo(zone_name)
+        first = start.astimezone(zone).date()
+        last = max(first + timedelta(days=1), (end - timedelta(seconds=1)).astimezone(zone).date())
+        body = kit.read(
+            spot.latitude, spot.longitude, zone=zone_name, country=spot.country,
+            first=first, last=last,
+        )
+        return outing(body, zone_name, start=start, end=end)
 
     def day_weather_card(self, day: date) -> dict[str, Any] | None:
         """The weather of ``day`` for the day line.

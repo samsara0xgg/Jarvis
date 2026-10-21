@@ -338,19 +338,21 @@ class Net:
         self, monkeypatch: pytest.MonkeyPatch, *, down: tuple[str, ...] = (),
         refuse: int | None = None, minutes: str = "dry-then-rain", warned: int = 0,
         hours: HourProfile | None = None, service: bool = True, summary: bool = True,
-        fail: tuple[str, ...] = (),
+        fail: tuple[str, ...] = (), hours_at: dict[str, HourProfile] | None = None,
     ) -> None:
         """Replace ``urlopen``; ``down`` lists hosts that time out, ``refuse`` an HTTP status.
 
         ``warned`` is how many alerts are in force; ``service`` whether WeatherKit offers alerts
         at the place; ``summary`` whether the next hour has one; ``fail`` the path prefixes of
-        WeatherKit that answer 503 while the rest answer. Every switch is an attribute a test may
-        set again between two calls.
+        WeatherKit that answer 503 while the rest answer; ``hours_at`` the hourly profile of a
+        place by the ``lat,lng`` in the request's path, over ``hours``. Every switch is an
+        attribute a test may set again between two calls.
         """
         self.asked: list[str] = []
         self.headers: list[dict[str, str]] = []
         self.down, self.refuse, self.minutes, self.warned = down, refuse, minutes, warned
         self.hours, self.service = hours, service
+        self.hours_at = hours_at or {}
         self.summary, self.fail = summary, fail
         self.reason = "NOT_ENABLED"
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen)
@@ -379,9 +381,10 @@ class Net:
             elif parts.path.startswith("/api/v1/weatherAlert/"):
                 body = alert_detail()
             else:
+                point = ",".join(parts.path.split("/")[-2:])
                 body = weatherkit_body(
-                    query, minutes=self.minutes, warned=self.warned, hours=self.hours,
-                    summary=self.summary,
+                    query, minutes=self.minutes, warned=self.warned,
+                    hours=self.hours_at.get(point, self.hours), summary=self.summary,
                 )
         elif host.startswith("geocoding"):
             found = next(  # the geocoder does not mind the case of a name

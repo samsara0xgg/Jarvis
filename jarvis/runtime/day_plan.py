@@ -68,6 +68,9 @@ _CALL_TIMEOUT_S: Final[float] = 300.0
 
 type Ask = Callable[[str, str], str]
 type RouteLegs = Callable[[list[plan.PlanItem], date], list[plan.PlanItem]]
+type OutingWeather = Callable[
+    [tuple[float, float] | None, datetime, datetime], dict[str, Any] | None,
+]
 
 
 def _count(value: object, default: int) -> int:
@@ -141,6 +144,10 @@ class DayPlanSources:
     zone: tzinfo
     day_sources: DaySources
     weather: Callable[[date], dict[str, Any] | None] | None = None
+    """The weather of a day at home: today in parts (ADR 0355)."""
+    outing_weather: OutingWeather | None = None
+    """The weather of ``(point, start, end)``: an outing's own hours at its place; the point None is
+    the home."""
 
 
 def make_ask(analyst: LLMAnalyst | None, event_log_path: Path) -> Ask | None:

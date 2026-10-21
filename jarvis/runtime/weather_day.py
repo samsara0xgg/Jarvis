@@ -10,6 +10,7 @@ the place's zone, and the rows.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
@@ -158,6 +159,48 @@ def split(hours: Sequence[Hour], now: datetime, words: Callable[[str], str]) -> 
         "tonight": tonight(hours, now),
     }
     return {name: part for name, part in parts.items() if part is not None}
+
+
+def stretch(hours: Sequence[Hour], start: datetime, end: datetime) -> dict[str, Any] | None:
+    """The weather of ``start`` to ``end``, the hours he is out (ADR 0355).
+
+    The rows are those that overlap it: their lowest and highest temperature, the highest chance of
+    rain and its amount, and from when to when rain is likely, cut to the stretch. Clocks are
+    ``HH:MM`` in the zone of ``start``. None when no hour overlaps it.
+    """
+    zone = start.tzinfo
+    rows = hours_between(hours, start, end)
+    if not rows:
+        return None
+    out: dict[str, Any] = {
+        "from": f"{start:%H:%M}", "to": f"{end.astimezone(zone):%H:%M}",
+        "max_chance_pct": _chance(rows), "rain_mm": _mm(rows),
+    }
+    temps = [float(row["temperature"]) for _, row in rows if row.get("temperature") is not None]
+    if temps:
+        out["low_c"], out["high_c"] = round(min(temps), 1), round(max(temps), 1)
+    likely = [hour for hour in rows if _likely(hour[1])]
+    if likely:
+        out["likely_from"] = f"{max(likely[0][0], start).astimezone(zone):%H:%M}"
+        out["likely_to"] = f"{min(_stop(likely[-1][0]), end).astimezone(zone):%H:%M}"
+    elif out["max_chance_pct"] <= _QUIET_PCT:
+        out["note"] = "no rain expected"
+    return out
+
+
+_UNPADDED: Final = re.compile(r"\d:\d\d")
+
+
+def padded(value: Any) -> Any:  # noqa: ANN401 - any JSON value
+    """``value`` with each clock written alone as ``H:MM`` made ``HH:MM`` (the plan's own form).
+
+    A plan prompt says its clocks as he does; only a clock that is the whole string is one.
+    """
+    if isinstance(value, dict):
+        return {k: padded(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [padded(v) for v in value]
+    return f"0{value}" if isinstance(value, str) and _UNPADDED.fullmatch(value) else value
 
 
 def horizon(now: datetime) -> datetime:
@@ -334,8 +377,10 @@ __all__ = [
     "hours_between",
     "hours_of",
     "now_sentence",
+    "padded",
     "rest_of_today",
     "split",
+    "stretch",
     "tonight",
     "warning_sentence",
 ]

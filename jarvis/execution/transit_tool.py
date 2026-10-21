@@ -1031,6 +1031,15 @@ def pin_offered(  # noqa: PLR0913 - the log, the offers, which one, add or not, 
         raise LookupError(str(exc)) from exc
 
 
+def _end_point(answer: Mapping[str, Any]) -> dict[str, float] | None:
+    """The point Google put the end of the route at, as ``{"lat", "lng"}``; None if it gave none."""
+    try:
+        at = answer["routes"][0]["legs"][-1]["endLocation"]["latLng"]
+        return {"lat": float(at["latitude"]), "lng": float(at["longitude"])}
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
 def _offer(  # noqa: PLR0913 - the offers, the context, the answer, its options, modes, the ask.
     offers: TransitOffers, ctx: ToolContext, answer: Mapping[str, Any],
     options: list[dict[str, Any]], modes: Mapping[str, Any], asked: str,
@@ -1268,7 +1277,8 @@ def build_planner(  # noqa: PLR0913, PLR0915, C901 - the key, places, offers, li
     inside one is said as it. Every Google request is counted against the month's ``cap_usd``
     (ADR 0283); ``book`` holds the places ``map_search`` found, so a place id has a name.
     ``quiet`` is for a background caller (:func:`build_leg_planner`): no card, no offer kept, no
-    destination announced; the cap guard and the spend record stay.
+    destination announced, but ``end_at``, the point the route ends at; the cap guard and the
+    spend record stay.
     """
     if not api_key:
         return None
@@ -1301,6 +1311,7 @@ def build_planner(  # noqa: PLR0913, PLR0915, C901 - the key, places, offers, li
         if not quiet and when.at is not None and when.at.date() != now.date():
             offers.keep_none(said(when.at, now))  # buses of another day are not pinned
         extra: dict[str, Any] = {"modes": modes} if modes else {}
+        extra |= {"end_at": ends_at} if quiet and (ends_at := _end_point(answer)) else {}
         named = _named(wanted, hits, times, now) if wanted else None
         if named is not None:
             extra["named_route"] = {k: v for k, v in named.items() if not k.startswith("_")} | (
@@ -1415,8 +1426,9 @@ def build_leg_planner(  # noqa: PLR0913 - the key, places, the context, kept, ca
     one of ``arrive_by`` and ``depart_at``. ``ctx`` is the job's own (its connection takes the
     cap guard and the spend rows). It shows no card and keeps no offer; "here" is not available.
     The answer is :func:`build_planner`'s plus ``chosen`` and ``backup`` (or None), as ``HH:MM``
-    times: for ``arrive_by`` the latest bus that arrives in time and the one before it; for
-    ``depart_at`` the first he can still catch and the one after it. ToolError ``spend_cap`` when
+    times, and ``end_at`` (``{"lat", "lng"}``, where the route ends, when Google gave it): for
+    ``arrive_by`` the latest bus that arrives in time and the one before it; for ``depart_at`` the
+    first he can still catch and the one after it. ToolError ``spend_cap`` when
     the month's cap is reached, ``invalid_arguments`` for a time that has passed or one over 30
     days ahead, ``not_found`` for no bus route.
     """

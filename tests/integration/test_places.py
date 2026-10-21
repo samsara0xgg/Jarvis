@@ -277,6 +277,21 @@ def test_equal_circles_go_to_the_older_place() -> None:
     assert places.containing([replace_address_only(first)], 48.0, -123.0) is None
 
 
+def test_a_kept_place_is_found_by_its_name_for_its_position() -> None:
+    """Case and spacing aside; a place with an address alone has no position to give."""
+    clinic = places.Place("a", "Dental  Clinic", "other", 48.5, -123.4, 100, None, "user", "t", "t")
+    cafe = replace_address_only(
+        places.Place("b", "Cafe", "other", 1.0, 2.0, 100, None, "user", "t", "t"),
+    )
+    twin = places.Place("c", "dental clinic", "other", 9.0, 9.0, 100, None, "user", "t", "t")
+    held = [cafe, clinic, twin]
+    assert places.position_of(held, "dental clinic") == (48.5, -123.4)
+    assert places.position_of(held, " DENTAL CLINIC ") == (48.5, -123.4)  # the first kept answers
+    assert places.position_of(held, "Cafe") is None  # kept by its address alone
+    assert places.position_of(held, "Clinic") is None  # a part of a name is not the name
+    assert places.position_of([], "Clinic") is None
+
+
 def replace_address_only(one: places.Place) -> places.Place:
     """The same place with only an address: it holds no stay."""
     return places.Place(
