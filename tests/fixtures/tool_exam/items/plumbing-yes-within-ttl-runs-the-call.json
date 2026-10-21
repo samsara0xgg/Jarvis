@@ -1,0 +1,45 @@
+{
+  "id": "plumbing-yes-within-ttl-runs-the-call",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "x",
+  "turns": [
+    {
+      "said": "remove the exam plugin",
+      "script": [
+        {
+          "tool_calls": [
+            {
+              "name": "remove_plugin",
+              "arguments": {
+                "plugin_id": "exam-plugin"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "said": "yes",
+      "after_s": 30,
+      "script": []
+    }
+  ],
+  "expect": {
+    "model_requests": [
+      1,
+      0
+    ],
+    "events_after": {
+      "must": [
+        "confirmation.accepted",
+        "action.running"
+      ],
+      "must_not": [
+        "confirmation.rejected"
+      ]
+    }
+  }
+}

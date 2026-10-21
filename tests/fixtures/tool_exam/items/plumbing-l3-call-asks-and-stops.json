@@ -1,0 +1,35 @@
+{
+  "id": "plumbing-l3-call-asks-and-stops",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "remove the exam plugin",
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "remove_plugin",
+          "arguments": {
+            "plugin_id": "exam-plugin"
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "model_requests": 1,
+    "events_after": {
+      "must": [
+        {
+          "type": "confirmation.requested",
+          "payload_matches": "remove_plugin"
+        }
+      ],
+      "must_not": [
+        "action.running",
+        "confirmation.accepted"
+      ]
+    }
+  }
+}

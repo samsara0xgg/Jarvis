@@ -1,10 +1,11 @@
-"""The tool layer of the exam (ADR 0317) holds: items, recorder, rules, baseline.
+"""The tool and plumbing layers of the exam (ADR 0317) hold: items, recorder, rules, baseline.
 
-The synthetic items in ``tests/fixtures/tool_exam/items`` run through the real dispatcher on a
-booted sandbox runtime, from recordings, at a frozen clock. Their shrink-only ``baseline.json``
-names the ones that fail today and why they should not (a bus after midnight, a weather result
-with no summary). Around them: the spec's result and error rules on a table of good and bad
-results, the recorder and replay against a local server, and the baseline verdict.
+The synthetic items in ``tests/fixtures/tool_exam/items`` run through the real dispatcher and the
+real ``decide()`` loop on a booted sandbox runtime, from recordings, at a frozen clock. Their
+shrink-only ``baseline.json`` names the ones that fail today and why they should not (a bus after
+midnight, a weather result with no summary, malformed arguments turned into ``{}``). Around them:
+the spec's result and error rules on a table of good and bad results, the recorder and replay
+against a local server, and the baseline verdict.
 """
 
 from __future__ import annotations
@@ -34,9 +35,9 @@ BEARER = "bearer-token-abcdefghijkl"
 
 
 def test_every_synthetic_item_passes_or_is_in_the_shrink_only_baseline() -> None:
-    """Nothing fails outside the baseline, and nothing in it passes."""
+    """Both layers, one baseline: nothing fails outside it, nothing in it passes."""
     result = exam.score(ITEMS)
-    assert result["items"] >= 3
+    assert result["items"] >= 10
     assert exam.verdict(result) == [], result["failed"]
 
 
@@ -221,14 +222,13 @@ def test_the_baseline_verdict_names_a_regression_a_fixed_item_and_a_stale_id(
 ) -> None:
     """A failure outside the baseline fails; a listed item that passes must leave the list."""
     shutil.copy(ITEMS / "schedule-write-then-read-rings.json", tmp_path)
-    shutil.copy(ITEMS / "bus-after-midnight.json", tmp_path)
-    shutil.copy(ITEMS / "bus-after-midnight.recording.json", tmp_path)
+    shutil.copy(ITEMS / "plumbing-malformed-arguments-json.json", tmp_path)
     (tmp_path / "baseline.json").write_text(
         json.dumps(["schedule-write-then-read-rings", "gone-item"]),
         encoding="utf-8",
     )
     lines = exam.verdict(exam.score(tmp_path))
-    assert any(ln.startswith("FAIL bus-after-midnight") for ln in lines)
+    assert any(ln.startswith("FAIL plumbing-malformed-arguments-json") for ln in lines)
     assert "schedule-write-then-read-rings: passes now; remove it from the baseline" in lines
     assert "gone-item: no such item; remove it from the baseline" in lines
 

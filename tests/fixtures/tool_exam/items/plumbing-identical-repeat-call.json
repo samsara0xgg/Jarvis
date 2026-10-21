@@ -1,0 +1,49 @@
+{
+  "id": "plumbing-identical-repeat-call",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "what have I kept",
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "kept",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "kept",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "text": "Nothing kept."
+    }
+  ],
+  "expect": {
+    "model_requests": 3,
+    "request_has": [
+      {
+        "request": 2,
+        "role": "tool",
+        "tool": "kept",
+        "matches": "already made this exact call"
+      }
+    ],
+    "events_after": {
+      "must": [
+        {
+          "type": "turn.guard_fired",
+          "payload_matches": "repeat"
+        }
+      ],
+      "must_not": []
+    }
+  }
+}

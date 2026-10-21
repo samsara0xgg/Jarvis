@@ -1,0 +1,47 @@
+{
+  "id": "plumbing-yes-after-ttl-goes-to-the-model",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "x",
+  "turns": [
+    {
+      "said": "remove the exam plugin",
+      "script": [
+        {
+          "tool_calls": [
+            {
+              "name": "remove_plugin",
+              "arguments": {
+                "plugin_id": "exam-plugin"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "said": "yes",
+      "after_s": 601,
+      "script": [
+        {
+          "text": "Which plugin do you mean?"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "model_requests": [
+      1,
+      1
+    ],
+    "events_after": {
+      "must": [],
+      "must_not": [
+        "confirmation.accepted",
+        "action.running"
+      ]
+    }
+  }
+}

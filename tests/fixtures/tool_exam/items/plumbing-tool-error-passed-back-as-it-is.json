@@ -1,0 +1,34 @@
+{
+  "id": "plumbing-tool-error-passed-back-as-it-is",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "what is on my schedule",
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "schedule",
+          "arguments": {
+            "action": "bogus"
+          }
+        }
+      ]
+    },
+    {
+      "text": "I could not read it."
+    }
+  ],
+  "expect": {
+    "model_requests": 2,
+    "request_has": [
+      {
+        "request": 1,
+        "role": "tool",
+        "tool": "schedule",
+        "matches": "^\\{\"error\": \"schedule: action must be one of read, add"
+      }
+    ]
+  }
+}

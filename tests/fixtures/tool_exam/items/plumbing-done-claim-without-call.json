@@ -1,0 +1,40 @@
+{
+  "id": "plumbing-done-claim-without-call",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "remember the milk",
+  "script": [
+    {
+      "text": "Saved, I've noted the milk."
+    },
+    {
+      "text": "Sorry, nothing is saved yet."
+    }
+  ],
+  "expect": {
+    "model_requests": 2,
+    "request_has": [
+      {
+        "request": 1,
+        "role": "user",
+        "matches": "no tool call did that this turn"
+      }
+    ],
+    "events_after": {
+      "must": [
+        {
+          "type": "turn.guard_fired",
+          "payload_matches": "unbacked"
+        }
+      ],
+      "must_not": [
+        "thing.added"
+      ]
+    },
+    "text_must": [
+      "nothing is saved"
+    ]
+  }
+}

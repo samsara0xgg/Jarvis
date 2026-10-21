@@ -1,0 +1,38 @@
+{
+  "id": "plumbing-malformed-arguments-json",
+  "layer": "plumbing",
+  "at": "2026-10-12T12:40:00-07:00",
+  "zone": "America/Los_Angeles",
+  "state": null,
+  "said": "keep milk on my list",
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "keep",
+          "arguments_json": "{\"what\": \"milk\""
+        }
+      ]
+    },
+    {
+      "text": "Sorry, that failed."
+    }
+  ],
+  "expect": {
+    "model_requests": 2,
+    "request_has": [
+      {
+        "request": 1,
+        "role": "tool",
+        "tool": "keep",
+        "matches": "(?is)error.*arguments.*(not valid|malformed|JSON)"
+      }
+    ],
+    "events_after": {
+      "must": [],
+      "must_not": [
+        "thing.added"
+      ]
+    }
+  }
+}

@@ -25,6 +25,7 @@ call ("would have done"). Keys come from the sandbox root's ``env``; none is pri
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -298,37 +299,115 @@ class _Substituting:
         return result
 
 
-class ScriptedClient:
-    """A fake model for ``--fake``: each ``chat`` plays the next scripted step, no network.
+class ScriptedModel:
+    """A scripted model for the real ``decide()`` loop: each ``chat`` plays the next step.
 
-    A step is ``{"tool_calls": [{"name": ..., "arguments": {...}}], "text": ...}``.
+    No network. A step is ``{"tool_calls": [{"name": ..., "arguments": {...}}], "text": ...,
+    "usage": [in, out]}``.
+    A call may give ``arguments_json`` instead: the raw string goes through as it is, so a
+    malformed one reaches the loop as a model could send it. Every request is recorded, whole,
+    as ``requests``; :meth:`request` renders request ``i`` as chat/completions or as Responses,
+    and :meth:`respond` plays a step for a logged request of either shape.
     """
 
-    model = "fake"
-    provider = "fake"
+    model = "claude-haiku-5-5"  # a priced id, so a step's zero tokens cost $0 without a warning
+    provider = "scripted"
+    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
+    last_input_tokens: int | None = 0
+    last_output_tokens: int | None = 0
+    last_finish_reason: str | None = "stop"
 
     def __init__(self, steps: Sequence[Mapping[str, Any]]) -> None:
         """Hold the script for one case."""
         self._steps = list(steps)
         self._n = 0
+        self.requests: list[dict[str, Any]] = []
 
-    def chat(self, **_kw: Any) -> ChatResult:  # noqa: ANN401
-        """The next scripted answer; an exhausted script is an error."""
+    @contextmanager
+    def fresh_context(self) -> Iterator[ScriptedModel]:
+        """The loop's marker for an isolated call; this client keeps no history anyway."""
+        yield self
+
+    def chat(
+        self, *, messages: list[dict[str, Any]], system: str,
+        tools: list[dict[str, Any]] | None = None, tool_choice: str | None = "auto",
+        **extra: Any,  # noqa: ANN401
+    ) -> ChatResult:
+        """Record the request as sent (the loop keeps editing ``messages``), play the next step."""
+        self.requests.append(copy.deepcopy({
+            "system": system, "messages": messages, "tools": tools, "tool_choice": tool_choice,
+            "extra": extra,
+        }))
+        return self._play()
+
+    def respond(self, request: Mapping[str, Any]) -> ChatResult:
+        """Play the next step for a logged request in chat/completions or Responses shape."""
+        system, messages = history_of(request)
+        self.requests.append(copy.deepcopy({
+            "system": system, "messages": messages, "tools": request.get("tools"),
+            "tool_choice": request.get("tool_choice"), "extra": {},
+        }))
+        return self._play()
+
+    def request(self, i: int, shape: str = "chat") -> dict[str, Any]:
+        """Request ``i`` as it goes on the wire in ``shape`` (``chat`` or ``responses``)."""
+        one = self.requests[i]
+        if shape == "chat":
+            return {
+                "messages": [{"role": "system", "content": one["system"]}, *one["messages"]],
+                "tools": one["tools"],
+            }
+        return {
+            "instructions": one["system"], "input": _responses_input(one["messages"]),
+            "tools": [
+                {"type": "function", **t["function"]} if "function" in t else t
+                for t in one["tools"] or ()
+            ],
+        }
+
+    def _play(self) -> ChatResult:
         if self._n >= len(self._steps):
-            msg = "the fake script has no step left for this request"
+            msg = "the script has no step left for this request"
             raise RuntimeError(msg)
         step = self._steps[self._n]
         self._n += 1
         calls = tuple(
-            ToolCall(call_id=f"fake{self._n}_{i}", name=one["name"],
-                     arguments_json=json.dumps(one.get("arguments", {})))
+            ToolCall(
+                call_id=f"scripted{self._n}_{i}", name=one["name"],
+                arguments_json=one["arguments_json"] if "arguments_json" in one
+                else json.dumps(one.get("arguments", {})),
+            )
             for i, one in enumerate(step.get("tool_calls") or ())
         )
+        tokens_in, tokens_out = step.get("usage", (0, 0))
         return ChatResult(
             text=step.get("text"), tool_calls=calls,
             finish_reason="tool_calls" if calls else "stop",
-            input_tokens=0, output_tokens=0, raw={}, model_used="fake",
+            input_tokens=tokens_in, output_tokens=tokens_out, raw={}, model_used=self.model,
+            tokens_in=tokens_in, tokens_out=tokens_out,
         )
+
+
+ScriptedClient = ScriptedModel
+"""The name ``--fake`` used before the model could also play malformed calls."""
+
+
+def _responses_input(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The loop's chat-shaped messages as Responses ``input`` items."""
+    items: list[dict[str, Any]] = []
+    for m in messages:
+        if m["role"] == "tool":
+            items.append({"type": "function_call_output", "call_id": m["tool_call_id"],
+                          "output": m["content"]})
+            continue
+        if m.get("content"):
+            items.append({"type": "message", "role": m["role"], "content": m["content"]})
+        items += [
+            {"type": "function_call", "call_id": c["id"], "name": c["function"]["name"],
+             "arguments": c["function"]["arguments"]}
+            for c in m.get("tool_calls") or ()
+        ]
+    return items
 
 
 # --- one case ------------------------------------------------------------------------------
@@ -403,7 +482,7 @@ def _events_after(runtime: JarvisRuntime, after: int) -> list[dict[str, Any]]:
 def _run_case(  # noqa: PLR0913 - the runtime, its baseline, and the case's model and request.
     runtime: JarvisRuntime, baseline: Path, work: Path, warm: DecisionFoldState | None,
     classes: Mapping[str, str], table: Mapping[str, Any], pushes: list[dict[str, str | None]],
-    case: Mapping[str, Any], inner: ScriptedClient | LLMClient, label: str, run: int, extra: str,
+    case: Mapping[str, Any], inner: ScriptedModel | LLMClient, label: str, run: int, extra: str,
 ) -> dict[str, Any]:
     _restore(runtime, baseline, work)
     pushes.clear()
@@ -522,7 +601,7 @@ def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run
             for case in cases:
                 for preset in presets:
                     for run in range(args.runs):
-                        inner = (ScriptedClient(script[case["id"]]) if script is not None
+                        inner = (ScriptedModel(script[case["id"]]) if script is not None
                                  else clients[preset])
                         line = _run_case(runtime, baseline, work, warm, classes, table, pushes,
                                          _for_preset(case, structured, preset), inner, preset,

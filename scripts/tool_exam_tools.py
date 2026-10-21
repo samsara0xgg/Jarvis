@@ -881,7 +881,11 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
 
 
 def run_one(item: Item) -> list[str]:
-    """Run an item."""
+    """Run an item of either layer."""
+    if item.raw.get("layer", "tool") == "plumbing":
+        from scripts.tool_exam_plumbing import run_item as run_plumbing  # noqa: PLC0415
+
+        return run_plumbing(item)
     return run_item(item)
 
 
