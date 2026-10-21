@@ -27,13 +27,16 @@ final class FootprintCurvesTests: XCTestCase {
         XCTAssertEqual(c.ms(x: 500), 100_000)
     }
 
-    func testAStopIsZeroAcrossItsWholeTimeAndTheLineBreaksAtTheGapOnly() {
+    func testTheLineBreaksInAStopAndAtTheGapAndNoLineStandsForTheStop() {
         let c = FootprintCurves(outing(), endMs: 100_000)
         XCTAssertEqual(c.bands, [FootprintCurves.Band(number: 1, startMs: 30_000, endMs: 50_000)])
-        XCTAssertEqual(c.kmh(at: 40_000), 0)                                   // the points inside the stop are gone
-        XCTAssertEqual(c.kmh(at: 30_000), 0)
+        XCTAssertNil(c.kmh(at: 40_000))                                        // the points inside the stop are gone and no zero line crosses it
+        XCTAssertEqual(c.kmh(at: 30_000), 0)                                   // the line comes down to zero as the stop begins
+        XCTAssertEqual(c.kmh(at: 50_000), 0)                                   // and sets off from zero as it ends
         XCTAssertEqual(c.kmh(at: 25_000) ?? 0, 15 * 3.6, accuracy: 1e-9)
-        XCTAssertEqual(c.runs.count, 2)
+        XCTAssertEqual(c.runs.count, 3, "before the stop, after it up to the gap, after the gap")
+        XCTAssertEqual(c.runs[0].last?.ms, 30_000)
+        XCTAssertEqual(c.runs[1].first?.ms, 50_000)
         XCTAssertEqual(c.bridges.count, 1)
         XCTAssertEqual([c.bridges[0].from.ms, c.bridges[0].to.ms], [70_000, 80_000])
         XCTAssertNil(c.kmh(at: 75_000))                                        // across a gap there is no speed

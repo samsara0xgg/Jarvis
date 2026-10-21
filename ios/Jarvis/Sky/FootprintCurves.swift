@@ -19,6 +19,7 @@ struct FootprintCurves: Equatable {
     static let width = 380.0, speedH = 64.0, heartH = 30.0
 
     let startMs: Int64, endMs: Int64
+    /// the line's runs: it breaks at a stop (a band stands there) and at a stretch with no fixes (a bridge stands there)
     let runs: [[Pt]], bridges: [Bridge], bands: [Band]
     /// km/h at the top of the speed curve
     let top: Double
@@ -33,7 +34,7 @@ struct FootprintCurves: Equatable {
         let bands = o.stops.sorted { $0.start_ms < $1.start_ms }.enumerated().map { Band(number: $0 + 1, startMs: $1.start_ms, endMs: min($1.end_ms ?? end, end)) }
         self.bands = bands
 
-        // a point with no speed takes the one before it; a stop stands at zero from its first moment to its last (the points inside it are dropped, or the line would slope across it)
+        // a point with no speed takes the one before it; a stop is zero at its first moment and at its last, and the line breaks between them (the points inside it are dropped, and no line stands for the stop)
         var last = o.points.compactMap(\.speed_mps).first ?? 0
         var pts = o.points.map { p -> Pt in last = p.speed_mps ?? last; return Pt(ms: p.at_ms, v: last * 3.6) }
         pts.removeAll { p in bands.contains { $0.startMs <= p.ms && p.ms <= $0.endMs } }
@@ -41,7 +42,9 @@ struct FootprintCurves: Equatable {
         pts.sort { $0.ms < $1.ms }
         var runs: [[Pt]] = [], bridges: [Bridge] = []
         for p in pts {
-            if let a = runs.last?.last, o.gaps.contains(where: { a.ms <= $0.start_ms && $0.end_ms <= p.ms }) {
+            if let a = runs.last?.last, bands.contains(where: { a.ms == $0.startMs && p.ms == $0.endMs }) {
+                runs.append([p])
+            } else if let a = runs.last?.last, o.gaps.contains(where: { a.ms <= $0.start_ms && $0.end_ms <= p.ms }) {
                 bridges.append(Bridge(from: a, to: p)); runs.append([p])
             } else if runs.isEmpty { runs = [[p]] } else { runs[runs.count - 1].append(p) }
         }
