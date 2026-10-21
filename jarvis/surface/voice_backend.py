@@ -92,18 +92,6 @@ class InputDeviceProfile:
     absent_pick: str | None = None
 
 
-@dataclass(frozen=True)
-class BackendCapabilities:
-    """Media capabilities observed for one backend implementation."""
-
-    owns_default_input: bool
-    owns_render_clock: bool
-    aec: bool
-    natural_barge_in: bool
-    reliable_adc_time: bool
-    reliable_dac_time: bool
-
-
 class RouteKind(enum.Enum):
     """ADR-0006 D9 output route class; ``hardware_aec`` is never produced here."""
 
@@ -219,17 +207,6 @@ def resolve_device_profile(
 
 
 @dataclass(frozen=True)
-class InputClockMapping:
-    """One input-cursor anchor into the monotonic process clock."""
-
-    stream_epoch: int
-    input_sample_cursor: int
-    adc_time_s: float | None
-    monotonic_ns: int
-    input_clock_domain: str
-
-
-@dataclass(frozen=True)
 class BackendStartResult:
     """Typed start result; uncertain opens never authorize a fallback owner."""
 
@@ -288,14 +265,6 @@ class BackendOwnershipSnapshot:
     reason: str | None = None
 
 
-class RenderSource(Protocol):
-    """Future paired-backend render seam; unused by SoundDevice in Wave 3."""
-
-    def render_into(self, output_buffer: Any, frame_count: int) -> int:  # noqa: ANN401
-        """Fill a backend-owned output buffer and return real sample count."""
-        ...
-
-
 class InputFrameSink(Protocol):
     """Private callback-to-ingress copy boundary."""
 
@@ -328,7 +297,6 @@ class AudioDuplexBackend(Protocol):
         stream_epoch: int,
         attempt_id: str,
         frame_sink: InputFrameSink,
-        render_source: RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> BackendStartResult:
         """Open one epoch and start callbacks."""
@@ -358,14 +326,6 @@ class AudioDuplexBackend(Protocol):
 
     def input_format(self) -> AudioInputFormat:
         """Return the configured native input layout."""
-        ...
-
-    def output_format(self) -> None:
-        """Wave-3 SoundDevice output remains owned by the Wave-2 player."""
-        ...
-
-    def capabilities(self) -> BackendCapabilities:
-        """Return implementation capabilities, independent of route policy."""
         ...
 
     def ownership_snapshot(self) -> BackendOwnershipSnapshot:
@@ -885,38 +845,15 @@ class SoundDeviceDuplexBackend:
         """Return the fixed native callback format."""
         return self._input_format
 
-    def output_format(self) -> None:
-        """Return no owned output format in Wave 3."""
-
-    def capabilities(self) -> BackendCapabilities:
-        """SoundDevice v1 has ADC timing but no shared render/AEC clock."""
-        return BackendCapabilities(
-            owns_default_input=True,
-            owns_render_clock=False,
-            aec=False,
-            natural_barge_in=False,
-            reliable_adc_time=True,
-            reliable_dac_time=False,
-        )
-
     def start(  # noqa: C901, PLR0911, PLR0915 - one linear bounded foreign-open state machine
         self,
         *,
         stream_epoch: int,
         attempt_id: str,
         frame_sink: InputFrameSink,
-        render_source: RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> BackendStartResult:
         """Open and start the sole default-input callback stream."""
-        if render_source is not None:
-            return BackendStartResult(
-                status=BackendStartStatus.FAILED_CLOSED,
-                stream_epoch=stream_epoch,
-                profile=None,
-                reason="sounddevice_wave3_render_source_not_owned",
-                attempt_id=attempt_id,
-            )
         with self._lock:
             if self._state is BackendLifecycleState.UNCERTAIN:
                 return BackendStartResult(
@@ -1582,11 +1519,10 @@ class FileReplayBackend:
         stream_epoch: int,
         attempt_id: str,
         frame_sink: InputFrameSink,
-        render_source: RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> BackendStartResult:
         """Start the paced replay thread for one epoch."""
-        del render_source, timeout_s
+        del timeout_s
         with self._lock:
             if self._thread is not None:
                 return BackendStartResult(
@@ -1712,21 +1648,6 @@ class FileReplayBackend:
         """Return the fixed canonical replay layout."""
         return self._format
 
-    def output_format(self) -> None:
-        """Replay owns no output."""
-        return
-
-    def capabilities(self) -> BackendCapabilities:
-        """Replay owns nothing physical and has no reliable clocks."""
-        return BackendCapabilities(
-            owns_default_input=False,
-            owns_render_clock=False,
-            aec=False,
-            natural_barge_in=False,
-            reliable_adc_time=False,
-            reliable_dac_time=False,
-        )
-
     def ownership_snapshot(self) -> BackendOwnershipSnapshot:
         """Report the replay thread as the only owner that can exist."""
         with self._lock:
@@ -1748,7 +1669,6 @@ class FileReplayBackend:
 __all__ = [
     "AudioDuplexBackend",
     "AudioInputFormat",
-    "BackendCapabilities",
     "BackendFault",
     "BackendLifecycleState",
     "BackendOwnershipSnapshot",
@@ -1760,11 +1680,9 @@ __all__ = [
     "DeviceProfileKey",
     "DeviceProfileSnapshot",
     "FileReplayBackend",
-    "InputClockMapping",
     "InputDeviceProfile",
     "InputFrameSink",
     "OutputRoute",
-    "RenderSource",
     "RouteKind",
     "SoundDeviceDuplexBackend",
     "resolve_device_profile",

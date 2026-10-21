@@ -204,17 +204,6 @@ def test_config_defaults_and_fail_closed_parsing() -> None:
         voice_audio.audio_ingress_config_from_mapping({"route_observer": True})
 
 
-def test_no_backend_claims_aec_or_natural_barge_in() -> None:
-    """Regression pin: capability claims stay False on the production backend."""
-    capabilities = voice_backend.SoundDeviceDuplexBackend(
-        input_format=_INPUT_FORMAT,
-        open_timeout_s=0.5,
-        close_timeout_s=0.5,
-    ).capabilities()
-    assert capabilities.aec is False
-    assert capabilities.natural_barge_in is False
-
-
 def test_profile_key_text_has_seven_fields() -> None:
     """The trace form carries every D9 field in order."""
     assert _JACK_KEY.as_text() == (
@@ -250,10 +239,9 @@ class _RouteBackend:
         stream_epoch: int,
         attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
-        render_source: voice_backend.RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> voice_backend.BackendStartResult:
-        del frame_sink, render_source, timeout_s
+        del frame_sink, timeout_s
         assert self.active_epoch is None
         self.active_epoch = stream_epoch
         self.active_attempt_id = attempt_id
@@ -323,19 +311,6 @@ class _RouteBackend:
 
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
-
-    def output_format(self) -> None:
-        return None
-
-    def capabilities(self) -> voice_backend.BackendCapabilities:
-        return voice_backend.BackendCapabilities(
-            owns_default_input=True,
-            owns_render_clock=False,
-            aec=False,
-            natural_barge_in=False,
-            reliable_adc_time=True,
-            reliable_dac_time=False,
-        )
 
     def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
         return voice_backend.BackendOwnershipSnapshot(
@@ -570,20 +545,14 @@ def test_voice_capability_payload_carries_route_fields() -> None:
     asyncio.run(_scenario())
 
 
-def test_file_replay_and_fake_backends_claim_no_aec(tmp_path: Path) -> None:
-    """Regression pin across the non-production backends too."""
+def test_file_replay_observes_no_output_route(tmp_path: Path) -> None:
+    """A replayed file has no output route to observe."""
     wav_path = tmp_path / "silence.wav"
     with wave.open(str(wav_path), "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(16_000)
         handle.writeframes(b"\x00" * 1024)
-    for capabilities in (
-        voice_backend.FileReplayBackend(wav_path).capabilities(),
-        _RouteBackend().capabilities(),
-    ):
-        assert capabilities.aec is False
-        assert capabilities.natural_barge_in is False
     assert voice_backend.FileReplayBackend(wav_path).current_output_route() is None
 
 

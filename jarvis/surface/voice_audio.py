@@ -1528,7 +1528,6 @@ class AudioIngress:
                     stream_epoch=epoch,
                     attempt_id=attempt_id,
                     frame_sink=self._on_backend_frame,
-                    render_source=None,
                     timeout_s=timeout_s,
                 )
             except TypeError as exc:
@@ -1538,7 +1537,6 @@ class AudioIngress:
                     stream_epoch=epoch,
                     attempt_id=attempt_id,
                     frame_sink=self._on_backend_frame,
-                    render_source=None,
                 )
         finally:
             with self._control_lock:
@@ -2245,7 +2243,7 @@ class AudioIngress:
         finally:
             self._lifecycle_lock.release()
 
-    def resume_after_wake(  # noqa: PLR0911 - exact bounded wake outcomes
+    def resume_after_wake(
         self,
         *,
         deadline: float | None = None,
@@ -2327,13 +2325,11 @@ class AudioIngress:
                 state = InputCapabilityState.CLOSE_UNCERTAIN
             else:
                 state = InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
-            snapshot = self._publish_capability_if_current(
+            self._publish_capability_if_current(
                 control_generation,
                 state,
                 reason=("wake_reopen_succeeded" if result.started else "wake_reopen_failed"),
             )
-            if snapshot is None and self._suspended:
-                return result
             return result
         finally:
             self._lifecycle_lock.release()
@@ -2617,20 +2613,6 @@ class AudioIngress:
         if self._active_epoch is None or profile is None:
             return None
         return profile.device_name, time.monotonic() - self._active_opened_s
-
-    def clock_mapping(self) -> voice_backend.InputClockMapping | None:
-        """Anchor cursor zero for the active epoch to ADC and monotonic clocks."""
-        timeline = self._active_timeline
-        if timeline is None or timeline.first_callback_monotonic_ns is None:
-            return None
-        mapping = voice_backend.InputClockMapping(
-            stream_epoch=timeline.stream_epoch,
-            input_sample_cursor=0,
-            adc_time_s=timeline.first_callback_adc_time_s,
-            monotonic_ns=timeline.first_callback_monotonic_ns,
-            input_clock_domain="portaudio_adc_time_and_process_monotonic",
-        )
-        return mapping if self._active_timeline is timeline else None
 
     def close(self) -> IngressCloseResult:
         """Reject callbacks, close the backend, and join every owned worker."""

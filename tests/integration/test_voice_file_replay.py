@@ -108,7 +108,6 @@ def test_replay_feeds_real_ingress_contiguously_at_real_time_pace(tmp_path: Path
     ]
     assert all(not any(frame.pcm16_mono) for frame in frames[file_frames + 1 :])
     assert backend.eof_reached
-    assert not backend.capabilities().owns_default_input
     close = ingress.close()
     assert close.definitively_closed
     assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED

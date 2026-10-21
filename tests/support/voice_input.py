@@ -58,11 +58,9 @@ class FakeBackend:
         stream_epoch: int,
         attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
-        render_source: voice_backend.RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> voice_backend.BackendStartResult:
         del timeout_s
-        assert render_source is None
         assert self.active_epoch is None, "a second physical owner was opened"
         self.start_count += 1
         self.active_epoch = stream_epoch
@@ -153,19 +151,6 @@ class FakeBackend:
 
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
-
-    def output_format(self) -> None:
-        return None
-
-    def capabilities(self) -> voice_backend.BackendCapabilities:
-        return voice_backend.BackendCapabilities(
-            owns_default_input=True,
-            owns_render_clock=False,
-            aec=False,
-            natural_barge_in=False,
-            reliable_adc_time=True,
-            reliable_dac_time=False,
-        )
 
     def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
         state = (

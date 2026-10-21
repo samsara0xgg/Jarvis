@@ -59,7 +59,6 @@ class _ScriptedWakeBackend(FakeBackend):
         stream_epoch: int,
         attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
-        render_source: voice_backend.RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> voice_backend.BackendStartResult:
         status = self.next_start_status
@@ -68,7 +67,6 @@ class _ScriptedWakeBackend(FakeBackend):
                 stream_epoch=stream_epoch,
                 attempt_id=attempt_id,
                 frame_sink=frame_sink,
-                render_source=render_source,
                 timeout_s=timeout_s,
             )
         self.next_start_status = None
@@ -77,7 +75,6 @@ class _ScriptedWakeBackend(FakeBackend):
                 stream_epoch=stream_epoch,
                 attempt_id=attempt_id,
                 frame_sink=frame_sink,
-                render_source=render_source,
                 timeout_s=timeout_s,
             )
         else:
@@ -630,12 +627,6 @@ def test_wake_capture_diagnostics_share_cursor_and_own_callback_buffers() -> Non
     assert cursors == [0, 512, 1024, 1536, 2048, 2560]
     assert [frame.sample_cursor for frame in capture_frames] == cursors
     assert [frame.sample_cursor for frame in diagnostic_frames] == cursors
-    mapping = ingress.clock_mapping()
-    assert mapping is not None
-    assert mapping.stream_epoch == epoch
-    assert mapping.input_sample_cursor == 0
-    assert mapping.adc_time_s is not None
-    assert mapping.monotonic_ns > 0
     assert [np.frombuffer(frame.pcm16_mono, dtype="<i2")[0] for frame in wake_frames] == [
         1,
         2,
@@ -1344,8 +1335,7 @@ def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
             stream_epoch: int,
             attempt_id: str,
             frame_sink: voice_backend.InputFrameSink,
-            render_source: voice_backend.RenderSource | None = None,
-            timeout_s: float | None = None,
+                timeout_s: float | None = None,
         ) -> voice_backend.BackendStartResult:
             if self.start_count == 1:
                 self.reopen_entered.set()
@@ -1354,7 +1344,6 @@ def test_foreign_reopen_returning_after_sleep_close_is_never_admitted() -> None:
                 stream_epoch=stream_epoch,
                 attempt_id=attempt_id,
                 frame_sink=frame_sink,
-                render_source=render_source,
                 timeout_s=timeout_s,
             )
 
@@ -2957,15 +2946,13 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
             stream_epoch: int,
             attempt_id: str,
             frame_sink: voice_backend.InputFrameSink,
-            render_source: voice_backend.RenderSource | None = None,
-            timeout_s: float | None = None,
+                timeout_s: float | None = None,
         ) -> voice_backend.BackendStartResult:
             actions.append("input_start")
             return super().start(
                 stream_epoch=stream_epoch,
                 attempt_id=attempt_id,
                 frame_sink=frame_sink,
-                render_source=render_source,
                 timeout_s=timeout_s,
             )
 

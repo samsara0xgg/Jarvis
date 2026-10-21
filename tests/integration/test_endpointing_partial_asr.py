@@ -631,10 +631,9 @@ class _FakeBackend:
         stream_epoch: int,
         attempt_id: str,
         frame_sink: voice_backend.InputFrameSink,
-        render_source: voice_backend.RenderSource | None = None,
         timeout_s: float | None = None,
     ) -> voice_backend.BackendStartResult:
-        del render_source, timeout_s
+        del timeout_s
         assert self.active_epoch is None
         self.active_epoch = stream_epoch
         self.active_attempt_id = attempt_id
@@ -694,19 +693,6 @@ class _FakeBackend:
 
     def input_format(self) -> voice_backend.AudioInputFormat:
         return self.format
-
-    def output_format(self) -> None:
-        return None
-
-    def capabilities(self) -> voice_backend.BackendCapabilities:
-        return voice_backend.BackendCapabilities(
-            owns_default_input=True,
-            owns_render_clock=False,
-            aec=False,
-            natural_barge_in=False,
-            reliable_adc_time=True,
-            reliable_dac_time=False,
-        )
 
     def ownership_snapshot(self) -> voice_backend.BackendOwnershipSnapshot:
         closed = self.active_epoch is None

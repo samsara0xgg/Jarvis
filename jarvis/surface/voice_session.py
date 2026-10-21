@@ -1848,15 +1848,6 @@ class DuplexVoiceSession:
             not_owner=not_owner,
         )
 
-    def _regex_words(
-        self, text: str, *, conversation: bool, over_her: bool, whole_only: bool,
-    ) -> str:
-        """What the regexes make of ``text``; ``whole_only`` leaves out the loose dismissal."""
-        return word_judge.regex_words(
-            self._word_hooks(), text,
-            conversation=conversation, over_her=over_her, whole_only=whole_only,
-        )
-
     def _act_on_words(self, turn_id: str, text: str, verdict: str, *, over_her: bool) -> None:
         """Carry out a verdict; raises when the words are no turn."""
         if verdict in {"elsewhere", "not_owner"}:
@@ -2013,7 +2004,7 @@ class DuplexVoiceSession:
                 return
             try:
                 # ADR-0015: a muted microphone drops the wake instead of arming.
-                # Barge-in never reaches this queue (see _open_barge_in_candidate),
+                # Barge-in never reaches this queue (see _barge_in_on_speech),
                 # so Allen can still stop Jarvis mid-sentence while muted.
                 if self._mic_muted is not None and self._mic_muted():
                     LOGGER.info("wake detection dropped: microphone muted")
