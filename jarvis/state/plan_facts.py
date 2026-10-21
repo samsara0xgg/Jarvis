@@ -101,7 +101,7 @@ class Here:
 
 @dataclass(frozen=True)
 class Move:
-    """A stretch of walking, running, cycling or driving. ``end_ms`` None: still going."""
+    """A stretch of walking, running, cycling, driving or ``moving`` (ADR 0316); no end: going."""
 
     start_ms: int
     end_ms: int | None
@@ -379,10 +379,11 @@ def facts_at(
     """
     first_ms, last_ms = _ms(day, time.min, zone), _ms(day + timedelta(days=1), time.min, zone)
     rows = read_rows(conn, first_ms - LOOKBACK_MS)
-    visits, motions = _until(rows.visits, now_ms), _until(rows.motions, now_ms)
-    held = stays(
-        rows._replace(visits=visits, motions=motions, fixes=_until(rows.fixes, now_ms)), now_ms,
+    seen = rows._replace(
+        visits=_until(rows.visits, now_ms), motions=_until(rows.motions, now_ms),
+        fixes=_until(rows.fixes, now_ms),
     )
+    held = stays(seen, now_ms)
     all_stays = tuple(
         Stay(s.start, s.end, str(s.fields.get("place") or ""), *_kept_of(
             kept, s.fields["lat"], s.fields["lng"]), s.fields["lat"], s.fields["lng"])
@@ -405,8 +406,8 @@ def facts_at(
     morning = _ms(day, WAKE_FROM, zone)
     drive = tuple(sorted(
         (
-            *(Move(m.start, m.end, str(m.fields["activity"]))
-              for m in phone_moves(motions, held, now_ms)
+            *(Move(m.start, m.end, str(m.fields.get("activity", "moving")))
+              for m in phone_moves(seen, held, now_ms)
               if m.start <= now_ms and (m.end is None or m.end >= first_ms)),
             *_rides(conn, first_ms, now_ms),
         ),

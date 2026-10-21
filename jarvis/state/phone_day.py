@@ -2,8 +2,9 @@
 
 One read of the phone's rows (:func:`read_rows`) and the folds that turn them into stays, moves and
 sleep, with the thresholds that decide them. A stay is a visit iOS reported or, where no visit
-covers the time, a stretch cut from the phone's location fixes (ADR 0301). The day line (ADR 0199,
-:mod:`jarvis.state.day_line`) serves these as timed items and the ledger (ADR 0201,
+covers the time, a stretch cut from the phone's location fixes (ADR 0301). A move is what motion
+reported, or a stretch where the fixes leave the stays and change place (ADR 0316). The day line
+(ADR 0199, :mod:`jarvis.state.day_line`) serves these as timed items and the ledger (ADR 0201,
 :mod:`jarvis.state.ledger`) counts them into the prompt, so the two cannot disagree about where he
 stayed or when he slept: they share these rules. Nothing is stored and nothing here calls a
 model.
@@ -53,6 +54,14 @@ to decide he has not moved."""
 STAY_MIN_MS: Final = 5 * _MINUTE_MS
 """A stay cut from fixes, or what a visit leaves of one, shorter than this is dropped; one with no
 end yet is measured to now."""
+PATH_GAP_MS: Final = 5 * _MINUTE_MS
+"""Fixes outside the stays this close are one path, and a path reaches a stay this close to its
+nearest fix: the phone sends a fix every 30 to 60 s while he moves (ADR 0316)."""
+VEHICLE_SPEED_MPS: Final = 25 / 3.6
+"""Two points of a path this fast apart, less both their accuracies, were ridden: the speed the
+phone itself takes for a vehicle (ADR 0312)."""
+VEHICLE_SPAN_MS: Final = 10_000
+"""The least time between the two points a vehicle's speed is taken over."""
 CUT_FROM_KEY: Final = "cut_from"
 CUT_FROM_FIXES: Final = "fixes"
 """A stay cut from fixes carries ``cut_from: "fixes"`` in its fields; a visit has no such key."""
@@ -186,14 +195,9 @@ def _centre(run: list[_Fix]) -> tuple[float, float]:
     return sum(f.lat for f in run) / len(run), sum(f.lng for f in run) / len(run)
 
 
-def _runs(fixes: list[Event]) -> list[list[_Fix]]:
-    """The fixes good enough to place him, in time order, cut into runs.
-
-    A run goes on while the next fix lies within :data:`STAY_RADIUS_M` of the mean of the run's
-    fixes so far; a fix beyond it starts the next run. A fix worse than :data:`FIX_MAX_ACCURACY_M`
-    is passed over and ends nothing.
-    """
-    good = sorted(
+def _good(fixes: list[Event]) -> list[_Fix]:
+    """The fixes good enough to place him, :data:`FIX_MAX_ACCURACY_M` or better, in time order."""
+    return sorted(
         (
             _Fix(
                 event.ts_epoch_ms, (place, event.event_uid), float(event.payload["lat"]),
@@ -205,8 +209,17 @@ def _runs(fixes: list[Event]) -> list[list[_Fix]]:
         ),
         key=lambda fix: (fix.at, fix.origin[0]),
     )
+
+
+def _runs(fixes: list[Event]) -> list[list[_Fix]]:
+    """The good fixes (:func:`_good`) cut into runs.
+
+    A run goes on while the next fix lies within :data:`STAY_RADIUS_M` of the mean of the run's
+    fixes so far; a fix beyond it starts the next run. A fix worse than :data:`FIX_MAX_ACCURACY_M`
+    is passed over and ends nothing.
+    """
     runs: list[list[_Fix]] = []
-    for fix in good:
+    for fix in _good(fixes):
         if runs and metres(_centre(runs[-1]), (fix.lat, fix.lng)) <= STAY_RADIUS_M:
             runs[-1].append(fix)
         else:
@@ -314,36 +327,47 @@ def _reach(end: int | None) -> float:
     return math.inf if end is None else end
 
 
-def _long_moves(events: list[Event], now_ms: int) -> list[Span]:
-    """Walking, running, cycling and driving, de-flickered, before any stay is taken out.
+def _segments(events: list[Event]) -> list[Span]:
+    """Motion's walking, running, cycling and driving of medium or high confidence, as reported.
 
     A segment ends where it says, else where the next segment of any activity starts, so a
-    stationary or doubtful segment ends the move before it. Segments of one activity that touch
-    within :data:`MOVE_MERGE_GAP_MS` merge; moves shorter than :data:`MOVE_MIN_MS` are dropped.
+    stationary or doubtful segment ends the one before it.
     """
     facts = settle(events, "started_at_ms", "ended_at_ms")
-    merged: list[Span] = []
+    found: list[Span] = []
     for index, fact in enumerate(facts):
         end = fact.end
         if end is None and index + 1 < len(facts):
             end = facts[index + 1].start
         activity = fact.payload["activity"]
-        if activity not in MOVE_ACTIVITIES or fact.payload["confidence"] not in MOVE_CONFIDENCES:
-            continue
+        if activity in MOVE_ACTIVITIES and fact.payload["confidence"] in MOVE_CONFIDENCES:
+            found.append(Span(fact.origin, "move", fact.start, end, {"activity": activity}))
+    return found
+
+
+def _merged(found: Iterable[Span], now_ms: int, *, first_row: bool) -> list[Span]:
+    """Moves of one activity (or of none) within :data:`MOVE_MERGE_GAP_MS` joined, short ones out.
+
+    ``found`` is in start order. A joined move keeps the id of the row reported first when
+    ``first_row``, else of the move that starts first; one shorter than :data:`MOVE_MIN_MS` is
+    dropped, and one with no end yet is measured to now.
+    """
+    merged: list[Span] = []
+    for move in found:
         last = merged[-1] if merged else None
         if (
             last is not None
-            and last.fields["activity"] == activity
+            and last.fields.get("activity") == move.fields.get("activity")
             and last.end is not None
-            and fact.start - last.end <= MOVE_MERGE_GAP_MS
+            and move.start - last.end <= MOVE_MERGE_GAP_MS
         ):
             merged[-1] = replace(
                 last,
-                origin=min(last.origin, fact.origin),
-                end=None if end is None else max(last.end, end),
+                origin=min(last.origin, move.origin) if first_row else last.origin,
+                end=None if move.end is None else max(last.end, move.end),
             )
         else:
-            merged.append(Span(fact.origin, "move", fact.start, end, {"activity": activity}))
+            merged.append(move)
     return [
         move
         for move in merged
@@ -351,14 +375,155 @@ def _long_moves(events: list[Event], now_ms: int) -> list[Span]:
     ]
 
 
-def moves(events: list[Event], held: list[Span], now_ms: int) -> list[Span]:
-    """How he got about: the moves of :func:`_long_moves` less those wholly inside one stay.
+def _long_moves(events: list[Event], now_ms: int) -> list[Span]:
+    """Motion's moves (:func:`_segments`), de-flickered, before any stay is taken out.
 
-    ``held`` are his stays, visits and cut ones alike; a stay still going counts.
+    Segments of one activity that touch within :data:`MOVE_MERGE_GAP_MS` merge, under the id of
+    the row reported first; moves shorter than :data:`MOVE_MIN_MS` are dropped.
     """
+    return _merged(_segments(events), now_ms, first_row=True)
+
+
+class _Path(NamedTuple):
+    start: int
+    end: int | None
+    first: _Fix  # its first fix, whose event_uid names the moves cut from it
+    points: list[_Fix]  # its fixes, with the centres of the stays it runs from and to
+
+
+def _centre_of(stay: Span, at: int) -> _Fix:
+    fields = stay.fields
+    return _Fix(at, stay.origin, fields["lat"], fields["lng"], fields["accuracy_m"], "")
+
+
+def _paths(fixes: list[Event], held: list[Span], now_ms: int) -> list[_Path]:
+    """Where the good fixes leave the stays in ``held`` and change place (ADR 0316).
+
+    The fixes no stay covers, in time order, are one path while no stay starts among them and
+    no two in a row are more than :data:`PATH_GAP_MS` apart. A path runs from the end of the stay
+    before it, and to the start of the stay after it, when that is within :data:`PATH_GAP_MS` of
+    its nearest fix; else from its first fix, and to its last, or on with no end while that fix
+    is at most :data:`PATH_GAP_MS` old. A path is kept when one of its points lies farther from
+    its first or last point than :data:`STAY_RADIUS_M` beyond both their accuracies: a fix that
+    strays from a stay and comes back is not a trip.
+    """
+    ordered = sorted(held, key=lambda stay: stay.start)
+    starts = [stay.start for stay in ordered]
+    latest: list[Span] = []  # of the first i + 1 stays, the one that reaches furthest
+    for stay in ordered:
+        further = not latest or _reach(stay.end) > _reach(latest[-1].end)
+        latest.append(stay if further else latest[-1])
+    groups: list[tuple[int, list[_Fix]]] = []  # (stays started before, fixes)
+    for fix in _good(fixes):
+        before = bisect_right(starts, fix.at)
+        if before and _reach(latest[before - 1].end) > fix.at:
+            continue
+        if groups and groups[-1][0] == before and fix.at - groups[-1][1][-1].at <= PATH_GAP_MS:
+            groups[-1][1].append(fix)
+        else:
+            groups.append((before, [fix]))
+    found: list[_Path] = []
+    for before, run in groups:
+        points = list(run)
+        start: int = run[0].at
+        left = latest[before - 1] if before else None
+        if left is not None and left.end is not None and start - left.end <= PATH_GAP_MS:
+            start = left.end
+            points.insert(0, _centre_of(left, start))
+        end: int | None = run[-1].at
+        if before < len(ordered) and ordered[before].start - run[-1].at <= PATH_GAP_MS:
+            end = ordered[before].start
+            points.append(_centre_of(ordered[before], end))
+        elif before == len(ordered) and now_ms - run[-1].at <= PATH_GAP_MS:
+            end = None
+        if any(
+            metres((one.lat, one.lng), (point.lat, point.lng))
+            > STAY_RADIUS_M + one.accuracy_m + point.accuracy_m
+            for one in (points[0], points[-1]) for point in points
+        ):
+            found.append(_Path(start, end, run[0], points))
+    return found
+
+
+def _ridden(points: list[_Fix], first: int, last: int | None) -> bool:
+    """True when he was ridden somewhere in ``[first, last)``.
+
+    That is when two points at least :data:`VEHICLE_SPAN_MS` apart, the first of them before
+    ``last`` and the other after ``first``, lie :data:`VEHICLE_SPEED_MPS` apart less both their
+    accuracies.
+    """
+    later = 0
+    for one in points:
+        while later < len(points) and points[later].at - one.at < VEHICLE_SPAN_MS:
+            later += 1
+        if later == len(points):
+            return False
+        other = points[later]
+        if other.at <= first or one.at >= _reach(last):
+            continue
+        apart = metres((one.lat, one.lng), (other.lat, other.lng))
+        seconds = (other.at - one.at) / 1000
+        if apart - one.accuracy_m - other.accuracy_m >= VEHICLE_SPEED_MPS * seconds:
+            return True
+    return False
+
+
+def _covering(segments: list[Span], first: int, last: int, now_ms: int) -> str | None:
+    """The activity of ``segments`` that covers most of ``[first, last)``, if any covers it."""
+    covered: Counter[str] = Counter()
+    for segment in segments:
+        end = now_ms if segment.end is None else segment.end
+        shared = min(last, end) - max(first, segment.start)
+        if shared > 0:
+            covered[segment.fields["activity"]] += shared
+    return covered.most_common(1)[0][0] if covered else None
+
+
+def _path_moves(rows: PhoneRows, held: list[Span], going: list[Span], now_ms: int) -> list[Span]:
+    """The parts of each path (:func:`_paths`) that no motion move in ``going`` covers, named.
+
+    Automotive when :func:`_ridden` says so and motion said no cycling on the path; else the
+    activity motion reported for most of the part; else the one activity motion reported on the
+    path, if only one; else none. Each part's id is the path's first fix's ``event_uid``, ``@``
+    and the part's start.
+    """
+    segments = _segments(rows.motions)
+    found: list[Span] = []
+    for path in _paths(rows.fixes, held, now_ms):
+        stop = now_ms if path.end is None else path.end
+        on_path = [
+            segment for segment in segments
+            if segment.start < stop and _reach(segment.end) > path.start
+        ]
+        said = {segment.fields["activity"] for segment in on_path}
+        for first, last in _uncovered(path.start, path.end, going):
+            if "cycling" not in said and _ridden(path.points, first, last):
+                activity: str | None = "automotive"
+            else:
+                activity = _covering(on_path, first, now_ms if last is None else last, now_ms)
+                if activity is None and len(said) == 1:
+                    (activity,) = said
+            place, uid = path.first.origin
+            found.append(Span(
+                (place, f"{uid}@{first}"), "move", first, last,
+                {} if activity is None else {"activity": activity},
+            ))
+    return found
+
+
+def moves(rows: PhoneRows, held: list[Span], now_ms: int) -> list[Span]:
+    """How he got about: motion's moves and the paths his fixes show, less those inside a stay.
+
+    Motion's moves (:func:`_long_moves`) and the uncovered parts of the paths
+    (:func:`_path_moves`), merged as motion's segments are (:func:`_merged`); a move with no
+    activity merges only with another with none. ``held`` are his stays, visits and cut ones
+    alike; a move wholly inside one, a stay still going included, is dropped.
+    """
+    going = _long_moves(rows.motions, now_ms)
+    found = sorted([*going, *_path_moves(rows, held, going, now_ms)], key=lambda move: move.start)
     return [
         move
-        for move in _long_moves(events, now_ms)
+        for move in _merged(found, now_ms, first_row=False)
         if not any(
             stay.start <= move.start and _reach(move.end) <= _reach(stay.end) for stay in held
         )

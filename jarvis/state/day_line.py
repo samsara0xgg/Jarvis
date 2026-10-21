@@ -8,7 +8,8 @@ going, so it overlaps every window after its start.
 Each source folds on its own and a source that raises leaves its items out (:func:`fold_day`):
 
 - ``phone``: stays from ``phone.visit_observed`` and, where no visit covers the time, cut from
-  ``phone.location_observed`` (ADR 0301), moves from ``phone.motion_observed`` and sleep
+  ``phone.location_observed`` (ADR 0301), moves from ``phone.motion_observed`` and from the fixes
+  between stays (ADR 0316), and sleep
   and workouts from ``phone.health_observed`` (ADR 0197, 0293), read in one query from two days
   before the window and folded by :mod:`jarvis.state.phone_day`, whose rules the ledger counts by
   too; a stay inside a place he keeps (ADR 0234) also carries it as ``kept_place``, a sleep block
@@ -356,7 +357,7 @@ def _ride_items(
 
 
 def _without_ridden_moves(items: list[dict[str, Any]], now_ms: int) -> list[dict[str, Any]]:
-    """Drop the automotive moves that a ride covers for at least half of their span (ADR 0224)."""
+    """Drop each automotive or unnamed move a ride covers for half its span or more (ADR 0224)."""
     spans = [(i["start_ms"], now_ms if i["end_ms"] is None else i["end_ms"])
              for i in items if i["kind"] == "ride"]
     if not spans:
@@ -365,7 +366,7 @@ def _without_ridden_moves(items: list[dict[str, Any]], now_ms: int) -> list[dict
     def ridden(move: dict[str, Any]) -> bool:
         start, end = move["start_ms"], now_ms if move["end_ms"] is None else move["end_ms"]
         shared = sum(max(0, min(end, b) - max(start, a)) for a, b in spans)
-        return move["kind"] == "move" and move.get("activity") == "automotive" and (
+        return move["kind"] == "move" and move.get("activity") in {None, "automotive"} and (
             2 * shared >= end - start
         )
 
@@ -1014,7 +1015,7 @@ def _phone_items(
     held = stays(rows, now_ms)
     kept = [] if sources.memory_db is None else places.read_kept(sources.memory_db)
     spans = [
-        *held, *phone_moves(rows.motions, held, now_ms), *sleeps(rows.health),
+        *held, *phone_moves(rows, held, now_ms), *sleeps(rows.health),
         *workouts(rows.health),
     ]
     items: list[dict[str, Any]] = []
