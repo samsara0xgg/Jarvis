@@ -1805,12 +1805,13 @@ def _judge_claims(
     return claims_check.check(block, shown=shown, offerable=offerable)
 
 
-def _claims_checked(
+def _claims_checked(  # noqa: PLR0913 - the loop's handles, the verdicts and the row's fields
     ctx: DecideContext,
     scratch: _Scratch,
     verdicts: Sequence[claims_check.Verdict],
     *,
     had_block: bool,
+    unread: int,
     sent_back: bool,
     **detail: bool,
 ) -> None:
@@ -1823,6 +1824,7 @@ def _claims_checked(
                 "turn_id": scratch.turn_id,
                 "had_block": had_block,
                 "entries": [v.to_json() for v in verdicts],
+                "unread": unread,
                 "sent_back": sent_back,
                 **detail,
             },
@@ -1961,7 +1963,8 @@ def _run_tool_use_loop(
             ctx, scratch, last_request=iteration >= ctx.max_tool_iterations,
         )
         _claims_checked(
-            ctx, scratch, verdicts, had_block=block is not None, sent_back=sent_back,
+            ctx, scratch, verdicts, had_block=block is not None,
+            unread=claims_check.unread(block), sent_back=sent_back,
             spoken_as_written=failed and not sent_back,
         )
         if sent_back:
@@ -2077,7 +2080,8 @@ def _wrap_up_claims(
     scratch.reaction = scratch.reaction or emoji
     verdicts = _judge_claims(ctx, scratch, messages, frozenset(), block)
     _claims_checked(
-        ctx, scratch, verdicts, had_block=block is not None, sent_back=False,
+        ctx, scratch, verdicts, had_block=block is not None,
+        unread=claims_check.unread(block), sent_back=False,
         spoken_as_written=any(not v.ok for v in verdicts),
     )
     return answer.strip(), emoji
@@ -3364,7 +3368,8 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
     reply.sent_back = hold.failed and bounce_open and not reply.tool_calls
     if hold.had_block or not reply.tool_calls:
         _claims_checked(
-            ctx, scratch, hold.verdicts, had_block=hold.had_block, sent_back=reply.sent_back,
+            ctx, scratch, hold.verdicts, had_block=hold.had_block,
+            unread=claims_check.unread(hold.block), sent_back=reply.sent_back,
             spoken_as_written=hold.failed and not bounce_open,
             ended_in_call=bool(reply.tool_calls), stopped_at_call=hold.stopped_at_call,
         )

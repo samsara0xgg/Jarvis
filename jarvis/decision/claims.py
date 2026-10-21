@@ -18,7 +18,11 @@ if TYPE_CHECKING:
 
 Kind = Literal["did", "looked", "offer"]
 
-_ENTRY: Final = re.compile(r"^\s*(did|looked|offer)\s+(.*?)\s*:\s*(.*?)\s*$", re.IGNORECASE)
+# A list mark before the kind, no space before the colon, and a full-width colon all still read.
+_ENTRY: Final = re.compile(
+    r"^\s*(?:[-*\u2022]\s*|\d+[.)]\s*)?(did|looked|offer)\b\s*(.*?)\s*[:\uff1a]\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
 _ID: Final = re.compile(r"\br[0-9a-f]{6}\b")
 
 NOTE_HEAD: Final[str] = (
@@ -59,7 +63,7 @@ class Verdict:
 
 
 def parse(block: str | None) -> list[Entry]:
-    """The entries of a block; a line that is no entry is left out, an empty block has none."""
+    """The entries of a block; a line that is no entry is left out (:func:`unread` counts it)."""
     entries: list[Entry] = []
     for raw in (block or "").splitlines():
         found = _ENTRY.match(raw)
@@ -69,6 +73,11 @@ def parse(block: str | None) -> list[Entry]:
         cites = tuple(one.strip().lower() for one in found.group(2).split(",") if one.strip())
         entries.append(Entry(kind, cites, raw.strip()))  # type: ignore[arg-type]
     return entries
+
+
+def unread(block: str | None) -> int:
+    """Lines of a block that hold words but no entry: a block written wrong is not an empty one."""
+    return sum(1 for raw in (block or "").splitlines() if raw.strip() and not _ENTRY.match(raw))
 
 
 def _flat(value: object) -> Iterable[str]:

@@ -96,12 +96,34 @@ SHOWN = {"r000001": DONE_CHANGE, "r000002": DONE_READ, "r000003": FAILED_CHANGE}
         ("offer kept: list them", ["kept only reads and is on the menu"]),
         ("offer nowhere: x", [""]),
         ("did r000001: a\nsome stray line\nlooked r000002: b", ["", ""]),
+        # A list mark, no space before the colon, or a full-width colon is still an entry.
+        ("- did r000001: set it\n* looked r000002: read it", ["", ""]),
+        ("1. did r000002: set it", ["receipt r000002 is a read, not a change"]),
+        ("did r000001：set it", [""]),
+        ("did: nothing cited", ["it cites no receipt"]),
+        ("didn't: a word, not a kind", []),
     ],
 )
 def test_each_entry_is_judged_against_the_receipt_it_cites(block: str, why: list[str]) -> None:
     """A change backs ``did``, a read backs ``looked``; a read-only tool on the menu is no offer."""
     verdicts = claims_check.check(block, shown=SHOWN, offerable=lambda tool: tool == "kept")
     assert [v.why for v in verdicts] == why
+
+
+@pytest.mark.parametrize(
+    ("block", "unread"),
+    [
+        (None, 0),
+        ("", 0),
+        ("\n  \n", 0),
+        ("- did r000001: set it", 0),
+        ("none", 1),
+        ("did r000001: a\nsome stray line\nlooked r000002: b", 1),
+    ],
+)
+def test_lines_with_words_but_no_entry_are_counted(block: str | None, unread: int) -> None:
+    """An empty block counts none; a line she wrote that reads as no entry counts one."""
+    assert claims_check.unread(block) == unread
 
 
 # --- the loops -----------------------------------------------------------------------------------
@@ -408,6 +430,22 @@ def test_a_reply_with_no_block_is_held_to_its_end_and_recorded_as_having_none(
         assert text == "你好，今天天气不错。"
         (row,) = claims_rows(conn)
         assert (row["had_block"], row["entries"], row["sent_back"]) == (False, [], False)
+        assert row["unread"] == 0
+    finally:
+        conn.close()
+
+
+def test_a_block_with_words_but_no_entry_is_recorded_apart_from_an_empty_one(
+    route: Route,
+) -> None:
+    """Neither is sent back; the row counts the lines that read as no entry."""
+    model = ScriptedModel(route.say("<claims>none</claims>你好。"))
+    text, conn = route.run(model)
+    try:
+        assert text == "你好。"
+        (row,) = claims_rows(conn)
+        assert (row["had_block"], row["entries"], row["unread"]) == (True, [], 1)
+        assert row["sent_back"] is False
     finally:
         conn.close()
 

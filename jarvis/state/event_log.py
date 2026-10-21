@@ -328,15 +328,16 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     ),
     # ADR 0320 — a reply's claims block was checked against the receipts: `entries` as written,
     # each with its verdict (`line`, `kind`, `ok`, `why`), whether the answer was `sent_back`,
-    # and whether the reply had a block at all (`had_block`). `spoken_as_written`: it failed and
-    # was spoken anyway; `ended_in_call` / `stopped_at_call`: the reply went on to a tool call,
-    # and speech stopped there.
+    # and whether the reply had a block at all (`had_block`). `unread`: lines of the block with
+    # words but no entry. `spoken_as_written`: it failed and was spoken anyway;
+    # `ended_in_call` / `stopped_at_call`: the reply went on to a tool call, and speech stopped
+    # there.
     EventTypeSchema(
         event_type="answer.claims_checked",
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=("turn_id", "had_block", "entries", "sent_back"),
-        optional_payload=("spoken_as_written", "ended_in_call", "stopped_at_call"),
+        optional_payload=("unread", "spoken_as_written", "ended_in_call", "stopped_at_call"),
         schema_version=1,
     ),
     EventTypeSchema(
