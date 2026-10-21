@@ -636,10 +636,11 @@ class Rides:
     ) -> dict[str, Any]:
         """``bus(ride="get_off")``: the stop he gets off at, by its name or a place (ADR 0344).
 
-        Only the stops the bus has not reached yet count. A stop the followed trip does not serve,
-        but another trip of the same route does, means the wrong trip was matched: when exactly
-        one bus of such a trip is near his fix the ride moves to it, else the followed bus's
-        headsign is said. ``place`` reads where he said, when no stop has that name.
+        Only the stops the bus has not reached yet count. A stop the followed trip does not serve
+        ahead (it has passed it, or never calls there), but another trip of the same route does,
+        means the wrong trip was matched: when exactly one bus of such a trip is near his fix the
+        ride moves to it, else the followed bus's headsign is said. ``place`` reads where he
+        said, when no stop has that name.
         """
         now = self._now_ms()
         with self._lock, contextlib.closing(self._open()) as conn:
@@ -706,37 +707,41 @@ class Rides:
         point: tuple[float, float] | None, here: HereReading | None, passed: list[StopTime],
         now: int,
     ) -> tuple[list[StopTime], str]:
-        """No stop ahead matches: a passed one (refused), or another trip of the route (moved).
+        """No stop ahead matches: another trip of the route (moved), or a passed one (refused).
+
+        A bus of another trip of the route near his fix that has the stop still ahead means the
+        wrong trip was matched, whether or not the followed bus has passed that stop: when exactly
+        one is near, the ride moves to it. With none, or several, a stop the followed bus has
+        passed is refused, and any other is for the caller to say it matches nothing.
 
         Returns the stop on the trip the ride now follows and the headsign it left, or nothing.
         """
-        behind = stop_named(passed, words) or (
-            [s] if point is not None and (s := nearest_stop(passed, point)) else []
-        )
-        if behind:
-            msg = (
-                f"the {ride.route} toward {ride.headsign or 'its end'} has already passed"
-                f" {behind[0].name}; ask him for a stop still ahead of the bus"
-            )
-            raise ToolError(msg, code="stop_passed")
-        if here is None or self.live is None:
-            return [], ""
-        fix = Fix(now - here.age_s * 1000, here.lat, here.lng, here.accuracy_m, here.device)
         found: list[tuple[Vehicle, list[StopTime]]] = []
-        for one in (self._poll() or self._seen).values():
-            if one.route != ride.route or one.trip_id == ride.trip_id:
-                continue
-            gap = self._gap(conn, one, fix)
-            if gap is None or gap > SAID_RADIUS_M:
-                continue
-            stops = self._timetable(one.trip_id, one.start_date, now)
-            rest = stops[next_index(stops, one, now):]
-            hits = stop_named(rest, words) or (
-                [s] if point is not None and (s := nearest_stop(rest, point)) else []
-            )
-            if hits:
-                found.append((one, hits))
+        if here is not None and self.live is not None:
+            fix = Fix(now - here.age_s * 1000, here.lat, here.lng, here.accuracy_m, here.device)
+            for one in (self._poll() or self._seen).values():
+                if one.route != ride.route or one.trip_id == ride.trip_id:
+                    continue
+                gap = self._gap(conn, one, fix)
+                if gap is None or gap > SAID_RADIUS_M:
+                    continue
+                stops = self._timetable(one.trip_id, one.start_date, now)
+                rest = stops[next_index(stops, one, now):]
+                hits = stop_named(rest, words) or (
+                    [s] if point is not None and (s := nearest_stop(rest, point)) else []
+                )
+                if hits:
+                    found.append((one, hits))
         if len(found) != 1:
+            behind = stop_named(passed, words) or (
+                [s] if point is not None and (s := nearest_stop(passed, point)) else []
+            )
+            if behind:
+                msg = (
+                    f"the {ride.route} toward {ride.headsign or 'its end'} has already passed"
+                    f" {behind[0].name}; ask him for a stop still ahead of the bus"
+                )
+                raise ToolError(msg, code="stop_passed")
             return [], ""
         bus, hits = found[0]
         was = ride.headsign or ""
