@@ -25,7 +25,7 @@ struct WatchHomePage: View {
                 Color.clear.frame(width: 80, height: 80)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { herPlace($0) }
                     .padding(.bottom, side * 0.21)
-                if !aod { centre(side: side) }
+                centre(side: side).opacity(aod ? 0.55 : 1)          // Always On: the next thing stays, dimmed
             }
             .frame(width: g.size.width, height: g.size.height)
         }
