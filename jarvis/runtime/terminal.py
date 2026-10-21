@@ -556,7 +556,7 @@ class _Speech:
     canceller: voice_aec.EchoCanceller | None = None
     listening: asyncio.Task[_Listening | None] | None = None
     ducker: SystemAudioDucker | None = None
-    """The one that mutes the system while a line plays; the night run waits for it."""
+    """The output leases of the lines playing; the night run waits for them."""
 
 
 @dataclass
@@ -920,7 +920,7 @@ def _start_night(night: NightRun | None, speech: _Speech) -> asyncio.Task[None] 
     """Tick this Mac's night run; it mutes after the goodnight line, never under a playing one."""
     if night is None:
         return None
-    night.busy = lambda: (d := speech.ducker) is not None and (d.active or d.outputting)
+    night.busy = lambda: (d := speech.ducker) is not None and d.outputting
     return asyncio.create_task(night.run(), name="night_run")
 
 

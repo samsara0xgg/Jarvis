@@ -7175,8 +7175,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             single_ingress_attempted=False,
         )
         voice_pipeline_callable: Any | None = None
-        # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker arbitrates
-        # wake-capture muting against TTS provider/playback output leases.
+        # ADR-0005 §5.1 / §5.3: ONE shared SystemAudioDucker counts the TTS
+        # provider/playback output leases the night run waits on.
         shared_ducker: voice_ducking.SystemAudioDucker = voice_ducking.SystemAudioDucker()
 
         live_voice: voice_live.LiveVoice | None = None
@@ -7248,12 +7248,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     _leave_unfinished_at_shutdown(runtime, unfinished, budget_s=shutdown_budget_s)
             await _stop_children(runtime, timeout_s=max(left(), _CHILD_STOP_FLOOR_S))
             _shutdown_tts(tts_pipe)
-            # Force-restore output volume in case a duck escaped a finally
-            # block on the way down (best-effort; idempotent if depth == 0).
-            try:
-                shared_ducker.restore_all()
-            except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
-                LOGGER.debug("shared_ducker.restore_all failed", exc_info=True)
             LOGGER.info("serve_inherent: shutdown complete")
 
         unwind.push_async_callback(_shutdown)
@@ -7841,9 +7835,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     ),
                 ),
                 runtime.settings_drift,
-                lambda: not controls.conversation and not (
-                    shared_ducker.active or shared_ducker.outputting
-                ),
+                lambda: not controls.conversation and not shared_ducker.outputting,
             ),
             moment_read=(
                 None if runtime.moment is None else functools.partial(_moment_hold, runtime.moment)
@@ -8189,8 +8181,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 runtime.rides.push = push
             watchers.append(asyncio.create_task(push.run(), name="push"))
         if runtime.night is not None:
-            # ADR 0093: the night run mutes after the goodnight line, never under a wake capture.
-            runtime.night.busy = lambda: shared_ducker.active or shared_ducker.outputting
+            # ADR 0093: the night run mutes after the goodnight line, never under a spoken line.
+            runtime.night.busy = lambda: shared_ducker.outputting
             # It holds the Mac past the deadline while a session it can see still works.
             runtime.night.watch = NightWatch(
                 port=_agents_port(),

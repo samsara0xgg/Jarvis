@@ -190,15 +190,10 @@ def summarize_trace(
     bounded_failures = [
         row.name
         for row in selected
-        if row.name in {
-            "action_wait_completed",
-            "tts_pipeline_close_bounded",
-            "system_output_lease_refused",
-        }
+        if row.name == "action_wait_completed"
         and (
             row.attributes.get("outcome") == "bounded_timeout"
             or row.attributes.get("success") is False
-            or row.name == "system_output_lease_refused"
         )
     ]
     return {

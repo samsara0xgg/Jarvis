@@ -1,14 +1,13 @@
 """Test-daemon-only patches for the voice harness (loaded through PYTHONPATH by ``run.py``).
 
 Active only in the process whose parent is the runner (``JARVIS_VOICE_HARNESS_PARENT``), so the
-live daemon, the runner itself and any child of the test daemon stay untouched. Four patches:
+live daemon, the runner itself and any child of the test daemon stay untouched. Three patches:
 
 * ``SoundDeviceDuplexBackend`` becomes a spool backend: silence at real-time pace, and each
   ``<spool>/<name>.wav`` that appears is played through the real ingress, then renamed
   ``<name>.done``. ``<name>.play.json`` records when its first sample was "heard".
 * The final recognizer returns the text of ``<name>.script.json`` for utterances that came from
   that wav (pieces matched by audio fingerprint) and the real SenseVoice otherwise.
-* ``SystemAudioDucker`` never runs osascript: system volume is not touched.
 * MiniMax ``task_start`` / ``task_continue`` messages are logged (language_boost per text).
 """
 
@@ -41,7 +40,6 @@ def _install(root: Path) -> None:
     from jarvis.surface import (  # noqa: PLC0415
         voice_asr,
         voice_backend,
-        voice_ducking,
         voice_pipeline,
         voice_tts,
     )
@@ -262,13 +260,6 @@ def _install(root: Path) -> None:
         real_init(self, recognizer=ScriptedRecognizer(recognizer), **kwargs)
 
     voice_pipeline.VoicePipeline.__init__ = pipeline_init  # type: ignore[method-assign]
-
-    # --- no system volume changes -------------------------------------------------------
-    def fake_osascript(script: str) -> str:
-        log("ducker.jsonl", script=script.strip().splitlines()[0] if script.strip() else "")
-        return "output volume:50, output muted:false"
-
-    voice_ducking._run_osascript = fake_osascript  # noqa: SLF001
 
     # --- MiniMax request log: the language each text was sent under ---------------------
     real_connect = voice_tts._ws_connect  # noqa: SLF001

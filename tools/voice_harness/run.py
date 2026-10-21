@@ -729,8 +729,7 @@ def write_report(
         f"({'unchanged' if env['volume_before'] == env['volume_after'] else 'CHANGED'})",
         f"- default devices before/after: `{env['devices_before']}` / `{env['devices_after']}` "
         f"({'unchanged' if env['devices_before'] == env['devices_after'] else 'CHANGED'})",
-        f"- ducker osascript calls intercepted: {env['ducker_calls']}; "
-        f"artifacts: `{path.parent}` (ws.jsonl, daemon.log, trace.jsonl)",
+        f"- artifacts: `{path.parent}` (ws.jsonl, daemon.log, trace.jsonl)",
     ]
     if note:
         out.append(f"- **{note}**")
@@ -974,8 +973,6 @@ def main() -> int:
         cleanup()
     env["volume_after"] = _sh("osascript", "-e", "get volume settings")
     env["devices_after"] = _devices()
-    ducker = daemon.root / "harness" / "ducker.jsonl"
-    env["ducker_calls"] = str(len(ducker.read_text().splitlines()) if ducker.exists() else 0)
 
     (run_dir / "run.pkl").write_bytes(
         pickle.dumps({"ctxs": ctxs, "spend": spend, "env": env, "note": note})

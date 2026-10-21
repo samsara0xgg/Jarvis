@@ -305,8 +305,8 @@ def test_the_dark_waits_out_the_goodnight_line_and_a_low_battery_lets_the_mac_go
     fx = NightFixture(tmp_path, at=night_ms(23))
     mac, clock, night = fx.mac, fx.clock, fx.night
     ducker = voice_ducking.SystemAudioDucker()
-    night.busy = lambda: ducker.active or ducker.outputting  # as the daemon wires it
-    assert ducker.enter_output(timeout_s=0.0)  # the goodnight line is still playing
+    night.busy = lambda: ducker.outputting  # as the daemon wires it
+    ducker.enter_output()  # the goodnight line is still playing
     night.start(hours=None, until=None, source="conversation")
     clock.go(seconds=9)
     night.tick()
@@ -322,7 +322,7 @@ def test_the_dark_waits_out_the_goodnight_line_and_a_low_battery_lets_the_mac_go
     night.end()
 
     # Output that never stops holds the dark back 20 s past due, no longer.
-    assert ducker.enter_output(timeout_s=0.0)
+    ducker.enter_output()
     night.start(hours=None, until=None, source="conversation")
     clock.go(seconds=27)
     night.tick()

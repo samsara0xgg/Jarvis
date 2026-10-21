@@ -64,7 +64,6 @@ from jarvis.shared import lang
 from jarvis.surface import (
     notify,
     voice_backend,
-    voice_ducking,
     voice_tts,
 )
 
@@ -147,10 +146,9 @@ class _RealAudioDeviceBlockedError(RuntimeError):
 def _block_audio_seam(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
     """Replacement for any audio-device factory; refuses to open the device."""
     msg = (
-        "Test attempted to open a real audio device (PortAudio or osascript). "
+        "Test attempted to open a real audio device (PortAudio). "
         "Patch the relevant seam in your test fixture: "
-        "voice_backend._open_sounddevice_input_stream, voice_tts._open_output_stream, "
-        "voice_ducking._run_osascript."
+        "voice_backend._open_sounddevice_input_stream, voice_tts._open_output_stream."
     )
     raise _RealAudioDeviceBlockedError(msg)
 
@@ -219,15 +217,6 @@ def _block_real_audio_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     # block here only fires when a test path forgot to mock.
     monkeypatch.setattr(voice_backend, "_open_sounddevice_input_stream", _block_audio_seam)
     monkeypatch.setattr(voice_tts, "_open_output_stream", _block_audio_seam)
-    # Ducker's AppleScript seam — replace with a safe stub returning a
-    # parseable snapshot so any accidental ``duck()`` call neither mutes
-    # the real system (which plays a macOS volume-change tick sound) nor
-    # crashes the test by failing the snapshot parse.
-    monkeypatch.setattr(
-        voice_ducking,
-        "_run_osascript",
-        lambda _script: "output volume:50, output muted:false",
-    )
     # Surface delivery primitives (``say`` voice + osascript notification
     # banner) — these are the OTHER macOS audio paths. ``render_response``
     # tests can still assert that the dispatch was *attempted* because

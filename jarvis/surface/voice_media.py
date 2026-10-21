@@ -2730,7 +2730,7 @@ class StreamingTTSPipeline:
             measurement_semantics="media_owner_started_provider_request",
         )
 
-    async def _play_response(  # noqa: C901, PLR0912, PLR0915 - bounded lifecycle cleanup FSM
+    async def _play_response(  # noqa: C901 - bounded lifecycle cleanup FSM
         self,
         active: _ActiveResponse,
     ) -> None:
@@ -2740,19 +2740,8 @@ class StreamingTTSPipeline:
         committed = segments[0][1] if live and segments else response.speech_text()
         speech_hash = hashlib.sha256(committed.encode()).hexdigest()
         if self._ducker is not None:
-            active.output_lease = self._ducker.enter_output(timeout_s=0.0)
-            if not active.output_lease:
-                await self._fail_active(
-                    active,
-                    reason="system_output_lease_refused",
-                    retryable=True,
-                )
-                if active.advance_after_cleanup:
-                    active.advance_after_cleanup = False
-                    if self._active is active:
-                        self._active = None
-                    self._advance_after_drain()
-                return
+            self._ducker.enter_output()
+            active.output_lease = True
         try:
             activation = emit_event(
                 self._require_conn(),
