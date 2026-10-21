@@ -27,7 +27,9 @@ Every registered tool is classed ``live_read`` (real handler, reads only), ``san
 handler, writes only inside the sandbox root) or ``stub`` (schema kept, handler replaced by a fixed
 "sandbox: not run" result and recorded); the run refuses to start with an unclassified tool.
 A call that needs Allen's confirmation never runs: the turn ends there and the record names the
-call ("would have done"). Keys come from the sandbox root's ``env``; none is printed.
+call ("would have done"). A paid run takes the keys from ``--root``'s ``env`` (the brain's), then
+from this machine's saved keys, and stops before any case when a preset's key is missing; none is
+printed.
 """
 
 from __future__ import annotations
@@ -670,6 +672,24 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     return list(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _load_keys(args: argparse.Namespace) -> None:
+    """The brain's keys from the snapshot's ``env``, then this machine's; stop on a missing one.
+
+    Only the variable names are checked here and named in the stop; no value is read.
+    """
+    root = args.root.expanduser()
+    load_env_file(root)
+    load_env_file(Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis"))
+    presets = yaml.safe_load(args.config.read_text(encoding="utf-8"))["llm"]["presets"]
+    names = {p: (presets.get(p) or {}).get("api_key_env") for p in args.presets}
+    if missing := [f"{p} ({n})" for p, n in names.items() if n and not os.environ.get(n)]:
+        msg = (
+            f"no key for {', '.join(missing)}: not in the environment, in {root}/env"
+            " or among this machine's saved keys"
+        )
+        raise SystemExit(msg)
+
+
 def cmd_run_steps(args: argparse.Namespace) -> int:
     """``run-steps``: run every case, logged ones on the snapshot, built ones at their moment."""
     all_cases = load_cases(args.cases)
@@ -683,8 +703,8 @@ def cmd_run_steps(args: argparse.Namespace) -> int:
     pushes: list[dict[str, str | None]] = []
     meter = Meter(args.cap_usd, table)
     done = 0
-    if script is None:  # a paid run: the saved keys, fill-only; the values are never read here
-        load_env_file(Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis"))
+    if script is None:  # a paid run: the keys, fill-only; the values are never read here
+        _load_keys(args)
     if built:
         from scripts.tool_exam_turns import run_built  # noqa: PLC0415 - it imports this module
 

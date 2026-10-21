@@ -22,6 +22,7 @@ import pytest
 from jarvis.decision.llm import LLMClient
 from jarvis.runtime.weatherkit import ENDPOINT, NOT_SET_UP
 from jarvis.shared.pricing import load_pricing_table
+from scripts import tool_exam_steps as steps
 from scripts import tool_exam_turns as turns
 from scripts.tool_exam_steps import Meter, ScriptedModel, classify, judge_steps
 from scripts.tool_exam_tools import Item, Recording, _Transport, cut_at, sandbox
@@ -274,10 +275,12 @@ class _Messages(BaseHTTPRequestHandler):
     """A stand-in for the Messages API: every request gets one short text answer."""
 
     bodies: ClassVar[list[dict[str, Any]]] = []
+    keys: ClassVar[list[str | None]] = []
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         type(self).bodies.append(json.loads(self.rfile.read(length)))
+        type(self).keys.append(self.headers.get("x-api-key"))
         body = json.dumps({
             "id": "msg_exam", "type": "message", "role": "assistant",
             "model": "claude-haiku-5-5", "content": [{"type": "text", "text": "Nothing yet."}],
@@ -298,6 +301,7 @@ class _Messages(BaseHTTPRequestHandler):
 def messages_api() -> Iterator[str]:
     """A local Messages API and its base URL."""
     _Messages.bodies = []
+    _Messages.keys = []
     server = HTTPServer(("127.0.0.1", 0), _Messages)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -330,3 +334,54 @@ def test_a_real_client_answers_a_built_case_through_the_closed_network(
     assert _Messages.bodies[0]["model"] == "claude-haiku-5-5"
     assert meter.calls == len(_Messages.bodies)
     assert meter.spent > 0
+
+
+def _paid_run(tmp_path: Path, messages_api: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """``run-steps`` arguments for one built case on a preset served by the stand-in."""
+    monkeypatch.setenv("EXAM_MESSAGES_KEY", "unset-below")  # undone at teardown, as are loads
+    monkeypatch.delenv("EXAM_MESSAGES_KEY")
+    monkeypatch.setenv("JARVIS_RUNTIME_ROOT", str(tmp_path / "this-machine"))
+    cases = tmp_path / "cases"
+    cases.mkdir()
+    case = {"id": "paid", "said": "anything on tonight", "at": AT.isoformat(), "zone": "UTC"}
+    (cases / "paid.json").write_text(json.dumps(case), encoding="utf-8")
+    config = tmp_path / "jarvis.yaml"
+    config.write_text(json.dumps({"llm": {"provider": "anthropic", "max_retries": 0, "presets": {
+        "haiku": {
+            "provider": "anthropic", "model": "claude-haiku-5-5", "base_url": messages_api,
+            "api_key_env": "EXAM_MESSAGES_KEY", "max_tokens": 64,
+        },
+    }}}), encoding="utf-8")
+    (tmp_path / "root").mkdir()
+    return [
+        "tool_exam_steps", "run-steps", "--cases", str(cases), "--presets", "haiku",
+        "--out", str(tmp_path / "out.jsonl"), "--root", str(tmp_path / "root"),
+        "--config", str(config), "--cap-usd", "0.05",
+        "--brain-settings", str(_brain_settings(tmp_path)),
+    ]
+
+
+def test_a_paid_run_takes_the_model_key_from_the_brain_snapshot(
+    messages_api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key is only in ``--root``'s env, as a snapshot of the brain carries it."""
+    argv = _paid_run(tmp_path, messages_api, monkeypatch)
+    (tmp_path / "root" / "env").write_text("EXAM_MESSAGES_KEY=exam-snapshot-key\n", "utf-8")
+    monkeypatch.setattr("sys.argv", argv)
+    assert steps.main() == 0
+    line = json.loads((tmp_path / "out.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert line["error"] is None, line["error"]
+    assert line["text"] == "Nothing yet."
+    assert _Messages.keys == ["exam-snapshot-key"]
+
+
+def test_a_paid_run_without_the_preset_key_stops_before_any_case(
+    messages_api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No key anywhere: one stop naming the preset and its variable, and no case is booted."""
+    monkeypatch.setattr("sys.argv", _paid_run(tmp_path, messages_api, monkeypatch))
+    with pytest.raises(SystemExit) as stopped:
+        steps.main()
+    assert "no key for haiku (EXAM_MESSAGES_KEY)" in str(stopped.value)
+    assert not (tmp_path / "out.jsonl").exists()
+    assert _Messages.bodies == []
