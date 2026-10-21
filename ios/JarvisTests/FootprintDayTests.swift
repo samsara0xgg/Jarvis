@@ -56,6 +56,28 @@ final class FootprintDayTests: XCTestCase {
         XCTAssertEqual(c.chips.count, 2)
     }
 
+    @MainActor func testTheChipsSayWhereHeIsAndHowHeMovedMostAndNameTheDistanceByIt() {
+        let (c, m) = made(), home = m.reply.stays[2], drive = m.reply.outings[0]
+        XCTAssertEqual(c.here.count, 1, "he is at home now")
+        XCTAssertEqual(c.here.first?.word, FootprintDayContent.name(home))
+        XCTAssertEqual(c.here.first?.value, clock(m.clock.minute(ms: home.start_ms)), "since he got in")
+        XCTAssertEqual(c.here.first?.symbol, "house.fill")
+        XCTAssertEqual(c.tripSymbol, "car.fill", "the drive has more time moving than the walk")
+        XCTAssertEqual(c.chips.first?.word, Words.FootprintDay.moving("automotive"))
+        XCTAssertEqual(c.chips.first?.value, tlDistance(drive.distance_m), "the drive's own distance, not the walk's too")
+        XCTAssertTrue(FootprintDayContent.make(m, past: true).here.isEmpty, "another day has no now")
+    }
+
+    @MainActor func testTheMainWayOfMovingIsTheOneWithMostTimeMovingAndNilForOneWithoutAWord() {
+        let (_, m) = made(), drive = m.reply.outings[0], walk = m.reply.outings[1]
+        XCTAssertEqual(FootprintDayContent.mainActivity([drive, walk]), "automotive")
+        XCTAssertEqual(FootprintDayContent.mainActivity([walk]), "walking")
+        XCTAssertNil(FootprintDayContent.mainActivity([]))
+        let boat = FootprintOuting(id: "b", start_ms: 0, end_ms: 9, from_stay: nil, to_stay: nil, activity: "boat", distance_m: 5, moving_ms: 9, max_speed_mps: nil, stops: [], gaps: [], heart_rate: nil, points: [])
+        XCTAssertNil(FootprintDayContent.mainActivity([boat]))
+        XCTAssertNil(Words.FootprintDay.moving("boat"))
+    }
+
     @MainActor func testTheRowUnderTheHeldMinuteIsTheStopThenTheOutingThenThePlace() {
         let (c, _) = made(), rows = c.entries
         let drive = rows.first { $0.kind == .trip }!, stop = rows.first { $0.token == 1 }!, gap = rows.first { $0.rail == .gap }!

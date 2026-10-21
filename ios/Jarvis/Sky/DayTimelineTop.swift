@@ -310,13 +310,15 @@ struct TLChips: View, Equatable {
     let health: [TLBody]                // what Health reported, after them
     let active: TLLens?
     var extra: [TLPlainChip] = []       // a page's own numbers, after the chips and before what Health reported
+    var lead: [TLPlainChip] = []        // a page's own, before the chips
     let toggle: (TLLens) -> Void
 
-    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra }
+    static func == (a: TLChips, b: TLChips) -> Bool { a.chips == b.chips && a.health == b.health && a.active == b.active && a.extra == b.extra && a.lead == b.lead }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                ForEach(lead) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
                 ForEach(chips) { c in chip(c) }
                 ForEach(extra) { c in face(c.symbol, c.color, c.word, c.value, on: false) }
                 if !health.isEmpty { TLBodyValues(values: health).padding(.leading, chips.isEmpty ? 0 : 8) }        // after the numbers, quiet
@@ -332,7 +334,7 @@ struct TLChips: View, Equatable {
 
     private func chip(_ c: TLChip) -> some View {
         let on = active == c.lens
-        return Button { toggle(c.lens) } label: { face(c.lens.symbol, c.lens.color, c.word, c.value, on: on) }
+        return Button { toggle(c.lens) } label: { face(c.symbol ?? c.lens.symbol, c.lens.color, c.word, c.value, on: on) }
         .buttonStyle(PressScale())
         .accessibilityLabel(c.word + " " + c.value)
         .accessibilityAddTraits(on ? .isSelected : [])

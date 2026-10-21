@@ -98,7 +98,7 @@ struct FootprintDayPage: View {
                 Group {
                     FootprintDayLine(ui: ui, summary: content.summary, bar: built?.bar(places: byPlace), model: model).offset(x: 30, y: Y.line)
                     if let built {
-                        FootprintDayBar(ui: ui, built: built, byPlace: byPlace, extra: content.chips, entries: content.entries)
+                        FootprintDayBar(ui: ui, built: built, byPlace: byPlace, extra: content.chips, lead: content.here, tripSymbol: content.tripSymbol, entries: content.entries)
                     }
                     FootprintDayList(ui: ui, engine: engine, entries: content.entries) { e in open(e) }
                         .offset(y: Y.list)

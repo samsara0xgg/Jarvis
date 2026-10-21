@@ -100,6 +100,8 @@ struct FootprintDayBar: View {
     let built: TLBuilt
     let byPlace: Bool
     let extra: [TLPlainChip]
+    let lead: [TLPlainChip]
+    let tripSymbol: String?
     let entries: [TLEntry]
     @Environment(\.accessibilityReduceMotion) private var reduce
 
@@ -110,8 +112,8 @@ struct FootprintDayBar: View {
             TLBarView(scene: built.scene(places: byPlace), scrub: state.minute, lens: lens != nil, lensColor: (lens ?? .trip).color, lensMarks: m.marks(of: lens ?? .trip), reduce: reduce)
                 .modifier(TLBarScrub(span: m.span, changed: { t, _ in held(t, bar) }, ended: lifted))
                 .offset(x: 30, y: FootprintDayPage.Y.bar)
-            if !m.chips.isEmpty || !m.body.isEmpty || !extra.isEmpty {
-                TLChips(chips: m.chips, health: m.body, active: lens, extra: extra) { l in
+            if !m.chips.isEmpty || !m.body.isEmpty || !extra.isEmpty || !lead.isEmpty {
+                TLChips(chips: m.chips.map { c in var c = c; if c.lens == .trip { c.symbol = tripSymbol }; return c }, health: m.body, active: lens, extra: extra, lead: lead) { l in
                     Haptic.selection()
                     withAnimation(.easeOut(duration: 0.15)) { state.lens = state.lens == l ? nil : l }
                 }

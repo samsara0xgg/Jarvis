@@ -368,6 +368,7 @@ enum TLLens: CaseIterable, Equatable {
 struct TLChip: Equatable, Identifiable {
     let lens: TLLens
     let value: String
+    var symbol: String?             // a page's own icon for it, in the place of the lens's (the footprint's trip chip wears the day's main way of moving)
     var id: String { word }
     var word: String { lens.word }
 }

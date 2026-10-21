@@ -11,6 +11,8 @@ struct FootprintDayContent: Equatable {
     var now: FootprintMapNow?
     var entries: [TLEntry] = []
     var chips: [TLPlainChip] = []
+    var here: [TLPlainChip] = []                // before the day's numbers: the place he is in now and since when (today only)
+    var tripSymbol: String?                     // the icon of the trip chip: how he moved most
     var summary = ""
 
     /// how many slices an outing's speed ribbon is cut into
@@ -115,9 +117,15 @@ struct FootprintDayContent: Equatable {
         }
         c.entries = rows
 
-        // the two numbers of this page
-        if let d = tlDistance(m.totalDistanceM) {
-            c.chips.append(TLPlainChip(symbol: "point.topleft.down.to.point.bottomright.curvepath", color: RGB.work, word: Words.Footprint.distance, value: d))
+        // the chips of this page: the place he is in, the trip chip's icon and the distance named by how he moved most, and the top speed
+        if !past, let s = nowStay, let n = name(s) {
+            c.here = [TLPlainChip(symbol: Self.symbol(of: s), color: s.kept_place.map { PlaceTint.line(role: $0.role, id: $0.id) } ?? PlaceTint.lineNeutral, word: n, value: clock(minute(s.start_ms)))]
+        }
+        let main = Self.mainActivity(r.outings)
+        c.tripSymbol = main.flatMap { DayTimelineModel.moves[$0]?.1 }
+        let moved = main.map { a in r.outings.filter { $0.activity == a }.reduce(0) { $0 + $1.distance_m } } ?? m.totalDistanceM
+        if let d = tlDistance(moved) {
+            c.chips.append(TLPlainChip(symbol: "point.topleft.down.to.point.bottomright.curvepath", color: RGB.work, word: main.flatMap { Words.FootprintDay.moving($0) } ?? Words.Footprint.distance, value: d))
         }
         if let v = m.topSpeedMps {
             c.chips.append(TLPlainChip(symbol: "speedometer", color: FootprintPaint.speed(mps: v), word: Words.Footprint.fastest, value: speedText(v)))
@@ -125,6 +133,16 @@ struct FootprintDayContent: Equatable {
         c.summary = summary(m, past: past)
         return c
     }
+
+    /// How he moved most of the day: the way of the outings that add up to the most time moving; nil when it is none the page has a word for.
+    static func mainActivity(_ outings: [FootprintOuting]) -> String? {
+        var moving: [String: Int64] = [:]
+        for o in outings { if let a = o.activity { moving[a, default: 0] += o.moving_ms } }
+        return moving.max { $0.value < $1.value }.map { $0.key }.flatMap { DayTimelineModel.moves[$0] == nil ? nil : $0 }
+    }
+
+    /// the icon of a long stay: the one the bar gives its place
+    static func symbol(of s: FootprintStay) -> String { ["home": "house.fill", "school": "graduationcap.fill"][s.kept_place?.role ?? ""] ?? "mappin" }
 
     /// the row of an outing, then its stops (numbered) and the stretches with no fixes, in time
     @MainActor private static func outingRows(_ o: FootprintOuting, _ m: FootprintModel, nowMinute: Double?) -> [TLEntry] {
