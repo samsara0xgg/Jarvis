@@ -1005,6 +1005,13 @@ tools:
     deep_preset: sonnet
     # 一次 deep 搜索里 Anthropic 最多搜几轮；越大越透、越贵越慢。
     deep_max_uses: 15
+  mail:
+    # ADR 0364 — mail 工具的列表翻 Gmail 的搜索（每页 100 个 id，只取 id、不读信），翻到
+    # 底或翻到这个数为止：数量是准的，超过就说「多于 N」。首页的未读数同一个上限。
+    list_cap: 500
+    # ADR 0363 — 一封邮件（含附件）超过这么多字节就不下载原始邮件，改读服务器给的
+    # 文本，并告诉她附件没读。15 MiB。
+    raw_max_bytes: 15728640
   # open_path（"打开 X"）：search_roots 是 Spotlight 搜索的根目录，bookmarks 是
   # 别名 -> 路径（直接命中），editor_extensions 这些后缀用 editor_app 打开。
   # `~` 会展开。个人书签写在自己的 settings.yaml 里。

@@ -470,6 +470,20 @@ def test_the_tools_web_bounds_are_positive_numbers_else_the_shipped_defaults() -
     assert runtime_config({"tools": {"web": 5}}).tools.web == shipped
 
 
+def test_the_tools_mail_bounds_are_positive_whole_numbers_else_the_shipped_defaults() -> None:
+    """ADR 0363, 0364: how far a list pages and the size a raw read stops at; UX knobs."""
+    shipped = runtime_config({}).tools.mail
+    assert (shipped.list_cap, shipped.raw_max_bytes) == (500, 15 * 1024 * 1024)
+    told = runtime_config({"tools": {"mail": {"list_cap": 200, "raw_max_bytes": 5000}}}).tools.mail
+    assert (told.list_cap, told.raw_max_bytes) == (200, 5000)
+    for bad in (0, -1, True, 2.5, "9", None):
+        broken = runtime_config({"tools": {"mail": {
+            "list_cap": bad, "raw_max_bytes": bad,
+        }}}).tools.mail
+        assert broken == shipped
+    assert runtime_config({"tools": {"mail": 5}}).tools.mail == shipped
+
+
 def test_the_search_provider_and_its_key_variable_are_stripped_names_never_a_key() -> None:
     """The key is read from the environment at boot, by the name this holds; it is not stored."""
     web = runtime_config({"tools": {"web": {
