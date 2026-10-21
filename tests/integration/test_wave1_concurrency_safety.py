@@ -891,7 +891,7 @@ def test_decide_records_one_production_cost_disposition(
     conn.close()
 
 
-def test_vision_cost_guard_records_success_and_error_and_no_recorder_records_nothing(
+def test_vision_cost_guard_records_success_and_error(
     tmp_path: Path,
 ) -> None:
     """Composition-root vision calls share L3 accounting and redaction."""
@@ -924,9 +924,6 @@ def test_vision_cost_guard_records_success_and_error_and_no_recorder_records_not
     assert {payload["disposition"] for payload in payloads} == {"completed", "error"}
     assert len({payload["llm_request_id"] for payload in payloads}) == 2
 
-    legacy = _LLMVisionClient(_openai_client("batch"), cost_recorder=None)
-    assert legacy.describe_image(image_path, question=None) == "batch"
-    assert _event_count(conn, "cost.recorded") == 2
     assert _table_count(conn, "cost_accounting_dispositions") == 2
     conn.close()
 

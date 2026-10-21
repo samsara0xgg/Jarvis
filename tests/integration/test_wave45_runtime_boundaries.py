@@ -80,7 +80,6 @@ def test_boot_vision_requests_are_thread_local_and_accounted(
         "vision",
         event_log_path=path,
         pricing_path=tmp_path / "missing.json",
-        account_cost=True,
     )
     assert client is not None
     image = tmp_path / "fixture.png"

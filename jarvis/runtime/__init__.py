@@ -2681,7 +2681,7 @@ class _LLMVisionClient:
         self,
         llm_client: LLMClient,
         *,
-        cost_recorder: CostRecorder | None = None,
+        cost_recorder: CostRecorder,
     ) -> None:
         """Wrap a vision-preset-bound `LLMClient` (see `_build_vision_client`)."""
         self._llm_client = llm_client
@@ -2713,19 +2713,13 @@ class _LLMVisionClient:
             },
         ]
         try:
-            if self._cost_recorder is None:
-                result = self._llm_client.chat(
-                    messages=messages,
-                    system=system,
-                )
-            else:
-                result = self._cost_recorder.chat(
-                    self._llm_client,
-                    messages=messages,
-                    system=system,
-                    kind="vision",
-                    turn_id=None,
-                )
+            result = self._cost_recorder.chat(
+                self._llm_client,
+                messages=messages,
+                system=system,
+                kind="vision",
+                turn_id=None,
+            )
         except Exception as exc:  # noqa: BLE001 — deliberately re-raised, scrubbed, as VisionCallError; see MUST-FIX 1a.
             raise VisionCallError(_redact_vision_error(exc)) from None
         return result.text or ""
@@ -2738,7 +2732,7 @@ class _RequestScopedVisionClient:
         self,
         config: Mapping[str, Any],
         *,
-        event_log_path: Path | None,
+        event_log_path: Path,
         pricing_path: Path | None,
     ) -> None:
         self._factory = LLMSessionFactory(config)
@@ -2751,13 +2745,8 @@ class _RequestScopedVisionClient:
     ) -> str:
         """Perform one bounded request with its own SQLite connection."""
         client = self._factory.create(self._snapshot, response_id=new_response_id())
-        with contextlib.ExitStack() as stack:
-            recorder = None
-            if self._event_log_path is not None:
-                conn = stack.enter_context(
-                    contextlib.closing(open_runtime_event_log(self._event_log_path)),
-                )
-                recorder = CostRecorder(conn, pricing_table=self._pricing)
+        with contextlib.closing(open_runtime_event_log(self._event_log_path)) as conn:
+            recorder = CostRecorder(conn, pricing_table=self._pricing)
             return _LLMVisionClient(client, cost_recorder=recorder).describe_image(
                 image_path, question=question, instructions=instructions,
             )
@@ -2767,9 +2756,8 @@ def _build_vision_client(
     config: Mapping[str, Any],
     preset_name: str,
     *,
-    event_log_path: Path | None = None,
+    event_log_path: Path,
     pricing_path: Path | None = None,
-    account_cost: bool = False,
 ) -> VisionClient | None:
     """Build the `screen_look` vision seam from `llm.presets.<preset_name>` (ADR-0011 D7).
 
@@ -2820,12 +2808,9 @@ def _build_vision_client(
             exc,
         )
         return None
-    if account_cost and event_log_path is None:
-        message = "vision accounting requires an Event Log path"
-        raise ValueError(message)
     return _RequestScopedVisionClient(
         vision_llm_config,
-        event_log_path=event_log_path if account_cost else None,
+        event_log_path=event_log_path,
         pricing_path=pricing_path,
     )
 
@@ -3251,7 +3236,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         vision_preset_name,
         event_log_path=paths.event_log,
         pricing_path=repo_root / "data" / "pricing.json",
-        account_cost=True,
     )
     deep_search = build_deep_search(
         full_config,
