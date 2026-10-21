@@ -1,12 +1,12 @@
-"""ADR 0314: where his attention went, read from what his Mac and his devices had in front.
+"""ADR 0330: where his attention went, read from what his Mac and his devices had in front.
 
 Checks, input to expected output:
 
 - at any moment his attention is in one place: the Mac while TimeSink counts him there, else the
   app in front on his phone or tablet (shared evenly while both have one); a device's app while
   he is at the Mac is alongside; typing goes with the time it was typed in;
-- the keys: a site by app and domain, else document, else title; a device app by its bundle, the
-  same on both devices; a key under half a minute is not listed but still counted;
+- the keys: a site by app, domain and page title, else document, else title; a device app by its
+  bundle, the same on both devices; a key under half a minute is not listed but still counted;
 - threads: a key nobody told is its own thread; keys told to serve one thread are summed as it;
   a key told to serve what is around it goes to the thread that held most within fifteen minutes
   of it, and stays itself with none;
@@ -171,20 +171,25 @@ def test_two_devices_in_front_at_once_share_his_attention(tmp_path: Path) -> Non
 def test_typing_goes_with_the_time_it_was_typed_in_and_keys_follow_site_document_title(
     tmp_path: Path,
 ) -> None:
-    """A span over the edge of the stretch keeps the part of its typing inside it."""
+    """A span over the edge of the stretch keeps the part of its typing inside it.
+
+    Two pages of one site are two keys, and the same page again is the same key.
+    """
+    github = {"appName": "Chrome", "domain": "github.com"}
     sources = _ship(tmp_path / "imports", [
         (_at(9, 50), _at(10, 10), {"appName": "Ghostty", "title": "jarvis", "keySeconds": 600}),
-        (_at(10, 10), _at(10, 20), {
-            "appName": "Chrome", "domain": "github.com", "title": "PR 12", "keySeconds": 30,
-        }),
-        (_at(10, 20), _at(10, 20) + timedelta(seconds=20), {"appName": "Finder"}),
+        (_at(10, 10), _at(10, 20), {**github, "title": "PR 12", "keySeconds": 30}),
+        (_at(10, 20), _at(10, 30), {**github, "title": "PR 13"}),
+        (_at(10, 30), _at(10, 35), {**github, "title": "PR 12"}),
+        (_at(10, 35), _at(10, 35) + timedelta(seconds=20), {"appName": "Finder"}),
     ])
     told = _told(sources, _at(10), _at(11))
     assert [(k["id"], k["name"], k["ms"], k["typed_ms"]) for k in told["threads"]] == [
-        ("mac|Chrome|github.com", "Chrome github.com (PR 12)", 10 * MIN, 30_000),
+        ("mac|Chrome|github.com PR 12", "Chrome github.com (PR 12)", 15 * MIN, 30_000),
+        ("mac|Chrome|github.com PR 13", "Chrome github.com (PR 13)", 10 * MIN, 0),
         ("mac|Ghostty|jarvis", "Ghostty jarvis", 10 * MIN, 300_000),
-    ]  # as long as each other: by key
-    assert told["front_ms"] == 20 * MIN + 20_000  # the Finder's 20 s are counted, not listed
+    ]  # PR 13 and jarvis are as long as each other: by key
+    assert told["front_ms"] == 35 * MIN + 20_000  # the Finder's 20 s are counted, not listed
 
 
 # --- rows ----------------------------------------------------------------------------------------

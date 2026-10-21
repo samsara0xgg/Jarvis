@@ -1,4 +1,4 @@
-"""ADR 0314: where his attention went, from what his Mac, phone and tablet had in front of him.
+"""ADR 0330: where his attention went, from what his Mac, phone and tablet had in front of him.
 
 At any moment his attention is in at most one place:
 
@@ -8,9 +8,9 @@ At any moment his attention is in at most one place:
 - else on no screen.
 
 An app in front on his phone or tablet while he is at the Mac is alongside, never his attention.
-Each thing his attention lands on is a key: on the Mac a site by app and domain, anything else by
-app and document, else window title (:func:`held`); on his phone or tablet an app by its bundle,
-the same key on both devices.
+Each thing his attention lands on is a key: on the Mac a site by app, domain and page title,
+anything else by app and document, else window title (:func:`held`); on his phone or tablet an app
+by its bundle, the same key on both devices.
 
 :func:`read` reads the pieces of a window from what the Mac terminal shipped (ADR 0294, 0304).
 :func:`within` tells one stretch of them by thread: what each key served, as he or a model told it
@@ -107,14 +107,16 @@ def _cut(text: object) -> str:
 def held(fields: Mapping[str, Any]) -> tuple[tuple[str, str], str]:
     """What a TimeSink span had in front, as (the key it is summed by, how it is named).
 
-    A site is summed by its domain, named with the first title seen; anything else by its
-    document, else its window title.
+    A site is summed by its domain and page title, one search or page apart from the next;
+    anything else by its document, else its window title.
     """
     app = str(fields.get("appName") or "unknown app")
     domain = str(fields.get("domain") or "")
     if domain:
         title = _cut(fields.get("title"))
-        return (app, domain), f"{app} {domain}" + (f" ({title})" if title else "")
+        return (app, f"{domain} {title}".rstrip()), f"{app} {domain}" + (
+            f" ({title})" if title else ""
+        )
     what = _cut(fields.get("document") or fields.get("title"))
     return (app, what), f"{app} {what}" if what and what != app else app
 
@@ -375,7 +377,7 @@ def _tally(
 def within(
     found: Sequence[Piece], start_ms: int, end_ms: int, threads: Mapping[str, Thread],
 ) -> dict[str, Any]:
-    """Where his attention went in ``[start_ms, end_ms)``, in the served shape (ADR 0314).
+    """Where his attention went in ``[start_ms, end_ms)``, in the served shape (ADR 0330).
 
     ``threads`` says what keys served (a key not in it is its own thread). ``front_ms`` is the
     time a screen had him; ``threads`` what held it, most first, each ``{"id", "name",
