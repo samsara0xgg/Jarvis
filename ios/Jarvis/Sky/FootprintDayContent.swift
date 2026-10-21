@@ -11,7 +11,7 @@ struct FootprintDayContent: Equatable {
     var now: FootprintMapNow?
     var entries: [TLEntry] = []
     var chips: [TLPlainChip] = []
-    var here: [TLPlainChip] = []                // before the day's numbers: the place he is in now and since when (today only)
+    var place: [TLPlainChip] = []               // before the day's numbers: the place he spends most of the day in, and how long
     var tripSymbol: String?                     // the icon of the trip chip: how he moved most
     var summary = ""
 
@@ -69,9 +69,11 @@ struct FootprintDayContent: Equatable {
             let t0 = max(0, minute(s.start_ms)), t1 = min(DAY, s.end_ms.map(minute) ?? nowMinute ?? DAY)
             return max(0, t1 - t0)
         }
+        var most: (stay: FootprintStay, total: Double)?          // the place he spends most of the day in
         for key in order {
             guard let list = groups[key], let first = list.first else { continue }
             let total = list.reduce(0) { $0 + spent($1) }
+            if total > (most?.total ?? 0) { most = (first, total) }
             let kept = first.kept_place
             let here = nowStay.map { n in list.contains { $0.id == n.id } } ?? false          // the now mark says how long he has been here, so the pin keeps its word to itself
             c.places.append(FootprintMapPlace(
@@ -120,9 +122,9 @@ struct FootprintDayContent: Equatable {
         }
         c.entries = rows
 
-        // the chips of this page: the place he is in, the trip chip's icon and the distance named by how he moved most, and the top speed
-        if !past, let s = nowStay, let n = name(s) {
-            c.here = [TLPlainChip(symbol: Self.symbol(of: s), color: s.kept_place.map { PlaceTint.line(role: $0.role, id: $0.id) } ?? PlaceTint.lineNeutral, word: n, value: clock(minute(s.start_ms)))]
+        // the chips of this page: the place he spends most of the day in and for how long (as the trip chip writes its time), the trip chip's icon and the distance named by how he moved most, and the top speed
+        if let s = most?.stay, let total = most?.total, let n = name(s) {
+            c.place = [TLPlainChip(symbol: Self.symbol(of: s), color: s.kept_place.map { PlaceTint.line(role: $0.role, id: $0.id) } ?? PlaceTint.lineNeutral, word: n, value: tlHM(tlInt(total)))]
         }
         let main = Self.mainActivity(r.outings)
         c.tripSymbol = main.flatMap { DayTimelineModel.moves[$0]?.1 }

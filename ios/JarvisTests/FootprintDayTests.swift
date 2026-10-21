@@ -56,16 +56,17 @@ final class FootprintDayTests: XCTestCase {
         XCTAssertEqual(c.chips.count, 2)
     }
 
-    @MainActor func testTheChipsSayWhereHeIsAndHowHeMovedMostAndNameTheDistanceByIt() {
+    @MainActor func testTheChipsSayWhereHeSpendsMostOfTheDayAndHowHeMovedMostAndNameTheDistanceByIt() {
         let (c, m) = made(), home = m.reply.stays[2], drive = m.reply.outings[0]
-        XCTAssertEqual(c.here.count, 1, "he is at home now")
-        XCTAssertEqual(c.here.first?.word, FootprintDayContent.name(home))
-        XCTAssertEqual(c.here.first?.value, clock(m.clock.minute(ms: home.start_ms)), "since he got in")
-        XCTAssertEqual(c.here.first?.symbol, "house.fill")
+        XCTAssertEqual(c.place.count, 1)
+        XCTAssertEqual(c.place.first?.word, FootprintDayContent.name(home))
+        XCTAssertEqual(c.place.first?.symbol, "house.fill")
+        let overnight = m.clock.minute(ms: m.reply.stays[0].end_ms!), evening = m.clock.minute(ms: m.reply.now_ms) - m.clock.minute(ms: home.start_ms)
+        XCTAssertEqual(c.place.first?.value, tlHM(tlInt(overnight + evening)), "home from midnight to the drive and from the walk's end to now, written as the trip chip writes its time")
+        XCTAssertEqual(FootprintDayContent.make(m, past: true).place.first?.word, c.place.first?.word, "on any day")
         XCTAssertEqual(c.tripSymbol, "car.fill", "the drive has more time moving than the walk")
         XCTAssertEqual(c.chips.first?.word, Words.FootprintDay.moving("automotive"))
         XCTAssertEqual(c.chips.first?.value, tlDistance(drive.distance_m), "the drive's own distance, not the walk's too")
-        XCTAssertTrue(FootprintDayContent.make(m, past: true).here.isEmpty, "another day has no now")
     }
 
     @MainActor func testTheMainWayOfMovingIsTheOneWithMostTimeMovingAndNilForOneWithoutAWord() {
