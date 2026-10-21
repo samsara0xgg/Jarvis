@@ -159,6 +159,11 @@ convention = "google"
 
 [tool.mypy]
 python_version = "3.12"
+# Jarvis runs on a Mac. The macOS-only modules guard themselves with `sys.platform != "darwin"`
+# and raise or return early; checked as linux, mypy takes the macOS body after such a guard for
+# unreachable, so `warn_unreachable` fails on a Linux machine for code that is right. Checking as
+# the platform the product targets gives a Mac and the Linux CI the same answer.
+platform = "darwin"
 strict = true
 # data/ holds untracked model symlinks (sensevoice-small-int8 points into an
 # upstream checkout whose export-onnx.py is not ours to type-check); without
