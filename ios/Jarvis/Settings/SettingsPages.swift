@@ -78,19 +78,21 @@ struct SettingsMainPage: View {
                              selection: Binding(get: { model.language.rawValue },
                                                 set: { model.language = .init(rawValue: $0) ?? .followMe }))
             }
-            SetSection(header: "手机感知", footer: "这些只发给你自己的大脑，随时可以关。") {
-                ForEach($model.senses) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
-            }
-            SetSection(header: "随身录音", footer: "只在 Wi-Fi 下上传。") {
-                SwitchRow(title: "随身录音", isOn: $model.lifelogOn)
-                TimelineView(.periodic(from: .now, by: 30)) { t in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(model.lifelogLine(now: t.date))
-                        if !model.lifelogReason.isEmpty { Text(model.lifelogReason) }
+            if DeviceRole.senses {          // an iPad senses and records nothing (ADR 0336): no switches for it
+                SetSection(header: "手机感知", footer: "这些只发给你自己的大脑，随时可以关。") {
+                    ForEach($model.senses) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
+                }
+                SetSection(header: "随身录音", footer: "只在 Wi-Fi 下上传。") {
+                    SwitchRow(title: "随身录音", isOn: $model.lifelogOn)
+                    TimelineView(.periodic(from: .now, by: 30)) { t in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(model.lifelogLine(now: t.date))
+                            if !model.lifelogReason.isEmpty { Text(model.lifelogReason) }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(LifelogUploader.shared.needsRepair ? SetColor.faint : SetColor.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 11)
                     }
-                    .font(.subheadline)
-                    .foregroundStyle(LifelogUploader.shared.needsRepair ? SetColor.faint : SetColor.muted)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 11)
                 }
             }
             SetSection(header: "通知") {

@@ -41,7 +41,7 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
     /// A silent push that asks where he is now (`{"locate": "<request_id>"}`, Map/LocatePush): one fix goes to the brain with the request's id before the wake ends.
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
                      fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        guard let id = LocatePush.requestId(userInfo) else { return completionHandler(.noData) }
+        guard DeviceRole.senses, let id = LocatePush.requestId(userInfo) else { return completionHandler(.noData) }          // an iPad does not say where it lies (ADR 0336)
         Task { @MainActor in
             let hold = BackgroundHold.begin("jarvis.locate")        // the request after the fix needs the app running a little longer
             let sent = await LocatePush.handle(id, source: OneShotLocation())
