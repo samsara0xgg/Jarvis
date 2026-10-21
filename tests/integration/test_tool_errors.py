@@ -114,7 +114,7 @@ FLAT_ROWS: tuple[tuple[str, dict[str, Any], str, tuple[str, ...]], ...] = (
      ("was refused (scheme 'ftp' is not in the http/https allowlist)",
       "only public http(s) pages can be fetched")),
     ("weather", {}, "network_error",
-     ("weather: the forecast could not be read (RuntimeError)", "tell him it is unavailable")),
+     ("weather is unavailable: the forecast could not be read (RuntimeError)",)),
     ("where_am_i", {}, "location_unavailable",
      ("this Mac's location could not be read (no signal)", "ask the user where he is")),
     ("save_place", {}, "invalid_arguments",

@@ -27,8 +27,10 @@ from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK, HOURLY_MAX_DAYS
 from jarvis.runtime.daily_report import PLAN_SERVER
 from jarvis.runtime.weather_day import fit
+from jarvis.runtime.weather_held import Held
 from jarvis.runtime.weather_place import ALTERNATIVES, Spot, country_of, get_json, locate
-from jarvis.runtime.weatherkit import NOT_SET_UP, day_rows, home_line
+from jarvis.runtime.weatherkit import NOT_SET_UP, Unavailable, day_rows, home_line
+from jarvis.runtime.weatherkit import alerts as wk_alerts
 from jarvis.runtime.weatherkit import report as wk_report
 from jarvis.shared import lang
 from jarvis.state.daily_contract import DailyError
@@ -256,22 +258,37 @@ def weather_lookup(
         zone, place.get("country_code") or country_of(zone),
     )
     known: dict[tuple[float, float], Spot] = {}
+    held = Held()
 
     def lookup(request: WeatherRequest) -> dict[str, Any]:
         if kit is None:
             raise ToolError(NOT_SET_UP, code="not_configured")
         spot, others = locate(request, home, known)
         zone_name = str(spot.zone or home.zone)
-        today = datetime.fromtimestamp(kit.clock(), ZoneInfo(zone_name)).date()
+        zone = ZoneInfo(zone_name)
+        today = datetime.fromtimestamp(kit.clock(), zone).date()
         first, last = _days(request, spot.label, today)
-        body = kit.read(
-            spot.latitude, spot.longitude, zone=zone_name, country=spot.country,
-            first=first, last=last,
+        asked = (
+            round(spot.latitude, 4), round(spot.longitude, 4), first, last, request.hourly,
+            request.air_quality, request.when is None,
         )
+        try:
+            body = kit.read(
+                spot.latitude, spot.longitude, zone=zone_name, country=spot.country,
+                first=first, last=last,
+            )
+        except Unavailable as exc:  # the last good read of this request, if there is one (ADR 0357)
+            last_good = held.last(asked, kit.clock(), zone_name, exc.why)
+            if last_good is None:
+                raise
+            return last_good
+        now = kit.clock()
         result = wk_report(
             body, spot.label, zone_name, first=first, last=last,
-            whole=request.when is None, hourly=request.hourly, now=kit.clock(),
-            alerts_asked=spot.country is not None,
+            whole=request.when is None, hourly=request.hourly, now=now,
+            alerts=None if last < today else wk_alerts(
+                kit, body, spot.latitude, spot.longitude, spot.country, zone, now,
+            ),
         )
         if others:
             result |= _elsewhere(others)
@@ -284,7 +301,9 @@ def weather_lookup(
                 result["air_quality"] = {
                     "unavailable": "not read for these days; its forecast reaches only a few days",
                 }
-        return fit(result)
+        done = fit(result)
+        held.keep(asked, now, done)
+        return done
 
     return lookup
 

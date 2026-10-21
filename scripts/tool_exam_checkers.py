@@ -31,14 +31,18 @@ HTTP_ERROR = 400
 
 
 def _bodies(recording: Recording | None, host: str, needle: str = "") -> list[dict[str, Any]]:
-    """Decoded answers of the recorded HTTP calls to ``host`` whose request holds ``needle``."""
-    return [
+    """Decoded answers of the recorded HTTP calls to ``host`` whose request holds ``needle``.
+
+    Objects only: a list (the data sets a place offers) has no rows to read.
+    """
+    answers = (
         json.loads(entry["body"])
         for entry in (recording.data["http"] if recording else ())
         if host in entry["url"]
         and needle in entry.get("request", "")
         and entry["status"] < HTTP_ERROR
-    ]
+    )
+    return [answer for answer in answers if isinstance(answer, dict)]
 
 
 def _now(item: Mapping[str, Any]) -> datetime:

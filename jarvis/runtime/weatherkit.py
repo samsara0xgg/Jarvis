@@ -3,12 +3,14 @@
 :class:`WeatherKit` signs the developer token (ES256, through the APNs provider token class),
 asks ``weatherkit.apple.com`` for the current conditions, hourly and daily forecasts, the
 next-hour minute precipitation and the official alerts of one place in one request, and holds an
-answer for :data:`TTL_S` so the home and a turn's tool call do not pay twice. The functions below
-it turn that answer into the words the model reads (:func:`report`) and the home's three-hourly
-line (:func:`home_line`).
+answer for :data:`TTL_S` so the home and a turn's tool call do not pay twice. Two small requests
+come with it (ADR 0357): which data sets WeatherKit offers at a place, held a day, and the full
+text of an alert in force. The functions below it turn that answer into the words the model reads
+(:func:`report`) and the home's three-hourly line (:func:`home_line`).
 
-Nothing here logs or returns the key, the token or the request's headers: a failure is a
-:class:`~jarvis.execution.tools.ToolError` that names what failed and Apple's own ``reason`` word.
+Nothing here logs or returns the key, the token or the request's headers: a failure is an
+:class:`Unavailable`, a :class:`~jarvis.execution.tools.ToolError` that names what failed and
+Apple's own ``reason`` word.
 """
 
 from __future__ import annotations
@@ -26,20 +28,22 @@ from datetime import UTC, date, datetime, timedelta, tzinfo
 from datetime import time as day_start
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from jarvis.execution.speakable import day_name
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
-from jarvis.runtime.weather_day import NIGHT_TO, first_line, horizon, hours_of, split
+from jarvis.runtime.weather_day import LIKELY, NIGHT_TO, first_line, horizon, hours_of, split
 from jarvis.surface.apns import ProviderToken, load_signing_key
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
 LOGGER = logging.getLogger(__name__)
 ENDPOINT: Final = "https://weatherkit.apple.com/api/v1/weather"
+AVAILABILITY: Final = "https://weatherkit.apple.com/api/v1/availability"
+ALERT_DETAIL: Final = "https://weatherkit.apple.com/api/v1/weatherAlert"
 ATTRIBUTION: Final = {
     "provider": "Apple Weather",
     "url": "https://weatherkit.apple.com/legal-attribution.html",
@@ -49,6 +53,16 @@ NOT_SET_UP: Final = "weather is not set up: WeatherKit key missing"
 DEFAULT_TEAM_ID: Final = "3MEBVQ3N3U"
 TTL_S: Final = 300
 """How long an answer is reused: the minute precipitation is a few minutes old at most."""
+OFFERS_TTL_S: Final = 86_400
+"""How long the data sets WeatherKit offers at a place are kept (ADR 0357)."""
+MAX_ALERTS: Final = 3
+"""Alerts in force given in full; the others are counted."""
+ALERT_TEXT_CHARS: Final = 300
+"""An alert's text is cut to about this many characters, at a word."""
+NO_SERVICE: Final = "no official warning service covers this place"
+NONE_IN_FORCE: Final = "none in force"
+NOT_ASKED: Final = "not asked: the country of this place is not known"
+NOT_CHECKED: Final = "none shown; whether a warning service covers this place could not be checked"
 TIMEOUT_S: Final = 6.0
 TOKEN_LIFETIME_S: Final = 3600
 _REFUSED: Final = 401
@@ -71,6 +85,8 @@ _KINDS: Final = (
     (("Cloud", "Breezy", "Windy"), "cloud"),
 )
 _RAIN_WORDS: Final = {"precipitation": "rain", "clear": "none"}
+_SEVERITY: Final = ("extreme", "severe", "moderate", "minor")
+"""Alerts in force are given most severe first."""
 
 
 def words(code: str) -> str:
@@ -81,6 +97,19 @@ def words(code: str) -> str:
 def kind(code: str) -> str:
     """The home's six icons: sun, cloud, fog, rain, snow, storm."""
     return next((one for keys, one in _KINDS if any(k in code for k in keys)), "rain")
+
+
+class Unavailable(ToolError):  # noqa: N818 - reads as the fact it states
+    """WeatherKit could not be read; ``why`` says so in a few words (never Apple's own body).
+
+    It is a ``dont_retry`` failure and sends nobody to a web search: a search finds pages, not a
+    forecast (ADR 0357).
+    """
+
+    def __init__(self, why: str, *, code: str = "network_error", then: str = "") -> None:
+        """Say that the weather is unavailable, why, and what follows from it."""
+        super().__init__(f"weather is unavailable: {why}{then}", code=code, kind="dont_retry")
+        self.why = why
 
 
 @dataclass(frozen=True)
@@ -118,7 +147,8 @@ class WeatherKit:
         self._token = token
         self.clock = clock
         self._lock = threading.Lock()
-        self._held: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._held: dict[str, tuple[float, Any]] = {}
+        self._offers: dict[tuple[float, float], tuple[float, frozenset[str]]] = {}
 
     @classmethod
     def from_settings(
@@ -189,9 +219,56 @@ class WeatherKit:
             query["dataSets"] = ",".join([*sets, "weatherAlerts"] if country else sets)
             query["hourlyStart"] = _utc(hourly)
             query["hourlyEnd"] = _utc(max(through, hourly + timedelta(hours=1)))
-            if country:
+            if country:  # Apple documents countryCode; its forum examples send country
                 query["countryCode"] = country
+                query["country"] = country
         url = f"{ENDPOINT}/en/{latitude}/{longitude}?{urlencode(query, safe=',:/')}"
+        body = self._cached(url, now)
+        if not isinstance(body, dict):
+            why = "the forecast could not be read (an unexpected answer)"
+            raise Unavailable(why)
+        return body
+
+    def offers(self, latitude: float, longitude: float, country: str) -> frozenset[str]:
+        """The data sets WeatherKit offers at a place (ADR 0357), held a day per place.
+
+        A place is its point to two decimals. ``weatherAlerts`` among them means a warning
+        service covers it.
+
+        Raises:
+            Unavailable: WeatherKit did not answer.
+        """
+        point = (round(latitude, 2), round(longitude, 2))
+        now = self.clock()
+        with self._lock:
+            held = self._offers.get(point)
+            if held is not None and now - held[0] < OFFERS_TTL_S:
+                return held[1]
+            url = f"{AVAILABILITY}/{point[0]}/{point[1]}?{urlencode({'country': country})}"
+            body = self._get(url)
+            if not isinstance(body, list):
+                why = "the data sets WeatherKit offers could not be read"
+                raise Unavailable(why)
+            found = frozenset(str(name) for name in body)
+            self._offers = {
+                at: h for at, h in self._offers.items() if now - h[0] < OFFERS_TTL_S
+            } | {point: (now, found)}
+            return found
+
+    def alert_detail(self, alert_id: str) -> dict[str, Any]:
+        """The full text and times of one alert in force, by its id; held like a forecast.
+
+        Raises:
+            Unavailable: WeatherKit did not answer.
+        """
+        body = self._cached(f"{ALERT_DETAIL}/en/{quote(alert_id, safe='')}", self.clock())
+        if not isinstance(body, dict):
+            why = "the alert could not be read (an unexpected answer)"
+            raise Unavailable(why)
+        return body
+
+    def _cached(self, url: str, now: float) -> Any:  # noqa: ANN401 - decoded JSON
+        """The JSON at ``url``, as asked within :data:`TTL_S` or fresh."""
         with self._lock:
             held = self._held.get(url)
             if held is not None and now - held[0] < TTL_S:
@@ -201,34 +278,26 @@ class WeatherKit:
             self._held[url] = (now, body)
             return body
 
-    def _get(self, url: str) -> dict[str, Any]:
+    def _get(self, url: str) -> Any:  # noqa: ANN401 - decoded JSON
         request = urllib.request.Request(  # noqa: S310 - a fixed https URL.
             url, headers={"Authorization": f"Bearer {self._token.current()}"},
         )
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_S) as reply:  # noqa: S310
-                body: dict[str, Any] = json.load(reply)
+                return json.load(reply)
         except urllib.error.HTTPError as exc:
-            reason = _reason(exc)
+            reason = " ".join(filter(None, (str(exc.code), _reason(exc))))
             if exc.code == _REFUSED:
                 self._token.discard()
-                msg = (
-                    f"weather: Apple WeatherKit refused the key (401 {reason}); tell him the"
-                    " weather key needs checking, and use web_search meanwhile"
-                )
-                raise ToolError(msg, code="weatherkit_refused") from None
-            msg = (
-                f"weather: Apple WeatherKit answered {exc.code} {reason}; use web_search, or"
-                " tell him it is unavailable"
-            )
-            raise ToolError(msg, code="network_error") from None
+                why = f"Apple WeatherKit refused the key ({reason})"
+                raise Unavailable(
+                    why, code="weatherkit_refused", then="; the key needs checking",
+                ) from None
+            why = f"Apple WeatherKit answered {reason}"
+            raise Unavailable(why) from None
         except Exception as exc:  # timeout, refusal, bad JSON: all one short reason.
-            msg = (
-                f"weather: the forecast could not be read ({type(exc).__name__}); "
-                "use web_search, or tell him it is unavailable"
-            )
-            raise ToolError(msg, code="network_error") from exc
-        return body
+            why = f"the forecast could not be read ({type(exc).__name__})"
+            raise Unavailable(why) from exc
 
 
 def _reason(exc: urllib.error.HTTPError) -> str:
@@ -333,8 +402,40 @@ def _hour(
     }
 
 
+def _periods(
+    summary: Sequence[Mapping[str, Any]], zone: ZoneInfo,
+) -> list[tuple[datetime, datetime | None, str]]:
+    """The rain periods of WeatherKit's summary of the next hour: ``(start, end, kind)``.
+
+    A period counts when it is not ``clear`` and its chance, if it names one, is at least half;
+    one that touches the one before it joins it. A period with no end ends where the next one
+    starts, or at the end of the data (None).
+    """
+    rows = sorted(((_when(one["startTime"], zone), one) for one in summary), key=lambda r: r[0])
+    out: list[tuple[datetime, datetime | None, str]] = []
+    for n, (start, one) in enumerate(rows):
+        chance = one.get("precipitationChance")
+        if one.get("condition") == "clear" or (chance is not None and chance < LIKELY):
+            continue
+        end = (
+            _when(one["endTime"], zone) if one.get("endTime")
+            else (rows[n + 1][0] if n + 1 < len(rows) else None)
+        )
+        kind = _RAIN_WORDS.get(str(one.get("condition")), str(one.get("condition")))
+        if out and out[-1][1] == start:
+            out[-1] = (out[-1][0], end, out[-1][2])
+        else:
+            out.append((start, end, kind))
+    return out
+
+
 def next_hour(body: Mapping[str, Any], zone: ZoneInfo, now: float) -> dict[str, Any]:
-    """The coming hour's precipitation by the minute, as when it starts and stops."""
+    """The coming hour's rain, as when it starts and stops (ADR 0357).
+
+    It follows WeatherKit's own summary of the hour, period by period. Without one, a minute is
+    rain when its chance is at least half and its intensity above zero; a minute at a lower
+    chance is dry however much it would rain.
+    """
     data = body.get("forecastNextHour")
     if not data or not data.get("minutes"):
         return {"unavailable": "no minute-by-minute precipitation exists for this place"}
@@ -342,48 +443,122 @@ def next_hour(body: Mapping[str, Any], zone: ZoneInfo, now: float) -> dict[str, 
     rows = [(at, one) for at, one in rows if at.timestamp() + _NEXT_HOUR_MIN > now]
     if not rows:
         return {"unavailable": "the minute-by-minute precipitation is out of date"}
-    wet = [(at, (one.get("precipitationIntensity") or 0) > 0) for at, one in rows]
-    raining = wet[0][1]
-    flip = next((at for at, is_wet in wet if is_wet != raining), None)
-    precip = [s for s in data.get("summary", ()) if s.get("condition") != "clear"]
-    label = _RAIN_WORDS.get(str(precip[0]["condition"]), str(precip[0]["condition"])) \
-        if precip else "rain"
-    peak = max((one.get("precipitationIntensity") or 0 for _, one in rows), default=0)
+    stamp = datetime.fromtimestamp(now, zone)
+    summary = [one for one in data.get("summary") or () if one.get("startTime")]
+    if summary:
+        periods = _periods(summary, zone)
+        current = next(
+            (p for p in periods if p[0] <= stamp and (p[1] is None or stamp < p[1])), None,
+        )
+        coming = next((p for p in periods if p[0] > stamp), None)
+        raining = current is not None
+        flip = (current[1] if current else coming[0] if coming else None)
+        kind = (current or coming or (None, None, "rain"))[2]
+        wet = [
+            one for at, one in rows
+            if any(start <= at and (end is None or at < end) for start, end, _ in periods)
+        ]
+    else:
+        marks = [
+            (at, (one.get("precipitationIntensity") or 0) > 0
+             and (one.get("precipitationChance") or 0) >= LIKELY)
+            for at, one in rows
+        ]
+        raining = marks[0][1]
+        flip = next((at for at, is_wet in marks if is_wet != raining), None)
+        wet = [one for (_, is_wet), (_, one) in zip(marks, rows, strict=True) if is_wet]
+        kind = "rain"
+    peak = max((one.get("precipitationIntensity") or 0 for one in wet), default=0)
     out: dict[str, Any] = {
-        "now": label if raining else "dry",
+        "now": kind if raining else "dry",
         "starts_at": None if raining or flip is None else flip.strftime("%H:%M"),
         "stops_at": flip.strftime("%H:%M") if raining and flip is not None else None,
         "peak_mm_h": _num(peak),
         "data_until": (rows[-1][0] + timedelta(minutes=1)).strftime("%H:%M"),
     }
     if not raining and flip is not None:
-        out["kind"] = label
+        out["kind"] = kind
     return out
 
 
-def alerts(
-    body: Mapping[str, Any], zone: ZoneInfo, *, asked: bool,
-) -> list[dict[str, Any]] | dict[str, str]:
-    """The official alerts in force or coming; ``{"unavailable": why}`` when not ``asked`` for.
+def _severity(row: Mapping[str, Any]) -> int:
+    named = str(row.get("severity") or "").lower()
+    return _SEVERITY.index(named) if named in _SEVERITY else len(_SEVERITY)
 
-    WeatherKit leaves ``weatherAlerts`` out of its answer when none are in force, so an asked
-    for set that is missing is no alerts, not an unknown.
+
+def _trimmed(text: str) -> str:
+    """``text`` on one line, cut to about :data:`ALERT_TEXT_CHARS` at a word."""
+    one = " ".join(text.split())
+    if len(one) <= ALERT_TEXT_CHARS:
+        return one
+    return one[:ALERT_TEXT_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:.") + "\u2026"
+
+
+def _text(detail: Mapping[str, Any]) -> str | None:
+    """The English text of an alert (else its first), trimmed; None when it has none."""
+    messages = [m for m in detail.get("messages", ()) if str(m.get("text") or "").strip()]
+    chosen = next(
+        (m for m in messages if m.get("language") == "en"), messages[0] if messages else None,
+    )
+    return None if chosen is None else _trimmed(str(chosen["text"]))
+
+
+def _alert(
+    row: Mapping[str, Any], detail: Mapping[str, Any], zone: ZoneInfo, today: date,
+) -> dict[str, Any]:
+    """One alert in force: what it is, where, who says so, when it runs, and its own words."""
+
+    def when(*names: str) -> str | None:
+        found = next((v for n in names if (v := detail.get(n) or row.get(n))), None)
+        return None if not found else _at(_when(str(found), zone), today)
+
+    text = _text(detail)
+    out: dict[str, Any] = {
+        "headline": row.get("description"), "severity": row.get("severity"),
+        "area": row.get("areaName"), "source": row.get("source"),
+        "starts": when("eventOnsetTime", "effectiveTime"),
+        "ends": when("eventEndTime", "expireTime"),
+    }
+    if text is not None:
+        out["text"] = text
+    elif row.get("detailsUrl"):
+        out["details_url"] = row["detailsUrl"]
+    return out
+
+
+def alerts(  # noqa: PLR0913 - the client, the answer, the point and its country, the clock.
+    kit: WeatherKit, body: Mapping[str, Any], latitude: float, longitude: float,
+    country: str | None, zone: ZoneInfo, now: float,
+) -> dict[str, Any]:
+    """The ``alerts`` an answer carries, as a fragment of it (ADR 0357).
+
+    A list when some are in force: at most :data:`MAX_ALERTS`, the most severe first, each with
+    its own text and when it starts and ends (one more request each), and ``more_alerts`` for
+    the rest. WeatherKit leaves ``weatherAlerts`` out when none are in force, and it is the same
+    where no service exists; so with none, it is asked which data sets it offers at the place and
+    ``alerts`` says which of the two it is, never a bare empty list.
     """
-    if not asked:
-        return {"unavailable": "alerts are read only where the country is known"}
-    data = body.get("weatherAlerts") or {}
-    return [
-        {
-            "headline": one.get("description"), "severity": one.get("severity"),
-            "area": one.get("areaName"), "source": one.get("source"),
-            "effective": _when(one["effectiveTime"], zone).isoformat(timespec="minutes")
-            if one.get("effectiveTime") else None,
-            "expires": _when(one["expireTime"], zone).isoformat(timespec="minutes")
-            if one.get("expireTime") else None,
-            "details_url": one.get("detailsUrl"),
-        }
-        for one in data.get("alerts", ())
-    ]
+    if not country:
+        return {"alerts": NOT_ASKED}
+    rows = sorted(
+        (body.get("weatherAlerts") or {}).get("alerts", ()), key=_severity,
+    )
+    if not rows:
+        try:
+            offered = kit.offers(latitude, longitude, country)
+        except ToolError:
+            return {"alerts": NOT_CHECKED}
+        return {"alerts": NONE_IN_FORCE if "weatherAlerts" in offered else NO_SERVICE}
+    today = datetime.fromtimestamp(now, zone).date()
+    shown: list[dict[str, Any]] = []
+    for row in rows[:MAX_ALERTS]:
+        try:
+            detail = kit.alert_detail(str(row["id"])) if row.get("id") else {}
+        except ToolError:  # the headline stands without its text
+            detail = {}
+        shown.append(_alert(row, detail, zone, today))
+    more = len(rows) - len(shown)
+    return {"alerts": shown} | ({"more_alerts": more} if more else {})
 
 
 def _hour_rows(
@@ -405,7 +580,8 @@ def _hour_rows(
 
 def report(  # noqa: PLR0913 - what the tool answers with: the answer and what was asked of it.
     body: Mapping[str, Any], label: str, zone_name: str, *,
-    first: date, last: date, whole: bool, hourly: bool, now: float, alerts_asked: bool,
+    first: date, last: date, whole: bool, hourly: bool, now: float,
+    alerts: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """What the model's ``weather`` tool answers with (ADR 0285, 0355): plain words, local times.
 
@@ -416,8 +592,8 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
     else the other days are ``days`` (``first`` to ``last``). ``hourly`` gives every hour of the
     days asked (from this hour on, for today) as ``hourly`` instead. The next hour's minutes come
     with the current day; alerts and attribution always, except that days all before today give
-    ``days`` and the attribution alone (no ``now``). ``alerts_asked`` is whether the request
-    carried a country, and so asked for alerts.
+    ``days`` and the attribution alone (no ``now``). ``alerts`` is the part of the answer about
+    official warnings (:func:`alerts`), which a request for days all before today has none of.
 
     Raises:
         ToolError: WeatherKit holds none of the days asked.
@@ -453,12 +629,21 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
         out["next_hours"] = _hour_rows(ahead, stamp, current, thin=True)
     if first <= today <= last:
         out["next_hour"] = next_hour(body, zone, now)
-    if not past:
-        out["alerts"] = alerts(body, zone, asked=alerts_asked)
+    if not past and alerts is not None:
+        out |= alerts
     out["attribution"] = ATTRIBUTION
     gone = [(row, date.fromisoformat(row["date"]) < today) for row in others]
     asked_now = out.get("now") if first <= today <= last else None
-    return {"summary": first_line(label, asked_now, parts, gone), **out}
+    in_force = out["alerts"] if isinstance(out.get("alerts"), list) else []
+    warned = [str(one.get("headline") or "unnamed warning") for one in in_force]
+    line = first_line(label, asked_now, parts, gone, warned, int(out.get("more_alerts", 0)))
+    return {"summary": line, **out}
+
+
+def said_at(moment: float, zone_name: str, now: float) -> str:
+    """When ``moment`` was, in the place's own time: ``today 07:42``, ``yesterday 23:10``."""
+    zone = ZoneInfo(zone_name)
+    return _at(datetime.fromtimestamp(moment, zone), datetime.fromtimestamp(now, zone).date())
 
 
 def home_line(body: Mapping[str, Any], zone_name: str, now: float) -> dict[str, Any]:
