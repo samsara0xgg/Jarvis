@@ -7,7 +7,7 @@ lane, the stretches of the day before that run past its midnight: the same spans
 ids, as a sleep across midnight shows on both days. An answer about one of them is kept for the
 day it belongs to.
 
-Each stretch the page shows also tells where his attention went in it (ADR 0314,
+Each stretch the page shows also tells where his attention went in it (ADR 0330,
 :func:`jarvis.state.attention.within`), by the threads its keys were told to serve (ADR 0315);
 a planned one, which has not happened, tells nothing.
 
