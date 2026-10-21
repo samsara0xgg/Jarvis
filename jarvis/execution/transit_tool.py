@@ -752,16 +752,22 @@ class TransitOffers:
 
     def later(
         self, route: str, board_stop: str, after_ms: int, now_ms: int,
-    ) -> tuple[int, int, str] | None:
-        """``(leave ms, departs ms, arrive_at)`` of the earliest option on that route and stop."""
+    ) -> tuple[int, int, str, str | None] | None:
+        """``(leave ms, departs ms, arrive_at, bus_trip_id)`` of the earliest such option.
+
+        The earliest option on that route and stop whose bus leaves after ``after_ms``;
+        ``bus_trip_id`` is the BC Transit trip it was matched to, None when it had none.
+        """
         grace = int(_PIN_PAST_GRACE.total_seconds() * _MS)
-        found = sorted(
-            (r["departs_ms"], r["leave_ms"], r["arrive_at"])
-            for r in self._rows
+        found = [
+            r for r in self._rows
             if r["route"].split("→")[0].strip() == route and r["board_stop"] == board_stop
             and r["departs_ms"] > after_ms and r["leave_ms"] >= now_ms - grace
-        )
-        return (found[0][1], found[0][0], found[0][2]) if found else None
+        ]
+        if not found:
+            return None
+        one = min(found, key=lambda r: (r["departs_ms"], r["leave_ms"], r["arrive_at"]))
+        return one["leave_ms"], one["departs_ms"], one["arrive_at"], one["bus_trip_id"]
 
 
 def live_card(trip: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:

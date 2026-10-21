@@ -212,7 +212,7 @@ class Departures:
             found = self._later(one, trip)
             reason: str | None = "no_later"
             if found is not None:
-                trip.leave_at_ms, trip.departs_at_ms, trip.arrive_at = found
+                trip.leave_at_ms, trip.departs_at_ms, trip.arrive_at, trip.bus_trip_id = found
                 self._live[trip.tid] = _Live()  # the bus matched before is not this one
                 self._record(conn, one, trip, now_ms)
                 reason = None
@@ -252,10 +252,11 @@ class Departures:
 
     def _later(
         self, one: folded.Departure, trip: folded.Trip,
-    ) -> tuple[int, int, str] | None:
-        """``(leave ms, departs ms, arrive_at)`` of the next bus: last answer or feed.
+    ) -> tuple[int, int, str, str | None] | None:
+        """``(leave ms, departs ms, arrive_at, bus_trip_id)`` of the next bus: answer or feed.
 
         Past the pinned buses of that route and stop, so it never doubles one already there.
+        ``bus_trip_id`` is the BC Transit trip of that bus, None when the answer's row had none.
         """
         line = max(
             t.departs_at_ms
@@ -281,7 +282,7 @@ class Departures:
             return None
         departs = departure_ms(found[1])
         shift = departs - trip.departs_at_ms
-        return trip.leave_at_ms + shift, departs, _shifted(trip, departs, shift)
+        return trip.leave_at_ms + shift, departs, _shifted(trip, departs, shift), found[0]
 
     def _record(
         self, conn: sqlite3.Connection, one: folded.Departure, trip: folded.Trip, now_ms: int,

@@ -778,15 +778,68 @@ def test_next_bus_falls_back_to_the_live_feed(world: _World) -> None:
     (ring,) = world.pending()
     assert ring.due_at_ms == int(_local("17:12").timestamp() * 1000)
     assert len(world.events("departure.pinned")) == 1
-    assert world.events("departure.updated")[-1]["departs_at_ms"] == int(
-        _local("17:15").timestamp() * 1000
-    )
+    moved = world.events("departure.updated")[-1]
+    assert moved["departs_at_ms"] == int(_local("17:15").timestamp() * 1000)
+    assert moved["bus_trip_id"] == "T28b"  # the bus it moved to, which the refresh now follows
     world.feed = _feed(("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 0))
     assert _take(world, "next").json()["reason"] == "no_later"
     world.feed = b""
     world.feed_error = OSError("down")
     assert _take(world, "next").json()["reason"] == "no_later"
     assert len(world.events("departure.updated")) == 1
+
+
+def test_after_next_bus_the_refresh_follows_the_bus_moved_to(world: _World) -> None:
+    """The pin follows the bus "next" moved it to, not the one he skipped (ADR 0342)."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:30", "12"))
+    world.pin()
+    world.reminders.tick()  # the first tick of a pin only starts its clock
+    reply = _take(world, "next").json()
+    assert (reply["departure"]["leave_at"], reply["departure"]["departs"]) == ("17:12", "17:15")
+    assert world.events("departure.updated")[-1]["bus_trip_id"] == "T28b"
+    # The bus he waits for now runs 2 min late; the skipped one is gone from the feed.
+    world.feed = _feed(("T28b", "S1", "17:15", 120))
+    world.clock += timedelta(seconds=REFRESH_S)
+    world.reminders.tick()
+    shown = _served(world)
+    assert shown is not None
+    assert (shown["departs"], shown["stale"]) == ("17:17", False)
+
+
+def test_the_skipped_bus_still_in_the_feed_does_not_pull_the_pin_back(world: _World) -> None:
+    """A skipped bus the feed still predicts is not the one the pin follows after "next"."""
+    _answer(world, ("17:05", "28"), ("17:15", "28"), ("17:30", "12"))
+    world.pin()
+    world.reminders.tick()
+    assert _take(world, "next").json()["departure"]["departs"] == "17:15"
+    world.feed = _feed(("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 0))
+    world.clock += timedelta(seconds=REFRESH_S)
+    world.reminders.tick()
+    shown = _served(world)
+    assert shown is not None
+    assert (shown["departs"], shown["stale"]) == ("17:15", False)
+    assert len(world.events("departure.updated")) == 1  # only the move to the next bus
+
+
+def test_a_next_bus_without_a_matched_trip_forgets_the_skipped_ones(world: _World) -> None:
+    """A later bus Google gave but the timetable could not match leaves no trip id behind."""
+    world.google = {"routes": [r for when in ("17:05", "17:15") for r in _google(when)["routes"]]}
+    second = world.google["routes"][1]["legs"][0]["steps"][1]["transitDetails"]["stopDetails"]
+    second["arrivalStop"].pop("location")  # no drop-off point: the store cannot match this bus
+    world.look_up("Mayfair Mall")
+    world.pin()
+    assert world.events("departure.pinned")[-1]["trips"][0]["bus_trip_id"] == "T28a"
+    world.reminders.tick()
+    assert _take(world, "next").json()["departure"]["departs"] == "17:15"
+    assert world.events("departure.updated")[-1]["bus_trip_id"] is None
+    # With no trip to follow, the refresh finds the bus by its time: the 17:15 running 4 min late,
+    # not the skipped 17:05, which is as on time as ever.
+    world.feed = _feed(("T28a", "S1", "17:05", 0), ("T28b", "S1", "17:15", 240))
+    world.clock += timedelta(seconds=REFRESH_S)
+    world.reminders.tick()
+    shown = _served(world)
+    assert shown is not None
+    assert (shown["departs"], shown["stale"]) == ("17:19", False)
 
 
 def test_cancel_then_undo_pins_the_same_trip_again(world: _World) -> None:
