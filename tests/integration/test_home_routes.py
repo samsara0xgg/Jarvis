@@ -31,7 +31,7 @@ from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.runtime.home import Home
-from jarvis.runtime.inherent_loop import _serve_today, _set_todo
+from jarvis.runtime.inherent_loop import _mail_letter, _serve_today, _set_todo
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.state import things
 from jarvis.state.daily_report import save_report
@@ -214,7 +214,7 @@ def _client(
         **today,
         # ADR 0148: the mail page's routes, wired as inherent_loop wires them.
         **({} if view is None else {
-            "mail_letter": functools.partial(asyncio.to_thread, home.letter),
+            "mail_letter": functools.partial(_mail_letter, home),
             "mail_mark_read": _flag(home.mark_read, "unread"),
             "mail_trash": _flag(home.trash, "undo"),
             "view_set": view.set,

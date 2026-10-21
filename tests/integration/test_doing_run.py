@@ -35,7 +35,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -97,6 +97,8 @@ from tests.integration.test_timeline_actions import _peers, _refused_without_cre
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
+
+    from jarvis.decision.llm import LLMClient
 
 VANCOUVER = ZoneInfo("America/Vancouver")
 DAY = date(2026, 10, 7)
@@ -271,7 +273,7 @@ def _good(prompt: str) -> dict[str, Any]:
 
 def _tile(prompt: str) -> str:
     """An answer for any day: one span per segment, said plainly."""
-    spans = [
+    spans: list[dict[str, Any]] = [
         {
             "from": one[1], "to": one[2], "kind": "doing", "title": "Work on it", "detail": None,
             "category": "work", "basis": "inferred", "confidence": "low", "clues": [],
@@ -284,6 +286,11 @@ def _tile(prompt: str) -> str:
 
 def _good_text(prompt: str) -> str:
     return json.dumps(_good(prompt), ensure_ascii=False)
+
+
+def _client(writer: _Writer) -> LLMClient:
+    """The fake as the preset's client: the run only has the cost recorder call its ``chat``."""
+    return cast("LLMClient", writer)
 
 
 def _recorder(tmp_path: Path) -> tuple[CostRecorder, sqlite3.Connection]:
@@ -622,7 +629,7 @@ def test_phone_or_tablet_use_reads_with_its_device_and_its_apps(brief: Brief) ->
 def test_the_writer_is_told_how_far_his_phone_and_tablet_use_is_known(brief: Brief) -> None:
     """None of it, all of it, or each device that lags with where its records stop."""
     def said(shown: Brief) -> str:
-        content = build_messages(shown)[0]["content"]
+        content: str = build_messages(shown)[0]["content"]
         return next(
             line for line in content.split("\n") if line.startswith("PHONE AND TABLET APP USE:")
         )
@@ -965,8 +972,10 @@ def _answer(brief: Brief) -> dict[str, Any]:
     return _good(build_messages(brief)[0]["content"])
 
 
-def _spans(answer: dict[str, Any]) -> list[dict[str, Any]]:
-    return answer["spans"]  # type: ignore[no-any-return]
+def _spans(answer: dict[str, Any]) -> list[Any]:
+    """The answer's span list: a rejection test may put anything in it."""
+    spans: list[Any] = answer["spans"]
+    return spans
 
 
 def test_a_good_answer_is_stored_as_the_spans_a_run_holds(brief: Brief) -> None:
@@ -1264,7 +1273,7 @@ def test_a_run_is_asked_gated_and_appended_with_what_it_rests_on(
     writer = _Writer(_good_text)
     recorder, cost_log = _recorder(tmp_path)
     with closing(cost_log):
-        composed = compose_run(brief, SETTINGS, writer, recorder)
+        composed = compose_run(brief, SETTINGS, _client(writer), recorder)
         costs = cost_log.execute("SELECT payload_json FROM events WHERE type = 'cost.recorded'")
         accounted = [json.loads(row[0]) for row in costs]
     assert composed.spans is not None
@@ -1291,7 +1300,7 @@ def test_a_rejected_answer_is_asked_again_once_and_a_second_failure_stores_nothi
     writer = _Writer(second_time_lucky)
     recorder, cost_log = _recorder(tmp_path)
     with closing(cost_log):
-        composed = compose_run(brief, SETTINGS, writer, recorder)
+        composed = compose_run(brief, SETTINGS, _client(writer), recorder)
         assert composed.spans is not None
         assert (len(writer.prompts), composed.tokens_in) == (2, 200)
         # the second ask shows the refused answer and why, after the same day
@@ -1300,7 +1309,7 @@ def test_a_rejected_answer_is_asked_again_once_and_a_second_failure_stores_nothi
         assert writer.asked[1][1]["content"] == "not json"
         assert "The gates refused that answer: not valid JSON." in writer.asked[1][2]["content"]
         always = _Writer(lambda _p: "not json")
-        failed = compose_run(brief, SETTINGS, always, recorder)
+        failed = compose_run(brief, SETTINGS, _client(always), recorder)
     assert (failed.spans, failed.why, len(always.prompts)) == (None, "not valid JSON", 2)
     with pytest.raises(ValueError, match="rejected"):
         store_run(world.memory, brief, failed)
@@ -1313,7 +1322,7 @@ def test_the_day_serves_the_stored_run_up_to_what_it_covers_and_his_words_over_i
     """The day serves the stored run up to what it covers and his words over it."""
     recorder, cost_log = _recorder(tmp_path)
     with closing(cost_log):
-        composed = compose_run(brief, SETTINGS, _Writer(_good_text), recorder)
+        composed = compose_run(brief, SETTINGS, _client(_Writer(_good_text)), recorder)
     store_run(world.memory, brief, composed)
 
     def served(now: datetime) -> list[dict[str, Any]]:
@@ -1349,7 +1358,7 @@ def test_a_newer_run_replaces_the_older_one_and_the_older_one_stays(
 ) -> None:
     """A newer run replaces the older one and the older one stays."""
     for title in ("First", "Second"):
-        spans = [
+        spans: list[dict[str, Any]] = [
             {"id": s.id, "start_ms": s.start_ms, "end_ms": s.end_ms, "kind": "doing",
              "title": title, "detail": None, "category": "work", "basis": "inferred",
              "confidence": "low", "clues": [], "question": None, "place_id": None}
@@ -1715,8 +1724,8 @@ def test_the_schedule_builds_its_client_from_the_preset_when_none_is_given(
 
 def _replay(world: World, writer: _Writer, *, dry_run: bool) -> list[dict[str, Any]]:
     return doing_replay.replay(
-        [DAY, DAY - timedelta(days=1)], world.sources, world.log, world.memory, SETTINGS, writer,  # type: ignore[arg-type]
-        NOW, dry_run=dry_run, pricing_table={},
+        [DAY, DAY - timedelta(days=1)], world.sources, world.log, world.memory, SETTINGS,
+        _client(writer), NOW, dry_run=dry_run, pricing_table={},
     )
 
 

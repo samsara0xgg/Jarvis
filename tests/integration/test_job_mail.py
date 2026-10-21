@@ -405,12 +405,13 @@ class _Harness:
         self.jev, self.gmail, self.outlook = jev, gmail, outlook
         self.event_log = bootstrap_runtime(tmp_path / "runtime").event_log
         open_event_log(self.event_log).close()
+        connections: Any = _Connections(gmail, outlook)  # JobMail only asks it for client_for
         self.job = JobMail(
             settings,
             jev.route(),
-            _Connections(gmail, outlook),
+            connections,
             self.db,
-            judge,  # type: ignore[arg-type]
+            judge,
             zone=OWNER_ZONE,
             event_log=self.event_log,
         )
@@ -438,14 +439,16 @@ class _Harness:
     def notices(self) -> list[dict[str, Any]]:
         reply = self.client.get("/inherent/notices")
         assert reply.status_code == 200
-        return reply.json()["notices"]
+        notices: list[dict[str, Any]] = reply.json()["notices"]
+        return notices
 
     def flat(self) -> list[dict[str, Any]]:
         """The notices with a summary replaced by the alerts it stands for."""
         return [one for n in self.notices() for one in n.get("items", [n])]
 
     def ledger(self) -> list[dict[str, Any]]:
-        return self.client.get("/inherent/jobs").json()["ledger"]
+        ledger: list[dict[str, Any]] = self.client.get("/inherent/jobs").json()["ledger"]
+        return ledger
 
     def sql(self, query: str, *args: object) -> list[tuple[Any, ...]]:
         conn = sqlite3.connect(self.db)
@@ -650,9 +653,9 @@ def test_the_speak_line_is_only_for_quiet_off_unmuted_and_no_conversation(
     # speak: false in the config.
     assert _harness(tmp_path / "c", jev, interview_and_offer, speak=False).job.poll_once() == 2
     # With no gap left to wait, both are said.
-    both = _harness(tmp_path / "d", jev, interview_and_offer, speak_gap_s=0)
-    both.job.poll_once()
-    assert both.spoken == 2
+    ungapped = _harness(tmp_path / "d", jev, interview_and_offer, speak_gap_s=0)
+    ungapped.job.poll_once()
+    assert ungapped.spoken == 2
 
 
 def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(tmp_path: Path, jev: _Jev) -> None:

@@ -48,7 +48,7 @@ from tests.integration.test_spoken_streaming import _Peer, _spoken_runtime
 from tests.integration.test_wire_routine_streaming import _drive
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
     from pathlib import Path
 
 START = 1_791_619_200_000
@@ -340,7 +340,12 @@ def _local_minutes(ms: int) -> str:
     )
 
 
-def _open_turn(runtime: Any, turn_id: str, text: str, about: object = None) -> Any:  # noqa: ANN401
+def _open_turn(
+    runtime: Any,  # noqa: ANN401
+    turn_id: str,
+    text: str,
+    about: Mapping[str, Any] | None = None,
+) -> Any:  # noqa: ANN401
     """The opening row of a phone's typed turn on the spoken route, as ``submit`` writes it."""
     return emit_surface_user_intent(
         runtime.conn, transcript=text, turn_id=turn_id, channel="inherent_ptt",
