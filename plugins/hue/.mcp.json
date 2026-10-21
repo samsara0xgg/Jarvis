@@ -14,7 +14,11 @@
         "list_zones": {"approval_mode": "approve"},
         "list_scenes": {"approval_mode": "approve"},
         "get_resource": {"approval_mode": "approve"},
-        "bridge_info": {"approval_mode": "approve"}
+        "bridge_info": {"approval_mode": "approve"},
+        "set_light": {"annotations": {"destructiveHint": false, "openWorldHint": false}},
+        "set_group": {"annotations": {"destructiveHint": false, "openWorldHint": false}},
+        "activate_scene": {"annotations": {"destructiveHint": false, "openWorldHint": false}},
+        "identify_light": {"annotations": {"destructiveHint": false, "openWorldHint": false}}
       }
     }
   }

@@ -3138,6 +3138,29 @@ def make_screen_capture(max_width_px: int) -> Tool:
 # --- ToolRegistry ------------------------------------------------------------
 
 
+def _leased(action_request: ActionRequest) -> bool:
+    """Whether the request carries a lease from Allen that covers this tool and target now."""
+    lease = action_request.authorization_lease
+    if lease is None:
+        return False
+    target = action_request.target_entity_ref
+    return (
+        lease["granted_by"] == "allen"
+        and action_request.tool_name in lease["allowed_tools"]
+        and (not lease["allowed_targets"] if target is None else target in lease["allowed_targets"])
+        and lease["expires_at_ms"] > int(time.time() * 1000)
+    )
+
+
+def _refuse_unleased(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    """The handler a confirm-required call gets when it arrives without a valid lease (I7)."""
+    msg = (
+        "this tool needs the user's confirmation and the call carried no valid authorization; "
+        "it was not run"
+    )
+    raise ToolError(msg, code="no_lease", kind="dont_retry")
+
+
 class ToolRegistry:
     """L4 dispatch surface (ADR § Module map L4 row).
 
@@ -3282,6 +3305,8 @@ class ToolRegistry:
         return or its raised error into the one `RawResult`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
+        if tool_def.requires_confirmation and not _leased(action_request):
+            tool_def = replace(tool_def, handler=_refuse_unleased)  # ADR 0321, I7
         dispatched_event = self._emit_dispatched(action_request, conn, lifecycle)
         return self._run_inline(
             action_request,

@@ -5,11 +5,12 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import time
 from typing import TYPE_CHECKING, Any
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, Tool, ToolRegistry
-from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
+from jarvis.shared import ActionRequest, AuthorizationLease, CallerPrincipal, RawResult
 from jarvis.state.event_log import open_event_log
 
 if TYPE_CHECKING:
@@ -44,8 +45,9 @@ def tool_request(
     *,
     arguments: dict[str, Any] | None = None,
     caller: CallerPrincipal = CallerPrincipal.JARVIS_LLM,
+    lease: bool = False,
 ) -> ActionRequest:
-    """Build one ActionRequest for a fixture tool."""
+    """Build one ActionRequest for a fixture tool; ``lease`` attaches Allen's grant for it."""
     return ActionRequest(
         action_id=action_id,
         tool_name=tool_name,
@@ -53,10 +55,25 @@ def tool_request(
         caller_principal=caller,
         risk_level="L1",
         arguments=arguments if arguments is not None else {},
-        authorization_lease=None,
+        authorization_lease=_lease_for(tool_name, action_id) if lease else None,
         run_id=None,
         turn_id=None,
     )
+
+
+def _lease_for(tool_name: str, action_id: str) -> AuthorizationLease:
+    """A lease an accepted card would have minted for ``tool_name`` (ADR 0012 D2)."""
+    return {
+        "lease_id": f"L{action_id}",
+        "granted_by": "allen",
+        "granted_to": CallerPrincipal.JARVIS_LLM,
+        "allowed_tools": frozenset({tool_name}),
+        "allowed_targets": frozenset(),
+        "expires_at_ms": int(time.time() * 1000) + 60_000,
+        "max_uses": 1,
+        "reason": "test",
+        "source_confirmation_event_id": f"accepted-{action_id}",
+    }
 
 
 type _Row = tuple[str, str, dict[str, Any], str | None, dict[str, Any] | None]

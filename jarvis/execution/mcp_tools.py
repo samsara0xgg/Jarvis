@@ -115,6 +115,29 @@ def approval_mode(spec: Mapping[str, Any], tool_name: str) -> str:
     return str(mode)
 
 
+def merged_annotations(
+    spec: Mapping[str, Any], tool_name: str, server: mcp_types.ToolAnnotations | None,
+) -> mcp_types.ToolAnnotations | None:
+    """The server's hints, plus the manifest's ``tools.<tool>.annotations`` where it gave none.
+
+    A hint the server sets wins (ADR 0321); the manifest fills only the fields it left unset.
+    """
+    tools = spec.get("tools") or {}
+    per_tool = tools.get(tool_name) if isinstance(tools, Mapping) else None
+    declared = (per_tool or {}).get("annotations")
+    if not isinstance(declared, Mapping):
+        return server
+    hints = mcp_types.ToolAnnotations.model_validate(dict(declared))
+    if server is None:
+        return hints
+    fill = {
+        name: getattr(hints, name)
+        for name in ("read_only_hint", "destructive_hint", "idempotent_hint", "open_world_hint")
+        if getattr(server, name) is None and getattr(hints, name) is not None
+    }
+    return server.model_copy(update=fill)
+
+
 def needs_approval(annotations: mcp_types.ToolAnnotations | None, mode: str) -> bool:
     """Codex ``requires_mcp_tool_approval_for_mode``: must Allen confirm the call first?
 
@@ -407,7 +430,7 @@ class McpServers:
             if mail:
                 self._mail[server] = _own_address(partial(self._call, server, client))
             pairs = zip(listed, modes, strict=True)
-            tools.extend(self._wrap(server, client, one, mode) for one, mode in pairs)
+            tools.extend(self._wrap(server, client, one, mode, spec) for one, mode in pairs)
             self.connected_servers.add(server)
             self._listed.extend((server, client, one) for one in listed)
             LOGGER.info("mcp server %r: %d tools", server, len(listed))
@@ -416,15 +439,25 @@ class McpServers:
     def configured_tools(self, servers: Mapping[str, Mapping[str, Any]]) -> tuple[Tool, ...]:
         """Reapply approval preferences to live tools without another login."""
         return tuple(
-            self._wrap(server, client, tool, approval_mode(servers[server], tool.name))
+            self._wrap(
+                server, client, tool, approval_mode(servers[server], tool.name), servers[server],
+            )
             for server, client, tool in self._listed
         )
 
-    def _wrap(self, server: str, client: Client, listed: mcp_types.Tool, mode: str) -> Tool:
-        read_only = bool(listed.annotations and listed.annotations.read_only_hint)
+    def _wrap(
+        self,
+        server: str,
+        client: Client,
+        listed: mcp_types.Tool,
+        mode: str,
+        spec: Mapping[str, Any],
+    ) -> Tool:
+        annotations = merged_annotations(spec, listed.name, listed.annotations)
+        read_only = bool(annotations and annotations.read_only_hint)
         # ADR 0033: a call that needs approval sits at the confirmation threshold,
         # so the Pre-action Gate asks Allen before it runs.
-        ask = needs_approval(listed.annotations, mode)
+        ask = needs_approval(annotations, mode)
         run: Callable[[Mapping[str, Any]], dict[str, Any]] = partial(
             self._call, server, client, listed.name
         )

@@ -280,10 +280,18 @@ def test_only_the_plugins_and_servers_whose_tools_are_listed_stay_in_a_built_cas
 def test_a_listed_plugin_is_offered_as_the_brain_offers_it_and_answers_from_the_recording(
     tmp_path: Path,
 ) -> None:
-    """Hue listed beside the cases: its read answers from the recording, a change asks first."""
+    """Hue listed beside the cases: its read and its change both answer from the recording.
+
+    Its manifest declares the change local and not destructive (ADR 0321), so no card stands in
+    front of it.
+    """
     (tmp_path / "mcp-tools.json").write_text(json.dumps(_HUE_LISTING), encoding="utf-8")
     lights = {"lights": [{"id": "lamp-1", "name": "Desk lamp", "on": True}]}
-    recorded = {"mcp": [{"server": "hue", "tool": "list_lights", "args": {}, "result": lights}]}
+    set_off = {"light_id": "lamp-1", "on": False}
+    recorded = {"mcp": [
+        {"server": "hue", "tool": "list_lights", "args": {}, "result": lights},
+        {"server": "hue", "tool": "set_light", "args": set_off, "result": {"ok": True}},
+    ]}
     (tmp_path / "lights.recording.json").write_text(json.dumps(recorded), encoding="utf-8")
     settings = tmp_path / "settings.brain.yaml"
     settings.write_text(
@@ -294,9 +302,10 @@ def test_a_listed_plugin_is_offered_as_the_brain_offers_it_and_answers_from_the_
         "id": "lights", "said": "要出门了灯关了", "at": AT.isoformat(), "zone": "UTC",
         "recording": "lights.recording.json",
     }
-    model = ScriptedModel(  # the card ends the turn: no third request is made
+    model = ScriptedModel(
         Reply(calls=(Call("mcp__hue__list_lights", {}, "list"),)),
-        Reply(calls=(Call("mcp__hue__set_light", {"light_id": "lamp-1", "on": False}, "set"),)),
+        Reply(calls=(Call("mcp__hue__set_light", set_off, "set"),)),
+        "The lamp is off.",
     )
     line = turns.run_one(
         case, model, "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None, settings,
@@ -305,7 +314,8 @@ def test_a_listed_plugin_is_offered_as_the_brain_offers_it_and_answers_from_the_
     listed = line["steps"][0]["calls"][0]
     assert listed["class"] == "recorded"
     assert json.loads(listed["result"]) == lights
-    assert [c["tool"] for c in line["confirmations"]] == ["mcp__hue__set_light"]
+    assert line["steps"][1]["calls"][0]["class"] == "recorded"
+    assert line["confirmations"] == []
     assert line["built"]["stubbed_providers"] == []
 
 

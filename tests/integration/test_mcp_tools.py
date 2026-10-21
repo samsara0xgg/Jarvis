@@ -49,7 +49,7 @@ def _call(tmp_path: Path, tools: tuple[Any, ...], name: str, action_id: str) -> 
     """Dispatch through the real registry and return the decoded terminal payload."""
     fx = ToolWorld(tmp_path / action_id, tools=tools)
     try:
-        fx.dispatch(tool_request(name, action_id))
+        fx.dispatch(tool_request(name, action_id, lease=True))
         observed = tool_chain(fx, action_id)
         assert observed["semantics"] == "observation"
         return dict(json.loads(observed["tool_output"]))
@@ -79,11 +79,13 @@ def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: Mcp
         # mcp 2.x wraps a bare `str` return as structured content; that wins over the text block.
         assert json.loads(observed["tool_output"]) == {"result": "你好 MCP"}
 
-        fx.dispatch(tool_request("mcp__echo__add", "M2", arguments={"a": 1, "b": 2}))
+        fx.dispatch(
+            tool_request("mcp__echo__add", "M2", arguments={"a": 1, "b": 2}, lease=True),
+        )
         observed = tool_chain(fx, "M2")
         assert json.loads(observed["tool_output"]) == {"sum": 3}
 
-        fx.dispatch(tool_request("mcp__echo__boom", "M3"))
+        fx.dispatch(tool_request("mcp__echo__boom", "M3", lease=True))
         observed = tool_chain(fx, "M3")
         assert observed["semantics"] == "error"
         assert observed["error"] == "mcp_tool_error"
