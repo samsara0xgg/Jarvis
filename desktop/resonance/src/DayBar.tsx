@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { spring, step } from './starCore';
@@ -9,6 +9,8 @@ import { CardBody, Swap } from './CardView';
 import { EASE, SayWhat } from './RowOpen';
 import { sayRange, type Said } from './dayOpen';
 import { Ic } from './dayIcons';
+import { DoorMarks, extentOf, nearestMark, type Extent } from './DayDoors';
+import type { BarMark } from './doors';
 import './day-bar.css';
 
 // The day in one bar (ADR 0308), above the rows: what each stretch is, written in it; now; what is still to come; the stars of what
@@ -26,17 +28,26 @@ const textWidth = (text: string, mono: boolean) => { const ctx = measuring ??= d
 const KIND: Record<LensKind, Rgb> = { sleep: [112, 120, 205], trip: [196, 208, 255], workout: [156, 224, 120], work: [108, 156, 255], call: [111, 224, 180], talk: [172, 124, 255], payment: [240, 132, 218], picture: [255, 240, 220] };
 const KIND_ICON: Record<LensKind, PhosphorIcon> = { sleep: Moon, trip: Path, workout: PersonSimpleRun, work: Laptop, call: Phone, talk: ChatCircleDots, payment: Coins, picture: PictureIcon };
 
-// What the bar's controls hold, kept by the pane: the lens (pinned by a click, or previewed while a chip is under the pointer), the range
-// being chosen, the range the list is cut to. Esc lets go of one at a time.
+// What the bar's controls hold, kept by the pane: the lens (pinned by a click, or previewed while a chip is under the pointer), the same for a door page's chip
+// (the day's lens and a page's chip are never both: the numbers row is the one or the other), the range being chosen, the range the list is cut to. Esc lets go of one at a time.
 export type Range = { a: number; b: number };
 export function useBarState() {
   const [pinned, setPinned] = useState<LensKind | null>(null), [preview, setPreview] = useState<LensKind | null>(null);
+  const [chipPinned, setChipPinned] = useState<string | null>(null), [chipPreview, setChipPreview] = useState<string | null>(null);
   const [sel, setSel] = useState<Range | null>(null), [filter, setFilter] = useState<Range | null>(null);
-  const live = useRef({ pinned, sel, filter });
-  live.current = { pinned, sel, filter };
+  const live = useRef({ pinned, chipPinned, sel, filter });
+  live.current = { pinned, chipPinned, sel, filter };
   // The pinned lens lets go with the preview of the chip the pointer may still be on, or that chip would hold it.
-  const escape = () => { const s = live.current; if (s.sel) setSel(null); else if (s.pinned) { setPinned(null); setPreview(null); } else if (s.filter) setFilter(null); else return false; return true; };
-  return { pinned, setPinned, preview, setPreview, lens: preview ?? pinned, sel, setSel, filter, setFilter, escape };
+  const escape = () => {
+    const s = live.current;
+    if (s.sel) setSel(null);
+    else if (s.pinned) { setPinned(null); setPreview(null); }
+    else if (s.chipPinned) { setChipPinned(null); setChipPreview(null); }
+    else if (s.filter) setFilter(null);
+    else return false;
+    return true;
+  };
+  return { pinned, setPinned, preview, setPreview, lens: preview ?? pinned, chipPinned, setChipPinned, chipPreview, setChipPreview, chip: chipPreview ?? chipPinned, sel, setSel, filter, setFilter, escape };
 }
 export type BarState = ReturnType<typeof useBarState>;
 
@@ -130,15 +141,18 @@ function Sweep({ on }: { on: boolean }) {
   return here && !reduced.matches ? <i className="dt-sweep" aria-hidden="true" onAnimationIteration={() => { if (!on) setHere(false); }}/> : null;
 }
 
+// A door's page on the bar (doors.ts): the day steps back to .25 and the page's marks are lit over it (`mute`: the keys of the rows a lit chip keeps, the marks of the others are
+// drawn at .25); the page's numbers row goes under the bar in place of the day's. What the pointer and a click find is then the page's marks, not the day's pieces.
+export type PageBar = { marks: BarMark[]; mute: ReadonlySet<string> | null; numbers: ReactNode };
 // `open`: the row whose detail page is up; its span stays marked, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
-// `sweep`: the day is being tidied.
-export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; sweep: boolean; hot: string | null; open: string | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
+// `sweep`: the day is being tidied. `door`: a door's page is under the bar.
+export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; sweep: boolean; hot: string | null; open: string | null; door: PageBar | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang, barBy }, setSettings] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t, barBy), [model, lang, barBy]), nums = useMemo(() => numbers(model, t), [model, lang]);
-  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), rcard = useRef<HTMLDivElement>(null), ncard = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
+  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
   const [hover, setHover] = useState<{ x: number; left: number } | null>(null), [on, setOn] = useState(false), [band, setBand] = useState<Range | null>(null);
   // The pinned number's card hangs under the numbers; a range being chosen or chosen has the room (its card wins), and the number's comes back when the range goes.
-  const numCard = useMemo(() => ui.pinned ? cardOf(model, ui.pinned, t, nums) : null, [model, lang, nums, ui.pinned]), numKind = numCard && !ui.sel && !band ? numCard.kind : null;
+  const numCard = useMemo(() => ui.pinned && !door ? cardOf(model, ui.pinned, t, nums) : null, [model, lang, nums, ui.pinned, !!door]), numKind = numCard && !ui.sel && !band ? numCard.kind : null;
   useLayoutEffect(() => {
     const el = track.current;
     if (!el) return;
@@ -172,13 +186,6 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
     const timer = setTimeout(() => setOn(true), 50);
     return () => clearTimeout(timer);
   }, [!!hover]);
-  // The pane is as tall as what is in it: on a short day the range card and a number's, which hang over the list, make room for themselves.
-  useLayoutEffect(() => {
-    const dt = box.current?.closest<HTMLElement>('.dt'), c = rcard.current ?? ncard.current;
-    if (!dt || !c) return;
-    dt.style.minHeight = `${Math.ceil(c.getBoundingClientRect().bottom - dt.getBoundingClientRect().top) + 12}px`;
-    return () => { dt.style.minHeight = ''; };
-  }, [ui.sel, numKind]);
   // A number's card comes in over 180 ms on the pane's ease, rising 4 px; under reduced motion it fades in over 120.
   useLayoutEffect(() => {
     if (!numKind) return;
@@ -202,6 +209,8 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
   // The pointer: a press and a release within 3 px is a click, a press and a move of more is a range.
   const press = useRef<{ x0: number; drag: boolean } | null>(null);
   const at = (e: { clientX: number }) => clamp(e.clientX - track.current!.getBoundingClientRect().left, 0, track.current!.clientWidth);
+  // On a door page what the pointer finds is the row whose mark is nearest it (within 8 px), not the day's piece under it.
+  const near = (e: { clientX: number; clientY: number }) => door && bar && track.current ? nearestMark(door.marks, bar, track.current.clientWidth, at(e), e.clientY - track.current.getBoundingClientRect().top) : null;
   const down = (e: ReactPointerEvent) => {
     if (e.button !== 0 || !bar) return;
     press.current = { x0: at(e), drag: false };
@@ -216,7 +225,7 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
     const x = at(e), p = press.current;
     if (p && !p.drag && Math.abs(x - p.x0) > TAP_PX) { p.drag = true; setHover(null); onHot(null); }
     if (p?.drag) setBand({ a: snap(ms(p.x0)), b: snap(ms(x)) });
-    else { setHover({ x, left: left(x) }); onHot(pieceAt(bar, ms(x))); }
+    else { setHover({ x, left: left(x) }); onHot(door ? near(e) : pieceAt(bar, ms(x))); }
   };
   // A drag that ends where it began (to the minute) is a click: a range of no length is none.
   const up = (e: ReactPointerEvent) => {
@@ -226,8 +235,8 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
     const x = at(e), a = snap(ms(p.x0)), b = snap(ms(x));
     setBand(null);
     if (p.drag && a !== b) { ui.setSel({ a: Math.min(a, b), b: Math.max(a, b) }); return; }
-    if (open) { onPage(pieceAt(bar, ms(x))); return; }
-    const key = rowAt(model, bar, ms(x));
+    if (open) { onPage(door ? near(e) : pieceAt(bar, ms(x))); return; }
+    const key = door ? near(e) : rowAt(model, bar, ms(x));
     if (key) onJump(key);
   };
   const leave = () => { if (press.current) return; setHover(null); onHot(null); };
@@ -270,7 +279,7 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
 
   if (!bar) return null;
   const sel = band ?? ui.sel, shown = sel ?? ui.filter, a = shown && Math.min(shown.a, shown.b), b = shown && Math.max(shown.a, shown.b);
-  const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
+  const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = !door && ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
   // A day with no place in it (talks and no location) says so in the empty past, if the words fit there.
   const voidText = t(['No location recorded', '没有位置记录']), voidW = (bar.nowF ?? 1) * width, showVoid = bar.segs.length === 0 && voidW >= textWidth(voidText, false) + 2 * PAD_PX;
   // The sun's marks sit in the hours row. An hour's number always wins: a mark that would sit on one is only a tick under the bar.
@@ -278,14 +287,24 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
   const suns = bar.sun.map(x => { const px = clamp(x.f * width, 6, Math.max(6, width - 6)); return { ...x, px, bare: hours.some(h => Math.abs(h.px - px) < 14) }; });
   const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
   // By place on a day with stretches the pointer lifts the place under it, but a click or the span marked is the stretch's (the list's row there).
-  const lifted = live?.row ?? null, hit = barBy === 'place' && model.segs.size && live ? bar.segs.find(x => x.s <= live.ms && live.ms < x.e)?.row ?? null : lifted;
-  const spanned = hot && hot !== hit && hot !== open ? model.span.get(hot) : null, opened = open ? model.span.get(open) : null;
+  // On a door page the pointer lifts none of the day's pieces, and the span marked is the row's own marks (a point is a 10 px box).
+  const lifted = live?.row ?? null, hit = door ? null : barBy === 'place' && model.segs.size && live ? bar.segs.find(x => x.s <= live.ms && live.ms < x.e)?.row ?? null : lifted;
+  type Bracket = { t0: number; t1: number; point?: boolean };
+  const spanned: Bracket | null | undefined = door ? hot && hot !== open ? extentOf(door.marks, hot) : null : hot && hot !== hit && hot !== open ? model.span.get(hot) : null;
+  const opened: Bracket | null | undefined = open ? door ? extentOf(door.marks, open) : model.span.get(open) : null;
+  // A door page's row that is lit (under the pointer, or chosen by the keys) says its mark's time in the scrub row, as a range does; the now label stays unless it would be under it.
+  const timesOf = (e: Extent) => {
+    const f0 = clamp(fOf(bar, e.t0), 0, 1) * width, f1 = clamp(fOf(bar, e.t1), 0, 1) * width, one = e.point || f1 - f0 < 36;
+    return one ? [{ x: (f0 + f1) / 2, text: e.point ? clock(e.t0, model.tz) : `${clock(e.t0, model.tz)}–${endClock(e.t1, model.reply, model.tz)}` }] : [{ x: f0, text: clock(e.t0, model.tz) }, { x: f1, text: endClock(e.t1, model.reply, model.tz) }];
+  };
+  const lit = door && !hover && !sel && hot ? extentOf(door.marks, hot) : null, litTimes = lit && lit.t1 >= bar.t0 && lit.t0 <= bar.t1 ? timesOf(lit) : [], nowX = (bar.nowF ?? 0) * width;
   const by = model.segs.size > 0 && <ByToggle value={barBy} onChange={k => setSettings({ barBy: k })} t={t}/>;
   return <>
-    <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
+    <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${door ? ' is-page' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
       <div className="dt-scrub" aria-hidden="true">
-        {bar.nowF !== null && !hover && !sel && <span className="dt-time is-now" style={{ left: `clamp(16px, ${bar.nowF * 100}%, calc(100% - 16px))` }}>{clock(model.now, model.tz)}</span>}
+        {bar.nowF !== null && !hover && !sel && !litTimes.some(x => Math.abs(x.x - nowX) < 34) && <span className="dt-time is-now" style={{ left: `clamp(16px, ${bar.nowF * 100}%, calc(100% - 16px))` }}>{clock(model.now, model.tz)}</span>}
         {hover && !band && <span className="dt-time" style={edge(hover.x)}>{live?.at}</span>}
+        {litTimes.map((x, i) => <span key={i} className="dt-time" style={edge(x.x)}>{x.text}</span>)}
         {sel && a !== null && b !== null && (fOf(bar, b) - fOf(bar, a)) * width < 36
           ? <span className="dt-time" style={edge((fOf(bar, a) + fOf(bar, b)) / 2 * width)}>{clock(a, model.tz)}–{endClock(b, model.reply, model.tz)}</span>
           : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{endClock(b, model.reply, model.tz)}</span></>}
@@ -305,11 +324,12 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
           {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
           <Sweep on={sweep}/>
           {lens && (bar.lens[lens] ?? []).map((m, i) => <i key={i} className={`dt-lm${m.f1 - m.f0 < .004 ? ' is-point' : ''}`} style={{ left: `${m.f0 * 100}%`, width: `${Math.max(0, m.f1 - m.f0) * 100}%` }}/>)}
+          {door && <DoorMarks marks={door.marks} bar={bar} mute={door.mute}/>}
         </div>
         <div className="dt-over" aria-hidden="true">
           {sel && a !== null && b !== null && <i className="dt-band" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {!sel && ui.filter && a !== null && b !== null && <i className="dt-band is-applied" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
-          {[spanned, opened].map((x, i) => x && x.t1 >= bar.t0 && x.t0 <= bar.t1 && <i key={i} className={`dt-bracket${i ? ' is-open' : ''}`} style={{ left: bx(fOf(bar, x.t0)), width: `max(3px, ${(clamp(fOf(bar, x.t1), 0, 1) - clamp(fOf(bar, x.t0), 0, 1)) * 100}%)` }}/>)}
+          {[spanned, opened].map((x, i) => x && x.t1 >= bar.t0 && x.t0 <= bar.t1 && <i key={i} className={`dt-bracket${i ? ' is-open' : ''}`} style={x.point ? { left: `calc(${bx(fOf(bar, x.t0))} - 5px)`, width: 10 } : { left: bx(fOf(bar, x.t0)), width: `max(3px, ${(clamp(fOf(bar, x.t1), 0, 1) - clamp(fOf(bar, x.t0), 0, 1)) * 100}%)` }}/>)}
           {bar.dots.map(d => <i key={d.key} className={`dt-bdot${lens === d.kind ? ' is-on' : ''}`} data-dot={d.key} style={{ left: bx(d.f), '--k': rgb(KIND[d.kind]) } as CSSProperties}/>)}
           <Stars key={model.reply.date} stars={bar.stars}/>
           {bar.nowF !== null && <i className="dt-nowtick" style={{ left: bx(bar.nowF) }}/>}
@@ -323,17 +343,17 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, onHot, onJump, 
       <div ref={card} className={`dt-card${on && !ui.sel && !band ? ' is-on' : ''}`} aria-hidden="true">
         <div ref={cardIn} className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>
       </div>
-      {summary && <div ref={rcard} className="dt-card is-range is-on" style={{ transform: `translateX(${left((fOf(bar, summary.a) + fOf(bar, summary.b)) / 2 * width)}px)` }}>
+      {summary && <div className="dt-card is-range is-on" style={{ transform: `translateX(${left((fOf(bar, summary.a) + fOf(bar, summary.b)) / 2 * width)}px)` }}>
         <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} say={sayRange(model, summary.a, summary.b)} onSay={onSay} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>
       </div>}
     </div>
-    {(nums.length + model.vitals.length > 0 || by) && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
+    {door ? door.numbers : (nums.length + model.vitals.length > 0 || by) && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
       {nums.map(n => { const Glyph = KIND_ICON[n.kind]; return <button key={n.kind} type="button" className={`dt-num${ui.pinned === n.kind ? ' is-pinned' : ''}`} aria-pressed={ui.pinned === n.kind} style={{ '--k': rgb(KIND[n.kind]) } as CSSProperties}
         onPointerEnter={() => ui.setPreview(n.kind)} onPointerLeave={() => ui.setPreview(null)} onClick={() => ui.setPinned(ui.pinned === n.kind ? null : n.kind)}>
         <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
       {model.vitals.length > 0 && <div className="dt-vitals">{model.vitals.map(v => <span key={v.key} className="dt-vit" data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}</div>}
       {by}
-      {numCard && numKind && <div ref={ncard} className="dt-card is-num is-on" role="region" aria-label={numCard.label}>
+      {numCard && numKind && <div className="dt-card is-num is-on" role="region" aria-label={numCard.label}>
         <div ref={nIn} className="dt-card-in"><Swap id={numCard.kind}><CardBody card={numCard} Glyph={KIND_ICON[numCard.kind]} color={`rgb(${rgb(KIND[numCard.kind])})`} port={port} onPicture={onPicture} t={t}/></Swap></div>
       </div>}
     </div>}

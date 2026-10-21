@@ -6,7 +6,7 @@
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { askable, buildDay, changeId, clock, covered, dateTitle, doingAt, doingOf, doingWords, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within, workoutOf } from '../src/dayView.ts';
@@ -986,7 +986,9 @@ check('the change a place write answers is read as the string it is (an id insid
 
 // ---------- the built page ----------
 const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--port', String(web), '--strictPort'], { cwd: root, stdio: 'ignore' });
-const browser = await chromium.launch({ headless: true, channel: 'chrome', args: ['--disable-web-security', '--mute-audio'] });
+// CHROMIUM names a browser to use; else the one a container keeps for Playwright; else this Mac's Chrome.
+const exe = [process.env.CHROMIUM, '/opt/pw-browsers/chromium'].find(p => p && existsSync(p));
+const browser = await chromium.launch({ headless: true, ...exe ? { executablePath: exe } : { channel: 'chrome' }, args: ['--disable-web-security', '--mute-audio'] });
 const errors = [];
 const NOTCH_R = 412.5, TOP = 32;
 // Every Web Animation the page starts is written down (what, on what, with which keyframes and timing), so what was asked for can be read.
@@ -2425,7 +2427,8 @@ try {
     await a.move(g2.left + 6, y2); await a.page.mouse.down(); await a.move(g2.left + g2.width * .3, y2); await a.move(g2.left + g2.width * .6, y2); await a.page.mouse.up(); await a.page.waitForTimeout(900);
     cb = await cardBox();
     const g3 = await a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom), btn = await a.page.locator('.dt-cbtn').boundingBox();
-    check('and so is the range card with its button, even when it is taller than the day: the pane makes room for it, and gives it back', cb && cb.bottom <= g3 - 6 && g3 > before + 10 && btn.y + btn.height <= g3, JSON.stringify({ cb, bottom: g3, before }));
+    // the pane is one size (the doors design): a card that is taller than the day hangs inside it, and the pane does not grow for it
+    check('and so is the range card with its button, even when it is taller than the day: it hangs inside the pane, which keeps its size', cb && cb.bottom <= g3 - 6 && Math.abs(g3 - before) <= 1 && btn.y + btn.height <= g3, JSON.stringify({ cb, bottom: g3, before }));
     await a.shot('bar-09-yesterday-range', { x: 40, y: 0, width: 560, height: 520 });
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
     check('and when the range goes the pane is as short as it was', Math.abs(await a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom) - before) < 2);
@@ -3628,7 +3631,8 @@ try {
     await chip(a, '睡').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(900);
     const again = { card: await cardBottom(), pane: await paneBottom() };
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
-    check('on a short day the card is inside the pane, which makes room for it when it must and gives the room back when the card goes', none.nums === 0 && withCard.card <= withCard.pane - 6 && again.card <= again.pane - 6 && again.pane >= short - 1 && Math.abs(await paneBottom() - short) < 2, JSON.stringify({ withCard, short, again }));
+    // the pane is one size (the doors design): the card hangs inside it on a short day, and the pane is the same with the card and without it
+    check('on a short day the card is inside the pane, which keeps its size with the card and without it', none.nums === 0 && withCard.card <= withCard.pane - 6 && again.card <= again.pane - 6 && Math.abs(withCard.pane - short) < 2 && Math.abs(again.pane - short) < 2 && Math.abs(await paneBottom() - short) < 2, JSON.stringify({ withCard, short, again }));
     await a.ctx.close();
 
     // the same in English (the Sleep and the Mac) and the photos (a thumbnail each; a click on one is the picture row's click)

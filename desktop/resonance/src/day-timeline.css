@@ -1,9 +1,10 @@
 /* The timeline pane (DayTimeline.tsx, ADR 0308): the notch's drop pane with the day in it. Black like the notch it grows out of;
    a place's colour is its own (home warm, school blue, the rest a fixed hue each), the day's now is a warm white, and amber is
    the turn mark's: here it says "waiting on you" (the pill in the header, the badge on a row) and nothing else. */
-.notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; max-height:584px; padding-inline:4px; }
+.notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; height:584px; padding-inline:4px; }
+/* one size: the pane changes size when it opens and when it folds, never for what is in it; the stage (the list or a page) takes what is left, and the doors row (day-doors.css) sits on the bottom edge */
 .notch .dt > :not(.dt-stage) { flex:none; }
-.notch .dt.is-loading > :not(.dt-head) { opacity:.45; transition:opacity var(--motion-fast); }
+.notch .dt.is-loading > :not(.dt-head):not(.dt-doors) { opacity:.45; transition:opacity var(--motion-fast); }
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
 .notch .dt-date { flex:none; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; }
 .notch .dt-today,.notch .dt-back { flex:none; padding:0 6px; border-radius:var(--radius-tag); font-style:normal; font-size:var(--text-label); font-weight:600; line-height:17px; color:var(--p-muted); background:rgb(255 255 255 / .08); }
@@ -138,7 +139,7 @@
 @keyframes dt-lit-in { from { opacity:0; } }
 @keyframes dt-flash { from { background:rgb(255 255 255 / .08); } to { background:transparent; } }
 @media (prefers-reduced-motion:reduce) {
-  .notch .dt.is-loading > :not(.dt-head),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh { transition:none; }
+  .notch .dt.is-loading > :not(.dt-head):not(.dt-doors),.notch .dt-nav button,.notch .dt-row,.notch .dt-sh { transition:none; }
   .notch .is-flash,.notch .dt-tidy.is-running svg { animation:none; }
   .notch .dt-badge,.notch .dt-star { animation-duration:120ms; transition-duration:120ms; }
 }

@@ -1,0 +1,52 @@
+/* The doors at the foot of the day's pane (DayDoors.tsx) and what a door's page is drawn with. The pane is one size (day-timeline.css), the doors row sits on its bottom edge, and a door
+   swaps only what is under the bar: the line, the numbers row, the rows. A page lights its own moments on the dimmed day bar; amber is "waiting on you" here too and nothing else. */
+.notch .dt-doors { display:flex; flex:none; align-items:center; gap:6px; margin-top:auto; }
+/* a door is a pill in the day's chips' look: 24 px, white .06; the one he is on is lit (white .12, a ring, its glyph in full ink); a count follows the name (amber when it waits on him) */
+.notch .dt-door { display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 9px; border-radius:12px; background:rgb(255 255 255 / .06); font-size:11.5px; white-space:nowrap; color:rgb(var(--ink) / .86); transition:background 120ms,box-shadow 120ms; }
+.notch .dt-door svg { flex:none; color:rgb(var(--ink) / .58); transition:color 120ms; }
+.notch .dt-door em { font-size:11.5px; line-height:16px; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
+.notch .dt-door em.is-amber { color:rgb(255 201 143); }
+.notch .dt-door:hover { background:rgb(255 255 255 / .1); }
+.notch .dt-door.is-on { background:rgb(255 255 255 / .12); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .6); }
+.notch .dt-door.is-on svg { color:var(--p-ink); }
+.notch .dt-door.is-bare { padding:0 8px; }
+
+/* a door page's line keeps its one line of room when it has nothing to say, so the bar does not move */
+.notch .dt-line.is-door { min-height:21.75px; }
+/* its numbers row: the page's chips (a lens where a chip has `only`), the link at the right end; one chip high even with none */
+.notch .dt-numbers.is-page { align-items:center; min-height:24px; }
+.notch .dt-numbers.is-page .dt-num.is-amber em { color:rgb(255 201 143); }
+.notch .dt-num.is-info:hover { background:rgb(255 255 255 / .06); }
+.notch .dt-go { display:inline-flex; align-items:center; gap:4px; height:24px; margin-left:auto; padding:0 2px; font-size:12px; white-space:nowrap; color:var(--p-muted); transition:color 120ms; }
+.notch .dt-go:hover { color:var(--p-ink); }
+
+/* the rows of a page, in the day's row (day-timeline.css): read ones step back, rows a lit chip does not keep step back more; a letter in the circle; a small tag after the title; the heading before the untimed rows */
+.notch .dt-row.is-read { opacity:.55; }
+.notch .dt-row.is-off { opacity:.35; }
+.notch .dt-ic.is-who { font-size:11.5px; font-weight:600; border-color:rgb(255 255 255 / .12); background:rgb(255 255 255 / .04); }
+.notch .dt-ic.is-on { border-color:rgb(var(--ink) / .55); }
+.notch .dt-tag { flex:none; padding:0 6px; border-radius:var(--radius-tag); background:rgb(255 255 255 / .08); font-style:normal; font-size:10.5px; font-weight:600; line-height:16px; color:var(--p-muted); }
+.notch .dt-uh { margin:0; padding:12px 6px 2px; font-size:var(--text-label); font-weight:600; line-height:16px; color:var(--p-faint); }
+/* a Dashboard component in a row's page (it is styled under .ad): the panel's own padding is not wanted here, the page has its own */
+.notch .dt-pin.is-door .dt-body { padding:6px 4px 12px; }
+.notch .dt-ad { align-self:stretch; padding:0; }
+
+/* page mode of the bar: what he was doing steps back to .25 (as under a lens), and the page's own moments are lit over it */
+.notch .dt-bar.is-page .dt-seg,.notch .dt-bar.is-page .dt-ground,.notch .dt-bar.is-page .dt-sched,.notch .dt-bar.is-page .dt-bdot { opacity:.25; }
+.notch .dt-mk { position:absolute; pointer-events:none; transition:opacity 150ms; }
+.notch .dt-mk.is-point { top:0; bottom:0; width:3px; margin-left:-1.5px; border-radius:1px; }
+.notch .dt-mk.is-span { height:6px; border-radius:3px; }
+.notch .dt-mk.is-on { background:rgb(var(--ink) / .92); }
+.notch .dt-mk.is-dim { background:rgb(var(--ink) / .42); }
+.notch .dt-mk.is-amber { background:rgb(255 201 143); }
+.notch .dt-mk.is-muted { opacity:.25; }
+/* a level: the area under a line over the track, its top stroke 1.5 px, the last value carried on dashed */
+.notch .dt-mk-lv { position:absolute; inset:0; width:100%; height:100%; overflow:visible; pointer-events:none; transition:opacity 150ms; }
+.notch .dt-mk-lv.is-muted { opacity:.25; }
+.notch .dt-lv-fill { fill:rgb(214 222 250 / .22); }
+.notch .dt-lv-top,.notch .dt-lv-run { fill:none; stroke:rgb(214 222 250 / .6); stroke-width:1.5; }
+.notch .dt-lv-run { stroke-dasharray:3 3; }
+.notch .dt-mk-lv.is-on .dt-lv-fill { fill:rgb(214 222 250 / .42); }
+.notch .dt-mk-lv.is-on .dt-lv-top,.notch .dt-mk-lv.is-on .dt-lv-run { stroke:rgb(214 222 250); }
+.notch .dt-mk-lv.is-amber .dt-lv-fill { fill:rgb(255 201 143 / .3); }
+.notch .dt-mk-lv.is-amber .dt-lv-top,.notch .dt-mk-lv.is-amber .dt-lv-run { stroke:rgb(255 201 143); }
