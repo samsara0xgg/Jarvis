@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
+from zoneinfo import ZoneInfo
 
 import pytest
 import time_machine
@@ -53,16 +56,33 @@ _UPDATE_HINT: Final = (
 _MISSING: Final = object()
 
 
+WORLD_ZONE: Final = "America/Vancouver"
+"""The owner's zone in every contract world, whatever zone the machine running the tests is in."""
+
+
 @contextlib.contextmanager
 def brain_at(now_ms: int = WORLD_NOW_MS) -> Iterator[FakeClock]:
-    """The brain's clock stopped at ``now_ms``: what its routes read as the time, and a clock.
+    """The brain's clock stopped at ``now_ms``, with local time in the world's zone.
 
     The routes ask ``time.time()`` for the moment, so it is frozen; the returned
-    :class:`FakeClock` is the same instant for code that takes a clock.
+    :class:`FakeClock` is the same instant for code that takes a clock. Travelling to an instant
+    in the owner's zone makes ``datetime.now()`` and ``time.localtime()`` read that zone too, so
+    a time the brain words in local time is the same on every machine.
     """
     clock = FakeClock(datetime.fromtimestamp(now_ms / 1000, tz=UTC))
-    with time_machine.travel(clock.utc_now(), tick=False):
+    with time_machine.travel(clock.utc_now().astimezone(ZoneInfo(WORLD_ZONE)), tick=False):
         yield clock
+
+
+def fixed_uuids(monkeypatch: pytest.MonkeyPatch, *modules: ModuleType) -> None:
+    """The ids ``modules`` mint with ``uuid.uuid4()``, the same on every run.
+
+    An id that is random is a different line in the file at every ``--update-contracts``.
+    """
+    ids = iter(uuid.UUID(f"c0ffee00-0000-4000-8000-{n:012d}") for n in range(1, 1000))
+    fixed = SimpleNamespace(uuid4=lambda: next(ids))
+    for module in modules:
+        monkeypatch.setattr(module, "uuid", fixed)
 
 
 def json_type(value: object) -> str:

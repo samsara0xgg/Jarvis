@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import uuid
 from contextlib import closing
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -27,7 +26,7 @@ from jarvis.execution.tools import (
 from jarvis.execution.transit_tool import TransitOffers, show_card
 from jarvis.runtime import plugin_connections
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.support.contracts import WORLD_NOW_MS, Contracts, Inputs, brain_at
+from tests.support.contracts import WORLD_NOW_MS, Contracts, Inputs, brain_at, fixed_uuids
 from tests.support.daemon_app import Daemon, run_in_daemon
 
 if TYPE_CHECKING:
@@ -43,11 +42,8 @@ FIELDS: list[dict[str, Any]] = [
 
 
 def _fixed_ids(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ids the tools mint, the same every run, so an update shows only what changed."""
-    ids = iter(uuid.UUID(f"c0ffee00-0000-4000-8000-{n:012d}") for n in range(1, 100))
-    fixed = SimpleNamespace(uuid4=lambda: next(ids))
-    for module in (tools, transit_tool, plugin_connections):
-        monkeypatch.setattr(module, "uuid", fixed)
+    """The ids the tools mint, the same every run, and no running action to point a row at."""
+    fixed_uuids(monkeypatch, tools, transit_tool, plugin_connections)
     monkeypatch.setattr(tools, "_get_running_event_uid", lambda *_: None)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
 

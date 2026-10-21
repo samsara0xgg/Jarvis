@@ -9,6 +9,8 @@ is written as the one writer writes it, and has a test that drives it.
 from __future__ import annotations
 
 import json
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +20,9 @@ from tests.support.contracts import (
     CONTRACTS_DIR,
     FROM_BRAIN,
     TO_BRAIN,
+    WORLD_NOW_MS,
     Contracts,
+    brain_at,
     drift,
     dump,
     json_type,
@@ -80,6 +84,17 @@ def test_a_field_added_passes_and_one_renamed_dropped_or_retyped_is_named(name: 
     """The subset match on keys and types, row by row."""
     example, actual, exact, expected = DRIFT[name]
     assert drift(example, actual, exact=exact) == expected
+
+
+def test_the_world_clock_is_stopped_in_the_owners_zone_whatever_zone_the_machine_is_in() -> None:
+    """A time worded in local time reads the same wherever the tests run."""
+    before = datetime.now().astimezone().utcoffset()
+    with brain_at(WORLD_NOW_MS):
+        inside = datetime.now().astimezone()
+        assert (inside.isoformat(timespec="seconds"), time.time()) == (
+            "2026-10-14T09:00:00-07:00", WORLD_NOW_MS / 1000,
+        )
+    assert datetime.now().astimezone().utcoffset() == before
 
 
 def test_json_types_keep_a_bool_apart_from_a_number() -> None:
