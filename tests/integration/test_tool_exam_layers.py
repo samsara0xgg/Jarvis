@@ -174,6 +174,26 @@ def test_a_recording_that_would_hold_a_key_is_not_written_and_the_refusal_names_
     assert not (tmp_path / "r.json").exists()
 
 
+def test_a_live_recording_keeps_out_a_key_saved_only_for_its_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key is not in the shell, only among the root's saved keys: the file is still refused."""
+    monkeypatch.setenv("EXAM_PROVIDER_API_KEY", "unset-below")  # undone at teardown, as is the load
+    monkeypatch.delenv("EXAM_PROVIDER_API_KEY")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "env").write_text(f"EXAM_PROVIDER_API_KEY={KEY}\n", encoding="utf-8")
+    (root / "settings.yaml").write_text(f"transit:\n  stop: {KEY}\n", encoding="utf-8")
+    item = tmp_path / "now.json"
+    now = {"id": "now", "tool": "kept", "at": "2026-10-17T20:14:00-07:00", "zone": "UTC"}
+    item.write_text(json.dumps(now), encoding="utf-8")
+    with pytest.raises(SystemExit) as refused:
+        exam.main(["record", str(item), "--root", str(root)])
+    assert "EXAM_PROVIDER_API_KEY" in str(refused.value)
+    assert KEY not in str(refused.value)
+    assert not (tmp_path / "now.recording.json").exists()
+
+
 def test_an_mcp_call_is_answered_from_the_recording_or_fails_the_item() -> None:
     """The MCP client's tool-call boundary: a recorded call replays, an unrecorded one misses."""
     recording = exam.Recording(

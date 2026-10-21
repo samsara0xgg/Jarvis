@@ -83,6 +83,7 @@ import time_machine
 import yaml
 from mcp import types as mcp_types
 
+from jarvis.deployment import load_env_file
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.runtime import bootstrap_runtime_app
@@ -1181,8 +1182,13 @@ def verdict(result: Mapping[str, Any], *, detail: bool = True) -> list[str]:
 
 
 def cmd_record(args: argparse.Namespace) -> int:
-    """``record``: run one item live and store what each provider answered beside it."""
+    """``record``: run one item live and store what each provider answered beside it.
+
+    The providers' keys are the ones saved for ``--root`` (this machine's saved keys for it, then
+    its ``env``), loaded before the recorder starts so that it scrubs and checks every one.
+    """
     item = Item(json.loads(args.item.read_text(encoding="utf-8")), args.item.resolve())
+    load_env_file(args.root.expanduser())
     recording = Recording({"settings": _snapshot_settings(args.root)})
     transport = _Transport(recording, live=True)
     with transport, sandbox(item, recording, live=True, real_root=args.root.expanduser()) as box:
