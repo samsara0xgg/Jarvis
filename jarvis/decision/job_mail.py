@@ -28,6 +28,7 @@ from jarvis.shared import lang
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import tzinfo
 
     from jarvis.decision.surrogate_route import Reply, SurrogateRoute
 
@@ -140,7 +141,7 @@ def body_state(head: Head, body: str, max_chars: int) -> str:
 class JobMailJev:
     """Jev's two questions over letters, with a daily cap on calls."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the transport, the four knobs of the block and the zone
         self,
         route: SurrogateRoute,
         *,
@@ -148,9 +149,14 @@ class JobMailJev:
         body_min: float,
         max_body_chars: int,
         max_calls_per_day: int,
+        zone: tzinfo,
     ) -> None:
-        """``route`` is the transport; its ``timeout_ms`` bounds one batch's wait."""
+        """``route`` is the transport; its ``timeout_ms`` bounds one batch's wait.
+
+        ``zone`` is the owner's: a time a letter gives with no zone is read as his clock.
+        """
         self._route = route
+        self._zone = zone
         self._skip_at = header_skip_at
         self._body_min = body_min
         self._max_chars = max_body_chars
@@ -215,7 +221,7 @@ class JobMailJev:
                 if top == _NOT_JOB
                 else (top if probabilities[top] >= self._body_min else "job_other")
             )
-            facts = extract(head, body)
+            facts = extract(head, body, self._zone)
             digest = kind == "job_other" and is_alert_digest(head.name, head.domain, head.subject)
             if kind == "job_other" and is_account_notice(head.subject):
                 kind = ACCOUNT_KIND
@@ -707,23 +713,27 @@ def _clock_of(sentence: str) -> tuple[int, int] | None:
     return None if plain is None else (int(plain["h"]), int(plain["m"]))
 
 
-def _moment(sentence: str, received: datetime) -> str | None:
-    """An ISO time out of a sentence that holds a clear date and time; else None."""
+def _moment(sentence: str, received: datetime, zone: tzinfo) -> str | None:
+    """An ISO time in ``zone`` out of a sentence that holds a clear date and time; else None.
+
+    A time with a zone of its own (``2:00 PM (PDT)``) is that instant; a bare time is the owner's
+    clock, which is ``zone``.
+    """
     day, clock = _day_of(sentence, received), _clock_of(sentence)
     if day is None or clock is None:
         return None
-    zone = _ZONE_RE.search(sentence)
+    named = _ZONE_RE.search(sentence)
     try:
         moment = datetime(
             day.year,
             day.month,
             day.day,
             *clock,
-            tzinfo=ZoneInfo(_ZONES[zone[1]]) if zone else None,
+            tzinfo=ZoneInfo(_ZONES[named[1]]) if named else zone,
         )
     except ValueError:
         return None
-    return moment.astimezone().isoformat(timespec="minutes")  # a bare time is Allen's own clock
+    return moment.astimezone(zone).isoformat(timespec="minutes")
 
 
 def _own_lines(body: str) -> list[str]:
@@ -746,7 +756,9 @@ def _own_lines(body: str) -> list[str]:
     return kept
 
 
-def _labelled_event(lines: list[str], received: datetime) -> tuple[str | None, str | None]:
+def _labelled_event(
+    lines: list[str], received: datetime, zone: tzinfo,
+) -> tuple[str | None, str | None]:
     """A ``Date:`` or ``When:`` line with its clock, on the line or on a ``Time:`` line."""
     fields = [(m[1].lower(), m[2].strip()) for ln in lines if (m := _FIELD_LINE.match(ln))]
     time_line = next((v for k, v in fields if k == "time"), "")
@@ -754,17 +766,18 @@ def _labelled_event(lines: list[str], received: datetime) -> tuple[str | None, s
         if label == "time" or _day_of(value, received) is None:
             continue
         sentence = value if _clock_of(value) else f"{value}, {time_line}"
-        if (at := _moment(sentence, received)) is not None:
+        if (at := _moment(sentence, received, zone)) is not None:
             return sentence[:_EVENT_CHARS], at
     return None, None
 
 
 def event_of(
-    body: str, received: datetime, *, dated: bool = False
+    body: str, received: datetime, zone: tzinfo, *, dated: bool = False
 ) -> tuple[str | None, str | None]:
     """(sentence, ISO time) of the first sentence on an interview or meeting with a date or time.
 
-    The time is None unless that sentence holds a clear date and time. With ``dated`` (the mail is
+    The time is None unless that sentence holds a clear date and time; it is written in the owner's
+    ``zone``, which also reads a time the sentence gives no zone for. With ``dated`` (the mail is
     already known to be an interview), a line that is only a clear date and time also counts, as
     in a Teams invitation whose "Thursday, October 8, 2026 2:00 PM (PDT)" has no event word.
     ``Date:``/``When:`` and ``Time:`` lines ("Date: Thursday October 8th", "Time: 1:00pm - 2:00pm")
@@ -774,7 +787,7 @@ def event_of(
     lines = _own_lines(body)
     own = "\n".join(lines)
     if dated or _EVENT_WORDS.search(own):
-        found = _labelled_event(lines, received)
+        found = _labelled_event(lines, received, zone)
         if found[1]:
             return found
     for raw in _SENTENCE_SPLIT.split(own):
@@ -782,7 +795,7 @@ def event_of(
         if not sentence:
             continue
         if _EVENT_WORDS.search(sentence) is None and not (
-            dated and _moment(sentence, received) is not None
+            dated and _moment(sentence, received, zone) is not None
         ):
             continue
         if not (
@@ -792,7 +805,7 @@ def event_of(
             or _TIME_24.search(sentence)
         ):
             continue
-        return sentence[:_EVENT_CHARS], _moment(sentence, received)
+        return sentence[:_EVENT_CHARS], _moment(sentence, received, zone)
     return None, None
 
 
@@ -812,13 +825,13 @@ def event_minutes(sentence: str) -> int | None:
     return None
 
 
-def extract(head: Head, body: str) -> Facts:
-    """The company, role and event of a letter, read locally."""
+def extract(head: Head, body: str, zone: tzinfo) -> Facts:
+    """The company, role and event of a letter, read locally; the event time is in ``zone``."""
     try:
         received = datetime.fromisoformat(head.received_at)
     except ValueError:
         received = datetime.now(UTC)
-    text, at = event_of(body, received)
+    text, at = event_of(body, received, zone)
     company = company_of(head.name, head.domain, head.subject, body)
     return Facts(company, role_of(head.subject, body, company), text, at)
 

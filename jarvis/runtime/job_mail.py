@@ -35,6 +35,7 @@ from jarvis.state.import_parsers import is_daily_subject
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from datetime import tzinfo
     from pathlib import Path
 
     from jarvis.decision.attention import Judge
@@ -123,6 +124,7 @@ class JobMail:
         db_path: Path,
         judge: Judge,
         *,
+        zone: tzinfo,
         moment: Moment | None = None,
         timesink_path: Path | None = None,
         device: DeviceLink | None = None,
@@ -130,11 +132,13 @@ class JobMail:
     ) -> None:
         """``route`` carries Jev's model and timeout; ``db_path`` is memory.db.
 
-        ``judge`` decides how loudly each typed letter reaches Allen (ADR 0155). ``moment``
-        holds alerts while Allen is in a call or away and is stored with each decision;
-        ``timesink_path`` is where the ledger's time column is read (ADR 0161), or, on a brain,
-        ``device`` is the link to the terminal whose TimeSink it is (ADR 0170). ``event_log`` is
-        the log the interview things are written to (ADR 0186, 0299); with none they are off.
+        ``zone`` is the owner's (``work_state.timezone``): a time a letter gives with no zone of its
+        own is his clock there. ``judge`` decides how loudly each typed letter reaches Allen
+        (ADR 0155). ``moment`` holds alerts while Allen is in a call or away and is stored with
+        each decision; ``timesink_path`` is where the ledger's time column is read (ADR 0161),
+        or, on a brain, ``device`` is the link to the terminal whose TimeSink it is (ADR 0170).
+        ``event_log`` is the log the interview things are written to (ADR 0186, 0299); with none
+        they are off.
         """
         self.moment = moment
         self.timesink_path = timesink_path
@@ -143,12 +147,14 @@ class JobMail:
         self._judge = judge
         self._connections = connections
         self._db = db_path
+        self._zone = zone
         self._jev = triage.JobMailJev(
             route,
             header_skip_at=settings.header_skip_at,
             body_min=settings.body_min,
             max_body_chars=settings.max_body_chars,
             max_calls_per_day=settings.max_calls_per_day,
+            zone=zone,
         )
         self._route = route
         self._last_spoke: float | None = None
@@ -193,7 +199,9 @@ class JobMail:
         """Run the repair pass over the ledger; a failure is logged and never stops the poller."""
         try:
             settings = self._settings
-            changed = repair(self._db, settings.linkedin_alerts, settings.exclude_domains)
+            changed = repair(
+                self._db, settings.linkedin_alerts, settings.exclude_domains, zone=self._zone,
+            )
         except Exception:
             LOGGER.exception("job mail: the ledger repair failed; the poller goes on")
             return 0
@@ -275,7 +283,7 @@ class JobMail:
             received = datetime.fromisoformat(row["received_at"])
         except (TypeError, ValueError):
             received = self.now()
-        sentence, at = triage.event_of(body, received, dated=True)
+        sentence, at = triage.event_of(body, received, self._zone, dated=True)
         if at or sentence:
             ledger.set_event(self._db, row["message_id"], at, sentence or row["event_text"])
 
@@ -755,7 +763,9 @@ class JobMail:
             raise LookupError(msg)
 
 
-def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()) -> int:
+def repair(
+    db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = (), *, zone: tzinfo,
+) -> int:
     """Recompute what the current rules read from each ledger row's stored header (ADR 0158).
 
     Idempotent and offline: only the stored sender name, domain and subject and the body start
@@ -767,7 +777,8 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
     as done. A row whose domain is in ``exclude_domains`` is hidden the same way (ADR 0171), except
     a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
     touched by the routing rules. An interview or offer row's event time is read again from its
-    kept body and replaced when the body names one.
+    kept body and replaced when the body names one; a bare time there is the owner's clock in
+    ``zone``.
     """
     changed = 0
     for row in ledger.mail_rows(db):
@@ -787,7 +798,7 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
                 if value != (row[field] or "")
             }
         )
-        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body):
+        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, zone):
             changed += 1
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
@@ -813,7 +824,7 @@ def repair(db: Path, linkedin_alerts: str, exclude_domains: tuple[str, ...] = ()
     return changed
 
 
-def _fix_event(db: Path, row: Mapping[str, Any], body: str) -> bool:
+def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> bool:
     """Set an interview or offer row's event to what its kept body names under today's rules.
 
     The body is the only source of an event, so a time the rules no longer read from it (a quoted
@@ -823,7 +834,7 @@ def _fix_event(db: Path, row: Mapping[str, Any], body: str) -> bool:
         received = datetime.fromisoformat(row["received_at"])
     except (TypeError, ValueError):
         return False
-    sentence, at = triage.event_of(body, received, dated=True)
+    sentence, at = triage.event_of(body, received, zone, dated=True)
     if (at, sentence) == (row["event_at"], row["event_text"]):
         return False
     ledger.set_event(db, row["message_id"], at, sentence)

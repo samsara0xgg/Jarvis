@@ -1833,13 +1833,16 @@ def _moment(
     return Moment(MomentSettings(dict(fields)), _timesink_db_path(config), db_path, device)
 
 
-def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
+def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the zone and the moment
     config: Mapping[str, Any], config_path: Path, log: JevLog | None,
-    connections: PluginConnections, db_path: Path,
+    connections: PluginConnections, db_path: Path, zone: tzinfo,
     moment: Moment | None = None, device: DeviceLink | None = None,
     event_log: Path | None = None,
 ) -> JobMail | None:
-    """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot."""
+    """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot.
+
+    ``zone`` is the owner's: a time a letter gives with no zone of its own is his clock there.
+    """
     block = config.get("job_mail")
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
@@ -1897,7 +1900,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators and the moment
     # min_confidence is the choice question's bar; these questions read probabilities instead.
     route = SurrogateRoute(model=model.strip(), min_confidence=1.0, timeout_ms=timeout, log=log)
     return JobMail(
-        settings, route, connections, db_path, rule_judge_v1,
+        settings, route, connections, db_path, rule_judge_v1, zone=zone,
         moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
     )
 
@@ -3454,8 +3457,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
 
     jev_log = _jev_log(full_config, paths.root)
     job_mail = _job_mail(
-        full_config, config_path, jev_log, plugin_connections, memory.db_path, moment, device,
-        paths.event_log,
+        full_config, config_path, jev_log, plugin_connections, memory.db_path, local_zone,
+        moment, device, paths.event_log,
     )
     _register_job_ledger(registry, job_mail)
     mail_codes = _mail_codes(full_config, config_path, plugin_connections, device)

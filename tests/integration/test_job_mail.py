@@ -59,6 +59,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 NOW = datetime.now(UTC)
+OWNER_ZONE = ZoneInfo("America/Vancouver")
+"""Allen's zone as job mail is given it: a time a letter gives no zone for is his clock there."""
 SETTINGS = JobMailSettings(
     poll_s=300,
     backfill_days=14,
@@ -409,6 +411,7 @@ class _Harness:
             _Connections(gmail, outlook),
             self.db,
             judge,  # type: ignore[arg-type]
+            zone=OWNER_ZONE,
             event_log=self.event_log,
         )
         self.quiet = "off"
@@ -1206,12 +1209,12 @@ def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
             "role": role,
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db, "ledger_only") == 4  # the account notice was right already
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 4  # the account notice was right already
     assert {
         key: tuple(rest) for key, *rest in h.sql("SELECT message_id, company, role FROM job_mail")
     } == {key: after for key, *_mid, after in rows}
     assert [one["company"] for one in h.ledger()] == ["Reliable Controls", "CGI"]
-    assert repair(h.db, "ledger_only") == 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
     assert h.gmail.calls == []
 
 
@@ -1295,7 +1298,7 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
 
     assert {"old1", "old2", "m-alert", "m-hiring"} <= pending()
 
-    assert repair(h.db, "ledger_only") > 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) > 0
     assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'old1'") == [(1,)]
     assert h.sql("SELECT deleted FROM job_mail WHERE message_id = 'old2'") == [(0,)]  # flagged
     assert h.sql("SELECT verdict, p_job FROM job_seen WHERE message_id = 'old1'") == [
@@ -1310,12 +1313,12 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
     assert h.sql("SELECT kind FROM job_mail WHERE message_id = 'm-account'") == [("other",)]
     assert not pending() & {"old1", "m-alert", "m-hiring", "m-account"}  # done, not deleted
     assert pending() >= {"old2", "m-inmail"}
-    assert repair(h.db, "ledger_only") == 0  # a second run changes nothing
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0  # a second run changes nothing
 
     # With card_sound the digests keep their alerts.
     keep = _harness(tmp_path / "keep", jev, LINKEDIN, linkedin_alerts="card_sound")
     keep.job.poll_once()
-    repair(keep.db, "card_sound")
+    repair(keep.db, "card_sound", zone=OWNER_ZONE)
     assert {m for (m,) in keep.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")} == {
         "m-alert",
         "m-hiring",
@@ -1390,9 +1393,9 @@ def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
         job_ledger.create_alert(h.db, key, "speak", "t", "l", NOW)
     job_ledger.add_flag(h.db, "old2", NOW)
 
-    repair(h.db, "ledger_only")  # nothing excluded: nothing is hidden
+    repair(h.db, "ledger_only", zone=OWNER_ZONE)  # nothing excluded: nothing is hidden
     assert h.sql("SELECT deleted FROM job_mail") == [(0,), (0,)]
-    assert repair(h.db, "ledger_only", ("linkedin.com",)) > 0
+    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) > 0
     assert h.sql("SELECT message_id, deleted FROM job_mail ORDER BY message_id") == [
         ("old1", 1),
         ("old2", 0),
@@ -1404,7 +1407,7 @@ def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
     assert [one["message_id"] for one in h.client.get("/inherent/jobs").json()["skipped"]] == [
         "old1"
     ]
-    assert repair(h.db, "ledger_only", ("linkedin.com",)) == 0  # idempotent
+    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) == 0  # idempotent
 
 
 def test_flagging_a_hidden_social_mail_brings_it_back_to_the_ledger(
@@ -1636,18 +1639,19 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
     connections: Any = _Connections(None)
 
-    assert _job_mail(shipped, config_path, None, connections, db) is None  # no watcher is built
-    assert _job_mail({}, config_path, None, connections, db) is None
+    # no watcher is built:
+    assert _job_mail(shipped, config_path, None, connections, db, OWNER_ZONE) is None
+    assert _job_mail({}, config_path, None, connections, db, OWNER_ZONE) is None
     on = {"job_mail": {**block, "enabled": True}}
-    built = _job_mail(on, config_path, None, connections, db)
+    built = _job_mail(on, config_path, None, connections, db, OWNER_ZONE)
     assert isinstance(built, JobMail)
     spaced = {"job_mail": {**on["job_mail"], "exclude_domains": [" LinkedIn.com "]}}
-    built = _job_mail(spaced, config_path, None, connections, db)
+    built = _job_mail(spaced, config_path, None, connections, db, OWNER_ZONE)
     assert built is not None
     assert built._settings.exclude_domains == ("linkedin.com",)  # noqa: SLF001
     assert built._settings.backfill_since == date(2026, 9, 10)  # noqa: SLF001
     undated = {"job_mail": {**on["job_mail"], "backfill_since": None}}
-    built = _job_mail(undated, config_path, None, connections, db)
+    built = _job_mail(undated, config_path, None, connections, db, OWNER_ZONE)
     assert built is not None
     assert built._settings.backfill_since is None  # noqa: SLF001
     for key, value in (
@@ -1667,7 +1671,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
     ):
         bad = {"job_mail": {**block, "enabled": True, key: value}}
         with pytest.raises(RuntimeBootstrapError, match=f"job_mail.{key}"):
-            _job_mail(bad, config_path, None, connections, db)
+            _job_mail(bad, config_path, None, connections, db, OWNER_ZONE)
 
     # The daemon wires no route for it, so every one answers 404.
     assert _job_mail_deps(None) == {}
@@ -2527,7 +2531,7 @@ def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cam
     )
     job_ledger.add_flag(h.db, "flagged", NOW)
 
-    assert repair(h.db, "ledger_only") > 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) > 0
     assert h.sql("SELECT company, role, deleted FROM job_mail WHERE message_id = 'cambio'") == [
         ("Cambio Earth", "QA & Test Automation Developer Co-op", 0)
     ]
@@ -2542,7 +2546,7 @@ def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cam
     }
     pending = {m for (m,) in h.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")}
     assert pending == {"cambio", "flagged"}  # the hidden row's alert ended as done
-    assert repair(h.db, "ledger_only") == 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
     assert h.gmail.calls == []
 
 
@@ -2605,13 +2609,13 @@ def test_a_linkedin_application_sent_mail_is_job_mail_and_the_rest_of_linkedin_i
             "role": "",
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db, "ledger_only", ("linkedin.com",)) > 0
+    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) > 0
     assert h.sql("SELECT message_id, company, deleted FROM job_mail ORDER BY message_id") == [
         ("m-sent", "Cambio Earth", 0),
         ("old1", "Cambio Earth", 0),
         ("old2", "LinkedIn", 1),
     ]
-    assert repair(h.db, "ledger_only", ("linkedin.com",)) == 0
+    assert repair(h.db, "ledger_only", ("linkedin.com",), zone=OWNER_ZONE) == 0
 
 
 def _stored(  # noqa: PLR0913 - a ledger row's fields
@@ -2736,13 +2740,13 @@ def test_the_repair_pass_clears_a_role_that_is_the_company_and_cleans_a_kept_one
             "role": role,
         }
         job_ledger.upsert_mail(h.db, mail, NOW)
-    assert repair(h.db, "ledger_only") > 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) > 0
     assert h.sql("SELECT message_id, company, role FROM job_mail ORDER BY message_id") == [
         ("a", "Later", ""),
         ("b", "Planview", ""),
         ("c", "RV Tech", "Software Engineering Intern"),
     ]
-    assert repair(h.db, "ledger_only") == 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
 
 
 def test_reliable_controls_mails_are_one_application_and_an_ats_name_joins_by_role(
@@ -2996,12 +3000,27 @@ Join: https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x
 def test_event_of_reads_a_bare_teams_time_line_only_for_a_known_interview() -> None:
     """A Teams invitation's time line has no event word: it counts when the mail is an interview."""
     received = NOW - timedelta(days=4)
-    assert triage.event_of(_TEAMS_INVITE, received) == (None, None)
-    sentence, at = triage.event_of(_TEAMS_INVITE, received, dated=True)
+    assert triage.event_of(_TEAMS_INVITE, received, OWNER_ZONE) == (None, None)
+    sentence, at = triage.event_of(_TEAMS_INVITE, received, OWNER_ZONE, dated=True)
     assert sentence == "Thursday, October 8, 2026 2:00 PM (PDT)"
     assert at == "2026-10-08T14:00-07:00"
     # A line with a date but no clock is not a time, even for a known interview.
-    assert triage.event_of("Sometime in October 8, 2026.", received, dated=True) == (None, None)
+    assert triage.event_of("Sometime in October 8, 2026.", received, OWNER_ZONE, dated=True) == (
+        None, None,
+    )
+
+
+def test_a_bare_time_is_the_owners_clock_and_the_machines_zone_reads_nothing() -> None:
+    """The configured zone reads a time with none of its own and writes every time it returns."""
+    tokyo = ZoneInfo("Asia/Tokyo")
+    received = NOW - timedelta(days=4)
+    assert triage.event_of("Interview on October 8, 2026 at 1:00 PM.", received, tokyo)[1] == (
+        "2026-10-08T13:00+09:00"
+    )
+    # A time that names its own zone is that instant, written on the owner's clock.
+    assert triage.event_of(_TEAMS_INVITE, received, tokyo, dated=True)[1] == (
+        "2026-10-09T06:00+09:00"
+    )
 
 
 _RC_INVITE = """Thank you again for applying for the Firmware QA Analyst Co-op position \
@@ -3029,33 +3048,25 @@ Subject: Invitation to Interview
 _RC_RECEIVED = datetime(2026, 10, 2, 9, 0, tzinfo=ZoneInfo("America/Vancouver"))
 
 
-@pytest.fixture
-def vancouver(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """A bare time is the machine's clock: pin it to Allen's."""
-    monkeypatch.setenv("TZ", "America/Vancouver")
-    time.tzset()
-    yield
-    monkeypatch.undo()
-    time.tzset()
-
-
-@pytest.mark.usefixtures("vancouver")
 def test_event_of_reads_the_date_and_time_lines_and_never_a_quoted_header() -> None:
     """A labelled Date and Time is the interview; a quoted Sent header or quote line is not."""
     for dated in (False, True):
-        sentence, at = triage.event_of(_RC_INVITE, _RC_RECEIVED, dated=dated)
+        sentence, at = triage.event_of(_RC_INVITE, _RC_RECEIVED, OWNER_ZONE, dated=dated)
         assert at == "2026-10-08T13:00-07:00"
         assert sentence == "Thursday October 8th, 1:00pm - 2:00pm"
-    assert triage.event_of("When: Oct 8 at 13:00 PDT\nCall me.", _RC_RECEIVED, dated=True)[1] == (
+    when = "When: Oct 8 at 13:00 PDT\nCall me."
+    assert triage.event_of(when, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == (
         "2026-10-08T13:00-07:00"
     )
     # A mail that is no interview and names no event takes no Date and Time lines.
-    assert triage.event_of("Date: October 8\nTime: 1pm", _RC_RECEIVED) == (None, None)
+    assert triage.event_of("Date: October 8\nTime: 1pm", _RC_RECEIVED, OWNER_ZONE) == (None, None)
     # The old mail's header gives no event in either mode; the reply holds nothing else.
     for dated in (False, True):
-        assert triage.event_of(_RC_REPLY, _RC_RECEIVED, dated=dated) == (None, None)
+        assert triage.event_of(_RC_REPLY, _RC_RECEIVED, OWNER_ZONE, dated=dated) == (None, None)
     both = _RC_REPLY + _RC_INVITE.split("\n\n", 1)[1]
-    assert triage.event_of(both, _RC_RECEIVED, dated=True)[1] == "2026-10-08T13:00-07:00"
+    assert triage.event_of(both, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == (
+        "2026-10-08T13:00-07:00"
+    )
 
 
 def test_a_range_with_one_am_pm_starts_at_its_start() -> None:
@@ -3067,9 +3078,11 @@ def test_a_range_with_one_am_pm_starts_at_its_start() -> None:
         ("Interview 1:00pm - 2:00pm Tuesday October 13th", "2026-10-13T13:00-07:00"),
         ("Interview at 2pm Tuesday October 13th", "2026-10-13T14:00-07:00"),
     ):
-        assert triage.event_of(sentence, _RC_RECEIVED, dated=True)[1] == at, sentence
+        assert triage.event_of(sentence, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == at, sentence
     labelled = "Date: Tuesday October 13th\nTime: 1:00 - 2:00pm"
-    assert triage.event_of(labelled, _RC_RECEIVED, dated=True)[1] == "2026-10-13T13:00-07:00"
+    assert triage.event_of(labelled, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == (
+        "2026-10-13T13:00-07:00"
+    )
 
 
 def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
@@ -3078,7 +3091,6 @@ def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
     assert people == ["Matthew Clarkson", "Logen De Bruyne"]
 
 
-@pytest.mark.usefixtures("vancouver")
 def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
     tmp_path: Path, jev: _Jev
 ) -> None:
@@ -3107,13 +3119,13 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
         job_ledger.record_decision(
             h.db, key, "body", "job", NOW, head={"received_at": NOW.isoformat()}, body_excerpt=text
         )
-    assert repair(h.db, "ledger_only") == 2  # fix and none
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 2  # fix and none
     assert h.sql("SELECT message_id, event_at, event_text FROM job_mail ORDER BY message_id") == [
         ("fix", "2026-10-08T13:00-07:00", "Thursday October 8th, 1:00pm - 2:00pm"),
         ("none", None, None),  # the rules read no time from the body: the quoted one goes
         ("other", wrong, "Sent: Friday, October 2, 2026 4:45 PM"),  # not interview or offer
     ]
-    assert repair(h.db, "ledger_only") == 0
+    assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0
     assert h.gmail.calls == []
 
 
@@ -3566,11 +3578,12 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
     connections: Any = _Connections(None)
     on = {"job_mail": {**block, "enabled": True}}
 
-    built = _job_mail(on, config_path, None, connections, db, event_log=tmp_path / "log.db")
+    log = tmp_path / "log.db"
+    built = _job_mail(on, config_path, None, connections, db, OWNER_ZONE, event_log=log)
     assert built is not None
     assert built.interviews is not None
     off = {"job_mail": {**on["job_mail"], "interview_reminders": {"enabled": False}}}
-    built = _job_mail(off, config_path, None, connections, db, event_log=tmp_path / "log.db")
+    built = _job_mail(off, config_path, None, connections, db, OWNER_ZONE, event_log=log)
     assert built is not None
     assert built.interviews is None
 
@@ -3584,7 +3597,7 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
     ):
         bad = {"job_mail": {**on["job_mail"], "interview_reminders": value}}
         with pytest.raises(RuntimeBootstrapError, match=r"job_mail\.interview_reminders"):
-            _job_mail(bad, config_path, None, connections, db)
+            _job_mail(bad, config_path, None, connections, db, OWNER_ZONE)
 
 
 # --- a brain asks the terminal that plays (ADR 0156, 0170) ------------------------------------

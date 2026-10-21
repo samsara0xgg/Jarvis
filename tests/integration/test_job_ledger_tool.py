@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -53,7 +54,8 @@ def _group(n: int, **over: Any) -> dict[str, Any]:  # noqa: ANN401
 
 def test_the_tool_is_l0_read_only_for_the_model_and_absent_while_job_mail_is_off() -> None:
     """Off (``_job_mail`` is None): no tool. On: the declared shape, in the registry once."""
-    assert _job_mail({}, cast("Any", None), None, cast("Any", None), cast("Any", None)) is None
+    none = cast("Any", None)
+    assert _job_mail({}, none, None, none, none, UTC) is None
     assert build_job_ledger_tool(None) == ()
     off = ToolRegistry()
     _register_job_ledger(off, None)
