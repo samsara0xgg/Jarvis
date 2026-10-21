@@ -50,8 +50,8 @@ def _trips() -> tuple[gtfs.TripSpec, ...]:
                       headsign="Harbour"),
         gtfs.TripSpec("out2", "7", (("E1", "9:30:00"), ("E2", "9:40:00")), direction=0,
                       headsign="Harbour"),
-        gtfs.TripSpec("back1", "7", (("W2", "8:52:00"), ("W1", "9:01:00")), direction=1,
-                      headsign="Hill"),
+        gtfs.TripSpec("back1", "7", (("W2", "8:52:00"), ("W1", "9:01:00"), ("F1", "9:20:00")),
+                      direction=1, headsign="Hill"),
         gtfs.TripSpec("late", "7", (("E1", "24:10:00"), ("E2", "24:20:00")), direction=0,
                       headsign="Harbour", service="WK"),
     )
@@ -97,6 +97,16 @@ def test_a_trip_past_midnight_belongs_to_the_day_it_started(tmp_path: Path) -> N
     after_midnight = table.calls_at("E1", _local_ms(saturday, "0:00"), _local_ms(saturday, "1:00"))
     assert [(c.trip_id, c.day) for c in after_midnight] == [("late", friday)]
     assert after_midnight[0].depart_ms == _local_ms(saturday, "0:10")
+
+
+def test_a_trips_last_stop_is_not_a_call_to_board(tmp_path: Path) -> None:
+    """Nobody boards where a trip ends: ``calls_at`` has the stops a trip leaves, not its last."""
+    table = _store(tmp_path, gtfs.Export(STOPS, _trips()))
+    day = date(2026, 10, 9)
+    nine, ten = _local_ms(day, "9:00"), _local_ms(day, "10:00")
+    assert table.calls_at("E2", nine, ten) == []  # out1 and out2 end there
+    assert [c.trip_id for c in table.calls_at("W1", nine, ten)] == ["back1"]  # it goes on to F1
+    assert table.calls_at("F1", nine, ten) == []  # and ends there
 
 
 def test_a_trips_stops_come_in_order_with_their_times(tmp_path: Path) -> None:

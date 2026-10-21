@@ -478,8 +478,9 @@ class Timetable:
     ) -> list[Call]:
         """Buses calling at a stop with a departure in ``[start_ms, end_ms]``, earliest first.
 
-        ``route`` limits it to that number (any case). Trips of the service day before and the
-        day itself are both looked at, since a late trip runs past midnight.
+        A trip's last stop is not one: nobody boards there. ``route`` limits it to that number
+        (any case). Trips of the service day before and the day itself are both looked at, since
+        a late trip runs past midnight.
         """
         first = datetime.fromtimestamp(start_ms / 1000, self.zone).date() - timedelta(days=1)
         last = datetime.fromtimestamp(end_ms / 1000, self.zone).date()
@@ -502,6 +503,8 @@ class Timetable:
             " t.service_id FROM stop_times st JOIN trips t ON t.trip_id = st.trip_id"
             " JOIN routes r ON r.route_id = t.route_id"
             " WHERE st.stop_id = ? AND st.dep_s BETWEEN ? AND ?"
+            " AND EXISTS (SELECT 1 FROM stop_times nx WHERE nx.trip_id = st.trip_id"
+            " AND nx.seq > st.seq)"
         )
         args: list[object] = [stop_id, low, high]
         if route:
