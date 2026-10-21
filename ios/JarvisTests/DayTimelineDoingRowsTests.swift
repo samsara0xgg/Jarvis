@@ -291,4 +291,15 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertTrue(stretches.contains { $0.detail?.contains("不太确定") == true })
         XCTAssertEqual(stretches.first { $0.id == "doing-835" }?.counts, TLCounts(pictures: 0, payments: 0, calls: 1, messages: 1))
     }
+
+    func testNowIsTheStretchThatEndsExactlyAtNowNotAMomentRowBegunLater() throws {
+        let m = DayTimelineModel.build(TimelineFixture.today(cal, doing: true), now: TimelineFixture.now)
+        let last = try XCTUnwrap(m.entries.last { $0.kind == .segment })
+        XCTAssertEqual(last.t1, TimelineFixture.now)
+        XCTAssertNil(m.seg(at: TimelineFixture.now), "the half-open stretch misses its own end")
+        XCTAssertEqual(m.nowRow()?.id, last.id)
+        XCTAssertNil(DayTimelineModel.build(TimelineFixture.today(cal, doing: true), now: nil).nowRow(), "a day before today has no now")
+        let plain = DayTimelineModel.build(TimelineFixture.today(cal), now: TimelineFixture.now)
+        XCTAssertEqual(plain.nowRow()?.title, "家", "a stay still going on is the stretch now is in")
+    }
 }

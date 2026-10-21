@@ -494,6 +494,14 @@ struct DayTimelineModel: Equatable {
         return e
     }
 
+    /// the row of the stretch now is in, as the readout finds it: a stretch that is still going on ends exactly at now, which `seg(at:)` (half-open) misses, and `entry(at:)` would pick a moment
+    /// row begun later. Where now is in no stretch, the row `lit(at:)` lights.
+    func nowRow() -> TLEntry? {
+        guard let n = now else { return nil }
+        if let s = seg(at: n) ?? seg(at: n.nextDown), let e = entries.first(where: { $0.id == s.id }) { return e }
+        return lit(at: n)
+    }
+
     /// What a finger on the bar at minute `t` reads out. The stretch there (a place, a trip, the night) opens it, or how long nothing was recorded, or that it has not happened;
     /// then what else was going on: what covers `t`, else what is within 10 minutes of it, the most telling first (work, Claude Code, a call, a talk, a workout, a picture, a payment,
     /// an event, Claude, a reminder, a bus, the night's stages).

@@ -68,7 +68,7 @@ struct PadStage: View {
 
     /// the stretch now is in, as its opened row says it; nothing when now is in none (a day before today, a gap)
     @ViewBuilder private func now(_ m: DayTimelineModel) -> some View {
-        if let t = m.now, let e = m.lit(at: t), e.kind != .now {
+        if let e = m.nowRow(), e.kind != .now {
             label(Words.Pad.now, color: muted)
             head(e).padding(.top, 8)
             TLOpenView(e: e, tl: tl, engine: engine, mapWidth: width - 2 * side).padding(.top, 16)
