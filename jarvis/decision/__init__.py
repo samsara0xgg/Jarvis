@@ -126,7 +126,16 @@ from jarvis.shared.realtime import (
     stable_authorization_identity,
 )
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.shared.receipts import Receipt, derive, only_reads, receipt_id, said
+from jarvis.shared.receipts import (
+    Completed,
+    Receipt,
+    call_asks,
+    call_risk,
+    derive,
+    only_reads,
+    receipt_id,
+    said,
+)
 from jarvis.shared.text import is_english, truncate_utf8
 from jarvis.shared.tool_discovery import native_catalog
 from jarvis.state import reactions
@@ -517,6 +526,17 @@ class ToolRegistryLike(Protocol):
 
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[ToolLike, ...]:
         """Return tools this caller may dispatch."""
+        ...
+
+    def complete(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        turn_id: str | None = None,
+    ) -> Completed:
+        """The full arguments a call that needs a card will run with (ADR 0361)."""
         ...
 
     def dispatch(
@@ -2196,7 +2216,7 @@ def _run_tier0_path(
         tool_name=hit.tool_name,
         target_entity_ref=None,
         caller_principal=CallerPrincipal.REGEX_ROUTER,
-        risk_level=tool_def.risk_level,
+        risk_level=call_risk(tool_def, hit.tool_args),
         arguments=dict(hit.tool_args),
         authorization_lease=None,
         run_id=None,
@@ -2209,7 +2229,7 @@ def _run_tier0_path(
             "action_id": action_id,
             "tool_name": hit.tool_name,
             "caller_principal": CallerPrincipal.REGEX_ROUTER.value,
-            "risk_level": tool_def.risk_level,
+            "risk_level": call_risk(tool_def, hit.tool_args),
             "target_entity_ref": None,
             "turn_id": scratch.turn_id,
             "arguments": dict(hit.tool_args),
@@ -2343,7 +2363,7 @@ def _tool_arguments(arguments_json: str) -> dict[str, Any] | str:
     return parsed
 
 
-def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
+def _dispatch_one_tool_call(  # noqa: C901, PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
     *,
     tool_call: object,
     policy: EffectivePolicy,
@@ -2411,13 +2431,22 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
         # proposes nothing.
         _check_response_cancelled(ctx, "after entity resolve")
 
+    # ADR 0361: a call that needs a card is completed first, so the card shows what will run.
+    if call_asks(tool_def, arguments) and getattr(tool_def, "complete", None) is not None:
+        done = ctx.tool_registry.complete(
+            name, arguments, ctx.conn, ctx.runtime_paths, scratch.turn_id,
+        )
+        if done.arguments is None:
+            return _completion_failed(name, arguments, done, key, call_id, scratch, messages)
+        arguments = dict(done.arguments)
+
     action_id = _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
         tool_name=name,
         target_entity_ref=target_entity_ref,
         caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level=tool_def.risk_level,
+        risk_level=call_risk(tool_def, arguments),
         arguments=arguments,
         authorization_lease=None,
         run_id=None,
@@ -2432,7 +2461,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
             "action_id": action_id,
             "tool_name": name,
             "caller_principal": CallerPrincipal.JARVIS_LLM.value,
-            "risk_level": tool_def.risk_level,
+            "risk_level": action_request.risk_level,
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
@@ -2467,7 +2496,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
     # (`_turn_ending_draft`), and the tool loop ends there. The model is told the same thing
     # for each, and a call it makes twice in one response is frozen once.
     if gate_outcome == "confirm_required":
-        _freeze_call(action_request, tool_def, gate_event, scratch)
+        _freeze_call(action_request, gate_event, scratch)
         messages.append(
             _tool_result_message(
                 call_id=call_id,
@@ -2570,6 +2599,30 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
             content=_render_result_for_llm(result, rid),
             is_error=receipt.status == "failed",
         ),
+    )
+    return "continue"
+
+
+def _completion_failed(  # noqa: PLR0913 — the call, what the completion said, and the turn's three holders.
+    name: str,
+    arguments: Mapping[str, Any],
+    done: Completed,
+    key: str,
+    call_id: str,
+    scratch: _Scratch,
+    messages: list[dict[str, Any]],
+) -> _DispatchOutcome:
+    """A call whose completion could not resolve it: a failed receipt, no card (ADR 0361)."""
+    rid = receipt_id(_new_action_id())
+    scratch.receipts[rid] = derive(
+        name, arguments, reads=False, code=done.code, failure=done.kind,
+    )
+    scratch.calls.append(TurnCall(name, read_only=False, ok=False, key=key))
+    body = {"receipt": rid, "error": done.error, "code": done.code, "kind": done.kind}
+    messages.append(
+        _tool_result_message(
+            call_id=call_id, content=json.dumps(body, ensure_ascii=False), is_error=True,
+        )
     )
     return "continue"
 
@@ -3972,9 +4025,7 @@ def _confirmation_already_requested_this_turn(scratch: _Scratch) -> bool:
     return scratch.pending_confirmation_template_line is not None
 
 
-def _frozen_snapshot(
-    action_request: ActionRequest, tool_def: ToolLike, lang: Language | None,
-) -> dict[str, Any]:
+def _frozen_snapshot(action_request: ActionRequest, lang: Language | None) -> dict[str, Any]:
     """One call frozen as proposed (ADR 0033, 0321).
 
     The snapshot carries the tool, its caller, its target ref, its risk and its arguments as
@@ -3986,17 +4037,15 @@ def _frozen_snapshot(
         "caller": action_request.caller_principal.value,
         "canonical_target": "",
         "target_entity_ref": action_request.target_entity_ref,
-        "risk_level": tool_def.risk_level,
+        "risk_level": action_request.risk_level,
         "args_meta": dict(action_request.arguments),
         "question": ask_line(action_request.tool_name, action_request.arguments, lang),
     }
 
 
-def _freeze_call(
-    action_request: ActionRequest, tool_def: ToolLike, gate_event: Event, scratch: _Scratch,
-) -> None:
+def _freeze_call(action_request: ActionRequest, gate_event: Event, scratch: _Scratch) -> None:
     """Add the call to this response's frozen calls, once however often the model repeats it."""
-    snapshot = _frozen_snapshot(action_request, tool_def, scratch.lang)
+    snapshot = _frozen_snapshot(action_request, scratch.lang)
     if all(
         _call_identity(snapshot) != _call_identity(frozen.snapshot)
         for frozen in scratch.frozen_calls
@@ -4051,7 +4100,17 @@ def _ask_for_frozen_calls(ctx: DecideContext, scratch: _Scratch) -> None:
     scratch.pending_confirmation_template_line = line
 
 
-def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments and the card's two settings.
+class CompletionRefused(Exception):  # noqa: N818 — a refusal he is told about, not a fault.
+    """A call's completion could not resolve it (ADR 0361): no card was raised."""
+
+    def __init__(self, message: str, code: str, kind: str) -> None:
+        """Keep the tool's own wording, code and failure kind."""
+        super().__init__(message)
+        self.code = code
+        self.kind = kind
+
+
+def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments and the card's settings.
     conn: sqlite3.Connection,
     registry: ToolRegistryLike,
     tool_name: str,
@@ -4059,23 +4118,31 @@ def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments an
     *,
     ttl_ms: int,
     lang: Language | None = None,
+    runtime_paths: RuntimePathsLike | None = None,
 ) -> str | None:
     """Put a card on screen for a call Allen himself started, with no model turn (ADR 0148).
 
-    Freezes ``arguments`` exactly as ``_ask_for_frozen_calls`` does;
-    his button then runs the usual answer path (lease, gate, dispatch). The confirmation id,
-    or None when the tool is not on the menu or does not ask first.
+    Completes the call first when the tool has a completion and ``runtime_paths`` is given
+    (ADR 0361; :class:`CompletionRefused` when it cannot be), then freezes the full arguments
+    exactly as ``_ask_for_frozen_calls`` does; his button then runs the usual answer path
+    (lease, gate, dispatch). The confirmation id, or None when the tool is not on the menu or
+    this call does not ask first.
     """
     tool_def = _find_tool_def(registry, tool_name)
-    if tool_def is None or not tool_def.requires_confirmation:
+    if tool_def is None or not call_asks(tool_def, arguments):
         return None
+    if runtime_paths is not None and getattr(tool_def, "complete", None) is not None:
+        done = registry.complete(tool_name, arguments, conn, runtime_paths)
+        if done.arguments is None:
+            raise CompletionRefused(done.error, done.code, done.kind)
+        arguments = done.arguments
     confirmation_id = _new_confirmation_id()
     call = {
         "tool_name": tool_name,
         "caller": CallerPrincipal.JARVIS_LLM.value,
         "canonical_target": "",
         "target_entity_ref": None,
-        "risk_level": tool_def.risk_level,
+        "risk_level": call_risk(tool_def, arguments),
         "args_meta": dict(arguments),
         "question": ask_line(tool_name, arguments, lang),
     }
@@ -4468,7 +4535,7 @@ def _run_accepted_call(  # noqa: PLR0913 — one keyword per answer-path input.
         tool_name=tool_name,
         target_entity_ref=target_entity_ref,
         caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level=tool_def.risk_level,
+        risk_level=call_risk(tool_def, arguments),
         arguments=arguments,
         authorization_lease=lease,
         run_id=None,
@@ -4481,7 +4548,7 @@ def _run_accepted_call(  # noqa: PLR0913 — one keyword per answer-path input.
             "action_id": action_id,
             "tool_name": tool_name,
             "caller_principal": CallerPrincipal.JARVIS_LLM.value,
-            "risk_level": tool_def.risk_level,
+            "risk_level": action_request.risk_level,
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
@@ -4747,6 +4814,10 @@ _CARD_NOTE: Final = (
     " Calling this does not run it: the user gets a card with these arguments"
     " and runs or discards it."
 )
+_CARD_NOTE_BY_CALL: Final = (
+    " A call that needs his approval does not run: the user gets a card with these arguments"
+    " and runs or discards it."
+)
 
 
 def _tool_menu(
@@ -4783,7 +4854,11 @@ def _tool_to_dict(tool_def: ToolLike) -> dict[str, Any]:
     A tool that asks first says so (ADR 0062), or the model, believing the
     call acts at once, asks in its own words before the card asks again.
     """
-    card = _CARD_NOTE if tool_def.requires_confirmation else ""
+    card = (
+        _CARD_NOTE if tool_def.requires_confirmation
+        else _CARD_NOTE_BY_CALL if getattr(tool_def, "effect", None) is not None
+        else ""
+    )
     return {
         "name": tool_def.name,
         "description": tool_def.description + card,
@@ -4860,6 +4935,7 @@ __all__ = [
     "DEFAULT_MAX_TOOL_ITERATIONS",
     "PREFIX_WARM_MAX_OUTPUT_TOKENS",
     "AttentionChannel",
+    "CompletionRefused",
     "DecideContext",
     "DecideResult",
     "EffectivePolicy",

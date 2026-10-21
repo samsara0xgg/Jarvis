@@ -28,7 +28,7 @@ import yaml
 from jarvis.shared.lang import TEXT, spoken_date, spoken_time, t
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from jarvis.shared.lang import Language
@@ -188,6 +188,7 @@ def validate_tier0_table(
     allowed_tool_names: frozenset[str],
     entity_required_tool_names: frozenset[str] = frozenset(),
     requires_confirmation_tool_names: frozenset[str] = frozenset(),
+    asks_for_args: Mapping[str, Callable[[Mapping[str, Any]], bool]] | None = None,
 ) -> None:
     """Cross-check the table against the registry's regex_router surface.
 
@@ -220,6 +221,10 @@ def validate_tier0_table(
     that branch is the RUNTIME enforcement of this boot rule, not dead
     code. Defaulted to an empty frozenset for the same backward-compat
     reason as ``entity_required_tool_names``.
+
+    ``asks_for_args`` (ADR 0361) names, for each tool whose calls differ in effect, whether a
+    call with given arguments needs a card; a row may target such a tool only with fixed
+    arguments that need none.
     """
     for pattern in table:
         if pattern.tool_name not in allowed_tool_names:
@@ -237,7 +242,10 @@ def validate_tier0_table(
                 "would be refused by the Pre-action Gate at every call"
             )
             raise Tier0ConfigError(msg)
-        if pattern.tool_name in requires_confirmation_tool_names:
+        asks = (asks_for_args or {}).get(pattern.tool_name)
+        if pattern.tool_name in requires_confirmation_tool_names or (
+            asks is not None and asks(pattern.arg_template)
+        ):
             msg = (
                 f"tier0 patterns: {pattern.pattern_id!r} targets tool "
                 f"{pattern.tool_name!r}, which declares "
