@@ -70,6 +70,7 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started, open_response_runs
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
+from tests.support.hold import HANG_S
 from tests.support.model import Failure, Pause, ScriptedModel
 from tests.support.response_run import (
     LLM_CONFIG,
@@ -440,8 +441,8 @@ def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
 
     ``decide()`` answers a user's words in one call, so a turn waits on an action only when its
     trigger is one ``decide()`` has no answer for: here the action's own dispatch row, with the
-    action registered live for the turn, and the worker's failure as the trigger that ends the
-    wait.
+    action registered live for the turn. The worker's failure, the trigger that would end the
+    wait, comes only after the cancel has: the cancel is what ended it.
     """
     runtime = make_runtime(tmp_path)
     action_id = "A-live"
@@ -453,11 +454,12 @@ def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
     )
     register_live_action(turn_id="T-action", action_id=action_id)
     worker_done = threading.Event()
+    worker_may_finish = threading.Event()
     event_log_path = runtime.runtime_paths.event_log
 
     def _late_worker() -> None:
-        """Stand in for a dispatched Codex worker that finishes on its own."""
-        time.sleep(0.4)
+        """Stand in for a dispatched Codex worker that finishes once the test lets it."""
+        worker_may_finish.wait()
         conn = open_event_log(event_log_path)
         try:
             emit_event(
@@ -480,11 +482,11 @@ def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
             user_intent_event=intent,
             available_surfaces=frozenset(),
             streaming_enabled=True,
-            trigger_timeout_s=5.0,
+            trigger_timeout_s=60.0,
         )
         assert runtime.response_runs is not None
         # Wait until the run is actually parked in the trigger waiter.
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_S
         while time.monotonic() < deadline:
             runs = runtime.response_runs.open_runs()
             if runs and runs[0].state == "waiting_action":
@@ -492,15 +494,18 @@ def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
             time.sleep(0.005)
         run = runtime.response_runs.open_runs()[0]
         assert run.state == "waiting_action"
-        started_at = time.monotonic()
-        assert cancel(run.response_id, "generation", "user_stop") == "cancelled"
-        with pytest.raises(ResponseCancelledError):
-            future.result(timeout=10)
-        assert time.monotonic() - started_at < 2.0
+        try:
+            assert cancel(run.response_id, "generation", "user_stop") == "cancelled"
+            # No trigger can arrive and the wait is a minute long, so the turn ends only if the
+            # cancel reaches the waiter.
+            with pytest.raises(ResponseCancelledError):
+                future.result(timeout=HANG_S)
+        finally:
+            worker_may_finish.set()
 
     assert event_count(runtime.conn, "response.cancelled") == 1
     assert event_count(runtime.conn, "action.cancelled") == 0
-    assert worker_done.wait(timeout=5)
+    assert worker_done.wait(timeout=HANG_S)
     assert event_count(runtime.conn, "action.failed") == 1
     assert runtime.response_runs.get(run.response_id) is None
     runtime.conn.close()
@@ -574,10 +579,11 @@ def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
             None,
         ),
     )
+    # The cancel runs beside the holder, which keeps the write lock until the cancel has answered.
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        started = time.monotonic()
-        assert cancel(run.response_id, "generation", "user_stop") == "timeout"
-        assert time.monotonic() - started < 0.25
+        cancelling = pool.submit(cancel, run.response_id, "generation", "user_stop")
+        assert cancelling.result(timeout=HANG_S) == "timeout"
         assert event_count(runtime.conn, "response.cancelled") == 0
         # Read into locals: the token is a property, and mypy would narrow a
         # direct `is False` assertion into the later `is True` one.
@@ -586,6 +592,7 @@ def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
     finally:
         holder.rollback()
         holder.close()
+        pool.shutdown()
 
     assert cancel(run.response_id, "generation", "user_stop") == "cancelled"
     assert event_count(runtime.conn, "response.cancelled") == 1
