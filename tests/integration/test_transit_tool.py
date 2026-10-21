@@ -334,7 +334,7 @@ def test_a_trip_google_finds_only_on_foot_answers_with_the_walk_and_the_drive(
     assert out["options"] == []
     assert out["modes"] == {"drive": {"minutes": 12, "km": 9.3}, "walk": {"minutes": 40, "km": 3.1}}
     assert out["summary"] == (
-        "No bus route to home at that time. By drive it is 12 min. By walk it is 40 min."
+        "No bus route to home at that time. Driving takes 12 min. Walking all the way is 40 min."
     )
 
 
@@ -863,6 +863,22 @@ def test_one_live_time_per_bus_in_the_answer_the_card_row_and_the_pin(
     assert (trip["departs_at_ms"], trip["bus_trip_id"]) == (local_ms(17, 12), "T26")
 
 
+def test_a_pinned_bus_after_midnight_is_said_with_its_day_and_no_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At 23:50 the 00:10 is on today's list but tomorrow's by the clock: no "at" before its day."""
+    late = datetime(2026, 10, 6, 23, 50, tzinfo=ZONE)
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "24:10"))))
+    live = _live(tmp_path, _trip("T26", "26", "24:10:00", "24:30:00"))
+    offers = TransitOffers()
+    _call({"to": "home"}, here=fix_with(), bus_live=live, offers=offers, now=late)
+    pinned = _call({"pin": [1]}, here=fix_with(), bus_live=live, offers=offers, now=late)
+    assert pinned["summary"] == (
+        "Pinned on the notch: the 26 from Stop of 26: leave tomorrow (Wed), 12:06 am, bus"
+        " tomorrow (Wed), 12:10 am. It rings at the leave time."
+    )
+
+
 DAY_MS = 24 * 3_600_000
 
 
@@ -1150,9 +1166,9 @@ def test_a_time_today_is_said_as_a_clock_and_another_days_with_its_day(
     )
     assert "last_today" not in out
     assert out["summary"] == (
-        "To home, option 1: leave tomorrow (Wed), 12:06 am, take the 26 from Stop of 26 at"
+        "To home, option 1: leave tomorrow (Wed), 12:06 am, take the 26 from Stop of 26"
         " tomorrow (Wed), 12:10 am (scheduled), arrive tomorrow (Wed), 12:30 am (24 min). Then"
-        " option 2: the 26 from Stop of 26 at tomorrow (Wed), 11:20 pm (scheduled), arrive"
+        " option 2: the 26 from Stop of 26 tomorrow (Wed), 11:20 pm (scheduled), arrive"
         " tomorrow (Wed), 11:40 pm."
     )
     row = _card()["options"][0]
@@ -1171,6 +1187,28 @@ def test_the_last_bus_had_left_is_said_when_the_next_one_is_of_a_later_service_d
     assert out["options"][0]["legs"][0]["departs"] == "tomorrow (Wed), 5:30 am"
     assert out["last_today"] == {"route": "26", "left_at": "11:20 pm"}
     assert out["summary"].endswith("The last 26 had left at 11:20 pm.")
+
+
+def test_the_last_bus_that_left_yesterday_is_said_with_its_day_and_no_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line with no Wednesday service, at 00:20 on Wednesday: the 26 last left yesterday."""
+    wednesday = datetime(2026, 10, 7, 0, 20, tzinfo=ZONE)
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "53:30"))))
+    export = gtfs.Export(
+        (BOARD_STOP, ALIGHT_STOP), tuple(_runs(("T26a", "26", "23:20"), ("T26", "26", "05:30"))),
+        services=(gtfs.ServiceSpec("WK", "1101111"),),
+    )
+    live = bus_live(tmp_path, export, lambda: b"")
+    out = _call({"to": "home"}, here=fix_with(), bus_live=live, now=wednesday)
+    assert out["options"][0]["legs"][0]["departs"] == "tomorrow (Thu), 5:30 am"
+    assert out["last_today"] == {"route": "26", "left_at": "yesterday (Tue) 11:20 pm"}
+    assert out["summary"] == (
+        "To home, option 1: leave tomorrow (Thu), 5:26 am, take the 26 from Stop of 26"
+        " tomorrow (Thu), 5:30 am (scheduled), arrive tomorrow (Thu), 5:50 am (24 min). Then"
+        " option 2: the 26 from Stop of 26 tomorrow (Thu), 11:20 pm (scheduled), arrive tomorrow"
+        " (Thu), 11:40 pm. The last 26 had left yesterday (Tue) 11:20 pm."
+    )
 
 
 def test_arrive_by_keeps_the_last_three_and_says_the_latest_in_time(
@@ -1292,6 +1330,24 @@ def test_a_named_bus_is_answered_in_the_sentence_with_its_verdict(
     _serve(monkeypatch, answer=routes_with(bus_route("28", "17:20")))
     assert _call({"to": "home", "route": "39"}, here=fix_with())["summary"].startswith(
         "Google has no route 39 bus then."
+    )
+
+
+def test_a_named_bus_and_the_next_one_of_another_day_are_said_with_their_day_and_no_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A time that carries its day is said without "at": the clock keeps it, the day does not."""
+    late = datetime(2026, 10, 6, 23, 50, tzinfo=ZONE)
+    _serve(monkeypatch, answer=routes_with(bus_route("39", "23:50"), bus_route("39", "24:21")))
+    out = _call({"to": "home", "route": "39"}, here=fix_with(), now=late)
+    assert out["summary"].startswith(
+        "The 39 leaves Stop of 39 at 11:50 pm (scheduled); he has missed it. The next one is"
+        " tomorrow (Wed), 12:21 am (scheduled)."
+    )
+    _serve(monkeypatch, answer=routes_with(bus_route("39", "24:21")))
+    out = _call({"to": "home", "route": "39"}, here=fix_with(), now=late)
+    assert out["summary"].startswith(
+        "The 39 leaves Stop of 39 tomorrow (Wed), 12:21 am (scheduled); he has room"
     )
 
 

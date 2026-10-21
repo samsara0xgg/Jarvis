@@ -491,6 +491,7 @@ class _Bus:
             feed = None
         start_ms = int(start.timestamp() * 1000)
         shown: list[dict[str, Any]] = []
+        lines: list[str] = []
         total = 0
         searched = _BOARD_WINDOW
         for hit in hits:
@@ -511,9 +512,9 @@ class _Bus:
                 **({"metres": hit.metres} if hit.metres is not None else {}),
                 "buses": [self._bus_view(b, now) for b in buses],
             })
+            lines.append(self._stop_line(shown[-1], [self._bus_said(b, now) for b in buses]))
         hours = int(searched.total_seconds() // 3600)
         label = f"the next {hours} h from {transit_tool.said(start, now)}"
-        lines = [self._stop_line(s) for s in shown]
         summary = " ".join(lines) if lines else "No buses were found."
         if total == 0:
             summary = f"No buses at {shown[0]['stop'] if shown else 'that stop'} in {label}."
@@ -560,15 +561,20 @@ class _Bus:
         }
 
     @staticmethod
-    def _stop_line(stop: Mapping[str, Any]) -> str:
-        far = f" ({stop['metres']} m away)" if "metres" in stop else ""
-        if not stop["buses"]:
-            return f"No buses are listed at {stop['stop']}{far}."
-        buses = "; ".join(
-            f"the {b['route']} toward {b['headsign'] or '?'} at {b['departs']} ({b['source']})"
-            for b in stop["buses"]
+    def _bus_said(one: Mapping[str, Any], now: datetime) -> str:
+        """``the 7 toward Downtown at 5:10 pm (scheduled)``; a time with its day has no "at"."""
+        call = one["call"]
+        return (
+            f"the {call.route} toward {call.headsign or '?'}"
+            f" {transit_tool.said_at_ms(one['ms'], now)} ({one['source']})"
         )
-        return f"Next at {stop['stop']}{far}: {buses}."
+
+    @staticmethod
+    def _stop_line(stop: Mapping[str, Any], buses: list[str]) -> str:
+        far = f" ({stop['metres']} m away)" if "metres" in stop else ""
+        if not buses:
+            return f"No buses are listed at {stop['stop']}{far}."
+        return f"Next at {stop['stop']}{far}: {'; '.join(buses)}."
 
     # --- the pin -----------------------------------------------------------------------------
 
@@ -580,8 +586,8 @@ class _Bus:
         )
         said = "; ".join(
             f"the {t.route} from {t.board_stop}: leave"
-            f" {transit_tool.said_ms(t.leave_at_ms, now, soon=True)}, bus at"
-            f" {transit_tool.said_ms(t.departs_at_ms, now)}"
+            f" {transit_tool.said_ms(t.leave_at_ms, now, soon=True)}, bus"
+            f" {transit_tool.said_at_ms(t.departs_at_ms, now)}"
             for t in trips
         )
         summary = (

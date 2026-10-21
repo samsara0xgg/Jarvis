@@ -684,6 +684,10 @@ def test_with_no_bus_in_three_hours_the_board_looks_on_to_the_day_it_runs(
     assert [(b["departs"], b["source"]) for b in stop["buses"]] == [
         ("tomorrow (Wed), 6:00 am", "scheduled"),
     ]
+    assert out["summary"] == (
+        "Next at Ring Rd at Oak St (100 m away): the 7 toward Downtown tomorrow (Wed), 6:00 am"
+        " (scheduled)."
+    )
     assert world.receipt()["covered"]["window"] == "the next 24 h from 5:00 pm"
 
 
