@@ -25,7 +25,7 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.runtime import inherent_loop
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import emit_event, latest_id, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -348,7 +348,7 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
     assert not registry.turn_stopped("T-pending")
 
     wire = _Wire()
-    pipeline = _Submitted(inherent_loop._latest_id(runtime.conn))  # noqa: SLF001
+    pipeline = _Submitted(latest_id(runtime.conn))
 
     def answer() -> None:
         for kind in ("response_open", "response_chunk", "response_emitted"):

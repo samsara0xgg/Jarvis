@@ -2243,6 +2243,48 @@ def iter_events_after(
         yield row[0], _row_to_event(row)
 
 
+def latest_id(conn: sqlite3.Connection) -> int:
+    """Return MAX(events.id) or 0 if the table is empty.
+
+    A watcher anchors its cursor here at startup so events that landed BEFORE
+    it came up are not replayed.
+    """
+    cursor = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events")
+    row = cursor.fetchone()
+    if row is None:
+        return 0
+    return int(row[0])
+
+
+# One cursor, many types: the `IN (...)` placeholder run is composed from the
+# tuple length; the type values themselves always go through placeholders.
+_SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE: Final[str] = (
+    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
+    "payload_json, source_event_id, correlation_json "
+    "FROM events WHERE id > ? AND type IN ({placeholders}) ORDER BY id ASC"
+)
+
+
+def fetch_events_after(
+    conn: sqlite3.Connection,
+    *,
+    after_id: int,
+    event_types: tuple[str, ...],
+) -> list[tuple[int, Event]]:
+    """Return ``(id, Event)`` for each row of ``event_types`` with ``id > after_id``, oldest first.
+
+    The polling twin of :func:`iter_events_after`: a watcher that keeps only a
+    cursor asks for the rows of the types it drives, and advances the cursor to
+    the last ``id`` it handled. Several types share one cursor, so the rows keep
+    their append order across types. The list is materialised, not streamed,
+    because the caller folds its cursor before the next poll.
+    """
+    placeholders = ",".join("?" * len(event_types))
+    sql = _SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE.format(placeholders=placeholders)
+    cursor = conn.execute(sql, (after_id, *event_types))
+    return [(int(row[0]), _row_to_event(row)) for row in cursor]
+
+
 def iter_events_of_types(
     conn: sqlite3.Connection,
     event_types: Iterable[str],
@@ -2460,11 +2502,13 @@ __all__ = [
     "UnregisteredEventTypeError",
     "append_event_in_transaction",
     "emit_event",
+    "fetch_events_after",
     "get_event",
     "iter_events",
     "iter_events_after",
     "iter_events_for_turn",
     "iter_events_of_types",
+    "latest_id",
     "open_event_log",
     "turn_intent_channel",
     "turn_origin",

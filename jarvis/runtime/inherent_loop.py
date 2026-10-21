@@ -237,9 +237,11 @@ from jarvis.state.event_log import (
     PHONE_VOICE_CHANNEL,
     confirmation_device,
     emit_event,
+    fetch_events_after,
     get_event,
     iter_events_for_turn,
     iter_events_of_types,
+    latest_id,
     open_event_log,
     open_runtime_event_log,
     recent_turns_of_device,
@@ -345,6 +347,12 @@ from jarvis.surface.voice_print import load_extractor
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 
+# The commentary path (``_open_commentary_in_worker_thread``, ``_commentary_watcher``) is split
+# by its own owner and still spells the two L2 cursor helpers by their old names; its tests patch
+# ``_fetch_events_after`` as the poll seam. Drop both lines with that split.
+_latest_id = latest_id
+_fetch_events_after = fetch_events_after
+
 
 # Default poll cadence for both watchers; 10 ms balances CPU against
 # first-byte latency between an L2 INSERT (Step 7 submit handler / L3
@@ -434,35 +442,17 @@ _RESPONSE_TERMINAL_TYPES: frozenset[str] = frozenset(
     {"surface.response_emitted", "response.cancelled", "response.failed"},
 )
 
-# Watcher cursor SELECT — placeholders only, no user-controlled
-# interpolation. Mirrors the column order of
-# ``jarvis.state.event_log._SELECT_ALL_ORDERED_SQL``. The type filter
-# is an ``IN (...)`` list with a dynamically-built placeholder run so
-# the watcher can fold multiple event types into one cursor (ADR-0005
-# §5.1: the inherent-loop user-intent watcher folds BOTH
-# ``surface.user_intent`` (keyboard) and ``utterance.received`` (voice)
-# into one driver path). Placeholder count is interpolated from the
-# tuple length passed in by the caller; tuple contents go through
-# placeholders, never interpolation.
-_SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE = (
-    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
-    "payload_json, source_event_id, correlation_json "
-    "FROM events WHERE id > ? AND type IN ({placeholders}) ORDER BY id ASC"
-)
-
-# Single-cursor SELECT for the three Step-2 Inherent response event
-# types, plus the two ends that produce no answer. Static type list (no
-# placeholders): asyncio's wakeup order does NOT guarantee that sibling
-# watchers (one per type) would fire in L2-insertion order, so we fold
-# all types into ONE cursor ordered by SQLite row id — D16 race
+# The rows the response watcher forwards: the three Step-2 Inherent response
+# event types, plus the two ends that produce no answer. They share ONE cursor:
+# asyncio's wakeup order does NOT guarantee that sibling watchers (one per type)
+# would fire in L2-insertion order, and the row id orders them — D16 race
 # elimination by construction.
-_SELECT_RESPONSE_EVENTS_AFTER_ID_SQL = (
-    "SELECT id, event_uid, type, schema_version, ts_epoch_ms, "
-    "payload_json, source_event_id, correlation_json "
-    "FROM events WHERE id > ? AND type IN ("
-    "'surface.response_open', 'surface.response_chunk', "
-    "'surface.response_emitted', 'turn.failed', 'response.cancelled'"
-    ") ORDER BY id ASC"
+_RESPONSE_WATCHER_TYPES: Final[tuple[str, ...]] = (
+    "surface.response_open",
+    "surface.response_chunk",
+    "surface.response_emitted",
+    "turn.failed",
+    "response.cancelled",
 )
 
 
@@ -751,95 +741,6 @@ def _voice_models_preflight(
     return (not missing, missing)
 
 
-def _latest_id(conn: sqlite3.Connection) -> int:
-    """Return MAX(events.id) or 0 if the table is empty.
-
-    Used by each watcher at startup to anchor its cursor so events that
-    landed BEFORE the daemon came up are not replayed.
-    """
-    cursor = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events")
-    row = cursor.fetchone()
-    if row is None:
-        return 0
-    return int(row[0])
-
-
-def _row_to_id_event(row: tuple[Any, ...]) -> tuple[int, Event]:
-    """Re-hydrate an events-table row into ``(id, Event)``.
-
-    Mirrors :func:`jarvis.state.event_log._row_to_event` (module-private
-    by L2 design — see the precedent comment in
-    :func:`jarvis.runtime._hydrate_event_row`); also surfaces the
-    SQLite ``id`` so the watcher can advance its cursor without a
-    second SELECT.
-    """
-    (
-        id_,
-        event_uid,
-        type_,
-        schema_version,
-        ts_epoch_ms,
-        payload_json,
-        source_event_id,
-        correlation_json,
-    ) = row
-    payload: dict[str, Any] = json.loads(payload_json)
-    correlation: dict[str, str] | None = (
-        None if correlation_json is None else json.loads(correlation_json)
-    )
-    return int(id_), Event(
-        event_uid=event_uid,
-        type=type_,
-        schema_version=schema_version,
-        ts_epoch_ms=ts_epoch_ms,
-        payload=payload,
-        source_event_id=source_event_id,
-        correlation=correlation,
-    )
-
-
-def _fetch_events_after(
-    conn: sqlite3.Connection,
-    *,
-    after_id: int,
-    event_types: tuple[str, ...],
-) -> list[tuple[int, Event]]:
-    """SELECT every event whose type is in ``event_types`` with ``id > after_id``.
-
-    ADR-0005 §5.1: callers may pass multiple event types so a single
-    cursor can drive turns from both keyboard
-    (``surface.user_intent``) and voice (``utterance.received``)
-    surfaces with one polling loop. The SQL ``IN (...)`` placeholder
-    list is built from ``len(event_types)``; the type values
-    themselves pass through SQLite placeholders (no string
-    interpolation of user data).
-
-    Returns a materialized list of ``(id, Event)`` tuples (not an
-    iterator) because the watcher loop folds the cursor before its next
-    poll; lifetime safety beats streaming for ~tens of rows. The ``id``
-    is the SQLite row id used to advance the cursor.
-    """
-    placeholders = ",".join("?" * len(event_types))
-    sql = _SELECT_AFTER_ID_OF_TYPES_SQL_TEMPLATE.format(placeholders=placeholders)
-    cursor = conn.execute(sql, (after_id, *event_types))
-    return [_row_to_id_event(row) for row in cursor]
-
-
-def _fetch_response_events_after(
-    conn: sqlite3.Connection,
-    *,
-    after_id: int,
-) -> list[tuple[int, Event]]:
-    """SELECT every ``surface.response_{open,chunk,emitted}`` with ``id > after_id``.
-
-    Returns ``(id, Event)`` tuples oldest-first, ordered by SQLite row
-    id so the three event types are interleaved in their L2-insertion
-    order — see :func:`_response_watcher` for the D16 rationale.
-    """
-    cursor = conn.execute(_SELECT_RESPONSE_EVENTS_AFTER_ID_SQL, (after_id,))
-    return [_row_to_id_event(row) for row in cursor]
-
-
 def _drop_for_silent_channel(  # noqa: PLR0913 - two verdict sources, one bookkeeping set
     event: Event,
     *,
@@ -1105,7 +1006,7 @@ def _boot_intent_pump_in_thread(event_log_path: Path) -> _IntentPumpBoot:
     conn = open_event_log(event_log_path)
     try:
         adoption = adopt_consumer(conn, name=REALTIME_INTENT_CONSUMER)
-        live_cursor_id = _latest_id(conn)
+        live_cursor_id = latest_id(conn)
         recovered = recoverable_inputs(
             conn,
             adoption_row_id=adoption.adoption_row_id,
@@ -1196,7 +1097,7 @@ async def _intent_pump_watcher(
                 while recovered:
                     await _offer_intent(runtime, queue, dispatched, recovered[0])
                     recovered.pop(0)
-                for row_id, event in _fetch_events_after(
+                for row_id, event in fetch_events_after(
                     runtime.conn,
                     after_id=after_id,
                     event_types=_USER_INTENT_TRIGGER_TYPES,
@@ -1520,7 +1421,7 @@ async def _response_watcher(
     player will say ``spoken``, and that player is never given a typed turn.
     Every other channel keeps ``no_voice``, a phone's included.
     """
-    after_id = _latest_id(runtime.conn)
+    after_id = latest_id(runtime.conn)
     silent_turns: set[str] = set()
     typed_turns: set[str] = set()  # the turns no player is given, as the TTS watcher drops them
     wait_lines: set[str] = set()  # response ids of wait lines, whose cancel is not the turn's
@@ -1528,9 +1429,10 @@ async def _response_watcher(
     try:
         while True:
             try:
-                new_events = _fetch_response_events_after(
+                new_events = fetch_events_after(
                     runtime.conn,
                     after_id=after_id,
+                    event_types=_RESPONSE_WATCHER_TYPES,
                 )
                 for row_id, ev in new_events:
                     after_id = max(after_id, row_id)
@@ -1622,14 +1524,14 @@ async def _tool_status_watcher(
     stays between two tools, so the surface never flickers). The label is fixed
     text from the language table.
     """
-    after_id = _latest_id(runtime.conn)
+    after_id = latest_id(runtime.conn)
     status = ToolStatus()
     sent = ("", "")
     LOGGER.info("tool_status_watcher started (after_id=%d)", after_id)
     try:
         while True:
             try:
-                for row_id, ev in _fetch_events_after(
+                for row_id, ev in fetch_events_after(
                     runtime.conn, after_id=after_id, event_types=_TOOL_STATUS_EVENT_TYPES,
                 ):
                     after_id = max(after_id, row_id)
@@ -1705,7 +1607,7 @@ async def _tts_watcher(  # noqa: C901 - ordered durable dispatch FSM
     try:
         while True:
             try:
-                new_events = _fetch_events_after(
+                new_events = fetch_events_after(
                     conn,
                     after_id=after_id,
                     event_types=(
@@ -1790,12 +1692,12 @@ async def _phone_ends_watcher(
     it. A row that cannot be taken is retried from the same place.
     """
     ends = UnplayedAnswers(owner_boot)
-    after_id = _latest_id(conn)
+    after_id = latest_id(conn)
     LOGGER.info("phone_ends_watcher started (after_id=%d)", after_id)
     try:
         while True:
             try:
-                for row_id, event in _fetch_events_after(
+                for row_id, event in fetch_events_after(
                     conn, after_id=after_id, event_types=terminal_voice.RESPONSE_ROW_TYPES,
                 ):
                     ends.observe(conn, row_id, event)
@@ -2978,7 +2880,7 @@ def _build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
             provider=provider,
             player=player,
             conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
-            boot_high_water_id=_latest_id(runtime.conn),
+            boot_high_water_id=latest_id(runtime.conn),
             config=(
                 media_config if network_lost_dir is None
                 else dataclasses.replace(media_config, network_lost_cache_dir=network_lost_dir)
@@ -3027,7 +2929,7 @@ class _SpokenCursor:
         self._silent: set[str] = set()
 
     def poll(self) -> terminal_voice.RowBatch:
-        rows = _fetch_events_after(
+        rows = fetch_events_after(
             self._conn, after_id=self._after, event_types=terminal_voice.RESPONSE_ROW_TYPES,
         )
         spoken: list[tuple[int, Event]] = []
@@ -3062,7 +2964,7 @@ class _SpokenRows:
         self._text_only = text_only
 
     def high_water(self) -> int:
-        return _latest_id(self._conn)
+        return latest_id(self._conn)
 
     def cursor(self, after: int) -> _SpokenCursor:
         return _SpokenCursor(self._conn, after, self._text_only)
@@ -3135,7 +3037,7 @@ class _PhoneCursor:
         return known
 
     def poll(self) -> terminal_voice.RowBatch:
-        rows = _fetch_events_after(
+        rows = fetch_events_after(
             self._conn, after_id=self._after,
             event_types=(
                 terminal_voice.RESPONSE_ROW_TYPES if self._spoken_only
@@ -3165,7 +3067,7 @@ class _PhoneStepCursor:
 
     def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
         frames: list[tuple[int, dict[str, Any]]] = []
-        for row_id, event in _fetch_events_after(
+        for row_id, event in fetch_events_after(
             self._conn, after_id=self._after, event_types=STEP_EVENT_TYPES,
         ):
             self._after = max(self._after, row_id)
@@ -3186,7 +3088,7 @@ class _PhoneReactionCursor:
 
     def poll(self) -> tuple[int, list[tuple[int, dict[str, Any]]]]:
         frames: list[tuple[int, dict[str, Any]]] = []
-        for row_id, event in _fetch_events_after(
+        for row_id, event in fetch_events_after(
             self._conn, after_id=self._after, event_types=(reactions.EVENT,),
         ):
             self._after = max(self._after, row_id)
@@ -3204,7 +3106,7 @@ class _PhoneRows:
         self._conn = conn
 
     def high_water(self) -> int:
-        return _latest_id(self._conn)
+        return latest_id(self._conn)
 
     def cursor(self, device: str, after: int, *, spoken_only: bool = False) -> _PhoneCursor:
         return _PhoneCursor(self._conn, after, device, spoken_only=spoken_only)
@@ -4751,7 +4653,7 @@ async def _system_trigger_watcher(
         while True:
             resume_id = after_id
             try:
-                new_events = _fetch_events_after(
+                new_events = fetch_events_after(
                     runtime.conn,
                     after_id=after_id,
                     event_types=_SYSTEM_TRIGGER_TYPES,
@@ -4853,7 +4755,7 @@ async def _start_sweep_control_plane(
     """
     sweep_interval_s, default_budget_s = _supervisor_settings(runtime.config)
 
-    anchor_id = _latest_id(runtime.conn)
+    anchor_id = latest_id(runtime.conn)
     anchored = asyncio.Event()
     watcher = asyncio.create_task(
         _system_trigger_watcher(

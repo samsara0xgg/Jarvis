@@ -45,7 +45,12 @@ from jarvis.runtime.phone_voice import (
     end_open_answers,
 )
 from jarvis.state.device_tokens import device_name_for_token, pair_device
-from jarvis.state.event_log import PHONE_VOICE_CHANNEL, emit_event, open_event_log
+from jarvis.state.event_log import (
+    PHONE_VOICE_CHANNEL,
+    emit_event,
+    fetch_events_after,
+    open_event_log,
+)
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.terminal_voice import RESPONSE_ROW_TYPES
@@ -168,7 +173,7 @@ def test_the_next_turn_is_told_an_answer_nobody_could_play_was_never_spoken(
     _phone_utterance(log, "T-phone")
     answer_rows(log, "T-phone", "R-phone", "Goodbye, Dad.")
     # the phone's answer, as the watcher meets it
-    for row_id, event in inherent_loop._fetch_events_after(  # noqa: SLF001
+    for row_id, event in fetch_events_after(
         watcher_conn, after_id=0,
         event_types=RESPONSE_ROW_TYPES,
     ):

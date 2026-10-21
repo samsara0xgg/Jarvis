@@ -36,6 +36,7 @@ from jarvis.state.event_log import (
     emit_event,
     iter_events_for_turn,
     iter_events_of_types,
+    latest_id,
     open_event_log,
     open_runtime_event_log,
 )
@@ -722,7 +723,7 @@ class VoiceHost:
             provider=cast("Any", self.mac_provider),
             player=mac_player,
             conn_factory=lambda: open_event_log(self.log),
-            boot_high_water_id=inherent_loop._latest_id(conn),  # noqa: SLF001
+            boot_high_water_id=latest_id(conn),
             config=_mac_config(),
             start_player=False,
             silent_intent_channels=inherent_loop._TTS_SILENT_CHANNELS,  # noqa: SLF001
