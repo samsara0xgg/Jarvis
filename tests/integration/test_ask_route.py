@@ -21,6 +21,7 @@ import pytest
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.runtime import _new_turn_id, inherent_loop
+from jarvis.runtime.daemon import live_backend
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.plugin_settings import local_key_matches
 from jarvis.surface import inherent_server
@@ -190,7 +191,7 @@ class _Daemon:
         self.broadcaster = InherentBroadcaster()
         self.app = create_app(InherentDeps(
             submit_callable=submit, broadcaster=self.broadcaster,
-            ask_outcome=functools.partial(inherent_loop._ask_outcome, self.paths.event_log),  # noqa: SLF001
+            ask_outcome=functools.partial(live_backend.ask_outcome, self.paths.event_log),
         ))
         require_local_key(
             self.app,
