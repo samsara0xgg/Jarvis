@@ -1111,8 +1111,8 @@ def test_a_time_today_is_said_as_a_clock_and_another_days_with_its_day(
 ) -> None:
     """ADR 0343: at 23:50 the 00:10 is tomorrow's, said so; the card keeps 00:10 and its epoch.
 
-    The first bus he can catch is on the next service day, so the answer also says when the last
-    26 left today, from the store.
+    The 00:10 is the 24:10 of today's service day, still to come, so no last 26 is said to have
+    left.
     """
     late = datetime(2026, 10, 6, 23, 50, tzinfo=ZONE)
     _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "24:10"))))
@@ -1125,16 +1125,29 @@ def test_a_time_today_is_said_as_a_clock_and_another_days_with_its_day(
     assert (first["leave_at"], first["legs"][0]["departs"], first["arrive_at"]) == (
         "tomorrow (Wed), 12:06 am", "tomorrow (Wed), 12:10 am", "tomorrow (Wed), 12:30 am",
     )
-    assert out["last_today"] == {"route": "26", "left_at": "11:20 pm"}
+    assert "last_today" not in out
     assert out["summary"] == (
         "To home, option 1: leave tomorrow (Wed), 12:06 am, take the 26 from Stop of 26 at"
         " tomorrow (Wed), 12:10 am (scheduled), arrive tomorrow (Wed), 12:30 am (24 min). Then"
         " option 2: the 26 from Stop of 26 at tomorrow (Wed), 11:20 pm (scheduled), arrive"
-        " tomorrow (Wed), 11:40 pm. The last 26 had left at 11:20 pm."
+        " tomorrow (Wed), 11:40 pm."
     )
     row = _card()["options"][0]
     wednesday = datetime(2026, 10, 7, 0, 10, tzinfo=ZONE)
     assert (row["departs"], row["departs_ms"]) == ("00:10", int(wednesday.timestamp() * 1000))
+
+
+def test_the_last_bus_had_left_is_said_when_the_next_one_is_of_a_later_service_day(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0343: at 23:50 the last 26 left at 11:20 pm and the next is the first of tomorrow's."""
+    late = datetime(2026, 10, 6, 23, 50, tzinfo=ZONE)
+    _serve(monkeypatch, answer=routes_with(_placed(bus_route("26", "29:30"))))
+    live = _live(tmp_path, *_runs(("T26a", "26", "23:20"), ("T26", "26", "05:30")))
+    out = _call({"to": "home"}, here=fix_with(), bus_live=live, now=late)
+    assert out["options"][0]["legs"][0]["departs"] == "tomorrow (Wed), 5:30 am"
+    assert out["last_today"] == {"route": "26", "left_at": "11:20 pm"}
+    assert out["summary"].endswith("The last 26 had left at 11:20 pm.")
 
 
 def test_arrive_by_keeps_the_last_three_and_says_the_latest_in_time(

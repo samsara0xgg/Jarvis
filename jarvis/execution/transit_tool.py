@@ -412,7 +412,12 @@ class _Times:
         return _settle(made, now)
 
     def last_gone(self, option: dict[str, Any], now: datetime) -> datetime | None:
-        """When the last bus of the option's route, stop and direction left before ``now``."""
+        """When the last bus of the option's route, stop and way left, if its bus is of a later day.
+
+        The two are compared by service day, not by the date on the clock: the 12:10 am bus of a
+        service day still running is not a day after the one that left at 11:20 pm. None when they
+        share a service day, or when the timetable has no bus that left.
+        """
         timed = option["legs"][0]["timed"]
         if self._bus is None or timed is None:
             return None
@@ -420,7 +425,7 @@ class _Times:
             call = self._bus.last_gone(timed, int(now.timestamp() * 1000))
         except Exception:  # noqa: BLE001 - without the timetable there is no such fact.
             return None
-        if call is None:
+        if call is None or call.day >= timed.match.board.day:
             return None
         return datetime.fromtimestamp(call.depart_ms / 1000, _zone(now))
 
