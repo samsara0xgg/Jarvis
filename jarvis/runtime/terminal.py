@@ -102,18 +102,20 @@ from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
 from jarvis.runtime.daemon.restart import restart_soon
 from jarvis.runtime.daemon.retention import data_sweep_task
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator
+from jarvis.runtime.daemon.voice_wiring import (
+    ListenPorts,
+    build_echo_canceller,
+    build_tts_pipeline,
+    build_voice_pipeline,
+    single_ingress_activation,
+    voice_knobs,
+    voice_models_preflight,
+)
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
-    _build_echo_canceller,
-    _build_tts_pipeline,
-    _build_voice_pipeline,
     _install_power_observer_or_degrade,
-    _ListenPorts,
     _shutdown_power_observer,
-    _single_ingress_activation,
     _spawn_single_ingress_session,
-    _voice_knobs,
-    _voice_models_preflight,
 )
 from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -616,12 +618,12 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     canceller = None
     if _listening_requested(speaking.config):
         try:
-            canceller = _build_echo_canceller(seat)
+            canceller = build_echo_canceller(seat)
         except Exception:
             LOGGER.exception("echo cancellation could not start; this terminal listens without it")
     ducker = SystemAudioDucker()
-    pipeline = _build_tts_pipeline(
-        seat, broadcaster, ducker=ducker, voice=_voice_knobs(speaking.config),
+    pipeline = build_tts_pipeline(
+        seat, broadcaster, ducker=ducker, voice=voice_knobs(speaking.config),
         echo_canceller=canceller, remote=RemoteTTSProvider(link),
         network_lost_dir=speaking.runtime_root / "terminal",
     )
@@ -641,7 +643,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     )
 
 
-def _terminal_ports(turn: LinkedTurn) -> _ListenPorts:
+def _terminal_ports(turn: LinkedTurn) -> ListenPorts:
     """What a voice terminal's capture session reaches in the brain, and nothing it can leave there.
 
     The brain judges the words as it receives the utterance (ADR 0277), so no call to it
@@ -649,7 +651,7 @@ def _terminal_ports(turn: LinkedTurn) -> _ListenPorts:
     go with a verdict are the brain's, not the session's. ``cancel_voice_runs`` stays for the
     owner leaving conversation mode from a surface.
     """
-    return _ListenPorts(
+    return ListenPorts(
         answer_words=turn.answer_words, turn_working=turn.turn_working,
         interrupt=turn.interrupt, hold_runs=turn.hold_runs,
         cancel_voice_runs=turn.cancel_runs, judged_on_send=True,
@@ -670,7 +672,7 @@ async def _start_listening(
     if link is None or pipeline is None or seat is None or speech.broadcaster is None:
         return None
     config = speaking.config
-    if not _single_ingress_activation(seat, tts=pipeline).requested:
+    if not single_ingress_activation(seat, tts=pipeline).requested:
         LOGGER.info("listening is off in this terminal's config "
                     "(realtime.single_audio_ingress.enabled); it speaks only")
         return None
@@ -687,7 +689,7 @@ async def _start_listening(
         config, key="voiceprint_model_path", config_dir=config_dir,
         fallback=default_voiceprint_model_path(speaking.runtime_root),
     )
-    models_ok, missing = _voice_models_preflight(
+    models_ok, missing = voice_models_preflight(
         sensevoice_dir=sensevoice_dir, silero_path=silero_path,
     )
     if not models_ok:
@@ -699,13 +701,13 @@ async def _start_listening(
     broadcaster = speech.broadcaster
 
     def build() -> tuple[voice_session.DuplexVoiceSession | None, bool, Dictation | None]:
-        recognizer_pipeline = _build_voice_pipeline(
+        recognizer_pipeline = build_voice_pipeline(
             seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
             emit=turn.emit_utterance, voiceprint_model=voiceprint_model,
         )
         session, attempted = _spawn_single_ingress_session(
             runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
-            silero_path=silero_path, tts=pipeline, voice=_voice_knobs(config),
+            silero_path=silero_path, tts=pipeline, voice=voice_knobs(config),
             mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
             conversation=controls.conversation, set_conversation=controls.set_conversation,
             set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,

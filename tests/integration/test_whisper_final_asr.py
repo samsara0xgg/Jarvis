@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import voice_wiring
 from jarvis.runtime.dictation import (
     COMMAND_PROMPT,
     DICTATION_LANGUAGES,
@@ -336,13 +336,13 @@ def _runtime(tmp_path: Path, final_asr: str) -> Any:  # noqa: ANN401 - a stand-i
 def test_the_switch_picks_the_recognizer(whisper: _Whisper, tmp_path: Path) -> None:
     """``whisper`` → Whisper finals, his user terms in the prompt; anything else → SenseVoice."""
     sensevoice = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
-    chosen = inherent_loop._final_recognizer(_runtime(tmp_path, "whisper"), sensevoice)  # noqa: SLF001
+    chosen = voice_wiring.final_recognizer(_runtime(tmp_path, "whisper"), sensevoice)
     assert isinstance(chosen, voice_asr.WhisperFinalRecognizer)
     whisper.texts = ["在吗？"]
     chosen.recognize(_speech(0.5, 0.1))
     assert whisper.calls[0]["initial_prompt"] == f"{_SIMPLIFIED} Common terms: Jarvis, 言文."
     assert load_user_terms(tmp_path / "vocab.yaml") == ["Jarvis", "言文"]
-    assert inherent_loop._final_recognizer(  # noqa: SLF001
+    assert voice_wiring.final_recognizer(
         _runtime(tmp_path, "sensevoice"), sensevoice,
     ) is sensevoice
 
@@ -353,7 +353,7 @@ def test_without_mlx_whisper_the_switch_keeps_sensevoice(
     """The packaged app ships without mlx-whisper: the switch falls back, the turn still hears."""
     monkeypatch.setitem(sys.modules, "mlx_whisper", None)  # import fails, find_spec says None
     sensevoice = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
-    chosen = inherent_loop._final_recognizer(_runtime(tmp_path, "whisper"), sensevoice)  # noqa: SLF001
+    chosen = voice_wiring.final_recognizer(_runtime(tmp_path, "whisper"), sensevoice)
     assert chosen is sensevoice
 
 
@@ -364,7 +364,7 @@ def test_hybrid_gives_the_two_passes_the_word_list_but_not_the_command_pass(
     runtime = _runtime(tmp_path, "hybrid")
     runtime.config["realtime"]["final_asr_terms"] = ["Jarvis", "co-op"]
     sensevoice = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
-    chosen = inherent_loop._final_recognizer(runtime, sensevoice)  # noqa: SLF001
+    chosen = voice_wiring.final_recognizer(runtime, sensevoice)
     assert isinstance(chosen, voice_asr.HybridFinalRecognizer)
     for ears, language in ((chosen._whisper_zh, "zh"), (chosen._whisper_en, "en")):  # noqa: SLF001
         whisper.calls.clear()

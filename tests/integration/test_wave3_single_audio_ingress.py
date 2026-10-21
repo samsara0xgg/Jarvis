@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import voice_power
+from jarvis.runtime.daemon import voice_power, voice_wiring
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -1865,7 +1865,7 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
     """Feature-off does not listen; flag-on needs a speech actor."""
     runtime = MagicMock()
     runtime.config = {"realtime": {"enabled": False}}
-    off = inherent_loop._single_ingress_activation(runtime, tts=None)
+    off = voice_wiring.single_ingress_activation(runtime, tts=None)
     assert not off.requested
     assert off.reason == "feature_disabled"
 
@@ -1875,19 +1875,19 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
             "single_audio_ingress": {"enabled": True},
         },
     }
-    no_speech = inherent_loop._single_ingress_activation(runtime, tts=None)
+    no_speech = voice_wiring.single_ingress_activation(runtime, tts=None)
     assert no_speech.requested
     assert not no_speech.capable
     assert no_speech.reason == "streaming_output_missing"
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
-    enabled = inherent_loop._single_ingress_activation(runtime, tts=wave2)
+    enabled = voice_wiring.single_ingress_activation(runtime, tts=wave2)
     assert enabled.requested
     assert enabled.capable
     assert enabled.ingress_config is not None
     assert enabled.session_config is not None
 
     runtime.config["realtime"]["single_audio_ingress"]["canonical_frame_samples"] = 480
-    invalid = inherent_loop._single_ingress_activation(runtime, tts=wave2)
+    invalid = voice_wiring.single_ingress_activation(runtime, tts=wave2)
     assert not invalid.capable
     assert invalid.reason.startswith("invalid_input_config:")
 
@@ -1901,7 +1901,7 @@ def test_voice_pipeline_build_is_feature_off_cold_and_explicit_prewarm_is_availa
     runtime.runtime_paths.artifacts_root = tmp_path / "artifacts"
     recognizer = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
     with patch.object(voice_asr, "SenseVoiceRecognizer", return_value=recognizer):
-        pipeline = inherent_loop._build_voice_pipeline(
+        pipeline = voice_wiring.build_voice_pipeline(
             runtime,
             broadcaster=MagicMock(),
             sensevoice_dir=tmp_path / "sensevoice",
@@ -4021,7 +4021,7 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     runtime.config = {"realtime": {"enabled": True}}
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     pipeline.run_turn.return_value = MagicMock()
-    ptt_callable = inherent_loop._build_voice_pipeline_callable(pipeline)
+    ptt_callable = voice_wiring.build_voice_pipeline_callable(pipeline)
     ptt_callable(b"RIFF", "T-ptt", "U-ptt", "S-ptt")
     pipeline.run_turn.assert_called_once()
     broadcaster = MagicMock()

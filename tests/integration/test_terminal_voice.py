@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from jarvis.cli import main
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import voice_wiring
 from jarvis.runtime.terminal import JOURNAL
 from jarvis.shared import Event
 from jarvis.shared.realtime import Wave4ResponseFlags
@@ -878,7 +878,7 @@ def test_the_media_actor_builder_runs_around_a_remote_provider_with_no_key(
     remote = RemoteTTSProvider(VoiceLink(journal))
     broadcaster = cast("Any", SimpleNamespace())
     monkeypatch.setattr(voice_tts, "_open_output_stream", open_stream(pull=False))
-    pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+    pipeline = voice_wiring.build_tts_pipeline(
         _host(SPEECH_CONFIG, journal),
         broadcaster,
         remote=remote,
@@ -891,7 +891,7 @@ def test_the_media_actor_builder_runs_around_a_remote_provider_with_no_key(
 
     off = {"realtime": {"enabled": False}}
     assert (
-        inherent_loop._build_tts_pipeline(  # noqa: SLF001
+        voice_wiring.build_tts_pipeline(
             _host(off, journal),
             broadcaster,
             remote=remote,
@@ -899,7 +899,7 @@ def test_the_media_actor_builder_runs_around_a_remote_provider_with_no_key(
         is None
     )
     assert (
-        inherent_loop._build_tts_pipeline(  # noqa: SLF001
+        voice_wiring.build_tts_pipeline(
             _host(SPEECH_CONFIG, journal),
             broadcaster,
         )
@@ -924,7 +924,7 @@ def test_the_command_takes_voice_as_opt_in_and_declares_it_in_the_hello(
     monkeypatch.setattr("jarvis.runtime.terminal.run_terminal_client", client)
     monkeypatch.setattr(voice_tts, "_open_output_stream", open_stream(pull=False))
     monkeypatch.setattr(
-        "jarvis.runtime.terminal._build_tts_pipeline",
+        "jarvis.runtime.terminal.build_tts_pipeline",
         lambda *_a, **_k: None,
     )
     base = [

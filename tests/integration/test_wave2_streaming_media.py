@@ -20,8 +20,7 @@ import numpy as np
 import pytest
 import yaml
 
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon import output_watchers, voice_wiring
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
@@ -2911,7 +2910,7 @@ def test_production_builder_gate_and_text_only_degradation(
         "_open_output_stream",
         return_value=_FakeOutputStream(),
     ):
-        pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+        pipeline = voice_wiring.build_tts_pipeline(
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
@@ -2919,7 +2918,7 @@ def test_production_builder_gate_and_text_only_degradation(
         assert pipeline.close()
         runtime.config = {"realtime": {"enabled": False}}
         assert (
-            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
@@ -2932,7 +2931,7 @@ def test_production_builder_gate_and_text_only_degradation(
             },
         }
         assert (
-            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
@@ -2949,7 +2948,7 @@ def test_production_builder_gate_and_text_only_degradation(
         ),
     ):
         assert (
-            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
@@ -2982,7 +2981,7 @@ def test_production_builder_gate_and_text_only_degradation(
         ) as provider_factory,
     ):
         started = time.monotonic()
-        startup_timeout_text_only = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+        startup_timeout_text_only = voice_wiring.build_tts_pipeline(
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
@@ -3035,7 +3034,7 @@ def test_production_builder_is_text_only_after_any_typed_startup_failure(
         patch.object(voice_tts, "MiniMaxWSClient", return_value=provider),
     ):
         assert (
-            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
@@ -3060,7 +3059,7 @@ def test_production_builder_is_text_only_after_any_typed_startup_failure(
         patch.object(voice_tts, "MiniMaxWSClient", return_value=provider),
     ):
         assert (
-            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
@@ -3276,7 +3275,7 @@ def test_realtime_output_device_reaches_the_builder_player(
 
     def _build(realtime: dict[str, object]) -> None:
         runtime.config = {"realtime": realtime}
-        pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+        pipeline = voice_wiring.build_tts_pipeline(
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
@@ -3341,7 +3340,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
             "_open_output_stream",
             return_value=_FakeOutputStream(),
         ):
-            pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
+            pipeline = voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )

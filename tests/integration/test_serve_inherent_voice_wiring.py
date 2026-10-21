@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import voice_wiring
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 def test_preflight_model_check_returns_false_when_missing(tmp_path: Path) -> None:
     """Pre-flight returns False with a missing-models list."""
-    ok, missing = inherent_loop._voice_models_preflight(  # noqa: SLF001 — preflight is module-private by design.
+    ok, missing = voice_wiring.voice_models_preflight(
         sensevoice_dir=tmp_path / "missing-sv",
         silero_path=tmp_path / "missing-silero.onnx",
     )
@@ -29,7 +29,7 @@ def test_preflight_model_check_returns_true_when_present(tmp_path: Path) -> None
     (sv / "tokens.txt").write_text("")
     silero = tmp_path / "silero_vad.onnx"
     silero.write_bytes(b"x")
-    ok, missing = inherent_loop._voice_models_preflight(  # noqa: SLF001 — preflight is module-private by design.
+    ok, missing = voice_wiring.voice_models_preflight(
         sensevoice_dir=sv,
         silero_path=silero,
     )

@@ -225,7 +225,7 @@ def heard_session(
     power = _Power()
     monkeypatch.setattr(inherent_loop, "install_power_observer", power.install)
     monkeypatch.setattr(voice_backend, "coreaudio_devices", lambda _kind: None)
-    monkeypatch.setattr(terminal_module, "_voice_models_preflight", lambda **_k: (True, []))
+    monkeypatch.setattr(terminal_module, "voice_models_preflight", lambda **_k: (True, []))
     monkeypatch.setattr(voice_asr, "SenseVoiceRecognizer", _Ears)
     monkeypatch.setattr(voice_wake, "MicroWakeWordEngine", _Wake)
     monkeypatch.setattr(voice_audio, "_load_silero_session", lambda *_a, **_k: EnergySession())

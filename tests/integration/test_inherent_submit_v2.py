@@ -20,11 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.deployment import inherent_v2_token_matches
-from jarvis.runtime.inherent_loop import (
-    _build_voice_pipeline_callable,
-    _submit_asr_v2,
-    _submit_text_v2,
-)
+from jarvis.runtime.daemon.voice_wiring import build_voice_pipeline_callable
+from jarvis.runtime.inherent_loop import _submit_asr_v2, _submit_text_v2
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -478,7 +475,7 @@ def _real_pipeline_callable(tmp_path: Path) -> Callable[[bytes, str, str, str], 
     ``_build_voice_pipeline_callable`` the composition root binds.
     """
     log_path = tmp_path / "mac_events.db"
-    return _build_voice_pipeline_callable(
+    return build_voice_pipeline_callable(
         voice_pipeline.VoicePipeline(
             conn_factory=lambda: open_event_log(log_path),
             recognizer=_StubRecognizer(),

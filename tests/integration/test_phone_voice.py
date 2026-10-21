@@ -37,7 +37,7 @@ from websockets.exceptions import InvalidStatus
 from websockets.sync.client import connect as _ws_connect
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon import output_watchers, voice_wiring
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -468,7 +468,7 @@ def test_the_speech_builder_needs_a_key_and_realtime_on(
         voice_settings=None,
     )
     rows = output_watchers.PhoneRows(conn)
-    knobs = inherent_loop._VoiceKnobs()  # noqa: SLF001
+    knobs = voice_wiring.VoiceKnobs()
     runtime = cast("Any", host)
 
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)

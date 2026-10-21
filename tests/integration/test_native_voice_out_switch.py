@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jarvis.runtime.daemon import voice_wiring
 from jarvis.surface.voice_native_out import NativeAudioStreamPlayer
 
 RATE = 48_000
@@ -22,10 +23,8 @@ def test_the_switch_keeps_the_python_player_when_the_helper_cannot_start(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """native_player on, but an unknown device: one warning, no helper."""
-    from jarvis.runtime import inherent_loop  # noqa: PLC0415
-
     with caplog.at_level("WARNING"):
-        unknown = inherent_loop._native_streaming_player(  # noqa: SLF001
+        unknown = voice_wiring.native_streaming_player(
             echo_canceller=None, device="No Such Output Device", **COMMON,
         )
     assert unknown is None
@@ -35,11 +34,9 @@ def test_the_switch_keeps_the_python_player_when_the_helper_cannot_start(
 
 def test_an_echo_canceller_no_longer_forces_the_python_player() -> None:
     """Echo cancellation on: the native player starts and its tap is the canceller's far end."""
-    from jarvis.runtime import inherent_loop  # noqa: PLC0415
-
     calls: list[int] = []
     canceller = SimpleNamespace(add_playback=lambda _block, rate, _at: calls.append(rate))
-    player = inherent_loop._native_streaming_player(  # noqa: SLF001
+    player = voice_wiring.native_streaming_player(
         echo_canceller=canceller,  # type: ignore[arg-type]
         device=None,
         extra_args=("--null-device",),
