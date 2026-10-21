@@ -78,6 +78,8 @@ struct FootprintMapView: UIViewRepresentable {
     var fitPadding: UIEdgeInsets = .zero
     /// the map frames its content when this changes, not on every update, so his pan and pinch survive a scrub
     var fitKey = ""
+    /// room kept under the map's own marks (Apple's logo and legal label) so that a fade over its foot does not hide them
+    var legalInset: CGFloat = 0
 
     /// everything the frame must cover
     var fitCoordinates: [CLLocationCoordinate2D] {
@@ -97,7 +99,10 @@ struct FootprintMapView: UIViewRepresentable {
         return m
     }
 
-    func updateUIView(_ m: FootprintMKMapView, context: Context) { context.coordinator.apply(self, to: m) }
+    func updateUIView(_ m: FootprintMKMapView, context: Context) {
+        m.layoutMargins.bottom = legalInset
+        context.coordinator.apply(self, to: m)
+    }
 }
 
 final class FootprintMKMapView: MKMapView {
