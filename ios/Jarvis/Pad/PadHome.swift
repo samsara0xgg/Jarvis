@@ -3,15 +3,16 @@ import UIKit
 
 // The iPad's home, in regular width: across the top her band (the date, her line, the day's bar with every hour named, the place line under it and all the day's
 // numbers in one row, with her at the right; a talk and the field she types in open inside it, and it grows for them), under it on the left the phone's own list
-// of the day, and on the right her stage: what he is in now and what waits on him, or the stretch he tapped on the left. Compact width (Split View, Slide
-// Over) is the phone's home as it is. The rows, the bar, the chips and an opened row are the phone's own views; this file only lays them out at iPad size.
+// of the day, and on the right her stage: what he is in now and what waits on him, or the stretch he tapped on the left. In compact width (a narrow Split View or
+// Slide Over) it is one column: her band over the list, whose rows open where they stand, as on the phone. The rows, the bar, the chips and an opened row are the
+// phone's own views; this file only lays them out at iPad size.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let faint = SetColor.faint
 private let amber = Color(red: 1, green: 201 / 255, blue: 143 / 255)
 
-/// The window's root: on an iPad with room the iPad's home, anywhere else the phone's. One engine for both, so a talk goes on when the window changes width.
+/// The window's root: on an iPad the iPad's home at any width, on a phone the phone's. One engine for both, so a talk goes on when the window changes width.
 struct HomeRoot: View {
     @State private var engine = StarEngine()
 
@@ -26,10 +27,9 @@ struct HomeRoot: View {
 
 private struct HomeChoice: View {
     let engine: StarEngine
-    @Environment(\.horizontalSizeClass) private var width
 
     var body: some View {
-        let pad = UIDevice.current.userInterfaceIdiom == .pad && width == .regular
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
         Group { if pad { PadHome(engine: engine) } else { StarChartScreen(engine: engine) } }
             .onChange(of: pad, initial: true) { _, p in engine.ui.padHome = p }          // the engine lays the history out as the home on screen has it
     }
@@ -72,10 +72,13 @@ struct PadHome: View {
     @State private var nowInView = true
     @State private var leftAt: Date?
     @State private var talkUntil = Date.distantPast    // her last round stays in her band until he does something else, ten minutes at most (as on the phone)
+    @State private var listRoom = 600.0             // how tall the list is: a row opened from the bar in one column is carried up within it
     @Environment(\.scenePhase) private var phase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var ui: StarUI { engine.ui }
+    private var one: Bool { sizeClass == .compact }          // a narrow window: one column, no stage
     private var tl: TimelineState { engine.ui.tl }
 
     /// the left column is the phone's list at the phone's width
@@ -88,13 +91,17 @@ struct PadHome: View {
                 ZStack(alignment: .topLeading) {
                     VStack(spacing: 0) {
                         PadBand(engine: engine, built: built, width: geo.size.width, talk: ui.tlTalk || (ctx.date < talkUntil && !ui.liveTurns.isEmpty),
-                                typing: $typing, focus: $fieldFocus, menu: menu, items: items, herAt: $herAt)
+                                typing: $typing, focus: $fieldFocus, menu: menu, items: items, herAt: $herAt, one: one, listRoom: listRoom)
                             .padding(.top, geo.safeAreaInsets.top + 6)
                             .zIndex(1)          // over the list and the stage: the attach panel hangs from the field over them
                         HStack(alignment: .top, spacing: 0) {
-                            list(built).frame(width: Self.listW).environment(\.padFlight, flight)
-                            Rectangle().fill(SetColor.line).frame(width: 0.5).padding(.vertical, 12)
-                            PadStage(engine: engine, model: built?.model, width: geo.size.width - Self.listW, flight: flight)
+                            if one {
+                                list(built)
+                            } else {
+                                list(built).frame(width: Self.listW).environment(\.padFlight, flight)
+                                Rectangle().fill(SetColor.line).frame(width: 0.5).padding(.vertical, 12)
+                                PadStage(engine: engine, model: built?.model, width: geo.size.width - Self.listW, flight: flight)
+                            }
                         }
                         .frame(maxHeight: .infinity)
                         .overlay { AttachScrim(model: ui.attach) }
@@ -108,6 +115,7 @@ struct PadHome: View {
                 .onChange(of: tl.scrub != nil) { _, on in if on { talkUntil = .distantPast } }
                 .onChange(of: typing) { _, on in if on { talkUntil = .distantPast } }
                 .onChange(of: ctx.date) { _, _ in tl.rollOver() }
+                .onChange(of: one) { _, _ in tl.close() }          // a row open on the stage is not one opened where it stands, nor the other way
                 .onChange(of: built != nil, initial: true) { _, has in reveal(has) }
                 .onChange(of: tl.enter) { _, _ in reveal(built != nil) }
             }
@@ -153,8 +161,9 @@ struct PadHome: View {
     @ViewBuilder private func list(_ built: TLBuilt?) -> some View {
         if let b = built {
             GeometryReader { g in
-                TLList(model: b.model, engine: engine, tl: tl, room: g.size.height, lens: tl.activeLens(in: b.model), nowInView: $nowInView)
-                    .id(tl.day)
+                TLList(model: b.model, engine: engine, tl: tl, room: g.size.height, lens: tl.activeLens(in: b.model), nowInView: $nowInView, inPlace: one)
+                    .id("\(tl.day) \(one)")          // the list is laid out for one way of opening its rows
+                    .onChange(of: g.size.height, initial: true) { _, h in listRoom = h }
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 12 / max(g.size.height, 1)),
                                                  .init(color: .black, location: 1 - 24 / max(g.size.height, 1)), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
             }
@@ -209,13 +218,15 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped, `-padScene paste` a picture on the pasteboard pasted into the open field as ⌘V does, `-padScene history` the history's sheet, `-padScene footprint` the day's footprint
+    /// `-padScene menu` her menu out, `-padScene type` the field open with words in it, `-padScene attach` the field open with two pictures attached, `-padScene row` a row of the list tapped, `-padScene bar` a block of the bar tapped, `-padScene paste` a picture on the pasteboard pasted into the open field as ⌘V does, `-padScene history` the history's sheet, `-padScene footprint` the day's footprint
     private func padScene(_ s: String) {
         switch s {
         case "menu": menu.show(holding: false)
         case "history": engine.openPanel()
         case "footprint": ui.footprintOpen = true
         case "type": ui.text = Words.Pad.field; engine.beginEditing?()
+        case "bar":             // a tap on the bar in the middle of the first stretch of the afternoon: its row goes on the stage
+            if let m = builtDay()?.model, let e = m.entries.first(where: { $0.kind == .segment && $0.t0 >= 15 * 60 }) { let t = (e.t0 + (e.t1 ?? e.t0)) / 2; if one { tl.tapBar(t, in: m, room: listRoom) } else { tl.padTapBar(t, in: m) } }
         case "row":             // a tap on the row before the last stretch's: its icon flies to the stage's title
             if let e = builtDay()?.model.entries.filter({ $0.kind == .segment }).dropLast().last { withAnimation(padMotion) { tl.openRow = e.id } }
         case "attach":          // the field open with two pictures (made-up ones) attached
@@ -243,6 +254,18 @@ struct PadHome: View {
     #endif
 }
 
+extension TimelineState {
+    /// A tap on the iPad's bar at `minute`: past now goes back to now; on a block, its row goes on the stage as a tap on the row puts it there, and the list goes to the row.
+    func padTapBar(_ minute: Double, in m: DayTimelineModel) {
+        let t = m.onBar(minute)
+        if let n = m.now, t >= n { Haptic.impact(.rigid); goToday(); return }
+        guard let s = m.seg(at: t), let e = m.entries.first(where: { $0.id == s.id }) else { return }
+        Haptic.selection()
+        withAnimation(padMotion) { openRow = e.id }
+        if let y = m.top(of: e.id) { scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: true) }
+    }
+}
+
 // MARK: - her band
 
 private struct PadBand: View {
@@ -255,6 +278,8 @@ private struct PadBand: View {
     let menu: PadMenu
     let items: [PadMenuItem]
     @Binding var herAt: CGPoint
+    let one: Bool                       // one column: a tap on the bar opens the row where it stands, as on the phone
+    let listRoom: Double
     @State private var lastScrub = 0.0
     @State private var lastStretch: String?
     @State private var fieldAt = CGRect.zero         // the field in the band's own space: the attach panel hangs from its bottom left
@@ -270,26 +295,11 @@ private struct PadBand: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 28) {             // she stays beside the date when her words grow the band
                 VStack(alignment: .leading, spacing: 0) {
-                    caption(m)
-                    date.padding(.top, 2)
-                    ZStack(alignment: .topLeading) {
-                        if talk {
-                            PadTalk(engine: engine, model: m).transition(.opacity)
-                        } else if tl.tidy != .idle {
-                            Text(tl.tidy.words).font(.system(size: 16)).foregroundStyle(muted).transition(.opacity)          // 理一下 at work, then what came of it
-                        } else if let note = ui.voiceNote {
-                            Text(note).font(AT.mono(13)).tracking(1.2).foregroundStyle(muted).lineLimit(1).transition(.opacity)
-                        } else if holding, let m {
-                            let r = m.readout(at: tl.scrub ?? lastScrub)
-                            TLReadoutLines(r: r, second: r.second)
-                                .environment(\.tlBarWidth, barW - padHerSize - 28).transition(.opacity)
-                        } else if let line = m?.line {
-                            Text(line).font(.system(size: 16)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
-                                .frame(maxWidth: .infinity, alignment: .leading).transition(.opacity)
-                        }
+                    if !one {
+                        caption(m)
+                        date.padding(.top, 2)
+                        words(m, barW: barW)
                     }
-                    .padding(.top, 10)
-                    .animation(padMotion, value: talk)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 18) {
@@ -310,6 +320,9 @@ private struct PadBand: View {
                 }
             }
             .padding(.horizontal, side)
+            if one {          // a narrow window: the date and her line under her row, the whole width
+                VStack(alignment: .leading, spacing: 0) { caption(m); date.padding(.top, 2); words(m, barW: barW) }.padding(.horizontal, side).padding(.top, 4)
+            }
             if typing {
                 PadField(engine: engine, focus: $focus) { withAnimation(padMotion) { typing = false } }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("design")) } action: { fieldAt = $0 }
@@ -319,7 +332,7 @@ private struct PadBand: View {
             if let built, let m {
                 bar(built, m, width: barW).padding(.horizontal, side).padding(.top, 34)
                 if !m.chips.isEmpty || !m.body.isEmpty {
-                    TLChips(chips: m.chips, health: m.body, active: tl.activeLens(in: m), width: width) { l in
+                    TLChips(chips: m.chips, health: m.body, active: tl.activeLens(in: m), width: width, whole: true) { l in
                         Haptic.selection()
                         withAnimation(.easeOut(duration: 0.15)) { tl.lens = tl.lens == l ? nil : l }
                     }
@@ -336,6 +349,29 @@ private struct PadBand: View {
         .overlay(alignment: .topLeading) { AttachOverlay(model: ui.attach, kbLift: 0, drop: CGPoint(x: fieldAt.minX, y: fieldAt.maxY + 8)) }
         .coordinateSpace(name: "design")          // the phone's attach views measure themselves in it (where a photo flies from and to)
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
+    }
+
+    /// her line under the date: a talk's round, 理一下 at work, a voice note, the held minute's readout, or the day's sentence
+    private func words(_ m: DayTimelineModel?, barW: Double) -> some View {
+        let holding = tl.scrub != nil
+        return ZStack(alignment: .topLeading) {
+            if talk {
+                PadTalk(engine: engine, model: m).transition(.opacity)
+            } else if tl.tidy != .idle {
+                Text(tl.tidy.words).font(.system(size: 16)).foregroundStyle(muted).transition(.opacity)          // 理一下 at work, then what came of it
+            } else if let note = ui.voiceNote {
+                Text(note).font(AT.mono(13)).tracking(1.2).foregroundStyle(muted).lineLimit(1).transition(.opacity)
+            } else if holding, let m {
+                let r = m.readout(at: tl.scrub ?? lastScrub)
+                TLReadoutLines(r: r, second: r.second)
+                    .environment(\.tlBarWidth, one ? barW : barW - padHerSize - 28).transition(.opacity)
+            } else if let line = m?.line {
+                Text(line).font(.system(size: 16)).lineSpacing(3).foregroundStyle(ink.opacity(0.9)).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading).transition(.opacity)
+            }
+        }
+        .padding(.top, 10)
+        .animation(padMotion, value: talk)
     }
 
     /// the day is being asked for: the bar's empty track, with its light going along it
@@ -365,13 +401,13 @@ private struct PadBand: View {
         .lineLimit(1)
     }
 
-    /// The phone's bar at the band's width, the hours named every hour. A finger on it reads the minute out where her line is and brings the list to it,
-    /// as on the phone; the open row is outlined on it.
+    /// The phone's bar at the band's width, the hours named every hour, every block that has happened given room for its icon (ADR 0376). A finger held on it reads the minute out
+    /// where her line is and brings the list to it, as on the phone; a tap on a block does what a tap on its row does; the open row is outlined on it.
     private func bar(_ built: TLBuilt, _ m: DayTimelineModel, width: Double) -> some View {
-        let lens = tl.activeLens(in: m)
+        let lens = tl.activeLens(in: m), axis = TLAxis.fair(built.scene, width: width)
         return TLBarView(scene: built.scene, bracket: bracket(m), scrub: tl.scrub, lens: lens != nil, lensColor: (lens ?? .trip).color, lensMarks: m.marks(of: lens ?? .trip),
-                         reveal: true, reduce: reduce, breathe: true, sweeping: tl.tidy == .running && tl.day == tl.today && !reduce)
-            .modifier(TLBarScrub(span: m.span, changed: { t, _ in scrubbed(t, m) }, ended: lifted))
+                         reveal: true, reduce: reduce, breathe: true, sweeping: tl.tidy == .running && tl.day == tl.today && !reduce, fair: true, blink: tl.blink)
+            .modifier(TLBarScrub(span: m.span, axis: axis, changed: { t, _ in scrubbed(t, m) }, ended: lifted, tap: { t in if one { tl.tapBar(t, in: m, room: listRoom) } else { tl.padTapBar(t, in: m) } }))
             .accessibilityElement().accessibilityLabel(Words.Pad.bar)
             .environment(\.tlBarWidth, width)
             .frame(height: 22 + 18, alignment: .top)
