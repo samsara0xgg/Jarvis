@@ -210,7 +210,12 @@ def remove(conn: sqlite3.Connection, pin_id: str, tid: str, *, reminder_id: str,
 def update(
     conn: sqlite3.Connection, pin_id: str, trip: Trip, *, reminder_id: str, ring: str,
 ) -> None:
-    """Append ``departure.updated``: this trip's live times, and the ring now."""
+    """Append ``departure.updated``: this trip's times and the BC Transit trip it follows now.
+
+    The ring is the one now. ``bus_trip_id`` is always written, ``None`` included: moving the trip
+    to a bus the timetable did not match must not leave the earlier bus's id behind. An event
+    from before that omits it, and the fold keeps the id the trip had.
+    """
     emit_event(
         conn,
         type="departure.updated",
@@ -222,7 +227,7 @@ def update(
             "leave_at_ms": trip.leave_at_ms,
             "departs_at_ms": trip.departs_at_ms,
             "arrive_at": trip.arrive_at,
-            **({} if trip.bus_trip_id is None else {"bus_trip_id": trip.bus_trip_id}),
+            "bus_trip_id": trip.bus_trip_id,
         },
     )
 
