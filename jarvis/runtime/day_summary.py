@@ -199,8 +199,12 @@ class DaySummarySchedule:
         jev_log: JevLog | None = None,
         ledger: LedgerContext | None = None,
         poll_s: float = 60.0,
+        client: LLMClient | None = None,
     ) -> None:
-        """Bind the store and the knobs; nothing runs until :meth:`run`."""
+        """Bind the store and the knobs; nothing runs until :meth:`run`.
+
+        ``client`` stands in for the one built from ``settings.preset`` on first use.
+        """
         self._memory = memory
         self._settings = settings
         self._llm_config = llm_config
@@ -213,7 +217,7 @@ class DaySummarySchedule:
         self._prose_client: LLMClient | None = None
         self._drafts: DayDrafts | None = None
         self._poll_s = poll_s
-        self._client: LLMClient | None = None
+        self._client = client
         self._core_client: LLMClient | None = None
         self._last: date | None = None
 

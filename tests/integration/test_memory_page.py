@@ -30,8 +30,9 @@ from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.support.core_memory import Consolidator, consolidator_changes, core_schedule
 from tests.support.day_summaries import (
     TODAY,
-    DaySummariser,
+    asked_days,
     day_ago,
+    day_summariser,
     insert_records,
     record_id,
     stamp_ago,
@@ -39,6 +40,8 @@ from tests.support.day_summaries import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from tests.support.model import ScriptedModel
 
 MIGRATED_DAY = 6
 
@@ -499,13 +502,10 @@ def test_a_day_view_pages_the_conversation_and_can_start_at_a_record(tmp_path: P
     assert world.client.get("/inherent/memory/day/not-a-day/records").status_code == 400
 
 
-def _summarise(world: World, replies: dict[str, str]) -> DaySummariser:
+def _summarise(world: World, replies: dict[str, str]) -> ScriptedModel:
     """Run the real day-summary job; ``replies`` maps a day to the model's answer."""
-    summariser = DaySummariser()
-    summariser.replies = replies
-    schedule = core_schedule(world.tmp, Consolidator())
-    schedule._client = summariser  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    schedule.write(TODAY)
+    summariser = day_summariser(replies)
+    core_schedule(world.tmp, Consolidator(), summariser=summariser).write(TODAY)
     return summariser
 
 
@@ -536,7 +536,7 @@ def test_a_day_summary_edit_wins_over_the_generated_one_and_is_never_regenerated
     world = World(tmp_path)
     old = GENERATED.format(day=day, a=record_id(1, 1), b=record_id(1, 2))
     summariser = _summarise(world, {day: old})
-    assert summariser.asked == [day]
+    assert asked_days(summariser) == [day]
     cards = world.get("/days")["days"]
     assert [(c["day"], c["kind"], c["records"]) for c in cards] == [(day, "model", 2)]
     assert cards[0]["lines"] == [
@@ -584,7 +584,7 @@ def test_a_day_summary_edit_wins_over_the_generated_one_and_is_never_regenerated
     assert [s["summary"] for s in spoken["summaries"]] == [rows[1][0]]
     # The night never writes a day that has a row: a second run asks the model nothing.
     again = _summarise(world, {day: "## x\n### Topics\nnone"})
-    assert again.asked == []
+    assert again.requests == []
     # Emptying a section writes "none", as the generator does; a verbatim day has nothing to edit.
     world.post(
         "/day/edit", {"day": day, "sections": {"topics": ["a"], "decisions": [], "unfinished": []}}

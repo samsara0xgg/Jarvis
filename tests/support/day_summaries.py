@@ -5,15 +5,18 @@ from __future__ import annotations
 import re
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from jarvis.decision.day_summary import REQUIRED_HEADINGS
-from jarvis.decision.llm import ChatResult
 from jarvis.runtime.day_summary import VERBATIM_UNDER_CHARS
 from jarvis.state.memory_db import open_memory_db
+from tests.support.model import Failure, Reply, ScriptedModel
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
+
+    from tests.support.model import Request
 
 TODAY = datetime.now().astimezone().date()
 
@@ -42,34 +45,31 @@ def insert_records(path: Path, rows: list[tuple[str, str, str, str]], *, pad: bo
         conn.executemany("INSERT INTO records (id, ts, source, text) VALUES (?, ?, ?, ?)", rows)
 
 
-class DaySummariser:
-    """Stands in for the day-summary preset's client; ``replies`` maps a day to its answer."""
+def day_of(request: Request) -> str:
+    """The day a request is about: its first message opens ``[Records of <day>, ...``."""
+    match = re.search(r"\[Records of (\S+),", str(request.messages[0]["content"]))
+    if match is None:
+        msg = "the request does not carry a day's records"
+        raise AssertionError(msg)
+    return match.group(1)
 
-    provider = "openai"
-    model = "fake-day-summariser"
 
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-        self.replies: dict[str, str] = {}
-        self.systems: list[str] = []
+def day_summariser(replies: Mapping[str, str | BaseException] | None = None) -> ScriptedModel:
+    """The day-summary preset's model: each day gets its entry in ``replies``, else a valid one.
 
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,
-        **_kwargs: object,
-    ) -> ChatResult:
-        text = str(messages[0]["content"])
-        day = re.match(r"\[Records of (\S+),", text).group(1)  # type: ignore[union-attr]
-        self.asked.append(day)
-        self.systems.append(system)
-        return ChatResult(
-            text=self.replies.get(day, f"## {day}\n{GOOD}"),
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=1,
-            output_tokens=1,
-            raw={},
-            model_used=self.model,
-        )
+    ``replies`` is read as each request arrives, so a test may change it between runs; an
+    exception as the entry is the request failing with it.
+    """
+    answers: Mapping[str, str | BaseException] = {} if replies is None else replies
+
+    def respond(request: Request) -> Reply | Failure:
+        day = day_of(request)
+        answer = answers.get(day, f"## {day}\n{GOOD}")
+        return Failure(answer) if isinstance(answer, BaseException) else Reply(answer)
+
+    return ScriptedModel(otherwise=respond, model="fake-day-summariser")
+
+
+def asked_days(model: ScriptedModel) -> list[str]:
+    """The day each request was about, in the order they were sent."""
+    return [day_of(request) for request in model.requests]

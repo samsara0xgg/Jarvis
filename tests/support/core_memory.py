@@ -12,10 +12,12 @@ from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import MemorySettings
-from tests.support.day_summaries import DaySummariser, insert_records, record_id, stamp_ago
+from tests.support.day_summaries import day_summariser, insert_records, record_id, stamp_ago
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from tests.support.model import ScriptedModel
 
 
 class Consolidator:
@@ -53,7 +55,14 @@ def consolidator_changes(*ops: dict[str, Any]) -> str:
     return json.dumps({"changes": list(ops)}, ensure_ascii=False)
 
 
-def core_schedule(tmp_path: Path, model: Consolidator, **core: Any) -> DaySummarySchedule:  # noqa: ANN401
+def core_schedule(
+    tmp_path: Path,
+    model: Consolidator,
+    *,
+    summariser: ScriptedModel | None = None,
+    **core: Any,  # noqa: ANN401
+) -> DaySummarySchedule:
+    """The nightly schedule over a temp store: ``summariser`` writes days, ``model`` the core."""
     log = tmp_path / "events.db"
     open_event_log(log).close()
     schedule = DaySummarySchedule(
@@ -63,8 +72,8 @@ def core_schedule(tmp_path: Path, model: Consolidator, **core: Any) -> DaySummar
         event_log_path=log,
         pricing_table={},
         core_memory=CoreMemorySettings(preset="c", prompt="consolidate", **core),
+        client=(day_summariser() if summariser is None else summariser).as_llm_client(),
     )
-    schedule._client = DaySummariser()  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
     schedule._core_client = model  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
     return schedule
 

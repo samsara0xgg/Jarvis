@@ -1,15 +1,15 @@
 """Daily conversation summaries (ADR 0142): the schedule, the gates and ``recall``.
 
 Real memory.db, real Event Log, real ``DaySummarySchedule`` and ``recall`` through
-the default registry; only the summariser's provider call is faked, by a client that
-answers per day and records what it was asked.
+the default registry; only the summariser's provider call is faked, by the scripted model,
+which answers per day and records what it was asked.
 """
 
 from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, time, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -29,8 +29,9 @@ from tests.support.daily_tools import DailyHarness
 from tests.support.day_summaries import (
     GOOD,
     TODAY,
-    DaySummariser,
+    asked_days,
     day_ago,
+    day_summariser,
     insert_records,
     record_id,
     stamp_ago,
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from jarvis.decision.llm import ChatResult
+    from tests.support.model import ScriptedModel
 
 
 def _stored(path: Path) -> dict[str, list[str]]:
@@ -52,19 +53,18 @@ def _stored(path: Path) -> dict[str, list[str]]:
 
 
 def _schedule(
-    tmp_path: Path, summariser: DaySummariser, at: time = time(5, 0),
+    tmp_path: Path, summariser: ScriptedModel, at: time = time(5, 0),
 ) -> DaySummarySchedule:
     log = tmp_path / "events.db"
     open_event_log(log).close()
-    schedule = DaySummarySchedule(
+    return DaySummarySchedule(
         memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
         settings=DaySummarySettings(at=at, preset="p", prompt="summarise", max_chars=500),
         llm_config={},
         event_log_path=log,
         pricing_table={},
+        client=summariser.as_llm_client(),
     )
-    schedule._client = summariser  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    return schedule
 
 
 def _run_once(schedule: DaySummarySchedule, now: datetime) -> dict[str, str] | None:
@@ -106,9 +106,11 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
         day_ago(1).isoformat(),
     ]
 
-    summariser = DaySummariser()
-    summariser.replies[day_ago(5).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"
-    summariser.replies[day_ago(1).isoformat()] = "## x\n### Topics\nno other headings"
+    replies = {
+        day_ago(5).isoformat(): f"## x\n{GOOD}\n[record_id={'f' * 32}]",
+        day_ago(1).isoformat(): "## x\n### Topics\nno other headings",
+    }
+    summariser = day_summariser(replies)
     schedule = _schedule(tmp_path, summariser)
 
     assert _run_once(schedule, datetime.now().astimezone().replace(hour=4, minute=59)) is None
@@ -116,24 +118,25 @@ def test_the_schedule_summarises_exactly_the_past_days_with_records_and_none_yet
     assert outcomes is not None
     # A rejected answer is asked once more in the same run.
     d5, d3, d1 = (day_ago(i).isoformat() for i in (5, 3, 1))
-    assert summariser.asked == [d5, d5, d3, d1, d1]
-    assert set(summariser.systems) == {"summarise"}
+    first_run = asked_days(summariser)
+    assert first_run == [d5, d5, d3, d1, d1]
+    assert {request.system for request in summariser.requests} == {"summarise"}
     assert outcomes[day_ago(5).isoformat()].startswith("rejected (cites record ids")
     assert outcomes[day_ago(1).isoformat()].startswith("rejected (missing headings")
     assert outcomes[day_ago(3).isoformat()].startswith("landed (2 records")
     stored = _stored(path)
     assert set(stored) == {day_ago(4).isoformat(), day_ago(3).isoformat()}
     assert stored[day_ago(4).isoformat()] == ["old"]
+    assert stored[day_ago(3).isoformat()] == [f"## {d3}\n{GOOD}"]  # the scripted model's answer
     # Once per local date: no second run today, even though two days are still open.
     assert _run_once(schedule, datetime.now().astimezone().replace(hour=23)) is None
 
     # The next day's run retries what was rejected and leaves the landed day alone.
-    summariser.replies.clear()
-    summariser.asked.clear()
+    replies.clear()
     tomorrow = datetime.now().astimezone() + timedelta(days=1)
     assert schedule.due(tomorrow.replace(hour=5, minute=1)) == TODAY + timedelta(days=1)
     schedule.write(TODAY + timedelta(days=1))
-    assert summariser.asked == [day_ago(5).isoformat(), day_ago(1).isoformat(), TODAY.isoformat()]
+    assert asked_days(summariser)[len(first_run) :] == [d5, d1, TODAY.isoformat()]
     assert set(_stored(path)) == {day_ago(i).isoformat() for i in (5, 4, 3, 1, 0)}
 
 
@@ -148,16 +151,7 @@ def test_a_failing_call_does_not_stop_the_days_after_it(tmp_path: Path) -> None:
         ],
         pad=True,
     )
-    summariser = DaySummariser()
-    real_chat = summariser.chat
-
-    def flaky(*, messages: list[dict[str, Any]], system: str, **kwargs: object) -> ChatResult:
-        if day_ago(3).isoformat() in str(messages[0]["content"]):
-            msg = "provider unreachable"
-            raise TimeoutError(msg)
-        return real_chat(messages=messages, system=system, **kwargs)
-
-    summariser.chat = flaky  # type: ignore[method-assign]
+    summariser = day_summariser({day_ago(3).isoformat(): TimeoutError("provider unreachable")})
     outcomes = _schedule(tmp_path, summariser).write(TODAY)
     assert outcomes[day_ago(3).isoformat()] == "failed"
     assert outcomes[day_ago(2).isoformat()].startswith("landed")
@@ -175,10 +169,10 @@ def test_a_short_day_is_kept_word_for_word_without_a_model_call(tmp_path: Path) 
             (record_id(2, 3), stamp_ago(2, 9, 2), "picture_note", "[Picture note]\n一碗面"),
         ],
     )
-    summariser = DaySummariser()
+    summariser = day_summariser()
     outcomes = _schedule(tmp_path, summariser).write(TODAY)
     assert outcomes[day_ago(2).isoformat()].startswith("verbatim (3 records")
-    assert summariser.asked == []
+    assert summariser.requests == []
     entry = _stored(path)[day_ago(2).isoformat()][-1]
     assert entry.endswith(
         "09:00 user: 早\n09:01 assistant: 早上好\n09:02 picture note: [Picture note]\n一碗面",
@@ -245,17 +239,17 @@ def test_a_restart_does_not_ask_again_for_a_day_already_tried(tmp_path: Path) ->
     """The log's summary calls since ``at`` today stand for the run a restart forgot."""
     path = tmp_path / "memory.db"
     insert_records(path, [(record_id(2, 1), stamp_ago(2, 9), "allen", "第二天")], pad=True)
-    summariser = DaySummariser()
-    summariser.replies[day_ago(2).isoformat()] = f"## x\n{GOOD}\n[record_id={'f' * 32}]"  # rejected
+    rejected = f"## x\n{GOOD}\n[record_id={'f' * 32}]"
+    summariser = day_summariser({day_ago(2).isoformat(): rejected})
     # The log stamps its rows with the real clock, so the run happens now, after a midnight ``at``.
     now = datetime.now().astimezone()
     assert _run_once(_schedule(tmp_path, summariser, time.min), now) is not None
-    assert summariser.asked == [day_ago(2).isoformat()] * 2
+    assert asked_days(summariser) == [day_ago(2).isoformat()] * 2
     restarted = _schedule(tmp_path, summariser, time.min)
     assert restarted.due(now) is None, "tried after at: the restart waits"
-    assert summariser.asked == [day_ago(2).isoformat()] * 2
+    assert asked_days(summariser) == [day_ago(2).isoformat()] * 2
     fresh = tmp_path / "fresh"
     fresh.mkdir()
-    assert _schedule(fresh, DaySummariser(), time.min).due(now) == now.date(), (
+    assert _schedule(fresh, day_summariser(), time.min).due(now) == now.date(), (
         "a log with no call today: a start still writes"
     )
