@@ -4,7 +4,6 @@ import WatchKit
 /// The watch app: one vertical scroll (home, then the list), the screens it opens, and the talk laid over all of it.
 /// Everything grows out of her and goes back into her: 0.3 s, no bounce.
 struct WatchRoot: View {
-    static let space = "watch-root"
     private static let grow = Animation.smooth(duration: 0.3)
     private static let cornerAt: CGFloat = 90          // points of scroll for her to travel from the middle to the corner
 
@@ -19,7 +18,6 @@ struct WatchRoot: View {
     /// scrolled far enough that she has reached the corner: from here the system's own corner item carries her (it also moves the time out of her way)
     @State private var inList = false
     @State private var herHome: CGRect = .zero
-    @State private var size: CGSize = .zero
     private let scrollToList: Bool
 
     init(path: [Route] = [], scrollToList: Bool = false) {
@@ -87,10 +85,8 @@ struct WatchRoot: View {
             .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.y + $0.contentInsets.top) } action: { _, y in scroll = y; inList = y >= Self.cornerAt }
             .onAppear { if scrollToList { Task { try? await Task.sleep(for: .seconds(0.4)); withAnimation(Self.grow) { proxy.scrollTo("list", anchor: .top) } } } }
         }
-        .overlay { if !inList { her } }
         .ignoresSafeArea()
-        .coordinateSpace(name: Self.space)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+        .overlay { ZStack { if !inList { her } }.ignoresSafeArea() }          // she is placed in screen coordinates, the ones her place is measured in (`.global`)
         .task(id: told) { if told != nil { try? await Task.sleep(for: .seconds(4)); if !Task.isCancelled { withAnimation(Self.grow) { told = nil } } } }
         .animation(Self.grow, value: told)
         .toolbar { if inList { WatchCornerHer(face: .rest, primary: true) } }
@@ -100,7 +96,7 @@ struct WatchRoot: View {
     /// She: the ball in the middle of the ring; as the list scrolls up she shrinks into the top-right corner, and grows back at the top.
     private var her: some View {
         let p = min(1, scroll / Self.cornerAt)
-        let corner = CGPoint(x: size.width - 32.5, y: 35)          // where the system puts a 28 pt top-trailing item
+        let corner = CGPoint(x: WKInterfaceDevice.current().screenBounds.width - 32.5, y: 35)          // where the system puts a 28 pt top-trailing item
         let at = CGPoint(x: herHome.midX + (corner.x - herHome.midX) * p, y: herHome.midY + (corner.y - herHome.midY) * p)
         let d = 80 + (28 - 80) * p
         return Button { model.startTalk() } label: {

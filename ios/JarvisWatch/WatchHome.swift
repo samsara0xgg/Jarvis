@@ -21,8 +21,10 @@ struct WatchHomePage: View {
                     .frame(width: side, height: side)
                     ring(day, side: side, thick: thick)
                 }
-                Color.clear.frame(width: 80, height: 80).offset(y: -side * 0.105)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(WatchRoot.space)) } action: { herPlace($0) }
+                // her place, a little above the middle: moved by layout (padding below), not `offset`, which the measure would not see
+                Color.clear.frame(width: 80, height: 80)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { herPlace($0) }
+                    .padding(.bottom, side * 0.21)
                 if !aod { centre(side: side) }
             }
             .frame(width: g.size.width, height: g.size.height)
