@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import voice_power, voice_wiring
+from jarvis.runtime.daemon import input_session, voice_power, voice_wiring
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -3933,7 +3933,7 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
-    disabled = inherent_loop._spawn_single_ingress_session(
+    disabled = input_session.spawn_single_ingress_session(
         runtime=runtime,
         pipeline=pipeline,
         broadcaster=broadcaster,
@@ -3960,7 +3960,7 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
             side_effect=AssertionError("device must not be constructed"),
         ),
     ):
-        failed = inherent_loop._spawn_single_ingress_session(
+        failed = input_session.spawn_single_ingress_session(
             runtime=runtime,
             pipeline=pipeline,
             broadcaster=broadcaster,
@@ -3996,7 +3996,7 @@ def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner(
         patch.object(voice_audio, "SileroVad", return_value=vad),
         patch.object(voice_backend, "SoundDeviceDuplexBackend", return_value=backend),
     ):
-        owners = inherent_loop._spawn_voice_input_owners(
+        owners = input_session.spawn_voice_input_owners(
             runtime=runtime,
             pipeline=pipeline,
             broadcaster=broadcaster,
@@ -4048,7 +4048,7 @@ def test_a_microphone_that_does_not_open_while_portaudio_starts_up_stuck_logs_wh
         stderr_in(err),
     ):
         voice_backend.keep_log_off_portaudio_stderr()  # what a voice terminal does at start
-        attempt = inherent_loop._spawn_single_ingress_session(
+        attempt = input_session.spawn_single_ingress_session(
             runtime=runtime,
             pipeline=MagicMock(spec=voice_pipeline.VoicePipeline),
             broadcaster=MagicMock(),
@@ -4102,7 +4102,7 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
                 "SileroVad",
                 side_effect=RuntimeError("injected Silero constructor failure"),
             ):
-                result = inherent_loop._spawn_single_ingress_session(
+                result = input_session.spawn_single_ingress_session(
                     runtime=runtime,
                     pipeline=pipeline,
                     broadcaster=broadcaster,
@@ -4115,7 +4115,7 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
                 "DuplexVoiceSession",
                 side_effect=RuntimeError("injected session constructor failure"),
             ):
-                result = inherent_loop._spawn_single_ingress_session(
+                result = input_session.spawn_single_ingress_session(
                     runtime=runtime,
                     pipeline=pipeline,
                     broadcaster=broadcaster,
@@ -4150,7 +4150,7 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     broadcaster = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
 
-    disabled = inherent_loop._spawn_voice_input_owners(
+    disabled = input_session.spawn_voice_input_owners(
         runtime=runtime,
         pipeline=pipeline,
         broadcaster=broadcaster,
@@ -4177,7 +4177,7 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
             side_effect=AssertionError("device must not be constructed"),
         ),
     ):
-        prewarm_failed = inherent_loop._spawn_voice_input_owners(
+        prewarm_failed = input_session.spawn_voice_input_owners(
             runtime=runtime,
             pipeline=pipeline,
             broadcaster=broadcaster,
@@ -4188,11 +4188,11 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     assert not prewarm_failed.single_ingress_attempted
 
     with patch.object(
-        inherent_loop,
-        "_spawn_single_ingress_session",
+        input_session,
+        "spawn_single_ingress_session",
         return_value=voice_power.SessionAttempt(None, attempted=True),
     ):
-        attempted_uncertain = inherent_loop._spawn_voice_input_owners(
+        attempted_uncertain = input_session.spawn_voice_input_owners(
             runtime=runtime,
             pipeline=pipeline,
             broadcaster=broadcaster,

@@ -78,6 +78,7 @@ from jarvis.runtime.daemon.devices import (
     start_device_change_watch,
     watch_board,
 )
+from jarvis.runtime.daemon.input_session import spawn_single_ingress_session
 from jarvis.runtime.daemon.observers import (
     agents_port,
     repo_observer_task,
@@ -101,7 +102,6 @@ from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
     _install_power_observer_or_degrade,
     _shutdown_power_observer,
-    _spawn_single_ingress_session,
 )
 from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -724,7 +724,7 @@ async def _start_listening(
 
     def build() -> tuple[SessionAttempt, Dictation | None]:
         recognizer_pipeline = recognizer()
-        attempt = _spawn_single_ingress_session(
+        attempt = spawn_single_ingress_session(
             runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
             silero_path=silero_path, tts=pipeline, voice=voice_knobs(config.raw),
             mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,

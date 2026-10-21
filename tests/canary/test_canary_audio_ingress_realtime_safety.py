@@ -1,7 +1,5 @@
 """Static Wave-3 guards for ADC callback safety and scope containment."""
 
-# ruff: noqa: SLF001 - private production seams are the canary target.
-
 from __future__ import annotations
 
 import ast
@@ -9,7 +7,7 @@ import inspect
 import textwrap
 from typing import TYPE_CHECKING
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import input_session
 from jarvis.surface import voice_audio, voice_backend, voice_session
 
 if TYPE_CHECKING:
@@ -68,7 +66,7 @@ def test_realtime_input_production_path_is_callback_only_and_has_no_stream_read(
             inspect.getsource(voice_backend.SoundDeviceDuplexBackend),
             inspect.getsource(voice_audio.AudioIngress),
             inspect.getsource(voice_session.DuplexVoiceSession),
-            inspect.getsource(inherent_loop._spawn_single_ingress_session),
+            inspect.getsource(input_session.spawn_single_ingress_session),
         ),
     )
     assert ".read(" not in inspect.getsource(voice_backend.SoundDeviceDuplexBackend)

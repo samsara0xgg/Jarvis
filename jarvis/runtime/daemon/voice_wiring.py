@@ -732,7 +732,8 @@ class ListenPorts:
     (:func:`~jarvis.runtime.daemon.listen_ports.local_listen_ports`).
     On a voice terminal each is a call over the brain link, or absent. The local halves of
     hold-output, stop-speaking and the like (the player, the input model) stay in
-    :func:`_spawn_single_ingress_session`, which runs wherever the microphone is.
+    :func:`~jarvis.runtime.daemon.input_session.spawn_single_ingress_session`, which runs
+    wherever the microphone is.
     """
 
     answer_words: Callable[[str, str, str], None] | None = None

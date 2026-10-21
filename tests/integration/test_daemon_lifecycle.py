@@ -94,7 +94,7 @@ def _fake_voice(monkeypatch: pytest.MonkeyPatch) -> _FakeVoiceSession:
     monkeypatch.setattr(inherent_loop, "_build_tts_pipeline", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         inherent_loop,
-        "_spawn_voice_input_owners",
+        "spawn_voice_input_owners",
         lambda **_kw: voice_power.VoiceInputOwners(
             duplex_session=session,  # type: ignore[arg-type]
             single_ingress_attempted=True,
