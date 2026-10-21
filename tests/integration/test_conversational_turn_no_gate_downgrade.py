@@ -109,8 +109,8 @@ def test_conversational_turn_passes_through_without_downgrade(
             f"Expected exactly 1 cost.recorded event, got {cost_count}: "
             f"the attempt-1 LLM retry must not fire on the no-subject path."
         )
-        assert llm.chat_calls == 1, (
-            f"LLM stub recorded {llm.chat_calls} chat calls; expected 1."
+        assert len(llm.requests) == 1, (
+            f"LLM stub recorded {len(llm.requests)} chat calls; expected 1."
         )
     finally:
         conn.close()

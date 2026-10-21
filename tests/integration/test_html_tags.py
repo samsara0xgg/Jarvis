@@ -14,6 +14,7 @@ import pytest
 
 from jarvis.shared.html_tags import HtmlTagFilter, strip_html
 from jarvis.state.memory_db import _plain
+from tests.support.model import ScriptedModel
 from tests.support.reaction_markup import decide_batch
 from tests.support.routine import drive_streaming_turn, logged_payloads
 from tests.support.spoken import (
@@ -22,7 +23,6 @@ from tests.support.spoken import (
     spoken_intent,
     spoken_runtime,
 )
-from tests.support.turn_guards import StepModel
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -92,5 +92,5 @@ def test_a_written_part_with_tags_is_cleaned_and_its_code_kept(tmp_path: Path) -
 
 def test_the_batch_loop_full_text_has_the_newline_and_no_tag(tmp_path: Path) -> None:
     """The non-streamed path finalises the same way."""
-    result = decide_batch(tmp_path, StepModel("到家就好。<br>早点休息。 a < b"), "cli_stdin")
+    result = decide_batch(tmp_path, ScriptedModel("到家就好。<br>早点休息。 a < b"), "cli_stdin")
     assert result.response_plan.text == "到家就好。\n早点休息。 a < b"

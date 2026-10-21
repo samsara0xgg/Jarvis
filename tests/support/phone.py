@@ -26,7 +26,6 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from jarvis.decision import DecideContext, decide
-from jarvis.decision.llm import ChatResult
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import inherent_loop
@@ -53,6 +52,7 @@ from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.voice_tts import TTSAudioChunk, TTSResponseSegment, TTSSegmentFinished
 from tests.support.media import CallbackPump
 from tests.support.media import media_config as _mac_config
+from tests.support.model import ScriptedModel
 from tests.support.net import free_port
 from tests.support.runtime_paths import StubRuntimePaths
 from tests.support.terminal import AsRemote, VoiceSpeechProvider, wait_for
@@ -64,7 +64,6 @@ if TYPE_CHECKING:
     from httpx2 import Response
 
     from jarvis.decision import LifecycleLike, RuntimePathsLike, ToolRegistryLike
-    from jarvis.decision.llm import LLMClient
     from jarvis.state.voiceprint import VoiceprintBook
 
 
@@ -304,47 +303,8 @@ def attachments_daemon(
     )
 
 
-class CapturingModel:
-    """Answers with fixed text and keeps every request it was handed."""
-
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    def __init__(self) -> None:
-        self.model = "stub-model"
-        self.requests: list[list[dict[str, Any]]] = []
-
-    @property
-    def last_input_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_output_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_finish_reason(self) -> str | None:
-        return "stop"
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,  # noqa: ARG002
-        tools: list[dict[str, Any]] | None = None,  # noqa: ARG002
-        tool_choice: str | None = "auto",  # noqa: ARG002
-    ) -> ChatResult:
-        self.requests.append([dict(m) for m in messages])
-        return ChatResult(
-            text="It is a one pixel picture.",
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
+ANSWER = "It is a one pixel picture."
+"""What the model says to a picture turn."""
 
 
 def attachment_turn(  # noqa: PLR0913 — one keyword per thing a turn can be given.
@@ -356,7 +316,7 @@ def attachment_turn(  # noqa: PLR0913 — one keyword per thing a turn can be gi
     tier0: bool = False,
     sent: list[str] | None = None,
     history: Sequence[dict[str, Any]] = (),
-) -> tuple[CapturingModel, str]:
+) -> tuple[ScriptedModel, str]:
     """Submit over HTTP, then run the stored intent through the real ``decide()``."""
     posted = d.remote.post(
         "/inherent/submit",
@@ -364,7 +324,7 @@ def attachment_turn(  # noqa: PLR0913 — one keyword per thing a turn can be gi
         json={"text": said, "attachments": list(ids)},
     )
     assert posted.status_code == 200
-    model = CapturingModel()
+    model = ScriptedModel(otherwise=ANSWER)
     paths = StubRuntimePaths(event_log=d.log, artifacts_root=d.root / "artifacts")
     with closing(open_event_log(d.log)) as conn:
         turn_id = posted.json()["turn_id"]
@@ -374,7 +334,7 @@ def attachment_turn(  # noqa: PLR0913 — one keyword per thing a turn can be gi
             runtime_paths=cast("RuntimePathsLike", paths),
             tool_registry=cast("ToolRegistryLike", build_default_registry()),
             lifecycle=cast("LifecycleLike", ActionLifecycle()),
-            llm_client=cast("LLMClient", model),
+            llm_client=model.as_llm_client(),
             system_prompt="stub system prompt",
             history=history,
             time_note="Time: 2026-10-10T12:00-07:00 Saturday",

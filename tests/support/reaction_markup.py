@@ -6,15 +6,17 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.decision import decide
 from jarvis.state.event_log import emit_event, open_event_log
-from tests.support.turn_guards import StepModel, guard_context
+from tests.support.turn_guards import guard_context
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from tests.support.model import ScriptedModel
+
 
 def decide_batch(
     tmp_path: Path,
-    model: StepModel,
+    model: ScriptedModel,
     channel: str,
     budget: int = 8,
 ) -> Any:  # noqa: ANN401 - DecideResult

@@ -6,7 +6,6 @@ import json
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import DecideContext, decide
-from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.runtime_paths import StubRuntimePaths
@@ -18,61 +17,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision import LifecycleLike, RuntimePathsLike, ToolRegistryLike
     from jarvis.decision.llm import LLMClient
-
-Step = str | tuple[str, dict[str, Any]]
-
-
-class StepModel:
-    """Answers each request with the next step: text, or one tool call (name, arguments)."""
-
-    native_tool_search = False  # Jarvis's own tool_search (ADR 0287)
-
-    def __init__(self, *steps: Step) -> None:
-        self._steps = list(steps)
-        self.requests: list[tuple[list[dict[str, Any]], bool]] = []  # (messages, tools offered)
-        self.model = "stub-model"
-
-    @property
-    def last_input_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_output_tokens(self) -> int | None:
-        return 0
-
-    @property
-    def last_finish_reason(self) -> str | None:
-        return "stop"
-
-    def chat(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        system: str,  # noqa: ARG002
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: str | None = "auto",  # noqa: ARG002
-    ) -> ChatResult:
-        self.requests.append(([dict(m) for m in messages], bool(tools)))
-        step = self._steps.pop(0)
-        calls: tuple[ToolCall, ...] = ()
-        text: str | None = None
-        if isinstance(step, str):
-            text = step
-        else:
-            name, args = step
-            calls = (ToolCall(f"call{len(self.requests)}", name, json.dumps(args)),)
-        return ChatResult(
-            text=text,
-            tool_calls=calls,
-            finish_reason="tool_calls" if calls else "stop",
-            input_tokens=0,
-            output_tokens=0,
-            raw={},
-            model_used="stub-model",
-            tokens_in=0,
-            tokens_out=0,
-        )
-
+    from tests.support.model import ScriptedModel
 
 def logged_guards(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT payload_json FROM events WHERE type='turn.guard_fired'")
@@ -110,7 +55,7 @@ def guard_context(  # noqa: PLR0913 - one argument per thing a turn's context ca
 
 def guard_batch(
     tmp_path: Path,
-    model: StepModel,
+    model: ScriptedModel,
     *,
     budget: int = 8,
     live_context: tuple[str, ...] = (),

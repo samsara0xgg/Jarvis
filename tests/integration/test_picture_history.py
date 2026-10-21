@@ -413,7 +413,7 @@ def test_a_history_ending_on_his_picture_folds_into_the_live_message_with_both_p
 
     model, _ = attachment_turn(d, "and this?", [live], history=history)
 
-    (message,) = [m for m in model.requests[0] if m["role"] == "user"]
+    (message,) = [m for m in model.requests[0].messages if m["role"] == "user"]
     kinds = [part["type"] for part in message["content"]]
     assert kinds == ["text", "image_file", "text", "image_url"]
     assert message["content"][1] == {"type": "image_file", "file_id": "file_001"}

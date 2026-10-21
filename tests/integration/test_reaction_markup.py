@@ -18,6 +18,7 @@ import pytest
 from jarvis.decision.reaction_markup import ReactionFilter, split_reaction
 from jarvis.shared import lang
 from jarvis.state.event_log import emit_event
+from tests.support.model import ScriptedModel, tool_call
 from tests.support.reaction_markup import decide_batch
 from tests.support.routine import drive_streaming_turn, logged_payloads, user_intent
 from tests.support.spoken import (
@@ -26,7 +27,6 @@ from tests.support.spoken import (
     spoken_intent,
     spoken_runtime,
 )
-from tests.support.turn_guards import StepModel
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -134,14 +134,14 @@ def test_the_wrap_up_after_the_tool_budget_that_is_only_a_tag(tmp_path: Path, ch
 
 def test_the_batch_loop_cuts_the_tag_and_hands_the_reaction_on(tmp_path: Path) -> None:
     """The plan holds the words alone, and the result carries the emoji."""
-    model = StepModel(f"到家就好。<react>{THUMB}</react>")
+    model = ScriptedModel(f"到家就好。<react>{THUMB}</react>")
     result = decide_batch(tmp_path, model, "cli_stdin")
     assert (result.response_plan.text, result.reaction) == ("到家就好。", THUMB)
 
 
 def test_the_batch_loop_answers_a_typed_message_with_a_tag_alone(tmp_path: Path) -> None:
     """One request, an empty answer, no limit line and no second try."""
-    model = StepModel(f"<react>{THUMB}</react>")
+    model = ScriptedModel(f"<react>{THUMB}</react>")
     result = decide_batch(tmp_path, model, "cli_stdin")
     assert (result.response_plan.text, result.reaction) == ("", THUMB)
     assert len(model.requests) == 1
@@ -150,7 +150,7 @@ def test_the_batch_loop_answers_a_typed_message_with_a_tag_alone(tmp_path: Path)
 @pytest.mark.parametrize("channel", ["cli_stdin", "inherent_ptt"])
 def test_the_batch_loops_wrap_up_that_is_only_a_tag(tmp_path: Path, channel: str) -> None:
     """Typed: the answer. Spoken: the limit line, as for any empty wrap-up."""
-    model = StepModel(("kept", {}), f"<react>{THUMB}</react>")
+    model = ScriptedModel(tool_call("kept"), f"<react>{THUMB}</react>")
     result = decide_batch(tmp_path, model, channel, budget=1)
     limit = lang.t("tool_budget.exhausted", lang="zh")
     assert result.response_plan.text == ("" if channel == "cli_stdin" else limit)
@@ -159,7 +159,7 @@ def test_the_batch_loops_wrap_up_that_is_only_a_tag(tmp_path: Path, channel: str
 
 def test_a_reply_without_a_tag_has_no_reaction(tmp_path: Path) -> None:
     """The field stays empty, and the plan is the reply untouched."""
-    result = decide_batch(tmp_path, StepModel("到家就好。"), "cli_stdin")
+    result = decide_batch(tmp_path, ScriptedModel("到家就好。"), "cli_stdin")
     assert (result.response_plan.text, result.reaction) == ("到家就好。", None)
 
 

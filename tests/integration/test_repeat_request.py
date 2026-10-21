@@ -70,7 +70,7 @@ def _decide(tmp_path: Path, heard: str, *, typed: bool = False) -> tuple[str, in
     finally:
         conn.close()
     assert result.response_plan is not None
-    return result.response_plan.text, llm.chat_calls
+    return result.response_plan.text, len(llm.requests)
 
 
 @pytest.mark.parametrize(

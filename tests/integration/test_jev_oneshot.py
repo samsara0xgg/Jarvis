@@ -457,7 +457,7 @@ def test_the_instant_function_comes_from_the_merged_request(
     result, conn, llm = _say(tmp_path, _WORDS, lines, jev)
     (ran,) = ran_tier0(conn)
     assert (ran["pattern_id"], ran["caller_principal"]) == ("time_now", "regex_router")
-    assert llm.chat_calls == 0
+    assert len(llm.requests) == 0
     assert result.response_plan is not None
     assert jev.requests == []
     assert len(lines.route.sent) == 1
@@ -476,7 +476,7 @@ def test_a_control_word_or_a_weak_choice_leaves_the_turn_to_the_model(
     lines = _Lines(tmp_path)
     lines.say(intent=(choice, confidence))
     result, conn, llm = _say(tmp_path, _WORDS, lines, jev)
-    assert llm.chat_calls == 1
+    assert len(llm.requests) == 1
     assert result.response_plan is not None
     assert result.response_plan.text == LLM_ANSWER
     (event,) = logged_events(conn, "route.surrogate_decided")

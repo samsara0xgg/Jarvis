@@ -39,14 +39,9 @@ from jarvis.decision.turn_guards import (
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import append_record
 from jarvis.surface.stream_emission import emit_permitted_segment
+from tests.support.model import ScriptedModel, tool_call
 from tests.support.phone import StepsHost, answer_with_record, history_of, logged_tool_call
-from tests.support.turn_guards import (
-    StepModel,
-    guard_batch,
-    guard_context,
-    logged_guards,
-    tool_texts,
-)
+from tests.support.turn_guards import guard_batch, guard_context, logged_guards, tool_texts
 
 if TYPE_CHECKING:
     import sqlite3
@@ -329,12 +324,12 @@ MEMO = ("schedule", {"action": "add", "what": "明天开会"})
 
 def test_an_identical_repeat_is_not_run_and_gets_the_note(tmp_path: Path) -> None:
     """(a) The same read twice in a turn: one run, and the second call's result is the note."""
-    model = StepModel(("kept", {}), ("kept", {}), "没有备忘。")
+    model = ScriptedModel(tool_call("kept"), tool_call("kept"), "没有备忘。")
     text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "没有备忘。"
         assert _count(conn, "action.result_observed") == 1
-        assert tool_texts(model.requests[-1][0])[1] == REPEATED_CALL
+        assert tool_texts(model.requests[-1].messages)[1] == REPEATED_CALL
         assert logged_guards(conn) == [{"turn_id": "T_guard", "guard": "repeat", "tool": "kept"}]
     finally:
         conn.close()
@@ -343,11 +338,11 @@ def test_an_identical_repeat_is_not_run_and_gets_the_note(tmp_path: Path) -> Non
 def test_a_repeat_of_a_call_that_failed_names_the_fix(tmp_path: Path) -> None:
     """The same failing call again is refused with the note that says to change what failed."""
     empty = ("keep", {"text": ""})
-    model = StepModel(empty, empty, "没记成。")
+    model = ScriptedModel(tool_call(*empty), tool_call(*empty), "没记成。")
     _, conn = guard_batch(tmp_path, model)
     try:
         assert _count(conn, "action.result_observed") == 1
-        failed, repeat = tool_texts(model.requests[-1][0])
+        failed, repeat = tool_texts(model.requests[-1].messages)
         assert "empty_text" in failed
         assert repeat == REPEATED_FAILED
     finally:
@@ -356,11 +351,11 @@ def test_a_repeat_of_a_call_that_failed_names_the_fix(tmp_path: Path) -> None:
 
 def test_the_same_memo_twice_is_saved_once(tmp_path: Path) -> None:
     """A write repeated unchanged (schedule, the same words) is refused too."""
-    model = StepModel(MEMO, MEMO, "记好了。")
+    model = ScriptedModel(tool_call(*MEMO), tool_call(*MEMO), "记好了。")
     _, conn = guard_batch(tmp_path, model)
     try:
         assert _count(conn, "thing.added") == 1
-        assert tool_texts(model.requests[-1][0])[1] == REPEATED_CALL
+        assert tool_texts(model.requests[-1].messages)[1] == REPEATED_CALL
         assert _count(conn, "turn.guard_fired") == 1
     finally:
         conn.close()
@@ -368,11 +363,11 @@ def test_the_same_memo_twice_is_saved_once(tmp_path: Path) -> None:
 
 def test_a_repeat_after_a_write_runs(tmp_path: Path) -> None:
     """(b) list, write, list: the second list may differ, so it runs."""
-    model = StepModel(("kept", {}), MEMO, ("kept", {}), "有一条。")
+    model = ScriptedModel(tool_call("kept"), tool_call(*MEMO), tool_call("kept"), "有一条。")
     _, conn = guard_batch(tmp_path, model)
     try:
         assert _count(conn, "action.result_observed") == 3
-        assert REPEATED_CALL not in tool_texts(model.requests[-1][0])
+        assert REPEATED_CALL not in tool_texts(model.requests[-1].messages)
         assert _count(conn, "turn.guard_fired") == 0
     finally:
         conn.close()
@@ -380,12 +375,12 @@ def test_a_repeat_after_a_write_runs(tmp_path: Path) -> None:
 
 def test_a_claim_with_no_call_goes_back_once_and_the_call_follows(tmp_path: Path) -> None:
     """(c) 「记下了」 with nothing saved: one note, then the model saves, then the answer stands."""
-    model = StepModel("记下了。", MEMO, "好了，明天开会记在备忘录里了。")
+    model = ScriptedModel("记下了。", tool_call(*MEMO), "好了，明天开会记在备忘录里了。")
     text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "好了，明天开会记在备忘录里了。"
         assert len(model.requests) == 3
-        second = model.requests[1][0]
+        second = model.requests[1].messages
         (note,) = _notes(second, DID)
         assert note["role"] == "user"
         assert second[second.index(note) - 1] == {"role": "assistant", "content": "记下了。"}
@@ -403,12 +398,12 @@ def test_a_did_line_in_the_history_is_no_backing_for_a_claim_in_this_turn(tmp_pa
     answer_with_record(host, "T_old", "好。")
     history = history_of(host)
     assert history[-1]["content"].endswith("好。\n[You did: saved a note]")
-    model = StepModel("记下了。", MEMO, "好了，明天开会记在备忘录里了。")
+    model = ScriptedModel("记下了。", tool_call(*MEMO), "好了，明天开会记在备忘录里了。")
     text, conn = guard_batch(tmp_path, model, history=history)
     try:
         assert text == "好了，明天开会记在备忘录里了。"
-        assert history[-1] in model.requests[0][0]
-        assert len(_notes(model.requests[1][0], DID)) == 1
+        assert history[-1] in model.requests[0].messages
+        assert len(_notes(model.requests[1].messages, DID)) == 1
         assert logged_guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": DID}]
         assert _count(conn, "thing.added") == 1
     finally:
@@ -417,7 +412,7 @@ def test_a_did_line_in_the_history_is_no_backing_for_a_claim_in_this_turn(tmp_pa
 
 def test_the_bounce_happens_once_a_turn(tmp_path: Path) -> None:
     """(d) The answer after the note stands, claim or not."""
-    model = StepModel("记下了。", "记下了。")
+    model = ScriptedModel("记下了。", "记下了。")
     text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "记下了。"
@@ -430,11 +425,11 @@ def test_the_bounce_happens_once_a_turn(tmp_path: Path) -> None:
 
 def test_an_announced_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) -> None:
     """「我查一下」 and no call: the note says it will check; the model then looks."""
-    model = StepModel("我查一下。", ("kept", {}), "还没有备忘。")
+    model = ScriptedModel("我查一下。", tool_call("kept"), "还没有备忘。")
     text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "还没有备忘。"
-        assert _notes(model.requests[1][0], CHECK)
+        assert _notes(model.requests[1].messages, CHECK)
         assert _count(conn, "action.result_observed") == 1
     finally:
         conn.close()
@@ -442,11 +437,11 @@ def test_an_announced_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) ->
 
 def test_a_claimed_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) -> None:
     """「我查了你的日历」 and no call: the note says it looked it up; the model then looks."""
-    model = StepModel("我查了你的日历，没有安排。", ("kept", {}), "还没有备忘。")
+    model = ScriptedModel("我查了你的日历，没有安排。", tool_call("kept"), "还没有备忘。")
     text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "还没有备忘。"
-        assert _notes(model.requests[1][0], LOOKED)
+        assert _notes(model.requests[1].messages, LOOKED)
         assert _count(conn, "action.result_observed") == 1
         assert logged_guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": LOOKED}]
     finally:
@@ -455,7 +450,7 @@ def test_a_claimed_lookup_goes_back_and_the_lookup_follows(tmp_path: Path) -> No
 
 def test_a_lookup_claimed_after_a_real_call_is_not_sent_back(tmp_path: Path) -> None:
     """The call made earlier this turn backs it; the answer stands with no note."""
-    model = StepModel(("kept", {}), "我查了，还没有备忘。")
+    model = ScriptedModel(tool_call("kept"), "我查了，还没有备忘。")
     text, conn = guard_batch(tmp_path, model)
     try:
         assert text == "我查了，还没有备忘。"
@@ -467,7 +462,7 @@ def test_a_lookup_claimed_after_a_real_call_is_not_sent_back(tmp_path: Path) -> 
 
 def test_a_calendar_answer_the_block_backs_is_not_sent_back(tmp_path: Path) -> None:
     """With the calendar line in this turn's state, 「你的日历下午是空的」 stands with no call."""
-    model = StepModel("你的日历明天是空的。")
+    model = ScriptedModel("你的日历明天是空的。")
     text, conn = guard_batch(tmp_path, model, live_context=(CAL_LINE,))
     try:
         assert text == "你的日历明天是空的。"
@@ -479,10 +474,10 @@ def test_a_calendar_answer_the_block_backs_is_not_sent_back(tmp_path: Path) -> N
 
 def test_the_same_answer_without_the_line_goes_back(tmp_path: Path) -> None:
     """No calendar line in the state: the claim is unbacked and the lookup follows the note."""
-    model = StepModel("你的日历明天是空的。", ("kept", {}), "没有。")
+    model = ScriptedModel("你的日历明天是空的。", tool_call("kept"), "没有。")
     _, conn = guard_batch(tmp_path, model)
     try:
-        assert _notes(model.requests[1][0], LOOKED)
+        assert _notes(model.requests[1].messages, LOOKED)
         assert _count(conn, "action.result_observed") == 1
     finally:
         conn.close()
@@ -490,10 +485,10 @@ def test_the_same_answer_without_the_line_goes_back(tmp_path: Path) -> None:
 
 def test_saying_the_calendar_was_checked_goes_back_even_with_the_line(tmp_path: Path) -> None:
     """The block is not a lookup: 「我查了日历」 with no call is sent back whatever is in view."""
-    model = StepModel("我查了日历，三点半有牙医。", ("kept", {}), "好。")
+    model = ScriptedModel("我查了日历，三点半有牙医。", tool_call("kept"), "好。")
     _, conn = guard_batch(tmp_path, model, live_context=(CAL_LINE,))
     try:
-        assert _notes(model.requests[1][0], LOOKED)
+        assert _notes(model.requests[1].messages, LOOKED)
         assert logged_guards(conn) == [{"turn_id": "T_guard", "guard": "unbacked", "said": LOOKED}]
     finally:
         conn.close()
@@ -501,12 +496,12 @@ def test_saying_the_calendar_was_checked_goes_back_even_with_the_line(tmp_path: 
 
 def test_no_bounce_when_the_budget_wraps_the_turn_up(tmp_path: Path) -> None:
     """(e) The budget's own no-tool answer is final, claim or not."""
-    wrapped = StepModel(("kept", {"n": 1}), ("kept", {"n": 2}), "记下了。")
+    wrapped = ScriptedModel(tool_call("kept", {"n": 1}), tool_call("kept", {"n": 2}), "记下了。")
     text, conn = guard_batch(tmp_path, wrapped, budget=2)
     try:
         assert text == "记下了。"
         assert len(wrapped.requests) == 3
-        assert not wrapped.requests[2][1]  # the wrap-up offers no tools
+        assert not wrapped.requests[2].tools  # the wrap-up offers no tools
         assert _count(conn, "turn.guard_fired") == 0
     finally:
         conn.close()
@@ -514,7 +509,7 @@ def test_no_bounce_when_the_budget_wraps_the_turn_up(tmp_path: Path) -> None:
 
 def test_no_bounce_on_the_last_request_the_budget_allows(tmp_path: Path) -> None:
     """There is no request left to run after a note, so the answer stands."""
-    last = StepModel(("kept", {}), "记下了。")
+    last = ScriptedModel(tool_call("kept"), "记下了。")
     text, conn = guard_batch(tmp_path, last, budget=2)
     try:
         assert text == "记下了。"

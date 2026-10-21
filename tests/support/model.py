@@ -142,6 +142,13 @@ class Reply:
         return "tool_calls" if self.calls else "stop"
 
 
+def tool_call(
+    name: str, arguments: Mapping[str, Any] | None = None, *, call_id: str | None = None
+) -> Reply:
+    """A reply that is one tool call and no words."""
+    return Reply(calls=(Call(name, {} if arguments is None else arguments, call_id),))
+
+
 @dataclass(frozen=True)
 class Failure:
     """The request fails with ``error``: ``chat`` raises it, a stream breaks with it."""

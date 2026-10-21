@@ -25,7 +25,7 @@ from contextlib import closing
 from datetime import UTC
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import pytest
 
@@ -48,12 +48,10 @@ from jarvis.state.day_line import DaySources, fold_day
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import render_context
 from jarvis.surface.cli import emit_surface_user_intent
-from tests.support.phone import PNG, CapturingModel
+from tests.support.model import ScriptedModel
+from tests.support.phone import PNG
 from tests.support.picture_notes import ANSWER, CORRECTION, FILLER_EN, WORDS, World
 from tests.support.runtime_paths import StubRuntimePaths
-
-if TYPE_CHECKING:
-    from jarvis.decision.llm import LLMClient
 
 
 @pytest.fixture
@@ -299,7 +297,7 @@ def _decide_request(tmp_path: Path, transcript: str, last_words: str) -> str:
     log = tmp_path / "events.db"
     store = Attachments(tmp_path / ATTACHMENTS_DIRNAME)
     picture = store.save(PNG, "IMG_1.png", images_ok=True).id
-    model = CapturingModel()
+    model = ScriptedModel("Looks like noodles.")
     with closing(open_event_log(log)) as conn:
         trigger = emit_surface_user_intent(
             conn, transcript=transcript, turn_id="T-lang", attachments=[picture],
@@ -309,10 +307,10 @@ def _decide_request(tmp_path: Path, transcript: str, last_words: str) -> str:
             runtime_paths=cast("RuntimePathsLike", StubRuntimePaths(log, tmp_path)),
             tool_registry=cast("ToolRegistryLike", build_default_registry()),
             lifecycle=cast("LifecycleLike", ActionLifecycle()),
-            llm_client=cast("LLMClient", model), system_prompt="s",
+            llm_client=model.as_llm_client(), system_prompt="s",
             read_attachments=store.load_many, last_words=last_words,
         ))
-    (live,) = [m for m in model.requests[0] if m["role"] == "user"]
+    (live,) = [m for m in model.requests[0].messages if m["role"] == "user"]
     return str(live["content"][0]["text"])
 
 

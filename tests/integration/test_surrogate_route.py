@@ -83,7 +83,7 @@ def test_a_confident_choice_runs_the_tier0_function(tmp_path: Path, jev: Surroga
         "get_current_time",
         "regex_router",
     )
-    assert llm.chat_calls == 0
+    assert len(llm.requests) == 0
     assert result.response_plan is not None
     assert result.response_plan.text != LLM_ANSWER
     (event,) = logged_events(conn, "route.surrogate_decided")
@@ -118,7 +118,7 @@ def test_the_batch_path_stays_sequential_even_with_parallel_on(
         parallel=True,
     )
     _result, conn, llm = _say(tmp_path, "do you have the time", route)
-    assert llm.chat_calls == 0
+    assert len(llm.requests) == 0
     (event,) = logged_events(conn, "route.surrogate_decided")
     assert (event["accepted"], event["aborted"], event["parallel"]) == (True, False, True)
 
@@ -164,7 +164,7 @@ def test_repeat_says_the_last_answer_again(tmp_path: Path, jev: SurrogateJev) ->
     )
     assert result.response_plan is not None
     assert result.response_plan.text == "Water is wet."
-    assert llm.chat_calls == 0
+    assert len(llm.requests) == 0
     assert logged_events(conn, "route.surrogate_decided")[0]["accepted"] is True
 
 
@@ -172,7 +172,7 @@ def test_repeat_with_nothing_said_yet_goes_to_the_model(tmp_path: Path, jev: Sur
     """Nothing to repeat is not a route: the model answers."""
     jev.choice = "repeat"
     result, conn, llm = _say(tmp_path, "could you go over that once more", _route(jev))
-    assert llm.chat_calls == 1
+    assert len(llm.requests) == 1
     assert result.response_plan is not None
     assert result.response_plan.text == LLM_ANSWER
     assert logged_events(conn, "route.surrogate_decided")[0]["accepted"] is False
@@ -202,7 +202,7 @@ def test_anything_else_falls_through_to_the_model(  # noqa: PLR0913 — one para
     for name, value in setup.items():
         setattr(jev, name, value)
     result, conn, llm = _say(tmp_path, "do you have the time", _route(jev, timeout_ms=300))
-    assert llm.chat_calls == 1
+    assert len(llm.requests) == 1
     assert result.response_plan is not None
     assert result.response_plan.text == LLM_ANSWER
     assert ran_tier0(conn) == []
@@ -226,7 +226,7 @@ def test_the_deadline_is_for_the_whole_call_not_each_phase(
     started = time.monotonic()
     result, conn, llm = _say(tmp_path, "do you have the time", _route(jev))
     assert result.response_plan is not None
-    assert llm.chat_calls == 1
+    assert len(llm.requests) == 1
     (event,) = logged_events(conn, "route.surrogate_decided")
     assert (event["error"], event["accepted"]) == ("timeout", False)
     assert 400 <= event["latency_ms"] <= 450
@@ -246,7 +246,7 @@ def test_a_missing_key_never_calls_and_warns_once(
         for turn in ("a", "b"):
             (tmp_path / turn).mkdir()
             result, conn, llm = _say(tmp_path / turn, "do you have the time", route)
-            assert llm.chat_calls == 1
+            assert len(llm.requests) == 1
             assert result.response_plan is not None
             assert logged_events(conn, "route.surrogate_decided")[0]["error"] == "no_key"
     assert jev.requests == []
@@ -317,7 +317,7 @@ def test_a_dataset_that_cannot_be_written_changes_no_decision(
             (tmp_path / turn).mkdir()
             _result, conn, llm = _say(tmp_path / turn, "do you have the time", route)
             assert [p["pattern_id"] for p in ran_tier0(conn)] == ["time_now"]
-            assert llm.chat_calls == 0
+            assert len(llm.requests) == 0
     assert len(caplog.records) == 1
     assert "jev log" in caplog.text
     assert KEY not in caplog.text
@@ -346,7 +346,7 @@ def test_a_tier0_regex_match_never_asks_jev(tmp_path: Path, jev: SurrogateJev) -
     assert jev.requests == []
     assert logged_events(conn, "route.surrogate_decided") == []
     assert [p["pattern_id"] for p in ran_tier0(conn)] == ["time_now"]
-    assert llm.chat_calls == 0
+    assert len(llm.requests) == 0
 
 
 def test_with_the_route_off_nothing_is_asked_or_recorded(tmp_path: Path, jev: SurrogateJev) -> None:
@@ -354,7 +354,7 @@ def test_with_the_route_off_nothing_is_asked_or_recorded(tmp_path: Path, jev: Su
     _result, conn, llm = _say(tmp_path, "do you have the time", None)
     assert jev.requests == []
     assert logged_events(conn, "route.surrogate_decided") == []
-    assert llm.chat_calls == 1
+    assert len(llm.requests) == 1
 
 
 def _exchange(
