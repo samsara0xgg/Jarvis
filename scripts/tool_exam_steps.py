@@ -323,10 +323,14 @@ class _Substituting:
     ``chat`` ignores decide()'s first messages (they were built from the sandbox) and sends the
     logged system and messages, then everything decide() appended since: its tool calls, their
     results and its notes. Every other attribute is the inner client's.
+
+    With no ``system`` and no ``head`` (a case built at its moment, ``scripts/tool_exam_turns.py``)
+    nothing is substituted: the request decide() built goes through as it is, and the first one is
+    kept whole as ``first``.
     """
 
     def __init__(
-        self, inner: Any, system: str, head: list[dict[str, Any]],  # noqa: ANN401
+        self, inner: Any, system: str | None, head: list[dict[str, Any]] | None,  # noqa: ANN401
         meter: Meter | None = None,
     ) -> None:
         self._inner = inner
@@ -336,6 +340,7 @@ class _Substituting:
         self.base: int | None = None
         self.live: list[dict[str, Any]] = []
         self.calls: list[dict[str, Any]] = []
+        self.first: dict[str, Any] | None = None
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401
         return getattr(self._inner, name)
@@ -359,7 +364,12 @@ class _Substituting:
         if loop:
             self.base = len(messages) if self.base is None else self.base
             self.live = messages
-            sent, sent_system = [*self._head, *messages[self.base:]], self._system
+            if self._head is None or self._system is None:
+                sent, sent_system = messages, system
+                if self.first is None:
+                    self.first = copy.deepcopy({"system": system, "messages": messages})
+            else:
+                sent, sent_system = [*self._head, *messages[self.base:]], self._system
         else:
             sent, sent_system = messages, system
         if self._meter is not None:
@@ -650,26 +660,56 @@ def _for_preset(
     return {**case, "request": spoken_reply_for(case["request"], structured=structured[preset])}
 
 
-def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run each case, report
-    """``run-steps``: boot the sandbox runtime, run every case, append the records."""
+def load_cases(path: Path) -> list[dict[str, Any]]:
+    """The cases of ``path``: a JSON list, or a directory of one case per ``*.json`` file."""
+    if path.is_dir():
+        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(path.glob("*.json"))]
+    return list(json.loads(path.read_text(encoding="utf-8")))
+
+
+def cmd_run_steps(args: argparse.Namespace) -> int:
+    """``run-steps``: run every case, logged ones on the snapshot, built ones at their moment."""
+    all_cases = load_cases(args.cases)
+    if args.only:
+        all_cases = [c for c in all_cases if c["id"] in args.only]
+    cases = [c for c in all_cases if "request" in c]
+    built = [c for c in all_cases if "request" not in c]
+    script = json.loads(args.fake.read_text(encoding="utf-8")) if args.fake else None
+    extra = args.system_append.read_text(encoding="utf-8").strip() if args.system_append else ""
+    table = load_pricing_table(REPO / "data" / "pricing.json")
+    pushes: list[dict[str, str | None]] = []
+    meter = Meter(args.cap_usd, table)
+    done = 0
+    if built:
+        from scripts.tool_exam_turns import run_built  # noqa: PLC0415 - it imports this module
+
+        done += run_built(built, args, table, meter, script)
+    if cases and not meter.capped:
+        done += _run_logged(args, cases, script, extra, table, pushes, meter)
+    summary = {**_peaks(done), "spend_usd": round(meter.spent, 6), "cap_usd": args.cap_usd,
+               "capped": meter.capped}
+    with args.out.open("a", encoding="utf-8") as out:
+        out.write(json.dumps(summary) + "\n")
+    sys.stderr.write(json.dumps(summary) + "\n")
+    sys.stdout.write(meter.report() + "\n")
+    return 0
+
+
+def _run_logged(  # noqa: PLR0913 - boot once on the snapshot, run each logged case
+    args: argparse.Namespace, cases: list[dict[str, Any]], script: Mapping[str, Any] | None,
+    extra: str, table: Mapping[str, Any], pushes: list[dict[str, str | None]], meter: Meter,
+) -> int:
     pristine = args.root.expanduser().resolve()
     live = (Path.home() / ".jarvis").resolve()
     if pristine == live or live in pristine.parents or not pristine.is_dir():
         msg = f"--root must be a snapshot made by tool_exam_snapshot.py, not {pristine}"
         raise SystemExit(msg)
-    cases = json.loads(args.cases.read_text(encoding="utf-8"))
-    if args.only:
-        cases = [c for c in cases if c["id"] in args.only]
-    script = json.loads(args.fake.read_text(encoding="utf-8")) if args.fake else None
-    extra = args.system_append.read_text(encoding="utf-8").strip() if args.system_append else ""
-    table = load_pricing_table(REPO / "data" / "pricing.json")
+    cases_dir = args.cases if args.cases.is_dir() else args.cases.parent
     work = Path(tempfile.mkdtemp(prefix="root-work-", dir=pristine.parent))
-    pushes: list[dict[str, str | None]] = []
-    meter = Meter(args.cap_usd, table)
     runtime, done = None, 0
     try:
         shutil.copytree(pristine, work, dirs_exist_ok=True)
-        runtime = _boot(work, args.cases.parent / "mcp-tools.json", pushes)
+        runtime = _boot(work, cases_dir / "mcp-tools.json", pushes)
         classes = classify(runtime.tool_registry)
         baseline = work / "baseline"
         baseline.mkdir()
@@ -712,22 +752,51 @@ def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run
                 runtime.plugin_connections.stop()  # ends the MCP child, so its peak is counted
         if not args.keep_work:
             shutil.rmtree(work, ignore_errors=True)
-    summary = {**_peaks(done), "spend_usd": round(meter.spent, 6), "cap_usd": args.cap_usd,
-               "capped": meter.capped}
-    with args.out.open("a", encoding="utf-8") as out:
-        out.write(json.dumps(summary) + "\n")
-    sys.stderr.write(json.dumps(summary) + "\n")
-    sys.stdout.write(meter.report() + "\n")
-    return 0
+    return done
 
 
 # --- scoring -------------------------------------------------------------------------------
 
 
+def _carries(args: Any, want: Mapping[str, Any]) -> bool:  # noqa: ANN401 - decoded JSON
+    """Whether the call's ``args`` hold every pair of ``want``; ``re:`` starts a regex value."""
+    if not isinstance(args, dict):
+        return False
+    for key, value in want.items():
+        got = args.get(key)
+        if isinstance(value, str) and value.startswith("re:"):
+            if got is None or not re.search(value[3:], str(got)):
+                return False
+        elif got != value and str(got) != str(value):
+            return False
+    return True
+
+
+def _arg_failures(spec: Mapping[str, Any], calls: Sequence[Mapping[str, Any]]) -> list[str]:
+    """What ``args_must``, ``args_must_not`` and ``min_calls`` ask of the proposed calls."""
+    why = []
+    for tool, wants in (spec.get("args_must") or {}).items():
+        ones = [c["args"] for c in calls if c["name"] == tool]
+        if not any(_carries(a, w) for a in ones for w in wants):
+            why.append(f"args_must:{tool}")
+    for tool, wants in (spec.get("args_must_not") or {}).items():
+        ones = [c["args"] for c in calls if c["name"] == tool]
+        if any(_carries(a, w) for a in ones for w in wants):
+            why.append(f"args_must_not:{tool}")
+    for tool, n in (spec.get("min_calls") or {}).items():
+        if sum(c["name"] == tool for c in calls) < n:
+            why.append(f"min_calls:{tool}<{n}")
+    return why
+
+
 def judge_steps(
-    spec: Mapping[str, Any], line: Mapping[str, Any], request: Mapping[str, Any],
+    spec: Mapping[str, Any], line: Mapping[str, Any], request: Mapping[str, Any] | None,
 ) -> tuple[bool, str]:
-    """Whether one run satisfies ``expect.steps``, and its short label."""
+    """Whether one run satisfies ``expect.steps``, and its short label.
+
+    ``request`` is the logged one; a case built at its moment has none, and
+    ``no_identical_repeat`` then looks at this turn's calls alone.
+    """
     if line.get("error"):
         return False, f"ERR({str(line['error']).split(':')[0]})"
     calls = [c for s in line["steps"] for c in s["calls"]]
@@ -737,15 +806,21 @@ def judge_steps(
     if "max_calls" in spec and len(calls) > spec["max_calls"]:
         why.append(f"calls:{len(calls)}>{spec['max_calls']}")
     if spec.get("no_identical_repeat"):
-        seen, _outputs = _history(request)
+        seen = _history(request)[0] if request is not None else []
         for c in calls:
             one = {"name": c["name"], "args": c["args"]}
             if one in seen:
                 why.append(f"repeat:{c['name']}")
             seen.append(one)
+    why += _arg_failures(spec, calls)
+    if spec.get("no_card") and line.get("confirmations"):
+        why.append("card")
     text = line.get("text") or ""
     why += ["text~must_not" for rx in spec.get("final_text_must_not", ()) if re.search(rx, text)]
     why += ["text!~must" for rx in spec.get("final_text_must", ()) if not re.search(rx, text)]
+    for tool, patterns in (spec.get("claims_need_call") or {}).items():
+        if tool not in names and any(re.search(rx, text) for rx in patterns):
+            why.append(f"claim:{tool}")
     return (not why), ("pass" if not why else f"FAIL({'+'.join(dict.fromkeys(why))})")
 
 
@@ -809,7 +884,7 @@ def _unscored(cases: Mapping[str, Any], presets: Sequence[str], runs: Runs) -> l
 
 def cmd_score_steps(args: argparse.Namespace) -> int:
     """``score-steps``: pass/fail per case and preset with calls, iterations, time and cost."""
-    cases = {c["id"]: c for c in json.loads(args.cases.read_text(encoding="utf-8"))}
+    cases = {c["id"]: c for c in load_cases(args.cases)}
     runs: Runs = {}
     for text in args.results.read_text(encoding="utf-8").splitlines():
         line = json.loads(text) if text.strip() else {}
@@ -817,7 +892,7 @@ def cmd_score_steps(args: argparse.Namespace) -> int:
             runs.setdefault((line["case"], line["preset"]), []).append(line)
     presets = sorted({p for _, p in runs})
     verdicts: Verdicts = {
-        key: [judge_steps(spec, line, cases[key[0]]["request"]) for line in sorted(
+        key: [judge_steps(spec, line, cases[key[0]].get("request")) for line in sorted(
             lines, key=lambda one: one["run"])]
         for key, lines in runs.items()
         if (spec := (cases[key[0]].get("expect") or {}).get("steps")) is not None
@@ -899,7 +974,7 @@ def quote(  # noqa: PLR0913 - the measured runs, the cases, the model and how mu
 
 def cmd_quote(args: argparse.Namespace) -> int:
     """``quote``: print what the cases would cost on a preset, priced from a previous run."""
-    cases = json.loads(args.cases.read_text(encoding="utf-8"))
+    cases = load_cases(args.cases)
     if args.only:
         cases = [c for c in cases if c["id"] in args.only]
     lines = args.results.read_text(encoding="utf-8").splitlines()

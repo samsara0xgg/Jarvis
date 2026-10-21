@@ -18,13 +18,15 @@ An item (JSON, one per file) holds his words and the moment, place and data they
 - ``state``: a backup directory name under ``~/.jarvis/backups/pi-brain``, a fixture directory
   (relative to the item's directory or the repo), or null for empty databases. A directory holds
   ``mac_events.db`` / ``memory.db`` (copied before the boot) and/or ``mac_events.sql`` /
-  ``memory.sql`` (run after it).
+  ``memory.sql`` (run after it). Rows made at or after ``at`` are deleted from the copied
+  databases first (:func:`cut_at`); the run prints the tables that cut could not handle.
 - ``setup``: earlier calls, ``[{tool, args}]``, made through the same dispatcher.
 - ``recording``: path (relative to the item's directory) of what each provider answered, or null.
   A provider call the recording lacks fails the item.
 - ``expect``:
   - ``summary_must[]`` / ``summary_must_not[]``: regexes on the result's ``summary`` (an
     error's text).
+  - ``result_must_not_mention[]``: texts the result's JSON must not hold (any case).
   - ``result[]``: ``{path, op, value?}`` on the decoded result; ``path`` is dotted with list
     indexes (``items.0.title``); ``op`` is eq, ne, contains, not_contains, matches, in, gt, gte,
     lt, lte, len, exists or absent.
@@ -68,12 +70,13 @@ import urllib.request
 import uuid
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import time_machine
 import yaml
@@ -548,6 +551,8 @@ class Box:
     item: Item
     clock: Any
     """The frozen clock; ``clock.shift(seconds=n)`` lets time pass between two calls."""
+    uncut: list[str] = field(default_factory=list)
+    """The tables of the copied databases the cut at ``at`` could not handle."""
 
 
 @contextmanager
@@ -576,12 +581,73 @@ def _environment(
         time.tzset()
 
 
-def _copy_state(item: Item, root: Path) -> list[Path]:
-    """Copy the item's databases in before the boot; return the ``.sql`` files to run after it."""
+UNCUT: set[str] = set()
+"""Every ``db:table`` the cut left as it was in this process, for the run's header."""
+_DAY_COLUMNS = frozenset({"day", "local_date", "upto_day"})
+_KEPT_COLUMNS = frozenset({"updated_at", "event_at"})
+"""A row edited later, or about a time ahead (an interview), is not made after the cut."""
+
+
+def _cut_tests(db: sqlite3.Connection, table: str, moment: datetime, zone: str) -> list[str]:
+    """The SQL conditions that mark a row of ``table`` as made at or after ``moment``."""
+    day = moment.astimezone(ZoneInfo(zone)).date().isoformat()
+    utc = moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    tests = []
+    for _, col, *_rest in db.execute(f'PRAGMA table_info("{table}")').fetchall():
+        if col in _KEPT_COLUMNS:
+            continue
+        if col.endswith("_ms"):
+            tests.append(f'"{col}" >= {int(moment.timestamp() * 1000)}')
+        elif col in _DAY_COLUMNS:
+            tests.append(f"\"{col}\" >= '{day}'")
+        elif col == "ts" or col.endswith("_at"):
+            tests.append(f"datetime(\"{col}\") >= '{utc}'")
+    return tests
+
+
+def cut_at(path: Path, moment: datetime, zone: str) -> list[str]:
+    """Delete from the database copy at ``path`` every row made at or after ``moment``.
+
+    A column counts when it is a millisecond epoch (``*_ms``), a stamp (``ts``, ``*_at``) or a
+    day (``day``, ``local_date``, ``upto_day``; the days on or after ``moment``'s day in ``zone``
+    go). The append-only triggers are dropped for the cut and put back. Returns the non-empty
+    tables with no such column, which the cut left as they were.
+    """
+    db = sqlite3.connect(path)
+    try:
+        triggers = db.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+        for name, _ in triggers:
+            db.execute(f'DROP TRIGGER "{name}"')
+        tables = db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        uncut = []
+        for (table,) in tables:  # names come from the copy's own schema
+            if tests := _cut_tests(db, table, moment, zone):
+                db.execute(f'DELETE FROM "{table}" WHERE ' + " OR ".join(tests))  # noqa: S608
+            elif db.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():  # noqa: S608
+                uncut.append(table)
+        for _, sql in triggers:
+            db.execute(sql)
+        db.commit()
+    finally:
+        db.close()
+    return uncut
+
+
+def _copy_state(item: Item, root: Path) -> tuple[list[Path], list[str]]:
+    """Copy the item's databases in, cut at its moment, before the boot.
+
+    Returns the ``.sql`` files to run after the boot and the tables the cut could not handle.
+    """
     state = _state_dir(item)
     sql: list[Path] = []
+    uncut: list[str] = []
     if state is None:
-        return sql
+        return sql, uncut
+    moment = datetime.fromisoformat(item.raw["at"])
     for name in ("mac_events.db", "memory.db"):
         if (state / name).is_file():
             src = sqlite3.connect(f"file:{state / name}?mode=ro", uri=True)
@@ -591,7 +657,13 @@ def _copy_state(item: Item, root: Path) -> list[Path]:
             finally:
                 src.close()
                 dst.close()
-    return [state / n for n in ("mac_events.sql", "memory.sql") if (state / n).is_file()]
+            uncut += [
+                f"{name}:{t}"
+                for t in cut_at(root / name, moment, str(item.raw.get("zone") or "UTC"))
+            ]
+    UNCUT.update(uncut)
+    sql = [state / n for n in ("mac_events.sql", "memory.sql") if (state / n).is_file()]
+    return sql, uncut
 
 
 @contextmanager
@@ -611,7 +683,7 @@ def sandbox(
     runtime: JarvisRuntime | None = None
     moment = datetime.fromisoformat(item.raw["at"])
     try:
-        sql = _copy_state(item, root)
+        sql, uncut = _copy_state(item, root)
         _settings(item, root, recording, real_root)
         if live and real_root is not None and (real_root / "env").is_file():
             shutil.copyfile(real_root / "env", root / "env")
@@ -629,7 +701,7 @@ def sandbox(
             for script in sql:
                 runtime.conn.executescript(script.read_text(encoding="utf-8"))
             _place_him(runtime, item.raw.get("here"), moment)
-            yield Box(runtime, root, item, clock)
+            yield Box(runtime, root, item, clock, uncut)
     finally:
         if runtime is not None:
             runtime.conn.close()
@@ -931,6 +1003,12 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
         if re.search(p, said)
     ]
     failures += [why for check in expect.get("result", ()) if (why := check_result(out, check))]
+    shown = json.dumps(out, ensure_ascii=False).lower()
+    failures += [
+        f"the result mentions {text!r}"
+        for text in expect.get("result_must_not_mention", ())
+        if text.lower() in shown
+    ]
     failures += state_failures(box, expect.get("state_after", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
     if name := expect.get("checker"):
@@ -1068,6 +1146,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"items: {result['items']}   failing: {len(result['failed'])}"
         f"   regressed: {len(result['regressed'])}   fixed: {len(result['fixed'])}\n",
     )
+    if UNCUT and not held:
+        sys.stdout.write(f"cut left these tables as they were: {', '.join(sorted(UNCUT))}\n")
     problems = verdict(result, detail=not held)
     for line in problems:
         sys.stdout.write(line + "\n")
