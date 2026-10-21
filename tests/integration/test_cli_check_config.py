@@ -75,7 +75,7 @@ def test_an_accepted_config_prints_one_line_and_leaves_the_root_alone(
     assert out == f"jarvis {entry}: {line}\n"
     assert not err
     assert _snapshot(root) == before
-    assert set(threading.enumerate()) == threads
+    assert not set(threading.enumerate()) - threads  # none started; one a past test left may end
     assert "ANTHROPIC_API_KEY" not in os.environ
     assert SECRET not in out + err
 
@@ -125,7 +125,7 @@ def test_a_refused_config_prints_the_refusal_on_stderr_and_exits_nonzero(
     assert t("cli.config_refused", lang="zh", reason="")[:5] in err
     assert named in err
     assert _snapshot(root) == before
-    assert set(threading.enumerate()) == threads
+    assert not set(threading.enumerate()) - threads  # none started; one a past test left may end
     assert SECRET not in err
 
 
