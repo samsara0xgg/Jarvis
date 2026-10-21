@@ -2,9 +2,9 @@
 
 Per ADR-0003 D4 + spec §3.7.2 the runtime root may host at most one live
 ``jarvis serve`` daemon. This module is the primitive both the daemon
-(``runtime/inherent_loop.py`` via :func:`acquire_exclusive`) and the CLI
-(``cli/__main__.py`` via :func:`is_held` + :func:`holder_pid`) call to
-detect and recover from contention.
+(``runtime/inherent_loop.py`` via :func:`acquire_exclusive`), the CLI
+(``cli/__init__.py``) and ``launchd.py`` (via :func:`is_held` +
+:func:`holder_pid`) call to detect and recover from contention.
 
 Design choices:
 

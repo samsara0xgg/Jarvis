@@ -71,9 +71,6 @@ class RuntimePaths:
             (spec §5.1 + ADR § Configurable paths). Owned by L2 at write
             time; L6 only places it.
         artifacts_root: Artifact store root at `${root}/artifacts/`.
-        registry: File-backed EventTypeRegistry path at `${root}/registry.json`,
-            available if Step 4's L2 chooses file-backing. Just a path; L6
-            does not create or open it.
         inherent_v2_token: Bearer token for the Inherent realtime v2 socket
             at `${root}/inherent-v2.token` (ADR-0014 D5). L6 owns the
             placement and, via `rotate_inherent_v2_token`, the file's
@@ -83,7 +80,6 @@ class RuntimePaths:
     root: Path
     event_log: Path
     artifacts_root: Path
-    registry: Path
     inherent_v2_token: Path
 
     @property
@@ -307,8 +303,8 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
           daemon, holding its lock, empties the root (:func:`daemon_session`,
           ADR 0067, ADR 0318).
         - `${root}/artifacts/` created with `parents=True, exist_ok=True`.
-        - `mac_events.db` and `registry.json` are NOT created here;
-          they are L2's responsibility at first write.
+        - `mac_events.db` is NOT created here; it is L2's responsibility at
+          first write.
 
     Idempotent: repeated calls with the same resolution produce equal
     `RuntimePaths` and do not raise when directories already exist.
@@ -331,7 +327,6 @@ def bootstrap_runtime(root: Path | None = None) -> RuntimePaths:
         root=resolved_root,
         event_log=resolved_root / "mac_events.db",
         artifacts_root=artifacts_root,
-        registry=resolved_root / "registry.json",
         inherent_v2_token=resolved_root / "inherent-v2.token",
     )
 

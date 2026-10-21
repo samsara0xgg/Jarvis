@@ -116,7 +116,6 @@ def test_runtime_refuses_event_log_as_trace_destination(
         root=tmp_path,
         event_log=event_log,
         artifacts_root=tmp_path / "artifacts",
-        registry=tmp_path / "registry.json",
         inherent_v2_token=tmp_path / "inherent-v2.token",
     )
     monkeypatch.setenv("JARVIS_REALTIME_TRACE_JSONL", str(event_log))

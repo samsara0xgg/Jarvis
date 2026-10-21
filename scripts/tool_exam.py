@@ -182,9 +182,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
     stub: Any = MagicMock()
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
-        paths = RuntimePaths(
-            base, base / "events.db", base / "artifacts", base / "registry.json", base / "token",
-        )
+        paths = RuntimePaths(base, base / "events.db", base / "artifacts", base / "token")
         catalog = register_catalog(
             build_registry=lambda: build_default_registry(
                 obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
