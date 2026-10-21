@@ -33,6 +33,7 @@ from jarvis.surface.voice_ledger import (
     PlaybackLedger,
     StalePlaybackGeneration,
 )
+from tests.support.hold import HANG_S, never_waits_for
 from tests.support.media import (
     Behavior,
     CallbackPump,
@@ -2466,7 +2467,7 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
     assert not pipeline._fallback_janitors  # noqa: SLF001
 
 
-def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR0915
+def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
     tmp_path: Path,
 ) -> None:
     """Startup, full-queue, provider-stop, and device-stop failures stay bounded."""
@@ -2512,7 +2513,7 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR09
         config=replace(
             media_config(),
             command_queue_capacity=1,
-            shutdown_timeout_s=0.2,
+            shutdown_timeout_s=HANG_S,
         ),
         start_player=False,
     )
@@ -2538,8 +2539,8 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR09
             submitter.start()
             submitters.append(submitter)
             if len(submitters) == 1:
-                assert command_entered.wait(timeout=1.0)
-        deadline = time.monotonic() + 1.0
+                assert command_entered.wait(timeout=HANG_S)
+        deadline = time.monotonic() + HANG_S
         while time.monotonic() < deadline:
             queue = queue_pipeline._queue  # noqa: SLF001
             if queue is not None and queue.full():
@@ -2549,11 +2550,11 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR09
             pytest.fail("normal command queue never reached capacity")
         queue_pipeline.request_close()
         command_release.set()
-        started = time.monotonic()
-        assert queue_pipeline.close(wait_timeout_s=0.2)
-        assert time.monotonic() - started < 0.2
+        # Cleanup completes, not merely gives up at its deadline: the full lane did not hold the
+        # shutdown back.
+        assert queue_pipeline.close(wait_timeout_s=HANG_S)
     for submitter in submitters:
-        submitter.join(timeout=1.0)
+        submitter.join(timeout=HANG_S)
         assert not submitter.is_alive()
     queue_conn.close()
 
@@ -2572,14 +2573,14 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR09
         config=replace(media_config(), shutdown_timeout_s=0.12),
         start_player=False,
     )
-    started = time.monotonic()
-    assert not provider_pipeline.close(wait_timeout_s=0.12)
-    assert time.monotonic() - started < 0.16
+    # The provider's stop stays held until close has returned: close gives up on it at its
+    # deadline instead of waiting for it.
+    with never_waits_for(provider_gate):
+        closed = provider_pipeline.close(wait_timeout_s=0.12)
+    assert not closed
     assert not provider_pipeline.cleanup_complete
     provider_gate.set()
-    deadline = time.monotonic() + 1.0
-    while not provider_pipeline.cleanup_complete and time.monotonic() < deadline:
-        time.sleep(0.002)
+    wait_until(lambda: provider_pipeline.cleanup_complete, timeout_s=HANG_S)
     assert provider_pipeline.close(wait_timeout_s=0.01)
 
     player_gate = threading.Event()
@@ -2593,14 +2594,12 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: C901, PLR09
         start_player=False,
     )
     with patch.object(stuck_player, "stop", side_effect=player_gate.wait):
-        started = time.monotonic()
-        assert not player_pipeline.close(wait_timeout_s=0.12)
-        assert time.monotonic() - started < 0.16
+        with never_waits_for(player_gate):
+            closed = player_pipeline.close(wait_timeout_s=0.12)
+        assert not closed
         assert not player_pipeline.cleanup_complete
         player_gate.set()
-        deadline = time.monotonic() + 1.0
-        while not player_pipeline.cleanup_complete and time.monotonic() < deadline:
-            time.sleep(0.002)
+        wait_until(lambda: player_pipeline.cleanup_complete, timeout_s=HANG_S)
         assert player_pipeline.close(wait_timeout_s=0.01)
     assert len(_live_media_owner_threads()) == baseline
 
@@ -2620,27 +2619,27 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
         late_connections.append(connection)
         return connection
 
-    started = time.monotonic()
-    with pytest.raises(voice_media.StreamingMediaStartupError) as conn_error:
+    # The connection stays held until construction has raised: the owner gives up on it at its
+    # startup deadline. That deadline is long enough for the owner thread to reach the factory.
+    with (
+        pytest.raises(voice_media.StreamingMediaStartupError) as conn_error,
+        never_waits_for(conn_gate),
+    ):
         voice_media.StreamingTTSPipeline(
             provider=FakeProvider(candidate_count=1),
             player=make_player(),
             conn_factory=_stuck_conn,
             boot_high_water_id=0,
-            config=replace(media_config(), shutdown_timeout_s=0.06),
+            config=replace(media_config(), shutdown_timeout_s=0.5),
             start_player=False,
         )
-    assert time.monotonic() - started < 0.1
     assert conn_error.value.phase == "opening_connection"
     assert not conn_error.value.device_state_uncertain
     live_after_conn_timeout = _live_media_owner_threads()
     assert live_after_conn_timeout
     assert all(thread.daemon for thread in live_after_conn_timeout)
     conn_gate.set()
-    deadline = time.monotonic() + 1.0
-    while len(_live_media_owner_threads()) != baseline and time.monotonic() < deadline:
-        time.sleep(0.002)
-    assert len(_live_media_owner_threads()) == baseline
+    wait_until(lambda: len(_live_media_owner_threads()) == baseline, timeout_s=HANG_S)
     assert len(late_connections) == 1
     with pytest.raises(sqlite3.ProgrammingError):
         late_connections[0].execute("SELECT 1")
@@ -2659,60 +2658,83 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
         patch.object(stuck_player, "start", side_effect=_stuck_start),
         patch.object(stuck_player, "stop", side_effect=_late_stop),
     ):
-        started = time.monotonic()
-        with pytest.raises(voice_media.StreamingMediaStartupError) as player_error:
+        with (
+            pytest.raises(voice_media.StreamingMediaStartupError) as player_error,
+            never_waits_for(player_gate),
+        ):
             voice_media.StreamingTTSPipeline(
                 provider=FakeProvider(candidate_count=1),
                 player=stuck_player,
                 conn_factory=lambda: open_event_log(db_path),
                 boot_high_water_id=0,
-                config=replace(media_config(), shutdown_timeout_s=0.06),
+                config=replace(media_config(), shutdown_timeout_s=0.5),
             )
-        assert time.monotonic() - started < 0.1
         assert player_error.value.phase == "starting_player"
         assert player_error.value.device_state_uncertain
         assert all(thread.daemon for thread in _live_media_owner_threads())
         player_gate.set()
-        assert player_stopped.wait(timeout=1.0)
-        deadline = time.monotonic() + 1.0
-        while len(_live_media_owner_threads()) != baseline and time.monotonic() < deadline:
-            time.sleep(0.002)
+        assert player_stopped.wait(timeout=HANG_S)
+        wait_until(lambda: len(_live_media_owner_threads()) == baseline, timeout_s=HANG_S)
     assert len(_live_media_owner_threads()) == baseline
+
+
+def _publish_deadlines_together(
+    pipeline: voice_media.StreamingTTSPipeline,
+    *,
+    short_s: float,
+    long_s: float,
+) -> tuple[float, float]:
+    """Race a short and a long shutdown request.
+
+    Returns the deadline in force and a moment by which the short request had been published.
+    """
+    publish = threading.Barrier(3)
+    short_published_by: list[float] = []
+
+    def _publish(timeout_s: float) -> None:
+        publish.wait()
+        pipeline._request_shutdown_deadline(timeout_s)  # noqa: SLF001
+        if timeout_s == short_s:
+            short_published_by.append(time.monotonic())
+
+    threads = [
+        threading.Thread(target=_publish, args=(long_s,), name="deadline-long"),
+        threading.Thread(target=_publish, args=(short_s,), name="deadline-short"),
+    ]
+    for thread in threads:
+        thread.start()
+    publish.wait()
+    for thread in threads:
+        thread.join(timeout=HANG_S)
+        assert not thread.is_alive()
+    with pipeline._deadline_lock:  # noqa: SLF001
+        return pipeline._shutdown_deadline, short_published_by[0]  # noqa: SLF001
 
 
 def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
     """A later long request cannot overwrite an earlier shutdown deadline."""
     db_path = tmp_path / "deadline-min.db"
-    pipeline = voice_media.StreamingTTSPipeline(
-        provider=FakeProvider(candidate_count=1),
-        player=make_player(),
-        conn_factory=lambda: open_event_log(db_path),
-        boot_high_water_id=0,
-        config=replace(media_config(), shutdown_timeout_s=0.5),
-        start_player=False,
-    )
-    publish = threading.Barrier(3)
-
-    def _publish(timeout_s: float) -> None:
-        publish.wait()
-        pipeline._request_shutdown_deadline(timeout_s)  # noqa: SLF001
-
-    long_thread = threading.Thread(target=_publish, args=(0.4,), name="deadline-long")
-    short_thread = threading.Thread(target=_publish, args=(0.05,), name="deadline-short")
-    long_thread.start()
-    short_thread.start()
-    started = time.monotonic()
-    publish.wait()
-    long_thread.join(timeout=1.0)
-    short_thread.join(timeout=1.0)
-    assert not long_thread.is_alive()
-    assert not short_thread.is_alive()
-    with pipeline._deadline_lock:  # noqa: SLF001
-        chosen = pipeline._shutdown_deadline  # noqa: SLF001
-    assert chosen <= started + 0.08
-    close_started = time.monotonic()
-    assert pipeline.close(wait_timeout_s=0.4)
-    assert time.monotonic() - close_started < 0.1
+    short_s = 2.0
+    # Which request lands last is up to the scheduler, and only the long one landing last can
+    # overwrite the short one, so the race is run on a fresh pipeline each round.
+    for _ in range(16):
+        pipeline = voice_media.StreamingTTSPipeline(
+            provider=FakeProvider(candidate_count=1),
+            player=make_player(),
+            conn_factory=lambda: open_event_log(db_path),
+            boot_high_water_id=0,
+            config=replace(media_config(), shutdown_timeout_s=0.5),
+            start_player=False,
+        )
+        chosen, short_published_by = _publish_deadlines_together(
+            pipeline,
+            short_s=short_s,
+            long_s=8.0,
+        )
+        # The short request computed its deadline before it returned, so the deadline in force
+        # is no later than that, whichever of the two was published last.
+        assert chosen <= short_published_by + short_s
+        assert pipeline.close(wait_timeout_s=HANG_S)
 
 
 class _FakeOutputStream:
@@ -2957,7 +2979,7 @@ def test_production_builder_gate_and_text_only_degradation(
     assert not failed_stream.active
 
     runtime.config = {
-        "realtime": {"enabled": True, "streaming_output": {"shutdown_timeout_s": 0.06}},
+        "realtime": {"enabled": True, "streaming_output": {"shutdown_timeout_s": 0.5}},
     }
     stuck_player = make_player()
     player_start_gate = threading.Event()
@@ -2980,21 +3002,20 @@ def test_production_builder_gate_and_text_only_degradation(
             return_value=FakeProvider(candidate_count=1),
         ) as provider_factory,
     ):
-        started = time.monotonic()
-        startup_timeout_text_only = voice_wiring.build_tts_pipeline(
-            cast("Any", runtime),
-            cast("Any", SimpleNamespace()),
-        )
+        # The player's start stays held until the builder has answered: it gives up on the stuck
+        # device at its startup deadline and leaves the boot text-only.
+        with never_waits_for(player_start_gate):
+            startup_timeout_text_only = voice_wiring.build_tts_pipeline(
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
         assert startup_timeout_text_only is None
-        assert time.monotonic() - started < 0.1
         assert player_factory.call_count == 1
         assert provider_factory.call_count == 1
         assert all(thread.daemon for thread in _live_media_owner_threads())
         player_start_gate.set()
-        assert late_player_stopped.wait(timeout=1.0)
-        deadline = time.monotonic() + 1.0
-        while _live_media_owner_threads() and time.monotonic() < deadline:
-            time.sleep(0.002)
+        assert late_player_stopped.wait(timeout=HANG_S)
+        wait_until(lambda: not _live_media_owner_threads(), timeout_s=HANG_S)
     assert not _live_media_owner_threads()
     conn.close()
 
