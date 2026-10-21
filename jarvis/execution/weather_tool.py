@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.location_tool import read_here, said_where
@@ -37,16 +36,16 @@ _DESCRIPTION: Final = (
     " Otherwise pass the place exactly as he names it (a city, area or landmark, in his own"
     " language, without extra words), and pass it again whenever he corrects or changes the"
     " place of an earlier answer: never state one place's weather from another place's result."
-    "{here} With no dates you get now, today, tomorrow and the next 12 hours: that answers"
-    " now, today, tonight and tomorrow. For any other day, past or later, pass start_date as"
-    " YYYY-MM-DD in the place's own calendar (work a weekday or a day number out from today's"
-    " date; a day alone needs only start_date), and end_date for a range. A past day gives its"
-    " daily figures only: no now, hours or alerts. Set hourly only when he wants hour-by-hour"
-    " rows for those days (today or later, up to 3 days), and air_quality for US AQI, PM2.5 and"
-    " PM10. Days from 7 back to 9 ahead are all one call; earlier or later ones are not"
-    " available: say so, or use web_search. If other places share the name, the result lists"
-    " them: mention it when it matters, and pass the coordinates given as place to read one of"
-    " them. Times are the place's local time; the weather is Apple Weather, which you may name."
+    "{here} With no `when` you get now, today, tomorrow and the next 12 hours: that answers"
+    " now, today, tonight and tomorrow. For any other day or days, past or later, pass `when` in"
+    " his words (tomorrow, Saturday, this weekend, next Friday, the 25th, 2026-10-25, two of"
+    " these joined by to): the tool works out the dates in the place's own calendar. A past day"
+    " gives its daily figures only: no now, hours or alerts. Set hourly only when he wants"
+    " hour-by-hour rows for those days (today or later, up to 3 days), and air_quality for US"
+    " AQI, PM2.5 and PM10. Days from 7 back to 9 ahead are all one call; earlier or later ones"
+    " are not available: say so, or use web_search. If other places share the name, the result"
+    " lists them: mention it when it matters, and pass the coordinates given as place to read one"
+    " of them. Times are the place's local time; the weather is Apple Weather, which you may name."
     " If it returns an error, say what failed, then use web_search or tell him it is"
     " unavailable."
 )
@@ -58,49 +57,20 @@ _HERE: Final = (
 
 @dataclass(frozen=True)
 class WeatherRequest:
-    """What one call asks of the lookup, checked: the place, the days and the extras.
+    """What one call asks of the lookup, checked: the place, the days in his words and the extras.
 
     ``place`` is a name or ``lat,lng``; with ``here`` (latitude, longitude, label) set it is where
-    he is; with neither it is the home. ``start`` and ``end`` are None for the default
-    (now, today and tomorrow).
+    he is; with neither it is the home. ``near`` is roughly where he is, which picks the place
+    called that nearest him. ``when`` is his words for the day or days (the lookup resolves them
+    in the place's zone); None is now, today and tomorrow.
     """
 
     place: str | None = None
     here: tuple[float, float, str] | None = None
-    start: date | None = None
-    end: date | None = None
+    when: str | None = None
     hourly: bool = False
     air_quality: bool = False
-
-
-def _day(args: Mapping[str, Any], key: str) -> date | None:
-    value = args.get(key)
-    if value is None:
-        return None
-    try:
-        return date.fromisoformat(str(value).strip())
-    except ValueError as exc:
-        msg = f"weather: {key} must be a date as YYYY-MM-DD (got {value!r})"
-        raise ToolError(msg, code="invalid_arguments") from exc
-
-
-def _dates(args: Mapping[str, Any], *, hourly: bool) -> tuple[date | None, date | None]:
-    start, end = _day(args, "start_date"), _day(args, "end_date")
-    if start is None:
-        if end is not None:
-            msg = "weather: end_date needs a start_date"
-            raise ToolError(msg, code="invalid_arguments")
-        return None, None
-    end = end or start
-    # How far back and ahead is the lookup's to judge: only it knows the place's zone, and it reads
-    # the runtime's clock (ADR 0322), so the range it names is the place's own.
-    if end < start:
-        msg = "weather: end_date is before start_date; give the first day, then the last"
-        raise ToolError(msg, code="invalid_arguments")
-    if hourly and (end - start).days >= HOURLY_MAX_DAYS:
-        msg = f"weather: hourly rows are for at most {HOURLY_MAX_DAYS} days; ask for fewer days"
-        raise ToolError(msg, code="invalid_arguments")
-    return start, end
+    near: tuple[float, float] | None = None
 
 
 def build_weather_tool(
@@ -114,27 +84,34 @@ def build_weather_tool(
         return ()
 
     def weather(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if any(args.get(name) is not None for name in ("start_date", "end_date")):
+            msg = (
+                "weather: start_date and end_date are gone; pass when in his words (tomorrow,"
+                " Saturday, this weekend, 2026-10-25, 2026-10-25 to 2026-10-27)"
+            )
+            raise ToolError(msg, code="invalid_arguments")
         place = str(args.get("place") or "").strip() or None
+        when = str(args.get("when") or "").strip() or None
         hourly = args.get("hourly") is True
-        start, end = _dates(args, hourly=hourly)
-        at = None
+        at = near = None
         said = ""
         if place is not None and place.casefold() == "here":
             fix = read_here(ctx)
             at = (fix.lat, fix.lng, fix.place or "where he is now")
             said, place = said_where(fix), None
+        elif place is not None and ctx.here is not None and (rough := ctx.here.coarse()):
+            near = (rough.lat, rough.lng)
         request = WeatherRequest(
-            place, at, start, end, hourly,
-            args.get("air_quality") is True,
+            place, at, when, hourly, args.get("air_quality") is True, near,
         )
         try:
             result = dict(lookup(request))
         except ToolError:
             raise
-        except Exception as exc:  # any other failure: say so, and offer the search.
+        except Exception as exc:  # any other failure: say so.
             msg = (
-                f"weather: the forecast could not be read ({type(exc).__name__}); "
-                "use web_search, or tell him it is unavailable"
+                f"weather: the forecast could not be read ({type(exc).__name__}); tell him it is"
+                " unavailable"
             )
             raise ToolError(msg, code="network_error") from exc
         return {**result, "location_from": said} if said else result
@@ -147,12 +124,14 @@ def build_weather_tool(
                 + (' "here" for where he is now.' if here is not None else "")
             ),
         },
-        "start_date": {
+        "when": {
             "type": "string",
-            "description": "First day, YYYY-MM-DD, from 7 days back to 9 days ahead; leave out for"
-            " now, today or tomorrow.",
+            "description": (
+                "The day or days in his words: today, tonight, tomorrow, Saturday, this weekend,"
+                " next Friday, the 25th, 2026-10-25, or two joined by to; from 7 days back to 9"
+                " ahead. Leave out for now, today and tomorrow."
+            ),
         },
-        "end_date": {"type": "string", "description": "Last day, YYYY-MM-DD; default start_date."},
         "hourly": {
             "type": "boolean",
             "description": "Hour-by-hour rows for the days asked; only when he wants them.",
@@ -174,4 +153,4 @@ def build_weather_tool(
     )
 
 
-__all__ = ["DAYS_AHEAD", "DAYS_BACK", "WeatherRequest", "build_weather_tool"]
+__all__ = ["DAYS_AHEAD", "DAYS_BACK", "HOURLY_MAX_DAYS", "WeatherRequest", "build_weather_tool"]

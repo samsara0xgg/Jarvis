@@ -199,7 +199,8 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
             float(config.home_weather["latitude"]), float(config.home_weather["longitude"]),
         ),
     )
-    weatherkit = WeatherKit.from_settings(config.weatherkit)  # ADR 0285: logs which source is used
+    # ADR 0285: logs which source is used; its days are cut by the one clock (ADR 0322).
+    weatherkit = WeatherKit.from_settings(config.weatherkit, clock.time)
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
         maps_key, config.maps_monthly_usd, memory.db_path, config.zone,
     )

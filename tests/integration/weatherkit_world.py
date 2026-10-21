@@ -31,8 +31,42 @@ if TYPE_CHECKING:
 KEY_ID = "ABC123DEFG"
 TEAM_ID = "3MEBVQ3N3U"
 SERVICE_ID = "com.example.jarvis.weather"
-NOW = datetime.now(UTC).replace(minute=30, second=30, microsecond=0)  # mid-hour: +5 min, same hour
+NOW = datetime(2026, 10, 21, 16, 30, 30, tzinfo=UTC)  # Wednesday 09:30 in Victoria, mid-hour
 GEOCODED: dict[tuple[str, str], list[dict[str, Any]]] = {}
+CANADA, USA = ("Canada", "CA"), ("United States", "US")
+
+
+def place_match(
+    name: str, point: tuple[float, float], region: str, country: tuple[str, str], zone: str,
+) -> dict[str, Any]:
+    """One geocoder match, as Open-Meteo gives it."""
+    return {
+        "name": name, "latitude": point[0], "longitude": point[1], "admin1": region,
+        "country": country[0], "country_code": country[1], "timezone": zone,
+    }
+
+
+BC = "British Columbia"
+RICHMOND_VA = place_match("Richmond", (37.55, -77.46), "Virginia", USA, "America/New_York")
+RICHMOND_BC = place_match("Richmond", (49.17, -123.14), BC, CANADA, "America/Vancouver")
+RICHMOND_CA = place_match("Richmond", (37.94, -122.35), "California", USA, "America/Los_Angeles")
+RICHMOND_HILL = place_match("Richmond Hill", (43.87, -79.44), "Ontario", CANADA, "America/Toronto")
+VANCOUVER_BC = place_match("Vancouver", (49.25, -123.12), BC, CANADA, "America/Vancouver")
+VANCOUVER_WA = place_match("Vancouver", (45.64, -122.66), "Washington", USA, "America/Los_Angeles")
+SPRINGFIELDS = [
+    place_match("Springfield", (39.8 + n, -89.6 - n), region, USA, "America/Chicago")
+    for n, region in enumerate((
+        "Illinois", "Missouri", "Massachusetts", "Oregon", "Ohio", "Tennessee", "Virginia",
+    ))
+]
+GEOCODED.update({  # the geocoder lists the places of a name in its own order, not nearest first
+    ("Richmond", "en"): [RICHMOND_VA, RICHMOND_HILL, RICHMOND_BC, RICHMOND_CA],
+    ("Vancouver", "en"): [VANCOUVER_WA, VANCOUVER_BC],
+    ("温哥华", "zh"): [place_match(
+        "温哥华", (49.25, -123.12), "不列颠哥伦比亚省", ("加拿大", "CA"), "America/Vancouver",
+    )],
+    ("Springfield", "en"): SPRINGFIELDS,
+})
 
 
 def make_key(directory: Path) -> tuple[Path, ec.EllipticCurvePrivateKey]:
@@ -199,7 +233,10 @@ class Net:
                 )
             body = weatherkit_body(query, minutes=self.minutes, warned=self.warned)
         elif host.startswith("geocoding"):
-            found = GEOCODED[query["name"], query["language"]]
+            found = next(  # the geocoder does not mind the case of a name
+                one for (name, language), one in GEOCODED.items()
+                if name.casefold() == query["name"].casefold() and language == query["language"]
+            )
             body = {"results": found} if found else {"generationtime_ms": 0.1}
         else:
             body = _series(query)
