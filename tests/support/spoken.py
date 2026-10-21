@@ -125,6 +125,7 @@ class SpokenPeer:
         self.release = threading.Event()
         self.requests: list[tuple[str, dict[str, Any]]] = []
         self.requested = threading.Event()  # set once the first request is in
+        self.delays_read = 0  # requests that have read ``first_event_delay_s``, to wait it out
         self.completed = 0
         self.url = ""
         self._ready = threading.Event()
@@ -183,8 +184,10 @@ class SpokenPeer:
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
             )
             answer = ""
+            delay = self.first_event_delay_s
+            self.delays_read += 1
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._released.wait(), self.first_event_delay_s)
+                await asyncio.wait_for(self._released.wait(), delay)
             for frame in response_frames(self.outputs.pop(0)):
                 writer.write(f"event: {frame['type']}\ndata: {json.dumps(frame)}\n\n".encode())
                 await writer.drain()
