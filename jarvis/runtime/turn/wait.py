@@ -34,9 +34,10 @@ RUNTIME_TRIGGER_TYPES: tuple[str, ...] = (
 )
 
 
-# Default polling cadence for ``wait_for_next_trigger``. 10 ms balances
-# CPU usage with first-byte latency once the Timer fires.
-_DEFAULT_POLL_INTERVAL_S: float = 0.01
+# Default polling cadence for ``wait_for_next_trigger`` and for the daemon's watchers
+# (``jarvis.runtime.daemon.polling`` re-exports it). 10 ms balances CPU usage with first-byte
+# latency between an L2 INSERT and the poller's reaction.
+DEFAULT_POLL_INTERVAL_S: float = 0.01
 
 
 # Conversational per-trigger wait. 5 s is generous, and small enough that
@@ -120,7 +121,7 @@ def wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate o
     action_ids: frozenset[str],
     lifecycle: ActionLifecycle,
     timeout: float,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     cancelled: Callable[[], bool] | None = None,
 ) -> tuple[Event, int]:
     """Poll the event log for the next L3 trigger event after ``after_id``.
