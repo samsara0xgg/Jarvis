@@ -16,7 +16,7 @@ import pytest
 
 from jarvis.decision.packet import format_pending_confirmation_note
 from jarvis.execution.mcp_tools import McpServers
-from jarvis.runtime.inherent_loop import confirmation_card
+from jarvis.runtime.daemon.cards import confirmation_card
 from jarvis.state.event_log import emit_event
 from jarvis.state.projections import PendingConfirmations
 from tests.support import consent

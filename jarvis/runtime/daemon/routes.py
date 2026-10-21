@@ -1,4 +1,4 @@
-"""What the daemon's routes are served from: today, the day, mail, settings and notices."""
+"""What the daemon's routes are served from: today, the day, mail, settings and the reads."""
 
 from __future__ import annotations
 
@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import request_confirmation
 from jarvis.deployment.launchd import supervised
+from jarvis.runtime.daemon.output_watchers import add_places, add_reactions, add_steps
 from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.shared import lang
-from jarvis.state import places, things
+from jarvis.state import footprint, phone_track, places, things
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -29,9 +30,11 @@ from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.imports import IMPORTS_DIRNAME, shared_reads
 from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES, LIFELOG_DIRNAME, Lifelog
+from jarvis.state.memory_db import conversation_rows
 from jarvis.state.phone_day import day_summary
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.shipments import Shipments
+from jarvis.state.turn_facts import recent_turn_timings
 from jarvis.surface.terminal_link import SETTINGS_NOTICE
 
 if TYPE_CHECKING:
@@ -668,3 +671,107 @@ def shipments(runtime: JarvisRuntime) -> Shipments:
 async def refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     """``POST /inherent/work-state/refresh``: the single-flight analysis on its own connection."""
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
+
+
+def read_conversation(
+    runtime: JarvisRuntime, after: int, limit: int, before: int,
+) -> dict[str, Any]:
+    """Spec §18.3: a page of the window's rows, the history floor, and ``has_more``."""
+    window_memory = runtime.memory
+    since = runtime.config.session.history_since
+    if window_memory is None:
+        return {"since": since, "rows": [], "has_more": False}
+    rows, has_more = conversation_rows(
+        window_memory.db_path, since=since, after=after, before=before, limit=limit,
+        attachments=runtime.attachments,
+    )
+    add_steps(runtime.runtime_paths.event_log, rows)
+    add_places(runtime.runtime_paths.event_log, rows)
+    add_reactions(runtime.runtime_paths.event_log, rows)
+    return {"since": since, "rows": rows, "has_more": has_more}
+
+
+def _read_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
+    """``GET /inherent/turn-timings`` (ADR 0276): the newest ``limit`` timing facts, oldest first.
+
+    ``since_ms`` is a time in epoch ms (0 for no lower bound); each fact is the event's payload
+    with its ``event_uid`` and ``ts_epoch_ms`` (when the turn's answer was out) added. The log is
+    read on a connection of its own, so this runs on a worker thread.
+    """
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        timings = recent_turn_timings(conn, since_ms=since_ms, limit=limit)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    turns = [
+        {"event_uid": event.event_uid, "ts_epoch_ms": event.ts_epoch_ms, **event.payload}
+        for event in timings
+    ]
+    return {"now_ms": int(time.time() * 1000), "turns": turns}
+
+
+def _read_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
+    """``GET /inherent/track`` (ADR 0312): the phones' dense track over a window.
+
+    The log is read on a connection of its own, so this runs on a worker thread.
+    """
+    conn = open_runtime_event_log(event_log_path)
+    try:
+        tracks = phone_track.track(conn, from_ms, to_ms)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return {
+        "from_ms": from_ms, "to_ms": to_ms, "columns": list(phone_track.COLUMNS), "tracks": tracks,
+    }
+
+
+async def serve_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
+    """:func:`_read_track` off the loop thread."""
+    return await asyncio.to_thread(_read_track, event_log_path, from_ms, to_ms)
+
+
+def _read_footprint(
+    event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
+    now_ms: int,
+) -> dict[str, Any]:
+    """``GET /inherent/footprint`` (ADR 0323): his footprint of the day asked for, or today.
+
+    The day is cut in the owner's zone as ``GET /inherent/day`` cuts it, and the places he keeps
+    are read from ``memory_db`` (none without it). The log is read on a connection of its own,
+    so this runs on a worker thread.
+    """
+    zone_name, zone = resolve_zone(None, configured)
+    on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
+    start_ms, end_ms = day_window(on, zone)
+    kept = [] if memory_db is None else places.read_kept(memory_db)
+    conn = open_runtime_event_log(event_log)
+    try:
+        folded = footprint.fold(conn, start_ms, end_ms, now_ms, kept)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return {
+        "date": on.isoformat(),
+        "tz": zone_name,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "now_ms": now_ms,
+        **folded,
+    }
+
+
+async def serve_footprint(
+    event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
+    *, clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """:func:`_read_footprint` off the loop thread, at the brain's ``clock``."""
+    return await asyncio.to_thread(
+        _read_footprint, event_log, configured, memory_db, day, int(clock() * 1000),
+    )
+
+
+async def serve_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
+    """:func:`_read_turn_timings` off the loop thread."""
+    return await asyncio.to_thread(_read_turn_timings, event_log_path, since_ms, limit)

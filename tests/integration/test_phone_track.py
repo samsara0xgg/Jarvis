@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import routes
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.lifelog import LIFELOG_DIRNAME, Lifelog
 from jarvis.state.phone_track import COLUMNS
@@ -64,7 +64,7 @@ class Brain:
             phone_events=BrainEvents(brain_log(self.log)),
             device_name=functools.partial(device_name_for_token, tmp_path),
             lifelog=self.store,
-            track_read=functools.partial(inherent_loop._serve_track, self.log),  # noqa: SLF001
+            track_read=functools.partial(routes.serve_track, self.log),
         ))
         self.key = local_key(tmp_path)
         require_local_key(

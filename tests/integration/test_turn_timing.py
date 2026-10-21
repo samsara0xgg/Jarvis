@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
-from jarvis.runtime.inherent_loop import _serve_turn_timings
+from jarvis.runtime.daemon.routes import serve_turn_timings
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
@@ -206,7 +206,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, Path]:
     log = tmp_path / "events.db"
     app = create_app(InherentDeps(
         submit_callable=lambda _text: "T1", broadcaster=InherentBroadcaster(),
-        turn_timings_read=functools.partial(_serve_turn_timings, log),
+        turn_timings_read=functools.partial(serve_turn_timings, log),
     ))
     require_local_key(app, functools.partial(local_key_matches, local_key(tmp_path)))
     return TestClient(app, base_url="http://127.0.0.1:8006", client=("127.0.0.1", 50000)), log

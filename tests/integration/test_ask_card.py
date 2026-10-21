@@ -16,7 +16,7 @@ import pytest
 from jarvis.decision.packet import assemble_packet, format_pending_clarification_note
 from jarvis.execution import tools
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime.inherent_loop import _FRAGMENT_CARD_HOLD_MS, _visible_ask_card
+from jarvis.runtime.daemon.cards import FRAGMENT_CARD_HOLD_MS, visible_ask_card
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import remember_fact, render_context
 from jarvis.state.projections import CLARIFICATION_EVENT_TYPES, PendingClarification
@@ -109,7 +109,7 @@ def test_speaking_over_the_card_leaves_it_up_and_every_turn_hears_it_is_still_on
         said = _says(conn, f"T{n}", "1 Test St, V8W 1A1")
         assert _card(conn).waiting
         assert _note(conn, said) == _STILL_UP
-    shown = _visible_ask_card(conn, _asked_at(conn) + _FRAGMENT_CARD_HOLD_MS)
+    shown = visible_ask_card(conn, _asked_at(conn) + FRAGMENT_CARD_HOLD_MS)
     assert shown is not None
     assert shown.clarification_id == "Q1"
 
@@ -182,7 +182,7 @@ def test_dismiss_card_takes_the_question_down_and_the_next_turn_hears_no_close_n
     }
     closed = _card(conn)
     assert (closed.waiting, closed.dismissed, closed.just_dismissed) == (False, False, False)
-    assert _visible_ask_card(conn, _asked_at(conn) + _FRAGMENT_CARD_HOLD_MS) is None
+    assert visible_ask_card(conn, _asked_at(conn) + FRAGMENT_CARD_HOLD_MS) is None
     assert _note(conn, _says(conn, "T2")) is None
 
 
@@ -257,8 +257,8 @@ def test_a_card_from_a_barge_pause_fragment_waits_out_the_hold_before_it_shows(
     _heard(conn, "T-ask", "barge_pause")
     _ask(conn, "Q1")
     at = _asked_at(conn)
-    assert _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS - 1) is None
-    shown = _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS)
+    assert visible_ask_card(conn, at + FRAGMENT_CARD_HOLD_MS - 1) is None
+    shown = visible_ask_card(conn, at + FRAGMENT_CARD_HOLD_MS)
     assert shown is not None
     assert shown.clarification_id == "Q1"
 
@@ -271,8 +271,8 @@ def test_a_continuation_inside_the_hold_no_longer_closes_the_fragment_card(
     _ask(conn, "Q1")
     at = _asked_at(conn)
     _heard(conn, "T-rest", "acoustic_pause")
-    assert _visible_ask_card(conn, at + 10) is None
-    shown = _visible_ask_card(conn, at + _FRAGMENT_CARD_HOLD_MS + 1)
+    assert visible_ask_card(conn, at + 10) is None
+    shown = visible_ask_card(conn, at + FRAGMENT_CARD_HOLD_MS + 1)
     assert shown is not None
     assert shown.clarification_id == "Q1"
 
@@ -281,6 +281,6 @@ def test_a_card_from_any_other_turn_shows_at_once(conn: sqlite3.Connection) -> N
     """ADR 0144: only a barge-pause fragment's card is held."""
     _heard(conn, "T-ask", "acoustic_pause")
     _ask(conn, "Q1")
-    shown = _visible_ask_card(conn, _asked_at(conn))
+    shown = visible_ask_card(conn, _asked_at(conn))
     assert shown is not None
     assert shown.clarification_id == "Q1"

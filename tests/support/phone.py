@@ -905,7 +905,7 @@ class StepsHost:
         self.thread = threading.Thread(target=lambda: asyncio.run(self._main()), daemon=True)
 
     def _conversation(self, after: int, limit: int, before: int) -> dict[str, Any]:
-        """What the daemon's ``_read_conversation`` does, with the real step lookup."""
+        """What the daemon's ``read_conversation`` does, with the real step lookup."""
         rows, more = conversation_rows(
             self.memory,
             since="",

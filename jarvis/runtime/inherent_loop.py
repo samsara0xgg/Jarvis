@@ -87,11 +87,11 @@ import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
-    from datetime import date, tzinfo
     from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.picture_notes import PictureNotes
+    from jarvis.shared import Event
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.surface.codex_sessions import CodexSession
 
@@ -101,10 +101,10 @@ from jarvis.decision.response_run import (
 )
 from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import logs_dir, supervised
-from jarvis.execution.transit_tool import live_card
 from jarvis.runtime import JarvisRuntime, _jev_log, save_language
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings, section_caps
+from jarvis.runtime.daemon.cards import answer_question, decide_card, read_card, read_question
 from jarvis.runtime.daemon.commentary import (
     commentary_watcher,
 )
@@ -129,9 +129,6 @@ from jarvis.runtime.daemon.observers import start_meaning_index as _start_meanin
 from jarvis.runtime.daemon.observers import start_repo_observer as _start_repo_observer
 from jarvis.runtime.daemon.observers import start_timesink_observer as _start_timesink_observer
 from jarvis.runtime.daemon.observers import start_usage_observer as _start_usage_observer
-from jarvis.runtime.daemon.output_watchers import add_places as _add_places
-from jarvis.runtime.daemon.output_watchers import add_reactions as _add_reactions
-from jarvis.runtime.daemon.output_watchers import add_steps as _add_steps
 from jarvis.runtime.daemon.output_watchers import log_watcher_death as _log_watcher_death
 from jarvis.runtime.daemon.output_watchers import phone_ends_watcher as _phone_ends_watcher
 from jarvis.runtime.daemon.output_watchers import response_watcher as _response_watcher
@@ -168,6 +165,12 @@ from jarvis.runtime.daemon.routes import model_takes_images as _model_takes_imag
 from jarvis.runtime.daemon.routes import moment_hold as _moment_hold
 from jarvis.runtime.daemon.routes import notice_deps as _notice_deps
 from jarvis.runtime.daemon.routes import open_lifelog as _lifelog
+from jarvis.runtime.daemon.routes import (
+    read_conversation,
+    serve_footprint,
+    serve_track,
+    serve_turn_timings,
+)
 from jarvis.runtime.daemon.routes import refresh_work_state_now as _refresh_work_state_now
 from jarvis.runtime.daemon.routes import ride_act as _ride_act
 from jarvis.runtime.daemon.routes import save_settings as _save_settings
@@ -224,26 +227,18 @@ from jarvis.runtime.turn.cancel import (
 )
 from jarvis.runtime.turn.start import new_turn_id as _new_turn_id
 from jarvis.runtime.work_state import auto_refresh
-from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state import (
-    footprint,
-    phone_track,
-    places,
     quiet_mode,
     reactions,
 )
-from jarvis.state.daily_report import resolve_zone
-from jarvis.state.day_line import DaySources, day_window
+from jarvis.state.day_line import DaySources
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.event_log import (
     MAC_NODE,
-    confirmation_device,
     emit_event,
-    iter_events_of_types,
     open_event_log,
     open_runtime_event_log,
-    turn_origin,
 )
 from jarvis.state.imports import IMPORTS_DIRNAME
 from jarvis.state.input_submission_inbox import (
@@ -257,23 +252,8 @@ from jarvis.state.input_submission_inbox import (
     submit_text_once,
 )
 from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
-from jarvis.state.memory_db import (
-    conversation_rows,
-    remember_fact,
-)
 from jarvis.state.plugin_settings import local_key, local_key_matches
-from jarvis.state.projections import (
-    CLARIFICATION_EVENT_TYPES,
-    PendingClarification,
-    PendingConfirmations,
-    PendingConfirmationSlot,
-)
 from jarvis.state.push_tokens import register_body
-from jarvis.state.turn_facts import (
-    clarification_asked_at,
-    heard_as_barge_pause,
-    recent_turn_timings,
-)
 from jarvis.surface import (
     respeaker_board,
     voice_audio,
@@ -310,60 +290,6 @@ LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 # with the legacy ``ui/web/server.py`` default (8000) or the
 # inherent-swift dev server (8001).
 _DEFAULT_PORT: int = 8006
-
-
-# ADR 0144: how long an ask card from a barge-pause fragment stays off the screen, so a
-# continuation that folds the fragment in (ADR 0074) arrives before it ever shows.
-_FRAGMENT_CARD_HOLD_MS: Final[int] = 1_500
-
-
-def confirmation_card(slot: PendingConfirmationSlot, device: str | None) -> dict[str, Any]:
-    """The waiting confirmation as the phone and the Mac read it (ADR 0062, 0321).
-
-    A card of several calls keeps this shape: its question text is the calls' lines one to a
-    line, and it has no single tool or arguments to show.
-    """
-    first = slot.calls[0]
-    tool = str(first.get("tool_name", ""))
-    args_raw = first.get("args_meta")
-    args = dict(args_raw) if isinstance(args_raw, Mapping) else {}
-    parts = tool.split("__")
-    several = len(slot.calls) > 1
-    return {
-        "id": slot.confirmation_id,
-        "tool": tool,
-        "action": slot.template_line if several else lang.action(tool)[0],
-        "source": parts[1] if len(parts) == 3 and parts[0] == "mcp" else "",  # noqa: PLR2004
-        "letter": not several and lang.letter_to(args) is not None,
-        "args": {} if several else args,
-        "device": device,
-    }
-
-
-_CARD_EVENT_TYPES: Final[tuple[str, ...]] = (
-    "confirmation.requested", "confirmation.accepted", "confirmation.rejected", "gate.evaluated",
-)
-"""What the pending card folds from (ADR 0062), the rows the answer path itself re-reads."""
-
-
-def _visible_ask_card(conn: sqlite3.Connection, now_ms: int) -> PendingClarification | None:
-    """ADR 0066: the ask card to show, or ``None``.
-
-    ADR 0144: a card its turn put up from a barge-pause fragment stays hidden for
-    ``_FRAGMENT_CARD_HOLD_MS``. ADR 0206: a continuation no longer closes it, so the hold
-    only delays showing it.
-    """
-    slot = PendingClarification.from_events(iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES))
-    if slot is None or not slot.waiting:
-        return None
-    asked_at = clarification_asked_at(conn, slot.clarification_id)
-    if (
-        asked_at is not None
-        and now_ms - asked_at < _FRAGMENT_CARD_HOLD_MS
-        and heard_as_barge_pause(conn, slot.asked_turn_id)
-    ):
-        return None
-    return slot
 
 
 def _reconcile_open_responses_in_thread(
@@ -467,92 +393,6 @@ this constant names that credential rather than a person.  The idempotency key
 still separates clients through ``client_instance_id``; a per-user principal
 arrives with a real identity mechanism.
 """
-
-
-def _read_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
-    """``GET /inherent/turn-timings`` (ADR 0276): the newest ``limit`` timing facts, oldest first.
-
-    ``since_ms`` is a time in epoch ms (0 for no lower bound); each fact is the event's payload
-    with its ``event_uid`` and ``ts_epoch_ms`` (when the turn's answer was out) added. The log is
-    read on a connection of its own, so this runs on a worker thread.
-    """
-    conn = open_runtime_event_log(event_log_path)
-    try:
-        timings = recent_turn_timings(conn, since_ms=since_ms, limit=limit)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-    turns = [
-        {"event_uid": event.event_uid, "ts_epoch_ms": event.ts_epoch_ms, **event.payload}
-        for event in timings
-    ]
-    return {"now_ms": int(time.time() * 1000), "turns": turns}
-
-
-def _read_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
-    """``GET /inherent/track`` (ADR 0312): the phones' dense track over a window.
-
-    The log is read on a connection of its own, so this runs on a worker thread.
-    """
-    conn = open_runtime_event_log(event_log_path)
-    try:
-        tracks = phone_track.track(conn, from_ms, to_ms)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-    return {
-        "from_ms": from_ms, "to_ms": to_ms, "columns": list(phone_track.COLUMNS), "tracks": tracks,
-    }
-
-
-async def _serve_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
-    """:func:`_read_track` off the loop thread."""
-    return await asyncio.to_thread(_read_track, event_log_path, from_ms, to_ms)
-
-
-def _read_footprint(
-    event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
-    now_ms: int,
-) -> dict[str, Any]:
-    """``GET /inherent/footprint`` (ADR 0323): his footprint of the day asked for, or today.
-
-    The day is cut in the owner's zone as ``GET /inherent/day`` cuts it, and the places he keeps
-    are read from ``memory_db`` (none without it). The log is read on a connection of its own,
-    so this runs on a worker thread.
-    """
-    zone_name, zone = resolve_zone(None, configured)
-    on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
-    start_ms, end_ms = day_window(on, zone)
-    kept = [] if memory_db is None else places.read_kept(memory_db)
-    conn = open_runtime_event_log(event_log)
-    try:
-        folded = footprint.fold(conn, start_ms, end_ms, now_ms, kept)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-    return {
-        "date": on.isoformat(),
-        "tz": zone_name,
-        "start_ms": start_ms,
-        "end_ms": end_ms,
-        "now_ms": now_ms,
-        **folded,
-    }
-
-
-async def _serve_footprint(
-    event_log: Path, configured: tzinfo | None, memory_db: Path | None, day: date | None,
-    *, clock: Callable[[], float] = time.time,
-) -> dict[str, Any]:
-    """:func:`_read_footprint` off the loop thread, at the brain's ``clock``."""
-    return await asyncio.to_thread(
-        _read_footprint, event_log, configured, memory_db, day, int(clock() * 1000),
-    )
-
-
-async def _serve_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:
-    """:func:`_read_turn_timings` off the loop thread."""
-    return await asyncio.to_thread(_read_turn_timings, event_log_path, since_ms, limit)
 
 
 def _live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
@@ -1256,162 +1096,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         usage_observer = _make_usage_observer(runtime)
         window_memory = runtime.memory
 
-        def _read_conversation(after: int, limit: int, before: int) -> dict[str, Any]:
-            """Spec §18.3: a page of the window's rows, the history floor, and ``has_more``."""
-            since = runtime.config.session.history_since
-            if window_memory is None:
-                return {"since": since, "rows": [], "has_more": False}
-            rows, has_more = conversation_rows(
-                window_memory.db_path, since=since, after=after, before=before, limit=limit,
-                attachments=runtime.attachments,
-            )
-            _add_steps(runtime.runtime_paths.event_log, rows)
-            _add_places(runtime.runtime_paths.event_log, rows)
-            _add_reactions(runtime.runtime_paths.event_log, rows)
-            return {"since": since, "rows": rows, "has_more": has_more}
-
-        def _read_card() -> dict[str, Any]:
-            """ADR 0062: the card waiting for Allen's button, or ``None``.
-
-            ``device`` (ADR 0218) is the one whose turn asked it, ``None`` when no turn did.
-            """
-            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
-            try:
-                slot = PendingConfirmations.from_events(
-                    iter_events_of_types(conn, _CARD_EVENT_TYPES),
-                ).slot
-                device = None if slot is None else confirmation_device(conn, slot.confirmation_id)
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.close()
-            if slot is None or not slot.is_live(int(time.time() * 1000)):
-                return {"card": None}
-            return {"card": confirmation_card(slot, device)}
-
-        def _decide_card(
-            confirmation_id: str, decision: str, edits: dict[str, str], device: str,
-        ) -> str:
-            """ADR 0062: a card's button, as an intent the turn pump runs like any other.
-
-            The turn is written under ``device``, the one that pressed it (ADR 0218).
-            """
-            turn_id = _new_turn_id()
-            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
-            try:
-                emit_event(
-                    conn,
-                    type="surface.user_intent",
-                    payload={
-                        "transcript": "",
-                        "turn_id": turn_id,
-                        "channel": "card",
-                        "confirmation_decision": {
-                            "confirmation_id": confirmation_id,
-                            "decision": decision,
-                            "edits": edits,
-                        },
-                    },
-                    correlation={"turn_id": turn_id},
-                    ingestion_node=device,
-                )
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.close()
-            return turn_id
-
-        def _read_question() -> dict[str, Any]:
-            """ADR 0066: the ask card waiting to be filled in, or ``None``.
-
-            ``device`` (ADR 0218) is the one whose turn asked it, ``None`` when unknown.
-            """
-            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
-            try:
-                slot = _visible_ask_card(conn, int(time.time() * 1000))
-                device = None if slot is None else turn_origin(conn, slot.asked_turn_id)[1]
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.close()
-            if slot is None:
-                return {"card": None}
-            fields = [
-                {k: f[k] for k in ("label", "choices", "value") if k in f} for f in slot.fields
-            ]
-            card: dict[str, Any] = {
-                "id": slot.clarification_id, "question": slot.question, "fields": fields,
-                "device": device,
-            }
-            if slot.trip is not None:  # ADR 0205: a bus card shows only the rows still catchable
-                shown = live_card(slot.trip, runtime.clock.now())
-                if shown is None:
-                    return {"card": None}
-                card["trip"] = shown
-            return {"card": card}
-
-        def _answer_question(
-            clarification_id: str, answers: dict[str, str] | None, device: str,
-        ) -> str | None:
-            """ADR 0066: filled-in answers are remembered and run as Allen's words.
-
-            Dismissing the card (``answers is None``) closes it and runs nothing. The answer's
-            turn is written under ``device``, the one that filled it in (ADR 0218).
-
-            Returns the answer turn's id, or ``None`` for a dismissal. Raises
-            ``LookupError`` once the card is not the one waiting.
-            """
-            conn = open_runtime_event_log(runtime.runtime_paths.event_log)
-            try:
-                slot = PendingClarification.from_events(
-                    iter_events_of_types(conn, CLARIFICATION_EVENT_TYPES),
-                )
-                if slot is None or not slot.waiting or slot.clarification_id != clarification_id:
-                    msg = "that card is no longer waiting"
-                    raise LookupError(msg)
-                if answers is None:
-                    emit_event(
-                        conn,
-                        type="surface.dismissed",
-                        payload={
-                            "turn_id": slot.asked_turn_id,
-                            "clarification_id": clarification_id,
-                        },
-                    )
-                    return None
-                filled = [
-                    (f, answers.get(str(f["label"]), "").strip()) for f in slot.fields
-                ]
-                filled = [(f, value) for f, value in filled if value]
-                if window_memory is not None:
-                    for f, value in filled:
-                        if f.get("remember", True):
-                            remember_fact(window_memory.db_path, str(f["label"]), value)
-                turn_id = _new_turn_id()
-                emit_event(
-                    conn,
-                    type="surface.clarified",
-                    payload={
-                        "turn_id": turn_id,
-                        "clarification_id": clarification_id,
-                        "answers": {str(f["label"]): value for f, value in filled},
-                    },
-                    correlation={"turn_id": turn_id},
-                    ingestion_node=device,
-                )
-                emit_event(
-                    conn,
-                    type="surface.user_intent",
-                    payload={
-                        "transcript": "\n".join(f"{f['label']}: {value}" for f, value in filled),
-                        "turn_id": turn_id,
-                        "channel": "clarify",
-                    },
-                    correlation={"turn_id": turn_id},
-                    ingestion_node=device,
-                )
-            finally:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.close()
-            return turn_id
-
         setup: Setup | None = None
         if window_memory is not None:
             knobs = _voice_knobs(runtime.config.raw)
@@ -1513,22 +1197,24 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 if runtime.projects is None
                 else functools.partial(asyncio.to_thread, runtime.projects.refresh)
             ),
-            conversation_read=None if window_memory is None else _read_conversation,
+            conversation_read=(
+                None if window_memory is None else functools.partial(read_conversation, runtime)
+            ),
             ask_outcome=functools.partial(_ask_outcome, runtime.runtime_paths.event_log),
             turn_timings_read=functools.partial(
-                _serve_turn_timings, runtime.runtime_paths.event_log,
+                serve_turn_timings, runtime.runtime_paths.event_log,
             ),
-            track_read=functools.partial(_serve_track, runtime.runtime_paths.event_log),
+            track_read=functools.partial(serve_track, runtime.runtime_paths.event_log),
             footprint_read=functools.partial(
-                _serve_footprint,
+                serve_footprint,
                 runtime.runtime_paths.event_log,
                 runtime.config.zone,
                 None if runtime.memory is None else runtime.memory.db_path,
             ),
-            card_read=_read_card,
-            card_decide=_decide_card,
-            question_read=_read_question,
-            question_answer=_answer_question,
+            card_read=functools.partial(read_card, runtime),
+            card_decide=functools.partial(decide_card, runtime),
+            question_read=functools.partial(read_question, runtime),
+            question_answer=functools.partial(answer_question, runtime),
             think_read=(
                 None if runtime.think_mode is None
                 else functools.partial(runtime.think_mode.status, runtime.conn)

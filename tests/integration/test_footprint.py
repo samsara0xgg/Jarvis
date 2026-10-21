@@ -37,7 +37,6 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
 from jarvis.runtime.daemon import routes
 from jarvis.shared.geo import metres
 from jarvis.state import places
@@ -306,7 +305,7 @@ class Brain:
             ),
             footprint_read=(
                 functools.partial(
-                    inherent_loop._serve_footprint, self.log, ZONE, self.memory,  # noqa: SLF001
+                    routes.serve_footprint, self.log, ZONE, self.memory,
                     clock=self.clock.time,
                 ) if footprint else None
             ),
