@@ -16,21 +16,27 @@
   source.
 - The six layers are enforced by `lint-imports`, and `runtime/` is the one place allowed to wire
   across them. A split inside `runtime/` changes no layer contract.
-- The lead-in commentary path and `serve_inherent` each have an owner who is still changing them.
-  The voice code that speaks a conversation line reads the commentary path's helpers (its
-  terminalizer, its pre-emit verdict, the answer-started query and two time windows), so neither
-  side can move alone.
+- `serve_inherent` itself was 1,100 lines of boot, voice wiring, route dependencies, background
+  tasks and teardown in one function. Its teardown reads state that boot fills late (the voice
+  subsystem with its microphone owner and GPT-Live, the power observer, the watcher list), and
+  the order it stops things in is a contract (ADR 0006, 0009), so the phases cannot be cut
+  apart without a place for that state to live.
 
 ## Decision
 
 Daemon code lives in `jarvis/runtime/daemon/`, one module per concern, and new daemon code goes
 in the module that owns its concern, not in `inherent_loop.py`.
 
-- `inherent_loop.py` keeps `serve_inherent` and the commentary path until their owners split
-  them; code that reads the commentary path's helpers stays beside it.
-- A name another module imports is public. No module re-exports another's names; `serve_inherent`
-  may read a moved name under its old spelling through an `import ... as` alias until it is
-  split.
+- `inherent_loop.py` holds only `serve_inherent`: the order the daemon's phases start in, and
+  the call that stops them in the order ADR 0006 and 0009 fix. A phase that grows is split into
+  its own module, not into the function.
+- State that a phase fills and the teardown or a mute switch reads late lives in a holder the
+  phases share (`Voice`, `Running`), not in a closure over `serve_inherent`'s locals. A step that
+  starts tasks extends the holder's list in place, so a step that fails mid-way leaves what it
+  started to the teardown.
+- A name another module imports is public. No module re-exports another's names, and none reads
+  a moved name under an alias.
+- A module's logger is `logging.getLogger(__name__)`.
 - A move changes no behaviour: the code is moved verbatim, and the tests that exercise it patch
   the module that now reads the name.
 
@@ -42,18 +48,16 @@ in the module that owns its concern, not in `inherent_loop.py`.
 - **One file with section markers** — a marker gives a group no seam to patch and no path for a
   canary to pin: three canaries named this file's path to check one watcher or sweep function
   each, and a change anywhere in the 8,312 lines was a change to the file they pin.
-- **Moving `serve_inherent` and the commentary path in the same change** — it rewrites lines two
-  owners are editing, so each edit would conflict with the move, and the commentary helpers have
-  no module to move to until their owner splits them.
+- **Moving `serve_inherent` and the commentary path in the first change** — it rewrote lines two
+  owners were editing, so each edit would have conflicted with the move; both moved last, once
+  those owners had finished.
 
 ## Consequences
 
-- Until the commentary path is split, the voice code that speaks a conversation line (the
-  conversation line itself, the cancel-voice-runs hook, the local listen ports, the single-ingress
-  session and the phone hub) and the job, plan and reminder lines stay in `inherent_loop.py`,
-  which keeps the file larger than the concern list suggests.
-- A test that patches a moved name on `inherent_loop` patches only the alias `serve_inherent`
-  reads; the moved code reads its own module's attribute, so the patch is silent. The test has to
-  patch the new module.
+- A test that patches a moved name on `inherent_loop` patches nothing the code reads; the moved
+  code reads its own module's attribute, so the patch is silent. The test has to patch the
+  module that reads the name.
 - Log lines from moved code carry the new module's logger name, so a log filter on
-  `jarvis.runtime.inherent_loop` no longer sees them.
+  `jarvis.runtime.inherent_loop` no longer sees them; `serve_inherent` itself logs nothing.
+- `Voice` and `Running` are mutable and filled in boot order. A phase that reads a field before
+  the phase that fills it has run sees `None`, which the type says and no ordering check enforces.
