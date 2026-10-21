@@ -58,7 +58,12 @@ from jarvis.runtime import (
     open_voiceprints,
     parse_response_channels,
 )
-from jarvis.runtime.config import RuntimeBootstrapError, RuntimeConfig, load_runtime_config
+from jarvis.runtime.config import (
+    RuntimeBootstrapError,
+    RuntimeConfig,
+    load_runtime_config,
+    system_language,
+)
 from jarvis.runtime.inherent_loop import serve_inherent
 from jarvis.runtime.terminal import run_terminal
 from jarvis.shared.lang import Language, t
@@ -446,6 +451,36 @@ def _resolve_runtime_root(arg: Path | None) -> Path:
     return Path(DEFAULT_RUNTIME_ROOT_LITERAL).expanduser().resolve()
 
 
+_CHECK_CONFIG_HELP = (
+    "Load the config the way a start does and say whether it is accepted: one line, exit 0 or "
+    "non-zero. Opens no database, starts no thread, binds no port, reads no key."
+)
+
+
+def _check_config(
+    entry: str, config_path: Path | None, root: Path, *, prompt_path: Path | None = None,
+) -> int:
+    """``--check-config`` (ADR 0370): :func:`load_runtime_config` as the entry point calls it.
+
+    Nothing else of the entry point runs: the root is not laid out or locked, the environment file
+    is not read, no key is touched. The refusal is the loader's own text on stderr.
+    """
+    try:
+        config = load_runtime_config(config_path, root, prompt_path=prompt_path)
+    except (RuntimeBootstrapError, ValueError) as exc:
+        reason = " ".join(str(exc).split())
+        sys.stderr.write(
+            f"jarvis {entry}: {t('cli.config_refused', lang=system_language(), reason=reason)}\n",
+        )
+        return 1
+    good = t(
+        "cli.config_ok", lang=config.language, config=config.config_path, root=root,
+        role=config.role,
+    )
+    sys.stdout.write(f"jarvis {entry}: {good}\n")
+    return 0
+
+
 def _main_serve(argv: list[str]) -> int:
     """Parse serve-mode args, bootstrap runtime, call :func:`serve_inherent`.
 
@@ -454,10 +489,14 @@ def _main_serve(argv: list[str]) -> int:
     before any bootstrap (ADR 0318), so it is the OUTERMOST scope of the
     daemon's resource ladder and is released after the Event Log is closed.
 
+    With ``--check-config`` it only loads the config the way a start would (ADR 0370) and says
+    whether it is accepted; the lock, the root's layout, the environment file and every resource
+    are left alone, so it can run beside a daemon that is up.
+
     Returns:
-        0 on clean shutdown, 1 on bootstrap failure, 2 if another live
-        daemon already owns the per-runtime-root lock, 3 if a database
-        was written by a newer Jarvis.
+        0 on clean shutdown (or an accepted ``--check-config``), 1 on bootstrap failure (or a
+        refused config), 2 if another live daemon already owns the per-runtime-root lock, 3 if a
+        database was written by a newer Jarvis.
     """
     parser = argparse.ArgumentParser(
         prog=f"{_PROG} serve",
@@ -496,7 +535,12 @@ def _main_serve(argv: list[str]) -> int:
             "manual daemon fights the launchd respawn for the same lock."
         ),
     )
+    parser.add_argument("--check-config", action="store_true", help=_CHECK_CONFIG_HELP)
     args = parser.parse_args(argv)
+    if args.check_config:
+        return _check_config(
+            "serve", args.config, _resolve_runtime_root(args.runtime_root), prompt_path=args.prompt,
+        )
 
     # ADR-0009 D1 — a manual serve while the agent is installed loses the
     # lock race against launchd's KeepAlive respawn (and vice versa). The
@@ -746,7 +790,7 @@ def _main_terminal(argv: list[str]) -> int:
             "observes. Holds no model key and keeps no state."
         ),
     )
-    parser.add_argument("--brain", required=True, help="The brain, e.g. http://jarvis:8006.")
+    parser.add_argument("--brain", default=None, help="The brain, e.g. http://jarvis:8006.")
     parser.add_argument(
         "--brain-token-file",
         type=Path,
@@ -785,12 +829,21 @@ def _main_terminal(argv: list[str]) -> int:
     parser.add_argument(
         "--port", type=int, default=None, help="With --serve-ui, the port (default 8006).",
     )
+    parser.add_argument("--check-config", action="store_true", help=_CHECK_CONFIG_HELP)
     args = parser.parse_args(argv)
+    if args.brain is None and not args.check_config:
+        parser.error("the following arguments are required: --brain")
     if args.port is not None and not args.serve_ui:
         parser.error("--port only applies with --serve-ui")
     root = _resolve_runtime_root(args.runtime_root)
     try:
-        base_url = _brain_base_url(args.brain)
+        base_url = _brain_base_url(args.brain) if args.brain is not None else ""
+    except ValueError as exc:
+        sys.stderr.write(f"jarvis terminal: {exc}\n")
+        return 1
+    if args.check_config:
+        return _check_config("terminal", args.config, root)
+    try:
         token = _read_brain_token(args.brain_token_file or root / _BRAIN_TOKEN_FILE)
     except ValueError as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")

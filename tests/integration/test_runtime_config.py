@@ -506,3 +506,14 @@ def test_a_brain_has_no_vault_and_no_bookmarks_of_its_own() -> None:
         "obsidian": {"vault_root": "~/Notes"}, "open_path": {"aliases": {"a": "/x"}},
     }}).tools
     assert (brain.obsidian_vault_root, dict(brain.open_path)) == (None, {})
+
+
+def test_a_settings_file_that_is_not_yaml_is_a_refusal_naming_the_file_and_line(
+    tmp_path: Path,
+) -> None:
+    """Not a traceback, and none of the file's own text in the message."""
+    root = _root(tmp_path, "locate: [\n  secret-looking-text\n")
+    named = r"settings\.yaml is not valid YAML.*\(line \d+\)"
+    with pytest.raises(RuntimeBootstrapError, match=named) as caught:
+        load_runtime_config(None, root)
+    assert "secret-looking-text" not in str(caught.value)

@@ -988,6 +988,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "这台机器上没有大脑在运行。用 --brain URL 把这句话交给一个大脑。",
         "en": "No brain is running on this machine. Pass --brain URL to hand this to one.",
     },
+    # ``serve --check-config`` and ``terminal --check-config``: the one line each prints.
+    "cli.config_ok": {
+        "zh": "配置可用：{config}，运行目录 {root}，角色 {role}",
+        "en": "Config is good: {config}, runtime root {root}, role {role}",
+    },
+    "cli.config_refused": {"zh": "配置被拒绝：{reason}", "en": "Config refused: {reason}"},
     # Desktop panels.
     "codex.session_ended": {"zh": "会话已结束", "en": "Session ended"},
     "codex.turn_stopped": {"zh": "已停下", "en": "Stopped"},

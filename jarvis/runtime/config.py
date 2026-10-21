@@ -365,8 +365,16 @@ def locate_repo_root(start: Path) -> Path:
 
 
 def _read_yaml_mapping(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+    except yaml.YAMLError as exc:
+        # The problem and its line only: the excerpt a YAMLError carries is the file's own text.
+        mark = getattr(exc, "problem_mark", None)
+        where = f" (line {mark.line + 1})" if mark is not None else ""
+        problem = getattr(exc, "problem", None) or "syntax"
+        msg = f"config at {path} is not valid YAML: {problem}{where}"
+        raise RuntimeBootstrapError(msg) from exc
     if not isinstance(raw, dict):
         msg = f"config at {path} is not a YAML mapping"
         raise RuntimeBootstrapError(msg)
@@ -415,6 +423,11 @@ def _system_language() -> lang.Language:
             out = ""
     first = out.strip().strip("()").split(",")[0].strip().strip('"')
     return lang.normalize(first) or lang.normalize(os.environ.get("LANG")) or "en"
+
+
+def system_language() -> lang.Language:
+    """The language fixed text is written in when no config could be read."""
+    return _system_language()
 
 
 def _language(raw: Mapping[str, Any]) -> lang.Language:
