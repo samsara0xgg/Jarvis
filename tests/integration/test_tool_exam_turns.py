@@ -24,8 +24,9 @@ from jarvis.runtime.weatherkit import ENDPOINT, NOT_SET_UP
 from jarvis.shared.pricing import load_pricing_table
 from scripts import tool_exam_steps as steps
 from scripts import tool_exam_turns as turns
-from scripts.tool_exam_steps import Meter, ScriptedModel, classify, judge_steps
+from scripts.tool_exam_steps import Meter, classify, judge_steps
 from scripts.tool_exam_tools import Item, Recording, _Transport, cut_at, sandbox
+from tests.support.model import Call, Reply, ScriptedModel
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -189,12 +190,12 @@ def test_a_built_case_runs_at_the_frozen_clock_and_stubs_a_deep_search(
         "at": "2026-10-17T20:14:00-07:00",
         "zone": "America/Vancouver",
     }
-    script: list[dict[str, Any]] = [
-        {"tool_calls": [{"name": "web_search", "arguments": {"query": "x", "depth": "deep"}}]},
-        {"text": "这个我暂时深查不了。"},
-    ]
+    model = ScriptedModel(
+        Reply(calls=(Call("web_search", {"query": "x", "depth": "deep"}),)),
+        Reply(text="这个我暂时深查不了。"),
+    )
     line = turns.run_one(
-        case, ScriptedModel(script), "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None,
+        case, model, "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None,
         _brain_settings(tmp_path),
     )
     assert line["error"] is None, line["error"]
@@ -210,7 +211,7 @@ def test_a_built_case_without_brain_settings_names_the_missing_file(tmp_path: Pa
     case = {"id": "no-settings", "said": "x", "at": "2026-10-17T20:14:00-07:00", "zone": "UTC"}
     missing = tmp_path / "settings.brain.yaml"
     line = turns.run_one(
-        case, ScriptedModel([{"text": "x"}]), "fake", 0, tmp_path, TABLE, Meter(None, TABLE),
+        case, ScriptedModel(Reply(text="x")), "fake", 0, tmp_path, TABLE, Meter(None, TABLE),
         None, missing,
     )
     assert line["error"] == f"LookupError: no brain settings at {missing}; pass --brain-settings"
@@ -229,12 +230,9 @@ def test_a_built_case_has_the_weather_on_though_his_key_file_is_out_of_reach(
         encoding="utf-8",
     )
     case = {"id": "built-weather", "said": "今天会下雨吗", "at": AT.isoformat(), "zone": "UTC"}
-    script: list[dict[str, Any]] = [
-        {"tool_calls": [{"name": "weather", "arguments": {}}]},
-        {"text": "天气暂时查不到。"},
-    ]
+    model = ScriptedModel(Reply(calls=(Call("weather", {}),)), Reply(text="天气暂时查不到。"))
     line = turns.run_one(
-        case, ScriptedModel(script), "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None, settings,
+        case, model, "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None, settings,
     )
     assert line["error"] is None, line["error"]
     assert NOT_SET_UP not in line["steps"][0]["calls"][0]["result"]

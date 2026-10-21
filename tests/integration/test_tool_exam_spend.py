@@ -13,6 +13,7 @@ import pytest
 
 from jarvis.decision.llm import ChatResult
 from scripts import tool_exam_steps as steps
+from tests.support.model import Reply, ScriptedModel, Usage
 
 TABLE = {
     "small": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
@@ -139,8 +140,10 @@ def test_the_meter_cannot_keep_a_cap_on_a_model_it_cannot_price() -> None:
 
 def test_the_substituting_client_meters_every_chat_it_sends() -> None:
     """The seam every model call of a case goes through is the one that counts them."""
-    model = steps.ScriptedModel([{"text": "one", "usage": [200_000, 0]}, {"text": "two"}])
-    model.model = "small"
+    model = ScriptedModel(
+        Reply(text="one", usage=Usage(input_tokens=200_000, output_tokens=0)), Reply(text="two"),
+        model="small",
+    )
     meter = steps.Meter(None, TABLE)
     sub = steps._Substituting(model, "sys", [{"role": "user", "content": "hi"}], meter)  # noqa: SLF001
     sub.chat(messages=[{"role": "user", "content": "hi"}], system="sys")
