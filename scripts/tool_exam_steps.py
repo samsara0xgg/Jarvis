@@ -98,6 +98,7 @@ LIVE_READ = frozenset({
     "get_current_time", "kept", "search_records", "recall", "read_records",
     "query_activity", "read_activity", "search_knowledge", "get_briefing",
     "web_search", "web_fetch", "weather", "where_am_i", "places",
+    "map_search",  # reads Google Places; its spend rows go to the sandbox's log
     "look_at_picture",  # calls the vision preset's model
     "job_ledger", "mail",  # mail() rates unrated unread letters with Jev (OpenRouter)
     "conversation", "archive", "my_day",

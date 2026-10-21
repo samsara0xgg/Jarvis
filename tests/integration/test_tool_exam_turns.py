@@ -9,6 +9,7 @@ request goes to a local stand-in for the Messages API: nothing is paid, nothing 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import datetime
@@ -21,15 +22,17 @@ import pytest
 from jarvis.decision.llm import LLMClient
 from jarvis.shared.pricing import load_pricing_table
 from scripts import tool_exam_turns as turns
-from scripts.tool_exam_steps import Meter, ScriptedModel, judge_steps
-from scripts.tool_exam_tools import cut_at
+from scripts.tool_exam_steps import Meter, ScriptedModel, classify, judge_steps
+from scripts.tool_exam_tools import Item, Recording, _Transport, cut_at, sandbox
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 AT = datetime.fromisoformat("2026-10-17T20:14:00-07:00")
 HOUR_MS = 3_600_000
-TABLE = load_pricing_table(Path(__file__).resolve().parents[2] / "data" / "pricing.json")
+REPO = Path(__file__).resolve().parents[2]
+TABLE = load_pricing_table(REPO / "data" / "pricing.json")
+_KEY_NAME = re.compile(r"\b[A-Z][A-Z0-9_]*_API_KEY\b")
 
 
 def test_the_cut_removes_what_was_made_at_or_after_the_moment_and_keeps_the_rest(
@@ -209,6 +212,36 @@ def test_a_built_case_without_brain_settings_names_the_missing_file(tmp_path: Pa
         None, missing,
     )
     assert line["error"] == f"LookupError: no brain settings at {missing}; pass --brain-settings"
+
+
+def _every_key_name() -> set[str]:
+    """Every provider key the code or the shipped config names: a tool may need any of them."""
+    texts = [p.read_text(encoding="utf-8") for p in (REPO / "jarvis").rglob("*.py")]
+    texts.append((REPO / "config" / "jarvis.yaml").read_text(encoding="utf-8"))
+    return {name for text in texts for name in _KEY_NAME.findall(text)}
+
+
+def test_every_tool_a_brain_with_all_its_keys_offers_has_a_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unclassed tool stops a paid run before its first case; a new one stops here instead."""
+    for name in _every_key_name():
+        monkeypatch.setenv(name, "exam-placeholder-key")
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    (brain / "settings.yaml").write_text(
+        "runtime:\n  role: brain\nhome:\n  weather:\n    latitude: 37.7749\n"
+        "    longitude: -122.4194\n",
+        encoding="utf-8",
+    )
+    item = Item({"id": "menu", "at": AT.isoformat(), "zone": "UTC"}, tmp_path / "menu.json")
+    recording = Recording()
+    with _Transport(recording, live=False), sandbox(item, recording, real_root=brain) as box:
+        try:
+            classes = classify(box.runtime.tool_registry)
+        except SystemExit as exc:
+            pytest.fail(str(exc))
+    assert {"bus", "map_search", "weather", "web_search"} <= classes.keys()
 
 
 class _Messages(BaseHTTPRequestHandler):
