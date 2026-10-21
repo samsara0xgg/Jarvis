@@ -33,6 +33,7 @@ from jarvis.decision import DecideContext, LifecycleLike, RuntimePathsLike, Tool
 from jarvis.execution.picture_tool import build_picture_tool
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import retention
 from jarvis.runtime.picture_notes import (
     MAX_ATTEMPTS,
     MAX_PENDING,
@@ -241,7 +242,7 @@ def test_clearing_the_pictures_clears_their_notes_and_the_export_carries_both(
     world.clock.now += WINDOW_S
     world.notes.run_due()
 
-    archive = inherent_loop._export_data(world.runtime)  # noqa: SLF001
+    archive = retention.export_data(world.runtime)
     try:
         with zipfile.ZipFile(archive) as bundle:
             names = bundle.namelist()
@@ -254,7 +255,7 @@ def test_clearing_the_pictures_clears_their_notes_and_the_export_carries_both(
             "SELECT count(*) FROM records WHERE source = 'picture_note'",
         ).fetchone() == (1,)
 
-    assert inherent_loop._clear_media(world.runtime) >= 1  # noqa: SLF001
+    assert retention.clear_media(world.runtime) >= 1
 
     assert world.store.get(picture) is None
     assert [s for _, s, _ in world.records()] == ["allen", "jarvis"]

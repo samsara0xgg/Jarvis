@@ -100,13 +100,13 @@ from jarvis.runtime.daemon.observers import (
 )
 from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
 from jarvis.runtime.daemon.restart import restart_soon
+from jarvis.runtime.daemon.retention import data_sweep_task
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
     _build_echo_canceller,
     _build_tts_pipeline,
     _build_voice_pipeline,
-    _data_sweep_task,
     _install_power_observer_or_degrade,
     _ListenPorts,
     _shutdown_power_observer,
@@ -946,7 +946,7 @@ def _start_retention(retention: _Retention) -> asyncio.Task[None]:
     root = retention.runtime_root
     memory = MemorySettings.from_config(retention.config.get("memory"), runtime_root=root)
     task = asyncio.create_task(
-        _data_sweep_task(
+        data_sweep_task(
             {memory.audio_dir: memory.audio_retention_days}, logs_dir(root),
             swept_elsewhere=functools.partial(is_held, root / LOCK_FILE), sleep=retention.sleep,
         ),

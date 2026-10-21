@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.deployment import bootstrap_runtime, daemon_session, data
 from jarvis.deployment.process_lock import LOCK_FILE, ProcessLockHeld, acquire_exclusive
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import retention
 from jarvis.runtime.terminal import _Retention, _run
 from jarvis.state import NewerDataError
 from jarvis.state.event_log import open_event_log
@@ -182,7 +182,7 @@ def test_a_daemon_sweeps_its_root_while_it_holds_the_lock(tmp_path: Path) -> Non
     async def daemon() -> None:
         sleep = SteppedSleep()
         sweeping = asyncio.create_task(
-            inherent_loop._data_sweep_task(  # noqa: SLF001
+            retention.data_sweep_task(
                 {audio: 30}, root / "logs", sleep=sleep,
             ),
         )

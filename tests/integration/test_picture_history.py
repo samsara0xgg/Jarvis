@@ -45,7 +45,8 @@ from jarvis.decision.llm_anthropic import (
     request_fields,
     set_stale_files_handler,
 )
-from jarvis.runtime import inherent_loop, picture_files
+from jarvis.runtime import picture_files
+from jarvis.runtime.daemon import retention
 from jarvis.runtime.picture_files import RETRY_AFTER_S, PictureFiles
 from jarvis.state import picture_notes as note_records
 from jarvis.state.device_tokens import unpair_device
@@ -455,10 +456,10 @@ def age(world: World, attachment_id: str, days: int) -> None:
 
 def sweep(world: World) -> None:
     """One pass of the hourly data sweep, as the daemon runs it."""
-    inherent_loop._sweep_data(  # noqa: SLF001
-        inherent_loop._media_dirs(world.runtime), world.runtime.runtime_paths.root / "logs",  # noqa: SLF001
+    retention.sweep_data(
+        retention.media_dirs(world.runtime), world.runtime.runtime_paths.root / "logs",
     )
-    inherent_loop._release_pictures(world.runtime)  # noqa: SLF001
+    retention.release_uploaded_pictures(world.runtime)
 
 
 def test_the_retention_sweep_deletes_the_uploaded_copy_of_the_files_it_removes(
@@ -500,7 +501,7 @@ def test_clearing_the_recordings_deletes_every_copy_with_the_files(world: World)
     """The pictures go at once, and so do their uploaded copies."""
     client, ids = uploaded(world, "IMG_1.png", "IMG_2.png")
 
-    inherent_loop._clear_media(world.runtime)  # noqa: SLF001
+    retention.clear_media(world.runtime)
 
     assert sorted(client.deleted) == ["file_001", "file_002"]
     assert all(world.store.file_id(one) is None for one in ids)
@@ -511,9 +512,9 @@ def test_erasing_everything_deletes_the_copies_before_the_files_go_at_the_next_b
 ) -> None:
     """The files are still there when the erase is asked for, and the copies are not."""
     client, ids = uploaded(world, "IMG_1.png")
-    monkeypatch.setattr(inherent_loop, "_restart_soon", lambda: None)
+    monkeypatch.setattr(retention, "restart_soon", lambda: None)
 
-    inherent_loop._erase_data(world.runtime)  # noqa: SLF001
+    retention.erase_data(world.runtime)
 
     assert client.deleted == ["file_001"]
     assert world.store.path(ids[0]) is not None
@@ -887,7 +888,7 @@ def test_a_saved_picture_starts_uploading_at_once_and_the_next_render_finds_its_
     )
     d = attachments_daemon(
         tmp_path,
-        saved=lambda ref: inherent_loop._start_upload(holder, ref),  # noqa: SLF001
+        saved=lambda ref: retention.start_upload(holder, ref),
     )
     files = PictureFiles(d.store)
     holder.picture_files = files
@@ -925,7 +926,7 @@ def test_no_upload_starts_when_the_default_preset_is_not_anthropics(world: World
     )
     picture = world.store.save(PNG, "IMG_1.png", images_ok=True)
 
-    inherent_loop._start_upload(runtime, picture)  # noqa: SLF001
+    retention.start_upload(runtime, picture)
 
     assert not files._inflight  # noqa: SLF001
     assert model.uploads == []
@@ -999,7 +1000,7 @@ def test_the_start_uploads_the_newest_twenty_in_the_background(world: World) -> 
     )
     ids = [send(world, f"IMG_{n:02d}.png") for n in range(HISTORY_PICTURES + 3)]
 
-    inherent_loop._link_pictures(world.runtime)  # noqa: SLF001
+    retention.link_earlier_pictures(world.runtime)
     deadline = time.monotonic() + 10
     while len(world.model.uploads) < HISTORY_PICTURES and time.monotonic() < deadline:
         time.sleep(0.01)

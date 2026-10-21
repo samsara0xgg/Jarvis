@@ -89,12 +89,10 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Generator, Sequence
+    from collections.abc import Callable, Collection, Generator, Sequence
     from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
-    from jarvis.decision.llm import LLMClient
-    from jarvis.decision.llm_session import LLMSessionFactory
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime.dashboard import MailDrafts
@@ -110,7 +108,6 @@ if TYPE_CHECKING:
     from jarvis.runtime.work_state import WorkStateService
     from jarvis.shared.clock import Clock
     from jarvis.shared.realtime import PresentationIntent, Wave4ResponseFlags
-    from jarvis.state.attachments import AttachmentRef
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.voice_settings import VoiceSettings
     from jarvis.state.voiceprint import VoiceprintBook
@@ -138,10 +135,9 @@ from jarvis.decision.response_run import (
     request_response_cancel,
     start_response_run,
 )
-from jarvis.deployment import data, inherent_v2_token_matches, models, rotate_inherent_v2_token
+from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import logs_dir, repo_root, supervised
 from jarvis.deployment.sleep_wake import install_power_observer
-from jarvis.execution.tools import SCREEN_ARTIFACTS_DIRNAME
 from jarvis.execution.transit_tool import live_card
 from jarvis.runtime import (
     JarvisRuntime,
@@ -163,7 +159,6 @@ from jarvis.runtime import (
     make_response_cancel_callable,
     make_supersede_unspoken_callable,
     make_turn_cancel_callable,
-    picture_files,
     save_language,
 )
 from jarvis.runtime.card_feedback import CardFeedback
@@ -201,6 +196,14 @@ from jarvis.runtime.daemon.restart import fetch_models_then_restart as _fetch_mo
 from jarvis.runtime.daemon.restart import restart_soon as _restart_soon
 from jarvis.runtime.daemon.restart import restart_when_idle as _restart_when_idle
 from jarvis.runtime.daemon.restart import restarting as _restarting
+from jarvis.runtime.daemon.retention import clear_media as _clear_media
+from jarvis.runtime.daemon.retention import data_sweep_task as _data_sweep_task
+from jarvis.runtime.daemon.retention import erase_data as _erase_data
+from jarvis.runtime.daemon.retention import export_data as _export_data
+from jarvis.runtime.daemon.retention import link_earlier_pictures as _link_pictures
+from jarvis.runtime.daemon.retention import media_dirs as _media_dirs
+from jarvis.runtime.daemon.retention import release_uploaded_pictures as _release_pictures
+from jarvis.runtime.daemon.retention import start_upload as _start_upload
 from jarvis.runtime.daemon.sweep import start_sweep_control_plane as _start_sweep_control_plane
 from jarvis.runtime.daemon.voice_power import SingleIngressActivation as _SingleIngressActivation
 from jarvis.runtime.daemon.voice_power import VoiceInputOwners as _VoiceInputOwners
@@ -225,7 +228,6 @@ from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.runtime.plan_run import Hooks, build_watch, leg_session, make_route_legs
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
-from jarvis.runtime.settings import SETTINGS_FILE
 from jarvis.runtime.setup import Setup
 from jarvis.runtime.spend_cap import SpendCap, SpendCapSettings
 from jarvis.runtime.work_state import auto_refresh
@@ -239,7 +241,6 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import (
     footprint,
     phone_track,
-    picture_notes,
     places,
     quiet_mode,
     reactions,
@@ -277,12 +278,9 @@ from jarvis.state.input_submission_inbox import (
 from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES, LIFELOG_DIRNAME, Lifelog
 from jarvis.state.memory_db import (
-    HISTORY_PICTURES,
     MemorySettings,
     conversation_rows,
-    recent_image_ids,
     remember_fact,
-    retention_days,
 )
 from jarvis.state.phone_day import day_summary
 from jarvis.state.plugin_settings import local_key, local_key_matches
@@ -3296,10 +3294,6 @@ async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[st
     return await asyncio.to_thread(settings.update, changes)
 
 
-_DATA_SWEEP_INTERVAL_S = 3600.0
-_ATTACHMENT_DAYS = 30  # ADR 0211: unless ``attachments.retention_days`` says otherwise
-
-
 def _model_takes_images(config: Mapping[str, Any]) -> bool:
     """ADR 0211: whether pictures may go to the conversation model.
 
@@ -3360,155 +3354,6 @@ def _shipments(runtime: JarvisRuntime) -> Shipments:
         else DEFAULT_MIN_FREE_BYTES
     )
     return Shipments(runtime.runtime_paths.root / IMPORTS_DIRNAME, min_free_bytes=min_free)
-
-
-def _media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
-    """ADR 0067: the recordings, screenshots and phone attachments, each with its days to keep."""
-    tools = runtime.config.get("tools") or {}
-    screen = tools.get("screen") if isinstance(tools, dict) else None
-    days = retention_days(screen.get("retention_days")) if isinstance(screen, dict) else None
-    dirs = {runtime.runtime_paths.artifacts_root / SCREEN_ARTIFACTS_DIRNAME: days}
-    sent = runtime.config.get("attachments")
-    if runtime.attachments is not None:
-        dirs[runtime.attachments.directory] = retention_days(
-            sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
-            else _ATTACHMENT_DAYS,
-        )
-    if runtime.memory is not None:
-        dirs[runtime.memory.audio_dir] = runtime.memory.audio_retention_days
-    return dirs
-
-
-def _link_pictures(runtime: JarvisRuntime) -> int:
-    """ADR 0255: link his earlier records to the files still kept (see ``picture_files``)."""
-    if runtime.attachments is None or runtime.memory is None:
-        return 0
-    sent = runtime.config.get("attachments")
-    days = retention_days(
-        sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
-        else _ATTACHMENT_DAYS,
-    )
-    linked = picture_files.link_kept_pictures(
-        runtime.memory.db_path, runtime.runtime_paths.event_log, runtime.attachments, days=days,
-    )
-    if runtime.picture_files is not None and (client := _upload_client(runtime)) is not None:
-        for attachment_id in recent_image_ids(runtime.memory.db_path, HISTORY_PICTURES):
-            runtime.picture_files.start(client, attachment_id)  # the backlog, newest first
-    return linked
-
-
-@functools.cache
-def _default_anthropic(factory: LLMSessionFactory) -> LLMClient | None:
-    return (
-        factory.create(factory.snapshot(factory.default_preset), response_id="pictures")
-        if factory.snapshot(factory.default_preset).provider == "anthropic" else None
-    )
-
-
-def _upload_client(runtime: JarvisRuntime) -> LLMClient | None:
-    """The client that uploads pictures: on the default preset, when that is Anthropic's."""
-    return _default_anthropic(runtime.llm_session_factory)
-
-
-def _start_upload(runtime: JarvisRuntime, ref: AttachmentRef) -> None:
-    """ADR 0255: a picture was just saved; upload it now so the next turn finds its id."""
-    client = _upload_client(runtime)
-    if runtime.picture_files is not None and client is not None:
-        runtime.picture_files.start(client, ref.id)
-
-
-def _files_client(runtime: JarvisRuntime) -> LLMClient | None:
-    """A client on an Anthropic preset, whatever preset is active, or ``None`` without one."""
-    if runtime.llm_client.provider == "anthropic":
-        return runtime.llm_client
-    factory = runtime.llm_session_factory
-    for name, spec in runtime.llm_client.get_presets().items():
-        if str(spec.get("provider", "")).lower() == "anthropic":
-            return factory.create(factory.snapshot(name), response_id="pictures")
-    return None
-
-
-def _release_pictures(runtime: JarvisRuntime, *, everything: bool = False) -> int:
-    """ADR 0255: delete the uploaded copies of pictures whose file is gone (or all of them)."""
-    if runtime.picture_files is None:
-        return 0
-    try:
-        return runtime.picture_files.release(_files_client(runtime), everything=everything)
-    except Exception:
-        LOGGER.exception("pictures: could not delete uploaded copies")
-        return 0
-
-
-def _sweep_data(dirs: dict[Path, int | None], logs: Path) -> None:
-    """Delete what has passed its days and cut each log past its size (ADR 0067)."""
-    for directory, days in dirs.items():
-        if gone := data.delete_older_than(directory, days):
-            LOGGER.info("retention: deleted %d files older than %s days from %s",
-                        gone, days, directory.name)
-    if cut := data.rotate_logs(logs):
-        LOGGER.info("retention: started %d new log files", cut)
-
-
-async def _data_sweep_task(  # noqa: PLR0913 — the brain's two hooks, a terminal's gate, the wait.
-    dirs: dict[Path, int | None], logs: Path, link_pictures: Callable[[], object] | None = None,
-    release_pictures: Callable[[], object] | None = None, *,
-    swept_elsewhere: Callable[[], bool] | None = None,
-    sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
-) -> None:
-    """At boot and then every hour; a failed pass waits for the next one.
-
-    ``link_pictures`` runs once, first (ADR 0255): the files must be there to be linked.
-    ``release_pictures`` runs after each sweep: the copies of the pictures it removed go too.
-    ``swept_elsewhere`` (ADR 0334) is a terminal's: while it says a daemon holds this root, the
-    daemon sweeps it and the pass is skipped; it is asked again at every pass.
-    """
-    if link_pictures is not None:
-        try:
-            await asyncio.to_thread(link_pictures)
-        except (OSError, sqlite3.Error):
-            LOGGER.exception("pictures: could not link earlier records to their files")
-    while True:
-        try:
-            if swept_elsewhere is None or not await asyncio.to_thread(swept_elsewhere):
-                await asyncio.to_thread(_sweep_data, dirs, logs)
-                if release_pictures is not None:
-                    await asyncio.to_thread(release_pictures)
-        except OSError:
-            LOGGER.exception("retention: sweep failed; next try in an hour")
-        await sleep(_DATA_SWEEP_INTERVAL_S)
-
-
-def _clear_media(runtime: JarvisRuntime) -> int:
-    """``POST /inherent/data/clear-recordings``: the files and the pictures' notes go (ADR 0223)."""
-    gone = data.clear_files(list(_media_dirs(runtime)))
-    if runtime.memory is not None:
-        picture_notes.delete_all(runtime.memory.db_path)
-    _release_pictures(runtime)
-    return gone
-
-
-def _export_data(runtime: JarvisRuntime) -> Path:
-    """``GET /inherent/data/export``: conversations, event log, settings, recordings, screenshots.
-
-    Keys, sign-ins, the browser profile and the speech models stay out.
-    """
-    paths = runtime.runtime_paths
-    memory = [runtime.memory.db_path] if runtime.memory is not None else []
-    return data.export_zip(
-        paths.root,
-        [*memory, paths.event_log, paths.settings, paths.root / SETTINGS_FILE,
-         *_media_dirs(runtime)],
-    )
-
-
-def _erase_data(runtime: JarvisRuntime) -> None:
-    """``POST /inherent/data/erase``: everything goes at the next boot, which starts now.
-
-    The uploaded copies of his pictures go first: the files that name them go at that boot.
-    """
-    _release_pictures(runtime, everything=True)
-    data.request_erase(runtime.runtime_paths.root)
-    _restart_soon()
 
 
 async def _refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:

@@ -41,6 +41,7 @@ from jarvis.decision.tier0 import load_tier0_table
 from jarvis.deployment import bootstrap_runtime, data
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _live_lines, _record_words, _shares_line, inherent_loop
+from jarvis.runtime.daemon import retention
 from jarvis.shared import llm_io_log
 from jarvis.state import attachments as attachments_module
 from jarvis.state.attachments import (
@@ -653,8 +654,8 @@ def test_attachments_age_out_with_the_recordings_and_clear_with_them(tmp_path: P
     stamp = time.time() - 31 * 86400
     os.utime(aged, (stamp, stamp))
 
-    assert inherent_loop._media_dirs(runtime)[store.directory] == 30  # noqa: SLF001
-    inherent_loop._sweep_data(inherent_loop._media_dirs(runtime), tmp_path / "logs")  # noqa: SLF001
+    assert retention.media_dirs(runtime)[store.directory] == 30
+    retention.sweep_data(retention.media_dirs(runtime), tmp_path / "logs")
 
     assert store.get(old.id) is None
     assert store.get(new.id) is not None
@@ -663,7 +664,7 @@ def test_attachments_age_out_with_the_recordings_and_clear_with_them(tmp_path: P
         ({"attachments": {"retention_days": None}}, None),
         ({"attachments": {}}, 30),
     ):
-        assert inherent_loop._media_dirs(_runtime(tmp_path / str(days), config))[  # noqa: SLF001
+        assert retention.media_dirs(_runtime(tmp_path / str(days), config))[
             Attachments(tmp_path / str(days) / "artifacts" / ATTACHMENTS_DIRNAME).directory
         ] == days
     assert data.clear_files([store.directory]) == 1

@@ -17,7 +17,7 @@ from contextlib import closing
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -27,12 +27,15 @@ from pypdf import PdfWriter
 from jarvis.deployment import data
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.tools import Tool, ToolContext, ToolError
-from jarvis.runtime import JarvisRuntime, inherent_loop
+from jarvis.runtime.daemon import retention
 from jarvis.state import imports, meaning
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log
 from jarvis.state.import_parsers import boc_text
 from jarvis.state.memory_db import open_memory_db
+
+if TYPE_CHECKING:
+    from jarvis.runtime import JarvisRuntime
 
 CLAUDE = Path(__file__).resolve().parents[1] / "fixtures" / "imports" / "claude_export"
 VANCOUVER = ZoneInfo("America/Vancouver")
@@ -345,7 +348,7 @@ def test_the_imports_directory_is_outside_sweep_clear_and_export(tmp_path: Path)
         attachments=None, memory=None,
     ))
 
-    media = inherent_loop._media_dirs(runtime)  # noqa: SLF001
+    media = retention.media_dirs(runtime)
     data.clear_files(list(media))
 
     kept = tmp_path / imports.IMPORTS_DIRNAME

@@ -28,6 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import retention
 from jarvis.state.device_tokens import (
     device_name_for_token,
     device_token_matches,
@@ -255,7 +256,7 @@ def test_the_runtime_places_the_archive_and_keeps_it_out_of_sweep_clear_and_expo
         root / LIFELOG_DIRNAME, DEFAULT_MIN_FREE_BYTES,
     )
     assert (moved.directory, moved.min_free_bytes) == (tmp_path / "ssd" / "lifelog", 1024**3)
-    media = inherent_loop._media_dirs(_runtime(root, {}))  # noqa: SLF001
+    media = retention.media_dirs(_runtime(root, {}))
     assert not any(
         d == default.directory or default.directory in d.parents for d in media
     )
