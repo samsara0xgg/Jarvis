@@ -6,13 +6,13 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
-from jarvis.runtime import _build_vision_client, _wave5_input_flags
+from jarvis.runtime import _build_vision_client
 from jarvis.state.event_log import open_event_log
 
 if TYPE_CHECKING:
@@ -95,41 +95,3 @@ def test_boot_vision_requests_are_thread_local_and_accounted(
     assert len({p["llm_request_id"] for p in payloads}) == 2
     assert all(p["kind"] == "vision" and p["disposition"] == "completed" for p in payloads)
     conn.close()
-
-
-@pytest.mark.parametrize(
-    "missing",
-    [
-        "transactional_event_append",
-        "lifecycle_terminal_cas",
-        "confirmation_dispatch_outbox",
-        "exactly_once_cost_accounting",
-        "response_run_lifecycle",
-        "enabled",
-    ],
-)
-def test_pump_requires_every_concurrency_dependency(missing: str) -> None:
-    """Each missing safety dependency disables concurrent production decisions."""
-    realtime: dict[str, Any] = {
-        "enabled": True,
-        "concurrency_safety": dict.fromkeys(
-            [
-                "transactional_event_append",
-                "lifecycle_terminal_cas",
-                "confirmation_dispatch_outbox",
-                "exactly_once_cost_accounting",
-            ],
-            True,
-        ),
-        "response": {"response_run_lifecycle": True},
-        "input": {"intent_pump": True},
-    }
-    assert _wave5_input_flags({"realtime": realtime}).intent_pump
-    for block in (
-        realtime,
-        realtime["concurrency_safety"],
-        realtime["response"],
-    ):
-        if missing in block:
-            block[missing] = False
-    assert not _wave5_input_flags({"realtime": realtime}).intent_pump

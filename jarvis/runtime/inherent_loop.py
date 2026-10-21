@@ -16,15 +16,16 @@ and rewired for Step 2 (three-envelope ``open`` / ``append`` x N /
    :func:`jarvis.surface.inherent_server.create_app`.
 4. Spawn two background async tasks:
 
-   - :func:`_user_intent_watcher` — polls the Event Log for new
-     ``surface.user_intent`` rows; for each, drives the turn via
-     :func:`jarvis.runtime.drive_turn` on a worker thread with
-     ``streaming_enabled=True`` so :func:`render_response` emits the
-     ADR-0003 Step 2 three-event Inherent taxonomy
-     (``surface.response_open`` + ``surface.response_chunk`` x N) before
-     the audit ``surface.response_emitted``. ADR-0003 D9 F3: an uncaught
-     exception from ``drive_turn`` is caught, logged, and recorded as a
-     ``turn.failed`` audit event; the watcher keeps polling.
+   - :func:`_intent_pump_watcher` — polls the Event Log for new
+     ``surface.user_intent`` and ``utterance.received`` rows, claims each
+     once, and drives the turn via :func:`jarvis.runtime.drive_turn` on a
+     worker thread with ``streaming_enabled=True`` so
+     :func:`render_response` emits the ADR-0003 Step 2 three-event
+     Inherent taxonomy (``surface.response_open`` +
+     ``surface.response_chunk`` x N) before the audit
+     ``surface.response_emitted``. ADR-0003 D9 F3: an uncaught exception
+     from ``drive_turn`` is caught, logged, and recorded as a
+     ``turn.failed`` audit event; the pump keeps polling.
    - :func:`_response_watcher` — polls the Event Log for new
      ``surface.response_{open,chunk,emitted}`` rows in ONE cursor
      (``WHERE type IN (...) ORDER BY id``) and dispatches to
@@ -1099,14 +1100,14 @@ def _drive_turn_in_worker_thread(
     return None
 
 
-# Event types the inherent-loop user-intent watcher folds into ONE
+# Event types the intent pump folds into ONE
 # cursor. Per ADR-0005 §5.1 "Important wiring detail", both the
 # keyboard surface (``surface.user_intent`` from cli/__main__.py and
 # the daemon /inherent/submit handler) AND the voice surface
 # (``utterance.received`` from the ASR pipeline / wake listener) drive
 # a turn through the same composition-root code path. The downstream
 # ``drive_turn`` (and thus L3 / L4 / L5) is identical regardless of
-# which event type arrived — the watcher passes the event verbatim as
+# which event type arrived — the pump passes the event verbatim as
 # ``user_intent_event`` to :func:`drive_turn`, which reads
 # ``payload["transcript"]`` and ``payload["turn_id"]`` (both schemas
 # require these keys per the L2 event registry).
@@ -1114,90 +1115,6 @@ _USER_INTENT_TRIGGER_TYPES: tuple[str, ...] = (
     "surface.user_intent",
     "utterance.received",
 )
-
-
-async def _user_intent_watcher(
-    runtime: JarvisRuntime,
-    *,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
-) -> None:
-    """Background task: drive a turn for each new user-intent row.
-
-    Folds two event types into one cursor — ADR-0005 §5.1
-    "Important wiring detail":
-
-    - ``surface.user_intent``  — keyboard surface (cli/__main__.py
-      and the daemon /inherent/submit HTTP handler).
-    - ``utterance.received``    — voice surface (the ASR pipeline /
-      wake listener emits this after VAD-segmented audio is
-      normalized).
-
-    Both events carry ``transcript`` + ``turn_id`` in their payload
-    (event-log registry requirement), so :func:`drive_turn` accepts
-    either verbatim as ``user_intent_event``; the L3 / L4 / L5
-    downstream is identical regardless of input channel.
-
-    Lifecycle:
-
-    1. Anchor the cursor at ``MAX(events.id)`` so events that landed
-       before the watcher started are not replayed.
-    2. Poll every ``poll_interval_s`` seconds. For each new row of
-       either trigger type, dispatch
-       :func:`_drive_turn_in_worker_thread` via
-       :func:`asyncio.to_thread`. The thread offload is mandatory:
-       ``drive_turn`` blocks on :func:`jarvis.runtime._wait_for_next_trigger`'s
-       ``time.sleep`` polling, which would freeze the event loop.
-    3. On uncaught :class:`Exception` (ADR-0003 D9 F3): log a warning
-       and emit ``turn.failed`` on the watcher's own ``runtime.conn``
-       (event-loop thread). Continue iterating; the watcher does not
-       crash on a single bad turn.
-
-    Cancellation: re-raises :class:`asyncio.CancelledError` so
-    :func:`serve_inherent`'s ``finally`` block can ``await`` the
-    cancellation cleanly.
-    """
-    after_id = _latest_id(runtime.conn)
-    LOGGER.info("user_intent_watcher started (after_id=%d)", after_id)
-    try:
-        while True:
-            new_events = _fetch_events_after(
-                runtime.conn,
-                after_id=after_id,
-                event_types=_USER_INTENT_TRIGGER_TYPES,
-            )
-            for row_id, ev in new_events:
-                after_id = max(after_id, row_id)
-                try:
-                    await asyncio.to_thread(
-                        _drive_turn_in_worker_thread,
-                        runtime,
-                        user_intent_event=ev,
-                    )
-                except ResponseCancelledError:
-                    # ADR-0008 D10: a cancelled response is an operator
-                    # decision, not a turn failure — it must not become
-                    # turn.failed. The `continue` advances to the next
-                    # trigger row, which is the right granularity.
-                    LOGGER.info(
-                        "user_intent_watcher: response cancelled for turn_id=%s",
-                        ev.payload.get("turn_id"),
-                    )
-                    continue
-                except Exception as exc:  # noqa: BLE001 — ADR-0003 D9 F3 catch-all: log + audit + continue.
-                    LOGGER.warning(
-                        "user_intent_watcher: drive_turn raised on turn_id=%s: %r",
-                        ev.payload.get("turn_id"),
-                        exc,
-                    )
-                    _emit_turn_failed(
-                        runtime.conn,
-                        intent_event=ev,
-                        exc=exc,
-                    )
-            await asyncio.sleep(poll_interval_s)
-    except asyncio.CancelledError:
-        LOGGER.info("user_intent_watcher cancelled")
-        raise
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1620,7 +1537,7 @@ async def _response_watcher(
     F5 failure modes (per-client send failure isolation + no-clients
     warning).
 
-    Cursor anchoring mirrors :func:`_user_intent_watcher` — events
+    Cursor anchoring mirrors :func:`_intent_pump_watcher` — events
     that landed BEFORE this watcher started are not replayed.
 
     Channel filter (ADR-0009 D4): a turn whose ``surface.response_open``
@@ -5138,7 +5055,7 @@ async def _system_trigger_watcher(
 ) -> None:
     """Background task: drive a system turn for each ORPHAN terminal event.
 
-    Same cursor pattern as :func:`_user_intent_watcher`, with two
+    Same cursor pattern as :func:`_intent_pump_watcher`, with two
     differences that are the whole point of ADR-0009 D4:
 
     1. **The cursor anchor is supplied, not computed.** The caller
@@ -7481,7 +7398,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        this module owns the lifecycle, ``log_level="warning"`` to
        avoid uvicorn's per-request stdout noise drowning the watcher
        logs).
-    6. Spawn :func:`_user_intent_watcher` and :func:`_response_watcher`
+    6. Spawn the intent pump and :func:`_response_watcher`
        as background tasks BEFORE :meth:`uvicorn.Server.serve` so an
        early intent post is observed; add :func:`_tts_watcher` when
        a TTS pipeline was constructed. ``_response_watcher`` polls all
@@ -8451,35 +8368,27 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
         server = _Server(config)
 
-        if runtime.input_flags.intent_pump:
-            # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen
-            # inside the startup barrier, before any task exists that could
-            # race them.
-            watchers.extend(
-                await _start_intent_pump(
-                    runtime,
-                    poll_interval_s=poll_interval_s,
-                    queue_capacity=_positive_int(
-                        runtime.config,
-                        section="input",
-                        key="queue_capacity",
-                        fallback=8,
-                    ),
-                    max_concurrent_turns=_positive_int(
-                        runtime.config,
-                        section="input",
-                        key="max_concurrent_turns",
-                        fallback=2,
-                    ),
+        # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen
+        # inside the startup barrier, before any task exists that could
+        # race them.
+        watchers.extend(
+            await _start_intent_pump(
+                runtime,
+                poll_interval_s=poll_interval_s,
+                queue_capacity=_positive_int(
+                    runtime.config,
+                    section="input",
+                    key="queue_capacity",
+                    fallback=8,
                 ),
-            )
-        else:
-            watchers.append(
-                asyncio.create_task(
-                    _user_intent_watcher(runtime, poll_interval_s=poll_interval_s),
-                    name="user_intent_watcher",
+                max_concurrent_turns=_positive_int(
+                    runtime.config,
+                    section="input",
+                    key="max_concurrent_turns",
+                    fallback=2,
                 ),
-            )
+            ),
+        )
         watchers.append(
             asyncio.create_task(
                 _response_watcher(

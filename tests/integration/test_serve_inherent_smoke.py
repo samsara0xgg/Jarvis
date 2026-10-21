@@ -8,7 +8,7 @@ ADR-0003 § Step 2 D11 (``docs/adr/0003-inherent-text.md``) for the
 canonical envelope mapping.
 
 Marked ``live_llm`` because :func:`jarvis.runtime.drive_turn` issues a
-real LLM call inside the daemon's user_intent_watcher thread; the test
+real LLM call inside the daemon's intent pump thread; the test
 is skipped by default in CI without credentials.
 """
 

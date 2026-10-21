@@ -209,10 +209,8 @@ def _build_overlay(root: Path) -> Path:
     ``routine_streaming`` plus ``speak_from_segments`` make a ``kind="stream"``
     answer start speaking from its first permitted segment, which is what
     opens the kill window (``surface.playback_started`` before the response
-    terminal). ``realtime.single_audio_ingress`` and
-    ``realtime.input.intent_pump`` stay at their shipped values: the first
-    would open the microphone, the second would re-adopt the killed turn's
-    input and answer it a second time, and neither is the contract under test.
+    terminal). ``realtime.single_audio_ingress`` stays at its shipped value:
+    it would open the microphone, which is not the contract under test.
     """
     source = repo_root()
     overlay = root / "overlay"

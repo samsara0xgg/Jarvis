@@ -39,7 +39,6 @@ from jarvis.runtime.inherent_loop import (
     _system_trigger_watcher,
 )
 from jarvis.shared import lang
-from jarvis.shared.realtime import Wave5InputFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
@@ -63,7 +62,7 @@ if TYPE_CHECKING:
 
 
 def _make_runtime(tmp_path: Path) -> JarvisRuntime:
-    """Build a minimal runtime with a real Event Log and the pump switched on."""
+    """Build a minimal runtime with a real Event Log."""
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
     return JarvisRuntime(
@@ -74,7 +73,6 @@ def _make_runtime(tmp_path: Path) -> JarvisRuntime:
         lifecycle=ActionLifecycle(),
         llm_client=None,  # type: ignore[arg-type]
         system_prompt="",
-        input_flags=Wave5InputFlags(intent_pump=True),
     )
 
 
@@ -231,6 +229,53 @@ def test_post_adoption_intents_are_claimed_and_driven_once(runtime: JarvisRuntim
     asyncio.run(_body())
 
     assert sorted(recorder.driven) == ["T-a", "T-b"]
+    assert _count(runtime.conn, "turn.started") == 2
+
+
+def test_a_spoken_utterance_is_claimed_and_driven_like_a_typed_intent(
+    runtime: JarvisRuntime,
+) -> None:
+    """ADR-0005 §5.1: ``utterance.received`` drives a turn through the same claim."""
+    recorder = _Recorder()
+
+    async def _body() -> None:
+        with patch.object(
+            inherent_loop,
+            "_drive_turn_in_worker_thread",
+            side_effect=recorder,
+        ):
+            tasks = await _start_intent_pump(
+                runtime,
+                poll_interval_s=0.001,
+                queue_capacity=8,
+                max_concurrent_turns=2,
+            )
+            try:
+                await asyncio.sleep(0.02)
+                _emit_intent(runtime, "T-typed", "打字")
+                emit_event(
+                    runtime.conn,
+                    type="utterance.received",
+                    payload={
+                        "transcript": "你好",
+                        "turn_id": "T-spoken",
+                        "channel": "inherent_wake",
+                        "language": "zh-CN",
+                    },
+                    correlation={"turn_id": "T-spoken"},
+                )
+                for _ in range(400):
+                    if len(recorder.driven) >= 2:
+                        break
+                    await asyncio.sleep(0.005)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(_body())
+
+    assert sorted(recorder.driven) == ["T-spoken", "T-typed"]
     assert _count(runtime.conn, "turn.started") == 2
 
 

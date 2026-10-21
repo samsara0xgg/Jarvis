@@ -241,7 +241,6 @@ from jarvis.shared.realtime import (
     AlreadyTerminal,
     Wave1FeatureFlags,
     Wave4ResponseFlags,
-    Wave5InputFlags,
     new_response_id,
 )
 from jarvis.shared.realtime_trace import (
@@ -683,7 +682,6 @@ class JarvisRuntime:
     # ADR 0164 — the one decision-snapshot cache every turn thread shares by reference
     # (internally locked, like ``committed_event_bus``); None folds the whole log per read.
     decision_state: DecisionStateCache | None = None
-    input_flags: Wave5InputFlags = field(default_factory=Wave5InputFlags)
     # ADR-0006 §5 — the two voice artifact locations, already resolved against
     # the config file's own directory. The daemon reads these instead of
     # interpreting a relative module constant against its working directory;
@@ -1257,50 +1255,6 @@ def _downgraded_response_activation(
 def _wave4_response_flags(config: Mapping[str, Any]) -> Wave4ResponseFlags:
     """Return the validated Wave-4A flags for ``config``."""
     return _wave4_response_activation(config).flags
-
-
-def _wave5_input_flags(config: Mapping[str, Any]) -> Wave5InputFlags:
-    """Resolve the ADR-0008 D8 intent-pump switch.
-
-    Parallel decisions require authorization consumption, isolated response
-    clients and atomic accounting as well as input claims.
-    """
-    realtime = config.get("realtime")
-    if not isinstance(realtime, Mapping):
-        return Wave5InputFlags()
-    input_raw = realtime.get("input")
-    requested = Wave5InputFlags.from_mapping(
-        input_raw if isinstance(input_raw, Mapping) else None,
-    )
-    if requested.all_disabled:
-        return requested
-    wave1 = _wave1_feature_flags(config)
-    reason: str | None = None
-    if realtime.get("enabled") is not True:
-        reason = "realtime_parent_disabled"
-    elif not all((
-        wave1.transactional_event_append,
-        wave1.lifecycle_terminal_cas,
-        wave1.confirmation_dispatch_outbox,
-        wave1.exactly_once_cost_accounting,
-    )):
-        reason = "concurrency_safety_disabled"
-    elif not _wave4_response_flags(config).response_run_lifecycle:
-        reason = "response_lifecycle_disabled"
-    if reason is None:
-        return requested
-    LOGGER.warning(
-        "realtime.input downgraded (%s): requested "
-        "intent_pump=True; effective intent_pump=False",
-        reason,
-    )
-    record_realtime_trace(
-        "input_activation_downgraded",
-        reason=reason,
-    )
-    return Wave5InputFlags()
-
-
 
 
 def _positive_int(
@@ -3602,7 +3556,6 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             partial(open_runtime_event_log, paths.event_log),
             is_idle=partial(_daemon_idle, paths.event_log),
         ),
-        input_flags=_wave5_input_flags(full_config),
         surrogate_route=_surrogate_route(full_config, config_path, jev_log),
         memory=memory,
         session=session,

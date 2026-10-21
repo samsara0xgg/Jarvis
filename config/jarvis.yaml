@@ -1424,17 +1424,14 @@ realtime:
       enabled: false
       at: 0.95
       groups: [calendar_todo_read, mail_read, web_search, comms_write]
-  # ADR-0008 D8 (Wave 5).  intent_pump replaces the daemon's "poll one
-  # event, await its whole turn" watcher with a durable-claim queue: each
+  # ADR-0008 D8 (Wave 5).  The intent pump is a durable-claim queue: each
   # trigger is claimed once by an idempotent turn.started, the cursor
   # advances only after the claim is accepted, and a bounded pool drives
-  # the turns.  First activation records one consumer.adopted watermark, so
+  # the turns.  First boot records one consumer.adopted watermark, so
   # historical utterances are never replayed.  queue_capacity full means
   # backpressure — the watcher leaves the row unconsumed rather than
-  # dropping a durable utterance.  ADR-0008 §6 names no key for this block;
-  # the shape mirrors realtime.actions.
+  # dropping a durable utterance.
   input:
-    intent_pump: true
     queue_capacity: 8
     max_concurrent_turns: 2
   # GPT-Live (ADR-0016).  `enabled`

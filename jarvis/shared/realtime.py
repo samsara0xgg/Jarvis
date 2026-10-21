@@ -171,31 +171,6 @@ class Wave4ResponseFlags:
 
 
 @dataclass(frozen=True)
-class Wave5InputFlags:
-    """Production adoption switch for ADR-0008 D8's intent pump (Step 4).
-
-    ``intent_pump`` replaces the daemon's "poll one event, await its whole
-    turn" watcher with a durable-claim queue: the watcher claims each trigger
-    with one idempotent ``turn.started``, advances its cursor only after that
-    claim is accepted, and hands the turn to a bounded pool. Off, the daemon
-    keeps the serial watcher and its startup ``MAX(events.id)`` anchor.
-    """
-
-    intent_pump: bool = False
-
-    @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None) -> Wave5InputFlags:
-        """Parse exact booleans, treating absent values as disabled."""
-        values = {} if raw is None else raw
-        return cls(intent_pump=values.get("intent_pump") is True)
-
-    @property
-    def all_disabled(self) -> bool:
-        """Return whether the runtime must retain the serial watcher."""
-        return not self.intent_pump
-
-
-@dataclass(frozen=True)
 class ResponseInterruptPolicy:
     """ADR-0008 D10 frozen interrupt contract, issued when a run starts.
 
@@ -480,7 +455,6 @@ __all__ = [
     "TerminalOutcome",
     "Wave1FeatureFlags",
     "Wave4ResponseFlags",
-    "Wave5InputFlags",
     "new_log_epoch",
     "new_response_id",
     "stable_authorization_identity",
