@@ -115,6 +115,8 @@ class Step:
     ref: str
     date: str = ""
     why: str = ""
+    event: str = ""
+    """The event uid of the write, which an undo names (ADR 0319)."""
 
 
 @dataclass
@@ -260,14 +262,14 @@ def fold(conn: sqlite3.Connection) -> dict[str, Thing]:
         if event.type == "thing.added":
             one = _from_payload(payload)
             one.added_ms, one.added_by = event.ts_epoch_ms, str(payload["by"])
-            one.history = (_step(event.ts_epoch_ms, "added", payload),)
+            one.history = (_step(event.ts_epoch_ms, "added", payload, event.event_uid),)
             found[one.thing_id] = one
         elif (held := found.get(str(payload.get("thing_id")))) is not None:
-            _apply(held, event.type, payload, event.ts_epoch_ms)
+            _apply(held, event.type, payload, event.ts_epoch_ms, event.event_uid)
     return found
 
 
-def _apply(one: Thing, event_type: str, payload: Mapping[str, Any], at: int) -> None:
+def _apply(one: Thing, event_type: str, payload: Mapping[str, Any], at: int, uid: str) -> None:
     """One write after ``added``, applied to the thing it is about."""
     date_key = str(payload.get("date") or "")
     what = "changed"
@@ -302,13 +304,13 @@ def _apply(one: Thing, event_type: str, payload: Mapping[str, Any], at: int) -> 
             one.date_states.pop(date_key, None)
         else:
             one.state, one.closed_ms = "open", None
-    one.history += (_step(at, what, payload),)
+    one.history += (_step(at, what, payload, uid),)
 
 
-def _step(at: int, what: str, payload: Mapping[str, Any]) -> Step:
+def _step(at: int, what: str, payload: Mapping[str, Any], uid: str) -> Step:
     return Step(
         at, what, str(payload["by"]), str(payload["evidence"]), str(payload.get("ref") or ""),
-        str(payload.get("date") or ""), str(payload.get("why") or ""),
+        str(payload.get("date") or ""), str(payload.get("why") or ""), uid,
     )
 
 

@@ -1293,3 +1293,46 @@ def test_the_default_registry_gives_schedule_the_ring_lead_and_his_zone(tmp_path
         assert things.find(conn, out["id"]).start_at.endswith(("-07:00", "-08:00"))
     finally:
         conn.close()
+
+
+def _receipt(world: _World, out: Mapping[str, Any]) -> dict[str, Any]:
+    """The receipt the dispatcher kept for the call that answered ``out`` (ADR 0319)."""
+    (receipt,) = [
+        event.payload["receipt"]
+        for event in iter_events_of_types(world.conn, ("action.result_observed",))
+        if event.correlation.get("action_id") == out["_action_id"]
+    ]
+    return cast("dict[str, Any]", receipt)
+
+
+def test_each_call_leaves_its_own_receipt(make: Maker) -> None:
+    """A read says what it covered; a write names the thing and the event an undo reverses."""
+    world = make()
+    made = world.call(action="add", what="Dentist", kind="go", at="2026-10-13 15:00")
+    added = _receipt(world, made)
+    (one,) = things.fold(world.conn).values()
+    assert added == {
+        "status": "done", "reads_only": False, "line": made["summary"],
+        "object": f"thing:{made['id']}", "undo": one.history[-1].event,
+    }
+    assert one.history[-1].event
+
+    again = world.call(action="add", what="Dentist", kind="go", at="2026-10-13 15:00")
+    assert "undo" not in _receipt(world, again)  # kept already: nothing written, nothing to undo
+
+    moved = world.call(action="move", id=made["id"], at="2026-10-13 16:00")
+    (one,) = things.fold(world.conn).values()
+    assert _receipt(world, moved)["undo"] == one.history[-1].event != added["undo"]
+
+    for n in range(9):
+        world.call(action="add", what=f"Errand {n}")
+    read = world.call()
+    receipt = _receipt(world, read)
+    assert (receipt["status"], receipt["reads_only"]) == ("done", True)
+    assert "object" not in receipt
+    assert "undo" not in receipt
+    assert receipt["covered"] == {
+        "sources": ["ledger of his things", "pinned bus"],
+        "window": receipt["covered"]["window"], "shown": 8, "more": 2, "how_more": "page=2",
+    }
+    assert receipt["line"].endswith(": 8 shown, 2 more (page=2)")

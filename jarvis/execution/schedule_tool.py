@@ -17,8 +17,9 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution import speakable
-from jarvis.execution.tools import Tool, ToolError, _get_running_event_uid
+from jarvis.execution.tools import Receipted, Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.receipts import Covered, Receipt
 from jarvis.state import commitments, departures, things
 from jarvis.state.daily_contract import encoded
 
@@ -331,23 +332,31 @@ class _Schedule:
         self._before_min = before_min
         self._clock = clock.now
 
-    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        """Do what ``action`` says (reading when it is left out) and answer in one sentence."""
+    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Do what ``action`` says (reading when it is left out) and answer in one sentence.
+
+        The receipt (ADR 0319) of a read says what it covered; of a write, the thing as its
+        object and, when the call wrote, the event an undo reverses.
+        """
         action = self._checked(args)
         now = self._clock()
         if action == "read":
             return self._read(args, ctx, now)
+        before = {things.short_id(one): len(one.history) for one in things.fold(ctx.conn).values()}
         if action == "add":
-            return self._add(args, ctx, now)
-        one = self._find(ctx, _text(args, "id"), action)
-        args = self._dated(args, one, action)
-        if action == "move":
-            return self._move(one, args, ctx, now)
-        if action == "confirm":
-            return self._confirm(one, args, ctx, now)
-        if action == "reopen":
-            return self._reopen(one, args, ctx, now)
-        return self._close(action, one, args, ctx, now)
+            answer = self._add(args, ctx, now)
+        else:
+            one = self._find(ctx, _text(args, "id"), action)
+            args = self._dated(args, one, action)
+            if action == "move":
+                answer = self._move(one, args, ctx, now)
+            elif action == "confirm":
+                answer = self._confirm(one, args, ctx, now)
+            elif action == "reopen":
+                answer = self._reopen(one, args, ctx, now)
+            else:
+                answer = self._close(action, one, args, ctx, now)
+        return _written(answer, ctx, before.get(str(answer["id"]), 0))
 
     @staticmethod
     def _checked(args: Mapping[str, Any]) -> str:
@@ -769,7 +778,7 @@ class _Schedule:
 
     # --- the read -------------------------------------------------------------------------
 
-    def _read(self, args: Mapping[str, Any], ctx: ToolContext, now: datetime) -> dict[str, Any]:
+    def _read(self, args: Mapping[str, Any], ctx: ToolContext, now: datetime) -> Receipted:
         """The ledger for a window (or a search): what is on, overdue, due and without a time."""
         query = _text(args, "what")
         page = speakable.page_number(args.get("page"), "schedule", "items 9-16")
@@ -786,13 +795,14 @@ class _Schedule:
         if page > 1 and not shown:
             end = max(1, (len(rows) - 1) // _PAGE + 1)
             summary = f"There is no page {page} of {window.label}; its items end at page {end}."
-            return {"summary": summary, "items": [], "more": False}
+            return _covered({"summary": summary, "items": [], "more": False}, window, 0, 0, page)
         self._ring_fields(ctx, shown, now)
         answer = {
             "summary": self._summary(window, query, groups, page, shown, now),
             "items": [row.fields for row in shown], "more": page * _PAGE < len(rows),
         }
-        return _fit(answer)
+        later = max(0, len(rows) - page * _PAGE)
+        return _covered(_fit(answer), window, len(shown), later, page)
 
     def _ring_fields(self, ctx: ToolContext, shown: list[_Row], now: datetime) -> None:
         """Give each shown time of a thing its rings, from the ledger's one account of them.
@@ -1036,6 +1046,37 @@ class _Schedule:
         return f"{window.label}: {counts}.{lead}{no_time}{unsure_words}{paged}"
 
 
+_SOURCES: Final = ("ledger of his things", "pinned bus")
+"""What a read looks at: the open things and their times, and the bus he pinned."""
+
+
+def _covered(
+    answer: dict[str, Any], window: _Window, shown: int, more: int, page: int,
+) -> Receipted:
+    """A read with its receipt: the window it read, how many rows it showed and left for later."""
+    how = f"page={page + 1}" if more else ""
+    line = f"read {window.label}: {shown} shown" + (f", {more} more ({how})" if more else "")
+    return Receipted(answer, Receipt(
+        "done", reads_only=True, line=line,
+        covered=Covered(_SOURCES, window.label, shown, more, how),
+    ))
+
+
+def _written(answer: dict[str, Any], ctx: ToolContext, steps_before: int) -> Receipted:
+    """A write with its receipt: the thing it is about, and the event an undo reverses.
+
+    ``steps_before`` is how many writes the thing had before the call; when it has no more, the
+    call wrote nothing (it was kept already, or confirmed already) and there is nothing to undo.
+    A call that wrote twice (a move that also changed its place or rings) names its last write.
+    """
+    short = str(answer["id"])
+    one = next(one for one in things.fold(ctx.conn).values() if things.short_id(one) == short)
+    undo = one.history[-1].event or None if len(one.history) > steps_before else None
+    return Receipted(answer, Receipt(
+        "done", reads_only=False, line=str(answer["summary"]), object=f"thing:{short}", undo=undo,
+    ))
+
+
 def build_schedule_tool(before_min: int) -> tuple[Tool, ...]:
     """``schedule`` over the ledger of his things, in the context clock's zone.
 
@@ -1043,7 +1084,7 @@ def build_schedule_tool(before_min: int) -> tuple[Tool, ...]:
     (``commitments.remind_before_min``, the lead the mail poller uses).
     """
 
-    def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    def run(args: Mapping[str, Any], ctx: ToolContext) -> Receipted:
         return _Schedule(ctx.clock, before_min).run(args, ctx)
 
     return (
