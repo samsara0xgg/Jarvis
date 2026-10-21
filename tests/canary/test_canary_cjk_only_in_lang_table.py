@@ -65,6 +65,12 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     ),
     # A shut Dashboard opens only when his words ask to see something.
     "jarvis/execution/dashboard_tool.py": frozenset({"_ASKS_TO_SEE"}),
+    # The day resolver (ADR 0356) reads his words for a day or a stretch in either language, and
+    # its error names the forms it reads.
+    "jarvis/execution/speakable.py": frozenset(
+        {"_ZH_DIGITS", "_ZH_WEEKDAY", "_REL", "_ZH_REL", "_SPAN_SPLIT", "_ZH_TODAY", "_zh_number",
+         "_one", "_back_only", "resolve_when"}
+    ),
     # The browser guard (ADR 0059) reads a page's own labels, Chinese sites included.
     "jarvis/execution/browser_guard.py": frozenset({"_MONEY", "_CARD", "_SECRET"}),
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
