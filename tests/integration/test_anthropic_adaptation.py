@@ -215,8 +215,11 @@ SEARCH_DESCRIPTION = (
 )
 
 
-def test_on_anthropics_host_the_deferred_tools_wait_for_its_own_search() -> None:
+def test_on_anthropics_host_the_deferred_tools_wait_for_its_own_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """ADR 0287: every tool goes, deferred ones marked; its search stands where tool_search stood."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
     search = _tool("tool_search")
     search.description = SEARCH_DESCRIPTION
     surface = [
@@ -238,10 +241,11 @@ def test_on_anthropics_host_the_deferred_tools_wait_for_its_own_search() -> None
         {"name": "mcp__gmail__gmail_send", "description": "mcp__gmail__gmail_send d",
          "input_schema": {"type": "object"}, "defer_loading": True},
     ]
-    body = request_fields(
-        messages=[{"role": "user", "content": "x"}], system=SplitSystem("STABLE", "VAR"),
-        tools=menu, max_tokens=9, reasoning_effort="low",
-    )
+    peer, _ = asyncio.run(_run(
+        _preset(""), _reply({"type": "text", "text": "ok"}, stop="end_turn"),
+        messages=[{"role": "user", "content": "x"}], system=SplitSystem("STABLE", "VAR"), tools=menu,
+    ))
+    body = peer.body
     assert body["tools"] == [
         {"name": "mail", "description": "mail d", "input_schema": {"type": "object"}},
         {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"},
@@ -558,21 +562,79 @@ def test_the_replay_script_rebuilds_the_history_and_streams_it_through_the_clien
     assert out["first_token_s"] is not None
 
 
-def test_a_split_system_prompt_caches_its_stable_prefix_as_a_block_of_its_own() -> None:
-    """The stable block carries the breakpoint, the route's rules follow it without one."""
-    system = SplitSystem("base\n\n[About the user]\n- Allen", "spoken rules")
-    body = request_fields(
-        messages=[{"role": "user", "content": "x"}], system=system, tools=None, max_tokens=9,
-        reasoning_effort=None,
+_NOTE = "# Working on this model\n- Call the tool."
+_SYSTEM_TEXT = "base\n\n[About the user]\n- Allen"
+
+
+def _sent_by(entry: str, system: str, note: str) -> dict[str, Any]:
+    """The JSON body of the one HTTP request ``entry`` puts on the wire for ``system``.
+
+    The real Anthropic SDK runs over an ``httpx`` transport that records the request and answers
+    with a scripted reply; nothing goes further than that transport.
+    """
+    import anthropic  # noqa: PLC0415
+    import httpx  # noqa: PLC0415
+
+    sent: list[dict[str, Any]] = []
+    message = {"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+               "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+               "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}}
+    frames = _reply({"type": "text", "text": "ok"}, stop="end_turn")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        if sent[-1].get("stream"):
+            sse = "".join(f"event: {f['type']}\ndata: {json.dumps(f)}\n\n" for f in frames)
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse.encode())
+        return httpx.Response(200, json=message)
+
+    client = _preset("", **({"system_note": note} if note else {}))
+    messages = [{"role": "user", "content": "x"}]
+    if entry == "stream_events":
+        peer, _ = asyncio.run(_run(client, frames, messages=messages, system=system))
+        return peer.body
+    client._anthropic_client = anthropic.Anthropic(  # noqa: SLF001 — the transport under the real SDK
+        api_key="synthetic", http_client=httpx.Client(transport=httpx.MockTransport(respond)),
     )
+    if entry == "chat":
+        client.chat(messages=messages, system=system)
+    else:
+        list(client.chat_stream(messages=messages, system=system))
+    return sent[0]
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_stream", "stream_events"])
+@pytest.mark.parametrize("note", ["", _NOTE])
+def test_a_split_system_prompt_caches_its_stable_prefix_as_a_block_of_its_own(
+    entry: str, note: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any entry, with or without a preset note: the stable block alone carries the breakpoint.
+
+    The route's rules follow it without one, and the note joins the rules, not the prefix.
+    """
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    system = SplitSystem(_SYSTEM_TEXT, "spoken rules")
+    body = _sent_by(entry, system, note)
     assert body["system"] == [
-        {"type": "text", "text": "base\n\n[About the user]\n- Allen",
-         "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": "\n\nspoken rules"},
+        {"type": "text", "text": _SYSTEM_TEXT, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "\n\nspoken rules" + (f"\n\n{_NOTE}" if note else "")},
     ]
-    assert "".join(b["text"] for b in body["system"]) == str(system)
-    assert body["cache_control"] == {"type": "ephemeral"}
-    assert request_fields(
-        messages=[{"role": "user", "content": "x"}], system="S", tools=None, max_tokens=9,
-        reasoning_effort=None,
-    )["system"] == "S"
+    # What the model reads is what a plain-string client reads.
+    assert "".join(b["text"] for b in body["system"]) == f"{system}" + (f"\n\n{_NOTE}" if note else "")
+
+
+@pytest.mark.parametrize("entry", ["chat", "chat_stream", "stream_events"])
+def test_a_preset_note_alone_is_the_rules_after_a_stable_prefix_and_a_plain_prompt_stays_plain(
+    entry: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A split prompt with no rules of its own still keeps its prefix block; a plain string is untouched."""
+    monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
+    assert _sent_by(entry, SplitSystem(_SYSTEM_TEXT), _NOTE)["system"] == [
+        {"type": "text", "text": _SYSTEM_TEXT, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": f"\n\n{_NOTE}"},
+    ]
+    assert _sent_by(entry, SplitSystem(_SYSTEM_TEXT), "")["system"] == [
+        {"type": "text", "text": _SYSTEM_TEXT, "cache_control": {"type": "ephemeral"}},
+    ]
+    assert _sent_by(entry, "S", "")["system"] == "S"
+    assert _sent_by(entry, "S", _NOTE)["system"] == f"S\n\n{_NOTE}"

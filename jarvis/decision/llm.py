@@ -47,6 +47,7 @@ from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared import llm_io_log
 from jarvis.shared.realtime import LLMUsageStatus
 from jarvis.shared.realtime_trace import record_realtime_trace
+from jarvis.shared.system_prompt import SplitSystem
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
@@ -271,6 +272,22 @@ def _empty_metadata() -> dict[str, Any]:
         "cache_read_tokens": None,
         "cache_write_tokens": None,
     }
+
+
+def _with_note(system: str, note: str) -> str:
+    """``system`` followed by a preset's ``note`` (which opens with its blank line).
+
+    ``str +`` would hand back a plain string and lose the split: a split prompt keeps its stable
+    prefix, so the Anthropic request still puts its cache breakpoint there, and the note joins
+    the part that varies.
+    """
+    if not note:
+        return system
+    if not isinstance(system, SplitSystem):
+        return system + note
+    return SplitSystem(
+        system.stable, system.variable + note if system.variable else note.removeprefix("\n\n"),
+    )
 
 
 def _create_message(client: Any, kwargs: dict[str, Any]) -> Any:  # noqa: ANN401 — SDK types
@@ -602,7 +619,7 @@ class LLMClient:
         Returns:
             A frozen :class:`ChatResult`.
         """
-        system += self._system_note
+        system = _with_note(system, self._system_note)
         # Reset per-call metadata so stale values don't bleed across turns.
         self._last_metadata = _empty_metadata()
         self._last_finish_reason = None
@@ -683,7 +700,7 @@ class LLMClient:
         Yields :class:`ChatStreamChunk` instances; the final has
         ``is_final=True`` and a non-None ``finish_reason``.
         """
-        system += self._system_note
+        system = _with_note(system, self._system_note)
         if self._provider == "openai":
             return self._chat_stream_openai(messages=messages, system=system, tools=tools)
         return self._chat_stream_anthropic(messages=messages, system=system, tools=tools)
@@ -709,7 +726,7 @@ class LLMClient:
         (:meth:`request_tier`).
         """
         request_id = _new_llm_request_id()
-        system += self._system_note
+        system = _with_note(system, self._system_note)
         responses = responses and self._provider == "openai"
         # Capture everything before returning the lazy source. Later preset or
         # caller-message mutations cannot redirect this request or its payload.
