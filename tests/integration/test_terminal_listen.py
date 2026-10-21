@@ -12,7 +12,8 @@ the speech provider, the recognizer, the microphone):
 - the answer goes to the terminal that heard the utterance, not the one connected last;
 - the brain's drop and stop commands reach the terminal that holds the playback, and the
   terminal's executor runs them against its media actor;
-- a microphone that cannot be opened leaves a terminal that still speaks, and is not retried;
+- a microphone that cannot be opened leaves a terminal that still speaks and says why (that it
+  is opened again is test_terminal_listen_retry's);
 - a listening terminal runs a daemon's device watch and power observer beside its capture
   session, hooked to one power coordinator, and ends them with it; one that cannot listen runs
   neither; the reSpeaker's saved look is kept on the board while any terminal runs, and a pick
@@ -683,13 +684,11 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Said once and clearly, not retried, and the answer in the brain's log is still played."""
-    starts: list[int] = []
+    """Said clearly with its reason, and the answer in the brain's log is still played."""
     wav = _say(tmp_path / "unused.wav")
 
     class Busy(voice_backend.FileReplayBackend):
         def start(self, **kwargs: Any) -> voice_backend.BackendStartResult:  # noqa: ANN401
-            starts.append(kwargs["stream_epoch"])
             return voice_backend.BackendStartResult(
                 status=voice_backend.BackendStartStatus.OWNER_BUSY,
                 stream_epoch=kwargs["stream_epoch"],
@@ -698,7 +697,7 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
                 attempt_id=kwargs["attempt_id"],
             )
 
-    power = heard_session(monkeypatch, lambda: Busy(wav))
+    heard_session(monkeypatch, lambda: Busy(wav))
     token = pair_device(tmp_path, "macbook")
     brain = VoiceBrain(tmp_path)
     brain.hub.listening = BrainListening(brain.hub, brain.hub.events)  # type: ignore[arg-type]
@@ -716,19 +715,16 @@ def test_a_microphone_that_cannot_be_opened_leaves_a_terminal_that_still_speaks(
             lambda: any("does not listen" in r.getMessage() for r in caplog.records),
             "the terminal never said it could not listen",
         )
-        time.sleep(1.5)  # a hot loop would have tried again by now
         append_answer(brain.log, "T1", "Still speaking.")
         wait_for(
             lambda: "surface.playback_completed" in logged_types(brain.log),
             "a terminal without a microphone did not speak",
         )
         assert terminal.error is None
-    assert len(starts) == 1
-    assert power.installs == 0  # no capture session, so no power hooks to carry
     refusal = [r for r in caplog.records if "does not listen" in r.getMessage()]
-    assert len(refusal) == 1
-    assert refusal[0].levelno == logging.ERROR
-    assert "stop that one and restart" in refusal[0].getMessage()
+    assert refusal
+    assert refusal[0].levelno >= logging.WARNING
+    assert "another process holds the microphone" in refusal[0].getMessage()
     assert "utterance.received" not in logged_types(brain.log)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import threading
@@ -10,8 +11,10 @@ from typing import TYPE_CHECKING, Any
 
 from jarvis.runtime import inherent_loop
 from jarvis.runtime import terminal as terminal_module
+from jarvis.runtime.terminal import _Speaking, _Speech, _start_speech, _stop_speech
 from jarvis.state.device_tokens import pair_device
 from jarvis.surface import voice_asr, voice_audio, voice_backend, voice_tts, voice_wake
+from jarvis.surface.terminal_events import EventOutbox
 from jarvis.surface.terminal_listen import BrainListening, ListenHooks
 from jarvis.surface.terminal_speaker import Journal, VoiceLink
 from tests.support.terminal import (
@@ -25,7 +28,7 @@ from tests.support.terminal import (
 from tests.support.voice_input import EnergySession
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
     from pathlib import Path
 
     import pytest
@@ -238,3 +241,18 @@ def heard_session(
     monkeypatch.setattr(voice_tts, "_open_output_stream", open_stream(pull=True))
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     return power
+
+
+@contextlib.asynccontextmanager
+async def terminal_without_a_brain(root: Path) -> AsyncIterator[tuple[_Speaking, _Speech]]:
+    """A voice terminal's media actor as ``_run`` builds it, with no brain on its link.
+
+    What a capture session is started from: the test starts it (or the wait before its next
+    try) and ends it, on this loop, with the injected clock it passes.
+    """
+    speaking = _Speaking(LISTEN_CONFIG, root)
+    speech = _start_speech(speaking, EventOutbox())
+    try:
+        yield speaking, speech
+    finally:
+        await _stop_speech(speech)

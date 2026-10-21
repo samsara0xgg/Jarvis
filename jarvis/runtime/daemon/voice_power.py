@@ -38,6 +38,27 @@ class VoiceInputOwners:
 
 
 @dataclasses.dataclass(frozen=True)
+class SessionAttempt:
+    """What starting the capture session came to: the session, or why there is none.
+
+    ``attempted`` is whether a device open was tried; a timed-out foreign open may still own
+    the microphone. ``definitively_closed`` is whether the failed attempt's close confirmed it
+    free: only then may a second input owner follow (ADR 0006). ``why`` names the cause for the
+    log: the capability's state and reason once the device was reached, else what failed.
+    """
+
+    session: voice_session.DuplexVoiceSession | None
+    attempted: bool = False
+    definitively_closed: bool = True
+    why: str = ""
+
+    @property
+    def retryable(self) -> bool:
+        """Whether another attempt is safe: a device open failed and its close was confirmed."""
+        return self.session is None and self.attempted and self.definitively_closed
+
+
+@dataclasses.dataclass(frozen=True)
 class VoicePowerTransition:
     """Auditable ordered input/output transition at the power boundary."""
 

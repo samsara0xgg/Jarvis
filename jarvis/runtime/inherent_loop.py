@@ -212,6 +212,7 @@ from jarvis.runtime.daemon.routes import settings_notice_deps as _settings_notic
 from jarvis.runtime.daemon.routes import shipments as _shipments
 from jarvis.runtime.daemon.routes import turn_end_asks as _turn_end_asks
 from jarvis.runtime.daemon.sweep import start_sweep_control_plane as _start_sweep_control_plane
+from jarvis.runtime.daemon.voice_power import SessionAttempt as _SessionAttempt
 from jarvis.runtime.daemon.voice_power import VoiceInputOwners as _VoiceInputOwners
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator as _VoicePowerCoordinator
 from jarvis.runtime.daemon.voice_wiring import ListeningHost
@@ -1532,13 +1533,15 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     set_quiet: Callable[[str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
     ports: _ListenPorts | None = None,
-) -> tuple[voice_session.DuplexVoiceSession | None, bool]:
-    """Start Wave 3 or return whether a device-open attempt was made.
+) -> _SessionAttempt:
+    """Start Wave 3, or say what came of the attempt.
 
     ``attempted=True`` means a device open was tried, even if startup failed: a
-    timed-out foreign PortAudio open may still own the default microphone.
+    timed-out foreign PortAudio open may still own the default microphone, unless
+    ``definitively_closed`` says the close confirmed it free.
     ``attempted=False`` means no input owner was touched, so a failed
     prerequisite/config validation leaves the boot with text and PTT upload only.
+    ``why`` names the cause for the caller's log.
 
     ``ports`` is how the session reaches the turn: by default direct calls into ``runtime``,
     which must then be a daemon's :class:`JarvisRuntime`; a voice terminal (ADR 0172) passes
@@ -1547,7 +1550,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     knobs = _VoiceKnobs() if voice is None else voice
     activation = _single_ingress_activation(runtime, tts=tts)
     if not activation.requested:
-        return None, False
+        return _SessionAttempt(None, why=activation.reason)
     if not activation.capable:
         LOGGER.warning(
             "realtime.single_audio_ingress validation failed (%s); "
@@ -1560,7 +1563,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             fallback="text_ptt_upload",
             input_owner_attempted=False,
         )
-        return None, False
+        return _SessionAttempt(None, why=activation.reason)
     ingress_config = activation.ingress_config
     session_config = activation.session_config
     if ingress_config is None or session_config is None:
@@ -1570,26 +1573,26 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     try:
         # Model construction/download happens before PortAudio owns the mic.
         engine.start()
-    except Exception:
+    except Exception as exc:
         LOGGER.exception(
             "realtime.single_audio_ingress wake model failed before device open; "
             "text and PTT upload only.",
         )
         with contextlib.suppress(Exception):
             engine.close()
-        return None, False
+        return _SessionAttempt(None, why=f"the wake model did not start: {exc!r}")
     try:
         # Wave 3 requires final-ASR model/stream readiness before the sole
         # device open. Feature-off and validation downgrade never execute it.
         pipeline.prewarm_input_model()
-    except Exception:
+    except Exception as exc:
         LOGGER.exception(
             "realtime.single_audio_ingress SenseVoice prewarm failed before "
             "device open; text and PTT upload only.",
         )
         with contextlib.suppress(Exception):
             engine.close()
-        return None, False
+        return _SessionAttempt(None, why=f"the recognizer did not warm up: {exc!r}")
 
     def _capability_changed(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
         log = LOGGER.info if snapshot.local_capture_available else LOGGER.warning
@@ -1720,7 +1723,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             pause_speaking=tts.pause_speaking if tts is not None else None,
             ambient=listen.ambient,
         )
-    except Exception:
+    except Exception as exc:
         LOGGER.exception(
             "realtime.single_audio_ingress construction failed before device open; "
             "text and PTT upload only.",
@@ -1730,10 +1733,10 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
                 ingress.close()
         with contextlib.suppress(Exception):
             engine.close()
-        return None, False
+        return _SessionAttempt(None, why=f"the capture session was not built: {exc!r}")
     try:
         start_result = session.start()
-    except voice_session.VoiceSessionPreDeviceError:
+    except voice_session.VoiceSessionPreDeviceError as exc:
         LOGGER.exception(
             "realtime.single_audio_ingress Silero prepare failed before device "
             "open; text and PTT upload only.",
@@ -1746,32 +1749,46 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             fallback="text_ptt_upload",
             input_owner_attempted=False,
         )
-        return None, False
-    except Exception:
+        return _SessionAttempt(None, why=f"the session was not prepared: {exc!r}")
+    except Exception as exc:
         LOGGER.exception(
             "realtime.single_audio_ingress failed after device ownership attempt; preserving "
             "text/PTT-upload only and refusing a second input owner.",
         )
-        with contextlib.suppress(Exception):
-            session.close()
-        return None, True
+        return _SessionAttempt(
+            None, attempted=True, definitively_closed=_closed_for_good(session),
+            why=f"the session's start raised: {exc!r}",
+        )
+    capability = start_result.ingress.capability
     if not start_result.started:
         LOGGER.warning(
             "realtime.single_audio_ingress start failed state=%s reason=%s; "
             "preserving text/PTT-upload only and refusing a second input owner.",
-            start_result.ingress.capability.state.value,
-            start_result.ingress.capability.reason,
+            capability.state.value,
+            capability.reason,
         )
         close_result = session.close()
         record_realtime_trace(
             "audio_input_activation_downgraded",
-            reason=start_result.ingress.capability.reason,
+            reason=capability.reason,
             fallback="text_ptt_upload",
             input_owner_attempted=True,
             definitively_closed=close_result.definitively_closed,
         )
-        return None, True
-    return session, True
+        return _SessionAttempt(
+            None, attempted=True, definitively_closed=close_result.definitively_closed,
+            why=f"state={capability.state.value} reason={capability.reason}",
+        )
+    return _SessionAttempt(session, attempted=True)
+
+
+def _closed_for_good(session: voice_session.DuplexVoiceSession) -> bool:
+    """Close a session whose start failed; whether that confirmed the microphone free."""
+    try:
+        return session.close().definitively_closed
+    except Exception:
+        LOGGER.exception("realtime.single_audio_ingress close after a failed start also failed")
+        return False
 
 
 def _input_owner_reason(
@@ -1814,7 +1831,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
 ) -> _VoiceInputOwners:
     """Start the single audio ingress, or leave the boot with text and PTT upload only."""
     knobs = _VoiceKnobs() if voice is None else voice
-    duplex_session, attempted = _spawn_single_ingress_session(
+    attempt = _spawn_single_ingress_session(
         runtime=runtime,
         pipeline=pipeline,
         broadcaster=broadcaster,
@@ -1828,13 +1845,13 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
         echo_canceller=echo_canceller,
     )
     return _VoiceInputOwners(
-        duplex_session=duplex_session,
-        single_ingress_attempted=attempted,
+        duplex_session=attempt.session,
+        single_ingress_attempted=attempt.attempted,
         reason=_input_owner_reason(
             runtime,
             tts=tts,
-            duplex_session=duplex_session,
-            attempted=attempted,
+            duplex_session=attempt.session,
+            attempted=attempt.attempted,
         ),
     )
 

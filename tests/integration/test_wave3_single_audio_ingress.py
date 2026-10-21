@@ -3934,7 +3934,8 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
         silero_path=MagicMock(),
         tts=wave2,
     )
-    assert disabled == (None, False)
+    assert disabled.session is None
+    assert not disabled.attempted
     pipeline.prewarm_input_model.assert_not_called()
 
     runtime.config = {
@@ -3960,7 +3961,9 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
             silero_path=MagicMock(),
             tts=wave2,
         )
-    assert failed == (None, False)
+    assert failed.session is None
+    assert not failed.attempted
+    assert "injected prewarm" in failed.why
     pipeline.prewarm_input_model.assert_called_once_with()
     engine.start.assert_called_once_with()
     engine.close.assert_called_once_with()
@@ -4047,7 +4050,9 @@ def test_a_microphone_that_does_not_open_while_portaudio_starts_up_stuck_logs_wh
         wait_until_true(
             lambda: "reason=shutdown_complete" in err.read_text(encoding="utf-8"),
         )
-    assert attempt == (None, True)
+    assert attempt.session is None
+    assert attempt.retryable  # its close was confirmed: nothing holds the microphone
+    assert attempt.why == "state=close_uncertain reason=injected_open_uncertain"
     lines = err.read_text(encoding="utf-8").splitlines()
     failed = "state=close_uncertain reason=injected_open_uncertain"
     stopped = "state=stopped epoch=None reason=shutdown_complete"
@@ -4109,7 +4114,9 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
                     silero_path=MagicMock(),
                     tts=wave2,
                 )
-    assert result == (None, False)
+    assert result.session is None
+    assert not result.attempted
+    assert not result.retryable
     assert backend.start_count == 0
     engine.close.assert_called_once_with()
     wait_until_true(
@@ -4175,7 +4182,7 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     with patch.object(
         inherent_loop,
         "_spawn_single_ingress_session",
-        return_value=(None, True),
+        return_value=voice_power.SessionAttempt(None, attempted=True),
     ):
         attempted_uncertain = inherent_loop._spawn_voice_input_owners(
             runtime=runtime,

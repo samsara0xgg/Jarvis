@@ -89,7 +89,12 @@ from jarvis.runtime import (
     _work_state_timezone,
     audio_output,
 )
-from jarvis.runtime.daemon.devices import start_audio_device_watch, watch_board
+from jarvis.runtime.daemon.devices import (
+    MIC_RETRY_S,
+    start_audio_device_watch,
+    start_device_change_watch,
+    watch_board,
+)
 from jarvis.runtime.daemon.observers import (
     agents_port,
     claude_sessions_read,
@@ -101,7 +106,7 @@ from jarvis.runtime.daemon.observers import (
 from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
 from jarvis.runtime.daemon.restart import restart_soon
 from jarvis.runtime.daemon.retention import data_sweep_task
-from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator
+from jarvis.runtime.daemon.voice_power import SessionAttempt, VoicePowerCoordinator
 from jarvis.runtime.daemon.voice_wiring import (
     ListenPorts,
     build_echo_canceller,
@@ -172,6 +177,7 @@ if TYPE_CHECKING:
     from jarvis.shared.realtime import Wave4ResponseFlags
     from jarvis.surface import voice_aec, voice_session
     from jarvis.surface.voice_media import StreamingTTSPipeline
+    from jarvis.surface.voice_pipeline import VoicePipeline
 
 LOGGER = logging.getLogger("jarvis.runtime.terminal")
 
@@ -550,6 +556,37 @@ class _QuietBroadcaster(InherentBroadcaster):
         LOGGER.debug("op %s %s", op, sorted(payload))
 
 
+class _Retry:
+    """The wait between two tries to open a deaf terminal's microphone, and what cuts it short."""
+
+    def __init__(self) -> None:
+        self._now = asyncio.Event()
+        self._over = asyncio.Event()
+
+    def now(self) -> None:
+        """The Mac woke, or the devices to be on changed: try again without the rest of the wait."""
+        self._now.set()
+
+    def end(self) -> None:
+        """This terminal is ending: no further tries, and a wait in progress is over."""
+        self._over.set()
+
+    async def wait(self, seconds: float, sleep: Callable[[float], Awaitable[object]]) -> bool:
+        """Wait out ``seconds`` or until :meth:`now`; ``False`` once the terminal is ending."""
+        waits = [
+            asyncio.ensure_future(sleep(seconds)),
+            asyncio.ensure_future(self._now.wait()),
+            asyncio.ensure_future(self._over.wait()),
+        ]
+        try:
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for pending in waits:
+                pending.cancel()
+        self._now.clear()
+        return not self._over.is_set()
+
+
 @dataclass
 class _Speech:
     """What a terminal that was asked to speak holds; empty when it is mute."""
@@ -563,6 +600,7 @@ class _Speech:
     listening: asyncio.Task[_Listening | None] | None = None
     ducker: SystemAudioDucker | None = None
     """The output leases of the lines playing; the night run waits for them."""
+    retry: _Retry = field(default_factory=_Retry)
 
 
 @dataclass
@@ -573,6 +611,15 @@ class _MacWatch:
     devices: asyncio.Task[None]  # ADR 0054: re-reads the devices when they change
     power: PowerObserver | None  # ADR-0009 D3: none if the system would not register it
     log: sqlite3.Connection  # the log the observer writes ``mac.sleeping`` / ``mac.awake`` to
+
+
+@dataclass
+class _RetryWatch:
+    """What cuts a deaf terminal's wait short: the system's wake and a change of the devices."""
+
+    devices: asyncio.Task[None]
+    power: PowerObserver | None
+    log: sqlite3.Connection  # the night log the observer writes ``mac.sleeping`` / ``mac.awake`` to
 
 
 @dataclass
@@ -661,13 +708,17 @@ def _terminal_ports(turn: LinkedTurn) -> ListenPorts:
 
 async def _start_listening(
     speaking: _Speaking, speech: _Speech, page: Settings | None = None,
+    *, sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
 ) -> _Listening | None:
     """Run the capture session of this terminal, or say why this terminal only speaks.
 
-    One attempt, no retry: a microphone another process holds stays held, and trying again in
-    a loop would only fight it. The words the owner says reach the brain as utterances and
-    every callback that touches brain state is a call over the link (ADR 0172). Models load
-    and the device opens on a worker thread, so the link comes up meanwhile.
+    A microphone that did not open, and whose failed open was confirmed closed, is opened
+    again: after 2 s, 5 s, 15 s and then every 30 s (ADR 0054), at once when the Mac wakes or
+    the devices to be on change. A close that was not confirmed means the failed open may still
+    hold the microphone, and a second owner beside it would fight it (ADR 0006): there is no
+    second open, and the log says so (ADR 0340). The words the owner says reach the brain as
+    utterances and every callback that touches brain state is a call over the link (ADR 0172).
+    Models load and the device opens on a worker thread, so the link comes up meanwhile.
     """
     link, pipeline, seat = speech.link, speech.pipeline, speech.seat
     if link is None or pipeline is None or seat is None or speech.broadcaster is None:
@@ -677,6 +728,71 @@ async def _start_listening(
         LOGGER.info("listening is off in this terminal's config "
                     "(realtime.single_audio_ingress.enabled); it speaks only")
         return None
+    models = _voice_models(speaking)
+    if models is None:
+        return None
+    sensevoice_dir, silero_path, voiceprint_model = models
+    turn, controls = LinkedTurn(link), LinkedControls(link)
+    ports = _terminal_ports(turn)
+    broadcaster = speech.broadcaster
+
+    @functools.cache
+    def recognizer() -> VoicePipeline:  # once: a try that fails closes the session, not the models
+        return build_voice_pipeline(
+            seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
+            emit=turn.emit_utterance, voiceprint_model=voiceprint_model,
+        )
+
+    def build() -> tuple[SessionAttempt, Dictation | None]:
+        recognizer_pipeline = recognizer()
+        attempt = _spawn_single_ingress_session(
+            runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
+            silero_path=silero_path, tts=pipeline, voice=voice_knobs(config),
+            mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
+            conversation=controls.conversation, set_conversation=controls.set_conversation,
+            set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
+        )
+        session = attempt.session
+        if session is None:
+            return attempt, None
+        # ADR 0183: dictation records on this microphone and hears with this machine's
+        # recognizer; its polish, which needs a model key, is the brain's.
+        vocab_path = Path(str((config.get("dictation") or {}).get("vocab_path", "")))
+        try:
+            dictation = build_dictation(
+                config=config, ingress=session.ingress, silero_path=silero_path,
+                transcribe=recognizer_pipeline.transcribe,
+                polisher=RemotePolish(link, functools.partial(load_vocab, vocab_path)),
+                vocab_path=vocab_path,
+                recordings=(
+                    seat.memory.audio_dir
+                    if seat.memory is not None and seat.memory.retain_audio else None
+                ),
+            )
+        except Exception:
+            session.close()  # nothing else holds this session: do not leave it open and unheard
+            raise
+        return attempt, dictation
+
+    opened = await _open_with_retries(speaking, speech.retry, build, sleep)
+    if opened is None:
+        return None
+    session, dictation, tries = opened
+    controls.on_surface_exit = session.dismiss
+    controls.start()
+    LOGGER.info(
+        "this terminal listens%s: wake, VAD and ASR run here; utterances go to the brain",
+        "" if tries == 0 else f" (the microphone opened on try {tries + 1})",
+    )
+    return _Listening(
+        session, controls, dictation, _start_lifelog(speaking, session),
+        _start_mac_watch(speaking, pipeline, session, page),
+    )
+
+
+def _voice_models(speaking: _Speaking) -> tuple[Path, Path, Path] | None:
+    """The SenseVoice, Silero and voiceprint model paths, or ``None`` (said) when one is missing."""
+    config = speaking.config
     config_dir = speaking.config_dir or speaking.runtime_root
     sensevoice_dir = _realtime_model_path(
         config, key="sensevoice_dir", config_dir=config_dir,
@@ -697,59 +813,92 @@ async def _start_listening(
         LOGGER.error("voice models are missing, so this terminal speaks but does not listen: %s",
                      "; ".join(missing))
         return None
-    turn, controls = LinkedTurn(link), LinkedControls(link)
-    ports = _terminal_ports(turn)
-    broadcaster = speech.broadcaster
+    return sensevoice_dir, silero_path, voiceprint_model
 
-    def build() -> tuple[voice_session.DuplexVoiceSession | None, bool, Dictation | None]:
-        recognizer_pipeline = build_voice_pipeline(
-            seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
-            emit=turn.emit_utterance, voiceprint_model=voiceprint_model,
-        )
-        session, attempted = _spawn_single_ingress_session(
-            runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
-            silero_path=silero_path, tts=pipeline, voice=voice_knobs(config),
-            mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
-            conversation=controls.conversation, set_conversation=controls.set_conversation,
-            set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
-        )
-        if session is None:
-            return None, attempted, None
-        # ADR 0183: dictation records on this microphone and hears with this machine's
-        # recognizer; its polish, which needs a model key, is the brain's.
-        vocab_path = Path(str((config.get("dictation") or {}).get("vocab_path", "")))
-        dictation = build_dictation(
-            config=config, ingress=session.ingress, silero_path=silero_path,
-            transcribe=recognizer_pipeline.transcribe,
-            polisher=RemotePolish(link, functools.partial(load_vocab, vocab_path)),
-            vocab_path=vocab_path,
-            recordings=(
-                seat.memory.audio_dir
-                if seat.memory is not None and seat.memory.retain_audio else None
-            ),
-        )
-        return session, attempted, dictation
 
+async def _open_with_retries(
+    speaking: _Speaking, retry: _Retry,
+    build: Callable[[], tuple[SessionAttempt, Dictation | None]],
+    sleep: Callable[[float], Awaitable[object]],
+) -> tuple[voice_session.DuplexVoiceSession, Dictation | None, int] | None:
+    """Build the capture session, again after each wait while the failed open was confirmed closed.
+
+    The session, its dictation and the number of tries that failed before it; ``None`` when
+    there will be no session: the cause is logged, or the terminal is ending.
+    """
+    tries = 0
+    watch: _RetryWatch | None = None
     try:
-        session, attempted, dictation = await asyncio.to_thread(build)
-    except Exception:
-        LOGGER.exception("the capture session could not be built; this terminal speaks only")
-        return None
-    if session is None:
+        while True:
+            try:
+                attempt, dictation = await asyncio.to_thread(build)
+            except Exception:
+                LOGGER.exception(
+                    "the capture session could not be built; this terminal speaks only",
+                )
+                return None
+            if attempt.session is not None:
+                return attempt.session, dictation, tries
+            if not attempt.retryable:
+                _say_deaf_for_good(attempt)
+                return None
+            delay = MIC_RETRY_S[min(tries, len(MIC_RETRY_S) - 1)]
+            LOGGER.warning(
+                "the microphone could not be opened (%s), so this terminal speaks but does not "
+                "listen. If another process holds it (the Mac's own jarvis daemon), stop that "
+                "one. Trying again in %.0f s, and when the Mac wakes or the devices change.",
+                attempt.why, delay,
+            )
+            if watch is None:
+                watch = _start_retry_watch(speaking, retry)
+            if not await retry.wait(delay, sleep):
+                return None
+            tries += 1
+    finally:
+        if watch is not None:
+            await _stop_retry_watch(watch)
+
+
+def _say_deaf_for_good(attempt: SessionAttempt) -> None:
+    """Why this terminal speaks only and tries nothing more: the log carries the cause."""
+    if attempt.attempted and not attempt.definitively_closed:
         LOGGER.error(
-            "the microphone could not be %s, so this terminal speaks but does not listen. If "
-            "another process holds it (the Mac's own jarvis daemon), stop that one and restart "
-            "this terminal; it does not try again by itself.",
-            "opened" if attempted else "prepared (see the warning above)",
+            "the microphone could not be opened (%s), and the close of that open was not "
+            "confirmed, so it may still be held: a second open could fight it. This terminal "
+            "speaks but does not listen, and does not try again; restart it.",
+            attempt.why,
         )
-        return None
-    controls.on_surface_exit = session.dismiss
-    controls.start()
-    LOGGER.info("this terminal listens: wake, VAD and ASR run here; utterances go to the brain")
-    return _Listening(
-        session, controls, dictation, _start_lifelog(speaking, session),
-        _start_mac_watch(speaking, pipeline, session, page),
+    else:
+        LOGGER.error(
+            "the capture session could not be prepared (%s), so this terminal speaks but does "
+            "not listen; it does not try again by itself.",
+            attempt.why,
+        )
+
+
+def _start_retry_watch(speaking: _Speaking, retry: _Retry) -> _RetryWatch:
+    """The two things a daemon's watch acts on, here only cutting a deaf terminal's wait short.
+
+    The Mac's wake from the power observer (writing its two events to this terminal's night
+    log, as a listening terminal's does) and a change of the devices to be on (ADR 0054). Runs
+    on the loop: the observer marshals its callbacks onto it, and the log belongs to its thread.
+    """
+    devices = start_device_change_watch(speaking.config, retry.now)
+    devices.add_done_callback(log_watcher_death)
+    log = open_event_log(speaking.runtime_root / NIGHT_LOG)
+    power = _install_power_observer_or_degrade(
+        log, asyncio.get_running_loop(),
+        before_sleep_hook=lambda: None, on_wake_hook=retry.now,
     )
+    return _RetryWatch(devices, power, log)
+
+
+async def _stop_retry_watch(watch: _RetryWatch) -> None:
+    """Power observer first, as a listening terminal's watch ends: a wake now finds it shut."""
+    _shutdown_power_observer(watch.power)
+    watch.devices.cancel()
+    await asyncio.gather(watch.devices, return_exceptions=True)
+    watch.log.close()
 
 
 def _start_mac_watch(
@@ -816,10 +965,15 @@ def _start_lifelog(
     return recorder
 
 
-async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
-    """End the capture session: the microphone first, then the brain's switches."""
+async def _stop_listening(task: asyncio.Task[_Listening | None] | None, retry: _Retry) -> None:
+    """End the capture session: the microphone first, then the brain's switches.
+
+    A wait for the next try ends at once; a try in flight is given the time to finish, and a
+    session it opened is closed.
+    """
     if task is None:
         return
+    retry.end()
     await asyncio.wait({task}, timeout=_LISTEN_CLOSE_S)
     if not task.done() or task.cancelled() or task.exception() is not None:
         return
@@ -835,7 +989,7 @@ async def _stop_listening(task: asyncio.Task[_Listening | None] | None) -> None:
 
 
 async def _stop_speech(speech: _Speech) -> None:
-    await _stop_listening(speech.listening)
+    await _stop_listening(speech.listening, speech.retry)
     for task in speech.tasks:
         task.cancel()
     if speech.tasks:

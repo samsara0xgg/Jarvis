@@ -14,7 +14,7 @@ from jarvis.runtime.daemon.voice_power import SUSPENDED, VoicePowerCoordinator
 from jarvis.surface import respeaker_board, voice_audio, voice_backend, voice_live
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from jarvis.runtime.settings import Settings
 
@@ -123,6 +123,29 @@ async def watch_audio_devices(
             retries += 1
 
 
+async def watch_device_changes(
+    choice: AudioDeviceChoice,
+    changed: Callable[[], object],
+    *,
+    sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+) -> None:
+    """Call ``changed`` when the devices Jarvis should be on change (ADR 0054).
+
+    The look :func:`watch_audio_devices` takes (:func:`device_targets` against the ones seen
+    last), for a caller with no capture session to re-read: a terminal whose microphone did not
+    open tries it again. It ends at once where CoreAudio lists no devices.
+    """
+    seen = await asyncio.to_thread(device_targets, choice)
+    if seen is None:
+        return
+    while True:
+        await sleep(AUDIO_DEVICE_POLL_S)
+        now = await asyncio.to_thread(device_targets, choice)
+        if now is not None and now != seen:
+            seen = now
+            changed()
+
+
 # ADR 0147: how often the reSpeaker's saved lights and levels are checked; a replug, a reboot
 # and the board's boot animation (rainbow, then direction after 2 s) put its factory values back.
 BOARD_POLL_S = 2.0
@@ -155,11 +178,28 @@ def start_audio_device_watch(
     live_voice: voice_live.LiveVoice | None,
 ) -> asyncio.Task[None]:
     """Start the ADR 0054 device watch and let the Settings page's device picks reach it."""
-    realtime = config.get("realtime") or {}
-    choice = AudioDeviceChoice(realtime.get("input_device"), realtime.get("output_device"))
+    choice = _configured_devices(config)
     if settings is not None:
         settings.on_devices = choice.choose
     return asyncio.create_task(
         watch_audio_devices(coordinator, ingress, live_voice, choice),
         name="audio_device_watch",
     )
+
+
+def start_device_change_watch(
+    config: Mapping[str, Any],
+    changed: Callable[[], object],
+    *,
+    sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+) -> asyncio.Task[None]:
+    """Start :func:`watch_device_changes` over the devices this machine's config picks."""
+    return asyncio.create_task(
+        watch_device_changes(_configured_devices(config), changed, sleep=sleep),
+        name="audio_device_change_watch",
+    )
+
+
+def _configured_devices(config: Mapping[str, Any]) -> AudioDeviceChoice:
+    realtime = config.get("realtime") or {}
+    return AudioDeviceChoice(realtime.get("input_device"), realtime.get("output_device"))
