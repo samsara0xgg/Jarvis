@@ -74,6 +74,8 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   of at most 12 hours, per device, as rows of :data:`jarvis.state.phone_track.COLUMNS`
 - ``GET /inherent/footprint?date=`` — ADR 0323; his footprint of a day: the long stays and the
   outings between them, each with its route, stops, distance, speeds and heart rate
+- ``GET /inherent/usage/history?from_ms=&to_ms=`` — the readings of Claude's and Codex's quota
+  windows over a span of at most 48 hours, for the day pane's quota bar
 """
 
 from __future__ import annotations
@@ -705,6 +707,10 @@ class InherentDeps:
     # raises ``ValueError`` for a bad pair. Loop thread (it emits). Desktop
     # credential only, like the reset.
     usage_record_balance: Callable[[str, float], object] | None = None
+    # The day pane's quota bar: ``(from_ms, to_ms)`` -> how Claude's and Codex's windows stood over
+    # that span, a small SQLite fold on the loop thread. The route checks the span; ``None``
+    # leaves ``GET /inherent/usage/history`` unregistered.
+    usage_history: Callable[[int, int], dict[str, Any]] | None = None
     # ADR 0023: the current-work-state record. ``work_state_read`` is a small
     # SQLite fold on the loop thread; ``work_state_refresh`` awaits the
     # runtime's single-flight analysis (off-thread) and answers the same
@@ -1613,6 +1619,42 @@ def _register_footprint_route(app: FastAPI, deps: InherentDeps) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return await _home_call(footprint_read(wanted))
+
+
+_USAGE_HISTORY_MAX_SPAN_MS: Final = 48 * 60 * 60 * 1000
+"""The longest span one ``GET /inherent/usage/history`` covers: a day's bar with room to spare."""
+_EPOCH_MS: Final = re.compile(r"[0-9]{1,15}")
+"""A span's end as a query string carries it: whole, not negative, and no wider than a log holds."""
+
+
+def _span_bound(name: str, raw: str | None) -> int:
+    """One end of a span asked for in epoch milliseconds; a 400 that names it when it is not one."""
+    if raw is None or _EPOCH_MS.fullmatch(raw) is None:
+        raise HTTPException(status_code=400, detail=f"{name} must be whole epoch milliseconds")
+    return int(raw)
+
+
+def _register_usage_history_route(app: FastAPI, deps: InherentDeps) -> None:
+    """``GET /inherent/usage/history``, the quota windows over a span; open as the day is."""
+    if deps.usage_history is None:
+        return
+    usage_history = deps.usage_history
+
+    @app.get("/inherent/usage/history")
+    async def usage_history_span(
+        from_ms: str | None = None, to_ms: str | None = None,
+    ) -> dict[str, Any]:
+        """``{services: {name: [{at_ms, status, windows}]}}``, the readings in the span.
+
+        Both ends are required, whole UTC milliseconds, both counted. A missing or malformed one,
+        a span that ends before it starts, or one over 48 hours is a 400.
+        """
+        start, end = _span_bound("from_ms", from_ms), _span_bound("to_ms", to_ms)
+        if end < start:
+            raise HTTPException(status_code=400, detail="the span ends before it starts")
+        if end - start > _USAGE_HISTORY_MAX_SPAN_MS:
+            raise HTTPException(status_code=400, detail="the span is longer than 48 hours")
+        return usage_history(start, end)
 
 
 _ITEM_ID: Final = r"^[A-Za-z0-9_\-=+/.|:@]{1,256}$"
@@ -3192,6 +3234,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
     _register_day_route(app, deps)
     _register_track_route(app, deps)
     _register_footprint_route(app, deps)
+    _register_usage_history_route(app, deps)
     _register_highlight_route(app, deps)
     _register_doing_answer_route(app, deps)
     _register_doing_tidy_route(app, deps)

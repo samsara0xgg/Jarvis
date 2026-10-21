@@ -339,6 +339,7 @@ from jarvis.surface.usage_observer import (
     UsageObserver,
     latest_usage,
     redeem_codex_reset,
+    usage_history,
 )
 from jarvis.surface.voice_print import load_extractor
 
@@ -7673,6 +7674,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             ),
             usage_codex_reset=None if usage_observer is None else redeem_codex_reset,
             usage_record_balance=None if usage_observer is None else usage_observer.record_balance,
+            usage_history=(
+                None if usage_observer is None else functools.partial(usage_history, runtime.conn)
+            ),
             work_state_read=(
                 None
                 if runtime.work_state is None

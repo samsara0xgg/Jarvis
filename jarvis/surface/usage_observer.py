@@ -834,6 +834,66 @@ def latest_usage(event_log: sqlite3.Connection) -> dict[str, Any]:
     return {"services": services}
 
 
+# A reading is stamped (``ts_epoch_ms``, which the index serves) right after it is observed
+# (``observed_at_ms``), on the same clock; so the stamp bounds the scan, with room for the clock to
+# have stepped, and the observation decides what is in. The reach back is the longest window there
+# is: a reading older than that before the span holds no window still open.
+_STAMP_SLACK_MS: Final[int] = 5 * 60 * 1000
+_HISTORY_REACH_MS: Final[int] = _SEVEN_DAYS_S * 1000
+_HISTORY_SQL: Final[str] = (
+    "SELECT id, payload_json FROM events WHERE type = ? AND ts_epoch_ms >= ? AND ts_epoch_ms <= ?"
+)
+_WINDOW_FIELDS: Final[tuple[str, ...]] = ("key", "label", "percent", "resets_at")
+
+
+def _history_windows(data: object) -> list[dict[str, Any]] | None:
+    """A stored snapshot's windows cut to what the bar draws; ``None`` when it holds none."""
+    windows = data.get("windows") if isinstance(data, dict) else None
+    if not isinstance(windows, list):
+        return None
+    return [
+        {name: window.get(name) for name in _WINDOW_FIELDS}
+        for window in windows
+        if isinstance(window, dict)
+    ]
+
+
+def usage_history(event_log: sqlite3.Connection, from_ms: int, to_ms: int) -> dict[str, Any]:
+    """Read model for the day bar: how each windowed service's quota stood over a span.
+
+    ``{"services": {name: [{"at_ms", "status", "windows"}, ...]}}``, each list oldest first: the
+    readings observed from ``from_ms`` to ``to_ms`` (both counted), led by the last one before
+    ``from_ms`` so the level at the start is known (none leads that was observed over a week
+    before). A service is listed when a reading from that week on carries windows (``claude`` and
+    ``codex`` today); one of its readings with none, a poll that failed, stays in its list with
+    ``windows`` empty. ``at_ms`` is the reading's ``observed_at_ms``.
+    """
+    readings: dict[str, list[tuple[int, int, dict[str, Any]]]] = {}
+    windowed: set[str] = set()
+    first = from_ms - _HISTORY_REACH_MS
+    for row_id, payload_json in event_log.execute(
+        _HISTORY_SQL, (EVENT_TYPE, first - _STAMP_SLACK_MS, to_ms + _STAMP_SLACK_MS)
+    ):
+        payload = json.loads(payload_json)
+        service, at_ms = payload.get("service"), payload.get("observed_at_ms")
+        if not isinstance(service, str) or type(at_ms) is not int:
+            continue
+        if not first <= at_ms <= to_ms:
+            continue
+        windows = _history_windows(payload.get("data"))
+        if windows is not None:
+            windowed.add(service)
+        reading = {"at_ms": at_ms, "status": payload.get("status"), "windows": windows or []}
+        readings.setdefault(service, []).append((at_ms, row_id, reading))
+    services: dict[str, list[dict[str, Any]]] = {}
+    for service in sorted(windowed):
+        ordered = sorted(readings[service], key=lambda row: row[:2])
+        before = [reading for at_ms, _, reading in ordered if at_ms < from_ms]
+        within = [reading for at_ms, _, reading in ordered if at_ms >= from_ms]
+        services[service] = [*before[-1:], *within]
+    return {"services": services}
+
+
 class UsageObserver:
     """Emit-on-change usage perception over a log-recovered baseline.
 
@@ -1007,4 +1067,5 @@ __all__ = [
     "recorded_spend",
     "recover_baselines",
     "redeem_codex_reset",
+    "usage_history",
 ]
