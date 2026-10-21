@@ -3,52 +3,51 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import time
 from typing import TYPE_CHECKING, Any
 
-from jarvis.decision.llm import ChatResult
 from jarvis.runtime.core_memory import CoreMemorySettings
 from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.state.event_log import open_event_log
 from jarvis.state.memory_db import MemorySettings
-from tests.support.day_summaries import day_summariser, insert_records, record_id, stamp_ago
+from tests.support.day_summaries import (
+    day_of,
+    day_summariser,
+    insert_records,
+    record_id,
+    stamp_ago,
+)
+from tests.support.model import Failure, Reply, ScriptedModel
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.support.model import ScriptedModel
+    from tests.support.model import Request
 
 
-class Consolidator:
-    """Stands in for the core_memory preset's client; ``script`` maps a day to its answers."""
+def consolidator(script: dict[str, list[str | Exception]] | None = None) -> ScriptedModel:
+    """The core_memory preset's model: ``script`` maps a day to the answers its requests get.
 
-    provider = "openai"
-    model = "fake-consolidator"
+    A day's answers are used up in order and the last one repeats, so a list set anew starts
+    over; an exception fails the request with it, and a day with no list gets no changes.
+    """
+    answers = {} if script is None else script
 
-    def __init__(self) -> None:
-        self.asked: list[str] = []
-        self.inputs: dict[str, str] = {}
-        self.script: dict[str, list[str | Exception]] = {}
+    def respond(request: Request) -> Reply | Failure:
+        queue = answers.get(day_of(request)) or ['{"changes": []}']
+        answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        return Failure(answer) if isinstance(answer, Exception) else Reply(answer)
 
-    def chat(self, *, messages: list[dict[str, Any]], **_kwargs: object) -> ChatResult:
-        text = str(messages[0]["content"])
-        day = re.search(r"\[Records of (\S+),", text).group(1)  # type: ignore[union-attr]
-        self.asked.append(day)
-        self.inputs[day] = text
-        answers = self.script.get(day) or ['{"changes": []}']
-        answer = answers[min(self.asked.count(day) - 1, len(answers) - 1)]
-        if isinstance(answer, Exception):
-            raise answer
-        return ChatResult(
-            text=answer,
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=1,
-            output_tokens=1,
-            raw={},
-            model_used=self.model,
-        )
+    return ScriptedModel(otherwise=respond, model="fake-consolidator")
+
+
+def consolidation_input(model: ScriptedModel, day: str) -> str:
+    """What the consolidator was last shown for ``day``: its first message."""
+    for request in reversed(model.requests):
+        if day_of(request) == day:
+            return str(request.messages[0]["content"])
+    msg = f"the consolidator was never asked about {day}"
+    raise AssertionError(msg)
 
 
 def consolidator_changes(*ops: dict[str, Any]) -> str:
@@ -57,7 +56,7 @@ def consolidator_changes(*ops: dict[str, Any]) -> str:
 
 def core_schedule(
     tmp_path: Path,
-    model: Consolidator,
+    model: ScriptedModel,
     *,
     summariser: ScriptedModel | None = None,
     **core: Any,  # noqa: ANN401
@@ -65,7 +64,7 @@ def core_schedule(
     """The nightly schedule over a temp store: ``summariser`` writes days, ``model`` the core."""
     log = tmp_path / "events.db"
     open_event_log(log).close()
-    schedule = DaySummarySchedule(
+    return DaySummarySchedule(
         memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
         settings=DaySummarySettings(at=time(5, 0), preset="p", prompt="summarise", max_chars=500),
         llm_config={},
@@ -73,9 +72,8 @@ def core_schedule(
         pricing_table={},
         core_memory=CoreMemorySettings(preset="c", prompt="consolidate", **core),
         client=(day_summariser() if summariser is None else summariser).as_llm_client(),
+        core_client=model.as_llm_client(),
     )
-    schedule._core_client = model  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    return schedule
 
 
 def seed_days(path: Path, *ago: int) -> None:

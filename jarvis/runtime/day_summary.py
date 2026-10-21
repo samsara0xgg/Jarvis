@@ -200,10 +200,12 @@ class DaySummarySchedule:
         ledger: LedgerContext | None = None,
         poll_s: float = 60.0,
         client: LLMClient | None = None,
+        core_client: LLMClient | None = None,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`.
 
-        ``client`` stands in for the one built from ``settings.preset`` on first use.
+        ``client`` stands in for the one built from ``settings.preset`` on first use, and
+        ``core_client`` for the one built from the ``core_memory`` preset.
         """
         self._memory = memory
         self._settings = settings
@@ -218,7 +220,7 @@ class DaySummarySchedule:
         self._drafts: DayDrafts | None = None
         self._poll_s = poll_s
         self._client = client
-        self._core_client: LLMClient | None = None
+        self._core_client = core_client
         self._last: date | None = None
 
     def due(self, now: datetime) -> date | None:

@@ -1,8 +1,8 @@
 """ADR 0154 — the Dashboard's memory page: its routes and the semantics behind them.
 
-Real memory.db in a tmp dir, the real nightly pass (``DaySummarySchedule`` with the same
-fake provider seam test_core_memory uses), the real routes through ``TestClient`` and the
-real ``Settings`` file for the cap. Nothing here edits a stored row to set a scene: every
+Real memory.db in a tmp dir, the real nightly pass (``DaySummarySchedule``, its model the
+scripted one, as in test_core_memory), the real routes through ``TestClient`` and the real
+``Settings`` file for the cap. Nothing here edits a stored row to set a scene: every
 version and summary comes from the pass or from the routes under test.
 """
 
@@ -27,7 +27,12 @@ from jarvis.state.memory_db import (
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.support.core_memory import Consolidator, consolidator_changes, core_schedule
+from tests.support.core_memory import (
+    consolidation_input,
+    consolidator,
+    consolidator_changes,
+    core_schedule,
+)
 from tests.support.day_summaries import (
     TODAY,
     asked_days,
@@ -99,7 +104,7 @@ class World:
             ]
 
 
-def _nightly(world: World, model: Consolidator, today_ago: int = 0) -> None:
+def _nightly(world: World, model: ScriptedModel, today_ago: int = 0) -> None:
     schedule = core_schedule(world.tmp, model)
     schedule.write(TODAY - timedelta(days=today_ago))
 
@@ -122,19 +127,22 @@ def world(tmp_path: Path) -> World:
     remember_fact(path, "饮食", "每天喝咖啡", "兴趣和品味")
     remember_fact(path, "项目", "写论文", "生活里的几件事")
     d3, d2 = day_ago(3).isoformat(), day_ago(2).isoformat()
-    model = Consolidator()
-    model.script[d3] = [
-        consolidator_changes(
-            {"op": "rewrite", "item": 1, "text": "城市: Victoria", "sources": ["r1"]}
-        ),
-    ]
-    model.script[d2] = [
-        consolidator_changes(
-            {"op": "add", "section": "定下来的规矩", "text": "周五交稿", "sources": ["r1"]},
-            {"op": "stale", "item": 2, "sources": ["r2"]},
-            {"op": "rewrite", "item": 3, "text": "写论文: 第二章", "sources": ["r2"]},
-        ),
-    ]
+    model = consolidator(
+        {
+            d3: [
+                consolidator_changes(
+                    {"op": "rewrite", "item": 1, "text": "城市: Victoria", "sources": ["r1"]}
+                ),
+            ],
+            d2: [
+                consolidator_changes(
+                    {"op": "add", "section": "定下来的规矩", "text": "周五交稿", "sources": ["r1"]},
+                    {"op": "stale", "item": 2, "sources": ["r2"]},
+                    {"op": "rewrite", "item": 3, "text": "写论文: 第二章", "sources": ["r2"]},
+                ),
+            ],
+        }
+    )
     made = World(tmp_path)
     _nightly(made, model)
     return made
@@ -249,15 +257,18 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
         world.path,
         [(record_id(1, 1), stamp_ago(1, 21), "allen", "我搬到 Seattle 了, 周五的稿也交了")],
     )
-    model = Consolidator()
-    model.script[d1] = [
-        consolidator_changes(
-            {"op": "rewrite", "item": 1, "text": "城市: Seattle", "sources": ["r1"]},
-            {"op": "stale", "item": 1, "sources": ["r1"]},
-            {"op": "stale", "item": 2, "sources": ["r1"]},  # 周五交稿, now before 写论文
-            {"op": "add", "section": "兴趣和品味", "text": "喜欢西雅图", "sources": ["r1"]},
-        ),
-    ]
+    model = consolidator(
+        {
+            d1: [
+                consolidator_changes(
+                    {"op": "rewrite", "item": 1, "text": "城市: Seattle", "sources": ["r1"]},
+                    {"op": "stale", "item": 1, "sources": ["r1"]},
+                    {"op": "stale", "item": 2, "sources": ["r1"]},  # 周五交稿, now before 写论文
+                    {"op": "add", "section": "兴趣和品味", "text": "喜欢西雅图", "sources": ["r1"]},
+                ),
+            ],
+        }
+    )
     assert "[1] (pinned) 城市: Victoria (BC)" in _consolidation_input(world, model, d1)
     items = world.items()
     assert items["城市: Victoria (BC)"]["pinned"] is True  # untouched by the night
@@ -285,9 +296,9 @@ def test_the_night_leaves_a_pinned_item_alone_and_keeps_a_stale_proposal_as_a_re
     assert world.items()["城市: Victoria (BC)"]["pinned"] is True
 
 
-def _consolidation_input(world: World, model: Consolidator, day: str) -> str:
+def _consolidation_input(world: World, model: ScriptedModel, day: str) -> str:
     _nightly(world, model)
-    return model.inputs[day]
+    return consolidation_input(model, day)
 
 
 def _changes_of_last(world: World) -> str:
@@ -372,7 +383,7 @@ def test_undo_refuses_when_a_later_version_touched_the_same_item_and_for_the_fir
     assert first["kind"] == "migration"
     assert world.post("/undo", {"version": first["id"]}, status=400)
     insert_records(world.path, [(record_id(1, 1), stamp_ago(1, 9), "allen", "今天没什么事")])
-    _nightly(world, Consolidator())  # an empty answer: a version that only advances upto_day
+    _nightly(world, consolidator())  # an empty answer: a version that only advances upto_day
     empty = next(v for v in world.get("/versions")["versions"] if v["kind"] == "nightly")
     assert empty["undoable"] is False
     assert world.post("/undo", {"version": empty["id"]}, status=400)
@@ -505,7 +516,7 @@ def test_a_day_view_pages_the_conversation_and_can_start_at_a_record(tmp_path: P
 def _summarise(world: World, replies: dict[str, str]) -> ScriptedModel:
     """Run the real day-summary job; ``replies`` maps a day to the model's answer."""
     summariser = day_summariser(replies)
-    core_schedule(world.tmp, Consolidator(), summariser=summariser).write(TODAY)
+    core_schedule(world.tmp, consolidator(), summariser=summariser).write(TODAY)
     return summariser
 
 

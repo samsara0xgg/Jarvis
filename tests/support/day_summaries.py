@@ -54,18 +54,18 @@ def day_of(request: Request) -> str:
     return match.group(1)
 
 
-def day_summariser(replies: Mapping[str, str | BaseException] | None = None) -> ScriptedModel:
+def day_summariser(replies: Mapping[str, str | Exception] | None = None) -> ScriptedModel:
     """The day-summary preset's model: each day gets its entry in ``replies``, else a valid one.
 
     ``replies`` is read as each request arrives, so a test may change it between runs; an
     exception as the entry is the request failing with it.
     """
-    answers: Mapping[str, str | BaseException] = {} if replies is None else replies
+    answers: Mapping[str, str | Exception] = {} if replies is None else replies
 
     def respond(request: Request) -> Reply | Failure:
         day = day_of(request)
         answer = answers.get(day, f"## {day}\n{GOOD}")
-        return Failure(answer) if isinstance(answer, BaseException) else Reply(answer)
+        return Failure(answer) if isinstance(answer, Exception) else Reply(answer)
 
     return ScriptedModel(otherwise=respond, model="fake-day-summariser")
 

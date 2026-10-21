@@ -44,7 +44,7 @@ from jarvis.state.memory_db import open_memory_db, remember_fact, render_context
 from jarvis.state.memory_page import Conflict
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.support.core_memory import Consolidator, core_schedule, seed_days
+from tests.support.core_memory import consolidation_input, consolidator, core_schedule, seed_days
 from tests.support.day_summaries import TODAY as CORE_TODAY
 from tests.support.day_summaries import day_ago
 from tests.support.ledger import NOW as LEDGER_NOW
@@ -1026,15 +1026,15 @@ def test_the_nightly_consolidator_reads_the_places_he_keeps(tmp_path: Path) -> N
     """The sentence added to its prompt points at a block its input carries (ADR 0234)."""
     path = tmp_path / "memory.db"
     seed_days(path, 2)
-    model = Consolidator()
+    model = consolidator()
     core_schedule(tmp_path, model).write(CORE_TODAY)
-    assert "[Places he keeps]" not in model.inputs[day_ago(2).isoformat()]  # none kept: no block
+    asked = consolidation_input(model, day_ago(2).isoformat())
+    assert "[Places he keeps]" not in asked  # none kept: no block
 
     places.save(path, name="gym", lat=48.0, lng=-123.0, role="other", origin="model")
     places.save(path, name="home", lat=48.01, lng=-123.0, role="home", origin="settings")
     seed_days(path, 1)
     core_schedule(tmp_path, model).write(CORE_TODAY)
-    assert "[Current core memory]\n" in model.inputs[day_ago(1).isoformat()]
-    assert "\n\n[Places he keeps]\ngym · other\nhome · home\n\n[Summary of " in (
-        model.inputs[day_ago(1).isoformat()]
-    )
+    asked = consolidation_input(model, day_ago(1).isoformat())
+    assert "[Current core memory]\n" in asked
+    assert "\n\n[Places he keeps]\ngym · other\nhome · home\n\n[Summary of " in asked
