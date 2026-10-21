@@ -18,55 +18,30 @@ final class FootprintDayState {
     func reset() { minute = nil; openOuting = nil; lens = nil; lastStretch = nil; list.hot = nil }
 }
 
-/// The overlay: the page slides in from the right over the sky and goes back the way it came, by the chevron or by a swipe to the right from the left edge.
+/// The overlay: on the phone the page is the map's in the bar at the foot (Sky/HomeBar.swift), over the sky; it fades in when its tab is picked and out when another is.
 struct FootprintDayLayer: View {
     let engine: StarEngine
     let ui: StarUI
-    @State private var drag = 0.0               // how far a swipe back has the page to the right
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if ui.footprintOpen {
-                FootprintDayPage(engine: engine, ui: ui, back: { ui.footprintOpen = false })
-                    .overlay(alignment: .leading) { edge }
-                    .offset(x: drag).opacity(TLMotion.pageShows(drag / W))
-                    .transition(reduce ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                FootprintDayPage(engine: engine, ui: ui, back: nil).transition(.opacity)
             }
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
         .opacity(ui.panelOpen ? 0 : 1).allowsHitTesting(!ui.panelOpen)          // the history takes the place of whatever is under it
         .animation(TLMotion.dayChange(reduce: reduce), value: ui.panelOpen)
-        .onChange(of: ui.footprintOpen) { _, open in if !open { ui.footprint.reset(); drag = 0 } }
-    }
-
-    /// the strip at the left edge a swipe back starts on (anywhere else a sideways swipe is a change of day, and the map's pan is its own)
-    private var edge: some View {
-        Color.clear.frame(width: 22).frame(maxHeight: .infinity).contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 10, coordinateSpace: .named("design"))
-                .onChanged { v in
-                    guard !reduce, TimelineState.backSwipeStarts(dx: v.translation.width, dy: v.translation.height) else { return }
-                    drag = max(0, v.translation.width - 10)
-                }
-                .onEnded { v in
-                    let goes = TimelineState.backSwipe(dx: v.translation.width, dy: reduce ? v.translation.height : 0, predicted: v.predictedEndTranslation.width)
-                    if reduce { if goes { ui.footprintOpen = false }; return }
-                    guard drag > 0 else { return }
-                    let to = goes ? W : 0
-                    let speed = abs(to - drag) > 1 ? v.velocity.width / (to - drag) : 0          // the finger's own speed, in parts of the way left per second
-                    withAnimation(TLMotion.release(speed: speed)) { drag = to } completion: {
-                        var t = Transaction(); t.disablesAnimations = true
-                        withTransaction(t) { if goes { ui.footprintOpen = false }; drag = 0 }
-                    }
-                })
+        .onChange(of: ui.footprintOpen) { _, open in if !open { ui.footprint.reset() } }
     }
 }
 
 struct FootprintDayPage: View {
     let engine: StarEngine
     let ui: StarUI
-    let back: () -> Void
+    let back: (() -> Void)?             // the way out, where the page is one (the iPad's sheet); on the phone it is a page of the bar at the foot
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var tl: TimelineState { ui.tl }
@@ -92,7 +67,7 @@ struct FootprintDayPage: View {
                 FootprintDayMap(ui: ui, content: content, model: model, fitKey: reply == nil ? "" : iso)
                     .frame(width: W, height: Y.mapH).offset(y: Y.map)
                 FootprintDayLegend().offset(x: 30, y: Y.legend)
-                FootprintDayHead(ui: ui, back: back).offset(x: 60, y: Y.head)
+                FootprintDayHead(ui: ui, back: back).offset(x: back == nil ? 74 : 60, y: Y.head)          // with no way out, 12 pt right of her in the corner (Sky/DayTimelineSeat.swift)
                     .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
                 FootprintDayPicker(ui: ui).offset(x: W - 30 - 36, y: Y.head + 4)          // 36 pt, centred on the head's row
                     .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)

@@ -8,7 +8,7 @@ import UIKit
 
 /// her places on the timeline, and how big she is in each
 enum TLSeat {
-    /// At rest: in the top row, right of the date and its weather and 20 pt clear of the map button; her top 9 pt under the island.
+    /// At rest: in the top row, right of the date and its weather, with the row's right end clear (the map and settings are in the bar at the foot); her top 9 pt under the island.
     static let home = CGPoint(x: 288, y: 79)
     static let radius = 22.0
     /// the corner of the top row that the footprint's pages leave her (Sky/FootprintDayPage.swift), at the size she had there
@@ -17,7 +17,7 @@ enum TLSeat {
     static let listening = 1.12
     /// a finger this far outside her disc is still on her
     static let slop = 8.0
-    /// Where she drifts to when nothing happens: down where her sentence is, behind its words (she may hide behind words, yilun said), at its right end under the buttons, past its middle,
+    /// Where she drifts to when nothing happens: down where her sentence is, behind its words (she may hide behind words, yilun said), at its right end, past its middle,
     /// and toward its left; under the top row, inside the screen's margins, and 12 pt over the bar.
     static let perches = [CGPoint(x: 388, y: 134), CGPoint(x: 236, y: 140), CGPoint(x: 112, y: 142)]
     /// how long nothing has to happen before she drifts (ms), how long she stays off, and how long she takes back home after (as slowly as she went)

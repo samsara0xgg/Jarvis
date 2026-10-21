@@ -16,6 +16,12 @@ extension Words {
         static var backToToday: String { pick(zh: "回到今天", en: "Back to today") }
         static var backToNow: String { pick(zh: "回到现在", en: "Back to now") }
 
+        // the glass bar at the foot (Sky/HomeBar.swift): the home's pages
+        static var pageDay: String { pick(zh: "今天", en: "Today") }
+        static var pageMap: String { pick(zh: "地图", en: "Map") }
+        static var pageSettings: String { pick(zh: "设置", en: "Settings") }
+        static var pageSettingsRecording: String { pick(zh: "设置，正在随身录音", en: "Settings, recording") }
+
         // her, to VoiceOver: she is drawn under the screen's controls, so an element stands in for her
         static var her: String { "Jarvis" }
         static var herHint: String { pick(zh: "点一下和她说话", en: "Tap to talk to her") }

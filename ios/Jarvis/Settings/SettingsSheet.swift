@@ -2,8 +2,10 @@
 import SwiftUI
 
 /// 设置: content for a standard iOS page sheet. Present it with `.sheet(isPresented:) { SettingsSheet() }`.
-/// It draws its own header (grabber, title, 完成 or back) and pushes the two sub pages over the list.
+/// It draws its own header (grabber, title, 完成 or back) and pushes the two sub pages over the list. `asPage`: it is the phone home's settings page, one of the bar at the foot
+/// (Sky/HomeBar.swift), with no grabber and no 完成.
 struct SettingsSheet: View {
+    private let asPage: Bool
     private let tuneNear: () -> Void
     @Bindable private var model = SettingsModel.shared
     @State private var page = SettingsPage.main
@@ -11,7 +13,8 @@ struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(tuneNear: @escaping () -> Void = {}) {
+    init(asPage: Bool = false, tuneNear: @escaping () -> Void = {}) {
+        self.asPage = asPage
         self.tuneNear = tuneNear
         #if DEBUG
         // `-settingsPage pair` opens on the pairing page, for screenshots
@@ -53,6 +56,7 @@ struct SettingsSheet: View {
         let current = page == p
         return ScrollView { content() }
             .scrollIndicators(.hidden)
+            .contentMargins(.bottom, asPage ? HomeBar.h : 0, for: .scrollContent)          // as a page, its end comes up clear of the bar at the foot
             .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: Self.headerHeight) }
             .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 2 } action: { _, isScrolled in
                 scrolled[p] = isScrolled
@@ -69,10 +73,10 @@ struct SettingsSheet: View {
 
     private var header: some View {
         ZStack(alignment: .top) {
-            // blur only once content scrolls under it; at rest the header is the page colour
-            Rectangle().fill(.ultraThinMaterial).opacity(scrolled[page] == true ? 1 : 0)
-            SetColor.color(14, 15, 30, 0.72)
-            Capsule().fill(SetColor.color(235, 235, 245, 0.26)).frame(width: 36, height: 5).padding(.top, 6)
+            // blur only once content scrolls under it; at rest the header is the page colour (as a page, up under the status bar too)
+            Rectangle().fill(.ultraThinMaterial).opacity(scrolled[page] == true ? 1 : 0).ignoresSafeArea(edges: .top)
+            SetColor.color(14, 15, 30, 0.72).ignoresSafeArea(edges: .top)
+            if !asPage { Capsule().fill(SetColor.color(235, 235, 245, 0.26)).frame(width: 36, height: 5).padding(.top, 6) }
             ZStack {
                 ForEach([SettingsPage.main, .pair, .log], id: \.self) { p in
                     Text(p.title).font(.headline).lineLimit(1)
@@ -100,7 +104,7 @@ struct SettingsSheet: View {
                     Button { dismiss() } label: {
                         Text("完成").fontWeight(.semibold).padding(.horizontal, 16).frame(height: 44).contentShape(Rectangle())
                     }
-                    .shown(page == .main)
+                    .shown(page == .main && !asPage)
                 }
                 .font(.body)
                 .buttonStyle(NavButtonStyle())

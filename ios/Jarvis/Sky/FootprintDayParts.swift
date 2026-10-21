@@ -9,17 +9,19 @@ private let muted = SetColor.muted
 /// the way back, the date, the today label (a label) or on another day the way back to it, and the page's name; laid out clear of her corner as a page of the timeline is
 struct FootprintDayHead: View {
     let ui: StarUI
-    let back: () -> Void
+    let back: (() -> Void)?             // none on the phone, where the page is one of the bar at the foot
 
     var body: some View {
         let tl = ui.tl, today = tl.day == tl.today
         HStack(spacing: 2) {
-            Button(action: back) {
-                Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).foregroundStyle(ink)
-                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            if let back {
+                Button(action: back) {
+                    Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold)).foregroundStyle(ink)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(PressScale())
+                .accessibilityLabel(Words.Footprint.back)
             }
-            .buttonStyle(PressScale())
-            .accessibilityLabel(Words.Footprint.back)
             HStack(spacing: 10) {
                 Text(ui.dateText).font(.system(size: 17, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
                 if today {
@@ -179,7 +181,7 @@ struct FootprintDayList: View {
             }
             .padding(.horizontal, 30)
         }
-        .contentMargins(.bottom, 40, for: .scrollContent)
+        .contentMargins(.bottom, TLLayout.listBottom + TLLayout.fade - HomeBar.top + 16, for: .scrollContent)          // the last row comes up clear of the bar at the foot
         .scrollPosition($pos)
         .onChange(of: tl.request) { _, r in
             if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }

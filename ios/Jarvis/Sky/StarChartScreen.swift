@@ -23,24 +23,52 @@ struct StarChartScreen: View {
     init(engine: StarEngine) { _engine = State(initialValue: engine) }
 
     var body: some View {
+        let settings = HomeModule.shared.isTimeline && engine.ui.page == .settings
         GeometryReader { geo in
-            let k = max(0.5, min(geo.size.width / W, geo.size.height / (H - 40)))
-            let ox = (geo.size.width - W * k) / 2, oy = (geo.size.height - H * k) / 2
+            let fit = Self.fit(geo.size)
             ZStack(alignment: .topLeading) {
                 StageRepresentable(engine: engine).ignoresSafeArea()
-                StarChrome(engine: engine, ui: engine.ui, k: k)
+                StarChrome(engine: engine, ui: engine.ui, k: fit.k)
                     .frame(width: W, height: H)
                     .coordinateSpace(name: "design")
-                    .scaleEffect(k, anchor: .topLeading)
-                    .frame(width: W * k, height: H * k, alignment: .topLeading)
-                    .offset(x: ox, y: oy)                   // once, as the stage under it (StarStage.layout): a window taller than the canvas (an iPad in Split View) centres both
+                    .modifier(InDesign(fit: fit))
+                    .accessibilityHidden(settings)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .ignoresSafeArea()
+        // over the chrome, the home's settings page in the screen's own points (it is a sheet anywhere else), and over everything the bar at the foot that picks the page (Sky/HomeBar.swift)
+        .overlay {
+            ZStack {
+                if settings { SettingsSheet(asPage: true, tuneNear: { engine.ui.page = .day; engine.setLevel(-1); engine.ui.tuning = true }).transition(.opacity) }
+            }
+            .animation(.easeOut(duration: 0.2), value: settings)
+        }
+        .overlay {
+            GeometryReader { geo in HomeTabBar(ui: engine.ui).modifier(InDesign(fit: Self.fit(geo.size))) }
+                .ignoresSafeArea()
+        }
         .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255))
         .preferredColorScheme(.dark)
         .statusBarHidden(false)
+    }
+
+    /// The design space on a screen of `size`: its scale, and where it is put. Once, as the stage under it (StarStage.layout): a window taller than the canvas (an iPad in Split View) centres both.
+    static func fit(_ size: CGSize) -> DesignFit {
+        let k = max(0.5, min(size.width / W, size.height / (H - 40)))
+        return DesignFit(k: k, ox: (size.width - W * k) / 2, oy: (size.height - H * k) / 2)
+    }
+}
+
+struct DesignFit { let k, ox, oy: Double }
+
+/// a W x H view of design points, scaled to the screen and put where `StarChartScreen.fit` says
+private struct InDesign: ViewModifier {
+    let fit: DesignFit
+    func body(content: Content) -> some View {
+        content.scaleEffect(fit.k, anchor: .topLeading)
+            .frame(width: W * fit.k, height: H * fit.k, alignment: .topLeading)
+            .offset(x: fit.ox, y: fit.oy)
     }
 }
 
@@ -116,7 +144,12 @@ struct StarChrome: View {
             let d = (n.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25, curve = (n.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int) ?? 7
             withAnimation(Self.keyboardAnimation(duration: d, curve: curve)) { ui.kbLift = lift }
         }
-        .sheet(isPresented: $ui.settingsOpen) { SettingsSheet(tuneNear: { ui.settingsOpen = false; engine.setLevel(-1); ui.tuning = true }) }
+        .sheet(isPresented: dialSettings) { SettingsSheet(tuneNear: { ui.settingsOpen = false; engine.setLevel(-1); ui.tuning = true }) }
+    }
+
+    /// Under the dial settings is a sheet from its button; on the timeline it is a page of the bar at the foot (StarChartScreen)
+    private var dialSettings: Binding<Bool> {
+        Binding(get: { ui.settingsOpen && !HomeModule.shared.isTimeline }, set: { if !$0 { ui.settingsOpen = false } })
     }
 
     /// The keyboard's own motion as an animation: its curve 7 (a spring the system keeps to itself) as a bezier that starts fast and settles, the others as the plain curves they are.
@@ -138,7 +171,7 @@ struct StarChrome: View {
         else { engine.openPanel() }
     }
 
-    // MARK: the top row: the day you are looking at, the scale, settings
+    // MARK: the top row: the day you are looking at, and under the dial the scale and settings
 
     /// On the timeline the top row's date, its label and the weather keep to the left of her at home (8 pt clear of her disc): what is left of that after the date is the weather's.
     private static let headWidth: Double = TLSeat.home.x - TLSeat.radius - 8 - 30
@@ -172,21 +205,16 @@ struct StarChrome: View {
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
                 .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
                 .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is hers
-            if tlOn {          // the footprint's one-day screen, left of the settings button
-                Button { ui.footprintOpen = true } label: {
-                    Image(systemName: "map").font(.system(size: 17, weight: .regular)).foregroundStyle(TLPaint.icon.color(0.8))
+            if !tlOn {          // on the timeline the map and settings are pages of the bar at the foot (Sky/HomeBar.swift), and the row's right end is hers
+                Button { ui.settingsOpen = true } label: {
+                    Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
                         .frame(width: 36, height: 36).glass(Circle())
+                        .overlay(alignment: .topTrailing) {     // the day is being recorded (随身录音); its switch is in settings
+                            if LifelogRecorder.shared.recording { Circle().fill(Color(red: 1, green: 92 / 255, blue: 92 / 255)).frame(width: 6, height: 6).offset(x: -3, y: 3) }
+                        }
                 }.buttonStyle(PressScale())
-                .accessibilityLabel(Words.Footprint.button)
+                .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
             }
-            Button { ui.settingsOpen = true } label: {
-                Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
-                    .frame(width: 36, height: 36).glass(Circle())
-                    .overlay(alignment: .topTrailing) {     // the day is being recorded (随身录音); its switch is in settings
-                        if LifelogRecorder.shared.recording { Circle().fill(Color(red: 1, green: 92 / 255, blue: 92 / 255)).frame(width: 6, height: 6).offset(x: -3, y: 3) }
-                    }
-            }.buttonStyle(PressScale())
-            .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
         }
         .padding(.horizontal, 30)
         .animation(.easeOut(duration: 0.35), value: tlOn)
@@ -197,7 +225,7 @@ struct StarChrome: View {
     /// She is drawn on the stage under the chrome, which VoiceOver does not see: on the timeline an element stands in for her at her place. Its action is her tap (she listens, or a talk
     /// stops), and her cards are its other actions, done at once.
     @ViewBuilder private var herElement: some View {
-        if HomeModule.shared.isTimeline && ui.tlHome && !ui.footprintOpen {
+        if HomeModule.shared.isTimeline && ui.tlHome && ui.page == .day {
             Color.clear.frame(width: 2 * TLSeat.radius, height: 2 * TLSeat.radius)
                 .accessibilityElement()
                 .accessibilityLabel(Words.Home.her).accessibilityHint(Words.Home.herHint).accessibilityAddTraits(.isButton)

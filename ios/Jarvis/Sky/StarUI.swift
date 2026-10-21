@@ -119,7 +119,7 @@ final class StarUI {
     static func lift(keyboardHeight h: Double) -> Double { h > 0 ? max(0, h - (restGap - keyGap)) : 0 }
     var mic: MicState = .mic
     var chipsOn = false
-    var settingsOpen = false
+    var settingsOpen = false            // settings is open: on the timeline the third page of the bar at the foot, under the dial and on the iPad a sheet
     var tuning = false                  // the near-view camera panel is open (Sky/StarTune.swift)
     var text = ""
     var talkChips: [String] = []
@@ -132,6 +132,11 @@ final class StarUI {
     var tlHome = HomeModule.shared.isTimeline       // she has come up to her place over the timeline (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
     var footprintOpen = false           // the footprint's one-day screen is over the timeline, which and the top row give way to it (Sky/FootprintDayPage.swift)
     let footprint = FootprintDayState()
+    /// the page of the home the glass bar at its foot is on (Sky/HomeBar.swift): the day, or the footprint's page or settings over it
+    var page: HomePage {
+        get { settingsOpen ? .settings : footprintOpen ? .map : .day }
+        set { footprintOpen = newValue == .map; settingsOpen = newValue == .settings }
+    }
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 
     /// The composer is out: always under the dial. On the timeline she is tapped to talk and the field is one of her cards: it is out while he types (he chose 打字, or asked her about a

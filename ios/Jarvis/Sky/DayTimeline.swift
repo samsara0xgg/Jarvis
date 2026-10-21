@@ -19,9 +19,10 @@ enum TLLayout {
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for now's time (and, under a finger, the time in its chip), 12 pt under it for the hours
     static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch
     static let pillsY = 248.0                          // the row of the pills (the way back, what waits) between the chips and the list
-    static let handleH = 36.0                          // the history's handle at the foot of the screen (over the composer while it is out): its hit area
-    static let listTop = 272.0, listBottom = 856.0, fade = 24.0, fadeTop = 12.0
-    static let composerRoom = 20.0                     // what the list gives up at its foot while the composer is out at rest: its fade ends 8 pt over the field
+    /// the list runs on under the glass bar at the foot (Sky/HomeBar.swift) and has faded out by the bar's bottom edge: rows show through the glass, and none under it
+    static let listTop = 272.0, fade = 24.0, fadeTop = 12.0, listBottom = H - HomeBar.foot - fade
+    /// what the list gives up at its foot while the composer is out at rest (the bar has given way to it): its fade ends 8 pt over the field
+    static var composerRoom: Double { listBottom + fade - (H - StarUI.restGap - 48 - 8) }
     static var viewport: Double { listBottom - listTop }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
@@ -315,7 +316,6 @@ struct DayTimelineView: View {
                 .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
-                TLHandle(engine: engine, ui: ui, pull: $pull)
                 TLWaitPill(count: away ? 0 : model?.waiting.count ?? 0) { if let model { tl.revealWaiting(in: model) } }
                     .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.pillsY + 2)
                 TLNowPill(tl: tl, nowInView: $nowInView, away: away)
@@ -378,15 +378,13 @@ struct DayTimelineView: View {
             .allowsHitTesting(false)
     }
 
-    // MARK: the history's handle and the way back (each its own view: they follow the keyboard, the voice's line and the scroll, which are not the day's)
-
-    /// a rename he can take back, for a few seconds, over the foot of the list
+    /// a rename he can take back, for a few seconds, over the bar at the foot
     private func undoToast(away: Bool) -> some View {
         ZStack {
             if let u = tl.undo, !away { TLUndoToast(undo: u) { tl.undoRename() }.transition(.move(edge: .bottom).combined(with: .opacity)) }
         }
         .frame(width: W, height: 48)
-        .offset(y: TLLayout.listBottom - 56)
+        .offset(y: HomeBar.top - 56)
     }
 
     // MARK: the list, and what waits above it
@@ -493,30 +491,6 @@ private struct FootFade: ViewModifier {
                 Color.clear
             }
         }
-    }
-}
-
-/// The way into the history, which opens from the bottom: a chevron at the foot of the screen, or over the composer while it is out (not while he types, the panel is open or a place is being
-/// named). A tap opens the panel, and so does a pull up; it rises with the composer.
-private struct TLHandle: View {
-    let engine: StarEngine
-    let ui: StarUI
-    @Binding var pull: Double?
-
-    var body: some View {
-        let hide = ui.typing || ui.panelOpen || ui.tl.renaming != nil
-        let foot = H - StarUI.restGap - (ui.composerOut ? 48 : 0) - ui.attach.rise - ui.kbLift
-        Image(systemName: "chevron.compact.up").font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.5))
-            .frame(width: 120, height: TLLayout.handleH)
-            .contentShape(Rectangle())
-            .gesture(panelDrag(engine, $pull, opens: true, tap: true))
-            .opacity(hide ? 0 : 1)
-            .allowsHitTesting(!hide)
-            .animation(.easeOut(duration: 0.3), value: hide)
-            .offset(x: (W - 120) / 2, y: foot - TLLayout.handleH)
-            .animation(.easeOut(duration: 0.25), value: ui.composerOut)
-            .accessibilityLabel("展开对话")
     }
 }
 

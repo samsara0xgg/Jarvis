@@ -51,7 +51,7 @@ struct TLDetailPage: View {
             ZStack(alignment: .top) {
                 ScrollView(showsIndicators: false) {
                     TLOpenView(e: e, tl: tl, engine: engine, mapWidth: TLLayout.barW)
-                        .padding(.horizontal, 30).padding(.top, 18).padding(.bottom, 80)
+                        .padding(.horizontal, 30).padding(.top, 18).padding(.bottom, TLLayout.listBottom + TLLayout.fade - HomeBar.top + 16)          // its end comes up clear of the bar at the foot
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .id(e.id).transition(bodyTurn)
