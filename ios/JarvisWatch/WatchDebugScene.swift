@@ -45,12 +45,14 @@ struct WatchComplicationGallery: View {
         let now = WatchRing.nowMinute(day, at: .now)
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                card("circular", w: 52, h: 52) { CircularComplication(day: day, now: now) { HerSprite(face: .rest, size: 30) } }
-                card("rectangular", w: 160, h: 64) { RectangularComplication(day: day) }
-                card("inline", w: 170, h: 22) { InlineComplication(day: day) }
-                card("corner", w: 190, h: 44) {
-                    HStack { CornerComplication(day: day) { HerSprite(face: .rest, size: 30) }.frame(width: 40, height: 40); Text(complicationLine(day)).font(.system(size: 12)).foregroundStyle(WatchTheme.ink) }
+                HStack(alignment: .top, spacing: 8) {
+                    card("circular", w: 52, h: 52) { CircularComplication(day: day, now: now) { HerSprite(face: .rest, size: 30) } }
+                    card("corner", w: 100, h: 52) {
+                        HStack { CornerComplication(day: day) { HerSprite(face: .rest, size: 30) }.frame(width: 40, height: 40); Text(complicationLine(day)).font(.system(size: 12)).foregroundStyle(WatchTheme.ink) }
+                    }
                 }
+                card("rectangular", w: 160, h: 56) { RectangularComplication(day: day) }
+                card("inline", w: 170, h: 22) { InlineComplication(day: day) }
             }
         }
     }
