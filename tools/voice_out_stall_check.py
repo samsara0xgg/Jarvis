@@ -95,7 +95,7 @@ def main() -> int:
     ap.add_argument("--device", default="BlackHole 16ch")
     args = ap.parse_args()
 
-    # The daemon's own settings (inherent_loop._build_tts_pipeline).
+    # The daemon's own settings (daemon.voice_wiring.build_tts_pipeline).
     common = {
         "sample_rate_hz": RATE, "ring_seconds": 2.0, "generation_safe": True,
         "device": args.device, "lazy_open": True,

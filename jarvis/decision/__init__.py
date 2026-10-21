@@ -3809,7 +3809,7 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     # new `attention_policy()` branch). Placed last so it wins over
     # every other override: the turn's entire content IS the ask, and
     # `ask_confirm` deliberately sits outside the ADR-0009 D4 TTS
-    # suppression set (`jarvis.runtime.inherent_loop._TTS_SILENT_CHANNELS`)
+    # suppression set (`jarvis.runtime.daemon.output_watchers.TTS_SILENT_CHANNELS`)
     # — the question must be spoken, not swallowed.
     attention = _confirmation_attention_override(scratch, attention)
 

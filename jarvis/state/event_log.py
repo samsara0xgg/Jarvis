@@ -837,7 +837,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # ADR-0003 Step 2 — chunked Inherent text response (D10).
     # Emit order per turn: surface.response_open → surface.response_chunk*
     # (1..N) → surface.response_emitted. The single response watcher
-    # in runtime/inherent_loop.py polls all three types in one cursor
+    # in runtime/daemon/output_watchers.py polls all three types in one cursor
     # (WHERE type IN (...) ORDER BY id) and dispatches by event.type.
     EventTypeSchema(
         event_type="surface.response_open",
@@ -972,7 +972,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     EventTypeSchema(
         # Watcher-level catch-all when drive_turn raises uncaught
         # (registered Day-2 per ADR-0003 D7; emit-site lands in Step 8
-        # inside runtime/inherent_loop.py's intent pump).
+        # inside runtime/daemon/intent_pump.py).
         # Records the meta-failure as a durable fact per spec §3.3.1.
         # No Day-2 projection consumer; the future task / claim ladder
         # may fold this into Limitation Claims (spec §3.4.11).

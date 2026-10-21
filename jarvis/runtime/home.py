@@ -2,7 +2,7 @@
 
 Mail comes through the live ``gmail`` connection's tools, outside any model turn; the weather
 from Apple WeatherKit (ADR 0285). Today's events and to-dos are the ledger of his things
-(ADR 0299), read by the Today route in ``inherent_loop``, not here. The writes are a To Do task's
+(ADR 0299), read by the Today route in ``daemon/routes``, not here. The writes are a To Do task's
 status and a letter's INBOX label, each only because Allen clicked it on the home (ADR 0124 for
 the letters).
 """
