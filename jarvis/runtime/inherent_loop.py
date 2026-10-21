@@ -192,6 +192,8 @@ from jarvis.runtime.daemon.observers import start_meaning_index as _start_meanin
 from jarvis.runtime.daemon.observers import start_repo_observer as _start_repo_observer
 from jarvis.runtime.daemon.observers import start_timesink_observer as _start_timesink_observer
 from jarvis.runtime.daemon.observers import start_usage_observer as _start_usage_observer
+from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S as _DEFAULT_POLL_INTERVAL_S
+from jarvis.runtime.daemon.polling import WATCHER_RETRY_S as _WATCHER_RETRY_S
 from jarvis.runtime.daemon.voice_power import SingleIngressActivation as _SingleIngressActivation
 from jarvis.runtime.daemon.voice_power import VoiceInputOwners as _VoiceInputOwners
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator as _VoicePowerCoordinator
@@ -356,15 +358,6 @@ LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 _latest_id = latest_id
 _fetch_events_after = fetch_events_after
 
-
-# Default poll cadence for both watchers; 10 ms balances CPU against
-# first-byte latency between an L2 INSERT (Step 7 submit handler / L3
-# render emission) and the watcher's reaction.
-_DEFAULT_POLL_INTERVAL_S: float = 0.01
-
-# How long a daemon loop waits after a failed poll before it tries again; long
-# enough that a persistent error writes one log line a second, not a hundred.
-_WATCHER_RETRY_S: float = 1.0
 
 # How long serve_inherent's teardown may take from the moment serving ends. launchd kills
 # a daemon 20 s after its stop (ExitTimeOut's default; the agent's plist sets none), so the
