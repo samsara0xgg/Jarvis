@@ -22,9 +22,15 @@ final class FootprintRouteRenderer: MKOverlayRenderer {
     }
 
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
-        let k = 1 / zoomScale, pts = route.points.map { point(for: MKMapPoint($0.coord)) }
-        let tile = rect(for: mapRect).insetBy(dx: -(width + 4) * k, dy: -(width + 4) * k)
-        let lit = litMs.map { FootprintMapMath.litCount(route.points, ms: $0) } ?? pts.count
+        let k = 1 / zoomScale, tile = rect(for: mapRect).insetBy(dx: -(width + 4) * k, dy: -(width + 4) * k)
+        var pts = route.points.map { point(for: MKMapPoint($0.coord)) }, colors = self.colors, cut = self.cut
+        var lit = litMs.map { FootprintMapMath.litCount(route.points, ms: $0) } ?? pts.count
+        // the held minute between two fixes: the line is lit as far as the dot, not only as far as the fix before it (a straight stretch has few fixes)
+        if let t = litMs, lit > 0, lit < pts.count, !cut[lit - 1], route.points[lit].ms > route.points[lit - 1].ms {
+            let f = Double(t - route.points[lit - 1].ms) / Double(route.points[lit].ms - route.points[lit - 1].ms), a = colors[lit - 1], b = colors[lit]
+            pts.insert(CGPoint(x: lerp(pts[lit - 1].x, pts[lit].x, f), y: lerp(pts[lit - 1].y, pts[lit].y, f)), at: lit)
+            colors.insert(RGB(lerp(a.r, b.r, f), lerp(a.g, b.g, f), lerp(a.b, b.b, f)), at: lit); cut.insert(false, at: lit); lit += 1
+        }
         ctx.setLineCap(.round); ctx.setLineJoin(.round)
 
         for g in route.gaps {
@@ -36,7 +42,7 @@ final class FootprintRouteRenderer: MKOverlayRenderer {
         }
         if lit < pts.count {                                    // after the held minute: thinner, no casing, flat at one alpha
             ctx.saveGState(); ctx.setAlpha(Self.faint); ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-            segments(max(lit - 1, 0)..<(pts.count - 1), pts, (width - 1.2) * k, tile, ctx)
+            segments(max(lit - 1, 0)..<(pts.count - 1), pts, colors, cut, (width - 1.2) * k, tile, ctx)
             ctx.endTransparencyLayer(); ctx.restoreGState()
         }
         if lit > 1 {
@@ -45,14 +51,14 @@ final class FootprintRouteRenderer: MKOverlayRenderer {
             for i in 0..<(lit - 1) where !cut[i] { ctx.move(to: pts[i]); ctx.addLine(to: pts[i + 1]) }
             ctx.strokePath()
             ctx.endTransparencyLayer(); ctx.restoreGState()
-            segments(0..<(lit - 1), pts, width * k, tile, ctx)
+            segments(0..<(lit - 1), pts, colors, cut, width * k, tile, ctx)
         }
     }
 
     static let faint = 0.34
 
     /// each segment from its start colour to its end colour, clipped to the stroked segment so the round caps meet cleanly
-    private func segments(_ range: Range<Int>, _ pts: [CGPoint], _ w: CGFloat, _ tile: CGRect, _ ctx: CGContext) {
+    private func segments(_ range: Range<Int>, _ pts: [CGPoint], _ colors: [RGB], _ cut: [Bool], _ w: CGFloat, _ tile: CGRect, _ ctx: CGContext) {
         let space = CGColorSpace(name: CGColorSpace.sRGB)
         for i in range where i + 1 < pts.count && !cut[i] {
             let a = pts[i], b = pts[i + 1]
