@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.location_tool import read_here, said_where
@@ -91,17 +91,10 @@ def _dates(args: Mapping[str, Any], *, hourly: bool) -> tuple[date | None, date 
             raise ToolError(msg, code="invalid_argument")
         return None, None
     end = end or start
-    # ponytail: judged against the UTC date, one day of grace each way, because the place's own
-    # zone is not known before the request; the lookup refuses what is still out of range.
-    today = datetime.now(UTC).date()
-    low, high = today - timedelta(days=DAYS_BACK + 1), today + timedelta(days=DAYS_AHEAD + 1)
-    if end < start or start < low or end > high:
-        msg = (
-            f"weather: dates must run from {DAYS_BACK} days back to {DAYS_AHEAD} days ahead"
-            f" ({(today - timedelta(days=DAYS_BACK)).isoformat()} to"
-            f" {(today + timedelta(days=DAYS_AHEAD)).isoformat()}) with end_date not before"
-            " start_date; use web_search beyond that"
-        )
+    # How far back and ahead is the lookup's to judge: only it knows the place's zone, and it reads
+    # the runtime's clock (ADR 0322), so the range it names is the place's own.
+    if end < start:
+        msg = "weather: end_date is before start_date; give the first day, then the last"
         raise ToolError(msg, code="invalid_argument")
     if hourly and (end - start).days >= HOURLY_MAX_DAYS:
         msg = f"weather: hourly rows are for at most {HOURLY_MAX_DAYS} days; ask for fewer days"

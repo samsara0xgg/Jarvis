@@ -314,7 +314,7 @@ def test_days_from_seven_back_to_nine_ahead_are_read_and_others_are_refused_unto
     assert "next_hour" not in later  # minute rain is for now only
     net.asked.clear()
     for first, last in ((_day(12), _day(12)), (_day(-8), _day(-8)), (_day(5), _day(2))):
-        with pytest.raises(ToolError, match=r"dates must run from 7 days back|forecast runs from"):
+        with pytest.raises(ToolError, match=r"forecast runs from|end_date is before start_date"):
             _call(kit, {"start_date": first, "end_date": last})
     with pytest.raises(ToolError, match="YYYY-MM-DD"):
         _call(kit, {"start_date": "next friday"})
@@ -326,7 +326,7 @@ def test_days_from_seven_back_to_nine_ahead_are_read_and_others_are_refused_unto
 def test_yesterday_and_seven_days_back_are_read_and_eight_back_is_refused_naming_the_range(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Either guard (UTC with a day of grace, then the place's own date) names the full range."""
+    """The place's own date judges the range and names it in full, at any hour of the UTC day."""
     net = Net(monkeypatch)
     kit = kit_for(key[0])
     assert [d["date"] for d in _call(kit, {"start_date": _day(-1)})["days"]] == [_day(-1)]
