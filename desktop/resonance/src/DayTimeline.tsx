@@ -7,7 +7,7 @@ import { answerOf, askOf, hasBody, headOf, openOf, sayOf, type About, type Ask, 
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState, type PageBar } from './DayBar';
 import { DoorDetail, DoorNumbers, DoorRowView, Doors, inRange } from './DayDoors';
-import { useDoors, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
+import { useDoors, type DoorCtx, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
 import { DetailPage, EASE, reduced, Unfold, Viewer, type Acts } from './RowOpen';
@@ -241,7 +241,7 @@ type Naming = { key: string; draft: string; role: string | null; state: 'edit' |
 type Docked = { ask: Ask | null; say: Said | null; state: DockState; nonce: number };
 
 // `swap`: said when what the pane shows has just been swapped for other content in one frame (a day, a cut list), so the pane takes the new height with it.
-export function DayTimeline({ port, feed, open, ask, hold, swap, tool }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void; swap?: () => void; tool?: ToolRenderer }) {
+export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions }: { port: string | null; feed: Route<DayReply>; open: boolean; ask?: (text: string, about?: About) => Promise<void>; hold?: (on: boolean) => void; swap?: () => void; tool?: ToolRenderer; sessions?: DoorCtx['sessions'] }) {
   const [{ lang }] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   // null is today, which the wing already reads; another day is read here.
   const [date, setDate] = useState<string | null>(null);
@@ -313,7 +313,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool }: { port:
   // (Notch.tsx remakes it a minute after a fold, on today).
   const [door, setDoor] = useState<DoorKey>('today');
   const pages = useDoors({ port, open, t, lang, ask, items: model?.items ?? NO_ITEMS,
-    day: { date: model?.reply.date ?? '', tz: model?.tz ?? '', start: model?.reply.start_ms ?? 0, end: model?.reply.end_ms ?? 0, now: model?.now ?? now, today: model?.today ?? false }, tool });
+    day: { date: model?.reply.date ?? '', tz: model?.tz ?? '', start: model?.reply.start_ms ?? 0, end: model?.reply.end_ms ?? 0, now: model?.now ?? now, today: model?.today ?? false }, tool, sessions });
   const page = door === 'today' ? null : pages[door] ?? BLANK;
   const todayDate = feed.data?.date ?? null, at = date ?? todayDate;
   // What is drawn is not the day asked for: it is on its way, or (`lost`) it did not come and the day that is drawn is not to be left under the new date.

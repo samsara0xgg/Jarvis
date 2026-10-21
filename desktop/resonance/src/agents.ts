@@ -12,6 +12,8 @@ export type AgentRequest = { id: string; tool: string; input: Record<string, unk
 export type Agent = {
   id: string; agent: 'claude' | 'codex'; state: AgentState; title: string; project: string; branch?: string; where: string; age: string;
   you: string; last: string; sub?: boolean; request?: AgentRequest; error?: string; at?: number; // last change, for Settings › Agents' stale limit
+  // When the session began (ms): a Claude one's transcript head, one of Startrail's from its first line; not known for a Codex one, which only says when it last changed.
+  started?: number;
   // A Claude session's kind, and for a background one the id `claude attach` takes (ADR 0057). `replyable`: idle
   // at its input box, so a line typed from the island lands there (ADR 0070).
   kind?: 'interactive' | 'background'; job?: string; replyable?: boolean;
@@ -43,18 +45,22 @@ export const fromCodex = (r: CodexSession): Agent => ({
   age: ago(r.since_ms), you: r.prompt, last: r.state === 'finished' ? r.last_message : r.detail, at: r.since_ms,
 });
 const base = (path: string) => path.split('/').filter(Boolean).pop() ?? path;
-// One line for what a request wants, for the Agents rows and the hover list.
-export function requestLine(r: AgentRequest) {
+// One line for what a request wants, for the Agents rows and the hover list: [English, 中文] (the day pane's Agents page shows either).
+export function requestWords(r: AgentRequest): [string, string] {
   const i = r.input;
-  if (r.tool === 'Bash') return `Wants to run ${String(i.command ?? '').split('\n')[0]}`;
-  if (typeof i.file_path === 'string') return `Wants to ${r.tool === 'Write' ? 'write' : 'edit'} ${base(i.file_path)}`;
-  if (r.tool === 'AskUserQuestion') return `Asks: ${(i.questions as { question?: string }[] | undefined)?.[0]?.question ?? 'a question'}`;
-  if (r.tool === 'ExitPlanMode') return 'Plan ready for review';
-  return `Wants to use ${r.tool.replace(/^mcp__([^_]+)__/, '$1 ')}`;
+  if (r.tool === 'Bash') { const cmd = String(i.command ?? '').split('\n')[0]; return [`Wants to run ${cmd}`, `想跑 ${cmd}`]; }
+  if (typeof i.file_path === 'string') { const file = base(i.file_path); return r.tool === 'Write' ? [`Wants to write ${file}`, `想写 ${file}`] : [`Wants to edit ${file}`, `想改 ${file}`]; }
+  if (r.tool === 'AskUserQuestion') { const q = (i.questions as { question?: string }[] | undefined)?.[0]?.question; return [`Asks: ${q ?? 'a question'}`, `在问：${q ?? '一个问题'}`]; }
+  if (r.tool === 'ExitPlanMode') return ['Plan ready for review', '计划等你看'];
+  const tool = r.tool.replace(/^mcp__([^_]+)__/, '$1 ');
+  return [`Wants to use ${tool}`, `想用 ${tool}`];
 }
+export const requestLine = (r: AgentRequest) => requestWords(r)[0];
 type ClaudeSession = {
   session_id: string; kind: 'interactive' | 'background'; job_id?: string; phase: 'needs_input' | 'working' | 'done'; title: string; project: string; branch: string; where: string; prompt: string; activity: string;
   last_message: string; updated_ms: number; compacting?: boolean; error?: string; request?: AgentRequest | null; replyable?: boolean;
+  // When it began: its transcript's first moment, else its process's start (null when neither is known; an older daemon sends none).
+  started_ms?: number | null;
   // ADR 0125: the daemon's Jev read a finished turn's ending as asking Allen something (null: not known)
   asks?: boolean | null;
   from_project?: boolean;
@@ -64,7 +70,7 @@ export const fromClaude = (r: ClaudeSession): Agent => ({
   state: r.request || r.phase === 'needs_input' || r.phase === 'done' && r.asks === true ? 'wait' : r.error ? 'err' : r.phase === 'working' ? r.compacting ? 'pack' : 'work' : 'done',
   where: r.where === 'background' ? 'Background' : r.where, age: ago(r.updated_ms), you: r.prompt,
   last: r.request ? requestLine(r.request) : r.compacting ? 'Compacting its context' : r.phase === 'done' ? r.last_message : r.activity || r.last_message,
-  request: r.request ?? undefined, error: r.error || undefined, at: r.updated_ms, kind: r.kind, job: r.job_id || undefined,
+  request: r.request ?? undefined, error: r.error || undefined, at: r.updated_ms, started: r.started_ms || undefined, kind: r.kind, job: r.job_id || undefined,
   replyable: !!r.replyable && !r.request, fromProject: r.from_project === true,
 });
 // Polled all the time: the marks beside the notch and the notices read them too. A daemon that does not serve

@@ -43,7 +43,7 @@ function requestOf(s: Sess, r: Req): AgentRequest | undefined {
 function rowOf(s: Sess, l: Line[] | undefined): Agent {
   const req = s.st === 'wait' && l ? pendingOf(l) : undefined;
   return { id: s.id, agent: s.agent, title: s.title, project: s.project, branch: s.branch || undefined, state: asksYou(s) ? 'wait' : s.st, where: 'Startrail',
-    age: ago(s.updated), you: l ? youOf(l) : '', last: (s.st === 'work' || s.st === 'pack') && s.now || s.summary, at: waitingSince(s),
+    age: ago(s.updated), you: l ? youOf(l) : '', last: (s.st === 'work' || s.st === 'pack') && s.now || s.summary, at: waitingSince(s), started: s.created,
     request: req && requestOf(s, req), error: s.st === 'err' ? s.summary : undefined, host: { unread: s.unread, parked: s.parked, archived: s.archived } };
 }
 

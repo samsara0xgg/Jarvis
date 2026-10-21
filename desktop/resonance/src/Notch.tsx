@@ -835,7 +835,7 @@ export function Notch({ look, wing = 'marks', agents, unread, parked, archived, 
   if (open && panel) lastPanel.current = panel;
   // The drop holds the sessions or the day, never both; the day is mounted afresh when it opens more than a minute after it folded (it starts on
   // today), and within the minute it is the one he left (the same day, scroll and open row).
-  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl} swap={snapTl} tool={timeline.tool}/>;
+  const dayPane = timeline && <DayTimeline key={tlKey} port={port} feed={timeline.day} open={tlOpen} ask={timeline.ask} hold={holdTl} swap={snapTl} tool={timeline.tool} sessions={{ agents, parked, archived, act }}/>;
   if (tlOpen) lastDrop.current = 'timeline'; else if (open) lastDrop.current = 'sessions';
   const dropBody = tlOpen ? dayPane : open ? panel : lastDrop.current === 'timeline' ? dayPane : lastPanel.current;
   const shownNote = note ?? lastNote.current;

@@ -1,0 +1,19 @@
+/* The Agents door's page (src/doors/agents.tsx), in the rows and detail the frame draws (day-doors.css). Amber is "waiting on you" and nothing else: the tag, the Allow button, the span's waiting part. */
+/* the brand's mark in a row's circle: the logo is a mask, so it takes the circle's ink (a running session's ring is lit by the frame) */
+.notch .dt-logo { display:block; width:15px; height:15px; background:currentColor; mask-size:contain; mask-repeat:no-repeat; mask-position:center; }
+/* how long a session has run, in the side column; a working one has a small live dot before it and reads in full ink */
+.notch .dt-live { display:inline-flex; align-items:center; color:var(--p-ink); }
+.notch .dt-live i { flex:none; width:6px; height:6px; margin-right:6px; border-radius:50%; background:rgb(var(--ink) / .9); box-shadow:0 0 6px rgb(var(--ink) / .5); }
+/* Allow, the one amber pill: it answers what waits on him */
+.notch .dt-ask.is-yes { background:rgb(255 201 143); color:#1a1307; }
+.notch .dt-ask.is-yes:hover { background:rgb(255 213 168); }
+
+/* a session's page: where it runs with the way there, the conversation (the island's lines: .m-list is the notch's), what it asks, a box for a reply; the pane's page scrolls, not the list in it */
+.notch .dt-ag { display:flex; flex-direction:column; gap:12px; align-self:stretch; min-height:100%; }
+.notch .dt-ag-top { display:flex; align-items:center; gap:8px; }
+.notch .dt-ag-top p { flex:1; min-width:0; margin:0; overflow:hidden; font-size:12px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dt-ag-top .dt-ask { flex:none; }
+.notch .dt-ag .m-list { max-height:none; overflow:visible; }
+.notch .dt-ag-ask { margin:0; font-size:var(--text-detail); line-height:1.5; color:var(--p-ink); overflow-wrap:anywhere; }
+.notch .dt-ag-acts { display:flex; gap:6px; }
+.notch .dt-ag .pg-input { position:sticky; bottom:0; flex:none; margin-top:auto; }

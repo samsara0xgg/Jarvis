@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { CalendarBlank, CheckCircle, DotsThree, EnvelopeSimple, Gauge, TerminalWindow, type Icon } from '@phosphor-icons/react';
+import type { Agent } from './agents';
 import type { L, Lang } from './companionSettings';
 import type { DayItem } from './dayView';
 import type { About } from './dayOpen';
@@ -61,6 +62,8 @@ export type DoorCtx = {
   items: DayItem[];             // the shown day's items (the day reply), e.g. `code` sessions
   ask?: (text: string, about?: About) => Promise<void>;
   tool?: ToolRenderer;          // the Dashboard's own pages for a row's detail (更多, 额度): `body: ctx.tool('settings', back)`
+  // The companion's sessions (Claude Code, Codex and Startrail's, the list the notch has), the marks he keeps on them and the acts the notch uses on them (Notch.tsx).
+  sessions?: { agents: Agent[]; parked: ReadonlyMap<string, number>; archived: ReadonlySet<string>; act: { jump(a: Agent): void; park(ids: string[]): void; unpark(ids: string[]): void } };
 };
 // One hook per door in src/doors/<key>.tsx: useMailDoor(ctx), useTodoDoor(ctx), useAgentsDoor(ctx),
 // useQuotaDoor(ctx), useMoreDoor(ctx): DoorPage | null. All run while the pane is open (the doors
