@@ -20,12 +20,10 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 
 from jarvis import runtime as runtime_module
@@ -62,7 +60,6 @@ from jarvis.runtime import (
 from jarvis.shared.realtime import (
     AlreadyTerminal,
     TerminalCommitted,
-    Wave4ResponseFlags,
     new_response_id,
     stable_legacy_presentation_binding,
     stable_response_group_id,
@@ -73,7 +70,6 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started, open_response_runs
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.canary._helpers import repo_root
 from tests.support.model import Failure, Pause, ScriptedModel
 from tests.support.response_run import (
     LLM_CONFIG,
@@ -119,54 +115,12 @@ def _publish_sink(sink: list[str]) -> Callable[[Event], None]:
     return _record
 
 
-def _ordered_types(conn: sqlite3.Connection) -> list[str]:
-    """Return every event type in append order."""
-    return [str(row[0]) for row in conn.execute("SELECT type FROM events ORDER BY id ASC")]
-
-
-# --- A1: flag-off parity ----------------------------------------------------
-
-
-def test_flag_off_drive_turn_matches_legacy_sequence(tmp_path: Path) -> None:
-    """Flags off: zero response.* rows and the legacy uuid5 L5 identity."""
-    runtime = make_runtime(tmp_path)
-    intent = emit_intent(runtime.conn, "T-fixed")
-
-    result = drive_turn(
-        runtime,
-        user_intent_event=intent,
-        available_surfaces=frozenset(),
-        streaming_enabled=True,
-    )
-
-    for terminal in (*_RESPONSE_TERMINALS, "response.started"):
-        assert event_count(runtime.conn, terminal) == 0, terminal
-    types = _ordered_types(runtime.conn)
-    # The decision's own rows (turn, cost, gate) sit between the intent and the answer.
-    assert [name for name in types if name.startswith("surface.")] == [
-        "surface.user_intent",
-        "surface.response_open",
-        "surface.response_chunk",
-        "surface.response_emitted",
-    ]
-    assert types[-1] == "turn.timing"  # ADR 0276
-    legacy = stable_legacy_presentation_binding(turn_id="T-fixed", response_hash=PLAN_HASH)
-    opened = payloads_of(runtime.conn, "surface.response_open")[0]
-    assert opened["response_id"] == legacy.response_id
-    assert opened["response_group_id"] == legacy.response_group_id
-    assert result.response_plan.text == PLAN_TEXT
-    # The extraction refactor must not move the group derivation.
-    assert stable_response_group_id("T-fixed") == legacy.response_group_id
-    assert legacy.response_group_id.startswith("RGRP")
-    runtime.conn.close()
-
-
 # --- lifecycle --------------------------------------------------------------
 
 
 def test_flag_on_emits_started_then_completed_with_one_terminal(tmp_path: Path) -> None:
     """One started, one completed, and the ADR §4.2 causal chain holds."""
-    runtime = make_runtime(tmp_path, lifecycle=True)
+    runtime = make_runtime(tmp_path)
     intent = emit_intent(runtime.conn, "T-life")
 
     drive_turn(
@@ -207,7 +161,7 @@ def test_flag_on_emits_started_then_completed_with_one_terminal(tmp_path: Path) 
 
 def test_flag_on_l5_events_carry_the_l3_response_id(tmp_path: Path) -> None:
     """ADR-0014 identity: surface.response_* name the L3 run, not the uuid5."""
-    runtime = make_runtime(tmp_path, lifecycle=True)
+    runtime = make_runtime(tmp_path)
     intent = emit_intent(runtime.conn, "T-ident")
 
     drive_turn(
@@ -245,7 +199,7 @@ def test_response_events_never_go_through_emit_event(
         recorded.append(str(kwargs.get("type")))
         return real_emit(conn, **kwargs)
 
-    runtime = make_runtime(tmp_path, lifecycle=True)
+    runtime = make_runtime(tmp_path)
     intent = emit_intent(runtime.conn, "T-spy")
     # Every caller does `from jarvis.state.event_log import emit_event`, so the
     # name is bound per module at import time; patching only the defining
@@ -443,8 +397,6 @@ def test_cancel_before_first_llm_call_produces_cancelled_and_no_surface_rows(
     released = threading.Event()
     runtime = make_runtime(
         tmp_path,
-        lifecycle=True,
-        cancel=True,
         model=ScriptedModel(Pause(entered, released, PLAN_TEXT)),
     )
     intent = emit_intent(runtime.conn, "T-early")
@@ -491,7 +443,7 @@ def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
     action registered live for the turn, and the worker's failure as the trigger that ends the
     wait.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     action_id = "A-live"
     intent = emit_event(
         runtime.conn,
@@ -556,7 +508,7 @@ def test_cancel_during_action_wait_leaves_action_alive(tmp_path: Path) -> None:
 
 def test_cancel_after_completion_keeps_completed_terminal(tmp_path: Path) -> None:
     """A6 / D10: after response.completed a cancel writes nothing."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     intent = emit_intent(runtime.conn, "T-late")
     drive_turn(
         runtime,
@@ -586,7 +538,7 @@ def test_cancel_after_completion_keeps_completed_terminal(tmp_path: Path) -> Non
 
 def test_cancel_times_out_without_writing_a_terminal(tmp_path: Path) -> None:
     """A-21/A-22: a contended CAS gives up, writes nothing, and retries clean."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
+    runtime = make_runtime(tmp_path, cancel_timeout_ms=50)
     facts = seed_started(runtime.runtime_paths.event_log, "RESP-busy", "T-busy")
     assert runtime.response_runs is not None
     factory = LLMSessionFactory(LLM_CONFIG)
@@ -647,7 +599,7 @@ def test_completed_without_delivery_when_render_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """§7 accepted gap, pinned: completed with no surface.response_emitted."""
-    runtime = make_runtime(tmp_path, lifecycle=True)
+    runtime = make_runtime(tmp_path)
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         msg = "render exploded"
@@ -796,7 +748,6 @@ def test_provider_failure_records_cost_and_fails_the_response_once(tmp_path: Pat
     """F27: a raised turn yields one response.failed and re-raises unmasked."""
     runtime = make_runtime(
         tmp_path,
-        lifecycle=True,
         model=ScriptedModel(Failure(RuntimeError("provider exploded"))),
     )
     intent = emit_intent(runtime.conn, "T-fail")
@@ -922,7 +873,7 @@ def test_cancel_winning_the_completion_cas_never_renders(
     ``render_response``'s stand-in's caller — the terminalizer — so no sleep
     or thread interleaving is involved.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     intent = emit_intent(runtime.conn, "T-cas-race")
     rendered: list[object] = []
     def _record_render(*_args: object, **kwargs: object) -> None:
@@ -1059,7 +1010,7 @@ def _cancel_foreground(runtime: JarvisRuntime, response_id: str) -> CancelOutcom
 
 def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) -> None:
     """H1: ``foreground_output`` clears policy in L3 and writes no terminal."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
 
     live = open_run(runtime, response_id="RESP-live", turn_id="T-live")
@@ -1099,51 +1050,14 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
 # --- A11: flag graph --------------------------------------------------------
 
 
-def test_cancel_flag_downgrades_without_lifecycle_flag(tmp_path: Path) -> None:
-    """A11: the cancel seam needs a surviving run lifecycle, and stays unrouted."""
-    config = realtime_config(lifecycle=False, cancel=True)
-    activation = _wave4_response_activation(config)
-    assert activation.reason == "lifecycle_flag_disabled"
-    assert activation.flags.independent_response_cancel is False
-
-    runtime = make_runtime(tmp_path, lifecycle=False, cancel=True)
-    assert runtime.response_flags.all_disabled
-    assert runtime.response_runs is None
-    app = create_app(
-        InherentDeps(
-            submit_callable=lambda _text: "T1",
-            broadcaster=InherentBroadcaster(),
-            cancel_response_callable=(
-                make_response_cancel_callable(runtime)
-                if runtime.response_flags.independent_response_cancel
-                else None
-            ),
-        ),
-    )
-    assert not [
-        route for route in app.routes if getattr(route, "path", "") == "/inherent/cancel-response"
-    ]
-    runtime.conn.close()
-
-
-def test_realtime_parent_disabled_keeps_both_switches_off() -> None:
+def test_realtime_parent_disabled_keeps_the_streaming_switches_off() -> None:
     """``realtime.enabled: false`` short-circuits the whole Wave-4A graph."""
-    config = realtime_config(lifecycle=True, cancel=True, enabled=False)
+    config = realtime_config(enabled=False)
+    config["realtime"]["response"]["routine_streaming"] = {"enabled": True}
     activation = _wave4_response_activation(config)
     assert activation.flags.all_disabled
     assert activation.reason == "realtime_parent_disabled"
     assert _wave4_response_flags({}).all_disabled
-
-
-def test_wave4_response_flags_ship_enabled() -> None:
-    """Rollout state: the shipped config turns both Wave-4A switches on."""
-    config_path = repo_root() / "config" / "jarvis.yaml"
-    shipped = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    response_block = shipped["realtime"]["response"]
-    assert Wave4ResponseFlags.from_mapping(response_block).all_disabled is False
-    assert response_block["cancel_timeout_ms"] == 500
-    assert _wave4_response_flags(shipped).all_disabled is False
-    assert replace(Wave4ResponseFlags(), response_run_lifecycle=True).all_disabled is False
 
 
 def _unused_iterator() -> Iterator[int]:  # pragma: no cover - typing import anchor
@@ -1154,7 +1068,7 @@ def _unused_iterator() -> Iterator[int]:  # pragma: no cover - typing import anc
 def test_run_client_keeps_the_presets_request_body_identity() -> None:
     """A run client sends the preset's extra_body / reasoning_effort, and the hash sees them.
 
-    Found live 2026-09-04: with ``response_run_lifecycle`` on, every decision
+    Found live 2026-09-04: with the run lifecycle first on, every decision
     request went through a snapshot that had neither field, so DeepSeek's
     ``thinking: {type: disabled}`` never reached the wire and a 3 700-character
     reasoning trace consumed the whole ``max_tokens`` budget.

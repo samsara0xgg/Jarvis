@@ -77,21 +77,17 @@ def _first_clause_chars(spoken: object) -> int:
 class Wave4ResponseFlags:
     """Production adoption switches for ADR-0008 Step 2 (Wave 4A).
 
-    ``response_run_lifecycle`` wraps ``drive_turn`` in a durable
-    ResponseRun with an immutable per-run request client.
-    ``independent_response_cancel`` additionally exposes the generation
-    cancel seam.
-    ``routine_streaming`` (ADR-0008 Step 8, ``routine_streaming.enabled``)
+    Every turn runs in a durable ResponseRun with an immutable per-run request
+    client, and the generation cancel seam exists (ADR 0332): neither is a
+    switch. ``routine_streaming`` (ADR-0008 Step 8, ``routine_streaming.enabled``)
     streams permitted sentences of a pre-routed casual answer while the model
     is still generating. ``spoken_streaming`` (``spoken_streaming.enabled``,
     docs/plans/speak-as-written-proposal.md) streams every request of a turn
     Allen spoke, tools included, and speaks its answer as it is written. The
-    shipped configuration turns the first two on and the last two off, so a
-    turn takes the batch path with the complete legacy prompt.
+    shipped configuration turns both off, so a turn takes the batch path with
+    the complete legacy prompt.
     """
 
-    response_run_lifecycle: bool = False
-    independent_response_cancel: bool = False
     routine_streaming: bool = False
     spoken_streaming: bool = False
     spoken_first_clause_chars: int = 0
@@ -105,8 +101,8 @@ class Wave4ResponseFlags:
     prefix_warm: bool = False
     """``prefix_warm.enabled``: after each turn, one capped request with the
     next turn's prompt up to its new message, so OpenAI's cache covers the
-    history (``jarvis.decision.open_prefix_warm``). Needs the run lifecycle's
-    per-run client; without it the switch does nothing."""
+    history (``jarvis.decision.open_prefix_warm``). Uses the run's per-run
+    client."""
     slow_results: bool = False
     """``slow_results.enabled`` (ADR 0107): a turn
     is told which earlier ones are still being answered, a turn Allen spoke
@@ -142,8 +138,6 @@ class Wave4ResponseFlags:
         warm = values.get("prefix_warm")
         slow = values.get("slow_results")
         return cls(
-            response_run_lifecycle=values.get("response_run_lifecycle") is True,
-            independent_response_cancel=values.get("independent_response_cancel") is True,
             routine_streaming=isinstance(routine, Mapping) and routine.get("enabled") is True,
             spoken_streaming=isinstance(spoken, Mapping) and spoken.get("enabled") is True,
             spoken_first_clause_chars=_first_clause_chars(spoken),
@@ -155,11 +149,9 @@ class Wave4ResponseFlags:
 
     @property
     def all_disabled(self) -> bool:
-        """Return whether the runtime must retain the legacy batch path."""
+        """Return whether no streaming or commentary switch is requested."""
         return not any(
             (
-                self.response_run_lifecycle,
-                self.independent_response_cancel,
                 self.routine_streaming,
                 self.spoken_streaming,
                 self.lifecycle_commentary,

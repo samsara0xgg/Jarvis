@@ -1237,21 +1237,16 @@ realtime:
   concurrency_safety:
     confirmation_dispatch_outbox: true
     exactly_once_cost_accounting: true
-  # ADR-0008 Step 2 (Wave 4A).  Enabling response_run_lifecycle additionally
-  # requires realtime.enabled; independent_response_cancel additionally
-  # requires response_run_lifecycle.  An invalid combination downgrades once,
-  # with one warning, to the complete legacy batch path.  cancel_timeout_ms is
-  # the cancel connection's SQLite busy_timeout: it bounds the terminal CAS,
-  # never an in-flight provider call.
+  # ADR-0008 Step 2 (Wave 4A).  Every turn is a durable ResponseRun that can
+  # be cancelled on its own (ADR 0332).  The switches below additionally
+  # require realtime.enabled and downgrade once, with one warning, without it.
+  # cancel_timeout_ms is the cancel connection's SQLite busy_timeout: it
+  # bounds the terminal CAS, never an in-flight provider call.
   response:
-    response_run_lifecycle: true
-    independent_response_cancel: true
     cancel_timeout_ms: 500
     # ADR-0008 Step 8.  routine_streaming lets a pre-routed casual, no-tool
     # answer stream its permitted sentences to the surface while the model is
-    # still generating (TTS still starts at surface.response_emitted).  It
-    # additionally requires response_run_lifecycle and downgrades once, with
-    # one warning, without it.
+    # still generating (TTS still starts at surface.response_emitted).
     routine_streaming:
       enabled: false
     # docs/plans/speak-as-written-proposal.md.  spoken_streaming streams every
@@ -1259,10 +1254,9 @@ realtime:
     # the model's own answer sentence by sentence, with no rewrite; its line
     # before a tool call rides action.proposed as lead_in, which commentary
     # speaks in place of the fixed line.  Speech starts before the
-    # answer is complete only with streaming_output.speak_from_segments.  It
-    # additionally requires response_run_lifecycle and downgrades once, with
-    # one warning, without it.  first_clause_chars > 0 lets the first thing
-    # said end at the first clause end (，；,;) at or past that many
+    # answer is complete only with streaming_output.speak_from_segments.
+    # first_clause_chars > 0 lets the first thing said end at the first
+    # clause end (，；,;) at or past that many
     # characters, so speech starts before the first sentence is written;
     # 0 waits for the sentence's end.  An Anthropic preset takes this route too, over
     # /v1/messages with output_config.format: it labels no line before a call.  structured (ADR 0114, only with
@@ -1325,9 +1319,8 @@ realtime:
   # turn.  It is a
   # `phase="commentary"` ResponseRun sharing the turn's response_group_id; the
   # final answer is never dropped or superseded by it.  No model writes the
-  # line.  It additionally requires realtime.enabled and
-  # response.response_run_lifecycle and downgrades once, with one warning,
-  # without them.
+  # line.  It additionally requires realtime.enabled and downgrades once, with
+  # one warning, without it.
   # Off from ADR 0045 to ADR 0116: every lifecycle row spoke, and "结果回来了"
   # landed with no lead-up whenever a tool finished within a second.  In a
   # spoken_streaming turn it says the model's own line before the call instead

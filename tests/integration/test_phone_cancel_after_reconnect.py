@@ -62,9 +62,7 @@ class _Host:
     """
 
     def __init__(self, tmp_path: Path) -> None:
-        self.runtime: JarvisRuntime = make_runtime(
-            tmp_path / "runtime", lifecycle=True, cancel=True,
-        )
+        self.runtime: JarvisRuntime = make_runtime(tmp_path / "runtime")
         keys = tmp_path / "keys"
         keys.mkdir()
         self.tokens = {name: pair_device(keys, name) for name in ("iphone", "ipad")}

@@ -41,8 +41,6 @@ _TIER_A_ENABLED = (
     "enabled",
     "concurrency_safety.confirmation_dispatch_outbox",
     "concurrency_safety.exactly_once_cost_accounting",
-    "response.response_run_lifecycle",
-    "response.independent_response_cancel",
     "single_audio_ingress.enabled",
 )
 

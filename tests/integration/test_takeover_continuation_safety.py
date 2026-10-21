@@ -46,7 +46,7 @@ def test_cancel_wins_against_late_provider_tool_batch(tmp_path: Path) -> None:
     entered = threading.Event()
     release = threading.Event()
     model = ScriptedModel(Pause(entered, release, tool_call("kept", call_id="memo-call")))
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, model=model)
+    runtime = make_runtime(tmp_path, model=model)
     intent = emit_intent(runtime.conn, "cancel-late-tools", "我记过什么")
     cancel = make_response_cancel_callable(runtime)
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -74,7 +74,7 @@ def test_cancel_wins_against_late_provider_tool_batch(tmp_path: Path) -> None:
 
 def test_cancel_deadline_includes_admission_lock(tmp_path: Path) -> None:
     """A blocked admission fence consumes the same total budget as SQLite setup."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, cancel_timeout_ms=50)
+    runtime = make_runtime(tmp_path, cancel_timeout_ms=50)
     intent = emit_intent(runtime.conn, "lock-budget", "fixture")
     opened = _start_drive_turn_response(runtime, user_intent_event=intent, turn_id="lock-budget")
     assert opened is not None

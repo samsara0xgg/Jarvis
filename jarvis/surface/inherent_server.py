@@ -594,8 +594,7 @@ class InherentDeps:
             by ``event.type``); the WS endpoint here registers /
             unregisters client sockets on connect / disconnect.
         cancel_response_callable: ADR-0008 D10 — bound to the runtime's
-            ``make_response_cancel_callable`` when
-            ``realtime.response.independent_response_cancel`` is on.
+            ``make_response_cancel_callable``.
             Takes ``(response_id, scope, reason)`` and returns one of
             ``cancelled`` / ``already_terminal`` / ``unknown_response``
             / ``unsupported_scope`` / ``timeout``, or, for

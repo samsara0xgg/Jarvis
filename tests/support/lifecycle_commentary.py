@@ -19,16 +19,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _observer_config(*, commentary: bool, cancel: bool = False) -> dict[str, Any]:
-    """Config for a runtime with the ResponseRun lifecycle and D6 commentary."""
+def _observer_config(*, commentary: bool) -> dict[str, Any]:
+    """Config for a runtime with D6 commentary."""
     return {
         "realtime": {
             "enabled": True,
-            "response": {
-                "response_run_lifecycle": True,
-                "independent_response_cancel": cancel,
-                "cancel_timeout_ms": 500,
-            },
+            "response": {"cancel_timeout_ms": 500},
             "commentary": {"enabled": commentary},
         },
     }
@@ -56,14 +52,12 @@ def commentary_runtime(
     tmp_path: Path,
     *,
     commentary: bool = True,
-    cancel: bool = False,
     model: ScriptedModel | None = None,
 ) -> JarvisRuntime:
     """Assemble the runtime the daemon's watchers receive; ``model`` answers its turns."""
     model = ScriptedModel(otherwise=FINAL_ANSWER) if model is None else model
     paths = bootstrap_runtime(tmp_path)
-    config = _observer_config(commentary=commentary, cancel=cancel)
-    flags = _wave4_response_activation(config).flags
+    config = _observer_config(commentary=commentary)
     return JarvisRuntime(
         config=config,
         runtime_paths=paths,
@@ -72,9 +66,9 @@ def commentary_runtime(
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        response_flags=flags,
+        response_flags=_wave4_response_activation(config).flags,
         llm_session_factory=ScriptedSessions(model, _LLM_CONFIG),
-        response_runs=ResponseRunRegistry() if flags.independent_response_cancel else None,
+        response_runs=ResponseRunRegistry(),
         committed_event_bus=CommittedEventBus(),
     )
 

@@ -2140,17 +2140,10 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     )
     if trigger_event.type == "action.dispatched":
         run.link_action(intent.subject_ref)
-    # Same condition the normal response path registers under
-    # (`jarvis/runtime/__init__.py`): with the operator cancel seam live the
-    # commentary run is reachable by id like any final run; without it no run
-    # of any phase is registered and the private registry keeps today's
-    # behaviour.
-    runtime_registry = runtime.response_runs
-    registry = (
-        runtime_registry
-        if runtime.response_flags.independent_response_cancel and runtime_registry is not None
-        else ResponseRunRegistry()
-    )
+    # The registry the normal response path registers under
+    # (`jarvis/runtime/__init__.py`), so the commentary run is reachable by id
+    # like any final run; a runtime without one keeps a private registry.
+    registry = runtime.response_runs if runtime.response_runs is not None else ResponseRunRegistry()
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit
     # Gate short-circuits to its routine pass-through and hands back the
     # token `render_response` demands.
@@ -6360,7 +6353,7 @@ def _leave_unfinished_at_shutdown(
     )
     record_realtime_trace("shutdown_deadline", budget_s=budget_s, unfinished=", ".join(names))
     registry = runtime.response_runs
-    if registry is None or not runtime.response_flags.independent_response_cancel:
+    if registry is None:
         return
     cancel = make_response_cancel_callable(runtime)
     for run in registry.open_runs():
@@ -7374,18 +7367,17 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         # ADR-0008 F14 / §4.4 — close ResponseRuns a previous process
         # abandoned, once, inside the startup barrier and before any
-        # watcher task exists. Off unless the lifecycle flag is on.
-        if runtime.response_flags.response_run_lifecycle:
-            closed_runs = await asyncio.to_thread(
-                _reconcile_open_responses_in_thread,
-                runtime.runtime_paths.event_log,
-                runtime.committed_event_bus,
+        # watcher task exists.
+        closed_runs = await asyncio.to_thread(
+            _reconcile_open_responses_in_thread,
+            runtime.runtime_paths.event_log,
+            runtime.committed_event_bus,
+        )
+        if closed_runs:
+            LOGGER.info(
+                "boot reconciliation closed %d open response run(s)",
+                closed_runs,
             )
-            if closed_runs:
-                LOGGER.info(
-                    "boot reconciliation closed %d open response run(s)",
-                    closed_runs,
-                )
 
         # ADR-0008 D9 / F23 — a previous process may have died holding a
         # repository: its action reached a canonical terminal but never wrote
@@ -7399,8 +7391,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # generation open forever. Close each one here, third and last, in
         # the ADR's own bullet order (responses, actions, playback).
         # Ungated on purpose: the actor that PRODUCES a playback generation
-        # is gated on realtime.enabled and the wave-1 event-log switches, not on
-        # response_run_lifecycle, so any flag gate here admits a legal config
+        # is gated on realtime.enabled, so any gate here admits a legal config
         # whose orphans no boot ever closes. The fold appends nothing when no
         # generation is open.
         closed_playback = await asyncio.to_thread(
@@ -7425,7 +7416,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     else None
                 ),
             )
-            if runtime.response_flags.independent_response_cancel
+            if runtime.response_runs is not None
             else None
         )
         # ADR-0014 D5: a fresh 256-bit bearer token every boot, written

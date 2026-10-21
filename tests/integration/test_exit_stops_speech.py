@@ -209,7 +209,7 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     A Live relay and a typed turn (ADR 0181) are the silent channels: nothing of them speaks.
     A spoken turn whose answer has not started stays too (ADR 0269): it answers in text.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     _run(runtime, "R-voice-old", "T-old")
     _answer_started(runtime, "T-old")
@@ -243,7 +243,7 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
 
     A second turn that had said nothing yet is not stopped with it (ADR 0269).
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     db_path = runtime.runtime_paths.event_log
     run = _run(runtime, "RG", "T-RG")
@@ -327,7 +327,7 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
     The turn's run stays open and its answer reaches the screen, but the speaker is given
     none of it; the wait line of the same turn and an answer already under way are ended.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     registry = runtime.response_runs
     assert registry is not None
     pending = _run(runtime, "R-pending", "T-pending")

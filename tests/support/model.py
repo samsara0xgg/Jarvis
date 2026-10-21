@@ -293,7 +293,7 @@ class ScriptedModel:
 
     def for_run(self, snapshot: LLMPresetSnapshot, response_id: str) -> ScriptedRun:
         """The request client of one response run: this script, pinned to the run's preset."""
-        return ScriptedRun(self._script, snapshot, response_id, self.native_tool_search)
+        return ScriptedRun(self._script, snapshot, response_id, self)
 
     @property
     def last_input_tokens(self) -> int | None:
@@ -408,7 +408,8 @@ class ScriptedRun(ScriptedModel):
     """One response run's request client: the script of its model, pinned to a frozen preset.
 
     A run reads its own last usage, as the real per-run client does, so two runs overlapping on
-    one script never see each other's token counts.
+    one script never see each other's token counts. Its Files API is its model's: the uploads
+    and deletes of every run are one record.
     """
 
     def __init__(
@@ -416,14 +417,16 @@ class ScriptedRun(ScriptedModel):
         script: _Script,
         snapshot: LLMPresetSnapshot,
         response_id: str,
-        native_tool_search: bool,  # noqa: FBT001 - copied from the model this run belongs to
+        model: ScriptedModel,
     ) -> None:
         """Pin the shared ``script`` to ``snapshot``'s provider and model."""
         super().__init__(
             provider=snapshot.provider,
             model=snapshot.model,
-            native_tool_search=native_tool_search,
+            native_tool_search=model.native_tool_search,
         )
+        self.uploads = model.uploads
+        self.deleted_files = model.deleted_files
         self._script = script
         self.active_preset = snapshot.preset_name
         self._preset_snapshot = snapshot

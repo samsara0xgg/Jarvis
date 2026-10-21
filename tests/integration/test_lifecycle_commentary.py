@@ -348,15 +348,9 @@ def test_no_jarvis_module_appends_a_presentation_intent() -> None:
 # --- flag graph ------------------------------------------------------------
 
 
-def _config(*, enabled: bool, lifecycle: bool, commentary: bool) -> dict[str, object]:
+def _config(*, enabled: bool, commentary: bool) -> dict[str, object]:
     """Build the `realtime` mapping the activation graph reads."""
-    return {
-        "realtime": {
-            "enabled": enabled,
-            "response": {"response_run_lifecycle": lifecycle},
-            "commentary": {"enabled": commentary},
-        },
-    }
+    return {"realtime": {"enabled": enabled, "commentary": {"enabled": commentary}}}
 
 
 def test_shipped_config_turns_commentary_on() -> None:
@@ -366,37 +360,23 @@ def test_shipped_config_turns_commentary_on() -> None:
     assert _wave4_response_activation(shipped).flags.lifecycle_commentary is True
 
 
-def test_commentary_requires_the_response_run_lifecycle() -> None:
-    """Without the lifecycle switch there is no ResponseRun to open at all."""
-    activation = _wave4_response_activation(
-        _config(enabled=True, lifecycle=False, commentary=True),
-    )
-    assert activation.reason == "lifecycle_flag_disabled"
-    assert activation.requested.lifecycle_commentary is True
-    assert activation.flags.lifecycle_commentary is False
-
-
 def test_commentary_requires_realtime_enabled() -> None:
     """The parent switch off downgrades the whole graph, commentary included."""
-    activation = _wave4_response_activation(
-        _config(enabled=False, lifecycle=True, commentary=True),
-    )
+    activation = _wave4_response_activation(_config(enabled=False, commentary=True))
     assert activation.reason == "realtime_parent_disabled"
     assert activation.flags.lifecycle_commentary is False
 
 
-def test_commentary_validates_with_its_two_preconditions() -> None:
-    """Both preconditions met: the switch survives the graph."""
-    activation = _wave4_response_activation(
-        _config(enabled=True, lifecycle=True, commentary=True),
-    )
+def test_commentary_validates_with_its_precondition() -> None:
+    """The precondition met: the switch survives the graph."""
+    activation = _wave4_response_activation(_config(enabled=True, commentary=True))
     assert activation.reason == "validated"
     assert activation.flags.lifecycle_commentary is True
 
 
 def test_non_boolean_truthy_never_enables_commentary() -> None:
     """Fail-closed `is True`, the same rule every other realtime flag uses."""
-    config = _config(enabled=True, lifecycle=True, commentary=True)
+    config = _config(enabled=True, commentary=True)
     config["realtime"]["commentary"] = {"enabled": "yes"}  # type: ignore[index]
     assert _wave4_response_activation(config).flags.lifecycle_commentary is False
 
@@ -2311,7 +2291,7 @@ def test_an_unheard_commentary_answers_cancel_response_and_writes_its_row(
     Before this change ``runtime.response_runs`` never held a commentary run,
     so this exact POST answered ``unknown_response`` and wrote nothing.
     """
-    runtime = commentary_runtime(tmp_path, cancel=True)
+    runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-opcancel")
     with _Observer(runtime):
@@ -2341,7 +2321,7 @@ def test_barge_in_while_a_commentary_is_open_still_cancels_the_final_run(
     registry holds two open runs and the barge-in returns
     ``ambiguous_open_runs``, cancelling nothing.
     """
-    runtime = commentary_runtime(tmp_path, cancel=True)
+    runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     registry = runtime.response_runs
     assert registry is not None
@@ -2391,7 +2371,7 @@ def test_a_closed_commentary_is_no_longer_a_cancel_target(tmp_path: Path) -> Non
     ``already_terminal`` would mean the entry is still registered, so
     ``unknown_response`` is exactly the proof of unregistration.
     """
-    runtime = commentary_runtime(tmp_path, cancel=True)
+    runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
     _user_turn(runtime.conn, "T-closed")
     with _Observer(runtime):

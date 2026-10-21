@@ -1142,19 +1142,15 @@ class _Wave4ResponseActivation:
 def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActivation:
     """Resolve the ADR-0008 Step 2 flag graph in exactly one place.
 
-    Every precondition for the two Wave-4A switches lives here rather than
-    being re-derived at each combination point — that ad-hoc ladder is the
-    root cause of the flag drift the Wave 0-3 audit found. Rules run in
-    order and produce at most one downgrade per boot, each with one warning
-    and one ``response_activation_downgraded`` trace point:
-
-    1. ``realtime`` absent / not a mapping / ``realtime.enabled`` not True.
-    2. ``independent_response_cancel``, ``routine_streaming``,
-       ``spoken_streaming`` or ``lifecycle_commentary`` requested without a
-       surviving ``response_run_lifecycle``. Cancellation,
-       routine streaming and D6 commentary all require stable response
-       lifecycle identities — without the lifecycle switch no ResponseRun,
-       terminalizer or registry is constructed at all.
+    Every precondition for the Wave-4A switches lives here rather than being
+    re-derived at each combination point — that ad-hoc ladder is the root
+    cause of the flag drift the Wave 0-3 audit found. One rule, at most one
+    downgrade per boot, with one warning and one
+    ``response_activation_downgraded`` trace point: ``routine_streaming``,
+    ``spoken_streaming`` or ``lifecycle_commentary`` requested while
+    ``realtime`` is absent, not a mapping, or ``realtime.enabled`` is not True.
+    The ResponseRun lifecycle and the cancel seam are no switches (ADR 0332):
+    bootstrap builds both for every runtime.
     """
     realtime = config.get("realtime")
     if not isinstance(realtime, Mapping):
@@ -1171,20 +1167,13 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     )
     if realtime.get("enabled") is not True:
         if not requested.all_disabled:
-            return _downgraded_response_activation(requested, "realtime_parent_disabled")
+            return _downgraded_response_activation(requested)
         return _Wave4ResponseActivation(
             flags=Wave4ResponseFlags(),
             requested=requested,
             reason="not_requested",
         )
 
-    if (
-        requested.independent_response_cancel
-        or requested.routine_streaming
-        or requested.spoken_streaming
-        or requested.lifecycle_commentary
-    ) and not requested.response_run_lifecycle:
-        return _downgraded_response_activation(requested, "lifecycle_flag_disabled")
     return _Wave4ResponseActivation(
         flags=requested,
         requested=requested,
@@ -1192,56 +1181,32 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     )
 
 
-def _downgraded_response_activation(
-    requested: Wave4ResponseFlags,
-    reason: str,
-) -> _Wave4ResponseActivation:
-    """Log and trace one downgrade, then return the safe flag set.
+def _downgraded_response_activation(requested: Wave4ResponseFlags) -> _Wave4ResponseActivation:
+    """Log and trace the one downgrade, then return the safe (all off) flag set.
 
-    ``lifecycle_flag_disabled`` drops only the cancel seam and keeps whatever
-    the operator asked for on the lifecycle switch; every other reason drops
-    both switches, because the run lifecycle is what the cancel seam needs to
-    exist at all. A downgrade never *enables* a switch the config left off.
+    A downgrade never *enables* a switch the config left off.
     """
-    flags = (
-        Wave4ResponseFlags(
-            response_run_lifecycle=requested.response_run_lifecycle,
-            independent_response_cancel=False,
-        )
-        if reason == "lifecycle_flag_disabled"
-        else Wave4ResponseFlags()
-    )
+    reason = "realtime_parent_disabled"
     LOGGER.warning(
-        "realtime.response downgraded (%s): requested response_run_lifecycle=%s "
-        "independent_response_cancel=%s "
-        "routine_streaming=%s spoken_streaming=%s lifecycle_commentary=%s; effective "
-        "response_run_lifecycle=%s independent_response_cancel=%s "
-        "routine_streaming=%s spoken_streaming=%s "
-        "lifecycle_commentary=%s",
+        "realtime.response downgraded (%s): requested routine_streaming=%s "
+        "spoken_streaming=%s lifecycle_commentary=%s; effective all off",
         reason,
-        requested.response_run_lifecycle,
-        requested.independent_response_cancel,
         requested.routine_streaming,
         requested.spoken_streaming,
         requested.lifecycle_commentary,
-        flags.response_run_lifecycle,
-        flags.independent_response_cancel,
-        flags.routine_streaming,
-        flags.spoken_streaming,
-        flags.lifecycle_commentary,
     )
     record_realtime_trace(
         "response_activation_downgraded",
         reason=reason,
         requested=(
-            f"response_run_lifecycle={requested.response_run_lifecycle},"
-            f"independent_response_cancel={requested.independent_response_cancel},"
             f"routine_streaming={requested.routine_streaming},"
             f"spoken_streaming={requested.spoken_streaming},"
             f"lifecycle_commentary={requested.lifecycle_commentary}"
         ),
     )
-    return _Wave4ResponseActivation(flags=flags, requested=requested, reason=reason)
+    return _Wave4ResponseActivation(
+        flags=Wave4ResponseFlags(), requested=requested, reason=reason,
+    )
 
 
 def _wave4_response_flags(config: Mapping[str, Any]) -> Wave4ResponseFlags:
@@ -3445,9 +3410,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     think_mode = _think_mode(llm_config, config_path)
 
     # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
-    #     here; every downstream site reads the validated result. With the
-    #     switches off nothing below is constructed: no session factory, no
-    #     registry, no extra env read and no extra SDK transport.
+    #     here; every downstream site reads the validated result. Every
+    #     runtime gets the session factory and the cancel registry (ADR 0332).
     response_activation = _wave4_response_activation(full_config)
     response_flags = response_activation.flags
     realtime_raw = full_config.get("realtime")
@@ -3458,12 +3422,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         if isinstance(realtime_raw, Mapping) and realtime_raw.get("enabled") is True
         else None
     )
-    llm_session_factory = (
-        LLMSessionFactory(llm_config) if response_flags.response_run_lifecycle else None
-    )
-    response_runs = (
-        ResponseRunRegistry() if response_flags.independent_response_cancel else None
-    )
+    llm_session_factory = LLMSessionFactory(llm_config)
+    response_runs = ResponseRunRegistry()
 
     # Plugin skills are sampled per turn so connections need no daemon restart.
     system_prompt = prompt_path.read_text(encoding="utf-8").replace(
@@ -3644,11 +3604,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     return runtime
 
 
-def _follow_conversation_setting(
-    settings: Settings | None, factory: LLMSessionFactory | None,
-) -> None:
+def _follow_conversation_setting(settings: Settings | None, factory: LLMSessionFactory) -> None:
     """ADR 0297: the page's conversation model and effort reach the next turn at once."""
-    if settings is None or factory is None:
+    if settings is None:
         return
     settings.on_conversation = factory.choose
     if chosen := settings.conversation_saved():
@@ -3740,7 +3698,7 @@ def _start_drive_turn_response(
     turn_id: str,
     correction: StreamCorrection | None = None,
 ) -> tuple[ResponseRun, ResponseTerminalizer, RoutineStreamRoute | None] | None:
-    """Open one durable ResponseRun for this turn, or ``None`` when flagged off.
+    """Open one durable ResponseRun for this turn, or ``None`` without a session factory.
 
     ``runtime`` here is ``drive_turn``'s own runtime — in the daemon that is
     the ``dataclasses.replace(conn=worker_conn)`` copy, so the run's
@@ -3754,9 +3712,7 @@ def _start_drive_turn_response(
     under ``spoken_stream_policy`` first (a typed one is never played, ADR 0181).
     Every other turn (and every correction run) keeps ``legacy_full_text_policy``.
     """
-    if not runtime.response_flags.response_run_lifecycle:
-        return None
-    if runtime.llm_session_factory is None:  # pragma: no cover - bootstrap pairs them
+    if runtime.llm_session_factory is None:
         return None
 
     response_id = new_response_id()
@@ -3823,7 +3779,7 @@ def _start_drive_turn_response(
         close_after=False,
         committed_event_bus=runtime.committed_event_bus,
     )
-    if runtime.response_flags.independent_response_cancel and runtime.response_runs is not None:
+    if runtime.response_runs is not None:
         runtime.response_runs.register(run)
         # Checked after registering, so a stop (or a sweep, ADR 0074) landing at
         # any moment either sees the run or is seen here.
@@ -4543,8 +4499,7 @@ def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate 
             :class:`~jarvis.decision.response_run.ResponseCancelledError`.
             This is the single line that makes a response cancel land
             within one poll interval during a 600 s action wait instead
-            of after it. ``None`` (the default, and what every caller
-            passes with the flag off) restores the exact legacy loop.
+            of after it. ``None`` (the default) polls without a cancel check.
 
     Returns:
         Tuple of ``(event, new_after_id)`` — the freshly-folded
@@ -5091,8 +5046,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
         )
     # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
     # decide loop so the per-run request client, the terminal owner and the
-    # L5 ids all name the same response. Returns None with the flag off, and
-    # every use below is guarded on that None.
+    # L5 ids all name the same response. Returns None for a runtime without a
+    # session factory (a hand-built one), and every use below is guarded on that None.
     run_pair = None if continuation is not None else _start_drive_turn_response(
         runtime,
         user_intent_event=user_intent_event,
@@ -5212,10 +5167,10 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                 else runtime.tool_registry,
             ),
             lifecycle=cast("LifecycleLike", runtime.lifecycle),
-            # ADR-0008 D4 — with the Wave-4A flag on, this turn's provider
-            # identity is the run's own immutable client, so two overlapping
-            # runs can never read each other's last-call metadata. With the
-            # flag off this is the same shared client object as before.
+            # ADR-0008 D4 — this turn's provider identity is the run's own
+            # immutable client, so two overlapping runs can never read each
+            # other's last-call metadata. A turn without a run (a hand-built
+            # runtime) uses the shared client.
             llm_client=run.request_client if run is not None else runtime.llm_client,
             # The profile rides the system prompt: stable across turns, so it
             # sits in the cached prefix rather than in the per-turn context.
@@ -5348,8 +5303,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     turn_id=effective_turn_id,
                     correction=correction,
                 )
-                if replacement is None:  # pragma: no cover - the flag graph pins lifecycle on
-                    msg = "drive_turn: correction run requires response_run_lifecycle"
+                if replacement is None:  # pragma: no cover - bootstrap always builds the factory
+                    msg = "drive_turn: correction run requires an LLM session factory"
                     raise RuntimeBootstrapError(msg)  # noqa: TRY301
                 run, terminalizer, _ = replacement
                 decide_ctx = replace(

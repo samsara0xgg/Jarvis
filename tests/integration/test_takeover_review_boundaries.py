@@ -98,7 +98,7 @@ def test_cancel_during_pricing_prevents_provider_admission(
 ) -> None:
     """Real drive_turn must not enter chat after cancellation won during setup."""
     model = answering()
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True, model=model)
+    runtime = make_runtime(tmp_path, model=model)
     runtime = replace(runtime, wave1_features=replace(
         runtime.wave1_features, exactly_once_cost_accounting=True,
     ))

@@ -50,8 +50,6 @@ def routine_runtime(
                 "exactly_once_cost_accounting": True,
             },
             "response": {
-                "response_run_lifecycle": True,
-                "independent_response_cancel": True,
                 "cancel_timeout_ms": 500,
                 "routine_streaming": {"enabled": routine},
             },

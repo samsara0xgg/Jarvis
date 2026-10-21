@@ -109,7 +109,7 @@ def test_on_word_thinks_its_own_turn_only(
     conn = open_event_log(paths.event_log)
     # The turns are stamped minutes apart by the test's clock; a hold counted from those stamps
     # would be waited out in real time.
-    config = realtime_config(lifecycle=True, cancel=False, answer_hold_s=0)
+    config = realtime_config(answer_hold_s=0)
     model = ScriptedModel(otherwise="好的。")
     runtime = JarvisRuntime(
         config=config,

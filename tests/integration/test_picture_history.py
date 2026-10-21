@@ -56,6 +56,7 @@ from jarvis.state.memory_db import (
     link_attachments,
     render_context,
 )
+from tests.support.model import ScriptedModel, ScriptedSessions
 from tests.support.net import start_http_server, stop_http_server
 from tests.support.phone import NOTES, PNG, attachment_turn, attachments_daemon
 from tests.support.picture_notes import ANSWER, FILLER_EN, WORDS, World
@@ -163,6 +164,14 @@ class FilesClient(LLMClient):
             msg = "files api down"
             raise RuntimeError(msg)
         self.deleted.append(file_id)
+
+
+def sessions(model: ScriptedModel, provider: str = "anthropic") -> ScriptedSessions:
+    """A session factory whose default preset is ``provider``'s; ``model`` answers every run."""
+    return ScriptedSessions(model, {
+        "provider": provider, "default_preset": "p",
+        "presets": {"p": {"provider": provider, "model": "m", "max_tokens": 64}},
+    })
 
 
 class Clock:
@@ -386,7 +395,10 @@ def test_the_anthropic_request_names_the_file_and_sends_the_files_beta_header(
 def test_a_real_turn_after_a_picture_turn_sees_the_picture_by_file_id(world: World) -> None:
     """Through drive_turn: the picture's own turn is excluded from history, the next one has it."""
     world.model.provider = "anthropic"  # only a Claude preset takes a picture as a file
-    world.runtime = replace(world.runtime, picture_files=PictureFiles(world.store))
+    world.runtime = replace(
+        world.runtime, llm_session_factory=sessions(world.model),
+        picture_files=PictureFiles(world.store),
+    )
     picture = world.picture("IMG_1.png")
 
     world.turn(WORDS, ANSWER, (picture,))
@@ -977,17 +989,17 @@ def test_a_backlog_is_never_uploaded_one_after_another_inside_a_turn(world: Worl
 
 def test_the_start_uploads_the_newest_twenty_in_the_background(world: World) -> None:
     """The backfill: no render is waiting, no more than the window can use goes up."""
-    client = FilesClient()
     world.runtime = replace(
-        world.runtime, llm_client=client, picture_files=PictureFiles(world.store),
+        world.runtime, llm_session_factory=sessions(world.model),
+        picture_files=PictureFiles(world.store),
     )
     ids = [send(world, f"IMG_{n:02d}.png") for n in range(HISTORY_PICTURES + 3)]
 
     inherent_loop._link_pictures(world.runtime)  # noqa: SLF001
     deadline = time.monotonic() + 10
-    while len(client.uploads) < HISTORY_PICTURES and time.monotonic() < deadline:
+    while len(world.model.uploads) < HISTORY_PICTURES and time.monotonic() < deadline:
         time.sleep(0.01)
 
-    uploaded_names = sorted(name for name, *_ in client.uploads)
+    uploaded_names = sorted(name for name, *_ in world.model.uploads)
     assert uploaded_names == sorted(f"IMG_{n:02d}.png" for n in range(3, HISTORY_PICTURES + 3))
     assert all(world.store.file_id(one) is None for one in ids[:3])

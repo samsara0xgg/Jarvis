@@ -88,7 +88,7 @@ def _scene(tmp_path: Path, open_for: tuple[str, ...]) -> JarvisRuntime:
     that names another turn, so it has no opening row (a reconciliation turn). ``W-mac`` and
     ``W-iphone`` are recent sentences whose run has not opened yet.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     nodes = {"mac": MAC_NODE, "iphone": PHONE}
     for name in open_for:
         turn_id = TURNS[name]
@@ -239,7 +239,7 @@ def test_a_devices_voice_cancels_only_the_runs_of_its_own_turns(
 
 def test_the_hold_on_completion_stays_global(tmp_path: Path) -> None:
     """ADR 0053's hold is on every run whoever speaks: a terminal's hold reaches the registry."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     registry = runtime.response_runs
     assert registry is not None
     _hooks(runtime).hold_runs(True)  # noqa: FBT003

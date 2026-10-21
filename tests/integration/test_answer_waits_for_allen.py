@@ -155,7 +155,7 @@ def test_no_answer_completes_while_allen_talks(
     tmp_path: Path,
 ) -> None:
     """The run waits at its completion while held and completes once released."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     runtime.response_runs.hold_completion(held=True)
     intent = emit_intent(runtime.conn, "T-first")
@@ -188,7 +188,7 @@ def test_the_next_sentence_cancels_only_an_unspoken_answer_to_a_recent_sentence(
     ``T-heard`` answers a voice sentence, but L5 already played some of it: kept.
     ``T-typed`` answers typed text: kept. The kept two complete on release.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     runtime.response_runs.hold_completion(held=True)
     asked: list[frozenset[str]] = []
@@ -241,7 +241,7 @@ def test_a_dropped_turn_takes_its_waiting_card_with_it(
     tmp_path: Path,
 ) -> None:
     """ADR 0074: the card the first half put up is rejected as ``superseded``, so none waits."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     runtime.response_runs.hold_completion(held=True)
     intent = emit_intent(runtime.conn, "T-first")
@@ -299,7 +299,7 @@ def test_a_turn_already_working_on_a_tool_is_superseded_only_without_slow_result
     it. Without a dispatched action, or with the flag off, ADR 0053/0074 still
     drops the unspoken answer.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     runtime = replace(runtime, response_flags=replace(runtime.response_flags, slow_results=slow))
     assert runtime.response_runs is not None
     runtime.response_runs.hold_completion(held=True)
@@ -366,7 +366,7 @@ def test_a_supplement_or_correction_acts_on_the_one_turn_it_names(  # noqa: PLR0
     playing is left to barge-in, except a correction stops it; a turn working on a tool is
     left alone.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     runtime.response_runs.hold_completion(held=True)
     intent = emit_intent(runtime.conn, "T-first")
@@ -414,7 +414,7 @@ def test_a_supplement_or_correction_acts_on_the_one_turn_it_names(  # noqa: PLR0
 
 def test_a_relation_to_a_turn_with_no_open_answer_does_nothing(tmp_path: Path) -> None:
     """The earlier answer already left (or was dropped by the 10 s sweep): no open run."""
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     relate = make_relation_supersede_callable(runtime, lambda ids: ids, lambda: None)
     assert relate("T-gone", "T-next", "supplement") == "no_open_run"
     runtime.conn.close()
@@ -490,7 +490,7 @@ def test_a_sentence_accepted_before_the_earlier_run_opens_still_supersedes_it(
     next line found nothing to cancel and both answers played, one 18 s behind.
     The run must be cancelled as ``superseded`` the moment it opens.
     """
-    runtime = make_runtime(tmp_path, lifecycle=True, cancel=True)
+    runtime = make_runtime(tmp_path)
     assert runtime.response_runs is not None
     intent = emit_intent(runtime.conn, "T-first")
     _heard(runtime.conn, "T-first")
