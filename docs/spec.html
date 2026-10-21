@@ -638,6 +638,7 @@ I8 到 I11 随审核链退役（ADR 0019），编号保留。
 <li><strong>Claude Code 的会话</strong>（ADR 0046）：跑 <code>claude agents --json</code> 拿名单和实时状态，读会话的 <code>state.json</code> 和对话记录的末尾。不往 Claude Code 里装东西，不写它的文件。默认关（<code>observer.claude_sessions.enabled</code>）；hook 送来的标记不受这个开关影响。</li>
 <li><strong>回后台会话一句话</strong>：打开上一条之后，主人可以在刘海里回一个空闲的后台 Claude 会话。后台在一个看不见的终端里跑 <code>claude attach</code>，把这一行打进去、回车、再断开；这个终端的环境里去掉了 <code>ANTHROPIC_API_KEY</code>，不走 API 计费。</li>
 <li><strong>Codex 的会话记录</strong> <code>~/.codex/sessions</code>：只有打开 <code>daily_report.codex_sessions</code> 时，日报才读它并发给模型。默认关。</li>
+<li><strong>Codex 会话板读的记录</strong>（ADR 0019）：hook 负载里的 <code>transcript_path</code> 只有指向 <code>~/.codex/sessions</code>（设了 <code>CODEX_HOME</code> 就是那里的 <code>sessions</code>）下的普通文件才会被读；设备、管道和目录之外的路径一律忽略，那一行只凭 hook 判断。每次读文件末尾，最多 8 MiB，读在事件循环之外进行。</li>
 </ul>
 <ul>
 <li><strong>Codex 会话的标题</strong>：刘海和 Agents 窗口读 <code>~/.codex/session_index.jsonl</code>（设了 <code>CODEX_HOME</code> 就读那里的），最多十秒一次。</li>

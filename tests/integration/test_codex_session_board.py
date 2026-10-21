@@ -2,22 +2,36 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.shared.lang import t
+from jarvis.surface import codex_sessions
+from jarvis.surface.codex_sessions import settle_codex_sessions
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
 def _noop(text: str) -> None:
     del text
+
+
+@pytest.fixture
+def sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Codex's sessions directory, where the daemon accepts a hook's rollout from."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    (tmp_path / "codex" / "sessions").mkdir(parents=True)
+    return tmp_path / "codex" / "sessions"
 
 
 def test_activity_retention_and_turn_identity_over_http() -> None:
@@ -80,12 +94,12 @@ def _rollout_line(
         fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 
-def test_rollout_settles_what_hooks_miss(tmp_path: Path) -> None:
+def test_rollout_settles_what_hooks_miss(sessions: Path) -> None:
     """Auto-reviewed approvals never ask Allen; a turn ended without a Stop leaves running."""
     client = TestClient(create_app(InherentDeps(
         submit_callable=_noop, broadcaster=InherentBroadcaster(),
     )))
-    auto, mine = tmp_path / "auto.jsonl", tmp_path / "mine.jsonl"
+    auto, mine = sessions / "auto.jsonl", sessions / "mine.jsonl"
     for path, reviewer in ((auto, "auto_review"), (mine, "user")):
         _rollout_line(path, 999, "turn_context", turn_id="t1", approvals_reviewer=reviewer)
         _rollout_line(path, 999, "task_started", turn_id="t1")
@@ -116,12 +130,12 @@ def test_rollout_settles_what_hooks_miss(tmp_path: Path) -> None:
         assert row("auto")["state"] == "running"
 
 
-def test_codex_question_waits_on_allen_until_he_writes(tmp_path: Path) -> None:
+def test_codex_question_waits_on_allen_until_he_writes(sessions: Path) -> None:
     """Codex asks and works on: the row asks until Allen sends anything, past the turn's end."""
     client = TestClient(create_app(InherentDeps(
         submit_callable=_noop, broadcaster=InherentBroadcaster(),
     )))
-    path = tmp_path / "rollout.jsonl"
+    path = sessions / "rollout.jsonl"
     _rollout_line(path, 999, "task_started", turn_id="t1")
     asked = t("codex.asks", question="Web prototype or SwiftUI?")
 
@@ -157,3 +171,114 @@ def test_codex_question_waits_on_allen_until_he_writes(tmp_path: Path) -> None:
     _rollout_line(path, 1005, "item_completed", item={"type": "UserMessage"})
     with patch("jarvis.surface.inherent_server.time.time", return_value=1006):
         assert (row()["state"], row()["detail"]) == ("running", "")
+
+
+def _within(seconds: float, call: Callable[[], object]) -> None:
+    """Run ``call`` and fail, rather than hang the suite, when it has not returned in time."""
+    done = threading.Event()
+
+    def run() -> None:
+        call()
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    assert done.wait(seconds), "the call is stuck on a file it should have refused"
+
+
+def _permission_request(client: TestClient, path: str, session: str = "s") -> dict[str, object]:
+    """Post a PermissionRequest naming ``path`` as the rollout; the board row it leaves."""
+    reply = client.post("/inherent/codex-hook", json={
+        "session_id": session, "hook_event_name": "PermissionRequest", "transcript_path": path,
+        "turn_id": "t1", "tool_name": "Bash", "tool_input": {"command": "git push"},
+    })
+    assert reply.status_code == 200
+    rows = client.get("/inherent/codex-sessions").json()["sessions"]
+    return dict(next(row for row in rows if row["session_id"] == session))
+
+
+def _reviewer_line(reviewer: str) -> str:
+    line = {"type": "turn_context", "payload": {"approvals_reviewer": reviewer}}
+    return json.dumps(line, separators=(",", ":")) + "\n"  # compact, as Codex writes it
+
+
+def test_a_hook_cannot_make_the_daemon_read_what_is_not_a_rollout(
+    sessions: Path, tmp_path: Path,
+) -> None:
+    """A device, a FIFO, a link out of the directory and a file elsewhere are not read."""
+    client = TestClient(create_app(InherentDeps(
+        submit_callable=_noop, broadcaster=InherentBroadcaster(),
+    )))
+    elsewhere = tmp_path / "elsewhere.jsonl"
+    elsewhere.write_text(_reviewer_line("auto_review"))
+    fifo = sessions / "fifo.jsonl"
+    os.mkfifo(fifo)
+    link = sessions / "link.jsonl"
+    link.symlink_to(elsewhere)
+
+    for refused in ("/dev/zero", str(fifo), str(link), str(elsewhere)):
+        def post(path: str = refused) -> None:
+            row = _permission_request(client, path, session=path)
+            # Read as a rollout, "elsewhere" would have said Codex's reviewer answers.
+            assert row["state"] == "needs_input"
+            assert "transcript_path" not in row
+
+        _within(10, post)
+
+
+def test_an_oversized_rollout_is_read_only_as_far_as_the_cap(sessions: Path) -> None:
+    """The reviewer line is found within the cap, not by reading the whole file."""
+    client = TestClient(create_app(InherentDeps(
+        submit_callable=_noop, broadcaster=InherentBroadcaster(),
+    )))
+    near, far = sessions / "near.jsonl", sessions / "far.jsonl"
+    for path, behind in ((near, 1024 * 1024), (far, 20 * 1024 * 1024)):
+        with path.open("wb") as fh:
+            fh.write(_reviewer_line("auto_review").encode())
+            fh.truncate(fh.tell() + behind)  # a hole: megabytes of zeros after the line
+
+    assert _permission_request(client, str(near), "near")["state"] == "running"
+    assert _permission_request(client, str(far), "far")["state"] == "needs_input"
+
+
+def test_a_row_naming_a_device_or_a_fifo_is_settled_without_reading_it(tmp_path: Path) -> None:
+    """The reader itself refuses what is not a regular file, whatever put the path on the row."""
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    board = {
+        name: {"session_id": name, "state": "running", "since_ms": 1, "transcript_path": path}
+        for name, path in (("zero", "/dev/zero"), ("fifo", str(fifo)))
+    }
+
+    _within(10, lambda: settle_codex_sessions(board))
+
+    assert [row["state"] for row in board.values()] == ["running", "running"]
+
+
+def test_reading_a_rollout_does_not_hold_the_event_loop(
+    sessions: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While a hook's rollout is being read, the daemon still answers its other requests."""
+    rollout = sessions / "rollout.jsonl"
+    rollout.write_text(_reviewer_line("user"))
+    reading, loop_free = threading.Event(), threading.Event()
+    held_the_loop: list[bool] = []
+    real = codex_sessions._rollout  # noqa: SLF001
+
+    def slow(path: str, *, tail: int) -> str:
+        reading.set()
+        held_the_loop.append(not loop_free.wait(10))
+        return real(path, tail=tail)
+
+    monkeypatch.setattr(codex_sessions, "_rollout", slow)
+    with TestClient(create_app(InherentDeps(
+        submit_callable=_noop, broadcaster=InherentBroadcaster(),
+    ))) as client:
+        hook = threading.Thread(target=_permission_request, args=(client, str(rollout)))
+        hook.start()
+        assert reading.wait(10)
+        assert client.get("/api/health").status_code == 200
+        loop_free.set()
+        hook.join(10)
+
+    assert held_the_loop
+    assert not any(held_the_loop)

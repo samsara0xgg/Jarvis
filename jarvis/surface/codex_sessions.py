@@ -6,24 +6,35 @@ row per session (``running`` / ``needs_input`` / ``finished``) that the
 Resonance dashboard polls from ``/inherent/codex-sessions``. The thread's own
 rollout (the payload's ``transcript_path``) settles what hooks cannot say:
 a turn that ended without a Stop, and an approval Codex's reviewer answers.
+
+The path comes from the request body, so it is trusted no further than
+:func:`rollout_path` lets it: a regular file under Codex's sessions
+directory, read in bounded pieces by a reader that cannot block on it.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from jarvis.shared.lang import t
 
+LOGGER = logging.getLogger(__name__)
+
 # The surface retains pinned snapshots. Never evict active work for newer work.
 RETENTION_MS = 24 * 60 * 60 * 1000
 _DETAIL_CHARS = 160
 # A turn's end is among the rollout's last lines; a turn's settings line may sit further back.
 _TAIL_BYTES = 256 * 1024
+# The most of one rollout ever read: the reviewer line is rewritten at every turn start, so
+# one beyond this is a turn that wrote megabytes of output, not one worth reading whole.
+_MAX_ROLLOUT_BYTES = 8 * 1024 * 1024
 _TURN_EVENTS = frozenset({"task_started", "task_complete", "turn_aborted"})
 _QUESTION_TOOL = "request_user_input"
 _MARKS = (*_TURN_EVENTS, _QUESTION_TOOL, '"UserMessage"')
@@ -36,15 +47,57 @@ _ACTIVE = frozenset({"running", "needs_input"})
 CodexSession = dict[str, Any]
 
 
-def _rollout(path: str, *, tail: int | None) -> str:
-    """The rollout's last ``tail`` bytes, or all of it; empty when it cannot be read."""
+def codex_sessions_root() -> Path:
+    """Where Codex keeps its rollouts: ``sessions`` under ``$CODEX_HOME`` or ``~/.codex``."""
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser() / "sessions"
+
+
+def rollout_path(raw: object) -> str | None:
+    """``raw`` as the resolved path of a regular file under Codex's sessions, else ``None``.
+
+    Only looks (``stat``), never opens: a FIFO or a device named here must not block the
+    caller, and nothing outside Codex's own directory is anyone's rollout.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
     try:
-        with Path(path).open("rb") as fh:
-            if tail is not None:
-                fh.seek(max(0, fh.seek(0, os.SEEK_END) - tail))
-            return fh.read().decode("utf-8", "replace")
+        path = Path(raw).resolve()
+        if path.is_relative_to(codex_sessions_root().resolve()) and stat.S_ISREG(
+            path.stat().st_mode,
+        ):
+            return str(path)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
+def _rollout(path: str, *, tail: int) -> str:
+    """The rollout's last ``tail`` bytes; empty when it is not a readable regular file.
+
+    Opened without following a link and without waiting for a writer, and the descriptor
+    (not the name) is checked, so a path swapped for a FIFO or a device after
+    :func:`rollout_path` still cannot block this or run on without end.
+    """
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
     except OSError:
         return ""
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return ""
+        left = min(tail, info.st_size)
+        os.lseek(fd, info.st_size - left, os.SEEK_SET)
+        pieces: list[bytes] = []
+        while left > 0 and (piece := os.read(fd, left)):
+            pieces.append(piece)
+            left -= len(piece)
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+    return b"".join(pieces).decode("utf-8", "replace")
 
 
 def _auto_reviewed(path: str) -> bool:
@@ -52,7 +105,7 @@ def _auto_reviewed(path: str) -> bool:
 
     Codex writes the thread settings at every turn start; the newest line wins.
     """
-    for tail in (_TAIL_BYTES, None):
+    for tail in (_TAIL_BYTES, _MAX_ROLLOUT_BYTES):
         found: list[str] = _REVIEWER.findall(_rollout(path, tail=tail))
         if found:
             return found[-1] != "user"
@@ -183,6 +236,15 @@ def _prompt(value: object) -> str:
     return _short(text.strip())
 
 
+def _keep_rollout(row: CodexSession, raw: object) -> None:
+    """Take the payload's ``transcript_path`` onto the row only when it is a rollout file."""
+    if (rollout := rollout_path(raw)) is not None:
+        row["transcript_path"] = rollout
+    elif raw:
+        # Not written yet, or not Codex's: the row is settled by its hooks alone.
+        LOGGER.info("codex hook: transcript_path is no rollout file under CODEX_HOME; ignored")
+
+
 def fold_codex_hook(
     board: dict[str, CodexSession], payload: dict[str, Any], *, now_ms: int
 ) -> None:
@@ -217,9 +279,10 @@ def fold_codex_hook(
             "turn_started_ms": now_ms,
         },
     )
-    for key in ("cwd", "model", "transcript_path"):
+    for key in ("cwd", "model"):
         if isinstance(payload.get(key), str):
             row[key] = payload[key]
+    _keep_rollout(row, payload.get("transcript_path"))
     if _hold_question(row, name, payload):
         return
     row["since_ms"] = now_ms

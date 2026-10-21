@@ -94,6 +94,7 @@ import ipaddress
 import json
 import logging
 import re
+import threading
 import time
 import wave
 from dataclasses import dataclass, field
@@ -3461,20 +3462,31 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 â
 
     # ADR 0019 step 4: Allen's own Codex sessions, fed by scripts/codex_hook_log.py.
     codex_board = deps.codex_board
+    codex_lock = threading.Lock()  # one writer at a time: both routes read rollouts off the loop
 
     @app.post("/inherent/codex-hook", status_code=200)
     async def codex_hook(payload: dict[str, Any]) -> dict[str, bool]:
         """Fold one Codex hook payload into the session board; never a decision."""
-        fold_codex_hook(codex_board, payload, now_ms=int(time.time() * 1000))
+
+        def fold(now_ms: int) -> None:
+            with codex_lock:
+                fold_codex_hook(codex_board, payload, now_ms=now_ms)
+
+        await asyncio.to_thread(fold, int(time.time() * 1000))
         return {"ok": True}
 
     @app.get("/inherent/codex-sessions")
     async def codex_sessions() -> dict[str, Any]:
         """Newest-first rows for the Resonance Codex card."""
-        prune_codex_sessions(codex_board, now_ms=int(time.time() * 1000))
-        settle_codex_sessions(codex_board)
-        rows = sorted(codex_board.values(), key=lambda r: int(r["since_ms"]), reverse=True)
-        return {"sessions": rows}
+
+        def read(now_ms: int) -> list[dict[str, Any]]:
+            with codex_lock:
+                prune_codex_sessions(codex_board, now_ms=now_ms)
+                settle_codex_sessions(codex_board)
+                rows = sorted(codex_board.values(), key=lambda r: int(r["since_ms"]), reverse=True)
+                return [dict(row) for row in rows]  # copies: the next hook may edit a row
+
+        return {"sessions": await asyncio.to_thread(read, int(time.time() * 1000))}
 
     # ADR 0046: Allen's own Claude Code sessions, read from Claude Code's own state;
     # ADR 0049: with the prompts Jarvis holds for them and their compacting / stopped marks.
