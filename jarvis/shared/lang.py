@@ -1208,6 +1208,16 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "面试：{company} — {role}",
         "en": "Interview: {company} — {role}",
     },
+    # ADR 0368: a time in a Pacific label that US and BC Pacific read differently, both readings
+    # with what the mail wrote; and the note on the interview's thing that carries them.
+    "job.when.two": {
+        "zh": "{first} 或 {later}（邮件写的是 {said}，按卑诗或美国太平洋时间算）",
+        "en": "{first} or {later} (the mail says {said}, BC or US Pacific)",
+    },
+    "job.thing.note": {
+        "zh": "可能是两个时间：{when}。提醒按较早的那个算。",
+        "en": "Two possible times: {when}. Reminders use the earlier one.",
+    },
     "job.part.role": {"zh": "（{role}）", "en": " ({role})"},
     "job.part.when": {"zh": "，{when}", "en": ", {when}"},
     "job.line.offer": {"zh": "{company}发来 offer{role}{when}。", "en": "{company} sent an offer{role}{when}."},

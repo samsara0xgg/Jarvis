@@ -15,12 +15,12 @@ His zone is America/Vancouver, so a reading is written on BC's clock.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis.shared import zone_label
+from jarvis.shared import lang, zone_label
 from tests.support.clock import DEFAULT_ZONE
 
 SUMMER = date(2026, 7, 15)
@@ -150,3 +150,71 @@ def test_a_clock_that_is_no_time_of_day_is_refused() -> None:
     for clock in ((24, 0), (10, 61), (-1, 0)):
         with pytest.raises(ValueError, match="must be in"):
             zone_label.read("10 am PST", WINTER, clock, DEFAULT_ZONE)
+
+
+@pytest.mark.parametrize(
+    ("sentence", "quoted"),
+    [
+        ("Thursday, November 12 at 10 am PT", "10 am PT"),
+        ("Friday 2:00 PM - 2:30 PM PT", "2:00 PM - 2:30 PM PT"),
+        ("Thursday 10:00 (PST)", "10:00 PST"),
+        ("At 10 am Pacific Standard Time on Thursday", "10 am Pacific Standard Time"),
+        ("Thursday 10:00 UTC-5", "10:00 UTC-5"),
+        ("Thursday 2pm ET", "2pm ET"),
+        ("Thursday at 10 am", ""),
+    ],
+)
+def test_said_quotes_the_time_and_label_the_mail_wrote(sentence: str, quoted: str) -> None:
+    """The words shown beside the readings are the mail's own; nothing when it names no zone."""
+    assert zone_label.said(sentence) == quoted
+
+
+def test_when_text_is_the_time_alone_or_both_readings_through_the_table() -> None:
+    """One reading is its clock (with the range's end); two are the table's sentence."""
+    first = datetime(2026, 11, 12, 10, 0, tzinfo=DEFAULT_ZONE)
+    later = datetime(2026, 11, 12, 11, 0, tzinfo=DEFAULT_ZONE)
+    assert zone_label.when_text(first, None, DEFAULT_ZONE) == "10:00"
+    assert zone_label.when_text(first, None, DEFAULT_ZONE, minutes=30) == "10:00-10:30"
+    for language in ("en", "zh"):
+        assert zone_label.when_text(
+            first, later, DEFAULT_ZONE, sentence="Thursday at 10 am PT", language=language
+        ) == lang.t("job.when.two", lang=language, first="10:00", later="11:00", said="10 am PT")
+        assert zone_label.when_text(
+            first,
+            later,
+            DEFAULT_ZONE,
+            sentence="Thursday 10:00 - 10:30 PST",
+            minutes=30,
+            language=language,
+        ) == lang.t(
+            "job.when.two",
+            lang=language,
+            first="10:00-10:30",
+            later="11:00-11:30",
+            said="10:00 - 10:30 PST",
+        )
+
+
+def test_when_text_says_pacific_when_the_kept_sentence_has_lost_its_label() -> None:
+    """A sentence kept cut at 200 characters may lose its label while its readings stand."""
+    first = datetime(2026, 11, 12, 10, 0, tzinfo=DEFAULT_ZONE)
+    later = datetime(2026, 11, 12, 11, 0, tzinfo=DEFAULT_ZONE)
+    assert zone_label.when_text(
+        first, later, DEFAULT_ZONE, sentence="Thursday, November 12 at 10 am", language="en"
+    ) == lang.t("job.when.two", lang="en", first="10:00", later="11:00", said="Pacific")
+
+
+def test_when_text_names_the_day_of_a_later_reading_on_another_day() -> None:
+    """A later reading that falls on the next day says which, so it is not read as the same day."""
+    first = datetime(2026, 11, 12, 23, 30, tzinfo=DEFAULT_ZONE)
+    later = datetime(2026, 11, 13, 0, 30, tzinfo=DEFAULT_ZONE)
+    assert zone_label.when_text(
+        first, later, DEFAULT_ZONE, sentence="11:30 pm PST", language="en"
+    ) == lang.t("job.when.two", lang="en", first="23:30", later="11-13 00:30", said="11:30 pm PST")
+
+
+def test_when_text_reads_the_readings_in_the_zone_it_is_given() -> None:
+    """Instants from any zone are worded on the zone passed, never the one they came in."""
+    zone = timezone(timedelta(hours=-7))
+    first = datetime(2026, 11, 12, 17, 0, tzinfo=UTC)
+    assert zone_label.when_text(first, None, zone) == "10:00"

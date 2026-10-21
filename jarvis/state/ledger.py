@@ -22,6 +22,7 @@ prose line, which the decision layer writes once a night from these numbers, is 
 from __future__ import annotations
 
 import concurrent.futures
+import itertools
 import logging
 import re
 import sqlite3
@@ -37,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
+from jarvis.shared import zone_label
 from jarvis.state import device_reads, imports, phone_day, places, reminders, things, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
@@ -86,6 +88,9 @@ _SUBJECT_COMPANY: Final[tuple[re.Pattern[str], ...]] = tuple(
 _FILLER: Final[re.Pattern[str]] = re.compile(r"\b(the|inc|ltd|group|technologies|technology)\b")
 _CLOCK: Final[re.Pattern[str]] = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?", re.IGNORECASE,
+)
+_RANGE_JOIN: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:-|\u2013|\u2014|to|until)\s*", re.IGNORECASE,
 )
 _SECTIONS: Final[dict[str, str]] = {  # the headings of a day summary, in the order they are shown
     "Topics": "Talked about",
@@ -321,6 +326,7 @@ class _Mail:
     event_text: str | None
     message_id: str
     via_ats: bool = False  # sent by an applicant-tracking system on the employer's behalf
+    event_later_at: str | None = None  # the later reading of a time its label reads two ways
 
     @property
     def cancelled(self) -> bool:
@@ -381,30 +387,27 @@ def _real_company(company: str, subject: str, known: Mapping[str, str]) -> str:
     return ""
 
 
-def _start_from_text(event_text: str | None, event_at: str | None) -> str | None:
-    """An interview's wall-clock start. The mail's own words beat the parsed ``event_at``."""
-    if event_text:
-        found = [
-            (int(hour), int(minute or 0), (meridiem or "").lower()[:1])
-            for hour, minute, meridiem in _CLOCK.findall(event_text)
-            if 1 <= int(hour) <= 12 and (minute or meridiem)  # noqa: PLR2004 — 12-hour clock
-        ]
-        if found:
-            shared = next((x[2] for x in found if x[2]), "")
-            hour, minute, meridiem = found[0][0], found[0][1], found[0][2] or shared
-            if meridiem == "p" and hour != 12:  # noqa: PLR2004
-                hour += 12
-            if meridiem == "a" and hour == 12:  # noqa: PLR2004
-                hour = 0
-            end = ""
-            if len(found) > 1:
-                hour2, minute2, meridiem2 = found[1][0], found[1][1], found[1][2] or shared
-                if meridiem2 == "p" and hour2 != 12:  # noqa: PLR2004
-                    hour2 += 12
-                end = f"-{hour2:02d}:{minute2:02d}"
-            return f"{hour:02d}:{minute:02d}{end}"
-    if event_at:
-        return datetime.fromisoformat(event_at).strftime("%H:%M")
+def _range_minutes(event_text: str | None) -> int | None:
+    """How long an invitation runs when its words give a range (``2:00 PM - 2:30 PM``), else None.
+
+    The same reading as ``decision.job_mail.event_minutes``, which this layer cannot import: the
+    two clocks must be joined by a dash, ``to`` or ``until``, so ``10:00 AM PST (1:00 PM EST)``
+    is one time said twice, not a range.
+    """
+    clocks = [
+        found for found in _CLOCK.finditer(event_text or "")
+        if 1 <= int(found[1]) <= 12 and (found[2] or found[3])  # noqa: PLR2004 — 12-hour clock
+    ]
+    for first, second in itertools.pairwise(clocks):
+        if not _RANGE_JOIN.fullmatch((event_text or "")[first.end() : second.start()]):
+            continue
+        shared = (first[3] or second[3] or "").lower()[:1]
+        start, end = (
+            (int(c[1]) % 12 + (12 if (c[3] or shared).lower()[:1] == "p" else 0)) * 60
+            + int(c[2] or 0)
+            for c in (first, second)
+        )
+        return end - start if 0 < end - start <= 12 * 60 else None
     return None
 
 
@@ -654,9 +657,12 @@ class _Data:
     def _mail(src: LedgerSources, as_of: datetime) -> list[_Mail]:
         with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
             try:
+                # A store no writer has opened since the column was added has none to read.
+                columns = {col[1] for col in conn.execute("PRAGMA table_info(job_mail)")}
+                later = "event_later_at" if "event_later_at" in columns else "NULL"
                 rows = conn.execute(
-                    "SELECT received_at,sender_name,subject,kind,company,role,event_at,event_text,"
-                    "message_id,deleted FROM job_mail WHERE received_at IS NOT NULL "
+                    "SELECT received_at,sender_name,subject,kind,company,role,event_at,event_text,"  # noqa: S608 — fixed names
+                    f"message_id,deleted,{later} FROM job_mail WHERE received_at IS NOT NULL "
                     "ORDER BY received_at",
                 ).fetchall()
             except sqlite3.Error:
@@ -681,7 +687,7 @@ class _Data:
                     at, sender, subject, str(row[3] or ""), employer, str(row[5] or ""),
                     None if row[6] is None else str(row[6]),
                     None if row[7] is None else str(row[7]), str(row[8]),
-                    company.lower() in _ATS,
+                    company.lower() in _ATS, None if row[10] is None else str(row[10]),
                 ),
             )
         return out
@@ -1147,13 +1153,25 @@ def _by_company(mail: Sequence[_Mail]) -> dict[str, dict[str, list[_Mail]]]:
 
 
 def _invitation_line(mail: _Mail, as_of: datetime, zone: tzinfo, company: str | None = None) -> str:
+    """One interview mail's invitation: its time in ``zone`` from the stored readings (ADR 0368).
+
+    A time its label reads two ways (``10 am PST``, US or BC Pacific) shows both, with what the
+    mail said; a range keeps its end. It is upcoming while any reading is still ahead.
+    """
     assert mail.event_at is not None  # noqa: S101 — callers pass dated mail only
-    when = datetime.fromisoformat(mail.event_at).astimezone(zone)
-    start = _start_from_text(mail.event_text, mail.event_at)
-    state = "upcoming" if when > as_of else "past"
+    first = datetime.fromisoformat(mail.event_at).astimezone(zone)
+    later = (
+        datetime.fromisoformat(mail.event_later_at).astimezone(zone)
+        if mail.event_later_at else None
+    )
+    when = zone_label.when_text(
+        first, later, zone, sentence=mail.event_text or "",
+        minutes=_range_minutes(mail.event_text), language="en",
+    )
+    state = "upcoming" if (later or first) > as_of else "past"
     return (
         f"  {company or mail.company} ({mail.role or 'co-op'}): latest dated invitation "
-        f"{when:%a %Y-%m-%d} at {start} Pacific [{state}; from the mail, received "
+        f"{first:%a %Y-%m-%d} at {when} [{state}; local time; from the mail, received "
         f"{mail.at:%m-%d %H:%M}; the mail text says: {_trim(mail.event_text or '', 80)}]"
     )
 
