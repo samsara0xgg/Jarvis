@@ -20,8 +20,12 @@ from zoneinfo import ZoneInfo
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from jarvis.execution.tools import Tool, build_default_registry
+from jarvis.runtime.home import weather_lookup
 from jarvis.runtime.weatherkit import WeatherKit
+from tests.support.clock import FakeClock
 from tests.support.runtime_config import runtime_config
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -29,9 +33,14 @@ if TYPE_CHECKING:
 
     import pytest
 
+    from tests.support.here import FixedHere
+
 type HourProfile = Callable[[datetime], dict[str, Any]]
 """Fields of the hourly row that begins at a local time, laid over the default row."""
 
+PLACE = {"latitude": 48.48, "longitude": -123.38, "country_code": "CA"}
+"""The home the tests read the weather of: a public city, Victoria."""
+ZONE = "America/Vancouver"
 KEY_ID = "ABC123DEFG"
 TEAM_ID = "3MEBVQ3N3U"
 SERVICE_ID = "com.example.jarvis.weather"
@@ -100,6 +109,29 @@ def kit_for(path: Path) -> WeatherKit:
     return kit
 
 
+_TOOLS: dict[tuple[int, int, str, tuple[tuple[str, Any], ...]], Tool] = {}
+
+
+def call(
+    kit: WeatherKit | None, args: dict[str, Any] | None = None, here: FixedHere | None = None,
+    *, home: dict[str, Any] | None = None, zone: str = ZONE,
+) -> dict[str, Any]:
+    """What the model's ``weather`` tool answers, at :data:`NOW`, for ``args``.
+
+    One lookup per client and reader, as the daemon builds it: it remembers the places it listed.
+    ``home`` and ``zone`` are the home's place (:data:`PLACE`) and the local time zone.
+    """
+    place = home or PLACE
+    token = (id(kit), id(here), zone, tuple(sorted(place.items())))
+    if token not in _TOOLS:
+        registry = build_default_registry(
+            weather_lookup=weather_lookup(place, kit, zone), here=here,
+        )
+        (_TOOLS[token],) = (d for d in registry.get_definitions() if d.name == "weather")
+    ctx = tool_context(clock=FakeClock(NOW), here=None if here is None else here.bind(None))
+    return dict(_TOOLS[token].handler(args or {}, ctx))
+
+
 def b64(text: str) -> bytes:
     """Decode one base64url JWT segment."""
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
@@ -135,14 +167,76 @@ def rain_all_day(at: datetime) -> dict[str, Any]:
     }
 
 
-def weatherkit_body(
-    query: dict[str, str], *, minutes: str = "dry-then-rain", warned: bool = True,
-    hours: HourProfile | None = None,
-) -> dict[str, Any]:
-    """The WeatherKit answer for ``query``; ``minutes`` is one of dry-then-rain, raining, none.
+ALERT_ID = "7c9a5f1e-2b3d-4e8a-9f60-a1b2c3d4e5f"
+"""An alert's id, a UUID with a digit to end it for each alert in force."""
+ALERT_TEXT = (
+    "Heavy rain is expected.   Rainfall amounts of 50 to 70 mm are possible\nby Thursday morning."
+    " Rain may cause flooding in low-lying areas and water pooling on roads. Be careful near"
+    " creeks and storm drains, and leave early if a road is closed ahead. Updates will be issued"
+    " as conditions change, so check the local road reports before you travel."
+)
+"""An alert's full text as WeatherKit gives it, spaces and line breaks included."""
+_SEVERITIES = ("moderate", "minor", "extreme", "severe", "moderate")
+_HEADLINES = (
+    "Rainfall Warning", "Special Weather Statement", "Storm Surge Warning", "Wind Warning",
+    "Freezing Rain Warning",
+)
 
-    With ``warned`` False no alert is in force, and WeatherKit leaves the set out of its answer.
-    ``hours`` sets the fields of each hourly row from its local start.
+# For each pattern: the minutes that rain with their chance, and the summary periods
+# (start minute, condition, chance) WeatherKit would give for the hour; None leaves no summary.
+type _Periods = list[tuple[int, str, float | None]]
+_MINUTES: dict[str, tuple[range, float, _Periods | None]] = {
+    "dry-then-rain": (
+        range(25, 45), 0.8, [(0, "clear", None), (25, "rain", 0.8), (45, "clear", None)],
+    ),
+    "raining": (range(20), 0.8, [(0, "rain", 0.8), (20, "clear", None)]),
+    # Minutes with some intensity at a 20% chance, in a summary that says clear: no shower.
+    "low-chance": (range(25, 45), 0.2, [(0, "clear", None)]),
+    # The minutes begin at 09:54; the summary's period begins at 09:52 and is the one to follow.
+    "summary-leads": (
+        range(24, 44), 0.7, [(0, "clear", None), (22, "rain", 0.7), (44, "clear", None)],
+    ),
+    "none": (range(0), 0.0, None),
+}
+
+
+def _next_hour(minutes: str, *, summary: bool) -> dict[str, Any]:
+    """WeatherKit's ``forecastNextHour`` for one of the patterns above, from the minute of NOW."""
+    wet, chance, periods = _MINUTES[minutes]
+    start = NOW.replace(second=0)
+    rows = [
+        {
+            "startTime": _z(start + timedelta(minutes=n)),
+            "precipitationIntensity": 1.5 if n in wet else 0.0,
+            "precipitationChance": chance if n in wet else 0.0,
+        }
+        for n in range(60)
+    ]
+    body: dict[str, Any] = {"minutes": rows}
+    if summary and periods is not None:
+        body["summary"] = [
+            {
+                "startTime": _z(start + timedelta(minutes=at)), "condition": condition,
+                "precipitationChance": odds, "precipitationIntensity": 1.5 if odds else 0.0,
+                **(
+                    {"endTime": _z(start + timedelta(minutes=periods[n + 1][0]))}
+                    if n + 1 < len(periods) else {}
+                ),
+            }
+            for n, (at, condition, odds) in enumerate(periods)
+        ]
+    return body
+
+
+def weatherkit_body(
+    query: dict[str, str], *, minutes: str = "dry-then-rain", warned: int = 1,
+    hours: HourProfile | None = None, summary: bool = True,
+) -> dict[str, Any]:
+    """The WeatherKit answer for ``query``; ``minutes`` is a pattern of :data:`_MINUTES`.
+
+    ``warned`` is how many alerts are in force; with none WeatherKit leaves the set out of its
+    answer. ``hours`` sets the fields of each hourly row from its local start; ``summary`` False
+    leaves the next hour's summary out.
     """
     zone = ZoneInfo(query["timezone"])
     sets = query["dataSets"].split(",")
@@ -185,28 +279,32 @@ def weatherkit_body(
             at += timedelta(hours=1)
         body["forecastHourly"] = {"hours": hourly_rows}
     if "forecastNextHour" in sets and minutes != "none":
-        start = NOW.replace(second=0)
-        rows: list[dict[str, Any]] = []
-        for n in range(60):
-            wet = (minutes == "raining" and n < 20) or (minutes == "dry-then-rain" and 25 <= n < 45)
-            rows.append({
-                "startTime": _z(start + timedelta(minutes=n)),
-                "precipitationIntensity": 1.5 if wet else 0.0, "precipitationChance": 0.8,
-            })
-        body["forecastNextHour"] = {
-            "minutes": rows,
-            "summary": [{"startTime": rows[0]["startTime"], "condition": "rain",
-                         "precipitationChance": 0.8, "precipitationIntensity": 1.5}],
-        }
+        body["forecastNextHour"] = _next_hour(minutes, summary=summary)
     if "weatherAlerts" in sets and warned:
-        body["weatherAlerts"] = {"alerts": [{
-            "description": "Rainfall Warning", "severity": "moderate",
-            "areaName": "Greater Victoria",
-            "source": "Environment Canada", "effectiveTime": _z(NOW),
-            "expireTime": _z(NOW + timedelta(hours=12)),
-            "detailsUrl": "https://weather.gc.ca/warnings",
-        }]}
+        body["weatherAlerts"] = {"alerts": [
+            {
+                "id": f"{ALERT_ID}{n}",
+                "description": _HEADLINES[n],
+                "severity": _SEVERITIES[n], "areaName": "Greater Victoria",
+                "source": "Environment Canada", "effectiveTime": _z(NOW),
+                "expireTime": _z(NOW + timedelta(hours=12)),
+                "detailsUrl": "https://weather.gc.ca/warnings",
+            }
+            for n in range(warned)
+        ]}
     return body
+
+
+def alert_detail() -> dict[str, Any]:
+    """What WeatherKit gives for one alert by its id: the words in each language and its times."""
+    return {
+        "messages": [
+            {"language": "fr", "text": "Des pluies abondantes sont prévues."},
+            {"language": "en", "text": ALERT_TEXT},
+        ],
+        "eventOnsetTime": _z(NOW + timedelta(hours=2)),
+        "eventEndTime": _z(NOW + timedelta(hours=14)),
+    }
 
 
 def _series(query: dict[str, str]) -> dict[str, Any]:
@@ -238,14 +336,23 @@ class Net:
 
     def __init__(  # noqa: PLR0913 - one switch for each thing the fake network can do
         self, monkeypatch: pytest.MonkeyPatch, *, down: tuple[str, ...] = (),
-        refuse: int | None = None, minutes: str = "dry-then-rain", warned: bool = True,
-        hours: HourProfile | None = None,
+        refuse: int | None = None, minutes: str = "dry-then-rain", warned: int = 0,
+        hours: HourProfile | None = None, service: bool = True, summary: bool = True,
+        fail: tuple[str, ...] = (),
     ) -> None:
-        """Replace ``urlopen``; ``down`` lists hosts that time out, ``refuse`` an HTTP status."""
+        """Replace ``urlopen``; ``down`` lists hosts that time out, ``refuse`` an HTTP status.
+
+        ``warned`` is how many alerts are in force; ``service`` whether WeatherKit offers alerts
+        at the place; ``summary`` whether the next hour has one; ``fail`` the path prefixes of
+        WeatherKit that answer 503 while the rest answer. Every switch is an attribute a test may
+        set again between two calls.
+        """
         self.asked: list[str] = []
         self.headers: list[dict[str, str]] = []
         self.down, self.refuse, self.minutes, self.warned = down, refuse, minutes, warned
-        self.hours = hours
+        self.hours, self.service = hours, service
+        self.summary, self.fail = summary, fail
+        self.reason = "NOT_ENABLED"
         monkeypatch.setattr(urllib.request, "urlopen", self._urlopen)
 
     def _urlopen(self, target: Any, *, timeout: float) -> io.BytesIO:  # noqa: ANN401
@@ -257,14 +364,25 @@ class Net:
         query = {k: unquote(v[0]) for k, v in parse_qs(parts.query).items()}
         if host in self.down:
             raise TimeoutError
+        body: Any
         if host == "weatherkit.apple.com":
-            if self.refuse:
+            if self.refuse or parts.path.startswith(self.fail or ("\0",)):
                 raise urllib.error.HTTPError(
-                    url, self.refuse, "refused", {}, io.BytesIO(b'{"reason":"NOT_ENABLED"}'),  # type: ignore[arg-type]
+                    url, self.refuse or 503, "refused", {},  # type: ignore[arg-type]
+                    io.BytesIO(json.dumps({"reason": self.reason}).encode()),
                 )
-            body = weatherkit_body(
-                query, minutes=self.minutes, warned=self.warned, hours=self.hours,
-            )
+            if parts.path.startswith("/api/v1/availability/"):
+                body = [
+                    "currentWeather", "forecastDaily", "forecastHourly", "forecastNextHour",
+                    *(["weatherAlerts"] if self.service else []),
+                ]
+            elif parts.path.startswith("/api/v1/weatherAlert/"):
+                body = alert_detail()
+            else:
+                body = weatherkit_body(
+                    query, minutes=self.minutes, warned=self.warned, hours=self.hours,
+                    summary=self.summary,
+                )
         elif host.startswith("geocoding"):
             found = next(  # the geocoder does not mind the case of a name
                 one for (name, language), one in GEOCODED.items()
@@ -278,3 +396,14 @@ class Net:
     def hosts(self) -> list[str]:
         """The host of each request, in order."""
         return [urlparse(one.split(" ")[0]).hostname or "" for one in self.asked]
+
+    def weather(self) -> list[str]:
+        """The forecast requests, in order: not availability, and not an alert's text."""
+        return [one for one in self.asked if "/api/v1/weather/" in one]
+
+    def paths(self) -> list[str]:
+        """The path of each request to WeatherKit, in order."""
+        return [
+            urlparse(one.split(" ")[0]).path for one in self.asked
+            if urlparse(one.split(" ")[0]).hostname == "weatherkit.apple.com"
+        ]

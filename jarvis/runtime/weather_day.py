@@ -232,19 +232,36 @@ def now_sentence(now: Mapping[str, Any]) -> str | None:
     return None if temp is None else f"{round(temp)}° and {now.get('condition') or 'unknown'} now"
 
 
-def first_line(
+def warning_sentence(headlines: Sequence[str], more: int = 0) -> str | None:
+    """``official warning in force: Rainfall Warning``; None with none in force.
+
+    ``more`` counts the warnings in force whose headlines are not given.
+    """
+    if not headlines:
+        return None
+    if len(headlines) + more == 1:
+        return f"official warning in force: {headlines[0]}"
+    left = f"; {more} more" if more else ""
+    return f"{len(headlines) + more} official warnings in force: {'; '.join(headlines)}{left}"
+
+
+def first_line(  # noqa: PLR0913 - the place, what is now, today, the days and the warnings.
     label: str, now: Mapping[str, Any] | None, parts: Mapping[str, Any],
-    days: Sequence[tuple[Mapping[str, Any], bool]],
+    days: Sequence[tuple[Mapping[str, Any], bool]], warned: Sequence[str] = (),
+    more_warned: int = 0,
 ) -> str:
-    """The line an answer opens with, written from its figures (ADR 0355).
+    """The line an answer opens with, written from its figures (ADR 0355, 0357).
 
     ``label`` is the place; ``now`` the current conditions (None for days all gone by); ``parts``
-    today in parts; ``days`` the other days asked, each with whether it is past, in order. The
-    sentences are joined by semicolons and the last ones go first when the line runs long, with a
-    count of the days left out.
+    today in parts; ``days`` the other days asked, each with whether it is past, in order;
+    ``warned`` the headlines of the official warnings in force, which come first, and
+    ``more_warned`` how many others are in force. The sentences are joined by semicolons and the
+    last ones go first when the line runs long, with a count of the days left out.
     """
     opening = None if now is None else now_sentence(now)
+    warning = warning_sentence(warned, more_warned)
     pieces = [
+        *([warning] if warning else []),
         *([opening] if opening else []),
         *_today_sentences(parts),
         *(day_sentence(row, past=past) for row, past in days),
@@ -279,7 +296,10 @@ def fit(result: dict[str, Any], limit: int = RESULT_CHARS) -> dict[str, Any]:
     The hour rows go first, then the air quality's days, then the days from the end, one row at a
     time; ``left_out`` counts them by list and ``see_more`` says how to get them.
     """
-    cut: dict[str, int] = {}
+    names = {path.replace(".", "_"): path for path in _CUT_ORDER}
+    cut: dict[str, int] = {  # an answer cut before keeps its counts
+        names[name]: int(n) for name, n in (result.get("left_out") or {}).items() if name in names
+    }
 
     def noted() -> dict[str, Any]:
         left = {path.replace(".", "_"): n for path, n in cut.items()}
@@ -317,4 +337,5 @@ __all__ = [
     "rest_of_today",
     "split",
     "tonight",
+    "warning_sentence",
 ]

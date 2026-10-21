@@ -120,7 +120,7 @@ def items(today: date) -> list[Item]:
 def _result() -> str:
     """The faked WeatherKit result of ``weather`` with no arguments, built by the tool itself."""
     with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as tmp:
-        Net(mp)
+        Net(mp, warned=1)  # a warning in force, for "are there storm warnings"
         kit = kit_for(make_key(Path(tmp))[0])
         registry = build_default_registry(weather_lookup=weather_lookup(HOME, kit, ZONE))
         (tool,) = (t for t in registry.get_definitions() if t.name == "weather")

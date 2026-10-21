@@ -83,11 +83,8 @@ def build_weather_tool(
         except ToolError:
             raise
         except Exception as exc:  # any other failure: say so.
-            msg = (
-                f"weather: the forecast could not be read ({type(exc).__name__}); tell him it is"
-                " unavailable"
-            )
-            raise ToolError(msg, code="network_error") from exc
+            msg = f"weather is unavailable: the forecast could not be read ({type(exc).__name__})"
+            raise ToolError(msg, code="network_error", kind="dont_retry") from exc
         return {**result, "location_from": said} if said else result
 
     properties: dict[str, Any] = {

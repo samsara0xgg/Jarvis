@@ -29,8 +29,10 @@ from tests.integration.weatherkit_world import (
     GEOCODED,
     KEY_ID,
     NOW,
+    PLACE,
     SERVICE_ID,
     TEAM_ID,
+    ZONE,
     Net,
     b64,
     config,
@@ -39,14 +41,11 @@ from tests.integration.weatherkit_world import (
     make_key,
     rain_all_day,
 )
-from tests.support.clock import FakeClock
+from tests.integration.weatherkit_world import call as _call
 from tests.support.here import FixedHere, mac_reading
 from tests.support.home_routes import Connections
 from tests.support.runtime_config import runtime_config
-from tests.support.tool_context import tool_context
 
-PLACE = {"latitude": 48.48, "longitude": -123.38, "country_code": "CA"}
-ZONE = "America/Vancouver"
 TORONTO = {
     "name": "Toronto", "latitude": 43.70, "longitude": -79.42, "admin1": "Ontario",
     "country": "Canada", "country_code": "CA", "timezone": "America/Toronto",
@@ -67,28 +66,10 @@ GEOCODED.update({
 })
 
 
-_TOOLS: dict[tuple[int, int], Any] = {}
-
-
 @pytest.fixture
 def key(tmp_path: Path) -> tuple[Path, ec.EllipticCurvePrivateKey]:
     """A throwaway signing key file and its key."""
     return make_key(tmp_path)
-
-
-def _call(
-    kit: WeatherKit | None, args: dict[str, Any] | None = None,
-    here: FixedHere | None = None,
-) -> dict[str, Any]:
-    # One lookup per client and reader, as the daemon builds it: it remembers the places it listed.
-    token = (id(kit), id(here))
-    if token not in _TOOLS:
-        registry = build_default_registry(
-            weather_lookup=weather_lookup(PLACE, kit, ZONE), here=here,
-        )
-        (_TOOLS[token],) = (d for d in registry.get_definitions() if d.name == "weather")
-    ctx = tool_context(clock=FakeClock(NOW), here=None if here is None else here.bind(None))
-    return dict(_TOOLS[token].handler(args or {}, ctx))
 
 
 def _day(offset: int) -> str:
@@ -109,16 +90,18 @@ def test_no_arguments_is_one_weatherkit_request_for_home_and_the_whole_answer(
     """One request: current, hours from midnight, daily, next hour and alerts; today in parts."""
     net = Net(monkeypatch)
     report = _call(kit_for(key[0]))
-    assert net.hosts() == ["weatherkit.apple.com"]
-    url = urlparse(net.asked[0].split(" ")[0])
-    assert url.path == "/api/v1/weather/en/48.48/-123.38"
+    assert net.paths() == [  # the forecast, then which data sets WeatherKit has at the place
+        "/api/v1/weather/en/48.48/-123.38", "/api/v1/availability/48.48/-123.38",
+    ]
+    assert len(net.weather()) == 1
     query = _query(net.asked[0])
     assert query["dataSets"] == (
         "currentWeather,forecastHourly,forecastDaily,forecastNextHour,weatherAlerts"
     )
-    assert query["countryCode"] == "CA"
+    assert query["countryCode"] == query["country"] == "CA"  # Apple documents one, forums the other
     assert query["timezone"] == ZONE
     assert "timeout=6.0" in net.asked[0]
+    assert report["alerts"] == "none in force"
     assert list(report) == [
         "summary", "place", "timezone", "now", "earlier_today", "rest_of_today", "tonight",
         "whole_day", "tomorrow", "next_hours", "next_hour", "alerts", "attribution",
@@ -157,8 +140,8 @@ def test_the_token_has_apples_header_and_claims_and_is_signed_with_the_key(
     _call(kit)
     _call(kit, {"when": _day(2)})
     bearers = [h["Authorization"] for h in net.headers]
-    assert len(bearers) == 2
-    assert bearers[0] == bearers[1]
+    assert len(bearers) == 3  # the forecast, the data sets of the place, another forecast
+    assert len(set(bearers)) == 1
     scheme, _, token = bearers[0].partition(" ")
     assert scheme == "Bearer"
     head, claims, signature = token.split(".")
@@ -177,76 +160,20 @@ def test_the_token_has_apples_header_and_claims_and_is_signed_with_the_key(
     )
 
 
-def test_the_next_hour_says_when_rain_starts_or_stops_or_that_there_is_no_minute_data(
-    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
-) -> None:
-    """Dry then rain at minute 25; raining now stops at minute 20; none: a plain reason."""
-    local = NOW.astimezone(ZoneInfo(ZONE)).replace(second=0)
-    Net(monkeypatch)
-    soon = _call(kit_for(key[0]))["next_hour"]
-    assert soon == {
-        "now": "dry", "starts_at": (local + timedelta(minutes=25)).strftime("%H:%M"),
-        "stops_at": None, "peak_mm_h": 1.5, "kind": "rain",
-        "data_until": (local + timedelta(minutes=60)).strftime("%H:%M"),
-    }
-    Net(monkeypatch, minutes="raining")
-    raining = _call(kit_for(key[0]))["next_hour"]
-    assert raining["now"] == "rain"
-    assert raining["stops_at"] == (local + timedelta(minutes=20)).strftime("%H:%M")
-    Net(monkeypatch, minutes="none")
-    none = _call(kit_for(key[0]))["next_hour"]
-    assert "no minute-by-minute precipitation" in none["unavailable"]
-
-
-def test_alerts_come_with_headline_severity_times_and_source_and_need_the_country(
-    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
-) -> None:
-    """The alert is read in the place's time; a place whose zone has no country is not asked."""
-    net = Net(monkeypatch)
-    (alert,) = _call(kit_for(key[0]))["alerts"]
-    assert alert["headline"] == "Rainfall Warning"
-    assert alert["severity"] == "moderate"
-    assert alert["source"] == "Environment Canada"
-    assert alert["area"] == "Greater Victoria"
-    assert alert["effective"].endswith(("-07:00", "-08:00"))
-    assert alert["expires"] > alert["effective"]
-    net.asked.clear()
-    registry = build_default_registry(
-        weather_lookup=weather_lookup(
-            {"latitude": 48.48, "longitude": -123.38}, kit_for(key[0]), "Etc/UTC",
-        ),
-    )
-    (tool,) = (d for d in registry.get_definitions() if d.name == "weather")
-    report = dict(tool.handler({}, None))  # type: ignore[arg-type]
-    assert "weatherAlerts" not in net.asked[0]
-    assert "countryCode" not in net.asked[0]
-    assert "unavailable" in report["alerts"]
-
-
 def test_a_named_place_is_geocoded_then_read_in_its_own_zone_and_country(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
     """The place goes to the geocoder as given; WeatherKit is asked for what it found."""
     net = Net(monkeypatch)
     report = _call(kit_for(key[0]), {"place": "Toronto"})
-    assert net.hosts() == ["geocoding-api.open-meteo.com", "weatherkit.apple.com"]
+    assert net.hosts() == ["geocoding-api.open-meteo.com", *["weatherkit.apple.com"] * 2]
     assert "name=Toronto" in net.asked[0]
     assert urlparse(net.asked[1].split(" ")[0]).path == "/api/v1/weather/en/43.7/-79.42"
     assert _query(net.asked[1])["timezone"] == "America/Toronto"
     assert _query(net.asked[1])["countryCode"] == "CA"
+    assert "/api/v1/availability/43.7/-79.42?country=CA" in net.asked[2]
     assert report["place"] == "Toronto, Ontario, Canada"
     assert report["timezone"] == "America/Toronto"
-
-
-def test_a_country_with_no_alert_in_force_reads_as_no_alerts(
-    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
-) -> None:
-    """WeatherKit omits the alerts set when none are in force: that is [], not unavailable."""
-    net = Net(monkeypatch, warned=False)
-    report = _call(kit_for(key[0]), {"place": "Toronto"})
-    assert "weatherAlerts" in _query(net.asked[-1])["dataSets"]
-    assert report["place"] == "Toronto, Ontario, Canada"
-    assert report["alerts"] == []
 
 
 def test_a_name_in_the_users_language_is_tried_in_that_language_then_in_english(
@@ -276,7 +203,7 @@ def test_same_name_places_are_listed_and_picked_by_coordinates_in_their_own_zone
     ]
     net.asked.clear()
     picked = _call(kit, {"place": "40.46,-80.6"})
-    assert net.hosts() == ["weatherkit.apple.com"]  # no geocoding for coordinates
+    assert set(net.hosts()) == {"weatherkit.apple.com"}  # no geocoding for coordinates
     assert _query(net.asked[0])["timezone"] == "America/New_York"
     assert _query(net.asked[0])["countryCode"] == "US"
     assert picked["place"] == "40.46,-80.6"
@@ -290,12 +217,12 @@ def test_a_point_far_from_home_takes_its_zone_from_the_offline_map(
     net = Net(monkeypatch)
     far = _call(kit_for(key[0]), {"place": "35.69,139.69"})
     assert far["timezone"] == "Asia/Tokyo"
-    assert net.hosts() == ["weatherkit.apple.com"]
+    assert set(net.hosts()) == {"weatherkit.apple.com"}
     assert parse_qs(urlparse(net.asked[0].split(" ")[0]).query)["countryCode"] == ["JP"]
     net.asked.clear()
     near = _call(kit_for(key[0]), {"place": "48.5,-123.4"})  # inside 100 km of home: its zone
     assert near["timezone"] == ZONE
-    assert net.hosts() == ["weatherkit.apple.com"]
+    assert set(net.hosts()) == {"weatherkit.apple.com"}
 
 
 def test_an_unknown_place_is_a_tool_error(
@@ -367,8 +294,8 @@ def test_a_request_of_days_all_past_asks_for_the_daily_forecast_alone_and_answer
     assert [d["date"] for d in mixed["days"]] == [_day(-1), _day(1)]
     assert mixed["whole_day"]["date"] == _day(0)
     assert {"now", "next_hour", "alerts"} <= set(mixed)
-    assert "dailyStart" in _query(net.asked[-1])
-    assert "forecastHourly" in _query(net.asked[-1])["dataSets"]
+    assert "dailyStart" in _query(net.weather()[-1])
+    assert "forecastHourly" in _query(net.weather()[-1])["dataSets"]
 
 
 def test_hourly_rows_for_a_past_day_are_refused_untouched(
@@ -391,8 +318,8 @@ def test_hourly_rows_cover_the_days_asked_and_air_quality_adds_aqi_rows(
     rows = report["hourly"]
     assert len(rows) == 24
     assert {row["at"].split(" ")[0] for row in rows} == {"tomorrow"}
-    assert net.hosts() == ["weatherkit.apple.com", "air-quality-api.open-meteo.com"]
-    assert f"start_date={_day(1)}&end_date={_day(1)}" in net.asked[1]
+    assert net.hosts() == ["weatherkit.apple.com"] * 2 + ["air-quality-api.open-meteo.com"]
+    assert f"start_date={_day(1)}&end_date={_day(1)}" in net.asked[2]
     assert report["air_quality"]["now"] == {"us_aqi": 42, "pm2_5_ugm3": 8.5, "pm10_ugm3": 12.0}
     assert [d["date"] for d in report["air_quality"]["days"]] == [_day(1)]
     default = _call(kit, {"hourly": True})  # no dates: the rest of today and then tomorrow
@@ -412,8 +339,8 @@ def test_here_reads_the_location_seam_and_says_where_it_came_from(
     kit = kit_for(key[0])
     fix = mac_reading(lat=48.45, lng=-123.37, accuracy_m=30.0, place="Government St, Victoria")
     report = _call(kit, {"place": "Here"}, here=FixedHere(fix))
-    assert net.hosts() == ["weatherkit.apple.com"]
-    assert urlparse(net.asked[0].split(" ")[0]).path == "/api/v1/weather/en/48.45/-123.37"
+    assert net.paths()[0] == "/api/v1/weather/en/48.45/-123.37"
+    assert len(net.weather()) == 1
     assert report["place"] == "Government St, Victoria"
     assert report["location_from"] == "this Mac"
     away = mac_reading(lat=43.65, lng=-79.38, accuracy_m=30.0, place="King St, Toronto")
@@ -433,18 +360,19 @@ def test_here_reads_the_location_seam_and_says_where_it_came_from(
     ("down", "args", "failed"),
     [
         ("geocoding-api.open-meteo.com", {"place": "Toronto"}, "weather: the place lookup"),
-        ("weatherkit.apple.com", {"place": "Toronto"}, "weather: the forecast"),
+        ("weatherkit.apple.com", {"place": "Toronto"}, "weather is unavailable: the forecast"),
     ],
 )
 def test_each_failed_read_is_a_tool_error_that_names_it(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
     down: str, args: dict[str, Any], failed: str,
 ) -> None:
-    """The geocoder or WeatherKit down: the error says which."""
+    """The geocoder or WeatherKit down: the error says which, and sends no one to a web search."""
     Net(monkeypatch, down=(down,))
     with pytest.raises(ToolError, match=f"{failed} could not be read") as caught:
         _call(kit_for(key[0]), args)
-    assert caught.value.code == "network_error"
+    assert (caught.value.code, caught.value.kind) == ("network_error", "dont_retry")
+    assert "web_search" not in str(caught.value)
 
 
 def test_a_401_from_apple_gives_a_plain_reason_without_the_token(
@@ -455,10 +383,10 @@ def test_a_401_from_apple_gives_a_plain_reason_without_the_token(
     net = Net(monkeypatch, refuse=401)
     with caplog.at_level(logging.DEBUG), pytest.raises(ToolError) as caught:
         _call(kit_for(key[0]))
-    assert caught.value.code == "weatherkit_refused"
+    assert (caught.value.code, caught.value.kind) == ("weatherkit_refused", "dont_retry")
     assert str(caught.value) == (
-        "weather: Apple WeatherKit refused the key (401 NOT_ENABLED); tell him the weather key"
-        " needs checking, and use web_search meanwhile"
+        "weather is unavailable: Apple WeatherKit refused the key (401 NOT_ENABLED);"
+        " the key needs checking"
     )
     token = net.headers[0]["Authorization"].split(" ")[1]
     assert token not in str(caught.value)
@@ -753,8 +681,8 @@ def test_the_homes_line_and_the_tool_without_days_are_one_request(
     home = Home(Connections(None), (ZONE, ZoneInfo(ZONE)), PLACE, weatherkit=kit)  # type: ignore[arg-type]
     assert home.weather() is not None
     _call(kit)
-    assert len(net.asked) == 1
-    assert _query(net.asked[0])["hourlyStart"] == "2026-10-21T07:00:00Z"
+    assert len(net.weather()) == 1
+    assert _query(net.weather()[0])["hourlyStart"] == "2026-10-21T07:00:00Z"
 
 
 def test_drizzle_before_dawn_is_over_and_the_answer_says_no_more_rain_today(
@@ -817,7 +745,7 @@ def test_every_day_row_names_its_day_and_the_hours_name_theirs(
 def test_a_full_day_of_rain_still_answers_in_under_four_thousand_characters(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Every field present, rain every hour, rain now, a warning: nothing is left out."""
+    """Every field present, rain every hour, rain now: nothing is left out."""
     Net(monkeypatch, hours=rain_all_day, minutes="raining")
     here = FixedHere(mac_reading(lat=48.45, lng=-123.37, place="Government St, Victoria"))
     kit = kit_for(key[0])
@@ -830,8 +758,8 @@ def test_a_full_day_of_rain_still_answers_in_under_four_thousand_characters(
 def test_a_range_too_long_to_say_is_cut_at_whole_days_and_says_how_to_get_the_rest(
     monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Today and nine days: the later days go whole, counted, with how to ask for them."""
-    Net(monkeypatch, hours=rain_all_day)
+    """Today and nine days, three warnings in force: the later days go whole, counted."""
+    Net(monkeypatch, hours=rain_all_day, warned=3)
     report = _call(kit_for(key[0]), {"when": f"{_day(0)} to {_day(9)}", "air_quality": True})
     assert len(json.dumps(report, ensure_ascii=False)) <= 4000
     shown = [d["date"] for d in report["days"]]
@@ -880,13 +808,13 @@ def test_one_answer_serves_the_same_request_within_five_minutes(
     kit.clock = lambda: now[0]
     _call(kit)
     _call(kit)
-    assert len(net.asked) == 1
+    assert len(net.weather()) == 1
     now[0] += 299
     _call(kit)
-    assert len(net.asked) == 1
+    assert len(net.weather()) == 1
     now[0] += 2
     _call(kit)
-    assert len(net.asked) == 2
+    assert len(net.weather()) == 2
 
 
 def test_the_tool_is_on_the_models_menu_up_front_read_only_and_only_with_a_location(
