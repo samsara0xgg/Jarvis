@@ -213,8 +213,9 @@ def test_anything_else_falls_through_to_the_model(  # noqa: PLR0913 — one para
         error,
         False,
     )
-    assert len(jev.requests) == 1  # never repeated without zdr
-    assert jev.requests[0]["provider"] == {"zdr": True}
+    requests = jev.arrived(1)  # a timed-out call can return before the stand-in reads it
+    assert len(requests) == 1  # never repeated without zdr
+    assert requests[0]["provider"] == {"zdr": True}
 
 
 def test_the_deadline_is_for_the_whole_call_not_each_phase(

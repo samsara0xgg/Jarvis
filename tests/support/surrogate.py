@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
@@ -36,13 +37,17 @@ class SurrogateJev:
         self.choice = "time"
         self.confidence = 0.95
         self.delay_s = 0.0
+        self._arrived = threading.Condition()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 size = int(self.headers["Content-Length"])
-                outer.requests.append(json.loads(self.rfile.read(size)))
-                outer.headers.append(dict(self.headers))
+                body = json.loads(self.rfile.read(size))
+                with outer._arrived:
+                    outer.requests.append(body)
+                    outer.headers.append(dict(self.headers))
+                    outer._arrived.notify_all()
                 time.sleep(outer.delay_s)
                 if outer.mode == "trickle":
                     # Every read lands inside the phase timeout; the whole never ends in time.
@@ -83,6 +88,16 @@ class SurrogateJev:
                 return
 
         self.server = start_http_server(Handler)
+
+    def arrived(self, count: int, timeout_s: float = 5.0) -> list[dict[str, Any]]:
+        """The requests once ``count`` have arrived.
+
+        A caller that gave up on its deadline can return before the handler thread has read
+        the request, so a check after a timeout waits for the arrival instead of racing it.
+        """
+        with self._arrived:
+            self._arrived.wait_for(lambda: len(self.requests) >= count, timeout_s)
+            return list(self.requests)
 
     @property
     def url(self) -> str:
