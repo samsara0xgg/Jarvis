@@ -376,12 +376,7 @@ def test_the_brain_refuses_what_is_not_a_well_formed_ask_and_the_link_lives_on(
         replies.append(ws.receive_json())
         ask_op(ws, "quiet", {"level": "deafening"}, "f" * 32)
         replies.append(ws.receive_json())
-        ask_op(
-            ws,
-            "words",
-            {"turn_id": "T1", "text": "x", "recent": "", "over_her": "yes", "confirm": False},
-            "1" * 32,
-        )
+        ask_op(ws, "interrupt", {"source": 7}, "1" * 32)
         replies.append(ws.receive_json())
         ask_op(ws, "working", {}, "2" * 32)
         alive = ws.receive_json()
@@ -471,7 +466,7 @@ def test_a_brain_that_does_not_listen_says_so_and_a_tell_to_it_is_dropped(tmp_pa
 
 
 def test_an_ask_waits_for_the_tells_sent_before_it_and_runs_them_in_order(tmp_path: Path) -> None:
-    """The judge's note and request precede the line's words, whatever the hooks' speed."""
+    """A tell precedes every ask sent after it, whatever the hook's speed."""
     from contextlib import ExitStack  # noqa: PLC0415
 
     seen: list[str] = []
@@ -479,55 +474,35 @@ def test_an_ask_waits_for_the_tells_sent_before_it_and_runs_them_in_order(tmp_pa
     def hold(held: bool) -> None:  # noqa: FBT001
         seen.append(f"hold:{held}")
 
-    def begin(turn: str, text: str, recent: str, over: bool, conv: bool) -> None:  # noqa: FBT001
-        del text, recent, over, conv
-        seen.append(f"begin:{turn}:start")
+    def say(turn: str, reason: str, text: str) -> None:
+        del reason, text
+        seen.append(f"say:{turn}:start")
         time.sleep(0.2)
-        seen.append(f"begin:{turn}:end")
-
-    def ask(turn: str, text: str, recent: str, over: bool, confirm: bool) -> str:  # noqa: FBT001
-        del text, recent, over, confirm
-        seen.append(f"words:{turn}")
-        return "stop"
+        seen.append(f"say:{turn}:end")
 
     def working_hook() -> bool:
         seen.append("working")
         return True
 
+    def controls_hook() -> dict[str, Any]:
+        seen.append("controls")
+        return {"conversation": True, "quiet": "off"}
+
     client, _hub, _log = listening_client(
-        tmp_path,
-        hold_runs=hold,
-        begin_line=begin,
-        ask_words=ask,
-        turn_working=working_hook,
+        tmp_path, hold_runs=hold, answer_words=say, turn_working=working_hook,
+        controls=controls_hook,
     )
     with ExitStack() as stack:
         ws = connect_listening(client, tmp_path, "macbook", stack)
         ask_op(ws, "hold", {"held": True}, None)
-        ask_op(
-            ws,
-            "begin",
-            {
-                "turn_id": "T1",
-                "text": "stop",
-                "recent": "",
-                "over_her": True,
-                "conversation": False,
-            },
-            None,
-        )
-        ask_op(
-            ws,
-            "words",
-            {"turn_id": "T1", "text": "stop", "recent": "", "over_her": True, "confirm": False},
-            "a" * 32,
-        )
-        ask_op(ws, "working", {}, "b" * 32)
+        ask_op(ws, "say", {"turn_id": "T1", "reason": "stop", "text": "ok"}, None)
+        ask_op(ws, "working", {}, "a" * 32)
+        ask_op(ws, "controls", {}, "b" * 32)
         replies = {reply["id"]: reply for reply in (ws.receive_json(), ws.receive_json())}
-    assert seen[:3] == ["hold:True", "begin:T1:start", "begin:T1:end"]
-    assert sorted(seen[3:]) == ["words:T1", "working"]  # answered asks run beside each other
-    assert replies["a" * 32]["value"] == {"choice": "stop"}
-    assert replies["b" * 32]["value"] == {"working": True}
+    assert seen[:3] == ["hold:True", "say:T1:start", "say:T1:end"]
+    assert sorted(seen[3:]) == ["controls", "working"]  # answered asks run beside each other
+    assert replies["a" * 32]["value"] == {"working": True}
+    assert replies["b" * 32]["value"] == {"conversation": True, "quiet": "off"}
 
 
 def test_the_answer_goes_to_the_terminal_that_heard_the_utterance(tmp_path: Path) -> None:

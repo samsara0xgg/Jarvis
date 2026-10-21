@@ -4,7 +4,7 @@ A voice terminal runs the capture session (wake, VAD, endpointing, ASR, barge-in
 does. What the session reaches in brain state crosses the ``/terminal/ws`` link of
 :mod:`jarvis.surface.terminal_link` as one frame pair::
 
-    terminal -> brain   {"type": "ask", "id": "<32 hex>", "op": "words", "args": {...}}
+    terminal -> brain   {"type": "ask", "id": "<32 hex>", "op": "working", "args": {...}}
     brain -> terminal   {"type": "reply", "id": "<32 hex>", "ok": true, "value": ...}
     brain -> terminal   {"type": "reply", "id": "<32 hex>", "ok": false, "code": "...",
                          "message": "..."}
@@ -26,15 +26,8 @@ utterance the final words, as the pipeline     ``{"verdict": "turn", "event_uid"
                                                (ADR 0278: first taking over from the device's
                                                pending earlier sentence, so the row holds the
                                                whole thought)
-words    turn_id, text, recent, over_her,      ``{"choice": str | null}``: the word judge
-         confirm                               (only a terminal built before ADR 0277 asks)
-elsewhere turn_id, text                        ``{"elsewhere": bool}``: another device recorded
-                                               these words in the last few seconds (ADR 0219;
-                                               only a terminal built before ADR 0277 asks)
 working  (none)                                ``{"working": bool}``: a turn is in flight
-recent   (none)                                ``{"text": str}``: what she said lately (ditto)
 interrupt source                               ``{"outcome": str}``: generation cancel
-supersede turn_id                              ``{}``: unspoken answers dropped and cancelled
 cancel_runs (none)                             ``{}``
 controls (none)                                ``{"conversation": bool, "quiet": str}``
 conversation on, reason                        ``{}``: set conversation mode
@@ -44,10 +37,6 @@ polish   raw, context, language, vocab         ``{"text": str}``: dictation's wo
          the recognizer's guess, the word      no key for (ADR 0183)
          list kept on the terminal)
 hold     held                                  (tell) the run-hold half of hold-output
-note     turn_id, verdict, text, over_her,     (tell) the word judge's note
-         conversation
-begin    turn_id, text, recent, over_her,      (tell) the word judge's one request
-         conversation
 say      turn_id, reason, text                 (tell) one spoken line back
 ======== ===================================== ==============================================
 
@@ -57,14 +46,11 @@ ADR 0286: the optional ``voiceprint`` the utterance carries, scored against the 
 microphone that heard it), then same-words-from-another-device (ADR 0219), then the regexes
 and Jev, then, for a turn, the unspoken answer it replaces is dropped (ADR 0074) before the row
 is written; the row keeps the voiceprint's score, never its embedding. The terminal acts on the
-verdict it gets back. ``words``, ``elsewhere``, ``recent`` and the tells ``note`` and ``begin``
-used to be sent one after another before the utterance; the brain still answers them for a
-terminal built before that, and may stop once none is.
+verdict it gets back.
 
-``interrupt``, ``supersede``, ``cancel_runs`` and ``elsewhere`` act for the terminal that
-sent them, which the brain knows from the link: they touch the turns that terminal opened and
-no others (ADR 0219), and the frames carry no device. A brain that does not know ``elsewhere``
-answers ``unknown_op``.
+``interrupt`` and ``cancel_runs`` act for the terminal that sent them, which the brain knows
+from the link: they touch the turns that terminal opened and no others (ADR 0219), and the
+frames carry no device.
 
 The brain also commands the terminal, on the ordinary ``call`` frame, with two tool names that
 are not menu tools: :data:`DROP_UNSPOKEN` and :data:`STOP_OUTPUT`, for supersede and
@@ -110,13 +96,13 @@ COMMAND_TIMEOUT_S: Final = 3.0
 
 ASKS: Final = frozenset(
     {
-        "utterance", "words", "elsewhere", "working", "recent", "interrupt", "supersede",
-        "cancel_runs", "controls", "conversation", "quiet", "polish",
+        "utterance", "working", "interrupt", "cancel_runs", "controls", "conversation", "quiet",
+        "polish",
     },
 )
-_DEVICE_OPS: Final = frozenset({"elsewhere", "interrupt", "supersede", "cancel_runs"})
+_DEVICE_OPS: Final = frozenset({"interrupt", "cancel_runs"})
 """The asks whose hook is told which terminal sent them (ADR 0219)."""
-TELLS: Final = frozenset({"hold", "note", "begin", "say"})
+TELLS: Final = frozenset({"hold", "say"})
 
 UTTERANCE_TIMEOUT_S: Final = 8.0
 """Covers the brain's judging of the words (Jev waits at most its own ``words_timeout_ms``)."""
@@ -226,14 +212,12 @@ class BrainListening:
         self.hooks = ListenHooks()
         self._last: _Link | None = None  # the terminal that last sent a turn
         self._ops: dict[str, Callable[[Mapping[str, Any]], Any]] = {
-            "words": self._words, "working": self._working, "recent": self._recent,
-            "controls": self._controls,
+            "working": self._working, "controls": self._controls,
             "conversation": self._conversation, "quiet": self._quiet, "polish": self._polish,
-            "hold": self._hold, "note": self._note, "begin": self._begin, "say": self._say,
+            "hold": self._hold, "say": self._say,
         }
         self._device_ops: dict[str, Callable[[str, Mapping[str, Any]], Any]] = {
-            "elsewhere": self._elsewhere, "interrupt": self._interrupt,
-            "supersede": self._supersede, "cancel_runs": self._cancel_runs,
+            "interrupt": self._interrupt, "cancel_runs": self._cancel_runs,
         }
 
     # -- frames ------------------------------------------------------------------------
@@ -454,37 +438,14 @@ class BrainListening:
         LOGGER.info("terminal %s: words go on from %s -> %s", link.name, earlier, outcome)
         return earlier if outcome == "superseded" else None
 
-    def _words(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        line = (
-            _text(args, "turn_id", _ID_CHARS), _text(args, "text"), _text(args, "recent"),
-            _flag(args, "over_her"), _flag(args, "confirm"),
-        )
-        hook = self.hooks.ask_words
-        choice = hook(*line) if hook is not None else None
-        return {"choice": choice if isinstance(choice, str) else None}
-
     def _working(self, _args: Mapping[str, Any]) -> dict[str, Any]:
         hook = self.hooks.turn_working
         return {"working": bool(hook()) if hook is not None else False}
-
-    def _recent(self, _args: Mapping[str, Any]) -> dict[str, Any]:
-        hook = self.hooks.recent_speech
-        return {"text": hook() if hook is not None else ""}
-
-    def _elsewhere(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        turn_id, text = _text(args, "turn_id", _ID_CHARS), _text(args, "text")
-        hook = self.hooks.heard_elsewhere
-        return {"elsewhere": bool(hook(device, turn_id, text)) if hook is not None else False}
 
     def _interrupt(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
         hook = self.hooks.interrupt
         source = _text(args, "source", _ID_CHARS)
         return {"outcome": hook(device, source) if hook is not None else "no_open_run"}
-
-    def _supersede(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        if self.hooks.supersede is not None:
-            self.hooks.supersede(device, _text(args, "turn_id", _ID_CHARS))
-        return {}
 
     def _cancel_runs(self, device: str, _args: Mapping[str, Any]) -> dict[str, Any]:
         if self.hooks.cancel_runs is not None:
@@ -534,22 +495,6 @@ class BrainListening:
     def _hold(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if self.hooks.hold_runs is not None:
             self.hooks.hold_runs(_flag(args, "held"))
-        return {}
-
-    def _note(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        if self.hooks.note_words is not None:
-            self.hooks.note_words(
-                _text(args, "turn_id", _ID_CHARS), _text(args, "verdict", _ID_CHARS),
-                _text(args, "text"), _flag(args, "over_her"), _flag(args, "conversation"),
-            )
-        return {}
-
-    def _begin(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        if self.hooks.begin_line is not None:
-            self.hooks.begin_line(
-                _text(args, "turn_id", _ID_CHARS), _text(args, "text"), _text(args, "recent"),
-                _flag(args, "over_her"), _flag(args, "conversation"),
-            )
         return {}
 
     def _say(self, args: Mapping[str, Any]) -> dict[str, Any]:
