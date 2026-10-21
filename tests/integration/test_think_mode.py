@@ -109,7 +109,9 @@ def test_on_word_thinks_its_own_turn_only(
     """Each answer's response.started names the effort its own words called for."""
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
-    config = realtime_config(lifecycle=True, cancel=False)
+    # The turns are stamped minutes apart by the test's clock; a hold counted from those stamps
+    # would be waited out in real time.
+    config = realtime_config(lifecycle=True, cancel=False, answer_hold_s=0)
     runtime = JarvisRuntime(
         config=config,
         runtime_paths=paths,

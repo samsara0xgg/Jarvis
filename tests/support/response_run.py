@@ -99,15 +99,27 @@ LLM_CONFIG: dict[str, Any] = {
 }
 
 
-def realtime_config(
+def realtime_config(  # noqa: PLR0913 — every knob of the flag graph, keyword-only.
     *,
     lifecycle: bool,
     cancel: bool,
     wave1: bool = True,
     enabled: bool = True,
     cancel_timeout_ms: int = 500,
+    answer_hold_s: float | None = None,
 ) -> dict[str, Any]:
-    """Build a config mapping for the Wave-4A flag graph."""
+    """Build a config mapping for the Wave-4A flag graph.
+
+    ``answer_hold_s`` sets the spoken answer's hold (ADR 0272); left out, the shipped default of
+    1.5 s applies, which a turn timed from a clock other than the real one waits out for real.
+    """
+    response: dict[str, Any] = {
+        "response_run_lifecycle": lifecycle,
+        "independent_response_cancel": cancel,
+        "cancel_timeout_ms": cancel_timeout_ms,
+    }
+    if answer_hold_s is not None:
+        response["answer_hold"] = {"seconds": answer_hold_s}
     return {
         "realtime": {
             "enabled": enabled,
@@ -117,11 +129,7 @@ def realtime_config(
                 "confirmation_dispatch_outbox": False,
                 "exactly_once_cost_accounting": False,
             },
-            "response": {
-                "response_run_lifecycle": lifecycle,
-                "independent_response_cancel": cancel,
-                "cancel_timeout_ms": cancel_timeout_ms,
-            },
+            "response": response,
         },
     }
 
