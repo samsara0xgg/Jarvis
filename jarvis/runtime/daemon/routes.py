@@ -576,7 +576,8 @@ def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
     try:
         asked = request_confirmation(
             conn, cast("ToolRegistryLike", runtime.tool_registry), "mcp__gmail__gmail_send", args,
-            ttl_ms=runtime.config.confirmation.ttl_ms, lang=lang.language(),
+            ttl_ms=runtime.config.confirmation.ttl_ms, runtime_paths=runtime.runtime_paths,
+            lang=lang.language(),
         )
     finally:
         with contextlib.suppress(sqlite3.Error):

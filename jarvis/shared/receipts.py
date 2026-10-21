@@ -228,18 +228,23 @@ def only_reads(tool: object, arguments: Mapping[str, Any]) -> bool:
     return bool(getattr(tool, "read_only", False))
 
 
+_LEVELS: Final = frozenset({"L0", "L1", "L2", "L3", "L4"})
+
+
 def call_risk(tool: object, arguments: Mapping[str, Any]) -> RiskLevel:
     """The level of this call (ADR 0361): the tool's ``effect`` of its arguments, else its level.
 
     A tool that declares no ``effect`` has one level for every call. An ``effect`` that cannot
-    take these arguments counts as the tool's own (highest) level.
+    take these arguments, or answers with no level, counts as the tool's own (highest) level.
     """
     effect = getattr(tool, "effect", None)
     if effect is not None:
         try:
-            return cast("RiskLevel", effect(arguments))
-        except Exception:  # noqa: BLE001, S110 — arguments the model made up must not lower it.
-            pass
+            level = effect(arguments)
+        except Exception:  # noqa: BLE001 — arguments the model made up must not lower it.
+            level = None
+        if level in _LEVELS:
+            return cast("RiskLevel", level)
     return cast("RiskLevel", getattr(tool, "risk_level", "L3"))
 
 

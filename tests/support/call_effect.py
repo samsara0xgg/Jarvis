@@ -49,8 +49,11 @@ def effect(args: Mapping[str, Any]) -> RiskLevel:
 
 
 def complete(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-    """A name becomes the person's address; two Pats need him; nobody is impossible."""
+    """A name becomes the person's address; two Pats need him; nobody is impossible; Boom breaks."""
     name = str(args.get("to", ""))
+    if name == "Boom":
+        msg = "the address book fell over"
+        raise RuntimeError(msg)
     if name == "Pat":
         msg = "two people are called Pat: Pat Kim (last mail 3 May), Pat Lo (last mail 9 Jun)"
         raise ToolError(msg, code="needs_choice_of_person", kind="needs_him")

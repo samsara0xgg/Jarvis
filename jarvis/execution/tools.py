@@ -486,6 +486,14 @@ def _fit_result(payload: dict[str, Any], cap: int) -> dict[str, Any]:
     return payload
 
 
+def _unexpected(tool_name: str, exc: Exception) -> str:
+    """What the model is told when a tool's code failed in a way the tool did not name."""
+    return (
+        f"{tool_name} failed unexpectedly ({type(exc).__name__}: {exc}); "
+        "tell him it failed, and do not repeat the same call"
+    )
+
+
 def _call_reads(tool_def: Tool, arguments: Mapping[str, Any]) -> bool:
     """Whether this call only reads; a ``reads`` that cannot take these arguments means a write."""
     try:
@@ -539,10 +547,7 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
         # The terminal row is the dispatcher's whatever the handler did.
         LOGGER.exception("tool %s raised", tool_def.name)
         error = "unexpected_error"
-        message = (
-            f"{tool_def.name} failed unexpectedly ({type(exc).__name__}: {exc}); "
-            "tell him it failed, and do not repeat the same call"
-        )
+        message = _unexpected(tool_def.name, exc)
     if error is not None:
         tool_output = tool_result(
             _fit_result({"error": message, "code": error, "kind": kind}, cap),
@@ -3324,7 +3329,8 @@ class ToolRegistry:
         """The full arguments a call that needs a card will run with (ADR 0361).
 
         A tool with no completion gives its arguments as they are. A completion that raises
-        :class:`ToolError` comes back as the failure it names; it only reads, so nothing was done.
+        :class:`ToolError` comes back as the failure it names, any other error as an unexpected
+        one; it only reads, so nothing was done, and no card follows either.
         """
         with self._lock:
             tool_def = self._tools.get(tool_name)
@@ -3338,6 +3344,9 @@ class ToolRegistry:
             return Completed(dict(tool_def.complete(arguments, ctx)))
         except ToolError as exc:
             return Completed(None, str(exc), exc.code, exc.kind)
+        except Exception as exc:
+            LOGGER.exception("tool %s's completion raised", tool_def.name)
+            return Completed(None, _unexpected(tool_def.name, exc), "unexpected_error")
 
     def dispatch(
         self,

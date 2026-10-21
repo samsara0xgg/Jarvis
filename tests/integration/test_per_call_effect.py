@@ -16,6 +16,10 @@ import pytest
 from jarvis.decision import CompletionRefused, request_confirmation
 from jarvis.decision.policy import PolicyConsistencyError, validate_requires_confirmation
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
+from jarvis.execution.tools import build_default_registry
+from jarvis.runtime.bootstrap.catalog import load_tables
+from jarvis.runtime.config import RuntimeBootstrapError, parse_runtime_config
+from jarvis.shared import CallerPrincipal
 from jarvis.shared.receipts import call_asks, call_risk
 from tests.support import call_effect
 from tests.support.consent import tool_results
@@ -165,8 +169,12 @@ def test_tier0_and_the_boot_check_judge_a_varying_tool_per_action(tmp_path: Path
         False, False, True,
     ]
     validate_requires_confirmation([tool], "L3")  # a varying tool is not held to one flag
-    with pytest.raises(PolicyConsistencyError):
+    with pytest.raises(PolicyConsistencyError, match="requires_confirmation"):
         validate_requires_confirmation([replace(tool, requires_confirmation=True)], "L3")
+    with pytest.raises(PolicyConsistencyError, match=r"action 'send'.*above"):  # the highest is L3
+        validate_requires_confirmation([replace(tool, risk_level="L1")], "L3")
+    with pytest.raises(PolicyConsistencyError, match="action 'note'"):  # a lower floor wants a card
+        validate_requires_confirmation([tool], "L1")
 
     def table(action: str) -> object:
         path = tmp_path / f"{action}.yaml"
@@ -186,3 +194,72 @@ def test_tier0_and_the_boot_check_judge_a_varying_tool_per_action(tmp_path: Path
         validate_tier0_table(
             table("send"), allowed_tool_names=frozenset({"depot"}), asks_for_args=asks,  # type: ignore[arg-type]
         )
+
+
+def test_a_completion_that_fails_unexpectedly_makes_no_card_and_says_not_to_repeat(
+    tmp_path: Path,
+) -> None:
+    """A completion's own bug ends the call like a refusal does: no card, a failed receipt."""
+    llm = ScriptedModel(_one_call(action="send", to="Boom", body="hi"), "It failed.")
+    ctx = call_effect.context(tmp_path, llm)
+    try:
+        assert say(ctx, "send", "T1") == "It failed."
+        assert logged_dicts(ctx.conn, "confirmation.requested") == []
+        assert logged_dicts(ctx.conn, "action.proposed") == []
+        (result,) = tool_results(llm, 1)
+        assert (result["code"], result["kind"], result["is_error"]) == (
+            "unexpected_error", "dont_retry", True,
+        )
+        assert "do not repeat the same call" in result["error"]
+    finally:
+        ctx.conn.close()
+
+
+def test_the_model_is_told_which_of_a_tools_calls_wait_for_his_approval(tmp_path: Path) -> None:
+    """A tool whose calls differ says so in its menu entry; a tool that always runs says nothing."""
+    llm = ScriptedModel("Nothing to do.")
+    ctx = call_effect.context(tmp_path, llm)
+    try:
+        say(ctx, "hello", "T1")
+        menu = {
+            (one.get("function") or one)["name"]: (one.get("function") or one)["description"]
+            for one in (llm.requests[0].tools or [])
+        }
+        assert menu["depot"].startswith("Look, note or send.")
+        assert "A call that needs his approval does not run" in menu["depot"]
+        assert "needs his approval" not in menu["keep"]
+    finally:
+        ctx.conn.close()
+
+
+def test_an_effect_that_cannot_answer_counts_as_the_tools_highest_level() -> None:
+    """A call the declaration cannot place is never lowered: it needs a card."""
+    tool = call_effect.depot()
+    assert call_risk(tool, {"action": "teleport"}) == "L3"  # the effect raises on it
+    assert call_asks(tool, {"action": "teleport"}) is True
+    lost = replace(tool, effect=lambda _args: "L9")  # type: ignore[arg-type, return-value]
+    assert call_risk(lost, {"action": "look"}) == "L3"
+
+
+def test_the_boot_refuses_a_tier0_row_that_fixes_a_call_that_needs_a_card(tmp_path: Path) -> None:
+    """The runtime's boot checks each Tier 0 row's fixed arguments against the tool's effect."""
+    config = parse_runtime_config({}, config_path=tmp_path / "jarvis.yaml", runtime_root=tmp_path)
+    tool = replace(
+        call_effect.depot(),
+        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM, CallerPrincipal.REGEX_ROUTER}),
+    )
+    registry = build_default_registry()
+    registry.register(tool)
+    rows = tmp_path / "tier0_patterns.yaml"
+
+    def row(action: str) -> str:
+        return (
+            "- id: row\n  pattern: '^go$'\n  tool: depot\n"
+            f"  args: {{action: {action}}}\n  template: tier0.time_now\n"
+        )
+
+    rows.write_text(row("note"), encoding="utf-8")
+    load_tables(config, registry)  # a change he can undo needs no card
+    rows.write_text(row("send"), encoding="utf-8")
+    with pytest.raises(RuntimeBootstrapError, match="depot"):
+        load_tables(config, registry)

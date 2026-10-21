@@ -2229,7 +2229,7 @@ def _run_tier0_path(
             "action_id": action_id,
             "tool_name": hit.tool_name,
             "caller_principal": CallerPrincipal.REGEX_ROUTER.value,
-            "risk_level": call_risk(tool_def, hit.tool_args),
+            "risk_level": action_request.risk_level,
             "target_entity_ref": None,
             "turn_id": scratch.turn_id,
             "arguments": dict(hit.tool_args),
@@ -2432,7 +2432,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0915 — single-pass orchestratio
         _check_response_cancelled(ctx, "after entity resolve")
 
     # ADR 0361: a call that needs a card is completed first, so the card shows what will run.
-    if call_asks(tool_def, arguments) and getattr(tool_def, "complete", None) is not None:
+    if call_asks(tool_def, arguments):
         done = ctx.tool_registry.complete(
             name, arguments, ctx.conn, ctx.runtime_paths, scratch.turn_id,
         )
@@ -4117,25 +4117,23 @@ def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments an
     arguments: Mapping[str, Any],
     *,
     ttl_ms: int,
+    runtime_paths: RuntimePathsLike,
     lang: Language | None = None,
-    runtime_paths: RuntimePathsLike | None = None,
 ) -> str | None:
     """Put a card on screen for a call Allen himself started, with no model turn (ADR 0148).
 
-    Completes the call first when the tool has a completion and ``runtime_paths`` is given
-    (ADR 0361; :class:`CompletionRefused` when it cannot be), then freezes the full arguments
-    exactly as ``_ask_for_frozen_calls`` does; his button then runs the usual answer path
-    (lease, gate, dispatch). The confirmation id, or None when the tool is not on the menu or
-    this call does not ask first.
+    Completes the call first, as a model's call is (ADR 0361; :class:`CompletionRefused` when it
+    cannot be), then freezes the full arguments exactly as ``_ask_for_frozen_calls`` does; his
+    button then runs the usual answer path (lease, gate, dispatch). The confirmation id, or None
+    when the tool is not on the menu or this call does not ask first.
     """
     tool_def = _find_tool_def(registry, tool_name)
     if tool_def is None or not call_asks(tool_def, arguments):
         return None
-    if runtime_paths is not None and getattr(tool_def, "complete", None) is not None:
-        done = registry.complete(tool_name, arguments, conn, runtime_paths)
-        if done.arguments is None:
-            raise CompletionRefused(done.error, done.code, done.kind)
-        arguments = done.arguments
+    done = registry.complete(tool_name, arguments, conn, runtime_paths)
+    if done.arguments is None:
+        raise CompletionRefused(done.error, done.code, done.kind)
+    arguments = done.arguments
     confirmation_id = _new_confirmation_id()
     call = {
         "tool_name": tool_name,
@@ -4815,7 +4813,7 @@ _CARD_NOTE: Final = (
     " and runs or discards it."
 )
 _CARD_NOTE_BY_CALL: Final = (
-    " A call that needs his approval does not run: the user gets a card with these arguments"
+    " A call that needs his approval does not run: he gets a card with these arguments"
     " and runs or discards it."
 )
 
