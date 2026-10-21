@@ -20,3 +20,6 @@ design/render-width-options.mjs
 scripts/compare-icons.py
 scripts/prepare-feedback.py
 scripts/trace-reference-icons.py
+
+# Output of the doors verifier (scripts/verify-day-doors.mjs).
+verify-out/
