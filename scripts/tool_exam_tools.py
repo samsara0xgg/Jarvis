@@ -63,6 +63,7 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -324,7 +325,8 @@ class _Transport:
     """Patches the provider boundaries: ``urlopen`` and the MCP client's tool call.
 
     ``replay`` answers from the recording and fails any call it lacks; ``record`` makes the call
-    and stores the answer. Everything else that opens a socket is refused while replaying.
+    and stores the answer. Everything else that opens a socket is refused while replaying, except
+    the exam's own model request inside :meth:`model_call`.
     """
 
     def __init__(self, recording: Recording, *, live: bool) -> None:
@@ -334,6 +336,7 @@ class _Transport:
         self.secrets: dict[str, str] = secret_values()
         self._real_urlopen = urllib.request.urlopen
         self._stack = contextlib.ExitStack()
+        self._open = threading.local()
 
     def __enter__(self) -> Self:
         real_call, real_direct = McpServers._call, McpServers.call  # noqa: SLF001
@@ -352,12 +355,37 @@ class _Transport:
         self._stack.enter_context(patch.object(McpServers, "_call", call))
         if not self.live:  # a call outside a model turn skips the "connected" check when replayed
             self._stack.enter_context(patch.object(McpServers, "call", direct))
-            self._stack.enter_context(patch.object(socket.socket, "connect", _refuse))
-            self._stack.enter_context(patch.object(socket, "getaddrinfo", _refuse))
+            for owner, name in ((socket.socket, "connect"), (socket, "getaddrinfo")):
+                self._stack.enter_context(
+                    patch.object(owner, name, self._gate(getattr(owner, name)))
+                )
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self._stack.close()
+
+    def _gate(self, real: Callable[..., Any]) -> Callable[..., Any]:
+        """``real`` inside :meth:`model_call` on this thread; refused everywhere else."""
+
+        def gated(*args: Any, **kw: Any) -> Any:  # noqa: ANN401 - the socket call as it is
+            if getattr(self._open, "model", False):
+                return real(*args, **kw)
+            return _refuse()
+
+        return gated
+
+    @contextmanager
+    def model_call(self) -> Iterator[None]:
+        """Open the network to this thread for the exam's own model request; tools stay recorded.
+
+        The request is synchronous, so its sockets open on the calling thread while every other
+        thread, and this one before and after, stays refused.
+        """
+        self._open.model = True
+        try:
+            yield
+        finally:
+            self._open.model = False
 
     def _urlopen(self, url: object, data: object = None, *args: object, **kw: object) -> _Reply:
         method, full, body = _request_of(url, data)

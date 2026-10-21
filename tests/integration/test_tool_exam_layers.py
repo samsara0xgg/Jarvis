@@ -128,6 +128,31 @@ def test_the_recorder_scrubs_every_credential_and_replay_answers_without_the_net
     assert len(replay.misses) == 1
 
 
+def test_only_the_model_request_opens_the_network_and_only_on_its_own_thread(
+    provider: str,
+) -> None:
+    """Inside ``model_call`` this thread connects; another thread, and this one after, cannot."""
+    port = int(provider.rsplit(":", 1)[1])
+    replay = exam._Transport(exam.Recording(), live=False)  # noqa: SLF001
+    elsewhere: list[BaseException] = []
+
+    def other_thread() -> None:
+        try:
+            socket.create_connection(("127.0.0.1", port)).close()
+        except OSError as exc:
+            elsewhere.append(exc)
+
+    with replay:
+        with replay.model_call():
+            socket.create_connection(("127.0.0.1", port)).close()
+            thread = threading.Thread(target=other_thread)
+            thread.start()
+            thread.join()
+        with pytest.raises(OSError, match="network blocked"):
+            socket.create_connection(("127.0.0.1", port))
+    assert [str(e) for e in elsewhere] == ["network blocked: the tool layer runs from recordings"]
+
+
 def test_a_recording_that_would_hold_a_key_is_not_written_and_the_refusal_names_no_value(
     tmp_path: Path,
 ) -> None:

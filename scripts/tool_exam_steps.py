@@ -2,7 +2,8 @@ r"""Tool exam, multi-step mode: each case runs the real decision loop, tools and
 
     .venv/bin/python -m scripts.tool_exam_steps run-steps --cases CASES.json --presets sonnet \
         --out RESULTS.jsonl [--root ~/tool-exam/root-pristine] [--runs 1] [--only id1,id2] \
-        [--system-append FILE] [--keep-work] [--fake SCRIPT.json] [--cap-usd 0.20]
+        [--system-append FILE] [--keep-work] [--fake SCRIPT.json] [--cap-usd 0.20] \
+        [--brain-settings settings.brain.yaml]
     .venv/bin/python -m scripts.tool_exam_steps score-steps RESULTS.jsonl --cases CASES.json
     .venv/bin/python -m scripts.tool_exam_steps quote RESULTS.jsonl --cases CASES.json \
         --preset sonnet [--runs 9] [--margin 0.3] [--only id1,id2]
@@ -57,6 +58,7 @@ import jarvis.runtime as runtime_module
 from jarvis.decision import DecideContext, _tool_menu, decide
 from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.policy import effective_policy, surface_for
+from jarvis.deployment import load_env_file
 from jarvis.execution.tools import Tool, _device_proxy, release_turn_actions
 from jarvis.runtime import _max_tool_iterations, bootstrap_runtime_app
 from jarvis.runtime.plugin_catalog import PluginPackage
@@ -680,6 +682,8 @@ def cmd_run_steps(args: argparse.Namespace) -> int:
     pushes: list[dict[str, str | None]] = []
     meter = Meter(args.cap_usd, table)
     done = 0
+    if script is None:  # a paid run: the saved keys, fill-only; the values are never read here
+        load_env_file(Path(os.environ.get("JARVIS_RUNTIME_ROOT") or Path.home() / ".jarvis"))
     if built:
         from scripts.tool_exam_turns import run_built  # noqa: PLC0415 - it imports this module
 
@@ -1008,6 +1012,10 @@ def main() -> int:
     run.add_argument("--keep-work", action="store_true")
     run.add_argument("--cap-usd", type=float, help="stop before a call that would cross this")
     run.add_argument("--fake", type=Path, help="scripted model: {case id: [step, ...]}")
+    run.add_argument(
+        "--brain-settings", type=lambda s: Path(s).expanduser(),
+        help="the brain's settings.yaml for built cases (default: the cutover-prep copy)",
+    )
     run.set_defaults(func=cmd_run_steps)
     score = sub.add_parser("score-steps")
     score.add_argument("results", type=Path)

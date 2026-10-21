@@ -9,8 +9,10 @@ A case with no ``request`` is built, not replayed:
 ``state`` names a full backup under ``~/.jarvis/backups/pi-brain`` (or a fixture directory, like a
 tool item's). The runner copies its databases, deletes every row and event made at or after ``at``
 (:func:`scripts.tool_exam_tools.cut_at`), freezes the clock at ``at``, boots the runtime on the copy
-and sends ``said`` through the runtime's own typed-turn entry (``run_turn``). The code under test
-builds the system prompt, the history, the state block and the menu; nothing is read from a log.
+and sends ``said`` through the turn the daemon drives (``drive_turn``), rendered on no physical
+surface as the brain renders it: nothing is spoken or shown on the machine the exam runs on. The
+code under test builds the system prompt, the history, the state block and the menu; nothing is
+read from a log.
 ``before`` is not supported: the cut leaves the earlier turns in the history as they were.
 
 Providers answer from the case's ``recording`` where it holds the call; a call it lacks fails inside
@@ -19,10 +21,12 @@ the tool as a provider error (the network is closed), and the result line lists 
 ``sandbox_write``, ``stub``); ``web_search`` with ``depth`` ``deep`` is a nested paid request and is
 always stubbed. A call that needs his confirmation never runs; the record names it.
 
-Configuration is the shipped ``config/jarvis.yaml`` with the brain's ``settings.yaml`` from
-``~/.jarvis/backups/cutover-prep`` over it, minus what would reach out or is not about the turn:
+Configuration is the shipped ``config/jarvis.yaml`` with the brain's ``settings.yaml``
+(``--brain-settings``, by default the copy in ``~/.jarvis/backups/cutover-prep``) over it, minus
+what would reach out or is not about the turn:
 no plugin or MCP server (Notion, Gmail, Hue, Linear, Microsoft), no project list, no log of model
 input and output, no listen addresses, no spoken streaming (the answer is made whole).
+The network is closed to every tool; only the exam's model request goes out.
 Still unlike the Pi: the plugin tools are absent unless an
 ``mcp-tools.json`` stands beside the cases, there are no phone, no real-time session and no
 background lanes, and ``--presets`` picks the model (the Pi's default is the Settings choice).
@@ -40,6 +44,7 @@ import signal
 import sys
 import tempfile
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -49,7 +54,8 @@ import yaml
 
 from jarvis.decision.llm import ChatResult, LLMClient
 from jarvis.execution.tools import Tool
-from jarvis.runtime import run_turn
+from jarvis.runtime import drive_turn
+from jarvis.surface.cli import emit_surface_user_intent
 from scripts.replay_decision import _client
 from scripts.tool_exam_steps import (
     Meter,
@@ -72,7 +78,7 @@ from scripts.tool_exam_tools import (
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from jarvis.execution.tools import FlatHandler, ToolContext
     from jarvis.runtime import JarvisRuntime
@@ -81,19 +87,55 @@ BRAIN_SETTINGS = Path("~/.jarvis/backups/cutover-prep/settings.brain.yaml").expa
 _NOT_IN_A_TURN = ("projects", "runtime", "diagnostics", "dashboard", "job_mail", "realtime")
 _NO_OUTSIDE_SERVERS = ("mcp", "plugins")
 STATE_BLOCK_CHARS = 300
-_STATE_MARK = "[State when this was said"
+_STATE_MARKS = ("[State when this was said", "[Current state")
+"""The block's two headers: as sent when the session replays sent messages, and live otherwise."""
 _STUB_DEEP = {"stubbed": True, "note": "sandbox: a deep web_search is a nested paid request"}
 
 
-def brain_settings(directory: Path) -> Path:
-    """Write the brain's settings, reduced as the module says, to ``directory``; the directory."""
-    data = yaml.safe_load(BRAIN_SETTINGS.read_text(encoding="utf-8")) or {}
+def brain_settings(directory: Path, source: Path = BRAIN_SETTINGS) -> Path:
+    """Write the brain's settings from ``source``, reduced as the module says, to ``directory``.
+
+    Returns ``directory``.
+    """
+    if not source.is_file():
+        msg = f"no brain settings at {source}; pass --brain-settings"
+        raise LookupError(msg)
+    data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     for key in _NOT_IN_A_TURN:
         data.pop(key, None)
     for key in _NO_OUTSIDE_SERVERS:
         (data.get("tools") or {}).pop(key, None)
     (directory / "settings.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
     return directory
+
+
+class _Direct:
+    """A real client as the turn's model: its own ``chat``, with the network open to that request.
+
+    The turn patches ``LLMClient.chat`` to reach the exam's seam, so the client's own method is
+    called past the patch; the transport opens the network to this one request.
+    """
+
+    def __init__(
+        self, client: LLMClient, chat: Callable[..., ChatResult], transport: _Transport,
+    ) -> None:
+        self._client, self._chat, self._transport = client, chat, transport
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(self._client, name)
+
+    def chat(self, **kw: Any) -> ChatResult:  # noqa: ANN401
+        """One request on the client's own chat, past the turn's patch."""
+        with self._transport.model_call():
+            return self._chat(self._client, **kw)
+
+
+def _as_model(inner: Any, transport: _Transport) -> Any:  # noqa: ANN401 - a client or a script
+    """``inner`` as the turn's model: a real client past the patch, a scripted one as it is.
+
+    Called before the turn patches ``LLMClient.chat``, so the method it keeps is the client's own.
+    """
+    return _Direct(inner, LLMClient.chat, transport) if isinstance(inner, LLMClient) else inner
 
 
 def _stub_deep_search(runtime: JarvisRuntime) -> None:
@@ -119,8 +161,9 @@ def state_block(first: Mapping[str, Any] | None) -> str:
     """
     for message in reversed(first["messages"] if first else ()):
         text = str(message.get("content") or "")
-        if (at := text.find(_STATE_MARK)) >= 0:
-            return text[at : at + STATE_BLOCK_CHARS]
+        found = [at for mark in _STATE_MARKS if (at := text.find(mark)) >= 0]
+        if found:
+            return text[min(found) : min(found) + STATE_BLOCK_CHARS]
     return ""
 
 
@@ -133,11 +176,13 @@ def run_one(  # noqa: PLR0913, PLR0915 - the case, its model and what meters and
     table: Mapping[str, Any],
     meter: Meter,
     preset: str | None,
+    settings: Path = BRAIN_SETTINGS,
 ) -> dict[str, Any]:
-    """One built case through ``run_turn``; the result line."""
+    """One built case through ``drive_turn``; the result line."""
     rec_name = case.get("recording")
     recording = Recording.load(base / rec_name) if rec_name else Recording()
     transport = _Transport(recording, live=False)
+    inner = _as_model(inner, transport)
     item = Item(dict(case), base / f"{case['id']}.json")
     scratch = Path(tempfile.mkdtemp(prefix="tool-exam-brain-"))
     started = time.monotonic()
@@ -155,7 +200,8 @@ def run_one(  # noqa: PLR0913, PLR0915 - the case, its model and what meters and
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.alarm(ITEM_TIMEOUT_S * 5)
     try:
-        with transport, sandbox(item, recording, real_root=brain_settings(scratch)) as box:
+        real_root = brain_settings(scratch, settings)
+        with transport, sandbox(item, recording, real_root=real_root) as box:
             runtime = box.runtime
             if runtime.view is not None:
                 runtime.view.push = pushes.append
@@ -182,8 +228,12 @@ def run_one(  # noqa: PLR0913, PLR0915 - the case, its model and what meters and
 
             try:
                 with patch.object(LLMClient, "chat", tap):
-                    text = run_turn(
-                        runtime, utterance=case["said"], trigger_timeout_s=5.0
+                    said = emit_surface_user_intent(
+                        runtime.conn, transcript=case["said"], turn_id=f"T{uuid.uuid4().hex[:12]}"
+                    )
+                    text = drive_turn(
+                        runtime, user_intent_event=said, available_surfaces=frozenset(),
+                        trigger_timeout_s=5.0,
                     ).response_plan.text
             except Exception as exc:  # noqa: BLE001 - one failed case must not stop the exam
                 cause = broke[0] if broke else exc
@@ -254,6 +304,7 @@ def run_built(
                         table,
                         meter,
                         None if script is not None else preset,
+                        args.brain_settings or BRAIN_SETTINGS,
                     )
                     out.write(json.dumps(line, ensure_ascii=False) + "\n")
                     out.flush()
