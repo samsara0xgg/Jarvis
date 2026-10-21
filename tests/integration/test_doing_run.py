@@ -1679,14 +1679,6 @@ SETTINGS_CASES = {
         {"enabled": True, "prompt": "write", "clock_drafts": "yes"},
         DoingSettings("haiku-bg", "write"),
     ),
-    "keys told, by their own model": (
-        {"enabled": True, "prompt": "write", "threads_prompt": " tell \n", "threads_preset": "h"},
-        DoingSettings("haiku-bg", "write", threads_prompt="tell", threads_preset="h"),
-    ),
-    "a blank threads prompt tells no key": (
-        {"enabled": True, "prompt": "write", "threads_prompt": "  ", "threads_preset": " "},
-        DoingSettings("haiku-bg", "write"),
-    ),
 }
 
 

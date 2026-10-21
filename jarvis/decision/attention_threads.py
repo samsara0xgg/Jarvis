@@ -1,10 +1,10 @@
-"""L3 attention threads — what each new key of his attention served, asked of a model (ADR 0315).
+"""L3 attention threads — what each new key of his attention served, told by the writer (ADR 0331).
 
-The input is a day's keys that nobody has told yet (:mod:`jarvis.state.attention`), each with how
-long it held him, how long he typed in it, where and when; the threads already told, each with a
-few of its keys; and the projects his Claude Code sessions ran in that day. The answer names a
-thread and its category for each key, or says the key serves what is around it. Keys are named by
-short labels (``k1``) the program gave, so an answer can only tell a key that was asked about. The
+The writer of the doing lane is shown, besides the day, the day's keys that nobody has told yet
+(:mod:`jarvis.state.attention`), each with how long it held him, how long he typed in it, where
+and when, and the threads already told, each with a few of its keys. Its answer names a thread
+and its category for each key, or says the key serves what is around it. Keys are named by short
+labels (``k1``) the program gave, so an answer can only tell a key that was asked about. The
 runtime owns when it runs and the client; L2 owns the pieces and the write.
 """
 
@@ -13,13 +13,13 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
 from jarvis.decision.day_prose import read_object
 from jarvis.state.doing import CATEGORIES
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
     from datetime import tzinfo
 
     from jarvis.state.attention import Piece
@@ -33,8 +33,11 @@ MAX_KEYS: Final = 150
 MAX_EXAMPLES: Final = 4
 """The most keys shown for each known thread."""
 THREAD_CATEGORIES: Final = tuple(c for c in CATEGORIES if c != "unknown")
-_TYPED_MIN_MS: Final = 5_000
 """What a told thread can be: what he was doing is known once a thread is named."""
+_TYPED_MIN_MS: Final = 5_000
+
+type Known = tuple[str, str | None, list[str]]
+"""A thread told so far: its name, its category and the names of some of its keys."""
 
 
 @dataclass(frozen=True)
@@ -48,22 +51,6 @@ class Asked:
     typed_ms: float
     first_ms: int
     last_ms: int
-
-
-@dataclass(frozen=True)
-class ThreadBrief:
-    """One day's keys as the model is shown them.
-
-    ``known`` are the threads told so far, each (name, category, names of some of its keys);
-    ``projects`` the Claude Code sessions of the day, each (project, title).
-    """
-
-    day: str
-    language: str
-    zone: tzinfo
-    asked: list[Asked]
-    known: list[tuple[str, str | None, list[str]]]
-    projects: list[tuple[str, str]]
 
 
 def untold(pieces: Iterable[Piece], told: Mapping[str, object]) -> list[Asked]:
@@ -99,7 +86,7 @@ def untold(pieces: Iterable[Piece], told: Mapping[str, object]) -> list[Asked]:
 
 def known_threads(
     told: Mapping[str, tuple[str | None, str | None]], names: Mapping[str, str],
-) -> list[tuple[str, str | None, list[str]]]:
+) -> list[Known]:
     """The threads ``told`` names, each with its category and up to :data:`MAX_EXAMPLES` keys.
 
     ``names`` says how a key is shown; a key with no name there is shown as the key itself.
@@ -118,24 +105,30 @@ def _clock(ms: int, zone: tzinfo) -> str:
     return f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
 
 
-def build_messages(brief: ThreadBrief) -> list[dict[str, Any]]:
-    """The one user message: the day, the language, the known threads, Claude Code, the keys."""
-    lines = [f"DAY: {brief.day}", f"TITLE LANGUAGE: {brief.language}", "", "KNOWN THREADS:"]
-    lines += [
+def brief_lines(asked: Sequence[Asked], known: Sequence[Known], zone: tzinfo) -> list[str]:
+    """The writer's sections on keys: the threads told so far, then the keys to tell.
+
+    Empty when no key is asked about.
+    """
+    if not asked:
+        return []
+    threads = [
         f"- {name}" + (f" ({cat})" if cat else "") + (f": {', '.join(keys)}" if keys else "")
-        for name, cat, keys in brief.known
+        for name, cat, keys in known
     ] or ["(none yet)"]
-    lines += ["", "CLAUDE CODE:"]
-    lines += [f"- {project}: {title}" for project, title in brief.projects] or ["(none)"]
-    lines += ["", "KEYS:"]
-    for n, one in enumerate(brief.asked, 1):
+    keys = []
+    for n, one in enumerate(asked, 1):
         place = "Mac" if one.where == "mac" else one.where
         typed = f", typed {round(one.typed_ms / 1000)}s" if one.typed_ms >= _TYPED_MIN_MS else ""
-        lines.append(
+        keys.append(
             f"k{n} {one.name} | {place}, {max(1, round(one.ms / 60_000))}m{typed}, "
-            f"{_clock(one.first_ms, brief.zone)}-{_clock(one.last_ms, brief.zone)}",
+            f"{_clock(one.first_ms, zone)}-{_clock(one.last_ms, zone)}",
         )
-    return [{"role": "user", "content": "\n".join(lines)}]
+    return [
+        "KNOWN THREADS (name (category): some of its keys):\n" + "\n".join(threads),
+        "NEW KEYS (id name | where, minutes that day, seconds typed, first-last time):\n"
+        + "\n".join(keys),
+    ]
 
 
 class _Rejected(Exception):  # noqa: N818 — a gate's verdict, caught where the answer is read
@@ -147,7 +140,7 @@ def _entry(
 ) -> tuple[str, tuple[str | None, str | None]]:
     """One entry of the answer as (key, (thread, category)); raises :class:`_Rejected`."""
     if not isinstance(one, dict) or one.get("key") not in labels:
-        msg = f"an entry names no key that was asked: {one!r}"[:200]
+        msg = f"a thread entry names no key that was asked: {one!r}"[:200]
         raise _Rejected(msg)
     label = str(one["key"])
     if labels[label] in found:
@@ -171,23 +164,26 @@ def _entry(
     return labels[label], (thread.strip(), str(category))
 
 
-def read_threads(
-    text: str | None, finish_reason: str | None, brief: ThreadBrief,
+def read_told(
+    text: str | None, finish_reason: str | None, asked: Sequence[Asked],
 ) -> dict[str, tuple[str | None, str | None]] | str:
     """What each asked key served, as (thread, category) by key, or why none may be stored.
 
-    The answer is one JSON object, ``{"threads": [{"key", "thread", "category"}, ...]}`` that
-    tells every key asked about exactly once, by its label. A thread is a name of at most
+    The writer's answer holds ``"threads": [{"key", "thread", "category"}, ...]`` that tells
+    every key asked about exactly once, by its label. A thread is a name of at most
     :data:`THREAD_MAX_CHARS` characters with a category of :data:`THREAD_CATEGORIES`, or null with
-    a null category: the key serves what is around it. One bad entry refuses the whole answer.
+    a null category: the key serves what is around it. One bad entry refuses all of it. With no
+    key asked there is nothing to tell, whatever the answer holds.
     """
+    if not asked:
+        return {}
     data = read_object(text, finish_reason)
     if isinstance(data, str):
         return data
     raw = data.get("threads")
     if not isinstance(raw, list):
-        return 'no "threads" list'
-    labels = {f"k{n}": one.key for n, one in enumerate(brief.asked, 1)}
+        return 'no "threads" list for the new keys'
+    labels = {f"k{n}": one.key for n, one in enumerate(asked, 1)}
     found: dict[str, tuple[str | None, str | None]] = {}
     try:
         for one in raw:
@@ -196,7 +192,7 @@ def read_threads(
     except _Rejected as rejected:
         return str(rejected)
     if missing := [label for label, key in labels.items() if key not in found]:
-        return f"not told: {', '.join(missing[:10])}"
+        return f"keys not told: {', '.join(missing[:10])}"
     return found
 
 
@@ -207,9 +203,9 @@ __all__ = [
     "THREAD_CATEGORIES",
     "THREAD_MAX_CHARS",
     "Asked",
-    "ThreadBrief",
-    "build_messages",
+    "Known",
+    "brief_lines",
     "known_threads",
-    "read_threads",
+    "read_told",
     "untold",
 ]

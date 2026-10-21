@@ -1,9 +1,10 @@
 """Runtime wiring for the writer of the doing lane (ADR 0302).
 
 For a day, the writer folds the day line, cuts the waking window into segments, gathers the clues
-and asks one model for what he was doing, on a dedicated client pinned to ``doing.preset``. L3
-builds the input and gates the answer; L2 appends the run. A run that fails or is gated out
-stores nothing and the run before it stays.
+and the day's keys of his attention nobody told yet, and asks one model for what he was doing and
+what each new key served (ADR 0331), on a dedicated client pinned to ``doing.preset``. L3 builds
+the input and gates the answer; L2 appends the run and the told keys. A run that fails or is gated
+out stores nothing and the run before it stays; a telling gated out leaves its keys untold.
 
 :class:`DoingSchedule` looks at today and the last few days every quarter of an hour, in a thread
 off the loop, and asks the model only when the inputs changed (ADR 0310, ADR 0311):
@@ -28,15 +29,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from jarvis.decision.attention_threads import (
-    ThreadBrief,
-    known_threads,
-    read_threads,
-    untold,
-)
-from jarvis.decision.attention_threads import (
-    build_messages as build_thread_messages,
-)
+from jarvis.decision.attention_threads import known_threads, read_told, untold
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.doing_run import (
     Brief,
@@ -71,12 +64,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
+    from jarvis.state.doing import Waking
     from jarvis.state.doing_clues import Clue
 
 LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "doing_run"
-THREADS_KIND: Final[str] = "attention_threads"
 DEFAULT_PRESET: Final[str] = "haiku-bg"
 SHORT_EVERY: Final[timedelta] = timedelta(hours=2)
 """A day is written at most this often, however often its inputs change, unless he asks."""
@@ -99,11 +92,6 @@ class DoingSettings:
     prompt: str
     clock_drafts: bool = False
     """Today is also written on the clock every two hours, not only when he asks (ADR 0311)."""
-    threads_prompt: str | None = None
-    """What the model is told when it says what new keys of his attention served (ADR 0315);
-    None: no key is told, and each stays its own thread."""
-    threads_preset: str | None = None
-    """The model that tells keys; None: the writer's."""
 
     @classmethod
     def from_config(cls, raw: object) -> DoingSettings | None:
@@ -114,15 +102,10 @@ class DoingSettings:
         if not (isinstance(prompt, str) and prompt.strip()):
             LOGGER.warning("doing needs a prompt; what he was doing is not written")
             return None
-        threads_prompt, threads_preset = raw.get("threads_prompt"), raw.get("threads_preset")
         return cls(
             preset=preset if isinstance(preset, str) and preset.strip() else DEFAULT_PRESET,
             prompt=prompt.strip(),
             clock_drafts=raw.get("clock_drafts") is True,
-            threads_prompt=threads_prompt.strip()
-            if isinstance(threads_prompt, str) and threads_prompt.strip() else None,
-            threads_preset=threads_preset
-            if isinstance(threads_preset, str) and threads_preset.strip() else None,
         )
 
 
@@ -150,7 +133,8 @@ def read_brief(
 
     The day line is folded as ``GET /inherent/day`` folds the doing lane, to where the waking part
     can reach past midnight (ADR 0313), and cut as it is there, so the spans written are over the
-    segments the page shows. The day is ``final`` once the waking part of it is over.
+    segments the page shows. The day is ``final`` once the waking part of it is over. The keys of
+    the waking window nobody told yet come with the threads told so far (:func:`_untold`).
     """
     zone = sources.zone
     start_ms, end_ms = day_window(day, zone)
@@ -171,13 +155,44 @@ def read_brief(
         waking=waking, segments=segments, facts=facts, items=items, clues=clues, signals=signals,
         screen=_screen_reach(line, sources),
         foreground=foreground(sources, (waking.start_ms, waking.end_ms)),
+        **_untold(sources, waking),
     )
 
 
+def _untold(sources: DaySources, waking: Waking) -> dict[str, Any]:
+    """The waking window's keys nobody told yet, and the threads told so far (ADR 0331).
+
+    None of either without memory.db, or when no key is untold; a read that fails leaves them out,
+    logged, and the day is written without them.
+    """
+    memory_db = sources.memory_db
+    if memory_db is None or not memory_db.is_file():
+        return {}
+    try:
+        pieces = attention.read(sources, waking.start_ms, waking.end_ms)
+        with closing(open_memory_db(memory_db)) as conn:
+            told = attention_threads(conn)
+    except Exception:
+        LOGGER.exception("doing: the day's keys could not be read; none is asked about")
+        return {}
+    asked = untold(pieces, told)
+    if not asked:
+        return {}
+    names = {p.key: p.name for p in pieces}
+    shown = {key: names.get(key) or attention.key_name(key) for key in told}
+    return {"asked": asked, "known": known_threads(told, shown)}
+
+
 class Composed(NamedTuple):
-    """What the model answered for a day: the gated spans, or why none may be stored."""
+    """What the model answered for a day, each part gated by itself.
+
+    ``spans`` are the gated spans, or None when none may be stored; ``threads`` what the new keys
+    served, by key (empty with none asked), or None when it may not be stored; ``why`` the last
+    refusal.
+    """
 
     spans: list[dict[str, Any]] | None
+    threads: dict[str, tuple[str | None, str | None]] | None
     why: str
     model: str | None
     tokens_in: int
@@ -189,11 +204,14 @@ def compose_run(
 ) -> Composed:
     """Ask the model for ``brief``'s day and gate the answer; a rejected one is asked once more.
 
-    The second ask shows the model its answer and why the gates refused it, so it fixes that
-    rather than writing the day afresh. Blocking. A call that raises propagates, with nothing
-    stored.
+    The spans and what the new keys served are gated apart: either refused asks again, and a part
+    that passed in either answer is kept, the later one when both passed. The second ask shows the
+    model its answer and why the gates refused it, so it fixes that rather than writing the day
+    afresh. Blocking. A call that raises propagates, with nothing stored.
     """
     messages = build_messages(brief)
+    spans: list[dict[str, Any]] | None = None
+    threads: dict[str, tuple[str | None, str | None]] | None = None
     why, model, spent_in, spent_out = "", None, 0, 0
     for _attempt in range(_ATTEMPTS):
         result = cost_recorder.chat(
@@ -203,12 +221,32 @@ def compose_run(
         model = result.model_used or client.model
         spent_in, spent_out = spent_in + result.tokens_in, spent_out + result.tokens_out
         found = read_run(result.text, result.finish_reason, brief)
-        if not isinstance(found, str):
-            return Composed(found, "", model, spent_in, spent_out)
-        why = found
+        told = read_told(result.text, result.finish_reason, brief.asked)
+        spans = spans if isinstance(found, str) else found
+        threads = threads if isinstance(told, str) else told
+        refused = [part for part in (found, told) if isinstance(part, str)]
+        if not refused:
+            return Composed(spans, threads, "", model, spent_in, spent_out)
+        why = "; ".join(refused)
         LOGGER.warning("doing: %s rejected (%s)", brief.day, why)
         messages = asked_again(messages, result.text, why)
-    return Composed(None, why, model, spent_in, spent_out)
+    return Composed(spans, threads, why, model, spent_in, spent_out)
+
+
+def store_told(memory_db: Path, brief: Brief, composed: Composed) -> int:
+    """Append what the answer told of ``brief``'s new keys, as the model's; how many it told.
+
+    Nothing is kept when that part was refused or no key was asked, and its keys are asked again
+    at the next run.
+    """
+    if not composed.threads:
+        if composed.threads is None:
+            LOGGER.warning("doing: %s's new keys not told (%s)", brief.day, composed.why)
+        return 0
+    append_attention_threads(
+        memory_db, composed.threads, origin="model", model=composed.model, day=brief.day,
+    )
+    return len(composed.threads)
 
 
 def store_run(memory_db: Path, brief: Brief, composed: Composed) -> str:
@@ -226,67 +264,6 @@ def store_run(memory_db: Path, brief: Brief, composed: Composed) -> str:
     )
 
 
-def read_thread_brief(brief: Brief, sources: DaySources, memory_db: Path) -> ThreadBrief | None:
-    """The keys of ``brief``'s waking window nobody told yet, as the model is shown them (0315).
-
-    None when there is none to ask about.
-    """
-    pieces = attention.read(sources, brief.waking.start_ms, brief.waking.end_ms)
-    with closing(open_memory_db(memory_db)) as conn:
-        told = attention_threads(conn)
-    asked = untold(pieces, told)
-    if not asked:
-        return None
-    names = {p.key: p.name for p in pieces}
-    shown = {key: names.get(key) or attention.key_name(key) for key in told}
-    projects = sorted({
-        (str(item.get("project") or ""), str(item.get("title") or ""))
-        for item in brief.items if item["kind"] == "code" and item.get("project")
-    })
-    return ThreadBrief(
-        day=brief.day, language=brief.language, zone=brief.zone, asked=asked,
-        known=known_threads(told, shown), projects=projects,
-    )
-
-
-class Told(NamedTuple):
-    """What the model said new keys served, or why none of it may be stored (ADR 0315)."""
-
-    threads: dict[str, tuple[str | None, str | None]] | None
-    why: str
-    model: str | None
-    tokens_in: int
-    tokens_out: int
-
-
-def compose_threads(
-    brief: ThreadBrief, settings: DoingSettings, client: LLMClient, cost_recorder: CostRecorder,
-) -> Told:
-    """Ask the model what ``brief``'s keys served, and gate it; a refused answer is asked again.
-
-    Blocking; a call that raises propagates, with nothing stored.
-    """
-    if settings.threads_prompt is None:
-        msg = "keys are told only with doing.threads_prompt"
-        raise ValueError(msg)
-    messages = build_thread_messages(brief)
-    why, model, spent_in, spent_out = "", None, 0, 0
-    for _attempt in range(_ATTEMPTS):
-        result = cost_recorder.chat(
-            client, messages=messages, system=settings.threads_prompt, tools=None,
-            tool_choice=None, kind=THREADS_KIND, turn_id=None,
-        )
-        model = result.model_used or client.model
-        spent_in, spent_out = spent_in + result.tokens_in, spent_out + result.tokens_out
-        found = read_threads(result.text, result.finish_reason, brief)
-        if not isinstance(found, str):
-            return Told(found, "", model, spent_in, spent_out)
-        why = found
-        LOGGER.warning("attention threads: %s rejected (%s)", brief.day, why)
-        messages = asked_again(messages, result.text, why)
-    return Told(None, why, model, spent_in, spent_out)
-
-
 class DoingSchedule:
     """Folds today and the last days every ``poll_s``; writes a day when its inputs changed."""
 
@@ -301,12 +278,10 @@ class DoingSchedule:
         pricing_table: Mapping[str, Mapping[str, float]],
         poll_s: float = 300.0,
         client: LLMClient | None = None,
-        threads_client: LLMClient | None = None,
     ) -> None:
         """Bind the stores and the knobs; nothing runs until :meth:`run`.
 
-        ``client`` stands in for the one built from ``settings.preset`` on first use, and
-        ``threads_client`` for the one built from ``settings.threads_preset``.
+        ``client`` stands in for the one built from ``settings.preset`` on first use.
         """
         self._settings = settings
         self._sources = sources
@@ -316,7 +291,6 @@ class DoingSchedule:
         self._pricing_table = pricing_table
         self._poll_s = poll_s
         self._client = client
-        self._threads_client = threads_client
         self._looked: dict[str, datetime] = {}
         self._writing = threading.Lock()
         """One day is written at a time: the clock's pass and his asking never write two runs."""
@@ -398,38 +372,16 @@ class DoingSchedule:
             self._client = build_compact_client(self._llm_config, self._settings.preset)
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
             recorder = CostRecorder(conn, pricing_table=self._pricing_table)
-            self._tell_threads(brief, recorder)
             composed = compose_run(writing, self._settings, self._client, recorder)
+        told = store_told(self._memory_db, brief, composed)
+        keys = f", {told} keys told" if told else ""
         if composed.spans is None:
-            return f"rejected ({composed.why})"
+            return f"rejected ({composed.why}){keys}"
         spans = [*map(dict, writing.kept), *composed.spans]
         store_run(self._memory_db, brief, composed._replace(spans=spans))
         questions = sum(span["question"] is not None for span in spans)
         kind = "final" if brief.final else "short" if writing.kept else "draft"
-        return f"landed ({kind}, {len(spans)} spans, {questions} questions)"
-
-    def _tell_threads(self, brief: Brief, recorder: CostRecorder) -> None:
-        """Before a run, have the day's new keys told (ADR 0315); a failure only logs."""
-        if self._settings.threads_prompt is None:
-            return
-        try:
-            asked = read_thread_brief(brief, self._sources, self._memory_db)
-            if asked is None:
-                return
-            if self._threads_client is None:
-                self._threads_client = build_compact_client(
-                    self._llm_config, self._settings.threads_preset or self._settings.preset,
-                )
-            told = compose_threads(asked, self._settings, self._threads_client, recorder)
-            if told.threads is None:
-                LOGGER.warning("attention threads: %s not told (%s)", brief.day, told.why)
-                return
-            append_attention_threads(
-                self._memory_db, told.threads, origin="model", model=told.model, day=brief.day,
-            )
-            LOGGER.info("attention threads: %s told %d keys", brief.day, len(told.threads))
-        except Exception:
-            LOGGER.exception("attention threads: %s failed; its keys stay as they are", brief.day)
+        return f"landed ({kind}, {len(spans)} spans, {questions} questions{keys})"
 
     async def run(self) -> None:
         """The loop; a failed pass is logged and the next one tries again."""
@@ -450,14 +402,11 @@ __all__ = [
     "KIND",
     "RECENT_DAYS",
     "SHORT_EVERY",
-    "THREADS_KIND",
     "Composed",
     "DoingSchedule",
     "DoingSettings",
-    "Told",
     "compose_run",
-    "compose_threads",
     "read_brief",
-    "read_thread_brief",
     "store_run",
+    "store_told",
 ]

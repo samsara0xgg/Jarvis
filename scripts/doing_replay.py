@@ -6,14 +6,16 @@ r"""Replay the writer of the doing lane (ADR 0302) for past days, against given 
         [--config config/jarvis.yaml] [--zone America/Vancouver]
 
 For each day it folds the day line from the event log and memory.db, cuts the waking window,
-gathers the clues, asks the ``doing.preset`` model once (twice when its first answer fails a
-gate; the key comes from the environment, filled from the runtime root's saved keys as the
-brain fills it) and prints the gated spans, one per line. Without
-``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a final run
-when the day is over as of ``--now``, else a draft), exactly as the daemon's schedule would; with
-it nothing is stored. The event log is only read: the model's cost is accounted in a throwaway
-log that is deleted afterwards. With ``--brief-only`` no model is asked: each day's input to the
-writer is printed as it would be sent. A day with no waking window or no inputs is skipped.
+gathers the clues and the keys of his attention nobody told yet, asks the ``doing.preset`` model
+once (twice when its first answer fails a gate; the key comes from the environment, filled from
+the runtime root's saved keys as the brain fills it) and prints the gated spans, one per line,
+then what it told of the new keys (ADR 0331) and where his attention went in each span by them.
+Without ``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a
+final run when the day is over as of ``--now``, else a draft), and what it told with them, exactly
+as the daemon's schedule would; with it nothing is stored. The event log is only read: the
+model's cost is accounted in a throwaway log that is deleted afterwards. With ``--brief-only`` no
+model is asked: each day's input to the writer is printed as it would be sent, with its length.
+A day with no waking window or no inputs is skipped.
 """
 
 from __future__ import annotations
@@ -39,12 +41,14 @@ from jarvis.runtime.doing_run import (
     compose_run,
     read_brief,
     store_run,
+    store_told,
 )
 from jarvis.runtime.interview_reminders import local_zone
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import open_event_log
+from scripts.attention_replay import attention_lines, threads_of, told_lines
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -79,7 +83,7 @@ def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and 
     settings: DoingSettings, client: LLMClient | None, now: datetime, *, dry_run: bool,
     pricing_table: Mapping[str, Mapping[str, float]],
 ) -> list[dict[str, Any]]:
-    """One summary per day, with its gated spans; they are stored unless ``dry_run``.
+    """One summary per day, with its gated spans and what it told; stored unless ``dry_run``.
 
     Without a client no model is asked and each day's summary carries the writer's input instead.
     """
@@ -96,25 +100,35 @@ def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and 
                 done.append(line | {"outcome": "skipped (no waking window or no inputs)"})
                 continue
             if client is None:
+                content = build_messages(brief)[0]["content"]
                 done.append(line | {
                     "outcome": "brief only", "segments": len(brief.segments),
-                    "clues": len(brief.clues), "digest": inputs_digest(brief),
-                    "brief": build_messages(brief)[0]["content"],
+                    "clues": len(brief.clues), "new_keys": len(brief.asked),
+                    "brief_chars": len(content), "digest": inputs_digest(brief), "brief": content,
                 })
                 continue
             composed = compose_run(brief, settings, client, recorder)
             line |= {
                 "final": brief.final, "segments": len(brief.segments),
-                "clues": len(brief.clues), "digest": inputs_digest(brief),
-                "model": composed.model, "tokens_in": composed.tokens_in,
-                "tokens_out": composed.tokens_out,
+                "clues": len(brief.clues), "new_keys": len(brief.asked),
+                "digest": inputs_digest(brief), "model": composed.model,
+                "tokens_in": composed.tokens_in, "tokens_out": composed.tokens_out,
             }
+            told = composed.threads or {}
+            names = {one.key: one.name for one in brief.asked}
+            said = told_lines(told, names) if composed.threads is not None else [
+                f"  not told ({composed.why})",
+            ]
+            if not dry_run:
+                store_told(memory_db, brief, composed)
             if composed.spans is None:
-                done.append(line | {"outcome": f"rejected ({composed.why})"})
+                done.append(line | {"outcome": f"rejected ({composed.why})", "told": said})
                 continue
             stored = "dry run" if dry_run else store_run(memory_db, brief, composed)
             done.append(line | {
                 "outcome": f"gated ({stored})", "spans": readable(composed.spans, sources.zone),
+                "told": said,
+                "attention": attention_lines(composed.spans, sources, threads_of(memory_db, told)),
             })
     return done
 
@@ -174,10 +188,16 @@ def main(argv: list[str] | None = None) -> int:
         pricing_table=table,
     ):
         spans = line.pop("spans", [])
+        told = line.pop("told", [])
+        seen = line.pop("attention", [])
         brief = line.pop("brief", None)
         sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
         for span in spans:
             sys.stdout.write(f"  {span}\n")
+        if told:
+            sys.stdout.write("told:\n" + "\n".join(told) + "\n")
+        if seen:
+            sys.stdout.write("attention:\n" + "\n".join(seen) + "\n")
         if brief is not None:
             sys.stdout.write(brief + "\n")
     if args.dry_run or args.brief_only:

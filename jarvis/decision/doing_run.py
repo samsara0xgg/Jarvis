@@ -1,11 +1,13 @@
 """L3 doing run — the input of the doing lane's writer and the gates on its answer (ADR 0302).
 
 One day's facts go in: the waking window, the program's cut of it with the facts that cover each
-segment, and the clues; the day's spans come out in the shape a stored run holds, or the reason to
-store nothing. The model names times and clues by short labels (``t3``, ``c12``) that the program
-gave it, never by milliseconds or text of its own, so a time that is not a boundary of the facts
-and a clue that does not exist cannot get through. The runtime owns when it runs and the client;
-L2 owns the facts, the clues and the write.
+segment, the clues, and the day's keys of his attention nobody told yet; the day's spans come out
+in the shape a stored run holds, or the reason to store nothing, and what each new key served
+(:mod:`jarvis.decision.attention_threads`, ADR 0331). The model names times, clues and keys by
+short labels (``t3``, ``c12``, ``k4``) that the program gave it, never by milliseconds or text of
+its own, so a time that is not a boundary of the facts, a clue that does not exist and a key that
+was not asked about cannot get through. The runtime owns when it runs and the client; L2 owns the
+facts, the clues and the write.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
+from jarvis.decision.attention_threads import brief_lines
 from jarvis.decision.day_prose import read_object
 from jarvis.state import places
 from jarvis.state.doing import (
@@ -34,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import tzinfo
 
+    from jarvis.decision.attention_threads import Asked, Known
     from jarvis.state.doing import Segment, Span
     from jarvis.state.doing_clues import Clue
 
@@ -70,7 +74,8 @@ class Brief:
     each device whose records stop before the window does, with where they stop. ``kept`` are the
     spans before the window that a short run keeps as written (ADR 0310, :func:`narrow`).
     ``foreground`` is what was in front of him at his Mac in each quarter hour of the window, as
-    (start, end, text).
+    (start, end, text). ``asked`` are the day's keys of his attention nobody told yet, and
+    ``known`` the threads told so far (ADR 0331).
     """
 
     day: str
@@ -88,6 +93,8 @@ class Brief:
     screen: Mapping[str, int] | None
     kept: Sequence[Mapping[str, Any]] = ()
     foreground: Sequence[tuple[int, int, str]] = ()
+    asked: Sequence[Asked] = ()
+    known: Sequence[Known] = ()
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -279,7 +286,8 @@ def _foreground_lines(brief: Brief) -> list[str]:
 def build_messages(brief: Brief) -> list[dict[str, Any]]:
     """The one user message the writer sees: the day, its times, its segments and its clues.
 
-    A short run (:func:`narrow`) also shows the spans it keeps, before the window it writes.
+    A short run (:func:`narrow`) also shows the spans it keeps, before the window it writes; a day
+    with keys nobody told shows them last, after the threads told so far.
     """
     labels = {ms: f"t{n}" for n, ms in enumerate(times(brief))}
     start, end = brief.waking
@@ -304,6 +312,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
         *_foreground_lines(brief),
         f"PHONE AND TABLET APP USE: {_screen_line(brief)}",
         "CLUES (id | local time | kind | text):\n" + ("\n".join(clue_lines) or "(none)"),
+        *brief_lines(brief.asked, brief.known, brief.zone),
     ))
     return [{"role": "user", "content": content}]
 
