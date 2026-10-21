@@ -696,6 +696,7 @@ class TransitOffers:
         self._id = ""
         self._rows: list[dict[str, Any]] = []
         self._listed: list[dict[str, Any]] = []
+        self._other_day: str | None = None
 
     @staticmethod
     def _table(options: list[dict[str, Any]], to: str) -> list[dict[str, Any]]:
@@ -722,10 +723,22 @@ class TransitOffers:
         """Take a plan's listed options (the numbers the model was told) and where they go."""
         self.to = to
         self._listed = self._table(options, to)
+        self._other_day = None
+
+    def keep_none(self, day: str) -> None:
+        """The newest answer was for another ``day`` (said): it leaves no list to number."""
+        self._listed = []
+        self._other_day = day
 
     def listed_row(self, number: int) -> dict[str, Any]:
         """Option ``number`` (from 1) of the last plan; ToolError when there is none."""
         if not self._listed:
+            if self._other_day:
+                msg = (
+                    f"The last list was for {self._other_day}, and a bus on another day cannot be"
+                    " pinned; ask for today's times with bus(to=...) first"
+                )
+                raise ToolError(msg, code="no_plan")
             msg = "There is no bus list to use yet; ask for the times first with bus(to=...)"
             raise ToolError(msg, code="no_plan")
         if not 1 <= number <= len(self._listed):
@@ -1265,6 +1278,8 @@ def build_planner(  # noqa: PLR0913, PLR0915, C901 - the key, places, offers, li
             api_key, start.waypoint, end.waypoint, wanted, now, when, times, meter,
         )
         selected = _pick(options, hits, wanted, when, times, now)
+        if not quiet and when.at is not None and when.at.date() != now.date():
+            offers.keep_none(said(when.at, now))  # buses of another day are not pinned
         extra: dict[str, Any] = {"modes": modes} if modes else {}
         named = _named(wanted, hits, times, now) if wanted else None
         if named is not None:
