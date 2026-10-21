@@ -26,12 +26,13 @@ from unittest.mock import MagicMock
 import pytest
 
 import jarvis.runtime as runtime_pkg
-from jarvis.runtime import bootstrap_runtime_app, inherent_loop
+from jarvis.runtime import inherent_loop
 from jarvis.runtime.daemon import intent_pump, voice_power
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.cli import emit_surface_user_intent
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,7 +80,7 @@ def _runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: A
         "observer:\n  timesink:\n    enabled: false\n  repos: []\n", encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(tmp_path))
-    return bootstrap_runtime_app(runtime_root=root)
+    return boot_runtime(root)
 
 
 def _fake_voice(monkeypatch: pytest.MonkeyPatch) -> _FakeVoiceSession:

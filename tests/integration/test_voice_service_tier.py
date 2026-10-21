@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +28,7 @@ from tests.support.routine import (
     routine_runtime,
     user_intent,
 )
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import SpokenPeer, response_frames, spoken_intent, spoken_runtime
 
 if TYPE_CHECKING:
@@ -207,10 +207,9 @@ def test_a_tier_with_no_row_bills_the_standard_rate() -> None:
 
 
 def _tiered(runtime: Any, tier: str | None) -> Any:  # noqa: ANN401
-    realtime = {**runtime.config["realtime"]}
+    realtime = {**runtime.config.raw["realtime"]}
     response = {**realtime["response"], **({"voice_service_tier": tier} if tier else {})}
-    realtime = {**realtime, "response": response}
-    return replace(runtime, config={**runtime.config, "realtime": realtime})
+    return reconfigure(runtime, realtime={**realtime, "response": response})
 
 
 def test_only_a_spoken_turn_gets_the_configured_tier(tmp_path: Path) -> None:

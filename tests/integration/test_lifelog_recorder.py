@@ -38,6 +38,7 @@ from jarvis.surface.lifelog_recorder import (
     LifelogRecorder,
 )
 from jarvis.surface.voice_audio import CanonicalAudioFrame
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -344,7 +345,7 @@ def test_the_terminal_records_only_when_its_own_config_says_so(tmp_path: Path) -
 
     def speaking(config: dict[str, object], url: str = "http://jarvis:8006") -> object:
         return terminal._Speaking(  # noqa: SLF001
-            config, tmp_path, brain_url=url, brain_token="tok",  # noqa: S106
+            runtime_config(config, root=tmp_path), tmp_path, brain_url=url, brain_token="tok",  # noqa: S106
         )
 
     off = terminal._start_lifelog(speaking({}), session)  # type: ignore[arg-type]  # noqa: SLF001

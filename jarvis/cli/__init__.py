@@ -41,20 +41,24 @@ if TYPE_CHECKING:
 
 from jarvis.deployment import (
     DEFAULT_RUNTIME_ROOT_LITERAL,
+    RuntimePaths,
+    bootstrap_runtime,
     daemon_session,
     launchd,
+    load_env_file,
     process_lock,
 )
 from jarvis.deployment.models import default_meaning_dir, fetch_meaning_model
 from jarvis.deployment.process_lock import ProcessLockHeld
 from jarvis.runtime import (
-    RuntimeBootstrapError,
     bootstrap_runtime_app,
     import_exports,
+    load_runtime_env_and_trace,
     mcp_login,
     open_voiceprints,
     parse_response_channels,
 )
+from jarvis.runtime.config import RuntimeBootstrapError, RuntimeConfig, load_runtime_config
 from jarvis.runtime.inherent_loop import serve_inherent
 from jarvis.runtime.terminal import run_terminal
 from jarvis.shared.lang import Language, t
@@ -513,11 +517,9 @@ def _main_serve(argv: list[str]) -> int:
     try:
         with daemon_session(args.runtime_root) as paths:
             try:
-                runtime = bootstrap_runtime_app(
-                    config_path=args.config,
-                    prompt_path=args.prompt,
-                    runtime_root=paths.root,
-                )
+                load_runtime_env_and_trace(paths)
+                config = load_runtime_config(args.config, paths.root, prompt_path=args.prompt)
+                runtime = bootstrap_runtime_app(config, paths)
             except RuntimeBootstrapError as exc:
                 sys.stderr.write(f"jarvis serve: bootstrap failed: {exc}\n")
                 return 1
@@ -794,8 +796,13 @@ def _main_terminal(argv: list[str]) -> int:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    try:
+        config = load_runtime_config(args.config, root)
+    except (RuntimeBootstrapError, ValueError) as exc:
+        sys.stderr.write(f"jarvis terminal: {exc}\n")
+        return 1
     return run_terminal(
-        base_url, token, runtime_root=root, config_path=args.config,
+        base_url, token, config=config, runtime_root=root,
         observers=not args.no_observers, voice=args.voice,
         serve_ui=(args.port or _DAEMON_PORT) if args.serve_ui else None,
     )
@@ -848,6 +855,14 @@ def _main_oneshot(argv: list[str]) -> int:
     return _EXIT_DAEMON_UNREACHABLE
 
 
+def _open_runtime(
+    config_path: Path | None, runtime_root: Path | None,
+) -> tuple[RuntimePaths, RuntimeConfig]:
+    """The runtime root laid out, and the config parsed over it (ADR 0370)."""
+    paths = bootstrap_runtime(runtime_root)
+    return paths, load_runtime_config(config_path, paths.root)
+
+
 def _main_mcp_login(argv: list[str]) -> int:
     """ADR 0032: `jarvis mcp-login <server>` opens the browser once; the daemon reuses the token."""
     parser = argparse.ArgumentParser(
@@ -869,10 +884,9 @@ def _main_mcp_login(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        return mcp_login(
-            args.server, config_path=args.config, runtime_root=args.runtime_root,
-            open_browser=not args.no_browser,
-        )
+        paths, config = _open_runtime(args.config, args.runtime_root)
+        load_env_file(paths.root)
+        return mcp_login(args.server, config=config, paths=paths, open_browser=not args.no_browser)
     except (RuntimeBootstrapError, OSError, ValueError) as exc:
         sys.stderr.write(f"jarvis mcp-login: {exc}\n")
         return 1
@@ -912,9 +926,8 @@ def _main_import(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        counts = import_exports(
-            args.source, args.paths, config_path=args.config, runtime_root=args.runtime_root,
-        )
+        paths, config = _open_runtime(args.config, args.runtime_root)
+        counts = import_exports(args.source, args.paths, config=config, paths=paths)
     except (RuntimeBootstrapError, OSError, ValueError) as exc:
         sys.stderr.write(f"jarvis import: {exc}\n")
         return 1
@@ -948,7 +961,7 @@ def _main_voiceprint(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        book = open_voiceprints(config_path=args.config, runtime_root=args.runtime_root)
+        book = open_voiceprints(_open_runtime(args.config, args.runtime_root)[1])
         if args.command == "status":
             for one in book.status():
                 sys.stdout.write(

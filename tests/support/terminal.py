@@ -41,6 +41,7 @@ from jarvis.surface.terminal_speaker import REMOTE_ENDPOINTS
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_tts import TTSAudioChunk, TTSResponseSegment, TTSSegmentFinished
 from tests.support.net import free_port
+from tests.support.runtime_config import runtime_config
 from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
@@ -752,7 +753,7 @@ class VoiceTerminal:
                     tools=frozenset({"read_clipboard"}),
                     execute=lambda *_: {"ok": True, "output": {}},
                     watched=None,
-                    speaking=_Speaking(self._config, root),
+                    speaking=_Speaking(runtime_config(self._config, root=root), root),
                     page=self.page,
                 )
             )

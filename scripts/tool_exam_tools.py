@@ -91,12 +91,12 @@ from mcp import types as mcp_types
 from jarvis.deployment import load_env_file
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event
 from jarvis.state.ride_progress import StopTime
 from jarvis.state.rides import Ride
 from jarvis.state.rides import write_start as write_ride_start
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -800,7 +800,7 @@ def sandbox(
             time_machine.travel(moment, tick=False) as clock,
             patch.object(runtime_module, "_start_locating_places", lambda *_: None),
         ):
-            runtime = bootstrap_runtime_app(runtime_root=root)
+            runtime = boot_runtime(root)
             if runtime.runtime_paths.root != root.resolve() and runtime.runtime_paths.root != root:
                 msg = f"the runtime booted on {runtime.runtime_paths.root}, not on the sandbox"
                 raise SystemExit(msg)

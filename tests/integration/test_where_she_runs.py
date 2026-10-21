@@ -12,10 +12,11 @@ import socket
 import time
 from typing import TYPE_CHECKING, Any
 
-from jarvis.runtime import _turn_device, _whereabouts_lines, bootstrap_runtime_app
+from jarvis.runtime import _turn_device, _whereabouts_lines
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import MAC_NODE, emit_event
 from jarvis.state.push_tokens import register_body
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,7 +30,7 @@ def _runtime(root: Path, settings: str, monkeypatch: pytest.MonkeyPatch) -> Any:
     root.mkdir()
     (root / "settings.yaml").write_text(settings, encoding="utf-8")
     monkeypatch.setenv("HOME", str(root.parent))
-    return bootstrap_runtime_app(runtime_root=root)
+    return boot_runtime(root)
 
 
 def _turn(runtime: Any, turn_id: str, device: str) -> None:  # noqa: ANN401

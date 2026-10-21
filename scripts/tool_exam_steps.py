@@ -61,7 +61,7 @@ from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.deployment import load_env_file
 from jarvis.execution.tools import Tool, _device_proxy, release_turn_actions
-from jarvis.runtime import _max_tool_iterations, bootstrap_runtime_app
+from jarvis.runtime import _max_tool_iterations
 from jarvis.runtime.plugin_catalog import PluginPackage
 from jarvis.runtime.plugin_connections import _Active
 from jarvis.runtime.plugins import Plugins
@@ -80,6 +80,7 @@ from scripts.tool_exam import (
     spoken_reply_for,
     structured_presets,
 )
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
@@ -186,7 +187,7 @@ def _microsoft_tools(recorded: Path, always: frozenset[str]) -> tuple[Tool, ...]
 def _add_microsoft(runtime: JarvisRuntime, recorded: Path) -> None:
     """Publish the stand-in Microsoft group as a connected direct MCP entry would be."""
     conns = runtime.plugin_connections
-    mcp = (runtime.config.get("tools") or {}).get("mcp") or {}
+    mcp = (runtime.config.raw.get("tools") or {}).get("mcp") or {}
     always = frozenset(mcp.get("always_loaded") or ())
     tools = _microsoft_tools(recorded, always)
     if conns is None or not tools:
@@ -234,7 +235,7 @@ def _boot(work: Path, recorded: Path, pushes: list[dict[str, str | None]]) -> Ja
     os.environ["JARVIS_RUNTIME_ROOT"] = str(work)
     # No geocoding at boot: the places in the copy are located already.
     runtime_module._start_locating_places = lambda *_: None  # noqa: SLF001
-    runtime = bootstrap_runtime_app(runtime_root=work)
+    runtime = boot_runtime(work)
     if runtime.runtime_paths.root != work or runtime.memory is None or not (
         runtime.memory.db_path.is_relative_to(work)
     ):
@@ -603,9 +604,9 @@ def _run_case(  # noqa: PLR0913 - the runtime, its baseline, and the case's mode
         conn=runtime.conn, runtime_paths=runtime.runtime_paths,
         tool_registry=cast("Any", runtime.tool_registry), lifecycle=cast("Any", runtime.lifecycle),
         llm_client=cast("LLMClient", sub), system_prompt=system,
-        max_tool_iterations=_max_tool_iterations(runtime.config, trigger),
+        max_tool_iterations=_max_tool_iterations(runtime.config.raw, trigger),
         wave1_features=runtime.wave1_features,
-        reply_language=str(runtime.config.get("reply_language", "follow")),
+        reply_language=runtime.config.reply_language,
         read_snapshot=partial(read_decision_snapshot, prior=warm),
     )
     started = time.monotonic()

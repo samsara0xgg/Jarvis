@@ -27,7 +27,6 @@ import yaml
 
 from jarvis.decision.core_memory import check_core_memory
 from jarvis.deployment import bootstrap_runtime
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.runtime import things_ledger as ledger_module
 from jarvis.runtime.things_ledger import ThingsLedger
 from jarvis.shared import lang
@@ -42,6 +41,7 @@ from jarvis.state.memory_db import (
     remember_fact,
     render_context,
 )
+from tests.support.runtime_config import boot_runtime
 from tests.support.runtime_log import RuntimeLog
 
 if TYPE_CHECKING:
@@ -1477,7 +1477,7 @@ def test_the_daemon_carries_in_once_at_boot_with_the_configured_lead(
     open_memory_db(root / "memory.db").close()
     _core_doc_with_to_dos(root / "memory.db")
     monkeypatch.setenv("HOME", str(tmp_path))
-    runtime = bootstrap_runtime_app(runtime_root=root)
+    runtime = boot_runtime(root)
     try:
         assert isinstance(runtime.things, ThingsLedger)
         with closing(open_event_log(paths.event_log)) as conn:
@@ -1490,7 +1490,7 @@ def test_the_daemon_carries_in_once_at_boot_with_the_configured_lead(
         assert due_items(root / "memory.db") == []
     finally:
         runtime.conn.close()
-    again = bootstrap_runtime_app(runtime_root=root)
+    again = boot_runtime(root)
     try:
         with closing(open_event_log(paths.event_log)) as conn:
             assert len(list(iter_events_of_types(conn, ("thing.carried_in",)))) == 1

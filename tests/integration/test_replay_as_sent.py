@@ -17,12 +17,12 @@ import pytest
 from jarvis import runtime as runtime_module
 from jarvis.state.memory_db import (
     MemorySettings,
-    SessionSettings,
     append_record,
     record_sent,
     render_context,
 )
 from tests.support.routine import drive_streaming_turn
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import SpokenPeer, spoken_intent, spoken_runtime
 
 if TYPE_CHECKING:
@@ -41,9 +41,8 @@ def _two_turns(tmp_path: Path, *, replay_sent: bool) -> tuple[dict[str, Any], di
     outputs = [[("final_answer", "我在。")], [("final_answer", "明天也在。")]]
     with SpokenPeer(outputs) as peer:
         runtime = replace(
-            spoken_runtime(tmp_path, peer.url),
+            reconfigure(spoken_runtime(tmp_path, peer.url), session={"replay_sent": replay_sent}),
             memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
-            session=SessionSettings(replay_sent=replay_sent),
         )
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "你在吗"))
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "那明天呢"))

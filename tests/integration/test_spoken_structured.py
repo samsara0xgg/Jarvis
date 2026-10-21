@@ -26,6 +26,7 @@ from jarvis.state.memory_db import MemorySettings, append_record
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.voice_media import _ResponseBuffer, _ResponseChunk
 from tests.support.routine import drive_streaming_turn, logged_payloads, logged_rows, wait_for
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import (
     SpokenPeer,
     fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
@@ -562,7 +563,7 @@ def test_a_spoken_turn_stops_at_the_voice_cap_and_wraps_up_in_the_spoken_shape(
     with SpokenPeer(outputs) as peer:
         runtime = _structured_runtime(tmp_path, peer.url)
         llm = {"max_tool_iterations": 40, "max_tool_iterations_voice": cap}
-        runtime = replace(runtime, config={**runtime.config, "llm": llm})
+        runtime = reconfigure(runtime, llm=llm)
         result = drive_streaming_turn(
             runtime, spoken_intent(runtime.conn, "turn-cap", "帮我找找邮件里跟 co-op 有关的")
         )

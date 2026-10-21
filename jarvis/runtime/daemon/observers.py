@@ -107,7 +107,7 @@ def start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     An empty ``observer.repos`` starts no task: the observer is opt-in
     perception, and a zero-repo poll loop would be pure wakeups.
     """
-    repo_paths = _observer_repo_paths(runtime.config)
+    repo_paths = _observer_repo_paths(runtime.config.raw)
     if not repo_paths:
         LOGGER.info("repo_observer: observer.repos is empty; observer not started.")
         return []
@@ -122,7 +122,7 @@ def start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
         asyncio.create_task(
             repo_observer_task(
                 observer,
-                interval_s=_observer_poll_interval_s(runtime.config),
+                interval_s=_observer_poll_interval_s(runtime.config.raw),
             ),
             name="repo_observer",
         ),
@@ -154,9 +154,9 @@ def claude_sessions_served(runtime: JarvisRuntime) -> bool:
     A brain has no sessions of its own and ignores its own setting (ADR 0225): it serves the page
     whenever a terminal can connect, and the terminal's setting decides what is read.
     """
-    if runtime.role == "brain":
-        return bool(runtime.listen_addresses)
-    return claude_sessions_read(runtime.config)
+    if runtime.config.role == "brain":
+        return bool(runtime.config.listen_addresses)
+    return claude_sessions_read(runtime.config.raw)
 
 
 def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -178,14 +178,14 @@ def usage_poll_interval_s(config: Mapping[str, Any]) -> float | None:
 
 def make_usage_observer(runtime: JarvisRuntime) -> UsageObserver | None:
     """Build the observer with baselines recovered on the loop thread."""
-    usage = _usage_observer_block(runtime.config)
+    usage = _usage_observer_block(runtime.config.raw)
     if usage is None:
         LOGGER.info("usage_observer: observer.usage disabled; observer not started.")
         return None
     # A brain has no Claude Code or Codex login of its own: a terminal reports those two.
     observer = UsageObserver(
         runtime.conn,
-        services=KEYED_SERVICES if runtime.role == "brain" else SERVICES,
+        services=KEYED_SERVICES if runtime.config.role == "brain" else SERVICES,
     )
     baselines = observer.recover_baselines()
     LOGGER.info("usage_observer: %d baseline(s) recovered from the event log", len(baselines))
@@ -280,7 +280,7 @@ async def timesink_observer_task(
 
 def start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     """Start the head poll when ``observer.timesink`` is enabled; baseline from the log."""
-    path = _timesink_db_path(runtime.config)
+    path = _timesink_db_path(runtime.config.raw)
     if path is None:
         LOGGER.info("timesink_observer: observer.timesink disabled; observer not started.")
         return []
@@ -290,7 +290,7 @@ def start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
         asyncio.create_task(
             timesink_observer_task(
                 observer,
-                interval_s=_timesink_poll_interval_s(runtime.config),
+                interval_s=_timesink_poll_interval_s(runtime.config.raw),
                 on_checked=None if runtime.work_state is None else runtime.work_state.note_checked,
             ),
             name="timesink_observer",

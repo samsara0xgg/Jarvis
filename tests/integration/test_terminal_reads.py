@@ -25,7 +25,7 @@ import pytest
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime import _reads_connected, bootstrap_runtime_app
+from jarvis.runtime import _reads_connected
 from jarvis.runtime.daily_report import DailyReportService, DailySchedule
 from jarvis.runtime.terminal import _Watched
 from jarvis.runtime.work_state import WorkStateService
@@ -45,6 +45,7 @@ from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.state.work_state import gather_evidence
 from jarvis.surface import terminal_link
 from tests.support.daily_report import DAY, NOW, TZ, ZONE, CannedReporter, git_repo, one_item
+from tests.support.runtime_config import boot_runtime
 from tests.support.terminal import Brain, Terminal, commit_file, log_rows, make_repo, wait_for
 from tests.support.timesink import add_capture, add_event, add_span, source
 from tests.support.tool_world import ToolWorld, tool_request
@@ -648,7 +649,7 @@ def test_one_machine_wires_no_device_into_its_readers_and_a_brain_wires_its_hub(
             f"runtime:\n  role: {role}\ndaily_report:\n  at: '03:00'\n", encoding="utf-8",
         )
         monkeypatch.setenv("HOME", str(tmp_path / name))
-        runtimes.append(bootstrap_runtime_app(runtime_root=root))
+        runtimes.append(boot_runtime(root))
     one, brain = runtimes
     try:
         assert one.terminal_hub is None

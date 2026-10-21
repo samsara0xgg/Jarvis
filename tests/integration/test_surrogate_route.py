@@ -457,7 +457,8 @@ def test_the_shipped_config_is_off_and_enabling_it_reads_the_block() -> None:
     """The repo ships it off; an enabled block builds the route, a bad one stops boot."""
     import yaml  # noqa: PLC0415 — only this test reads the file
 
-    from jarvis.runtime import RuntimeBootstrapError, _surrogate_route  # noqa: PLC0415
+    from jarvis.runtime import _surrogate_route  # noqa: PLC0415
+    from jarvis.runtime.config import RuntimeBootstrapError  # noqa: PLC0415
 
     path = repo_root() / "config" / "jarvis.yaml"
     config = yaml.safe_load(path.read_text(encoding="utf-8"))

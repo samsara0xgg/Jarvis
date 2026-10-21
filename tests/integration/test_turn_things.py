@@ -33,8 +33,8 @@ import yaml
 
 from jarvis.decision import turn_things as decision
 from jarvis.deployment import bootstrap_runtime
-from jarvis.runtime import RuntimeBootstrapError, bootstrap_runtime_app
 from jarvis.runtime import turn_things as runtime
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.turn_things import ModelFailed, TurnThings, TurnThingsSettings
 from jarvis.shared import lang
 from jarvis.state import picture_notes, plan, things
@@ -43,6 +43,7 @@ from jarvis.state.attachments import AttachmentRef
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.memory_db import open_memory_db
 from scripts import turn_things_replay
+from tests.support.runtime_config import boot_runtime
 from tests.support.runtime_log import RuntimeLog
 
 if TYPE_CHECKING:
@@ -1331,7 +1332,7 @@ def test_the_pass_is_built_only_when_enabled(
     bootstrap_runtime(root)
     (root / "settings.yaml").write_text(settings, encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
-    runtime_app = bootstrap_runtime_app(runtime_root=root)
+    runtime_app = boot_runtime(root)
     try:
         assert isinstance(runtime_app.turn_things, TurnThings) is built
     finally:
@@ -1358,7 +1359,7 @@ def test_a_bad_value_stops_the_boot(
     )
     monkeypatch.setenv("HOME", str(tmp_path))
     with pytest.raises(RuntimeBootstrapError, match="turn_things"):
-        bootstrap_runtime_app(runtime_root=root)
+        boot_runtime(root)
 
 
 def test_the_shipped_config_has_the_pass_off_and_on_sonnet() -> None:

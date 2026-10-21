@@ -23,6 +23,7 @@ import numpy as np
 import soxr
 
 from jarvis.surface.voice_aec import EchoCanceller
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -276,7 +277,8 @@ def test_echo_cancellation_config_auto_true_false() -> None:
 
     def built(*, setting: object) -> EchoCanceller | None:
         ingress = {} if setting is None else {"echo_cancellation": setting}
-        runtime = SimpleNamespace(config={"realtime": {"single_audio_ingress": ingress}})
+        config = runtime_config({"realtime": {"single_audio_ingress": ingress}})
+        runtime = SimpleNamespace(config=config)
         return build_echo_canceller(runtime)
 
     frame = np.full(512, 1000, dtype="<i2").tobytes()

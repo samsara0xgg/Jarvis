@@ -19,6 +19,7 @@ from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from jarvis.shared import Event
@@ -65,7 +66,7 @@ def routine_runtime(
         "max_retries": 0,
     }
     return JarvisRuntime(
-        config=config,
+        config=runtime_config(config, root=tmp_path),
         runtime_paths=paths,
         conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(),

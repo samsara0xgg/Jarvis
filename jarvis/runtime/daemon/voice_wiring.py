@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.decision.response_run import ResponseRunRegistry
+    from jarvis.runtime.config import RuntimeConfig
     from jarvis.shared import Event
     from jarvis.shared.realtime import Wave4ResponseFlags
     from jarvis.state.memory_db import MemorySettings
@@ -48,9 +49,8 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 
-# The voice ASR / VAD artifact locations come from ``runtime.sensevoice_dir``
-# / ``runtime.silero_vad_path`` (ADR-0006 §5), resolved once at the composition
-# root against the config file's own directory. ADR-0005 §12 (pre-flight) —
+# The voice ASR / VAD artifact locations come from ``config.models`` (ADR-0006 §5),
+# resolved once at load against the config file's own directory. ADR-0005 §12 (pre-flight) —
 # ``serve_inherent`` checks them BEFORE starting the microphone owner so a missing
 # wheel surfaces as a single log line instead of a crashed daemon thread on
 # first wake. Tests pin their own paths via :func:`voice_models_preflight`
@@ -305,7 +305,7 @@ def final_recognizer(
     runtime: _ConfigHost, sensevoice: voice_asr.SenseVoiceRecognizer,
 ) -> voice_asr.AsrRecognizer:
     """``realtime.final_asr``: SenseVoice, Whisper as 言文 hears (proposal), or both (ADR 0132)."""
-    realtime = runtime.config.get("realtime")
+    realtime = runtime.config.raw.get("realtime")
     choice = realtime.get("final_asr") if isinstance(realtime, Mapping) else None
     if choice == "hybrid":
         # A loop is heard as nothing, so SenseVoice's words stand: a hotter retry took 4.6 s on
@@ -328,7 +328,7 @@ def final_recognizer(
         )
     if choice != "whisper":
         return sensevoice
-    dictation_config = runtime.config.get("dictation") or {}
+    dictation_config = runtime.config.raw.get("dictation") or {}
     vocab_path = Path(str(dictation_config.get("vocab_path", "")))
     whisper = whisper_ears(terms=functools.partial(load_user_terms, vocab_path))
     if whisper is None:
@@ -342,7 +342,7 @@ class _ConfigHost(Protocol):
     """A host of which the voice builders read only the loaded config."""
 
     @property
-    def config(self) -> Mapping[str, Any]: ...
+    def config(self) -> RuntimeConfig: ...
 
 
 class _PipelineHost(_ConfigHost, Protocol):
@@ -379,7 +379,7 @@ def build_voice_pipeline(
     that is not there means no voiceprint.
     """
     # realtime.final_asr_language pins SenseVoice's language, and with it the hybrid's Whisper.
-    realtime = runtime.config.get("realtime")
+    realtime = runtime.config.raw.get("realtime")
     pinned = realtime.get("final_asr_language") if isinstance(realtime, Mapping) else None
     sensevoice = voice_asr.SenseVoiceRecognizer(
         model_dir=sensevoice_dir, language=str(pinned or "") or None,
@@ -405,7 +405,7 @@ def build_echo_canceller(runtime: _ConfigHost) -> voice_aec.EchoCanceller | None
     ``echo_cancellation`` is ``auto`` (the default: on for any microphone but the
     reSpeaker, which does its own), ``true`` (always on) or ``false`` (none built).
     """
-    realtime_raw = runtime.config.get("realtime")
+    realtime_raw = runtime.config.raw.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     ingress_raw = realtime.get("single_audio_ingress")
     ingress = ingress_raw if isinstance(ingress_raw, Mapping) else {}
@@ -500,8 +500,8 @@ class SpeakerHost(Protocol):
     """
 
     @property
-    def config(self) -> Mapping[str, Any]:
-        """The daemon's or terminal's config mapping."""
+    def config(self) -> RuntimeConfig:
+        """The daemon's or terminal's config."""
         ...
 
     @property
@@ -567,7 +567,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
             "MINIMAX_API_KEY unset; skipping TTS subsystem (text path only).",
         )
         return None
-    realtime_raw = runtime.config.get("realtime")
+    realtime_raw = runtime.config.raw.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     volume_kwargs = tts_volume_kwargs(realtime)
     # Passed straight through to sd.OutputStream, which maps a name to a device
@@ -597,7 +597,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
     recorder = (
         voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
         if remote is None
-        and diagnostics_flag(runtime.config, "record_tts_audio")
+        and diagnostics_flag(runtime.config.raw, "record_tts_audio")
         and runtime.memory is not None
         else None
     )
@@ -766,7 +766,7 @@ def single_ingress_activation(
     tts: voice_media.StreamingTTSPipeline | None,
 ) -> SingleIngressActivation:
     """Validate feature flags, Wave-1/2 dependencies, and strict input bounds."""
-    realtime_raw = runtime.config.get("realtime")
+    realtime_raw = runtime.config.raw.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     ingress_raw = realtime.get("single_audio_ingress")
     ingress_values = ingress_raw if isinstance(ingress_raw, Mapping) else {}

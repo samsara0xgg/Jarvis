@@ -19,11 +19,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.mcp_oauth import _Listener
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tool_search import build_tool_search
 from jarvis.execution.tools import Tool
 from jarvis.runtime import mcp_login
+from jarvis.runtime.config import load_runtime_config
 from jarvis.shared import CallerPrincipal
 from tests.support import mcp as mcp_support
 from tests.support.mcp import ECHO, SERVERS
@@ -195,7 +197,8 @@ def test_mcp_login_runs_a_local_servers_own_login(
         "env": {"FEATURES": "gmail only"},
     }
     config.write_text(json.dumps({"tools": {"mcp": {"servers": {"local": entry}}}}))
-    assert mcp_login("local", config_path=config, runtime_root=tmp_path / "runtime") == 3
+    paths = bootstrap_runtime(tmp_path / "runtime")
+    assert mcp_login("local", config=load_runtime_config(config, paths.root), paths=paths) == 3
     assert (tmp_path / "seen.txt").read_text() == "gmail only"
 
 
@@ -340,7 +343,11 @@ def test_mcp_login_without_a_browser_prints_the_url_and_finishes_through_the_loo
     browser = threading.Thread(target=other_machines_browser, daemon=True)
     browser.start()
     runtime_root = tmp_path / "runtime"
-    assert mcp_login("svc", config_path=config, runtime_root=runtime_root, open_browser=False) == 0
+    paths = bootstrap_runtime(runtime_root)
+    login = mcp_login(
+        "svc", config=load_runtime_config(config, paths.root), paths=paths, open_browser=False,
+    )
+    assert login == 0
     browser.join(timeout=10)
     assert opened == []
     assert f"http://127.0.0.1:{port}/callback" in printed.getvalue()

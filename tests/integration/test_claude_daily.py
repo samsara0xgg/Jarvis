@@ -20,8 +20,9 @@ import yaml
 
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.tools import Tool, ToolError
-from jarvis.runtime import RuntimeBootstrapError, _claude_daily
+from jarvis.runtime import _claude_daily
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day
 from jarvis.state.event_log import open_event_log

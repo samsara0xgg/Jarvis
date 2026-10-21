@@ -51,6 +51,7 @@ from tests.support.media import (
     terminal_rows,
     wait_until,
 )
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -2920,7 +2921,7 @@ def test_production_builder_gate_and_text_only_degradation(
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={"realtime": {"enabled": True}},
+        config=runtime_config({"realtime": {"enabled": True}}),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -2938,7 +2939,7 @@ def test_production_builder_gate_and_text_only_degradation(
         )
         assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
         assert pipeline.close()
-        runtime.config = {"realtime": {"enabled": False}}
+        runtime.config = runtime_config({"realtime": {"enabled": False}})
         assert (
             voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
@@ -2946,12 +2947,12 @@ def test_production_builder_gate_and_text_only_degradation(
             )
             is None
         )
-        runtime.config = {
+        runtime.config = runtime_config({
             "realtime": {
                 "enabled": True,
                 "streaming_output": {"command_queue_capacity": 0},
             },
-        }
+        })
         assert (
             voice_wiring.build_tts_pipeline(
                 cast("Any", runtime),
@@ -2959,7 +2960,7 @@ def test_production_builder_gate_and_text_only_degradation(
             )
             is None
         )
-    runtime.config = {"realtime": {"enabled": True}}
+    runtime.config = runtime_config({"realtime": {"enabled": True}})
     failed_stream = _FakeOutputStream(start_error=OSError("injected PortAudio start failure"))
     with (
         patch.object(voice_tts, "_open_output_stream", return_value=failed_stream),
@@ -2978,9 +2979,9 @@ def test_production_builder_gate_and_text_only_degradation(
         )
     assert not failed_stream.active
 
-    runtime.config = {
+    runtime.config = runtime_config({
         "realtime": {"enabled": True, "streaming_output": {"shutdown_timeout_s": 0.5}},
-    }
+    })
     stuck_player = make_player()
     player_start_gate = threading.Event()
     late_player_stopped = threading.Event()
@@ -3029,7 +3030,7 @@ def test_production_builder_is_text_only_after_any_typed_startup_failure(
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={"realtime": {"enabled": True}},
+        config=runtime_config({"realtime": {"enabled": True}}),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -3280,7 +3281,7 @@ def test_realtime_output_device_reaches_the_builder_player(
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={},
+        config=runtime_config({}),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -3295,7 +3296,7 @@ def test_realtime_output_device_reaches_the_builder_player(
         return real_player(**cast("Any", kwargs))
 
     def _build(realtime: dict[str, object]) -> None:
-        runtime.config = {"realtime": realtime}
+        runtime.config = runtime_config({"realtime": realtime})
         pipeline = voice_wiring.build_tts_pipeline(
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
@@ -3336,7 +3337,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={"realtime": {"enabled": True}},
+        config=runtime_config({"realtime": {"enabled": True}}),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -3345,7 +3346,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     monkeypatch.setenv("MINIMAX_API_KEY", "integration-placeholder")
 
     def _emitted_vol(realtime_config: dict[str, object]) -> object:
-        runtime.config = {"realtime": realtime_config}
+        runtime.config = runtime_config({"realtime": realtime_config})
         ws = FakeWebSocket()
 
         async def _connect(

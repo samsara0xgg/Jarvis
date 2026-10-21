@@ -17,6 +17,7 @@ from jarvis.surface import voice_asr, voice_audio, voice_backend, voice_tts, voi
 from jarvis.surface.terminal_events import EventOutbox
 from jarvis.surface.terminal_listen import BrainListening, ListenHooks
 from jarvis.surface.terminal_speaker import Journal, VoiceLink
+from tests.support.runtime_config import runtime_config
 from tests.support.terminal import (
     SPEECH_CONFIG,
     TERMINAL_WS,
@@ -250,7 +251,7 @@ async def terminal_without_a_brain(root: Path) -> AsyncIterator[tuple[_Speaking,
     What a capture session is started from: the test starts it (or the wait before its next
     try) and ends it, on this loop, with the injected clock it passes.
     """
-    speaking = _Speaking(LISTEN_CONFIG, root)
+    speaking = _Speaking(runtime_config(LISTEN_CONFIG, root=root), root)
     speech = _start_speech(speaking, EventOutbox())
     try:
         yield speaking, speech

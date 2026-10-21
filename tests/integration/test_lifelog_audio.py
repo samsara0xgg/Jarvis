@@ -43,6 +43,7 @@ from jarvis.state.lifelog import (
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -234,7 +235,7 @@ def test_a_daemon_without_the_archive_has_no_route(tmp_path: Path) -> None:
 def _runtime(root: Path, config: dict[str, object]) -> JarvisRuntime:
     """Just what the archive's wiring and the media sweep read."""
     return cast("JarvisRuntime", SimpleNamespace(
-        config=config,
+        config=runtime_config(config, root=root),
         runtime_paths=SimpleNamespace(root=root, artifacts_root=root / "artifacts"),
         attachments=None,
         memory=None,

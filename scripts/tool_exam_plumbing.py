@@ -70,11 +70,11 @@ def play_turn(box: Box, said: str, model: ScriptedModel) -> str:
         llm_client=cast("LLMClient", model),
         system_prompt=runtime.system_prompt,
         tier0_table=(),
-        confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
+        confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config.raw),
         confirm_grammar_table=runtime.confirm_grammar_table,
-        max_tool_iterations=_max_tool_iterations(runtime.config, trigger),
+        max_tool_iterations=_max_tool_iterations(runtime.config.raw, trigger),
         wave1_features=runtime.wave1_features,
-        reply_language=str(runtime.config.get("reply_language", "follow")),
+        reply_language=runtime.config.reply_language,
     )
     plan = decide(trigger, ctx).response_plan
     return plan.text if plan is not None else ""

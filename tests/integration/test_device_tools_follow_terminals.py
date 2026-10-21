@@ -14,12 +14,13 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.execution.tools import ToolRegistry, build_default_registry
-from jarvis.runtime import bootstrap_runtime_app, device_tools
+from jarvis.runtime import device_tools
 from jarvis.runtime.daemon.observers import claude_sessions_served
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state.device_tokens import pair_device, unpair_device
 from jarvis.surface.terminal_link import TerminalHub
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -161,7 +162,7 @@ def _brain_runtime(root: Path, settings: str, monkeypatch: pytest.MonkeyPatch) -
     root.mkdir()
     (root / "settings.yaml").write_text(settings, encoding="utf-8")
     monkeypatch.setenv("HOME", str(root.parent))
-    return bootstrap_runtime_app(runtime_root=root)
+    return boot_runtime(root)
 
 
 def test_a_brain_boots_with_device_settings_that_only_a_terminal_could_use(
@@ -176,7 +177,7 @@ def test_a_brain_boots_with_device_settings_that_only_a_terminal_could_use(
     )
     brain = _brain_runtime(tmp_path / "brain", settings, monkeypatch)
     try:
-        assert brain.config["tools"]["open_path"] is None  # the terminal's, not the brain's
+        assert brain.config.raw["tools"]["open_path"] is None  # the terminal's, not the brain's
         assert "search_notes" not in {t.name for t in brain.tool_registry.get_definitions()}
         pair_device(brain.runtime_paths.root, "macbook")
         _hello(brain.terminal_hub, "macbook", {"search_notes", "open_path"})
@@ -194,7 +195,7 @@ def test_a_brain_boots_with_device_settings_that_only_a_terminal_could_use(
 
 def _brain_runtime_again(root: Path, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
     monkeypatch.setenv("HOME", str(root.parent))
-    return bootstrap_runtime_app(runtime_root=root)
+    return boot_runtime(root)
 
 
 @pytest.mark.parametrize(

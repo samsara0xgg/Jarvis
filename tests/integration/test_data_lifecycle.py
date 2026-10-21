@@ -31,6 +31,7 @@ from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.support.net import free_port
+from tests.support.runtime_config import runtime_config
 from tests.support.stepped_sleep import SteppedSleep
 
 if TYPE_CHECKING:
@@ -126,7 +127,9 @@ async def _boot_terminal(
     booted = asyncio.create_task(_run(
         f"http://127.0.0.1:{free_port()}", "token", tools=frozenset(),
         execute=lambda *_: {"ok": False}, watched=None,
-        retention=_Retention({"memory": {"audio_retention_days": 30}}, root, sleep),
+        retention=_Retention(
+            runtime_config({"memory": {"audio_retention_days": 30}}, root=root), root, sleep,
+        ),
     ))
     try:
         await laps(sleep)

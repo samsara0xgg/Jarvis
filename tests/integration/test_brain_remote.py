@@ -27,7 +27,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 
 from jarvis.cli import main
-from jarvis.runtime import RuntimeBootstrapError
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.state.device_tokens import device_token_matches
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -364,11 +364,11 @@ def test_listen_settings_are_empty_by_default_and_either_role_may_set_them(
     brain = brain_runtime(tmp_path / "1", f"runtime:\n  role: brain\n{listen}", monkeypatch)
     alone = brain_runtime(tmp_path / "2", f"runtime:\n  role: all\n{listen}", monkeypatch)
     try:
-        assert (default.listen_addresses, default.listen_hosts) == ((), ())
+        assert (default.config.listen_addresses, default.config.listen_hosts) == ((), ())
         assert default.phone_events is None
         for listening in (brain, alone):
-            assert listening.listen_addresses == (REMOTE,)
-            assert listening.listen_hosts == ("jarvis",)
+            assert listening.config.listen_addresses == (REMOTE,)
+            assert listening.config.listen_hosts == ("jarvis",)
             assert listening.phone_events is not None
         assert brain.terminal_hub is not None
         assert alone.terminal_hub is None

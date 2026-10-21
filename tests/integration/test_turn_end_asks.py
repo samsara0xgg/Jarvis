@@ -24,7 +24,8 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.decision.turn_end_asks import TurnEndAsks
-from jarvis.runtime import RuntimeBootstrapError, _turn_end_asks
+from jarvis.runtime import _turn_end_asks
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root

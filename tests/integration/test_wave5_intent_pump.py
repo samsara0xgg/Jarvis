@@ -52,6 +52,7 @@ from jarvis.state.input_claim import (
 )
 from jarvis.state.trigger_consumption import trigger_was_consumed
 from jarvis.surface.inherent_output import InherentBroadcaster
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -68,7 +69,7 @@ def _make_runtime(tmp_path: Path) -> JarvisRuntime:
     paths = bootstrap_runtime(tmp_path)
     conn = open_event_log(paths.event_log)
     return JarvisRuntime(
-        config={},
+        config=runtime_config(root=tmp_path),
         runtime_paths=paths,
         conn=conn,
         tool_registry=build_default_registry(),

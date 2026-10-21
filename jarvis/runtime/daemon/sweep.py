@@ -254,7 +254,7 @@ async def start_sweep_control_plane(
     precisely so that ordering lives in a single readable place instead of
     inside ``serve_inherent``'s already-long body.
     """
-    sweep_interval_s, default_budget_s = _supervisor_settings(runtime.config)
+    sweep_interval_s, default_budget_s = _supervisor_settings(runtime.config.raw)
 
     anchor_id = latest_id(runtime.conn)
     anchored = asyncio.Event()

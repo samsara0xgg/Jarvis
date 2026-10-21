@@ -24,6 +24,7 @@ import pytest
 
 from jarvis.decision.surrogate_route import SurrogateRoute
 from tests.support.routine import drive_streaming_turn, logged_payloads, logged_rows
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import (
     SpokenPeer,
     fixture_key,  # noqa: F401 - autouse fixture, shared with the other spoken-route tests
@@ -63,13 +64,11 @@ def _runtime(  # noqa: PLR0913 - the fixture's knobs, one per test setting
     )
     # ADR 0272's hold on a spoken answer waits out its own 1.5 s of real time, which none of
     # these turns is about, so it is off here.
-    realtime = runtime.config["realtime"]
+    realtime = runtime.config.raw["realtime"]
     response = {**realtime["response"], "answer_hold": {"seconds": 0}}
-    config = {**runtime.config, "realtime": {**realtime, "response": response}}
     return replace(
-        runtime,
+        reconfigure(runtime, realtime={**realtime, "response": response}),
         clock=fake.clock,
-        config=config,
         response_flags=flags,
         tier0_table=TABLE,
         surrogate_route=route,

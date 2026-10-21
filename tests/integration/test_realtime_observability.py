@@ -10,6 +10,7 @@ import pytest
 
 from jarvis import runtime as jarvis_runtime
 from jarvis.deployment import RuntimePaths
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
     realtime_trace_context,
@@ -84,7 +85,7 @@ def test_runtime_refuses_event_log_as_trace_destination(
     )
     monkeypatch.setenv("JARVIS_REALTIME_TRACE_JSONL", str(event_log))
     with pytest.raises(
-        jarvis_runtime.RuntimeBootstrapError,
+        RuntimeBootstrapError,
         match="must not target the production Event Log",
     ):
         jarvis_runtime._configure_realtime_trace_export(paths)  # noqa: SLF001

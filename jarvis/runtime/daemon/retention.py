@@ -33,11 +33,11 @@ _ATTACHMENT_DAYS = 30  # ADR 0211: unless ``attachments.retention_days`` says ot
 
 def media_dirs(runtime: JarvisRuntime) -> dict[Path, int | None]:
     """ADR 0067: the recordings, screenshots and phone attachments, each with its days to keep."""
-    tools = runtime.config.get("tools") or {}
+    tools = runtime.config.raw.get("tools") or {}
     screen = tools.get("screen") if isinstance(tools, dict) else None
     days = retention_days(screen.get("retention_days")) if isinstance(screen, dict) else None
     dirs = {runtime.runtime_paths.artifacts_root / SCREEN_ARTIFACTS_DIRNAME: days}
-    sent = runtime.config.get("attachments")
+    sent = runtime.config.raw.get("attachments")
     if runtime.attachments is not None:
         dirs[runtime.attachments.directory] = retention_days(
             sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
@@ -52,7 +52,7 @@ def link_earlier_pictures(runtime: JarvisRuntime) -> int:
     """ADR 0255: link his earlier records to the files still kept (see ``picture_files``)."""
     if runtime.attachments is None or runtime.memory is None:
         return 0
-    sent = runtime.config.get("attachments")
+    sent = runtime.config.raw.get("attachments")
     days = retention_days(
         sent.get("retention_days", _ATTACHMENT_DAYS) if isinstance(sent, dict)
         else _ATTACHMENT_DAYS,

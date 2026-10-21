@@ -66,6 +66,7 @@ from jarvis.surface.terminal_listen import (
     with_voice_commands,
 )
 from jarvis.surface.terminal_speaker import BrainCallError
+from tests.support.runtime_config import runtime_config
 from tests.support.stderr_log import stderr_in, stderr_sent_nowhere
 from tests.support.terminal import (
     TERMINAL_WS,
@@ -747,7 +748,8 @@ def test_a_voice_terminals_log_survives_portaudio_initialising_stuck(
     err = tmp_path / "terminal.err.log"
     with stderr_in(err):
         code = terminal_module.run_terminal(
-            "http://127.0.0.1:1", "t", runtime_root=tmp_path / "root", voice=True,
+            "http://127.0.0.1:1", "t", config=runtime_config(root=tmp_path / "root"),
+            runtime_root=tmp_path / "root", voice=True,
         )
     assert code == 0
     lines = err.read_text(encoding="utf-8").splitlines()

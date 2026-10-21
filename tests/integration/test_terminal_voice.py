@@ -55,6 +55,7 @@ from jarvis.surface.voice_tts import (
     TTSSegmentFinished,
     TTSSessionClosedError,
 )
+from tests.support.runtime_config import runtime_config
 from tests.support.terminal import (
     SPEECH_CONFIG,
     TERMINAL_WS,
@@ -859,7 +860,7 @@ class _Paths:
 
 def _host(config: dict[str, Any], journal: Journal) -> Any:  # noqa: ANN401
     return SimpleNamespace(
-        config=config,
+        config=runtime_config(config),
         response_flags=Wave4ResponseFlags(),
         runtime_paths=_Paths(journal.path),
         conn=journal.conn,

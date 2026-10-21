@@ -55,11 +55,6 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from jarvis.deployment.launchd import logs_dir, spawned_by_terminal_agent
-from jarvis.deployment.models import (
-    default_sensevoice_dir,
-    default_silero_vad_path,
-    default_voiceprint_model_path,
-)
 from jarvis.deployment.night_power import MacPower
 from jarvis.deployment.process_lock import LOCK_FILE, is_held
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
@@ -71,24 +66,19 @@ from jarvis.execution.tools import (
     make_screen_capture,
 )
 from jarvis.runtime import (
-    _DEFAULT_CONFIG_FILENAME,
-    RuntimeBootstrapError,
     _audio_devices,
     _default_audio_device,
     _install_open_path,
-    _load_full_config,
-    _locate_repo_root,
     _observer_poll_interval_s,
     _observer_repo_paths,
     _obsidian_vault_root,
-    _realtime_model_path,
     _screen_tools_config,
     _timesink_db_path,
     _timesink_poll_interval_s,
     _wave4_response_flags,
-    _work_state_timezone,
     audio_output,
 )
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.devices import (
     MIC_RETRY_S,
     start_audio_device_watch,
@@ -125,17 +115,16 @@ from jarvis.runtime.inherent_loop import (
 from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.night_watch import NightWatch
-from jarvis.runtime.settings import Settings, apply_settings
+from jarvis.runtime.settings import Settings
 from jarvis.runtime.settings_owner import check_own, page_keys, release, terminal_report
 from jarvis.shared import ActionRequest
 from jarvis.shared.device_link import COPY_CODE
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl
 from jarvis.state import device_reads, job_time, ledger, timesink, timesink_moment
 from jarvis.state.daily_contract import DailyError
-from jarvis.state.daily_report import git_show, local_commits, resolve_zone
+from jarvis.state.daily_report import git_show, local_commits
 from jarvis.state.daily_store import commit_exists
 from jarvis.state.event_log import EventLogError, emit_event, open_event_log
-from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projects import Project, gather, parse_catalog, window_to_wire
 from jarvis.surface import voice_backend
@@ -174,7 +163,9 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.runtime.config import RuntimeConfig
     from jarvis.shared.realtime import Wave4ResponseFlags
+    from jarvis.state.memory_db import MemorySettings
     from jarvis.surface import voice_aec, voice_session
     from jarvis.surface.voice_media import StreamingTTSPipeline
     from jarvis.surface.voice_pipeline import VoicePipeline
@@ -495,7 +486,7 @@ class _SeatPaths:
 class _Seat:
     """What the voice builders read from their host; a terminal's is its journal and config."""
 
-    config: Mapping[str, Any]
+    config: RuntimeConfig
     response_flags: Wave4ResponseFlags
     runtime_paths: _SeatPaths
     conn: sqlite3.Connection
@@ -509,9 +500,8 @@ class _Seat:
 class _Speaking:
     """A terminal that was asked to speak: the config its media actor is built from."""
 
-    config: Mapping[str, Any]
+    config: RuntimeConfig
     runtime_root: Path
-    config_dir: Path | None = None  # where relative model paths in the config resolve from
     broadcaster: InherentBroadcaster | None = None  # the companion's sockets, with ``--serve-ui``
     controls: VoiceControls | None = None  # this device's mic and speech switches, likewise
     brain_url: str = ""  # where the day recording's pieces go (ADR 0256)
@@ -633,9 +623,9 @@ class _Listening:
     mac: _MacWatch | None = None
 
 
-def _listening_requested(config: Mapping[str, Any]) -> bool:
+def _listening_requested(config: RuntimeConfig) -> bool:
     """Whether this machine's own config turns the capture session on."""
-    realtime = config.get("realtime")
+    realtime = config.raw.get("realtime")
     ingress = realtime.get("single_audio_ingress") if isinstance(realtime, Mapping) else None
     return isinstance(ingress, Mapping) and ingress.get("enabled") is True
 
@@ -656,12 +646,10 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     broadcaster.attach_loop(asyncio.get_running_loop())
     seat = _Seat(
         speaking.config,
-        _wave4_response_flags(speaking.config),
+        _wave4_response_flags(speaking.config.raw),
         _SeatPaths(journal.path, speaking.runtime_root),
         journal.conn,
-        MemorySettings.from_config(
-            speaking.config.get("memory"), runtime_root=speaking.runtime_root,
-        ),
+        speaking.config.memory,
     )
     canceller = None
     if _listening_requested(speaking.config):
@@ -671,7 +659,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
             LOGGER.exception("echo cancellation could not start; this terminal listens without it")
     ducker = SystemAudioDucker()
     pipeline = build_tts_pipeline(
-        seat, broadcaster, ducker=ducker, voice=voice_knobs(speaking.config),
+        seat, broadcaster, ducker=ducker, voice=voice_knobs(speaking.config.raw),
         echo_canceller=canceller, remote=RemoteTTSProvider(link),
         network_lost_dir=speaking.runtime_root / "terminal",
     )
@@ -747,7 +735,7 @@ async def _start_listening(
         recognizer_pipeline = recognizer()
         attempt = _spawn_single_ingress_session(
             runtime=seat, pipeline=recognizer_pipeline, broadcaster=broadcaster,
-            silero_path=silero_path, tts=pipeline, voice=voice_knobs(config),
+            silero_path=silero_path, tts=pipeline, voice=voice_knobs(config.raw),
             mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
             conversation=controls.conversation, set_conversation=controls.set_conversation,
             set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
@@ -757,10 +745,10 @@ async def _start_listening(
             return attempt, None
         # ADR 0183: dictation records on this microphone and hears with this machine's
         # recognizer; its polish, which needs a model key, is the brain's.
-        vocab_path = Path(str((config.get("dictation") or {}).get("vocab_path", "")))
+        vocab_path = Path(str((config.raw.get("dictation") or {}).get("vocab_path", "")))
         try:
             dictation = build_dictation(
-                config=config, ingress=session.ingress, silero_path=silero_path,
+                config=config.raw, ingress=session.ingress, silero_path=silero_path,
                 transcribe=recognizer_pipeline.transcribe,
                 polisher=RemotePolish(link, functools.partial(load_vocab, vocab_path)),
                 vocab_path=vocab_path,
@@ -792,20 +780,9 @@ async def _start_listening(
 
 def _voice_models(speaking: _Speaking) -> tuple[Path, Path, Path] | None:
     """The SenseVoice, Silero and voiceprint model paths, or ``None`` (said) when one is missing."""
-    config = speaking.config
-    config_dir = speaking.config_dir or speaking.runtime_root
-    sensevoice_dir = _realtime_model_path(
-        config, key="sensevoice_dir", config_dir=config_dir,
-        fallback=default_sensevoice_dir(speaking.runtime_root),
-    )
-    silero_path = _realtime_model_path(
-        config, key="silero_vad_path", config_dir=config_dir,
-        fallback=default_silero_vad_path(speaking.runtime_root),
-    )
-    voiceprint_model = _realtime_model_path(  # ADR 0286: absent, utterances go without one
-        config, key="voiceprint_model_path", config_dir=config_dir,
-        fallback=default_voiceprint_model_path(speaking.runtime_root),
-    )
+    models = speaking.config.models
+    sensevoice_dir, silero_path = models.sensevoice_dir, models.silero_vad_path
+    voiceprint_model = models.voiceprint_model  # ADR 0286: absent, utterances go without one
     models_ok, missing = voice_models_preflight(
         sensevoice_dir=sensevoice_dir, silero_path=silero_path,
     )
@@ -883,7 +860,7 @@ def _start_retry_watch(speaking: _Speaking, retry: _Retry) -> _RetryWatch:
     log, as a listening terminal's does) and a change of the devices to be on (ADR 0054). Runs
     on the loop: the observer marshals its callbacks onto it, and the log belongs to its thread.
     """
-    devices = start_device_change_watch(speaking.config, retry.now)
+    devices = start_device_change_watch(speaking.config.raw, retry.now)
     devices.add_done_callback(log_watcher_death)
     log = open_event_log(speaking.runtime_root / NIGHT_LOG)
     power = _install_power_observer_or_degrade(
@@ -913,7 +890,7 @@ def _start_mac_watch(
     """
     coordinator = VoicePowerCoordinator(session=session, media=pipeline)
     devices = start_audio_device_watch(
-        speaking.config, page, coordinator, session.ingress, None,
+        speaking.config.raw, page, coordinator, session.ingress, None,
     )
     devices.add_done_callback(log_watcher_death)
     log = open_event_log(speaking.runtime_root / NIGHT_LOG)
@@ -941,7 +918,7 @@ def _start_lifelog(
     It pauses while the microphone is muted. A failure to start costs the recording, never
     the listening.
     """
-    section = speaking.config.get("lifelog_capture")
+    section = speaking.config.raw.get("lifelog_capture")
     if not (isinstance(section, Mapping) and section.get("enabled") is True):
         return None
     if not speaking.brain_url or not speaking.brain_token:
@@ -1003,7 +980,7 @@ class _Ui:
     """``--serve-ui``: the loopback socket this terminal listens on, and what answers behind it."""
 
     sock: socket.socket
-    config: Mapping[str, Any]
+    config: RuntimeConfig
     runtime_root: Path
 
 
@@ -1087,7 +1064,7 @@ def _start_night(night: NightRun | None, speech: _Speech) -> asyncio.Task[None] 
 class _Retention:
     """ADR 0334: the root whose logs and recordings this terminal keeps in bounds itself."""
 
-    config: Mapping[str, Any]
+    config: RuntimeConfig
     runtime_root: Path
     sleep: Callable[[float], Awaitable[object]] = asyncio.sleep
 
@@ -1101,7 +1078,7 @@ def _start_retention(retention: _Retention) -> asyncio.Task[None]:
     A daemon that holds this root sweeps it itself: two processes cutting one log lose lines.
     """
     root = retention.runtime_root
-    memory = MemorySettings.from_config(retention.config.get("memory"), runtime_root=root)
+    memory = retention.config.memory
     task = asyncio.create_task(
         data_sweep_task(
             {memory.audio_dir: memory.audio_retention_days}, logs_dir(root),
@@ -1113,10 +1090,10 @@ def _start_retention(retention: _Retention) -> asyncio.Task[None]:
     return task
 
 
-def _device_page(config: Mapping[str, Any], runtime_root: Path) -> Settings:
+def _device_page(config: RuntimeConfig, runtime_root: Path) -> Settings:
     """This machine's Settings page; the UI, the board look and the device watch share one."""
     return Settings(
-        runtime_root, config, _audio_devices, _default_audio_device, owned=_OWN_PAGE_KEYS,
+        runtime_root, config.raw, _audio_devices, _default_audio_device, owned=_OWN_PAGE_KEYS,
     )
 
 
@@ -1240,10 +1217,10 @@ def _configure_realtime_trace(runtime_root: Path) -> None:
         LOGGER.info("realtime trace: %s", path)
 
 
-def _own_projects(config: Mapping[str, Any]) -> tuple[Project, ...]:
+def _own_projects(config: RuntimeConfig) -> tuple[Project, ...]:
     """This machine's ``projects`` catalog; a malformed one is the brain's to refuse at boot."""
     try:
-        return parse_catalog(config.get("projects"))
+        return parse_catalog(config.raw.get("projects"))
     except ValueError:
         LOGGER.warning("this machine's projects catalog is malformed; the brain gets no commits")
         return ()
@@ -1253,15 +1230,15 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     base_url: str,
     token: str,
     *,
+    config: RuntimeConfig,
     runtime_root: Path,
-    config_path: Path | None = None,
     observers: bool = True,
     voice: bool = False,
     serve_ui: int | None = None,
 ) -> int:
     """Hold this device's link to the brain until interrupted; the exit code of the command.
 
-    Reads only this machine's own config (the shipped YAML and the runtime root's
+    Reads only this machine's own ``config`` (the shipped YAML and the runtime root's
     ``settings.yaml``); it opens no database, no env file and no key. With ``observers`` the
     repos and TimeSink that config turns on are observed here and reported to the brain.
     With ``voice`` this terminal also plays the brain's spoken answers (ADR 0172). With
@@ -1270,18 +1247,15 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     """
     if voice:
         voice_backend.keep_log_off_portaudio_stderr()  # before the first thing PortAudio can hang
-    if config_path is None:
-        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
     settings_yaml = runtime_root / "settings.yaml"
     try:
-        config = apply_settings(_load_full_config(config_path, settings_yaml), runtime_root)
-        _install_open_path(config)
-        configured_repos = _observer_repo_paths(config)
-        configured_store = _timesink_db_path(config)
+        _install_open_path(config.raw)
+        configured_repos = _observer_repo_paths(config.raw)
+        configured_store = _timesink_db_path(config.raw)
         repos = configured_repos if observers else ()
         store = configured_store if observers else None
-        usage_interval_s = usage_poll_interval_s(config) if observers else None
-        ship = ship_config(config, runtime_root) if observers else None
+        usage_interval_s = usage_poll_interval_s(config.raw) if observers else None
+        ship = ship_config(config.raw, runtime_root) if observers else None
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
         return 1
@@ -1294,16 +1268,15 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         except OSError as exc:
             sys.stderr.write(f"jarvis terminal: {exc}\n")
             return 1
-    _vision_preset, max_width_px = _screen_tools_config(config)
-    claude = ClaudeSessions() if claude_sessions_read(config) else None
+    _vision_preset, max_width_px = _screen_tools_config(config.raw)
+    claude = ClaudeSessions() if claude_sessions_read(config.raw) else None
     # ADR 0192: this Mac's night run, held here because a brain has no Mac to keep awake. Its
     # events are the one log a terminal keeps; it recovers an open run from them at start.
     night_log = runtime_root / NIGHT_LOG
     night_log.parent.mkdir(parents=True, exist_ok=True)
     open_event_log(night_log).close()
     night = NightRun(
-        night_log, night_settings(config), MacPower(),
-        zone=resolve_zone(None, _work_state_timezone(config))[1],
+        night_log, night_settings(config.raw), MacPower(), zone=config.zone,
     )
     # It holds the Mac past the deadline while a session it can see still works. Codex's board
     # is filled by hooks into the brain, so none is read here.
@@ -1312,15 +1285,15 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         codex={},
     )
     registry = build_default_registry(
-        obsidian_vault_root=_obsidian_vault_root(config), night=night,
+        obsidian_vault_root=_obsidian_vault_root(config.raw), night=night,
     )
     registry.register(make_screen_capture(max_width_px))
     tools = _declared(registry)
     LOGGER.info("this terminal runs %s", sorted(tools))
     watched = (
         _Watched(
-            repos, _observer_poll_interval_s(config), store, _timesink_poll_interval_s(config),
-            usage_interval_s,
+            repos, _observer_poll_interval_s(config.raw), store,
+            _timesink_poll_interval_s(config.raw), usage_interval_s,
         )
         if repos or store is not None or usage_interval_s is not None
         else None
@@ -1340,7 +1313,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         asyncio.run(_run(
             base_url, token, tools=tools, execute=execute, watched=watched,
             speaking=_Speaking(
-                config, runtime_root, config_path.parent, brain_url=base_url, brain_token=token,
+                config, runtime_root, brain_url=base_url, brain_token=token,
             ) if voice else None,
             ui=ui, night=night, settings=terminal_report(settings_yaml, runtime_root), page=page,
             ship=ship, retention=_Retention(config, runtime_root),

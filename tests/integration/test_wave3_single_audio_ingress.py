@@ -32,6 +32,7 @@ from jarvis.surface import (
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
 from tests.support.hold import HANG_S, never_waits_for
+from tests.support.runtime_config import runtime_config
 from tests.support.stderr_log import stderr_in, stderr_sent_nowhere
 from tests.support.voice_input import (
     FakeBackend,
@@ -1914,17 +1915,17 @@ def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None
 def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
     """Feature-off does not listen; flag-on needs a speech actor."""
     runtime = MagicMock()
-    runtime.config = {"realtime": {"enabled": False}}
+    runtime.config = runtime_config({"realtime": {"enabled": False}})
     off = voice_wiring.single_ingress_activation(runtime, tts=None)
     assert not off.requested
     assert off.reason == "feature_disabled"
 
-    runtime.config = {
+    runtime.config = runtime_config({
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
         },
-    }
+    })
     no_speech = voice_wiring.single_ingress_activation(runtime, tts=None)
     assert no_speech.requested
     assert not no_speech.capable
@@ -1936,7 +1937,12 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
     assert enabled.ingress_config is not None
     assert enabled.session_config is not None
 
-    runtime.config["realtime"]["single_audio_ingress"]["canonical_frame_samples"] = 480
+    runtime.config = runtime_config({
+        "realtime": {
+            "enabled": True,
+            "single_audio_ingress": {"enabled": True, "canonical_frame_samples": 480},
+        },
+    })
     invalid = voice_wiring.single_ingress_activation(runtime, tts=wave2)
     assert not invalid.capable
     assert invalid.reason.startswith("invalid_input_config:")
@@ -3923,7 +3929,7 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
 def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None:
     """SenseVoice prewarm never changes feature-off or claims a mic on failure."""
     runtime = MagicMock()
-    runtime.config = {"realtime": {"enabled": True}}
+    runtime.config = runtime_config({"realtime": {"enabled": True}})
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
@@ -3938,12 +3944,12 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
     assert not disabled.attempted
     pipeline.prewarm_input_model.assert_not_called()
 
-    runtime.config = {
+    runtime.config = runtime_config({
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
         },
-    }
+    })
     pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")
     engine = MagicMock()
     with (
@@ -3972,12 +3978,12 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
 def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner() -> None:
     """Session preparation has a typed no-owner boundary before ingress.start."""
     runtime = MagicMock()
-    runtime.config = {
+    runtime.config = runtime_config({
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
         },
-    }
+    })
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
     backend = FakeBackend()
@@ -4030,7 +4036,9 @@ def test_a_microphone_that_does_not_open_while_portaudio_starts_up_stuck_logs_wh
             return stopped
 
     runtime = MagicMock()
-    runtime.config = {"realtime": {"enabled": True, "single_audio_ingress": {"enabled": True}}}
+    runtime.config = runtime_config(
+        {"realtime": {"enabled": True, "single_audio_ingress": {"enabled": True}}},
+    )
     backend = _StuckInit()
     err = tmp_path / "terminal.err.log"
     with (
@@ -4069,12 +4077,12 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
 ) -> None:
     """Partial Wave-3 construction cannot leak its observer lane or mic owner."""
     runtime = MagicMock()
-    runtime.config = {
+    runtime.config = runtime_config({
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
         },
-    }
+    })
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
     backend = FakeBackend()
@@ -4133,7 +4141,7 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
 def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_branch() -> None:
     """Serve's extracted branch starts at most one mic owner while PTT stays callable."""
     runtime = MagicMock()
-    runtime.config = {"realtime": {"enabled": True}}
+    runtime.config = runtime_config({"realtime": {"enabled": True}})
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     pipeline.run_turn.return_value = MagicMock()
     ptt_callable = voice_wiring.build_voice_pipeline_callable(pipeline)
@@ -4153,12 +4161,12 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     assert not disabled.single_ingress_attempted
     assert disabled.reason == "feature_disabled"
 
-    runtime.config = {
+    runtime.config = runtime_config({
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
         },
-    }
+    })
     pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")
     engine = MagicMock()
     with (

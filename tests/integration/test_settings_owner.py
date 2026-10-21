@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
-from jarvis.runtime import _BRAIN_OVERRIDES
+from jarvis.runtime.config import _BRAIN_OVERRIDES
 from jarvis.runtime.daemon.routes import settings_notice_deps
 from jarvis.runtime.settings import PATHS
 from jarvis.runtime.settings_owner import (

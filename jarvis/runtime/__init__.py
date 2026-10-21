@@ -34,7 +34,6 @@ import asyncio
 import base64
 import contextlib
 import io
-import ipaddress
 import json
 import logging
 import mimetypes
@@ -54,10 +53,8 @@ from datetime import date, datetime
 from datetime import time as clock
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-import yaml
 
 from jarvis.decision import (
     DEFAULT_MAX_TOOL_ITERATIONS,
@@ -124,14 +121,9 @@ from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_thi
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.decision.turn_end_asks import TurnEndAsks
 from jarvis.decision.voice_words import VoiceWords
-from jarvis.deployment import RuntimePaths, bootstrap_runtime, load_env_file
+from jarvis.deployment import RuntimePaths, load_env_file
 from jarvis.deployment.launchd import logs_dir
-from jarvis.deployment.models import (
-    default_meaning_dir,
-    default_sensevoice_dir,
-    default_silero_vad_path,
-    default_voiceprint_model_path,
-)
+from jarvis.deployment.models import default_meaning_dir
 from jarvis.deployment.night_power import MacPower
 from jarvis.execution import maps_spend
 from jarvis.execution.archive_tool import build_archive_tool
@@ -177,6 +169,7 @@ from jarvis.runtime.about_item import AboutItems
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
 from jarvis.runtime.commitment_intake import CommitmentIntake, CommitmentSettings
+from jarvis.runtime.config import Role, RuntimeBootstrapError, RuntimeConfig
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
     DailyReportService,
@@ -218,7 +211,7 @@ from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.push import Push
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.rides import RIDE_LINE_CHARS, RIDE_LINE_PREFIX, Rides
-from jarvis.runtime.settings import REPLY_LINES, SETUP_VOICES, Settings, apply_settings
+from jarvis.runtime.settings import REPLY_LINES, Settings
 from jarvis.runtime.settings_owner import SettingsDrift, check_own, page_keys
 from jarvis.runtime.setup import write_setting
 from jarvis.runtime.stream_bridge import LoopBoundTokenStream
@@ -257,7 +250,6 @@ from jarvis.state.authorized_dispatch_outbox import (
     answer_confirmation_once,
 )
 from jarvis.state.committed_event_bus import CommittedEventBus
-from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import (
     emit_event,
@@ -274,7 +266,6 @@ from jarvis.state.memory_db import (
     PictureFileId,
     PlacesBlock,
     ReceiptsOf,
-    SessionSettings,
     append_record,
     open_memory_db,
     record_sent,
@@ -330,19 +321,6 @@ LOGGER = logging.getLogger("jarvis.runtime")
 
 
 # --- Defaults ---------------------------------------------------------------
-
-# Default config / prompt asset paths relative to the repo root. The
-# composition root resolves the repo root by walking up from this module
-# until a ``config/jarvis.yaml`` exists; tests / users may override.
-_DEFAULT_CONFIG_FILENAME = Path("config") / "jarvis.yaml"
-_DEFAULT_PROMPT_FILENAME = Path("prompts") / "jarvis_v1.md"
-
-# ADR-0005 §12 pre-flight artifacts for hand-assembled runtimes (tests).
-# ``bootstrap_runtime_app`` anchors the absent-key default at
-# ``<runtime root>/models`` instead (``jarvis.deployment.models``).
-DEFAULT_SENSEVOICE_DIR = Path("data/sensevoice-small-int8")
-DEFAULT_SILERO_VAD_PATH = Path("data/silero_vad.onnx")
-DEFAULT_VOICEPRINT_MODEL = Path("data/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx")
 
 # Trigger event types the runtime loop expects from L4 paths.
 # ``action.result_observed`` is defensive — sync tools emit it inline
@@ -409,73 +387,11 @@ _VISION_SYSTEM_PROMPT: str = (
 # --- Exceptions -------------------------------------------------------------
 
 
-class RuntimeBootstrapError(RuntimeError):
-    """Raised when :func:`bootstrap_runtime_app` cannot assemble the runtime."""
-
-
 class TriggerWaitTimeout(RuntimeError):  # noqa: N818 — Day-1 vocabulary keeps `Timeout` suffix per ADR § Multi-trigger loop.
     """Raised by :func:`_wait_for_next_trigger` when no trigger arrives in time."""
 
 
 # --- ADR 0170 — the process's role ------------------------------------------
-
-Role = Literal["all", "brain"]
-
-# What the brain forces off whatever the user's files say: each of these reads or
-# drives this machine's own devices, files or apps, and a terminal owns those. The vault and
-# the open_path bookmarks are the terminal's alone (ADR 0225): `None` replaces a whole block.
-_BRAIN_OVERRIDES: Final[dict[str, Any]] = {
-    "observer": {
-        "repos": [],
-        "timesink": {"enabled": False},
-    },
-    "realtime": {"ambient_sounds": False, "gpt_live": {"enabled": False}},
-    "daily_report": {"codex_sessions": False},
-    "tools": {"workers": {"enabled": False}, "obsidian": {"vault_root": ""}, "open_path": None},
-}
-
-
-def _role(config: Mapping[str, Any]) -> Role:
-    """``runtime.role``: ``all`` (one machine does everything, the default) or ``brain``."""
-    block = config.get("runtime")
-    value = block.get("role", "all") if isinstance(block, Mapping) else "all"
-    if value == "all":
-        return "all"
-    if value == "brain":
-        return "brain"
-    msg = f"runtime: runtime.role must be all or brain, not {value!r}"
-    raise RuntimeBootstrapError(msg)
-
-
-def _listen(config: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``runtime.listen_addresses`` and ``runtime.listen_hosts``: where the daemon also answers.
-
-    A brain may have any (ADR 0170), and so may a Mac running alone (ADR 0207), only on private
-    addresses: a wildcard or a public address stops the boot, so no setting can open the daemon
-    to the internet.
-    """
-    block = config.get("runtime")
-    block = block if isinstance(block, Mapping) else {}
-    raw = {key: block.get(key) or [] for key in ("listen_addresses", "listen_hosts")}
-    for key, value in raw.items():
-        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-            msg = f"runtime: runtime.{key} must be a list of strings"
-            raise RuntimeBootstrapError(msg)
-    if not raw["listen_addresses"] and not raw["listen_hosts"]:
-        return (), ()
-    for item in raw["listen_addresses"]:
-        try:
-            address = ipaddress.ip_address(item)
-        except ValueError:
-            msg = f"runtime: runtime.listen_addresses has {item!r}, which is not an IP address"
-            raise RuntimeBootstrapError(msg) from None
-        if address.is_unspecified or address.is_multicast or address.is_global:
-            msg = f"runtime: runtime.listen_addresses has {item!r}, which is not a private address"
-            raise RuntimeBootstrapError(msg)
-    if any(not item or "*" in item for item in raw["listen_hosts"]):
-        msg = "runtime: runtime.listen_hosts must be plain host names, no wildcards"
-        raise RuntimeBootstrapError(msg)
-    return tuple(raw["listen_addresses"]), tuple(raw["listen_hosts"])
 
 
 def _settings_drift(
@@ -488,11 +404,6 @@ def _settings_drift(
     drift = SettingsDrift(paths.root, paths.settings, config)
     hub.on_settings = drift.on_report
     return drift
-
-
-def _for_role(config: dict[str, Any], role: Role) -> dict[str, Any]:
-    """The config this role runs on: the brain's has every device-bound switch forced off."""
-    return _overlay(config, _BRAIN_OVERRIDES) if role == "brain" else config
 
 
 def _on_menu(table: Tier0Table, registry: ToolRegistry, role: Role) -> Tier0Table:
@@ -620,7 +531,9 @@ class JarvisRuntime:
     :func:`jarvis.surface.cli_render.render_response`.
 
     Attributes:
-        config: Raw parsed YAML config (read-only mapping form).
+        config: The parsed, validated config (ADR 0370), with ``role`` (ADR 0170: the daemon
+            starts no microphone, playback, power observer or device watcher in ``brain``) and
+            the private addresses and Host names it also listens on (ADR 0170, 0207).
         runtime_paths: Bootstrapped L6 layout (root + event_log +
             artifacts_root + registry).
         conn: Open Event Log connection. The caller closes it when
@@ -638,11 +551,6 @@ class JarvisRuntime:
             grammar loaded from ``config/confirm_grammar.yaml``; empty
             tuple = the answer-path grammar hook disabled (same "off
             means inert" posture as an empty ``tier0_table``).
-        role: ``runtime.role`` (ADR 0170); the daemon starts no microphone,
-            playback, power observer or device watcher in ``brain``.
-        listen_addresses: ``runtime.listen_addresses``, the private addresses the
-            daemon also listens on; ``listen_hosts``, the Host names it accepts
-            there. Empty by default (ADR 0170, 0207).
         terminal_hub: the connected terminals a brain's device-bound tool calls go to;
             ``None`` unless the role is ``brain``.
         phone_events: where a paired phone's events are appended (ADR 0197); ``None``
@@ -652,7 +560,7 @@ class JarvisRuntime:
         picture_notes: the worker that writes a note for each picture after its turn (ADR 0223).
     """
 
-    config: Mapping[str, Any]
+    config: RuntimeConfig
     runtime_paths: RuntimePaths
     conn: sqlite3.Connection
     tool_registry: ToolRegistry
@@ -672,22 +580,12 @@ class JarvisRuntime:
     # ADR 0164 — the one decision-snapshot cache every turn thread shares by reference
     # (internally locked, like ``committed_event_bus``); None folds the whole log per read.
     decision_state: DecisionStateCache | None = None
-    # ADR-0006 §5 — the two voice artifact locations, already resolved against
-    # the config file's own directory. The daemon reads these instead of
-    # interpreting a relative module constant against its working directory;
-    # the defaults keep a hand-assembled runtime byte-identical to today.
-    sensevoice_dir: Path = DEFAULT_SENSEVOICE_DIR
-    silero_vad_path: Path = DEFAULT_SILERO_VAD_PATH
-    # ADR 0286: the speaker model a Mac running alone embeds its voice with; absent, no voiceprint.
-    voiceprint_model: Path = DEFAULT_VOICEPRINT_MODEL
     # ADR 0286: the owner's voice, per microphone: scores what a terminal, a phone or this
     # machine's own microphone heard. None = hand-assembled.
     voiceprints: VoiceprintBook | None = None
     # memory.db wiring (``memory:`` config block). None = no memory store:
     # hand-assembled runtimes write no records and inject no note.
     memory: MemorySettings | None = None
-    # ``session:`` config block: compaction thresholds and the Live brief budget.
-    session: SessionSettings = field(default_factory=SessionSettings)
     # ADR-0008 Step 8 — tool cues loaded from ``config/tool_cues.yaml``;
     # empty tuple = no cue can veto the routine route (the other pre-route
     # conditions still apply).
@@ -777,12 +675,6 @@ class JarvisRuntime:
     # ADR 0156: where sound would come out now, for the notices' ``audio_private`` and the job
     # mail; on a brain (ADR 0170) the output of the terminal that plays.
     sound_output: Callable[..., dict[str, Any]] = audio_output.current_output
-    # ADR 0170: ``brain`` runs headless and starts nothing device-bound.
-    role: Role = "all"
-    # ADR 0170, 0207: the private addresses the daemon also listens on, and the Host names it
-    # accepts.
-    listen_addresses: tuple[str, ...] = ()
-    listen_hosts: tuple[str, ...] = ()
     # ADR 0170: where a brain's device-bound tool calls go. None unless ``role`` is ``brain``.
     terminal_hub: TerminalHub | None = None
     # ADR 0227: what a brain's terminals report of their own settings files, and the owner's answer.
@@ -886,84 +778,6 @@ def _snapshot_reader(runtime: JarvisRuntime) -> SnapshotReader | None:
 # --- bootstrap_runtime_app --------------------------------------------------
 
 
-def _locate_repo_root(start: Path) -> Path:
-    """Walk up from ``start`` until ``config/jarvis.yaml`` exists; return that dir."""
-    current = start.resolve()
-    for candidate in (current, *current.parents):
-        if (candidate / _DEFAULT_CONFIG_FILENAME).is_file():
-            return candidate
-    msg = (
-        f"runtime: could not locate config/jarvis.yaml by walking up from {start}. "
-        "Pass config_path=Path(...) explicitly to bootstrap_runtime_app."
-    )
-    raise RuntimeBootstrapError(msg)
-
-
-def _read_yaml_mapping(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-    if not isinstance(raw, dict):
-        msg = f"config at {path} is not a YAML mapping"
-        raise RuntimeBootstrapError(msg)
-    return raw
-
-
-def _overlay(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
-    """``top`` over ``base``: mappings merge key by key, any other value replaces."""
-    merged = dict(base)
-    for key, value in top.items():
-        below = merged.get(key)
-        if isinstance(below, Mapping) and isinstance(value, Mapping):
-            merged[key] = _overlay(below, value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _load_full_config(path: Path, settings_path: Path | None = None) -> Mapping[str, Any]:
-    """The shipped config at ``path`` with the user's own settings laid over it.
-
-    ``config/jarvis.yaml`` holds what every install shares; the runtime
-    root's ``settings.yaml`` holds this user's values (projects, watched
-    repos, timezone, vault, ...). A missing settings file changes nothing.
-    """
-    raw = _read_yaml_mapping(path)
-    if settings_path is not None and settings_path.is_file():
-        raw = _overlay(raw, _read_yaml_mapping(settings_path))
-    name = _assistant_name(raw)
-    return {key: _named(value, name) for key, value in raw.items()}
-
-
-def _assistant_name(config: Mapping[str, Any]) -> str:
-    """``assistant_name`` — what the user calls the assistant; ``Jarvis`` when unset."""
-    name = config.get("assistant_name")
-    return name.strip() if isinstance(name, str) and name.strip() else "Jarvis"
-
-
-def _language(config: Mapping[str, Any]) -> lang.Language:
-    """``language`` from the user's settings, else the system language."""
-    raw = config.get("language")
-    chosen = lang.normalize(raw)
-    if chosen is None and raw not in (None, ""):
-        LOGGER.warning("settings: language %r is not zh or en; using the system language", raw)
-    return chosen or _system_language()
-
-
-def _system_language() -> lang.Language:
-    """The first of macOS's preferred languages (then ``$LANG``): Chinese or English."""
-    out = ""
-    if sys.platform == "darwin":
-        try:
-            out = subprocess.run(
-                ["/usr/bin/defaults", "read", "-g", "AppleLanguages"],
-                capture_output=True, text=True, timeout=2, check=False,
-            ).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            out = ""
-    first = out.strip().strip("()").split(",")[0].strip().strip('"')
-    return lang.normalize(first) or lang.normalize(os.environ.get("LANG")) or "en"
-
-
 def save_language(settings_path: Path, code: str) -> lang.Language:
     """Switch every fixed sentence to ``code`` now and keep it in ``settings.yaml``.
 
@@ -976,17 +790,6 @@ def save_language(settings_path: Path, code: str) -> lang.Language:
         raise ValueError(msg)
     write_setting(settings_path, "language", chosen)
     return lang.set_language(chosen)
-
-
-def _named(value: Any, name: str) -> Any:  # noqa: ANN401 — any YAML value.
-    """Put the assistant's name in for every ``{assistant}`` in the config's strings."""
-    if isinstance(value, str):
-        return value.replace("{assistant}", name)
-    if isinstance(value, Mapping):
-        return {key: _named(item, name) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_named(item, name) for item in value]
-    return value
 
 
 def _positive_float(value: object, fallback: float) -> float:
@@ -1303,7 +1106,7 @@ def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
 
 
 def _ledger(
-    full_config: Mapping[str, Any], memory: MemorySettings | None, event_log: Path,
+    config: RuntimeConfig, memory: MemorySettings | None, event_log: Path,
     device: DeviceLink | None = None, attachments: Path | None = None,
 ) -> LedgerContext | None:
     """ADR 0201: the one ledger both prompt renders ask; None without a ``ledger:`` block.
@@ -1311,29 +1114,25 @@ def _ledger(
     On a brain (``device``, ADR 0170) its TimeSink is the terminal's. ``attachments`` is where his
     pictures are kept, which the day line of ADR 0235 reads.
     """
-    settings = LedgerSettings.from_config(
-        full_config.get("ledger"), str(full_config.get("reply_language", "follow")),
-    )
+    settings = LedgerSettings.from_config(config.raw.get("ledger"), config.reply_language)
     if settings is None or memory is None:
         return None
-    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
     sources = LedgerSources(
-        memory.db_path, event_log, _timesink_db_path(full_config), zone,
+        memory.db_path, event_log, _timesink_db_path(config.raw), config.zone,
         None if device is None else TerminalScreen(device), attachments,
     )
     return LedgerContext(sources, settings)
 
 
 def _highlight_marks(
-    full_config: Mapping[str, Any], memory: MemorySettings, paths: RuntimePaths,
+    config: RuntimeConfig, memory: MemorySettings, paths: RuntimePaths,
     device: DeviceLink | None,
 ) -> HighlightMarks:
     """ADR 0235: what `mark_highlight` does, over the same day line `GET /inherent/day` folds."""
-    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
     return HighlightMarks(
         paths.event_log,
         DaySources(
-            zone, _timesink_db_path(full_config), memory.db_path,
+            config.zone, _timesink_db_path(config.raw), memory.db_path,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
@@ -1342,19 +1141,17 @@ def _highlight_marks(
 
 
 def _doing_schedule(
-    full_config: Mapping[str, Any], memory: MemorySettings, paths: RuntimePaths,
-    device: DeviceLink | None, pricing_path: Path,
+    config: RuntimeConfig, memory: MemorySettings, paths: RuntimePaths, device: DeviceLink | None,
 ) -> DoingSchedule | None:
     """ADR 0302, 0310: the writer of the doing lane, over the day line `GET /inherent/day` folds."""
-    settings = DoingSettings.from_config(full_config.get("doing"))
+    settings = DoingSettings.from_config(config.raw.get("doing"))
     if settings is None:
         return None
-    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
-    llm_config = full_config.get("llm")
+    llm_config = config.raw.get("llm")
     return DoingSchedule(
         settings=settings,
         sources=DaySources(
-            zone, _timesink_db_path(full_config), memory.db_path,
+            config.zone, _timesink_db_path(config.raw), memory.db_path,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
@@ -1362,19 +1159,18 @@ def _doing_schedule(
         memory_db=memory.db_path,
         event_log_path=paths.event_log,
         llm_config=llm_config if isinstance(llm_config, Mapping) else {},
-        pricing_table=load_pricing_table(pricing_path),
+        pricing_table=load_pricing_table(config.pricing_path),
     )
 
 
 def _about_items(
-    full_config: Mapping[str, Any], memory: MemorySettings, paths: RuntimePaths,
+    config: RuntimeConfig, memory: MemorySettings, paths: RuntimePaths,
 ) -> AboutItems:
     """ADR 0298: the day line `GET /inherent/day` folds, from local stores only."""
-    zone = resolve_zone(None, _work_state_timezone(full_config))[1]
     return AboutItems(
         paths.event_log,
         DaySources(
-            zone, _timesink_db_path(full_config), memory.db_path,
+            config.zone, _timesink_db_path(config.raw), memory.db_path,
             attachments=paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
         ),
@@ -1416,30 +1212,6 @@ def _work_state_preset(config: Mapping[str, Any]) -> str:
     block = config.get("work_state")
     raw = block.get("preset") if isinstance(block, Mapping) else None
     return raw if isinstance(raw, str) and raw.strip() else _FALLBACK_WORK_STATE_PRESET
-
-
-def _work_state_timezone(config: Mapping[str, Any]) -> tzinfo | None:
-    """``work_state.timezone`` — the local zone day windows are cut in; unset = system local."""
-    block = config.get("work_state")
-    raw = block.get("timezone") if isinstance(block, Mapping) else None
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        return ZoneInfo(raw.strip())
-    except ZoneInfoNotFoundError as exc:
-        message = f"work_state.timezone must be an IANA zone name: {raw!r}"
-        raise ValueError(message) from exc
-
-
-def _system_clock(config: Mapping[str, Any]) -> SystemClock:
-    """The one clock (ADR 0333), in ``work_state.timezone`` else the machine's zone (ADR 0322)."""
-    built = SystemClock(_work_state_timezone(config))
-    try:
-        built.check_rule()
-    except ZoneError as exc:
-        msg = f"runtime: {exc}"
-        raise RuntimeBootstrapError(msg) from exc
-    return built
 
 
 def _work_state_auto(config: Mapping[str, Any], config_path: Path) -> bool:
@@ -2324,11 +2096,11 @@ def _reads_connected(hub: TerminalHub) -> bool:
 
 
 def _daily_schedule(
-    service: DailyReportService, event_log: Path, config: Mapping[str, Any],
+    service: DailyReportService, event_log: Path, config: RuntimeConfig,
     hub: TerminalHub | None = None,
 ) -> DailySchedule | None:
     """``daily_report.at`` — when the daemon writes yesterday's report (ADR 0101); unset: off."""
-    block = config.get("daily_report")
+    block = config.raw.get("daily_report")
     raw = block.get("at") if isinstance(block, Mapping) else None
     if raw is None:
         return None
@@ -2337,9 +2109,8 @@ def _daily_schedule(
     except ValueError:
         LOGGER.warning("daily_report.at %r is not HH:MM; no daily report is written", raw)
         return None
-    zone = resolve_zone(None, _work_state_timezone(config))[1]
     return DailySchedule(
-        service, event_log_path=event_log, at=at, zone=zone,
+        service, event_log_path=event_log, at=at, zone=config.zone,
         device_ready=None if hub is None else partial(_reads_connected, hub),
     )
 
@@ -2418,57 +2189,6 @@ def _install_open_path(config: Mapping[str, Any]) -> None:
     except FileTargetsConfigError as exc:
         msg = f"runtime: tools.open_path invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
-
-
-def _realtime_model_path(
-    config: Mapping[str, Any],
-    *,
-    key: str,
-    config_dir: Path,
-    fallback: Path,
-) -> Path:
-    """Return `realtime.<key>` as an absolute path, or ``fallback`` (ADR-0006 §5).
-
-    Resolution rule for every path-valued ``realtime.*`` key: ``~``-expanded,
-    and if still relative anchored at the directory holding the config file the
-    operator pointed at with ``--config`` — never at ``os.getcwd()``, which is
-    the defect this key exists to remove, and never at ``repo_root``, which is
-    itself the guess ``config_path.parent.parent``.
-
-    An absent or malformed value degrades to ``fallback`` with one warning and
-    never fails boot, matching :func:`_obsidian_vault_root`: a missing artifact
-    is already handled softly by the daemon's pre-flight, so a config typo must
-    not be harder to recover from than a missing file.
-    """
-    block = config.get("realtime")
-    if not isinstance(block, Mapping):
-        return fallback
-    raw = block.get(key)
-    if raw is None:
-        return fallback
-    if not isinstance(raw, str) or not raw.strip():
-        LOGGER.warning(
-            "realtime.%s must be a non-empty string; using %s.", key, fallback,
-        )
-        return fallback
-    try:
-        # `Path.expanduser` RAISES on a `~` it cannot resolve, unlike
-        # `os.path.expanduser`, which returns the string untouched. A missing
-        # slash -- `~models/silero.onnx` -- is enough, and this runs inside
-        # `bootstrap_runtime_app`, so an uncaught raise takes down every CLI
-        # command, not just `serve`.
-        candidate = Path(raw.strip()).expanduser()
-    except RuntimeError:
-        LOGGER.warning(
-            "realtime.%s (%r) has an unresolvable '~' prefix; using %s.",
-            key,
-            raw,
-            fallback,
-        )
-        return fallback
-    if candidate.is_absolute():
-        return candidate
-    return (config_dir / candidate).resolve()
 
 
 def _web_search_provider_config(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -2858,7 +2578,7 @@ def diagnostics_flag(config: Mapping[str, Any], key: str) -> bool:
     return isinstance(block, Mapping) and block.get(key) is True
 
 
-def _load_runtime_env_and_trace(paths: RuntimePaths) -> None:
+def load_runtime_env_and_trace(paths: RuntimePaths) -> None:
     """Load fill-only runtime env, then apply its optional trace destination."""
     load_env_file(paths.root)
     _configure_realtime_trace_export(paths)
@@ -2944,8 +2664,8 @@ def _print_only(_url: str) -> None:
 def mcp_login(
     server: str,
     *,
-    config_path: Path | None = None,
-    runtime_root: Path | None = None,
+    config: RuntimeConfig,
+    paths: RuntimePaths,
     open_browser: bool = True,
 ) -> int:
     """ADR 0032: log one `auth: oauth` server in through the browser; the daemon reuses the token.
@@ -2961,22 +2681,14 @@ def mcp_login(
     refused or never asked for a login, 2 the entry is missing or has no login;
     a login command's own exit code otherwise.
     """
-    if config_path is None:
-        repo_root = _locate_repo_root(Path(__file__).parent)
-        config_path = repo_root / _DEFAULT_CONFIG_FILENAME
-    else:
-        repo_root = config_path.resolve().parent.parent
-    paths = bootstrap_runtime(runtime_root)
-    load_env_file(paths.root)
-    config = _load_full_config(config_path, paths.settings)
-    block = _mcp_block(config)
-    servers = _all_mcp_servers(config, _plugins(config, repo_root))
+    block = _mcp_block(config.raw)
+    servers = _all_mcp_servers(config.raw, _plugins(config.raw, config.repo_root))
     spec = servers.get(server)
     if not isinstance(spec, Mapping):
         known = ", ".join(sorted(servers)) or "none"
         sys.stderr.write(
             f"mcp-login: no server {server!r} in `tools.mcp.servers` or an enabled plugin"
-            f" of {config_path} (known: {known})\n"
+            f" of {config.config_path} (known: {known})\n"
         )
         return 2
     if spec.get("command") and spec.get("login_args"):
@@ -3020,10 +2732,10 @@ def mcp_login(
 
 def import_exports(
     source: str,
-    paths: Sequence[Path],
+    files: Sequence[Path],
     *,
-    config_path: Path | None = None,
-    runtime_root: Path | None = None,
+    config: RuntimeConfig,
+    paths: RuntimePaths,
 ) -> imports.Counts:
     """ADR 0259: keep the files raw under the runtime root and read their entries into memory.db.
 
@@ -3031,48 +2743,35 @@ def import_exports(
         ValueError: ``source`` has no parser yet.
         OSError: a file cannot be read or kept.
     """
-    if config_path is None:
-        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
-    root = bootstrap_runtime(runtime_root)
-    config = _load_full_config(config_path, root.settings)
-    memory = MemorySettings.from_config(config.get("memory"), runtime_root=root.root)
-    with contextlib.closing(open_memory_db(memory.db_path)) as conn:
-        return imports.import_files(conn, root.root / imports.IMPORTS_DIRNAME, source, paths)
+    with contextlib.closing(open_memory_db(config.memory.db_path)) as conn:
+        return imports.import_files(conn, paths.root / imports.IMPORTS_DIRNAME, source, files)
 
 
-def open_voiceprints(
-    *, config_path: Path | None = None, runtime_root: Path | None = None,
-) -> VoiceprintBook:
+def open_voiceprints(config: RuntimeConfig) -> VoiceprintBook:
     """ADR 0286: the owner's profiles in this runtime's ``memory.db``, for the CLI."""
-    if config_path is None:
-        config_path = _locate_repo_root(Path(__file__).parent) / _DEFAULT_CONFIG_FILENAME
-    root = bootstrap_runtime(runtime_root)
-    config = _load_full_config(config_path, root.settings)
-    memory = MemorySettings.from_config(config.get("memory"), runtime_root=root.root)
-    return VoiceprintBook(memory.db_path)
+    return VoiceprintBook(config.memory.db_path)
 
 
-def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stays explicit
-    *,
-    config_path: Path | None = None,
-    prompt_path: Path | None = None,
-    runtime_root: Path | None = None,
+def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays explicit
+    config: RuntimeConfig, paths: RuntimePaths,
 ) -> JarvisRuntime:
     """Assemble a frozen :class:`JarvisRuntime` ready for :func:`run_turn`.
 
+    The caller has laid out the runtime root (:func:`jarvis.deployment.bootstrap_runtime`),
+    loaded its environment (:func:`load_runtime_env_and_trace`) and parsed the config
+    (:func:`~jarvis.runtime.config.load_runtime_config`): a bad value has stopped it before
+    anything here opens a file.
+
     Wiring (bottom-up across the layer DAG):
 
-    1. L6 bootstrap — :func:`jarvis.deployment.bootstrap_runtime` resolves
-       the runtime root (env var / explicit / default) and creates the
-       base directories.
-    2. L2 event log — :func:`jarvis.state.event_log.open_event_log`
+    1. L2 event log — :func:`jarvis.state.event_log.open_event_log`
        opens (or creates) the SQLite spine, idempotently installing
        the schema / indexes / append-only triggers.
-    3. L4 registry + lifecycle — :func:`jarvis.execution.tools.build_default_registry`
+    2. L4 registry + lifecycle — :func:`jarvis.execution.tools.build_default_registry`
        registers the tools; the :class:`ActionLifecycle` is per-process FSM.
-    3b. L3 Tier 0 whitelist — ``config/tier0_patterns.yaml`` parsed and
+    2b. L3 Tier 0 whitelist — ``config/tier0_patterns.yaml`` parsed and
        cross-checked against the registry's ``regex_router`` surface.
-    4. L3 LLM client — :class:`jarvis.decision.llm.LLMClient` reads the
+    3. L3 LLM client — :class:`jarvis.decision.llm.LLMClient` reads the
        ``llm:`` block from the YAML config. Lazy SDK construction —
        no network call until ``run_turn`` actually invokes ``chat``.
 
@@ -3081,84 +2780,51 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     across turns), so the composition root does not wire it here.
 
     Args:
-        config_path: Optional explicit path to ``config/jarvis.yaml``.
-            Default: resolved by walking up from this module's file.
-        prompt_path: Optional explicit path to ``prompts/jarvis_v1.md``.
-            Default: ``${repo_root}/prompts/jarvis_v1.md``.
-        runtime_root: Optional override for the L6 runtime root
-            (tests / sandboxed runs).
+        config: The parsed config, with the role's overrides applied.
+        paths: The runtime root's layout.
 
     Returns:
         Frozen :class:`JarvisRuntime`.
 
     Raises:
-        RuntimeBootstrapError: When config / prompt files cannot be
-            located or parsed.
+        RuntimeBootstrapError: When the prompt file, the Tier 0, grammar or cue tables, or the
+            ``llm`` section is missing or malformed, or the zone database has no rule for now.
     """
-    # Path resolution. The composition root tolerates either
-    # repo-rooted defaults or explicit overrides; we never look at
-    # ``os.getcwd()``.
-    if config_path is None:
-        repo_root = _locate_repo_root(Path(__file__).parent)
-        config_path = repo_root / _DEFAULT_CONFIG_FILENAME
-    else:
-        repo_root = config_path.resolve().parent.parent
-
-    config_dir = config_path.resolve().parent
-
-    if prompt_path is None:
-        prompt_path = repo_root / _DEFAULT_PROMPT_FILENAME
-
-    if not config_path.is_file():
-        msg = f"runtime: config file {config_path} does not exist"
+    config_path, repo_root = config.config_path, config.repo_root
+    if not config.prompt_path.is_file():
+        msg = f"runtime: prompt file {config.prompt_path} does not exist"
         raise RuntimeBootstrapError(msg)
-    if not prompt_path.is_file():
-        msg = f"runtime: prompt file {prompt_path} does not exist"
-        raise RuntimeBootstrapError(msg)
+    system_clock = SystemClock(config.zone)
+    try:
+        system_clock.check_rule()
+    except ZoneError as exc:
+        msg = f"runtime: {exc}"
+        raise RuntimeBootstrapError(msg) from exc
 
-    # 1. L6 paths.
-    paths = bootstrap_runtime(runtime_root)
-
-    # 1b. ADR-0009 D1 — fill-only ``${runtime_root}/env`` loader, BEFORE
-    #     any surface preflight reads the environment (launchd strips the
-    #     shell env; secrets must not live in the 0644 plist).
-    # Optional live-burn seam. This JSONL is diagnostic-only and must never be
-    # the canonical SQLite Event Log. Relative paths stay inside runtime_root;
-    # no path means the exporter is disabled (the production default).
-    _load_runtime_env_and_trace(paths)
-
-    # 2. L2 event log.
+    # 1. L2 event log.
     conn = open_event_log(paths.event_log)
 
-    # 3. L4 registry + lifecycle. Config is loaded here (ahead of step 4's
-    #    LLM-config read) because `search_notes`/`web_search`/`web_fetch`
+    # 2. L4 registry + lifecycle. `search_notes`/`web_search`/`web_fetch`
     #    need `tools.obsidian.vault_root` / `tools.web.*` threaded into
     #    the registry at build time (ADR-0011 D7) — L4 handlers do not
     #    load YAML themselves.
-    # ADR 0052: the Settings page's saved values lie over the YAML and the
-    # user's settings.yaml for this boot.
-    full_config = apply_settings(_load_full_config(config_path, paths.settings), paths.root)
-    role = _role(full_config)
-    listen_addresses, listen_hosts = _listen(full_config)
-    full_config = _for_role(full_config, role)
-    lang.set_language(_language(full_config))
-    log_llm_io = diagnostics_flag(full_config, "log_llm_io")
+    role = config.role
+    listen_addresses = config.listen_addresses
+    lang.set_language(config.language)
+    log_llm_io = diagnostics_flag(config.raw, "log_llm_io")
     llm_io_log.configure(logs_dir(paths.root) / "llm-io.jsonl" if log_llm_io else None)
-    realtime_block = full_config.setdefault("realtime", {})
-    if not realtime_block.get("tts_voice"):
-        realtime_block["tts_voice"] = SETUP_VOICES[lang.language()][0]
-    wave1_features = _wave1_feature_flags(full_config)
+    wave1_features = _wave1_feature_flags(config.raw)
     (
         web_search_max_results,
         web_fetch_max_bytes,
         web_fetch_max_text_bytes,
         web_timeout_s,
-    ) = _web_tools_config(full_config)
-    web_search_provider, web_search_api_key = _web_search_provider_config(full_config)
-    _install_open_path(full_config)
-    vision_preset_name, screen_max_width_px = _screen_tools_config(full_config)
-    memory = MemorySettings.from_config(full_config.get("memory"), runtime_root=paths.root)
-    voiceprint_gate = _voiceprint_gate(full_config)  # ADR 0286, read once at boot
+    ) = _web_tools_config(config.raw)
+    web_search_provider, web_search_api_key = _web_search_provider_config(config.raw)
+    _install_open_path(config.raw)
+    vision_preset_name, screen_max_width_px = _screen_tools_config(config.raw)
+    memory = config.memory
+    voiceprint_gate = _voiceprint_gate(config.raw)  # ADR 0286, read once at boot
     # ADR 0170: a brain's TimeSink and git are its terminal's, so what reads them asks the hub.
     locate_waits = LocateWaits()
     phone_events = (
@@ -3166,68 +2832,66 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     )
     terminal_hub = TerminalHub(events=phone_events) if role == "brain" else None
     device = None if terminal_hub is None else terminal_hub.call
-    settings_drift = _settings_drift(terminal_hub, paths, full_config)
-    moment = _moment(full_config, config_path, memory.db_path, device)
+    settings_drift = _settings_drift(terminal_hub, paths, config.raw)
+    moment = _moment(config.raw, config_path, memory.db_path, device)
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
-    system_clock = _system_clock(full_config)
-    local_zone = system_clock.zone
+    local_zone = config.zone
     # ADR 0234: home and school move out of the settings into the places table, once.
-    place_state.migrate_settings(memory.db_path, _transit_places(full_config))
+    place_state.migrate_settings(memory.db_path, _transit_places(config.raw))
     maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
     _start_locating_places(memory.db_path, maps_key)
     kept_places = partial(place_state.home_school, memory.db_path)
-    session = SessionSettings.from_config(full_config.get("session"))
     work_state = WorkStateService(
         event_log_path=paths.event_log,
         memory_path=memory.db_path,
-        timesink_path=_timesink_db_path(full_config),
-        repos=_observer_repo_paths(full_config),
+        timesink_path=_timesink_db_path(config.raw),
+        repos=_observer_repo_paths(config.raw),
         analyst=build_analyst(
-            full_config,
-            _work_state_preset(full_config),
-            pricing_path=repo_root / "data" / "pricing.json",
+            config.raw,
+            _work_state_preset(config.raw),
+            pricing_path=config.pricing_path,
             account_cost=True,
         ),
-        model=_work_state_preset(full_config),
-        tz=_work_state_timezone(full_config),
+        model=_work_state_preset(config.raw),
+        tz=config.zone,
         device=device,
     )
-    catalog = parse_catalog(full_config.get("projects"))
+    catalog = parse_catalog(config.raw.get("projects"))
     projects = (
         None
         if not catalog
         else ProjectsService(
             event_log_path=paths.event_log,
-            timesink_path=_timesink_db_path(full_config),
+            timesink_path=_timesink_db_path(config.raw),
             projects=catalog,
             sorter=build_analyst(
-                full_config,
-                _work_state_preset(full_config),
-                pricing_path=repo_root / "data" / "pricing.json",
+                config.raw,
+                _work_state_preset(config.raw),
+                pricing_path=config.pricing_path,
                 account_cost=True,
                 kind="projects",
             ),
-            model=_work_state_preset(full_config),
-            tz=_work_state_timezone(full_config),
+            model=_work_state_preset(config.raw),
+            tz=config.zone,
             device=device,
         )
     )
     daily_report = DailyReportService(
         memory_path=memory.db_path,
-        timesink_path=_timesink_db_path(full_config),
-        repos=_observer_repo_paths(full_config),
+        timesink_path=_timesink_db_path(config.raw),
+        repos=_observer_repo_paths(config.raw),
         reporter=build_analyst(
-            full_config,
-            _daily_report_preset(full_config),
-            pricing_path=repo_root / "data" / "pricing.json",
+            config.raw,
+            _daily_report_preset(config.raw),
+            pricing_path=config.pricing_path,
             account_cost=True,
             kind="daily_report",
             timeout_s=_DAILY_REPORT_TIMEOUT_S,
         ),
-        model=_daily_report_preset(full_config),
-        tz=_work_state_timezone(full_config),
-        codex_sessions_path=_codex_sessions_path(full_config),
+        model=_daily_report_preset(config.raw),
+        tz=config.zone,
+        codex_sessions_path=_codex_sessions_path(config.raw),
         device=device,
     )
     night = (
@@ -3235,67 +2899,65 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         if role == "brain"  # ADR 0170: holding a Mac awake and dark is the terminal's job
         else NightRun(
             paths.event_log,
-            night_settings(full_config),
+            night_settings(config.raw),
             MacPower(),
-            zone=resolve_zone(None, _work_state_timezone(full_config))[1],
+            zone=config.zone,
         )
     )
     voice_settings = VoiceSettings(paths.root / "voice-settings.json")
-    view, mail_view, mail_drafts = _dashboard_state(full_config)
+    view, mail_view, mail_drafts = _dashboard_state(config.raw)
     voice_cues = VoiceCues()
     ambient = (
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
-        if _ambient_sounds(full_config) else None
+        if _ambient_sounds(config.raw) else None
     )
     bus_live = BusLive(paths.root / "cache")
     transit_offers = TransitOffers()  # the list `bus` keeps, and its chat card rows (ADR 0205)
     vision_client = _build_vision_client(
-        full_config,
+        config.raw,
         vision_preset_name,
         event_log_path=paths.event_log,
-        pricing_path=repo_root / "data" / "pricing.json",
+        pricing_path=config.pricing_path,
     )
     deep_search = build_deep_search(
-        full_config,
+        config.raw,
         event_log_path=paths.event_log,
-        pricing_path=repo_root / "data" / "pricing.json",
+        pricing_path=config.pricing_path,
         account_cost=True,
     )
     rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
-        None if phone_events is None else _locator(full_config, locate_waits, system_clock)
+        None if phone_events is None else _locator(config.raw, locate_waits, system_clock)
     )
     here = HerePolicy(  # ADR 0322: the one Here every tool call reads where he is from
         paths.event_log, system_clock, locator=locator, mac=_here_location(role),
-        memory_db=memory.db_path, **_here_settings(full_config),
+        memory_db=memory.db_path, **_here_settings(config.raw),
     )
-    weatherkit = WeatherKit.from_config(full_config)  # ADR 0285: logs which source is used
+    weatherkit = WeatherKit.from_config(config.raw)  # ADR 0285: logs which source is used
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
-        maps_key, _maps_monthly_usd(full_config), memory.db_path, local_zone,
+        maps_key, _maps_monthly_usd(config.raw), memory.db_path, local_zone,
     )
-    doing = _doing_schedule(
-        full_config, memory, paths, device, repo_root / "data" / "pricing.json",
-    )
-    jev_log = _jev_log(full_config, paths.root)
+    doing = _doing_schedule(config, memory, paths, device)
+    jev_log = _jev_log(config.raw, paths.root)
 
     def make_late(connections: PluginConnections) -> tuple[JobMail | None, Home]:
         _wire_plan_reader(daily_report, connections)
         job_mail = _job_mail(
-            full_config, config_path, jev_log, connections, memory.db_path, system_clock,
+            config.raw, config_path, jev_log, connections, memory.db_path, system_clock,
             moment, device, paths.event_log,
         )
         home = Home(
             connections,
-            resolve_zone(None, _work_state_timezone(full_config)),
-            _home_weather(full_config),
-            _mail_reply(full_config, config_path, system_clock, jev_log),
+            (config.zone_name, config.zone),
+            _home_weather(config.raw),
+            _mail_reply(config.raw, config_path, system_clock, jev_log),
             mail_view,
             None if mail_view is None else mail_summarizer(
                 # ADR 0148: the cheapest preset (gpt-6-luna), never Jev: a body goes here.
                 build_analyst(
-                    full_config,
-                    _work_state_preset(full_config),
-                    pricing_path=repo_root / "data" / "pricing.json",
+                    config.raw,
+                    _work_state_preset(config.raw),
+                    pricing_path=config.pricing_path,
                     account_cost=True,
                     kind="mail_summary",
                 ),
@@ -3309,17 +2971,17 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         build_default_registry,
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
-        observed_repos=_observer_repo_paths(full_config),
-        timesink_db_path=_timesink_db_path(full_config),
+        observed_repos=_observer_repo_paths(config.raw),
+        timesink_db_path=_timesink_db_path(config.raw),
         work_state_refresh=_work_state_tool_refresh(work_state, daily_report),
         night=night,
         voice_settings=voice_settings,
         weather_lookup=weather_lookup(
-            _home_weather(full_config), weatherkit,
-            resolve_zone(None, _work_state_timezone(full_config))[0],
+            _home_weather(config.raw), weatherkit,
+            config.zone_name,
         ),
         transit_api_key=maps_key,
-        maps_monthly_usd=_maps_monthly_usd(full_config),
+        maps_monthly_usd=_maps_monthly_usd(config.raw),
         surroundings=surroundings,
         transit_places=kept_places,
         transit_offers=transit_offers,
@@ -3327,11 +2989,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         here=here,
         bus_live=_live_departure(bus_live),
         ride_control=rides.control(),
-        highlight_marker=_highlight_marks(full_config, memory, paths, device).mark,
-        plan_day_ends=day_ends_of(full_config.get("day_plan")),
-        ring_before_min=_remind_before_min(full_config),
+        highlight_marker=_highlight_marks(config, memory, paths, device).mark,
+        plan_day_ends=day_ends_of(config.raw.get("day_plan")),
+        ring_before_min=_remind_before_min(config.raw),
         confirmation_dispatch_outbox=wave1_features.confirmation_dispatch_outbox,
-        obsidian_vault_root=_obsidian_vault_root(full_config),
+        obsidian_vault_root=_obsidian_vault_root(config.raw),
         web_search_max_results=web_search_max_results,
         web_search_provider=web_search_provider,
         web_search_api_key=web_search_api_key,
@@ -3347,17 +3009,17 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         build_registry=build_registry,
         offer_devices=partial(device_tools.follow_terminals, terminal_hub, paths.root),
         paths=paths,
-        config=full_config,
+        config=config.raw,
         view=view,
         make_plugins=lambda reg: PluginConnections(
             repo_root=repo_root, runtime_root=paths.root, event_log=paths.event_log,
-            registry=reg, config=full_config,
+            registry=reg, config=config.raw,
         ),
         make_late=make_late,
         memory_db=memory.db_path,
         doing=doing,
         ledger=LedgerSources(
-            memory.db_path, paths.event_log, _timesink_db_path(full_config), local_zone,
+            memory.db_path, paths.event_log, _timesink_db_path(config.raw), local_zone,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
@@ -3423,8 +3085,8 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         msg = f"runtime: {tool_cues_path} invalid: {exc}"
         raise RuntimeBootstrapError(msg) from exc
 
-    # 4. L3 LLM client. `full_config` was already loaded at step 3 above.
-    llm_config = full_config.get("llm")
+    # 4. L3 LLM client. `config.raw` was already loaded at step 3 above.
+    llm_config = config.raw.get("llm")
     if not isinstance(llm_config, Mapping):
         msg = f"runtime: {config_path} has no 'llm' section"
         raise RuntimeBootstrapError(msg)
@@ -3434,9 +3096,9 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     # 4b. ADR-0008 Step 2 (Wave 4A). The whole flag graph is resolved once,
     #     here; every downstream site reads the validated result. Every
     #     runtime gets the session factory and the cancel registry (ADR 0332).
-    response_activation = _wave4_response_activation(full_config)
+    response_activation = _wave4_response_activation(config.raw)
     response_flags = response_activation.flags
-    realtime_raw = full_config.get("realtime")
+    realtime_raw = config.raw.get("realtime")
     # The bus is gated on `realtime.enabled` rather than a Wave-4A switch so
     # Waves 4B/4C reuse this same line. It is inert while nobody subscribes.
     committed_event_bus = (
@@ -3448,38 +3110,38 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     response_runs = ResponseRunRegistry()
 
     # Plugin skills are sampled per turn so connections need no daemon restart.
-    system_prompt = prompt_path.read_text(encoding="utf-8").replace(
-        "{assistant}", _assistant_name(full_config)
+    system_prompt = config.prompt_path.read_text(encoding="utf-8").replace(
+        "{assistant}", config.assistant_name
     )
-    if full_config.get("reply_language") in REPLY_LINES:
-        reply_line = REPLY_LINES[full_config["reply_language"]]
+    if config.reply_language in REPLY_LINES:
+        reply_line = REPLY_LINES[config.reply_language]
         system_prompt = f"{system_prompt.rstrip()}\n\n{reply_line}\n"
     plugin_connections.publish_event = (
         committed_event_bus.publish if committed_event_bus is not None else None
     )
 
-    mail_codes = _mail_codes(full_config, config_path, plugin_connections, device)
+    mail_codes = _mail_codes(config.raw, config_path, plugin_connections, device)
     commitments = _commitments(
-        full_config, config_path, plugin_connections, memory.db_path, paths.event_log,
+        config.raw, config_path, plugin_connections, memory.db_path, paths.event_log,
         lambda preset: build_analyst(
-            full_config,
+            config.raw,
             preset,
-            pricing_path=repo_root / "data" / "pricing.json",
+            pricing_path=config.pricing_path,
             account_cost=True,
             kind="commitments",
         ),
     )
     claude_daily = _claude_daily(
-        full_config, config_path, plugin_connections, memory.db_path, paths.root,
+        config.raw, config_path, plugin_connections, memory.db_path, paths.root,
     )
-    things_ledger = _things_ledger(full_config, paths.event_log, memory.db_path, local_zone)
+    things_ledger = _things_ledger(config.raw, paths.event_log, memory.db_path, local_zone)
     things_mirror = ThingsMirror(plugin_connections, paths.event_log, local_zone)
     turn_things = _turn_things(
-        full_config, config_path, memory.db_path, paths.event_log, local_zone,
+        config.raw, config_path, memory.db_path, paths.event_log, local_zone,
         lambda preset: build_analyst(
-            full_config,
+            config.raw,
             preset,
-            pricing_path=repo_root / "data" / "pricing.json",
+            pricing_path=config.pricing_path,
             account_cost=True,
             kind="turn_things",
         ),
@@ -3494,17 +3156,14 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
     picture_files = PictureFiles(attachments, memory_db=memory.db_path)
     set_stale_files_handler(picture_files.stale)  # ADR 0255
     runtime = JarvisRuntime(
-        config=full_config,
+        config=config,
         runtime_paths=paths,
         conn=conn,
         tool_registry=registry,
         lifecycle=lifecycle,
         llm_client=llm_client,
         system_prompt=system_prompt,
-        role=role,
         clock=system_clock,
-        listen_addresses=listen_addresses,
-        listen_hosts=listen_hosts,
         terminal_hub=terminal_hub,
         settings_drift=settings_drift,
         phone_events=phone_events,
@@ -3517,12 +3176,12 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
                 store=attachments,
                 vision=vision_client,
                 event_log=paths.event_log,
-                pinned_language=str(full_config.get("reply_language", "follow")),
+                pinned_language=config.reply_language,
             )
         ),
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
-        confirmation_words=_confirmation_words_client(full_config),
+        confirmation_words=_confirmation_words_client(config.raw),
         wave1_features=wave1_features,
         response_flags=response_flags,
         llm_session_factory=llm_session_factory,
@@ -3532,34 +3191,15 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             partial(open_runtime_event_log, paths.event_log),
             is_idle=partial(_daemon_idle, paths.event_log),
         ),
-        surrogate_route=_surrogate_route(full_config, config_path, system_clock, jev_log),
+        surrogate_route=_surrogate_route(config.raw, config_path, system_clock, jev_log),
         memory=memory,
-        session=session,
         workers=workers,
         plugin_connections=plugin_connections,
-        sensevoice_dir=_realtime_model_path(
-            full_config,
-            key="sensevoice_dir",
-            config_dir=config_dir,
-            fallback=default_sensevoice_dir(paths.root),
-        ),
-        silero_vad_path=_realtime_model_path(
-            full_config,
-            key="silero_vad_path",
-            config_dir=config_dir,
-            fallback=default_silero_vad_path(paths.root),
-        ),
-        voiceprint_model=_realtime_model_path(
-            full_config,
-            key="voiceprint_model_path",
-            config_dir=config_dir,
-            fallback=default_voiceprint_model_path(paths.root),
-        ),
         voiceprints=VoiceprintBook(memory.db_path, gate=lambda: voiceprint_gate),
         tool_cues=tool_cues,
         think_mode=think_mode,
         work_state=work_state,
-        work_state_auto=_work_state_auto(full_config, config_path),
+        work_state_auto=_work_state_auto(config.raw, config_path),
         projects=projects,
         home=home,
         view=view,
@@ -3580,11 +3220,11 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
             # ADR 0291: today's plan, settled or not, with its next item.
             partial(
                 plan_line, paths.event_log, local_zone, system_clock.now,
-                day_ends_of(full_config.get("day_plan")),
+                day_ends_of(config.raw.get("day_plan")),
             ),
         ),
         voice_cues=voice_cues,
-        turn_end_asks=_turn_end_asks(full_config, config_path, system_clock, jev_log),
+        turn_end_asks=_turn_end_asks(config.raw, config_path, system_clock, jev_log),
         job_mail=job_mail,
         mail_codes=mail_codes,
         commitments=commitments,
@@ -3593,35 +3233,35 @@ def bootstrap_runtime_app(  # noqa: C901, PLR0915 - composition root wiring stay
         things_mirror=things_mirror,
         turn_things=turn_things,
         moment=moment,
-        push=Push.from_config(full_config, paths.root, paths.event_log),
+        push=Push.from_config(config.raw, paths.root, paths.event_log),
         whereabouts=Whereabouts(
             paths.root, terminal_hub, moment, memory_db=memory.db_path, zone=local_zone,
             around=surroundings, here=here,
         ),
-        about_items=_about_items(full_config, memory, paths),
+        about_items=_about_items(config, memory, paths),
         reminders=reminders,
         rides=rides,
         leg_planner=None if not maps_key else partial(
             build_leg_planner, maps_key, kept_places,
             kept=partial(place_state.read_kept, memory.db_path),
-            cap_usd=_maps_monthly_usd(full_config),
+            cap_usd=_maps_monthly_usd(config.raw),
         ),
-        voice_words=_voice_words(full_config, config_path, system_clock, jev_log),
+        voice_words=_voice_words(config.raw, config_path, system_clock, jev_log),
         oneshot=_jev_oneshot(
-            full_config, config_path, system_clock, jev_log, tier0_table,
+            config.raw, config_path, system_clock, jev_log, tier0_table,
             _event_emitter(paths.event_log),
         ),
         settings=Settings(
             paths.root,
-            full_config,
+            config.raw,
             _no_audio_devices if role == "brain" else _audio_devices,
             _no_default_audio_device if role == "brain" else _default_audio_device,
             owned=page_keys("brain", "both") if role == "brain" else None,
         ),
         night=night,
         voice_settings=voice_settings,
-        daily_schedule=_daily_schedule(daily_report, paths.event_log, full_config, terminal_hub),
-        ledger=_ledger(full_config, memory, paths.event_log, device, attachments.directory),
+        daily_schedule=_daily_schedule(daily_report, paths.event_log, config, terminal_hub),
+        ledger=_ledger(config, memory, paths.event_log, device, attachments.directory),
         places_block=partial(_places_block, memory.db_path, paths.event_log, local_zone),
         sound_output=output,
     )
@@ -3673,10 +3313,10 @@ def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, pro
     def _run() -> None:
         try:
             history = render_context(
-                memory.db_path, exclude_id="", since=runtime.session.history_since,
-                recent=runtime.session.recent_records,
-                context=runtime.session.context,
-                raw_max_chars=runtime.session.context_raw_max_chars,
+                memory.db_path, exclude_id="", since=runtime.config.session.history_since,
+                recent=runtime.config.session.recent_records,
+                context=runtime.config.session.context,
+                raw_max_chars=runtime.config.session.context_raw_max_chars,
                 ledger=runtime.ledger,
                 places=runtime.places_block,
                 pictures=_history_pictures(runtime, llm_client),
@@ -3888,7 +3528,7 @@ def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact o
     meaning: a contended ``BEGIN IMMEDIATE`` gives up after that many
     milliseconds, no terminal is written, and the caller may retry.
     """
-    cancel_timeout_ms = _cancel_timeout_ms(runtime.config)
+    cancel_timeout_ms = _cancel_timeout_ms(runtime.config.raw)
     event_log_path = runtime.runtime_paths.event_log
     committed_event_bus = runtime.committed_event_bus
     registry = runtime.response_runs
@@ -4921,7 +4561,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     folded_raw = user_intent_event.payload.get("folded")
     folded = [str(one) for one in folded_raw] if isinstance(folded_raw, list) else []
     # ADR 0272: the model request below goes at once; what leaves her waits until this time.
-    output_hold = answer_hold.output_not_before(runtime.config, user_intent_event)
+    output_hold = answer_hold.output_not_before(runtime.config.raw, user_intent_event)
     if memory is not None and continuation is None and not surface_wrote_row and not card_button:
         audio_ref = user_intent_event.payload.get("audio_artifact_ref")
         append_record(
@@ -4953,7 +4593,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     # docs/plans/replay-as-sent-proposal.md: this turn's message is kept as
     # sent for later histories; a card's button wrote no row to keep it under.
     record_sent_message: Callable[[str], None] | None = None
-    if memory is not None and runtime.session.replay_sent:
+    if memory is not None and runtime.config.session.replay_sent:
         record_sent_message = (
             (lambda _text: None)
             if card_button or folded  # a thought of several rows replays from the rows
@@ -4983,10 +4623,11 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
     with timer.part("memory"):
         memory_context = (
             render_context(
-                memory.db_path, exclude_id=memory_exclude_id, since=runtime.session.history_since,
-                recent=runtime.session.recent_records,
-                context=runtime.session.context,
-                raw_max_chars=runtime.session.context_raw_max_chars,
+                memory.db_path, exclude_id=memory_exclude_id,
+                since=runtime.config.session.history_since,
+                recent=runtime.config.session.recent_records,
+                context=runtime.config.session.context,
+                raw_max_chars=runtime.config.session.context_raw_max_chars,
                 ledger=timer.timed("ledger", runtime.ledger),
                 places=timer.timed("places", runtime.places_block),
                 pictures=timer.timed("pictures", _history_pictures(
@@ -5054,7 +4695,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             else None
         )
         route_rules: list[str] = []
-        if runtime.session.replay_sent:
+        if runtime.config.session.replay_sent:
             # What every turn would repeat rides the system prompt, cached once,
             # instead of each replayed state block; it follows the cached prefix.
             if stream_route is not None and stream_route.context.route == "spoken":
@@ -5103,8 +4744,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             entity_resolver=_make_entity_resolver(runtime.conn, runtime.terminal_hub),
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
-            confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config),
-            max_tool_iterations=_max_tool_iterations(runtime.config, user_intent_event),
+            confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config.raw),
+            max_tool_iterations=_max_tool_iterations(runtime.config.raw, user_intent_event),
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
@@ -5131,8 +4772,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             surrogate_route=runtime.surrogate_route,
             oneshot=runtime.oneshot,
             # The same boot value as the system prompt's reply-language line.
-            reply_language=str(runtime.config.get("reply_language", "follow")),
-            service_tier=_voice_service_tier(runtime.config, user_intent_event),
+            reply_language=runtime.config.reply_language,
+            service_tier=_voice_service_tier(runtime.config.raw, user_intent_event),
             read_attachments=(
                 None if runtime.attachments is None else runtime.attachments.load_many
             ),
@@ -5503,7 +5144,6 @@ __all__ = [
     "JarvisRuntime",
     "PreEmitTokenError",
     "RunTurnResult",
-    "RuntimeBootstrapError",
     "TriggerWaitTimeout",
     "bootstrap_runtime_app",
     "drive_turn",

@@ -25,6 +25,7 @@ from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started
 from tests.support.model import ScriptedModel, ScriptedSessions
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -129,7 +130,7 @@ def make_runtime(
     conn = open_event_log(paths.event_log)
     config = realtime_config(cancel_timeout_ms=cancel_timeout_ms)
     return JarvisRuntime(
-        config=config,
+        config=runtime_config(config, root=tmp_path),
         runtime_paths=paths,
         conn=conn,
         tool_registry=build_default_registry(),

@@ -41,11 +41,11 @@ def build_brain_voice(
     if not api_key:
         LOGGER.warning("MINIMAX_API_KEY unset; a voice terminal will not be spoken to.")
         return None
-    realtime_raw = runtime.config.get("realtime")
+    realtime_raw = runtime.config.raw.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     recorder = (
         voice_artifact_store.TtsRecorder(runtime.memory.audio_dir)
-        if diagnostics_flag(runtime.config, "record_tts_audio") and runtime.memory is not None
+        if diagnostics_flag(runtime.config.raw, "record_tts_audio") and runtime.memory is not None
         else None
     )
     client = minimax_client(
@@ -83,7 +83,7 @@ def build_phone_speech(
     if not api_key:
         LOGGER.warning("MINIMAX_API_KEY unset; a phone will not be spoken to.")
         return None
-    realtime_raw = runtime.config.get("realtime")
+    realtime_raw = runtime.config.raw.get("realtime")
     realtime = realtime_raw if isinstance(realtime_raw, Mapping) else {}
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}

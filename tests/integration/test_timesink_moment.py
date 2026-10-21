@@ -19,8 +19,9 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision import moment as rules
 from jarvis.decision.attention import replay, rule_judge_v1
-from jarvis.runtime import RuntimeBootstrapError, _moment
+from jarvis.runtime import _moment
 from jarvis.runtime.card_feedback import CardFeedback
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.routes import moment_hold
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.state import job_ledger, job_time, timesink_moment

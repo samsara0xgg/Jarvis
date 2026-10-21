@@ -11,7 +11,6 @@ prefix warm against a localhost /v1/responses peer.
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -19,6 +18,7 @@ from jarvis.state.daily_records import search_records
 from jarvis.state.memory_db import SessionSettings, open_memory_db, render_context
 from tests.support.prefix_warm import assert_prefix_of, wait_for_requests, warm_runtime
 from tests.support.routine import drive_streaming_turn
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import (
     SpokenPeer,
     fixture_key,  # noqa: F401 — autouse fixture: the key and the phase labels
@@ -119,7 +119,7 @@ def test_the_prefix_warm_and_the_next_turn_see_the_same_window(tmp_path: Path) -
     outputs = [[("final_answer", "晴天。")], [("final_answer", "好")], [("final_answer", "也是。")]]
     with SpokenPeer(outputs) as peer:
         runtime, _memory = warm_runtime(tmp_path, peer.url, warm=True)
-        runtime = replace(runtime, session=replace(runtime.session, recent_records=2))
+        runtime = reconfigure(runtime, session={"recent_records": 2})
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
         wait_for_requests(peer, 2)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "明天呢"))

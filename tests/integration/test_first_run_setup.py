@@ -29,8 +29,8 @@ from fastapi.testclient import TestClient
 from jarvis.decision.llm import MissingAPIKeyError, failure_reason
 from jarvis.deployment import forget_keys, load_env_file, read_keys, save_key
 from jarvis.deployment.models import Progress
-from jarvis.runtime import _load_full_config
 from jarvis.runtime import setup as runtime_setup
+from jarvis.runtime.config import load_runtime_config
 from jarvis.runtime.settings import SETUP_VOICES
 from jarvis.runtime.setup import KEY_ENVS, Setup
 from jarvis.shared import lang
@@ -107,7 +107,7 @@ def test_a_fresh_install_is_a_first_run_until_done(tmp_path: Path) -> None:
     assert (tmp_path / "settings.yaml").read_text(encoding="utf-8") == 'assistant_name: "No"\n'
     shipped = tmp_path / "jarvis.yaml"
     shipped.write_text('persona: "You are {assistant}."\n', encoding="utf-8")
-    assert _load_full_config(shipped, tmp_path / "settings.yaml")["persona"] == "You are No."
+    assert load_runtime_config(shipped, tmp_path).raw["persona"] == "You are No."
 
     renamed = client.post("/inherent/setup/name", json={"name": "Ada Lovelace"}).json()
     assert (renamed["name"], renamed["assistant_name"]) == ("Ada Lovelace", "No")

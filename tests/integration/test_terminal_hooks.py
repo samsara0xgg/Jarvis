@@ -31,6 +31,7 @@ from jarvis.state.plugin_settings import local_key
 from jarvis.surface.claude_sessions import ClaudeSessions
 from tests.support.claude_hooks import HOOK, SUGGESTION
 from tests.support.net import free_port
+from tests.support.runtime_config import runtime_config
 from tests.support.terminal import Brain, wait_for
 from tests.support.terminal_claude import BUSY, WAITING, device_home
 
@@ -66,7 +67,7 @@ class _Mac:
         self._args = (
             url, token, _declared(registry),
             make_executor(registry, claude=ClaudeSessions()),
-            _Ui(bind_ui(port), {}, root),
+            _Ui(bind_ui(port), runtime_config(root=root), root),
         )
         self.loop = asyncio.new_event_loop()
         self.task: asyncio.Task[None] | None = None

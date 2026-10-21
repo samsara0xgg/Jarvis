@@ -10,7 +10,6 @@ for what reaches speech, the chunks and the plan.
 # ruff: noqa: RUF001 - the replies under test are Chinese, with fullwidth punctuation
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -21,6 +20,7 @@ from jarvis.state.event_log import emit_event
 from tests.support.model import ScriptedModel, tool_call
 from tests.support.reaction_markup import decide_batch
 from tests.support.routine import drive_streaming_turn, logged_payloads, user_intent
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import (
     SpokenPeer,
     fixture_key,  # noqa: F401 - the autouse fixture the peer needs
@@ -111,7 +111,7 @@ def test_a_typed_reply_that_is_only_the_tag_is_an_empty_answer_that_passes_the_g
 def _budget_runtime(tmp_path: Path, url: str) -> Any:  # noqa: ANN401 - JarvisRuntime
     """A spoken-route runtime that may call one tool, so its second request is the budget's."""
     runtime = spoken_runtime(tmp_path, url)
-    return replace(runtime, config={**runtime.config, "llm": {"max_tool_iterations": 1}})
+    return reconfigure(runtime, llm={"max_tool_iterations": 1})
 
 
 @pytest.mark.parametrize("channel", ["cli_stdin", "inherent_ptt"])

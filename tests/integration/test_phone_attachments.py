@@ -69,6 +69,7 @@ from tests.support.phone import (
     attachment_turn,
     attachments_daemon,
 )
+from tests.support.runtime_config import runtime_config
 from tests.support.runtime_paths import StubRuntimePaths
 
 if TYPE_CHECKING:
@@ -637,7 +638,8 @@ def _runtime(tmp_path: Path, config: dict[str, Any]) -> JarvisRuntime:
         "model": "m", "base_url": "https://example.invalid", "max_tokens": 8,
     }}}
     return JarvisRuntime(
-        config=config, runtime_paths=paths, conn=open_event_log(paths.event_log),
+        config=runtime_config(config, root=tmp_path), runtime_paths=paths,
+        conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(), lifecycle=ActionLifecycle(),
         llm_client=LLMClient(llm), system_prompt="", llm_session_factory=LLMSessionFactory(llm),
         attachments=Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME),

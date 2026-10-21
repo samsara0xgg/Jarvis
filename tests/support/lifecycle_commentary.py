@@ -21,6 +21,7 @@ from jarvis.state.event_log import fetch_events_after, open_event_log
 from jarvis.surface.cli import parse_response_channels
 from tests.support.clock import FakeClock
 from tests.support.model import ScriptedModel, ScriptedSessions
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     import sqlite3
@@ -74,7 +75,7 @@ def commentary_runtime(
     paths = bootstrap_runtime(tmp_path)
     config = _observer_config(commentary=commentary)
     return JarvisRuntime(
-        config=config,
+        config=runtime_config(config, root=tmp_path),
         runtime_paths=paths,
         conn=open_event_log(paths.event_log),
         tool_registry=build_default_registry(),

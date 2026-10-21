@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.runtime.daemon.observers import make_usage_observer
 from jarvis.runtime.terminal import _Watched
 from jarvis.state.device_tokens import pair_device
@@ -35,6 +34,7 @@ from jarvis.surface.usage_observer import (
     UsageObserver,
     latest_usage,
 )
+from tests.support.runtime_config import boot_runtime
 from tests.support.terminal import (
     Brain,
     Terminal,
@@ -200,10 +200,10 @@ def test_a_brain_runs_the_keyed_half_and_a_one_machine_daemon_all_of_it(
         (root / "settings.yaml").write_text(
             f"runtime:\n  role: {role}\nobserver:\n  usage:\n    enabled: true\n", encoding="utf-8",
         )
-        built[name] = bootstrap_runtime_app(runtime_root=root)
+        built[name] = boot_runtime(root)
     try:
         for runtime in built.values():
-            assert runtime.config["observer"]["usage"]["enabled"] is True
+            assert runtime.config.raw["observer"]["usage"]["enabled"] is True
         one = make_usage_observer(built["one"])
         brain = make_usage_observer(built["brain"])
         assert one is not None

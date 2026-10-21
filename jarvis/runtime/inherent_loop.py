@@ -118,18 +118,16 @@ from jarvis.decision.response_run import (
     start_response_run,
 )
 from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
-from jarvis.deployment.launchd import logs_dir, repo_root, supervised
+from jarvis.deployment.launchd import logs_dir, supervised
 from jarvis.deployment.sleep_wake import install_power_observer
 from jarvis.execution.transit_tool import live_card
 from jarvis.runtime import (
     JarvisRuntime,
-    _assistant_name,
     _event_action_id,
     _jev_log,
     _new_turn_id,
     _positive_int,
     _timesink_db_path,
-    _work_state_timezone,
     device_voice,
     make_barge_in_interrupt_callable,
     make_compose_callable,
@@ -805,7 +803,8 @@ def _slow_tool_line(
     if call is None:
         return None
     waits = finished_call_ms(conn, call.tool_name)
-    if len(waits) < _LEAD_IN_MIN_CALLS or statistics.median(waits) < _lead_in_ms(runtime.config):
+    lead_in_ms = _lead_in_ms(runtime.config.raw)
+    if len(waits) < _LEAD_IN_MIN_CALLS or statistics.median(waits) < lead_in_ms:
         return None
     return steps.line(
         call.tool_name, call.arguments, language="en" if is_english(user_text) else "zh",
@@ -1193,7 +1192,7 @@ def _say_conversation_line(
             )
             if phrase is None:
                 said_in = lang.reply_language(
-                    text, str(runtime.config.get("reply_language", "follow")),
+                    text, runtime.config.reply_language,
                 )
                 phrase = secrets.choice(lang.variants(f"conversation.{reason}", said_in))
             plan = pre_emit_gate(phrase)
@@ -1364,8 +1363,8 @@ def _build_brain_listening(
         controls=controls.update,
         # ADR 0183: a terminal's dictation is polished here, with the key only the brain has.
         polish=local_polisher(
-            runtime.config, runtime.runtime_paths.event_log,
-            load_pricing_table(repo_root() / "data" / "pricing.json"),
+            runtime.config.raw, runtime.runtime_paths.event_log,
+            load_pricing_table(runtime.config.pricing_path),
         ),
     )
     return listening
@@ -1581,7 +1580,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             open_timeout_s=ingress_config.backend_open_timeout_s,
             close_timeout_s=ingress_config.backend_close_timeout_s,
             # ADR 0052: the Settings page's microphone; null = the system default.
-            device=(runtime.config.get("realtime") or {}).get("input_device"),
+            device=(runtime.config.raw.get("realtime") or {}).get("input_device"),
         )
         ingress = voice_audio.AudioIngress(
             backend=backend,
@@ -1590,7 +1589,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             echo_canceller=echo_canceller,
         )
         ingress.set_output_device(
-            _output_or_default((runtime.config.get("realtime") or {}).get("output_device")),
+            _output_or_default((runtime.config.raw.get("realtime") or {}).get("output_device")),
         )
         vad = voice_audio.SileroVad(
             mode="record",
@@ -1750,7 +1749,7 @@ def _input_owner_reason(
     """Name why this boot ended up with the input owner it has.
 
     Re-runs :func:`_single_ingress_activation`, which is a pure read of
-    ``runtime.config`` and ``tts``: cheaper once per boot than threading a
+    ``runtime.config.raw`` and ``tts``: cheaper once per boot than threading a
     third return value through a helper five tests construct directly.
     """
     reason = _single_ingress_activation(runtime, tts=tts).reason
@@ -2509,7 +2508,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     inner_conn.close()
             return turn_id
 
-        images_ok = _model_takes_images(runtime.config)
+        images_ok = _model_takes_images(runtime.config.raw)
         submit_attachments = functools.partial(
             _submit_with_attachments, runtime.runtime_paths.event_log,
         )
@@ -2582,7 +2581,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 live_voice.set_speech_muted(muted)
 
         controls.on_speech_muted = _apply_speech_mute
-        voice_knobs = _voice_knobs(runtime.config)
+        voice_knobs = _voice_knobs(runtime.config.raw)
         # A failed setup is a stopped daemon, not a half-alive one: the voice owners started
         # below hold non-daemon threads, and nothing else ends the process. The same teardown
         # runs on a setup failure and on a normal stop; what is not built yet is None.
@@ -2637,10 +2636,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 runtime, runtime.terminal_hub,
                 controls=controls, set_conversation=_set_conversation, set_quiet=_set_quiet,
             )
-        sensevoice_dir = runtime.sensevoice_dir
-        silero_path = runtime.silero_vad_path
+        sensevoice_dir = runtime.config.models.sensevoice_dir
+        silero_path = runtime.config.models.silero_vad_path
         model_fetch = models.Progress()
-        brain = runtime.role == "brain"
+        brain = runtime.config.role == "brain"
         models_ok, missing = (
             (False, [])
             if brain
@@ -2664,7 +2663,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     runtime,
                     broadcaster=broadcaster,
                     sensevoice_dir=sensevoice_dir,
-                    voiceprint_model=runtime.voiceprint_model,
+                    voiceprint_model=runtime.config.models.voiceprint_model,
                 )
                 voice_pipeline_callable = _build_voice_pipeline_callable(voice_pipe)
                 echo_canceller = _build_echo_canceller(runtime)
@@ -2715,14 +2714,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # POST /inherent/controls {"live": "start"}, which re-checks the single
         # audio ingress and the API key at that moment. Billed per second, so
         # the shutdown path below hangs up before the microphone goes away.
-        realtime_raw = runtime.config.get("realtime")
+        realtime_raw = runtime.config.raw.get("realtime")
         realtime_map = realtime_raw if isinstance(realtime_raw, Mapping) else {}
         gpt_live_raw = realtime_map.get("gpt_live")
         gpt_live_config: voice_live.GptLiveConfig | None = None
         if isinstance(gpt_live_raw, Mapping):
             try:
                 gpt_live_config = voice_live.gpt_live_config_from_mapping(
-                    {"assistant": _assistant_name(runtime.config), **gpt_live_raw},
+                    {"assistant": runtime.config.assistant_name, **gpt_live_raw},
                 )
             except (TypeError, ValueError):
                 LOGGER.exception("realtime.gpt_live is malformed; GPT-Live stays off this boot")
@@ -2737,7 +2736,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             live_backend = _LiveBackend(
                 event_log_path=runtime.runtime_paths.event_log,
                 memory=runtime.memory,
-                session=runtime.session,
+                session=runtime.config.session,
             )
             live_voice = voice_live.LiveVoice(
                 config=gpt_live_config,
@@ -2846,7 +2845,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         def _read_conversation(after: int, limit: int, before: int) -> dict[str, Any]:
             """Spec §18.3: a page of the window's rows, the history floor, and ``has_more``."""
-            since = runtime.session.history_since
+            since = runtime.config.session.history_since
             if window_memory is None:
                 return {"since": since, "rows": [], "has_more": False}
             rows, has_more = conversation_rows(
@@ -3002,12 +3001,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         setup: Setup | None = None
         if window_memory is not None:
-            knobs = _voice_knobs(runtime.config)
+            knobs = _voice_knobs(runtime.config.raw)
             setup = Setup(
                 root=runtime.runtime_paths.root,
                 settings_path=runtime.runtime_paths.settings,
                 memory_path=window_memory.db_path,
-                config=runtime.config,
+                config=runtime.config.raw,
                 tts_endpoint=knobs.tts_primary_endpoint,
                 tts_model=knobs.tts_model,
                 restart=_restart_soon if supervised() else None,
@@ -3018,12 +3017,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         ingress = duplex_voice_session.ingress if duplex_voice_session is not None else None
         if ingress is not None and voice_pipe is not None:
             polisher = local_polisher(
-                runtime.config, runtime.runtime_paths.event_log,
-                load_pricing_table(repo_root() / "data" / "pricing.json"),
+                runtime.config.raw, runtime.runtime_paths.event_log,
+                load_pricing_table(runtime.config.pricing_path),
             )
             if polisher is not None:
                 dictation = build_dictation(
-                    config=runtime.config, ingress=ingress, silero_path=silero_path,
+                    config=runtime.config.raw, ingress=ingress, silero_path=silero_path,
                     transcribe=voice_pipe.transcribe, polisher=polisher,
                     vocab_path=polisher.vocab_path,
                     recordings=(
@@ -3039,10 +3038,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         mail_home = None if runtime.mail_drafts is None else runtime.home
         if runtime.view is not None:  # ADR 0176: her ``present`` op reaches the companion
             runtime.view.push = lambda sent: broadcaster.broadcast_op_sync("present", **sent)
-        spend = SpendCapSettings.from_config(runtime.config.get("spend_cap"))
+        spend = SpendCapSettings.from_config(runtime.config.raw.get("spend_cap"))
         built_phone = (
             _build_phone_hub(runtime, voice_knobs, set_quiet=_set_quiet)
-            if runtime.listen_addresses
+            if runtime.config.listen_addresses
             else None
         )
         phone_hub = None if built_phone is None else built_phone[0]
@@ -3052,7 +3051,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if phone_hub is not None and runtime.whereabouts is not None:
             # ADR 0217: a device with its conversation socket open is a phone, and that is said.
             runtime.whereabouts.phone_open = phone_hub.connected
-        local_zone = resolve_zone(None, _work_state_timezone(runtime.config))[1]
+        local_zone = runtime.config.zone
         deps = InherentDeps(
             submit_callable=submit_callable,
             attachments=runtime.attachments,
@@ -3110,7 +3109,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             footprint_read=functools.partial(
                 _serve_footprint,
                 runtime.runtime_paths.event_log,
-                _work_state_timezone(runtime.config),
+                runtime.config.zone,
                 None if runtime.memory is None else runtime.memory.db_path,
             ),
             card_read=_read_card,
@@ -3124,9 +3123,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             day_read=functools.partial(
                 _serve_day,
                 runtime.runtime_paths.event_log,
-                _work_state_timezone(runtime.config),
+                runtime.config.zone,
                 None if runtime.memory is None else runtime.memory.db_path,
-                _timesink_db_path(runtime.config),
+                _timesink_db_path(runtime.config.raw),
                 terminal=(
                     None if runtime.terminal_hub is None
                     else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S)
@@ -3220,10 +3219,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 else MemoryPage(
                     window_memory.db_path,
                     runtime.settings,
-                    section_caps=section_caps(runtime.config.get("core_memory")),
-                    history_since=runtime.session.history_since,
+                    section_caps=section_caps(runtime.config.raw.get("core_memory")),
+                    history_since=runtime.config.session.history_since,
                     event_log=runtime.runtime_paths.event_log,
-                    zone=resolve_zone(None, _work_state_timezone(runtime.config))[1],
+                    zone=runtime.config.zone,
                 )
             ),
             brief_read=(
@@ -3265,7 +3264,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 manager_authorize(
                     runtime.plugin_connections.settings.matches,
                     functools.partial(device_token_matches, runtime.runtime_paths.root)
-                    if runtime.listen_addresses
+                    if runtime.config.listen_addresses
                     else None,
                 )
                 if runtime.plugin_connections
@@ -3286,17 +3285,19 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 None if duplex_voice_session is None else duplex_voice_session.dismiss
             ),
             live=live_voice,
-            terminals=runtime.terminal_hub if runtime.listen_addresses else None,
-            phone_events=runtime.phone_events if runtime.listen_addresses else None,
-            lifelog=(lifelog_archive := _lifelog(runtime) if runtime.listen_addresses else None),
+            terminals=runtime.terminal_hub if runtime.config.listen_addresses else None,
+            phone_events=runtime.phone_events if runtime.config.listen_addresses else None,
+            lifelog=(
+                lifelog_archive := _lifelog(runtime) if runtime.config.listen_addresses else None
+            ),
             lifelog_coverage=(
                 None if lifelog_archive is None else _lifelog_coverage(runtime, lifelog_archive)
             ),
-            imports_intake=_shipments(runtime) if runtime.listen_addresses else None,
+            imports_intake=_shipments(runtime) if runtime.config.listen_addresses else None,
             phone=phone_hub,
             push_register=(
                 functools.partial(register_body, runtime.runtime_paths.root)
-                if runtime.listen_addresses
+                if runtime.config.listen_addresses
                 else None
             ),
             ride_act=None if runtime.rides is None else functools.partial(_ride_act, runtime.rides),
@@ -3307,21 +3308,23 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             claude_prompt_log=runtime.runtime_paths.root / "claude-prompts.jsonl",
             device_name=(
                 functools.partial(device_name_for_token, runtime.runtime_paths.root)
-                if runtime.listen_addresses
+                if runtime.config.listen_addresses
                 else None
             ),
             # ADR 0196: routes on every daemon, but only a brain that listens can mint a code.
             pairing=DevicePairing(
                 root=runtime.runtime_paths.root,
                 codes=PairingCodes(runtime.runtime_paths.root),
-                listens=bool(runtime.listen_addresses),
-                brain_urls=brain_urls(runtime.listen_addresses, runtime.listen_hosts, port),
+                listens=bool(runtime.config.listen_addresses),
+                brain_urls=brain_urls(
+                    runtime.config.listen_addresses, runtime.config.listen_hosts, port,
+                ),
             ),
             v2=InherentV2Deps(
                 token_matches=functools.partial(inherent_v2_token_matches, v2_token),
                 device_token_matches=(
                     functools.partial(device_token_matches, runtime.runtime_paths.root)
-                    if runtime.listen_addresses
+                    if runtime.config.listen_addresses
                     else None
                 ),
                 submit_text=functools.partial(
@@ -3345,13 +3348,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         require_local_key(
             app,
             functools.partial(local_key_matches, local_key(runtime.runtime_paths.root)),
-            extra_hosts=runtime.listen_hosts,
+            extra_hosts=runtime.config.listen_hosts,
             device_token_matches=(
                 functools.partial(device_token_matches, runtime.runtime_paths.root)
-                if runtime.listen_addresses
+                if runtime.config.listen_addresses
                 else None
             ),
-            open_claim=bool(runtime.listen_addresses),
+            open_claim=bool(runtime.config.listen_addresses),
         )
 
         config = uvicorn.Config(
@@ -3371,13 +3374,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 runtime,
                 poll_interval_s=poll_interval_s,
                 queue_capacity=_positive_int(
-                    runtime.config,
+                    runtime.config.raw,
                     section="input",
                     key="queue_capacity",
                     fallback=8,
                 ),
                 max_concurrent_turns=_positive_int(
-                    runtime.config,
+                    runtime.config.raw,
                     section="input",
                     key="max_concurrent_turns",
                     fallback=2,
@@ -3451,14 +3454,14 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         compaction = (
             CompactionSweep(
                 memory=runtime.memory,
-                settings=runtime.session,
+                settings=runtime.config.session,
                 llm_config=(
-                    runtime.config["llm"]
-                    if isinstance(runtime.config.get("llm"), Mapping)
+                    runtime.config.raw["llm"]
+                    if isinstance(runtime.config.raw.get("llm"), Mapping)
                     else {}
                 ),
                 event_log_path=runtime.runtime_paths.event_log,
-                pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                pricing_table=load_pricing_table(runtime.config.pricing_path),
                 context_length=lambda: preset_context_length(runtime.llm_client),
                 live_open=lambda: (
                     live_voice is not None and live_voice.status().get("state") != "idle"
@@ -3479,7 +3482,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # so it is wired after the sweep control plane without disturbing
         # that anchor-then-bootstrap ordering.
         watchers.extend(_start_repo_observer(runtime))
-        watchers.extend(_start_usage_observer(usage_observer, runtime.config))
+        watchers.extend(_start_usage_observer(usage_observer, runtime.config.raw))
         watchers.extend(_start_timesink_observer(runtime))
         watchers.extend(_start_meaning_index(runtime))
         if runtime.job_mail is not None:
@@ -3555,7 +3558,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             runtime.night.watch = NightWatch(
                 port=_agents_port(),
                 key=functools.partial(local_key, runtime.runtime_paths.root),
-                claude=ClaudeSessions() if _claude_sessions_read(runtime.config) else None,
+                claude=ClaudeSessions() if _claude_sessions_read(runtime.config.raw) else None,
                 codex=codex_board,
             )
             watchers.append(asyncio.create_task(runtime.night.run(), name="night_run"))
@@ -3563,10 +3566,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             watchers.append(
                 asyncio.create_task(runtime.daily_schedule.run(), name="daily_report_schedule"),
             )
-        day_summary = DaySummarySettings.from_config(runtime.config.get("day_summary"))
+        day_summary = DaySummarySettings.from_config(runtime.config.raw.get("day_summary"))
         if day_summary is not None and runtime.memory is not None:
             # ADR 0142: past days' conversation summaries, written once a day.
-            llm_config = runtime.config.get("llm")
+            llm_config = runtime.config.raw.get("llm")
             watchers.append(
                 asyncio.create_task(
                     DaySummarySchedule(
@@ -3574,12 +3577,12 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         settings=day_summary,
                         llm_config=llm_config if isinstance(llm_config, Mapping) else {},
                         event_log_path=runtime.runtime_paths.event_log,
-                        pricing_table=load_pricing_table(repo_root() / "data" / "pricing.json"),
+                        pricing_table=load_pricing_table(runtime.config.pricing_path),
                         clock=runtime.clock,
                         core_memory=CoreMemorySettings.from_config(
-                            runtime.config.get("core_memory"),
+                            runtime.config.raw.get("core_memory"),
                         ),
-                        jev_log=_jev_log(runtime.config, runtime.runtime_paths.root),
+                        jev_log=_jev_log(runtime.config.raw, runtime.runtime_paths.root),
                         ledger=runtime.ledger,
                     ).run(),
                     name="day_summary_schedule",
@@ -3588,7 +3591,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         if runtime.doing is not None:
             # ADR 0302, 0310: what he was doing, written for the days under way and just past.
             watchers.append(asyncio.create_task(runtime.doing.run(), name="doing_schedule"))
-        day_experience =DayExperienceSettings.from_config(runtime.config.get("day_experience"))
+        day_experience =DayExperienceSettings.from_config(runtime.config.raw.get("day_experience"))
         if day_experience is not None and runtime.memory is not None:
             # ADR 0280: past days' experience table, folded from the event log once a day.
             watchers.append(
@@ -3601,17 +3604,17 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     name="day_experience_schedule",
                 ),
             )
-        day_plan = DayPlanSettings.from_config(runtime.config.get("day_plan"))
+        day_plan = DayPlanSettings.from_config(runtime.config.raw.get("day_plan"))
         if day_plan is not None and runtime.memory is not None:
             # ADR 0288: the day's plan, drafted at `day_plan.at` and on a start with none for today.
-            plan_zone = resolve_zone(None, _work_state_timezone(runtime.config))[1]
+            plan_zone = runtime.config.zone
             home = runtime.home
             plan_sources = DayPlanSources(
                 event_log_path=runtime.runtime_paths.event_log,
                 memory_db=runtime.memory.db_path,
                 zone=plan_zone,
                 day_sources=DaySources(
-                    plan_zone, _timesink_db_path(runtime.config),
+                    plan_zone, _timesink_db_path(runtime.config.raw),
                     runtime.memory.db_path,
                     None if runtime.terminal_hub is None
                     else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S),
@@ -3630,8 +3633,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 asyncio.create_task(
                     build_schedule(
                         day_plan,
-                        config=runtime.config,
-                        pricing_path=repo_root() / "data" / "pricing.json",
+                        config=runtime.config.raw,
+                        pricing_path=runtime.config.pricing_path,
                         sources=plan_sources,
                         route_legs=(
                             None if open_leg is None
@@ -3647,8 +3650,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     asyncio.create_task(
                         build_watch(
                             day_plan,
-                            config=runtime.config,
-                            pricing_path=repo_root() / "data" / "pricing.json",
+                            config=runtime.config.raw,
+                            pricing_path=runtime.config.pricing_path,
                             sources=plan_sources,
                             open_leg=open_leg,
                             hooks=_plan_hooks(runtime, controls),
@@ -3686,7 +3689,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
         if power_coordinator is not None and duplex_voice_session is not None:
             device_watch = _start_audio_device_watch(
-                runtime.config, runtime.settings, power_coordinator,
+                runtime.config.raw, runtime.settings, power_coordinator,
                 duplex_voice_session.ingress, live_voice,
             )
             device_watch.add_done_callback(_log_watcher_death)
@@ -3708,8 +3711,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
 
         await server.serve(
-            sockets=_listen_sockets(host, port, runtime.listen_addresses)
-            if runtime.listen_addresses
+            sockets=_listen_sockets(host, port, runtime.config.listen_addresses)
+            if runtime.config.listen_addresses
             else None,
         )
 

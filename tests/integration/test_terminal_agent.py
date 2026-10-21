@@ -15,6 +15,7 @@ import pytest
 from jarvis.cli import main
 from jarvis.deployment import launchd
 from jarvis.runtime.terminal import _Speech, _Ui, _ui_device
+from tests.support.runtime_config import runtime_config
 
 BRAIN = "http://jarvis:8006"
 
@@ -107,7 +108,7 @@ def test_the_terminal_restarts_itself_only_under_its_own_agent(
 ) -> None:
     """``POST /inherent/restart`` has a handler where KeepAlive respawns the terminal."""
     with socket.socket() as sock:
-        ui = _Ui(sock, {}, tmp_path)
+        ui = _Ui(sock, runtime_config(root=tmp_path), tmp_path)
         monkeypatch.delenv(launchd.AGENT_ENV_MARKER, raising=False)
         assert _ui_device(ui, None, _Speech).restart is None
         monkeypatch.setenv(launchd.AGENT_ENV_MARKER, launchd.AGENT_LABEL)  # the daemon's agent

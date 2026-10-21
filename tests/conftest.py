@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-import jarvis.runtime as runtime_pkg
+import jarvis.runtime.config as runtime_config_module
 from jarvis.deployment import models, sleep_wake
 from jarvis.shared import lang
 from jarvis.surface import (
@@ -209,7 +209,7 @@ def _chinese_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch) -> It
     and the choice is process-wide, so one test's boot would otherwise leak
     its language into every later test.
     """
-    monkeypatch.setattr(runtime_pkg, "_system_language", lambda: "zh")
+    monkeypatch.setattr(runtime_config_module, "_system_language", lambda: "zh")
     lang.set_language("zh")
     yield
     lang.set_language("zh")

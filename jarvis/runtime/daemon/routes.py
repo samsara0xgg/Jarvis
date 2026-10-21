@@ -19,7 +19,6 @@ from jarvis.runtime import (
     JarvisRuntime,
     _confirmation_ttl_ms,
     _timesink_db_path,
-    _work_state_timezone,
 )
 from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
@@ -305,8 +304,8 @@ async def answer_doing(  # noqa: PLR0913 — the route's day, span or stretch, a
 def day_sources(runtime: JarvisRuntime, memory_db: Path) -> DaySources:
     """The stores a day is folded from, as the routes that write about a day's items read them."""
     return DaySources(
-        resolve_zone(None, _work_state_timezone(runtime.config))[1],
-        _timesink_db_path(runtime.config),
+        runtime.config.zone,
+        _timesink_db_path(runtime.config.raw),
         memory_db,
         (
             None if runtime.terminal_hub is None
@@ -578,7 +577,7 @@ def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
     try:
         asked = request_confirmation(
             conn, cast("ToolRegistryLike", runtime.tool_registry), "mcp__gmail__gmail_send", args,
-            ttl_ms=_confirmation_ttl_ms(runtime.config), lang=lang.language(),
+            ttl_ms=_confirmation_ttl_ms(runtime.config.raw), lang=lang.language(),
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -627,7 +626,7 @@ def model_takes_images(config: Mapping[str, Any]) -> bool:
 
 def open_lifelog(runtime: JarvisRuntime) -> Lifelog:
     """ADR 0238: the archive of his recorded days, at ``lifelog.dir`` or in the runtime root."""
-    section = runtime.config.get("lifelog")
+    section = runtime.config.raw.get("lifelog")
     section = section if isinstance(section, dict) else {}
     where = section.get("dir")
     directory = (
@@ -661,7 +660,7 @@ def lifelog_coverage(runtime: JarvisRuntime, lifelog: Lifelog) -> Callable[[], d
 
 def shipments(runtime: JarvisRuntime) -> Shipments:
     """ADR 0294: the intake for a terminal's scheduled copies, in the imports archive."""
-    section = runtime.config.get("imports")
+    section = runtime.config.raw.get("imports")
     floor = section.get("min_free_gb") if isinstance(section, dict) else None
     min_free = (
         int(floor * 1024 ** 3) if isinstance(floor, (int, float)) and floor >= 0

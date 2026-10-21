@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.runtime import RuntimeBootstrapError
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.shared import CallerPrincipal
 from jarvis.state.plugin_settings import local_key
 from tests.support.brain_role import brain_runtime
@@ -52,7 +52,7 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
     default = brain_runtime(tmp_path / "a", "assistant_name: Jarvis\n", monkeypatch)
     brain = brain_runtime(tmp_path / "b", "runtime:\n  role: brain\n", monkeypatch)
     try:
-        assert default.role == "all"
+        assert default.config.role == "all"
         assert {"open_path", "read_file", "read_clipboard", "open_url", "screen_look"} <= {
             t.name for t in default.tool_registry.get_definitions()
         }
@@ -60,7 +60,7 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
         assert default.night is not None
         assert default.terminal_hub is None
 
-        assert brain.role == "brain"
+        assert brain.config.role == "brain"
         held = {t.name for t in brain.tool_registry.get_definitions()}
         assert brain.terminal_hub is not None
         # ADR 0225: a device tool is on the menu once a paired terminal declares it; they are
@@ -71,10 +71,10 @@ def test_the_default_role_is_all_and_the_brain_runs_no_device_tool_itself(
         assert {"keep", "kept", "web_fetch", "ask_user"} <= _menu(brain)
         assert brain.night is None
         assert {row.tool_name for row in brain.tier0_table} <= held | catalogue
-        observer = brain.config["observer"]
+        observer = brain.config.raw["observer"]
         assert observer["timesink"]["enabled"] is False
         assert observer["repos"] == []
-        assert brain.config["realtime"]["gpt_live"]["enabled"] is False
+        assert brain.config.raw["realtime"]["gpt_live"]["enabled"] is False
     finally:
         default.conn.close()
         brain.conn.close()

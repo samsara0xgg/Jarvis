@@ -18,10 +18,12 @@ from zoneinfo import ZoneInfo
 import pytest
 import time_machine
 
-from jarvis.runtime import RuntimeBootstrapError, bootstrap_runtime_app
+from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.shared import clock as clock_module
 from jarvis.shared.clock import Clock, SystemClock, ZoneError, system_zone
+from jarvis.state import daily_report as daily_report_module
 from tests.support.clock import FakeClock
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -329,7 +331,7 @@ def _boot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: str) -> Clo
     root.mkdir()
     (root / "settings.yaml").write_text(settings, encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
-    runtime = bootstrap_runtime_app(runtime_root=root)
+    runtime = boot_runtime(root)
     runtime.conn.close()
     return runtime.clock
 
@@ -362,8 +364,9 @@ def test_boot_stops_when_the_zone_database_lacks_the_rule_in_force(
 ) -> None:
     """The error names the zone and the setting, instead of a daemon that cuts days wrongly."""
     machine_zone("America/Vancouver")
+    # The config resolves the owner's zone once, through the report's resolver (ADR 0370).
     monkeypatch.setattr(
-        clock_module,
+        daily_report_module,
         "system_zone",
         lambda: _Table("America/Vancouver", lambda _: timedelta(hours=-8)),
     )

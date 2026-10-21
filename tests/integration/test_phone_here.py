@@ -34,7 +34,6 @@ import pytest
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.location_tool import describe_age
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.runtime.locate import NO_PHONE_REPORT, NOT_ASKED, HerePolicy, Locator
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.shared import ActionRequest, CallerPrincipal
@@ -53,6 +52,7 @@ from jarvis.state.phone_location import NoPhoneReport, latest_phone_fix
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
 from tests.support.clock import FakeClock
 from tests.support.phone import GOOD, LOCATION, PNG, VISIT, event_frame, here_daemon
+from tests.support.runtime_config import boot_runtime
 from tests.support.terminal import bearer, brain_client
 from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 from tests.support.transit import FIX as MAC_FIX
@@ -557,7 +557,7 @@ def _brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: str) -> Ja
     root.mkdir()
     (root / "settings.yaml").write_text(f"runtime:\n  role: brain\n{settings}", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
-    return bootstrap_runtime_app(runtime_root=root)
+    return boot_runtime(root)
 
 
 def _report(runtime: JarvisRuntime, device: str, lat: float, lng: float, ts: int) -> None:

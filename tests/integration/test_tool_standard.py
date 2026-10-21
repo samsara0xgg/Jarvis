@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.shared import CallerPrincipal
 from scripts.check_tools import PRE_STANDARD, REPO, broken_rules, checked_tools, failures
 from scripts.tool_exam import _exam_registry
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -60,7 +60,7 @@ def test_a_booted_runtime_serves_the_exam_menu_in_the_exam_order(
     root.mkdir()
     (root / "settings.yaml").write_text("runtime:\n  role: brain\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
-    runtime = bootstrap_runtime_app(runtime_root=root)
+    runtime = boot_runtime(root)
     try:
         booted = [t.name for t in runtime.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)]
     finally:

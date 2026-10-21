@@ -35,6 +35,7 @@ from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
 from tests.support.model import ScriptedModel, ScriptedSessions
 from tests.support.response_run import realtime_config
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -112,7 +113,7 @@ def test_on_word_thinks_its_own_turn_only(
     config = realtime_config(answer_hold_s=0)
     model = ScriptedModel(otherwise="好的。")
     runtime = JarvisRuntime(
-        config=config,
+        config=runtime_config(config, root=tmp_path),
         runtime_paths=paths,
         conn=conn,
         tool_registry=build_default_registry(),

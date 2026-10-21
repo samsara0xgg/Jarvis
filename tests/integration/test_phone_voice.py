@@ -63,6 +63,7 @@ from tests.support.phone import (
     voice_log,
 )
 from tests.support.phone import bearer as _bearer_header
+from tests.support.runtime_config import runtime_config
 from tests.support.terminal import VoiceSpeechProvider, wait_for
 from tools.phone_fake_client import (
     DEFAULT_CLOCK_OFFSET_NS,
@@ -459,9 +460,8 @@ def test_the_speech_builder_needs_a_key_and_realtime_on(
 ) -> None:
     """No key or realtime off: ``voice: false``. Otherwise a speech builder."""
     conn = voice_log(tmp_path / "events.db")
-    config: dict[str, Any] = {"realtime": {"enabled": True}}
     host = SimpleNamespace(
-        config=config,
+        config=runtime_config({"realtime": {"enabled": True}}),
         response_flags=Wave4ResponseFlags(),
         runtime_paths=SimpleNamespace(event_log=tmp_path / "events.db"),
         voice_settings=None,
@@ -476,7 +476,7 @@ def test_the_speech_builder_needs_a_key_and_realtime_on(
     assert isinstance(
         phone_brain.build_phone_speech(runtime, knobs, rows), PhoneSpeech,
     )
-    config["realtime"]["enabled"] = False
+    host.config = runtime_config({"realtime": {"enabled": False}})
     assert phone_brain.build_phone_speech(runtime, knobs, rows) is None
 
 

@@ -16,10 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from jarvis.runtime import bootstrap_runtime_app, inherent_loop
+from jarvis.runtime import inherent_loop
 from jarvis.runtime.daemon import intent_pump
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.plugin_settings import local_key
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -82,7 +83,7 @@ def run_in_daemon[T](
     (root / "settings.yaml").write_text(settings, encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("JARVIS_PLUGIN_CATALOG", str(tmp_path / "no-catalog"))
-    runtime = bootstrap_runtime_app(runtime_root=root)
+    runtime = boot_runtime(root)
     answers: list[T] = []
     turns: list[dict[str, Any]] = []
 

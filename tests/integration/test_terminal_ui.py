@@ -63,6 +63,7 @@ from jarvis.surface.terminal_ui import (
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_controls import VoiceControls
 from tests.support.net import free_port
+from tests.support.runtime_config import runtime_config
 from tests.support.terminal import (
     SPEECH_CONFIG,
     AsRemote,
@@ -641,8 +642,8 @@ class _Terminal:
             self.task = asyncio.create_task(_run(
                 url, token, tools=frozenset({"read_clipboard"}),
                 execute=lambda *_: {"ok": True, "output": {}}, watched=None,
-                speaking=_Speaking(self.config, root),
-                ui=_Ui(bind_ui(self.port), self.config, root),
+                speaking=_Speaking(runtime_config(self.config, root=root), root),
+                ui=_Ui(bind_ui(self.port), runtime_config(self.config, root=root), root),
             ))
             with contextlib.suppress(asyncio.CancelledError):
                 try:

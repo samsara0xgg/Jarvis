@@ -33,13 +33,13 @@ from jarvis.execution.tools import (
     ToolRegistry,
     build_default_registry,
 )
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.shared import ActionRequest, CallerPrincipal, lang, steps
 from jarvis.state import commitments, departures, things
 from jarvis.state import reminders as reminder_state
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from scripts import tool_exam, tool_exam_steps
 from tests.support.clock import FakeClock
+from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     import sqlite3
@@ -1260,7 +1260,7 @@ def test_the_booted_runtime_has_the_tool_and_not_the_old_ones(
         encoding="utf-8",
     )
     monkeypatch.setenv("HOME", str(tmp_path))
-    runtime = bootstrap_runtime_app(runtime_root=root)
+    runtime = boot_runtime(root)
     try:
         held = {t.name: t for t in runtime.tool_registry.for_caller(CallerPrincipal.JARVIS_LLM)}
         assert {"schedule", "keep", "kept"} <= set(held)

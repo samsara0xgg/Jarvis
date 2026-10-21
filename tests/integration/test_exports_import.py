@@ -34,6 +34,7 @@ from jarvis.state.event_log import open_event_log
 from jarvis.state.import_parsers import boc_text
 from jarvis.state.memory_db import open_memory_db
 from tests.support.clock import FakeClock
+from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
@@ -346,7 +347,7 @@ def test_the_imports_directory_is_outside_sweep_clear_and_export(tmp_path: Path)
     wechat, _ = _statements(tmp_path)
     _import(tmp_path, "wechat_pay", wechat)
     runtime = cast("JarvisRuntime", SimpleNamespace(
-        config={}, runtime_paths=SimpleNamespace(root=tmp_path, artifacts_root=tmp_path / "artifacts"),
+        config=runtime_config({}), runtime_paths=SimpleNamespace(root=tmp_path, artifacts_root=tmp_path / "artifacts"),
         attachments=None, memory=None,
     ))
 

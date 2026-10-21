@@ -15,7 +15,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import _load_full_config
+from jarvis.runtime.config import load_runtime_config
 from jarvis.runtime.projects import ProjectsService
 from jarvis.state.projects import Project, parse_catalog
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -238,7 +238,7 @@ def test_projects_come_from_the_users_settings(tmp_path: Path) -> None:
         "projects:\n  - {id: jarvis, name: Jarvis, repos: [~/Projects/jarvis]}\n",
         encoding="utf-8",
     )
-    catalog = parse_catalog(_load_full_config(shipped, settings)["projects"])
+    catalog = parse_catalog(load_runtime_config(shipped, tmp_path).raw["projects"])
     assert [p.id for p in catalog] == ["jarvis"]
     assert all(not r.startswith("~") for p in catalog for r in p.repos)
     cases = (

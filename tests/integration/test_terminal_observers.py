@@ -26,7 +26,6 @@ import uvicorn
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from jarvis.runtime import bootstrap_runtime_app
 from jarvis.runtime.terminal import _observe, _Watched
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, open_event_log
@@ -45,6 +44,7 @@ from jarvis.surface.terminal_link import TerminalHub, run_terminal_client
 from jarvis.surface.timesink_observer import TimesinkObserver
 from jarvis.surface.usage_observer import DEVICE_SERVICES, UsageObserver
 from tests.support.net import free_port
+from tests.support.runtime_config import boot_runtime
 from tests.support.terminal import (
     REMOTE,
     AsRemote,
@@ -284,21 +284,22 @@ def test_a_brain_without_event_wiring_and_a_one_machine_runtime_take_no_events(
         f"    db_path: {tmp_path}/t.db\n",
         encoding="utf-8",
     )
-    one = bootstrap_runtime_app(runtime_root=root)
+    one = boot_runtime(root)
     brain_root = tmp_path / "broot"
     brain_root.mkdir()
     (brain_root / "settings.yaml").write_text(
         f"runtime:\n  role: brain\nobserver:\n  repos: [{repo}]\n", encoding="utf-8",
     )
-    brain = bootstrap_runtime_app(runtime_root=brain_root)
+    brain = boot_runtime(brain_root)
     try:
         assert one.terminal_hub is None
-        assert one.config["observer"]["repos"] == [str(repo)]
-        assert one.config["observer"]["timesink"]["enabled"] is True
+        assert one.config.raw["observer"]["repos"] == [str(repo)]
+        assert one.config.raw["observer"]["timesink"]["enabled"] is True
         assert brain.terminal_hub is not None
         assert isinstance(brain.terminal_hub.events, BrainEvents)
-        assert brain.config["observer"]["repos"] == []  # the brain still observes nothing itself
-        assert brain.config["observer"]["timesink"]["enabled"] is False
+        # the brain still observes nothing itself
+        assert brain.config.raw["observer"]["repos"] == []
+        assert brain.config.raw["observer"]["timesink"]["enabled"] is False
     finally:
         one.conn.close()
         brain.conn.close()

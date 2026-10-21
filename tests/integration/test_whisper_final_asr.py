@@ -32,6 +32,7 @@ from jarvis.runtime.dictation import (
 )
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
+from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -324,13 +325,15 @@ def test_his_first_words_after_a_quiet_spell_warm_whisper_once(whisper: _Whisper
     assert len(whisper.calls) == 1
 
 
-def _runtime(tmp_path: Path, final_asr: str) -> Any:  # noqa: ANN401 - a stand-in runtime
+def _runtime(
+    tmp_path: Path, final_asr: str, **realtime: object,
+) -> Any:  # noqa: ANN401 - a stand-in runtime
     vocab = tmp_path / "vocab.yaml"
     vocab.write_text("user: [Jarvis, 言文]\nauto: [自动词]\n", encoding="utf-8")
-    return SimpleNamespace(config={
-        "realtime": {"final_asr": final_asr},
+    return SimpleNamespace(config=runtime_config({
+        "realtime": {"final_asr": final_asr, **realtime},
         "dictation": {"vocab_path": str(vocab)},
-    })
+    }))
 
 
 def test_the_switch_picks_the_recognizer(whisper: _Whisper, tmp_path: Path) -> None:
@@ -361,8 +364,7 @@ def test_hybrid_gives_the_two_passes_the_word_list_but_not_the_command_pass(
     whisper: _Whisper, tmp_path: Path,
 ) -> None:
     """ADR 0150: the ADR 0137 command pass keeps its own prompt and its 16-token cap."""
-    runtime = _runtime(tmp_path, "hybrid")
-    runtime.config["realtime"]["final_asr_terms"] = ["Jarvis", "co-op"]
+    runtime = _runtime(tmp_path, "hybrid", final_asr_terms=["Jarvis", "co-op"])
     sensevoice = MagicMock(spec=voice_asr.SenseVoiceRecognizer)
     chosen = voice_wiring.final_recognizer(runtime, sensevoice)
     assert isinstance(chosen, voice_asr.HybridFinalRecognizer)

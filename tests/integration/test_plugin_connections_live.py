@@ -11,6 +11,7 @@ from jarvis.runtime import JarvisRuntime, drive_turn, run_turn
 from jarvis.state.event_log import get_event
 from tests.support.mcp import ECHO
 from tests.support.plugin_connections import make_service, wait_for_request, write_package
+from tests.support.runtime_config import runtime_config
 from tests.support.tool_world import ToolWorld
 
 
@@ -26,7 +27,7 @@ def test_conversation_opens_plugin_and_resumes_with_live_tool(
     service = make_service(tmp_path, fx)
     llm_config = load_llm_config(Path("config/jarvis.yaml"))
     runtime = JarvisRuntime(
-        config={},
+        config=runtime_config(root=tmp_path / "runtime"),
         runtime_paths=fx.paths,
         conn=fx.conn,
         tool_registry=fx.registry,

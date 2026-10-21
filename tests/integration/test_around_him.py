@@ -34,6 +34,7 @@ from jarvis.state import places
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere, reading
+from tests.support.runtime_config import boot_runtime
 from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
@@ -464,13 +465,13 @@ def test_the_runtime_gives_the_state_block_the_line_and_makes_no_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, google: Google,
 ) -> None:
     """Through the function every turn calls: a kept place under the phone's fix is a line."""
-    from jarvis.runtime import _whereabouts_lines, bootstrap_runtime_app  # noqa: PLC0415
+    from jarvis.runtime import _whereabouts_lines  # noqa: PLC0415
 
     root = tmp_path / "root"
     root.mkdir()
     (root / "settings.yaml").write_text("assistant_name: Jarvis\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
-    runtime = bootstrap_runtime_app(runtime_root=root)
+    runtime = boot_runtime(root)
     try:
         assert runtime.memory is not None
         places.save(runtime.memory.db_path, name="Home", lat=HERE[0], lng=HERE[1], origin="user")

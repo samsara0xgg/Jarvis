@@ -77,6 +77,7 @@ from tests.support.media import (
     terminal_rows,
 )
 from tests.support.media import media_config as _media_config
+from tests.support.runtime_config import reconfigure
 
 if TYPE_CHECKING:
     import sqlite3
@@ -777,8 +778,7 @@ def test_the_setting_moves_the_bar_and_the_median_ignores_one_slow_call(tmp_path
     """``voice.lead_in_ms`` is the bar; a median of 20 calls is not moved by one outlier."""
     runtime = commentary_runtime(tmp_path)
     reader = _reader(runtime)
-    config = {**runtime.config, "voice": {"lead_in_ms": 500}}
-    runtime = replace(runtime, config=config)
+    runtime = reconfigure(runtime, voice={"lead_in_ms": 500})
     with CommentaryObserver(runtime) as observer:
         _user_turn(runtime, "T-bar")
         _finished_calls(runtime.conn, "schedule", 600, 4)
@@ -2256,7 +2256,7 @@ def test_a_pinned_reply_language_picks_the_conversation_line_over_his_words(
 ) -> None:
     """``reply_language: en`` answers a Chinese 「等我一下」 in English."""
     runtime = commentary_runtime(tmp_path, commentary=False)
-    runtime = replace(runtime, config={**runtime.config, "reply_language": "en"})
+    runtime = reconfigure(runtime, reply_language="en")
 
     inherent_loop._say_conversation_line(runtime, "T-words", "wait", "等我一下。")  # noqa: SLF001
 

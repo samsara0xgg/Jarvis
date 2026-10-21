@@ -35,7 +35,7 @@ from jarvis.shared.about import MAX_START_MS, clean_about, prompt_title
 from jarvis.state.day_line import DaySources, day_window, parse_day
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import open_event_log, open_runtime_event_log
-from jarvis.state.memory_db import MemorySettings, SessionSettings
+from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -45,6 +45,7 @@ from jarvis.surface.terminal_events import BrainEvents
 from tests.support.day_line import health, load_rows, minutes_ms
 from tests.support.phone import REMOTE, here_daemon
 from tests.support.routine import drive_streaming_turn
+from tests.support.runtime_config import reconfigure
 from tests.support.spoken import SpokenPeer, spoken_runtime
 
 if TYPE_CHECKING:
@@ -447,9 +448,8 @@ def test_the_line_is_replayed_with_its_turn_where_the_state_block_is(tmp_path: P
     outputs = [[("final_answer", "好了。")], [("final_answer", "再推了。")]]
     with SpokenPeer(outputs) as peer:
         runtime = replace(
-            spoken_runtime(tmp_path, peer.url),
+            reconfigure(spoken_runtime(tmp_path, peer.url), session={"replay_sent": True}),
             memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
-            session=SessionSettings(replay_sent=True),
         )
         drive_streaming_turn(runtime, _open_turn(runtime, "T-1", "把它推到明天", REMINDER))
         drive_streaming_turn(runtime, _open_turn(runtime, "T-2", "再推一小时"))
@@ -466,9 +466,8 @@ def test_as_shipped_each_turn_needs_its_own_item(tmp_path: Path) -> None:
     outputs = [[("final_answer", word)] for word in ("好了。", "再推了。", "好。")]
     with SpokenPeer(outputs) as peer:
         runtime = replace(
-            spoken_runtime(tmp_path, peer.url),
+            reconfigure(spoken_runtime(tmp_path, peer.url), session={"replay_sent": False}),
             memory=MemorySettings(db_path=tmp_path / "memory.db", audio_dir=tmp_path / "audio"),
-            session=SessionSettings(replay_sent=False),
         )
         drive_streaming_turn(runtime, _open_turn(runtime, "T-1", "把它推到明天", REMINDER))
         drive_streaming_turn(runtime, _open_turn(runtime, "T-2", "再推一小时"))
