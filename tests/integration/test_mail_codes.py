@@ -1,10 +1,13 @@
 """ADR 0266 — a verification code in new mail reaches the Mac clipboard.
 
-Data-driven: ``find_code`` over realistic mails (input -> expected code or none). Then the real
-poller over a fake ``gmail`` client and a fake device link: a fresh code mail makes one
-``copy_code`` call with the right code, the same mail next cycle none, an old mail none, and a
-terminal that is away is tried again. The terminal's own op runs with ``pbcopy`` and ``osascript``
-replaced, to see the clipboard text, the notification arguments and what a bad code does.
+Data-driven: ``find_code`` over realistic mails (input -> expected code or none), among them the
+rows of ADR 0369: a bare "code" or "PIN" is a code only in a sentence that says what it is for, and
+a number that the words just before it make an account, order, promo or other number is not the
+code. Then the real poller over a fake ``gmail`` client and a fake device link: a fresh code mail
+makes one ``copy_code`` call with the right code, the same mail next cycle none, an old mail none,
+and a terminal that is away is tried again. The terminal's own op runs with ``pbcopy`` and
+``osascript`` replaced, to see the clipboard text, the notification arguments and what a bad code
+does.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ SAMPLES = json.loads(
 @pytest.mark.parametrize("sample", SAMPLES, ids=lambda s: s["subject"] or s["body"][:20])
 def test_find_code(sample: dict[str, Any]) -> None:
     """Each sample mail gives its code, or none for a receipt, newsletter, phone, link ..."""
-    assert find_code(sample["subject"], sample["body"]) == sample["expected"]
+    assert find_code(sample["subject"], sample["body"]) == sample["expected"], sample.get("why")
 
 
 NOW = datetime.now(UTC)

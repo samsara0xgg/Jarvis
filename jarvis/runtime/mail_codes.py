@@ -13,6 +13,7 @@ import asyncio
 import logging
 import re
 import subprocess
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
@@ -50,10 +51,45 @@ _STRONG: Final = (
     r"|验证码|校验码|动态码|确认码|認証コード"
 )
 _KEYWORD: Final = re.compile(rf"(?P<strong>{_STRONG})|(?P<weak>\bcode\b|\bpin\b)", re.IGNORECASE)
+_STRONG_WORD: Final = re.compile(_STRONG, re.IGNORECASE)
 # A "code" that is not a login code: promo, postal and similar words just before the keyword.
 _NOT_LOGIN: Final = re.compile(
     r"(?:promo\w*|coupon|discount|gift|referral|zip|postal|area|country|source|tracking|invit\w*"
     r"|优惠|折扣)\W*$",
+    re.IGNORECASE,
+)
+# What a bare "code" or "PIN" is for (ADR 0369): it is a login code only in a sentence that also
+# says signing in, signing up, verifying, confirming or authenticating.
+_LOGIN_WORD: Final = re.compile(
+    r"\b(?:sign(?:ing)?[- ]?(?:in(?:to)?|up)|log(?:ging)?[- ]?in(?:to)?)\b"
+    r"|\b(?:verif(?:y|ie[sd]|ying|ication)|confirm|authenticat|two[- ]?step|2[- ]?step)"
+    r"|登录|登陆|注册|验证|确认",
+    re.IGNORECASE,
+)
+# A sentence ends at a full stop, "!" or "?" before a space or the end ("no." is not one), at the
+# full-width stop, "!" or "?", and at a line break.
+_SENTENCE_END: Final = re.compile(
+    r"(?<!\bno)[.!?]+(?=\s|$)|[\u3002\uff01\uff1f]|[\r\n]", re.IGNORECASE
+)
+# What makes a number another kind of number (ADR 0369), read just before it: an account, order,
+# invoice, reference, member, customer or tracking number (the word alone, or with number, no., #
+# or ID after it), a confirmation or booking number (a "confirmation code" is still a code), a
+# promo, coupon or gift code.
+_SP: Final = r"[ \t\xa0]"  # horizontal space, the no-break space of an HTML mail included
+_KIND_EN: Final = (
+    r"(?:account|acct|order|invoice|ref(?:erence)?|member(?:ship)?|customer|tracking)"
+    rf"(?:{_SP}*(?:number|no\b\.?|#|id\b))?"
+    rf"|(?:confirmation|booking){_SP}*(?:number|no\b\.?|#|id\b)"
+    rf"|(?:promo\w*|coupon|gift)(?:{_SP}*(?:code|card))?"
+)
+_KIND_ZH: Final = (
+    r"(?:账号|账户|订单|发票|会员|客户|运单|快递|物流|优惠|折扣|礼品)(?:单号|号码?|编号|码)?"
+    r"|(?:确认|预订|预定)(?:号码?|编号)"
+)
+# ... then "is", "are", "ending in", a colon or a dash, up to the number itself.
+_NAMED_ELSE: Final = re.compile(
+    rf"(?:\b(?:{_KIND_EN})|{_KIND_ZH})"
+    rf"(?:{_SP}*(?:\bis\b|\bare\b|\bending(?:{_SP}+in)?\b|是|为|[:=#\uff1a-]))*{_SP}*$",
     re.IGNORECASE,
 )
 _URL: Final = re.compile(r"https?://\S+")
@@ -64,6 +100,7 @@ _YEAR_LEN: Final = 4
 _MIXED_MIN: Final = 6
 _AFTER_CHARS: Final = 60
 _BEFORE_CHARS: Final = 40
+_NAME_REACH: Final = 40
 
 
 def _plausible(text: str, found: re.Match[str], *, strong: bool, year_ok: bool) -> str | None:
@@ -73,6 +110,8 @@ def _plausible(text: str, found: re.Match[str], *, strong: bool, year_ok: bool) 
     after = text[found.end(1) : found.end(1) + 2]
     if re.search(r"\d[-.,/]$|[$¥€£#+]$", before) or re.match(r"[-.,/:]\d|%", after):
         return None
+    if _NAMED_ELSE.search(text, max(0, found.start(1) - _NAME_REACH), found.start(1)):
+        return None  # an account, order or promo number, not a login code
     digits = token.replace(" ", "")
     if digits.isdigit():
         if len(digits) == _YEAR_LEN and digits[:2] in ("19", "20") and not year_ok:
@@ -103,19 +142,48 @@ def _first(text: str, lo: int, hi: int, *, strong: bool, last: bool = False) -> 
     return found[-1] if last else found[0]
 
 
+def _keywords(text: str, *, covered: bool) -> list[re.Match[str]]:
+    """The keywords of ``text`` that name a login code.
+
+    A "code" after promo, postal and similar words is not one, and a bare "code" or "PIN" is one
+    only in a sentence that says what it is for (ADR 0369) or when ``covered`` says the subject did.
+    """
+    ends = [(m.start(), m.end()) for m in _SENTENCE_END.finditer(text)]
+    starts = [start for start, _ in ends]
+    said: dict[int, bool] = {}  # sentence number -> whether it has a login word
+
+    def says_login(at: int) -> bool:
+        """Whether the sentence that holds the position ``at`` has a login word."""
+        k = bisect_left(starts, at)
+        if k not in said:
+            first = ends[k - 1][1] if k else 0
+            last = starts[k] if k < len(starts) else len(text)
+            said[k] = _LOGIN_WORD.search(text, first, last) is not None
+        return said[k]
+
+    return [
+        m
+        for m in _KEYWORD.finditer(text)
+        if not _NOT_LOGIN.search(text[: m.start()][-24:])
+        and (m["strong"] or covered or says_login(m.start()))
+    ]
+
+
 def find_code(subject: str, body: str) -> str | None:
     """The verification code in a mail, or ``None``; the subject is read before the body.
 
     A keyword (code, verification, OTP, 验证码 ...) must stand within a few words of a 4-8 digit
-    number (or a 6-8 character capital mix under a strong keyword). Of the numbers after a
+    number (or a 6-8 character capital mix under a strong keyword). A bare "code" or "PIN" counts
+    only in a sentence that also says sign in, verify, confirm ... (a strong word in the subject
+    covers the body), and a number is not taken when the words just before it make it another kind
+    of number ("account 20481", "order 12345", "gift code 482913"). Of the numbers left after a
     keyword the nearest wins; one just before it counts when none follows ("G-123456 is your
     Google verification code").
     """
-    for part in (subject, body):
+    subject_says = _STRONG_WORD.search(_URL.sub(" ", subject)) is not None
+    for part, covered in ((subject, False), (body, subject_says)):
         text = _URL.sub(" ", part)
-        hits = [
-            m for m in _KEYWORD.finditer(text) if not _NOT_LOGIN.search(text[: m.start()][-24:])
-        ]
+        hits = _keywords(text, covered=covered)
         for m in hits:
             if code := _first(text, m.end(), m.end() + _AFTER_CHARS, strong=bool(m["strong"])):
                 return code

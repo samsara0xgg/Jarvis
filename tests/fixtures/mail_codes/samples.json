@@ -17,7 +17,8 @@
  {
   "subject": "Your Apple ID Code is: 625 318",
   "body": "Never share this code with anyone.",
-  "expected": "625318"
+  "expected": null,
+  "why": "a bare code in a sentence that says nothing of signing in is not a login code"
  },
  {
   "subject": "Your login code",
@@ -78,5 +79,167 @@
   "subject": "Meeting Oct 15",
   "body": "Please verify the agenda for October 2026 before the call.",
   "expected": null
+ },
+ {
+  "subject": "",
+  "body": "Use PIN 4821 to log in.",
+  "expected": "4821",
+  "why": "a bare PIN in a log-in sentence is a code"
+ },
+ {
+  "subject": "Welcome to Acme",
+  "body": "Thanks for signing up! Your confirmation code is 482913.",
+  "expected": "482913",
+  "why": "a sign-up confirmation code is a code"
+ },
+ {
+  "subject": "",
+  "body": "Finish signing up with code 482913.",
+  "expected": "482913",
+  "why": "a bare code in a sign-up sentence is a code"
+ },
+ {
+  "subject": "",
+  "body": "请输入 code 308116 完成登录。",
+  "expected": "308116",
+  "why": "a Chinese login word beside a bare code"
+ },
+ {
+  "subject": "Your order is ready",
+  "body": "Your pickup code is 482913. Show it at the counter.",
+  "expected": null,
+  "why": "a bare code that names no login word is a pickup code"
+ },
+ {
+  "subject": "",
+  "body": "Your store PIN is 4821.",
+  "expected": null,
+  "why": "a bare PIN that names no login word is a store PIN"
+ },
+ {
+  "subject": "",
+  "body": "Your code is 482913. Use it to sign in.",
+  "expected": null,
+  "why": "a login word in the next sentence does not make a bare code one"
+ },
+ {
+  "subject": "Booking confirmed",
+  "body": "Door PIN: 4821",
+  "expected": null,
+  "why": "a confirmed booking does not make its door PIN a login code"
+ },
+ {
+  "subject": "Your Acme verification code",
+  "body": "Your verification code for account 20481 is 735190.",
+  "expected": "735190",
+  "why": "an account number just before the code is not the code"
+ },
+ {
+  "subject": "",
+  "body": "Use the code for account 20481 to sign in: 735190.",
+  "expected": "735190",
+  "why": "an account number between a bare code and the code is not the code"
+ },
+ {
+  "subject": "Your order",
+  "body": "Please verify Order 12345 before pickup.",
+  "expected": null,
+  "why": "an order number is not a code"
+ },
+ {
+  "subject": "",
+  "body": "To confirm pickup, quote the code for Order 12345.",
+  "expected": null,
+  "why": "an order number after a bare code in a confirming sentence is not a code"
+ },
+ {
+  "subject": "",
+  "body": "Verify your delivery: order no. 48151 shipped.",
+  "expected": null,
+  "why": "an order number written no. is not a code"
+ },
+ {
+  "subject": "Welcome",
+  "body": "Verify your email to get gift code 20481 for your first order.",
+  "expected": null,
+  "why": "a gift code after a login word is not the login code"
+ },
+ {
+  "subject": "",
+  "body": "Sign up now and use promo code 482913 at checkout.",
+  "expected": null,
+  "why": "a promo code is not a login code"
+ },
+ {
+  "subject": "",
+  "body": "Verify your email and your coupon 482913 is yours.",
+  "expected": null,
+  "why": "a coupon number after a login word is not the login code"
+ },
+ {
+  "subject": "",
+  "body": "Verify your booking. Confirmation number: 48151623.",
+  "expected": null,
+  "why": "a confirmation number is not a code"
+ },
+ {
+  "subject": "",
+  "body": "Verify your delivery. Tracking number 481516.",
+  "expected": null,
+  "why": "a tracking number is not a code"
+ },
+ {
+  "subject": "",
+  "body": "Your verification code for account 20481.",
+  "expected": null,
+  "why": "an account number alone leaves no code"
+ },
+ {
+  "subject": "",
+  "body": "Your verification code is 482913. Account 20481.",
+  "expected": "482913",
+  "why": "the nearest number after the keyword still wins"
+ },
+ {
+  "subject": "",
+  "body": "您的验证码（订单号 12345）：527904。",
+  "expected": "527904",
+  "why": "an order number named in Chinese is not the code"
+ },
+ {
+  "subject": "",
+  "body": "Your one-time passcode for account ending in 1234 is 567890.",
+  "expected": "567890",
+  "why": "the last digits of an account are not the code"
+ },
+ {
+  "subject": "",
+  "body": "Verify your delivery: order 12345 shipped.",
+  "expected": null,
+  "why": "an order number after a no-break space (U+00A0), as an HTML mail writes it"
+ },
+ {
+  "subject": "",
+  "body": "Use the code for account no. 20481 to sign in: 735190.",
+  "expected": "735190",
+  "why": "no. is an abbreviation: it ends no sentence, and it marks the account number"
+ },
+ {
+  "subject": "",
+  "body": "Booking confirmed\nDoor PIN: 4821",
+  "expected": null,
+  "why": "a login word on the line above does not make a bare PIN a login code"
+ },
+ {
+  "subject": "",
+  "body": "Thanks for signing up! Your code is 482913.",
+  "expected": null,
+  "why": "an exclamation ends the sentence: the sign-up before it does not cover the code"
+ },
+ {
+  "subject": "",
+  "body": "您的 code 是 308116。请完成登录。",
+  "expected": null,
+  "why": "a full-width stop ends the sentence: the login word after it does not cover the code"
  }
 ]
