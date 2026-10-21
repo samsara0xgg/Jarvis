@@ -3,7 +3,7 @@ r"""L5 channel-aware multi-surface render — Step 18 of ADR-0002.
 Per ADR-0002 § Attention channel → physical surface mapping
 (lines 1017-1044) and § build-order Step 18 row (line 1876).
 
-The Day-1 surface render was a single ``write_output`` call into a
+The Day-1 surface render was a single call into a
 stdout-like stream. Day-2 the same approved :class:`ResponsePlan`
 must be routed to ALL physical surfaces declared for the L3
 Attention Policy's chosen channel:
@@ -50,11 +50,9 @@ separate calls with separate ``response_id``s. Its payload carries:
 - ``response_hash`` — SHA-256 hex of the ResponsePlan text, taken
   from ``ResponsePlan.response_hash`` (the Pre-emit Gate token).
 
-Pre-emit token enforcement: the Day-1 canary H3 (``surface.cli``
-runtime check) is preserved — :func:`render_response` performs
-the same token check as :func:`jarvis.surface.cli.write_output`
-and raises :class:`jarvis.surface.cli.PreEmitTokenError` on
-mismatch / absence. The returned :class:`SurfaceState` has the
+Pre-emit token enforcement: canary H3 (the runtime check) lives here —
+:func:`render_response` raises :class:`jarvis.surface.cli.PreEmitTokenError`
+on mismatch / absence. The returned :class:`SurfaceState` has the
 token cleared.
 
 Layer rules: this module sits in L5 alongside
@@ -265,8 +263,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
 
     Per ADR-0002 Step 18. The renderer:
 
-    1. Enforces the Pre-emit Gate token (canary H3 contract — same
-       check as :func:`jarvis.surface.cli.write_output`).
+    1. Enforces the Pre-emit Gate token (canary H3 contract).
     2. Parses ``response_plan.text`` into voice / document channels
        via :func:`parse_response_channels`. When the text is not
        channelized, both slots receive the (stripped) full text.
@@ -370,7 +367,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         PreEmitTokenError: When the surface state lacks the matching
             Pre-emit Gate token (canary H3 runtime check).
     """
-    # 1. Pre-emit token check (canary H3 — same contract as write_output).
+    # 1. Pre-emit token check (canary H3).
     if state.last_gate_response_hash is None:
         msg = (
             "render_response: no Pre-emit Gate token recorded on surface state; "

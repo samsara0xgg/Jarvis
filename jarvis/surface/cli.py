@@ -14,13 +14,12 @@ Day-1 responsibilities:
 2. ``record_pre_emit_token`` — the surface holds the latest
    ``ResponsePlan.response_hash`` the Pre-emit Gate stamped. The runtime
    composition root calls this after :func:`jarvis.decision.decide`
-   returns a final plan and BEFORE handing the plan to ``write_output``.
-3. ``write_output`` — render the document side of a channel-split
-   ``ResponsePlan`` to stdout. Refuses if the token in
-   :class:`SurfaceState` does not match
+   returns a final plan and BEFORE handing the plan to
+   :func:`jarvis.surface.cli_render.render_response`, which refuses when the
+   token in :class:`SurfaceState` does not match
    ``response_plan.response_hash`` (canary H3 runtime check — "the
    final output must match the latest valid gate token").
-4. ``parse_response_channels`` — verbatim port of legacy
+3. ``parse_response_channels`` — verbatim port of legacy
    ``jarvis-legacy/core/response_channels.py`` (ADR § Reference sources).
    The implementation of ``parse_response_channels`` is byte-equivalent
    to the legacy 52-LOC module.
@@ -36,9 +35,8 @@ Protocol so the surface never imports the L3 sibling.
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass
-from typing import IO, TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.state.event_log import emit_event
 
@@ -110,7 +108,7 @@ def parse_response_channels(text: str) -> ResponseChannels:
 
 
 class PreEmitTokenError(RuntimeError):
-    """Raised when ``write_output`` is called without a matching Pre-emit token.
+    """Raised when ``render_response`` is called without a matching Pre-emit token.
 
     Canary H3 runtime check — surfaces the violation as a hard runtime
     failure so a bug in the composition root (forgetting to record the
@@ -126,7 +124,7 @@ class SurfaceState:
     Held by the composition root; refreshed via
     :func:`record_pre_emit_token` after the Pre-emit Gate stamps a
     ``ResponsePlan.response_hash``, and cleared (set to ``None``) by
-    :func:`write_output` once the plan has been rendered.
+    :func:`jarvis.surface.cli_render.render_response` once the plan has been rendered.
 
     Attributes:
         last_gate_response_hash: The most recent
@@ -230,7 +228,7 @@ def record_pre_emit_token(
     mutation). The composition root calls this with the
     ``ResponsePlan.response_hash`` returned by
     :func:`jarvis.decision.decide` immediately before passing the
-    plan to :func:`write_output`.
+    plan to :func:`jarvis.surface.cli_render.render_response`.
 
     The ``state`` argument is accepted for API symmetry with the
     ``state -> state`` style used across :class:`SurfaceState`
@@ -241,67 +239,6 @@ def record_pre_emit_token(
     return SurfaceState(last_gate_response_hash=response_hash)
 
 
-def write_output(
-    state: SurfaceState,
-    response_plan: ResponsePlanLike,
-    *,
-    stream: IO[str] | None = None,
-) -> SurfaceState:
-    """Render an approved ``ResponsePlan`` to the user.
-
-    Behavior per ADR § Gate contracts (Pre-emit token) and
-    spec §18 (voice / document split):
-
-    1. Refuse if ``state.last_gate_response_hash != response_plan.response_hash``
-       (raise :class:`PreEmitTokenError`). Refuse also when no token has been
-       recorded (``state.last_gate_response_hash is None``).
-    2. Parse ``response_plan.text`` via :func:`parse_response_channels`.
-    3. Write the document side of the channel split to ``stream``
-       (default ``sys.stdout``). When the document channel is empty,
-       fall back to the voice channel so a voice-only response still
-       surfaces. Day-1 voice would route to TTS in Stage 2; the
-       surface renders the document side to the CLI.
-    4. Return a fresh :class:`SurfaceState` with the token consumed
-       (``last_gate_response_hash=None``) so a stale token cannot be
-       reused for a second emission.
-
-    Args:
-        state: Current surface state (must hold a matching token).
-        response_plan: The approved plan from :func:`jarvis.decision.decide`.
-        stream: Output stream; default ``sys.stdout``.
-
-    Returns:
-        Updated frozen :class:`SurfaceState` with the token cleared.
-
-    Raises:
-        PreEmitTokenError: Token missing or mismatched.
-    """
-    if state.last_gate_response_hash is None:
-        msg = (
-            "write_output: no Pre-emit Gate token recorded on surface state; "
-            "composition root must call record_pre_emit_token(...) before write_output(...)."
-        )
-        raise PreEmitTokenError(msg)
-    if state.last_gate_response_hash != response_plan.response_hash:
-        msg = (
-            f"write_output: Pre-emit token mismatch — recorded "
-            f"{state.last_gate_response_hash!r} but plan carries "
-            f"{response_plan.response_hash!r}."
-        )
-        raise PreEmitTokenError(msg)
-
-    target_stream: IO[str] = sys.stdout if stream is None else stream
-    channels = parse_response_channels(response_plan.text)
-
-    rendered = channels.document or channels.voice
-    target_stream.write(rendered)
-    if not rendered.endswith("\n"):
-        target_stream.write("\n")
-    target_stream.flush()
-
-    return SurfaceState(last_gate_response_hash=None)
-
-
 __all__ = [
     "PreEmitTokenError",
     "ResponseChannels",
@@ -310,5 +247,4 @@ __all__ = [
     "emit_surface_user_intent",
     "parse_response_channels",
     "record_pre_emit_token",
-    "write_output",
 ]

@@ -4,7 +4,7 @@ Per ADR 0001 § Gate contracts + spec § Cross-Layer Invariant 1 (State
 flows through events): every Pre-emit Gate verdict that produces a
 ``ResponsePlan`` must also produce a durable ``gate.evaluated`` event on
 the Event Log. H3.a (``test_pre_emit_required.py``) covers the
-Surface-side runtime check — ``write_output`` rejects stale or missing
+Surface-side runtime check — ``render_response`` rejects stale or missing
 tokens. H3.b is the L3-side companion: AST scan asserts that
 ``_finalize_response`` either directly emits, or invokes a helper that
 emits, at least one ``emit_event(...)`` call where
