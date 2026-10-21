@@ -19,6 +19,7 @@ from jarvis.state import timetable
 from tests.support import gtfs
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 ZONE = ZoneInfo("America/Vancouver")
@@ -214,4 +215,107 @@ def test_a_failed_build_leaves_the_old_store_in_place(tmp_path: Path) -> None:
     with pytest.raises(Exception):  # noqa: B017, PT011 - any broken export refuses the same way.
         timetable.build(zip_path, store)
     assert len(timetable.Timetable(store).trips_of("7", date(2026, 10, 9))) == 4
+    assert not list(tmp_path.glob("*.building"))
+
+
+# --- one builder at a time ----------------------------------------------------------------
+
+
+def _long_export(trips: int) -> gtfs.Export:
+    """One line of 40 stops and ``trips`` trips: a build long enough for builders to overlap."""
+    stops = tuple(
+        gtfs.StopSpec(f"S{i}", f"Stop {i}", 48.5 + i * 0.001, -123.4, f"{10000 + i}")
+        for i in range(40)
+    )
+    runs = tuple(
+        gtfs.TripSpec(
+            f"T{n}", "7", tuple((f"S{i}", f"{8 + n % 12}:{i:02d}:00") for i in range(40)),
+            headsign="Harbour",
+        )
+        for n in range(trips)
+    )
+    return gtfs.Export(stops, runs)
+
+
+def _count_trips(reader: BusLive) -> Callable[[], object]:
+    """What a caller needing the timetable does: take it and count the trips of line 7 on a day."""
+    return lambda: len(reader.table().trips_of("7", date(2026, 10, 9)))
+
+
+def _together(callers: list[Callable[[], object]]) -> list[object]:
+    """Run every caller on a thread of its own, released at one instant; what each returned.
+
+    An exception is returned in place of a result, as the caller would have met it.
+    """
+    start = threading.Barrier(len(callers))
+    found: list[object] = [None] * len(callers)
+
+    def run(slot: int) -> None:
+        start.wait()
+        try:
+            found[slot] = callers[slot]()
+        except BaseException as exc:  # noqa: BLE001 - the failure is the finding.
+            found[slot] = exc
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in range(len(callers))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return found
+
+
+@pytest.mark.parametrize("shared", [True, False], ids=["one reader", "a reader each"])
+def test_callers_that_need_the_first_store_at_once_each_get_it_whole(
+    tmp_path: Path, *, shared: bool,
+) -> None:
+    """Three callers ask for the timetable together before any store exists; each gets all of it.
+
+    They are the daemon's threads (one reader) or two daemons on one folder (a reader each), and
+    nothing half-built stays behind.
+    """
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    gtfs.write(cache / "bctransit-gtfs.zip", _long_export(600))
+    one = BusLive(cache, feed=lambda: b"", download=lambda _p: None)
+    readers = [
+        one if shared else BusLive(cache, feed=lambda: b"", download=lambda _p: None)
+        for _ in range(3)
+    ]
+    assert _together([_count_trips(reader) for reader in readers]) == [600, 600, 600]
+    assert not [p for p in cache.iterdir() if p.suffix in (".building", ".part")]
+
+
+def test_callers_that_find_no_export_at_once_download_it_once(tmp_path: Path) -> None:
+    """The first of three callers downloads the export; the others wait for it and use it."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    downloads: list[Path] = []
+
+    def download(part: Path) -> None:
+        downloads.append(part)
+        gtfs.write(part, _long_export(60))
+
+    readers = [BusLive(cache, feed=lambda: b"", download=download) for _ in range(3)]
+    assert _together([_count_trips(reader) for reader in readers]) == [60, 60, 60]
+    assert len(downloads) == 1
+    assert not [p for p in cache.iterdir() if p.suffix in (".building", ".part")]
+
+
+def test_an_export_that_has_its_store_is_not_indexed_again(tmp_path: Path) -> None:
+    """A second build from the same export leaves the store as it is.
+
+    A file a killed builder left is cleared by the next build, and a new export replaces the store.
+    """
+    zip_path, store = tmp_path / "export.zip", tmp_path / "store.sqlite"
+    gtfs.write(zip_path, _export_with(_trips()))
+    timetable.build(zip_path, store)
+    built = store.stat()
+    (tmp_path / "store.sqlite.1x2y.building").write_bytes(b"half a store")
+    timetable.build(zip_path, store)
+    again = store.stat()
+    assert (again.st_ino, again.st_mtime_ns) == (built.st_ino, built.st_mtime_ns)
+    gtfs.write(zip_path, _export_with(_trips()[:1]))
+    timetable.build(zip_path, store)
+    assert len(timetable.Timetable(store).trips_of("7", date(2026, 10, 9))) == 1
     assert not list(tmp_path.glob("*.building"))
