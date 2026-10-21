@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, time, timedelta, tzinfo
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol
 
 from jarvis.execution import maps_spend, place_reader, places_api, speakable
@@ -88,8 +89,10 @@ class BusTimes(Protocol):
         """The trip a Google bus leg is, with the feed's times, or None."""
         ...
 
-    def following(self, after: Timed, feed: Any = None) -> Timed | None:  # noqa: ANN401
-        """The next trip of the same route, from the same stop, in the same direction."""
+    def following(
+        self, after: Timed, feed: Any = None, not_before_ms: int | None = None,  # noqa: ANN401
+    ) -> Timed | None:
+        """The next trip of the same route, stop and way, leaving by ``not_before_ms`` if given."""
         ...
 
     def last_gone(self, after: Timed, now_ms: int) -> Call | None:
@@ -318,9 +321,15 @@ class _Times:
                 found.append(None)
         return found
 
-    def apply(self, options: list[dict[str, Any]], now: datetime) -> None:
-        """Match every bus leg to its trip and give it its one time; settle each option."""
+    def apply(self, options: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+        """Match every bus leg to its trip and give it its one time; settle each option.
+
+        An option whose later bus leaves a change before the bus before it gets there takes that
+        route's next bus from the change, or is dropped when there is none. Returns the options
+        kept.
+        """
         legs = [leg for o in options for leg in o["legs"]]
+        zone = _zone(now)
         if self._bus is not None and legs:
             pool = ThreadPoolExecutor(max_workers=1)  # a cold first download is left to finish
             try:
@@ -329,12 +338,38 @@ class _Times:
                 found = [None] * len(legs)
             finally:
                 pool.shutdown(wait=False)
-            zone = _zone(now)
             for leg, timed in zip(legs, found, strict=True):
                 if timed is not None:
                     _timed_leg(leg, timed, zone)
-        for option in options:
+        kept = [o for o in options if self._connected(o, zone)]
+        for option in kept:
             _settle(option, now)
+        return kept
+
+    def _connected(self, option: dict[str, Any], zone: tzinfo) -> bool:
+        """Whether each bus of ``option`` leaves its stop after the bus before it gets there.
+
+        A bus that leaves too soon is replaced by its route's next one from that stop, read to
+        the same stop as before; False when the timetable has none.
+        """
+        legs = option["legs"]
+        for before, leg in pairwise(legs):
+            if leg["departs"] >= before["arrives"]:
+                continue
+            nxt = self._catching(leg, int(before["arrives"].timestamp() * 1000))
+            if nxt is None:
+                return False
+            _timed_leg(leg, nxt, zone)
+        return True
+
+    def _catching(self, leg: dict[str, Any], not_before_ms: int) -> Timed | None:
+        """The next trip after the leg's own that leaves by ``not_before_ms``, or None."""
+        if self._bus is None or leg["timed"] is None:
+            return None
+        try:
+            return self._bus.following(leg["timed"], self._snapshot(), not_before_ms)
+        except Exception:  # noqa: BLE001 - without the timetable there is no next bus.
+            return None
 
     def following(self, option: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         """The option for the next trip of this one's route, stop and direction, or None."""
@@ -387,8 +422,7 @@ def _options(
 ) -> list[dict[str, Any]]:
     """Each bus route of Google's answer as an option with its times matched and settled."""
     options = [o for r in answer.get("routes", ()) if (o := _option(r, _zone(now)))]
-    times.apply(options, now)
-    return options
+    return times.apply(options, now)
 
 
 def _ahead(options: list[dict[str, Any]], wanted: str, now: datetime) -> list[dict[str, Any]]:
