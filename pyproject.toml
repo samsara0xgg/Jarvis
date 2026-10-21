@@ -45,6 +45,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-xdist",
     "import-linter",
     "ruff",
     "mypy",

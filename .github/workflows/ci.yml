@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
+# A pull request's newer push replaces its older run. On main every pushed commit
+# finishes its run or waits behind the running one, so a busy hour still ends tested.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   static:
@@ -59,4 +61,4 @@ jobs:
       - name: Install
         run: scripts/ci_install.sh
       - name: Tests
-        run: .venv/bin/pytest tests -m "not live_llm"
+        run: .venv/bin/pytest tests -m "not live_llm" -n auto
