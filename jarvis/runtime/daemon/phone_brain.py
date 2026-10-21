@@ -168,7 +168,8 @@ def build_phone_hub(
     Words it hears over her are judged with the Mac's own hooks (ADR 0216,
     :func:`local_listen_ports`) and ``set_quiet``, the daemon's, which the caller passes in.
     The second value says which log row a device's actor was built at (``None``: it has none),
-    for :func:`phone_ends_watcher`.
+    for :func:`phone_ends_watcher`. The hub is also what the locator asks for a fix over a
+    device's socket and what the whereabouts reads to know a phone is open.
     """
     events = runtime.phone_events
     if events is None:
@@ -198,6 +199,12 @@ def build_phone_hub(
             None if runtime.attachments is None else runtime.attachments.check_for_turn
         ),
     )
+    if runtime.locator is not None:
+        # ADR 0281: a phone with a live conversation socket is asked for a fix over it.
+        runtime.locator.ask_socket = hub.ask_location
+    if runtime.whereabouts is not None:
+        # ADR 0217: a device with its conversation socket open is a phone, and that is said.
+        runtime.whereabouts.phone_open = hub.connected
     return hub, (lambda _device: None) if speech is None else speech.owner_boot
 
 

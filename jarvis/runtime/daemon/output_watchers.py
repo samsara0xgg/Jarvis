@@ -13,7 +13,7 @@ from jarvis.decision.llm import failure_reason
 from jarvis.decision.pre_route import TYPED_CHANNEL
 from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S, WATCHER_RETRY_S
 from jarvis.runtime.phone_voice import UnplayedAnswers
-from jarvis.runtime.tool_status import EVENT_TYPES as _TOOL_STATUS_EVENT_TYPES
+from jarvis.runtime.tool_status import EVENT_TYPES as TOOL_STATUS_EVENT_TYPES
 from jarvis.runtime.tool_status import ToolStatus
 from jarvis.shared import Event, lang
 from jarvis.shared.steps import EVENT_TYPES as STEP_EVENT_TYPES
@@ -406,7 +406,7 @@ async def tool_status_watcher(
         while True:
             try:
                 for row_id, ev in fetch_events_after(
-                    runtime.conn, after_id=after_id, event_types=_TOOL_STATUS_EVENT_TYPES,
+                    runtime.conn, after_id=after_id, event_types=TOOL_STATUS_EVENT_TYPES,
                 ):
                     after_id = max(after_id, row_id)
                     status.feed(ev, time.monotonic())

@@ -154,7 +154,7 @@ def drive_turn_on_own_connection(
 
     ``open_event_log`` uses ``check_same_thread=True``, so the connection has
     to be opened *inside* the worker thread — this mirrors
-    ``inherent_loop._drive_turn_in_worker_thread`` exactly. The registry and
+    ``intent_pump.drive_turn_in_worker_thread`` exactly. The registry and
     the committed-event bus are shared by reference through
     :func:`dataclasses.replace`, which is what lets the cancelling thread see
     the run this one registers.

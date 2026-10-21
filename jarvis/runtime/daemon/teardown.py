@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
+import time
 from typing import TYPE_CHECKING, Final
 
+from jarvis.runtime.daemon.voice_power import shutdown_power_observer
 from jarvis.runtime.turn.cancel import make_response_cancel_callable
 from jarvis.shared.realtime_trace import record_realtime_trace
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
 
+    from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.runtime import JarvisRuntime
-    from jarvis.runtime.daemon.voice_power import VoiceInputOwners
+    from jarvis.runtime.daemon.voice_boot import Voice
+    from jarvis.runtime.daemon.voice_power import VoiceInputOwners, VoicePowerCoordinator
     from jarvis.surface import voice_media, voice_session
 
 LOGGER = logging.getLogger(__name__)
@@ -27,7 +32,22 @@ SHUTDOWN_BUDGET_S: Final[float] = 15.0
 
 # What the stop of a child gets (the codex app-server, the MCP clients) when the budget is
 # already spent by a turn that would not end: a child left running outlives the daemon.
-CHILD_STOP_FLOOR_S: Final[float] = 2.0
+_CHILD_STOP_FLOOR_S: Final[float] = 2.0
+
+
+@dataclasses.dataclass
+class Running:
+    """What the daemon has started, as far as boot got; :func:`shutdown` stops what is set.
+
+    A failed setup is a stopped daemon, not a half-alive one: the voice owners started hold
+    non-daemon threads, and nothing else ends the process. The same teardown runs on a setup
+    failure and on a normal stop; what is not built yet is ``None`` or empty.
+    """
+
+    voice: Voice
+    watchers: list[asyncio.Task[None]] = dataclasses.field(default_factory=list)
+    power_coordinator: VoicePowerCoordinator | None = None
+    power_observer: PowerObserver | None = None
 
 
 def shutdown_tts(
@@ -93,7 +113,7 @@ def request_voice_input_branch_shutdown(
     _request_tts_close(tts_pipe)
 
 
-def leave_unfinished_at_shutdown(
+def _leave_unfinished_at_shutdown(
     runtime: JarvisRuntime, unfinished: Collection[asyncio.Task[None]], *, budget_s: float,
 ) -> None:
     """Record what the shutdown budget ran out on, and close the runs it leaves open.
@@ -118,7 +138,7 @@ def leave_unfinished_at_shutdown(
             cancel(run.response_id, "generation", "shutdown")
 
 
-async def stop_children(runtime: JarvisRuntime, *, timeout_s: float) -> None:
+async def _stop_children(runtime: JarvisRuntime, *, timeout_s: float) -> None:
     """Stop what the daemon started: each stop gets ``timeout_s`` off the loop; log, never raise."""
     stops: list[tuple[str, Callable[[], object]]] = []
     if runtime.workers is not None:
@@ -137,3 +157,49 @@ async def stop_children(runtime: JarvisRuntime, *, timeout_s: float) -> None:
             LOGGER.warning("serve_inherent: %s did not stop in %.1f s; leaving it", name, timeout_s)
         except Exception:
             LOGGER.exception("serve_inherent: stopping %s failed", name)
+
+
+async def shutdown(runtime: JarvisRuntime, running: Running, *, budget_s: float) -> None:
+    """Stop what ``running`` holds, within ``budget_s``; the order is ADR 0006's and 0009's.
+
+    A turn still in a model call at the deadline is left running, its response run cancelled
+    as ``shutdown``, and the children are stopped anyway.
+    """
+    LOGGER.info("serve_inherent: shutting down watchers")
+    deadline = time.monotonic() + budget_s
+    voice = running.voice
+
+    def left() -> float:
+        return max(0.0, deadline - time.monotonic())
+
+    # Power observer FIRST: its closed flag must be set before the
+    # loop starts winding down, so a notification racing this
+    # teardown finds the flag instead of a dead loop. Everything
+    # below (input / TTS / ducker / watcher cancel) is loop-thread
+    # work that would otherwise be racing that notification.
+    shutdown_power_observer(running.power_observer)
+    if running.power_coordinator is not None:
+        running.power_coordinator.close(timeout_s=0.1)
+    # ADR-0006 F14: input is revoked before output.
+    # GPT-Live is billed per second: hang up before the microphone goes away.
+    # The budget follows close_timeout_s and stays under launchd's default
+    # 20 s ExitTimeOut, after which the agent is killed mid-hangup.
+    if voice.live is not None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                voice.live.stop(reason="daemon_shutdown"),
+                timeout=min(voice.live.stop_budget_s, left()),
+            )
+    request_voice_input_branch_shutdown(voice.owners, voice.tts)
+    # Cancel/await watcher ownership before PortAudio teardown. A
+    # provider thread may still exist, but the closed generation owns
+    # no right to write or invoke fallback.
+    for w in running.watchers:
+        w.cancel()
+    if running.watchers:
+        _done, unfinished = await asyncio.wait(running.watchers, timeout=left())
+        if unfinished:
+            _leave_unfinished_at_shutdown(runtime, unfinished, budget_s=budget_s)
+    await _stop_children(runtime, timeout_s=max(left(), _CHILD_STOP_FLOOR_S))
+    shutdown_tts(voice.tts)
+    LOGGER.info("serve_inherent: shutdown complete")

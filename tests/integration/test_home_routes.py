@@ -96,7 +96,7 @@ def _client(
     home: Home, conn: sqlite3.Connection | None = None, view: ViewState | None = None,
     *, ledger: Ledger | None = None,
 ) -> TestClient:
-    """The routes wired the way the daemon wires them (runtime/inherent_loop.py).
+    """The routes wired the way the daemon wires them (runtime/daemon/deps.py).
 
     Today's two read and tick his things, so they are there only with a ``ledger``.
     """
@@ -115,7 +115,7 @@ def _client(
         mail_archive=archive,
         brief_read=None if conn is None else functools.partial(home.brief, conn),
         **today,
-        # ADR 0148: the mail page's routes, wired as inherent_loop wires them.
+        # ADR 0148: the mail page's routes, wired as the daemon's build_deps wires them.
         **({} if view is None else {
             "mail_letter": functools.partial(mail_letter, home),
             "mail_mark_read": _flag(home.mark_read, "unread"),
@@ -826,7 +826,7 @@ def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> N
 
 
 def _drafts_client(gmail: Gmail | None = None) -> tuple[TestClient, ViewState, MailDrafts]:
-    """The mail page's draft routes wired over the real stores, as inherent_loop wires them."""
+    """The mail page's draft routes over the real stores, wired as the daemon's build_deps does."""
     from jarvis.runtime.daemon.routes import draft_view, save_draft  # noqa: PLC0415
 
     view = ViewState()

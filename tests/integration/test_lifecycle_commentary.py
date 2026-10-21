@@ -1961,22 +1961,19 @@ def test_flag_off_event_log_is_what_the_observer_never_touched(
 
 
 def test_the_observer_task_is_created_only_under_the_flag() -> None:
-    """`serve_inherent` names `commentary_watcher` exactly once, under the flag."""
-    tree = ast.parse((repo_root() / "jarvis" / "runtime" / "inherent_loop.py").read_text())
-    serve = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "serve_inherent"
+    """The daemon's background starter names `commentary_watcher` exactly once, under the flag."""
+    tree = ast.parse(
+        (repo_root() / "jarvis" / "runtime" / "daemon" / "background.py").read_text(),
     )
     references = [
         node
-        for node in ast.walk(serve)
+        for node in ast.walk(tree)
         if isinstance(node, ast.Name) and node.id == "commentary_watcher"
     ]
     assert len(references) == 1
     guards = [
         node
-        for node in ast.walk(serve)
+        for node in ast.walk(tree)
         if isinstance(node, ast.If)
         and ast.unparse(node.test) == "runtime.response_flags.lifecycle_commentary"
     ]
