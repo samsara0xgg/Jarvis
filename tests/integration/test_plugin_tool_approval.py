@@ -179,10 +179,12 @@ def _rows(conn: sqlite3.Connection, event_type: str) -> list[dict[str, Any]]:
     ]
 
 
-def _ask(tmp_path: Path, servers: McpServers) -> tuple[DecideContext, _ScriptedClient]:
+def _ask(
+    tmp_path: Path, servers: McpServers, **context: Any,  # noqa: ANN401 — DecideContext fields
+) -> tuple[DecideContext, _ScriptedClient]:
     """Turn 1: the adder is not offered until searched, and calling it asks instead of running."""
     llm = _ScriptedClient()
-    ctx = _context(tmp_path, servers, llm)
+    ctx = dataclasses.replace(_context(tmp_path, servers, llm), **context)
     assert _say(ctx, "用 add 工具算 17 加 25", "T1") == ASK
     first, second = llm.offered
     assert "tool_search" in first
@@ -274,6 +276,28 @@ def test_an_unrelated_turn_leaves_the_card_to_its_button(
             "这张卡已经处理过或被换掉了，没有执行。"  # noqa: RUF001 — the fixed Chinese stale line.
         )
         assert len(_rows(ctx.conn, "action.result_observed")) == 2
+    finally:
+        ctx.conn.close()
+
+
+def test_a_card_pressed_after_its_words_window_still_sends(
+    tmp_path: Path, servers: McpServers
+) -> None:
+    """ADR 0062: ``confirmation.ttl_ms`` bounds only a spoken yes; a card's button never expires."""
+    ctx, llm = _ask(tmp_path, servers, confirmation_ttl_ms=0)  # the words window is shut at the ask
+    try:
+        card = _rows(ctx.conn, "confirmation.requested")[0]["confirmation_id"]
+        assert _say(ctx, "可以", "T2") != "已执行 echo add。"  # the yes is not a button
+        assert _rows(ctx.conn, "confirmation.accepted") == []
+        pressed = _press(ctx, {"confirmation_id": card, "decision": "accept"}, "T3")
+        assert pressed == "已执行 echo add。"
+        assert [r["grammar_rule_id"] for r in _rows(ctx.conn, "confirmation.accepted")] == [
+            "card_button"
+        ]
+        assert json.loads(_rows(ctx.conn, "action.result_observed")[-1]["tool_output"]) == {
+            "sum": 42
+        }
+        assert len(llm.offered) == 3  # only the yes reached the model; the button never does
     finally:
         ctx.conn.close()
 

@@ -20,11 +20,9 @@ Three sections of truth are folded:
   slot for it — the A5 :class:`CancelRequestView`;
 - the single globally unique **confirmation slot** (D14) from
   ``confirmation.requested`` / ``.accepted`` / ``.rejected`` /
-  ``.expired``.  Expiry clears the slot two ways, and both report reason
-  ``expired``: lazily, against the timestamp of the rows folded past the
-  deadline (``PendingConfirmationSlot.is_live`` evaluated at fold time),
-  and durably, from the ``confirmation.expired`` row the D14 terminalizer
-  appends — the one an idle panel with no further traffic depends on.
+  ``.expired``.  The slot has no deadline of its own (ADR 0062: a card waits
+  until it is answered or replaced); only a ``confirmation.expired`` row,
+  which nothing writes since ADR 0047, clears it with reason ``expired``.
 
 Three bounds live here because they bound the *truth kept*, not the bytes
 sent (D16, and D13's "bounded ActionViewProjection"):
@@ -580,11 +578,6 @@ class InherentView:
         and returns None.  So every returned transition is exactly one durable
         envelope.
 
-        The confirmation deadline is judged here, against this row's
-        ``ts_epoch_ms``: the fold has no clock, so the first row folded at or
-        past a live slot's ``expires_at_ms`` clears it, before that row's own
-        changes.
-
         Args:
             cursor: ``events.id`` of the row.
             event_uid: The row's ``event_uid``; becomes the delta's message id.
@@ -606,17 +599,12 @@ class InherentView:
             msg = f"cursor {cursor} does not advance past {self._through_cursor}"
             raise ValueError(msg)
         self._through_cursor = cursor
-        changes: list[ViewChange] = []
-        expiry = self._expire_confirmation(cursor, ts_epoch_ms)
-        if expiry is not None:
-            changes.append(expiry)
         folded = self._fold_row(
             cursor, event_uid, event_type, ts_epoch_ms, payload, source_event_id, correlation,
         )
-        if folded is None and not changes:
+        if folded is None:
             return None
-        changes.extend(folded or ())
-        return ViewTransition(cursor=cursor, event_uid=event_uid, changes=tuple(changes))
+        return ViewTransition(cursor=cursor, event_uid=event_uid, changes=tuple(folded))
 
     # --- row dispatch -------------------------------------------------------
 
@@ -981,13 +969,6 @@ class InherentView:
             return []
         reason: ConfirmationClearReason = _CLEAR_REASON_OF_TYPE[event_type]
         return [self._clear_confirmation(slot, reason, cursor)]
-
-    def _expire_confirmation(self, cursor: int, ts_epoch_ms: int) -> ViewChange | None:
-        """Clear a slot whose deadline this row's timestamp has reached."""
-        slot = self._confirmation
-        if slot is None or ts_epoch_ms < slot.expires_at_ms:
-            return None
-        return self._clear_confirmation(slot, "expired", cursor)
 
     def _clear_confirmation(
         self, slot: ConfirmationView, reason: ConfirmationClearReason, cursor: int,

@@ -658,9 +658,9 @@ class DecideContext:
             ``write_file`` resolution inert the same way ``None`` on
             ``entity_resolver`` does for ``read_file`` — fail-closed,
             not a bug.
-        confirmation_ttl_ms: How long a ``confirmation.requested`` ask
-            stays live before the PendingConfirmations projection
-            judges it expired (ADR-0012 §3 D4/V2), in milliseconds.
+        confirmation_ttl_ms: How long a spoken or typed yes/no can answer
+            a ``confirmation.requested`` ask (ADR 0062; the card itself
+            never expires), in milliseconds.
             Default 10 minutes; the composition root reads
             ``confirmation.ttl_ms`` from ``config/jarvis.yaml``
             (`jarvis.runtime._confirmation_ttl_ms`) so the live burn

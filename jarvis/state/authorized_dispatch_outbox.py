@@ -636,9 +636,8 @@ def _revalidate_confirmation(  # noqa: C901, PLR0912, PLR0915 - fail-closed matr
     ):
         msg = "accepted confirmation is stale, superseded, rejected, or already consumed"
         raise ConfirmationRevalidationError(msg)
-    if now_ms >= slot.expires_at_ms:
-        msg = "confirmation slot expired before dispatch authorization"
-        raise ConfirmationRevalidationError(msg)
+    # No deadline on the slot: its ``expires_at_ms`` bounds only a spoken yes (ADR 0062). The
+    # lease minted at the accept carries the short deadline checked below.
 
     required_lease_fields = {
         "lease_id",

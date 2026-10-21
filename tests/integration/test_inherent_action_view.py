@@ -548,22 +548,16 @@ def test_a_supersede_is_one_delta_clearing_a_before_upserting_b() -> None:
     assert changes[1]["revision"] > 1
 
 
-def test_lazy_expiry_clears_the_slot_on_the_first_row_past_the_deadline() -> None:
-    """D14: the fold has no clock, so the folded row's own timestamp judges it."""
+def test_a_row_past_the_deadline_leaves_the_card_waiting_for_its_button() -> None:
+    """ADR 0062: a card never expires; its deadline bounds only a spoken yes, no row clears it."""
     fold = _Fold()
     deadline = BASE_MS + 5_000
     fold.row("confirmation.requested", _requested("CONF1", expires_at_ms=deadline))
-    before = fold.row("action.proposed", _proposed("A1"), ts_epoch_ms=deadline - 1)
-    changes = fold.changes(
-        "action.proposed", _proposed("A2"), ts_epoch_ms=deadline,
-    )
-    late = fold.changes("confirmation.accepted", _answer("CONF1"), ts_epoch_ms=deadline + 1)
+    changes = fold.changes("action.proposed", _proposed("A2"), ts_epoch_ms=deadline + 1)
+    answered = fold.changes("confirmation.accepted", _answer("CONF1"), ts_epoch_ms=deadline + 2)
 
-    assert before is not None
-    assert [c["kind"] for c in delta_payload(before)["changes"]] == ["action.upsert"]
-    assert [c["kind"] for c in changes] == ["confirmation.cleared", "action.upsert"]
-    assert (changes[0]["reason"], changes[0]["revision"]) == ("expired", 3)
-    assert late == []
+    assert [c["kind"] for c in changes] == ["action.upsert"]
+    assert [(c["kind"], c["reason"]) for c in answered] == [("confirmation.cleared", "accepted")]
 
 
 # --- response lifecycle -------------------------------------------------------
