@@ -1,3 +1,4 @@
+// words: legacy
 import AppIntents
 import Foundation
 #if !WIDGET_EXTENSION

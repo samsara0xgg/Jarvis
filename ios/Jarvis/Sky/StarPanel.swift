@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // The talk panel under the dial. Its bottom edge is fixed above the composer; its top edge has two places: the reading zone (星盘为主, the talk on show over the sky)

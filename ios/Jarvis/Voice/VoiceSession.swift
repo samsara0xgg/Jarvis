@@ -1,3 +1,4 @@
+// words: legacy
 import AVFoundation
 import Observation
 import os

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // 理一下: a capsule in the header's top row, on today, that has the brain tidy the day (`POST /inherent/day/tidy`, ADR 0310). The brain answers when a model has written the doing lane afresh,

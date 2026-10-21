@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // Her side of the talk before she has said a word, and what she did once she has: the typing line, the step she is on, the small line under her answer.

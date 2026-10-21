@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // Her sentence, the overview bar under it and the day's numbers under that: the part of the timeline that follows his finger. It is a view of its own because the minute under a finger

@@ -1,3 +1,4 @@
+// words: legacy
 import CoreLocation
 import Foundation
 import Observation

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What a row of the day does when it is opened, each only where it works today: hand it to her, open the conversation at its time, rename a place he keeps (and take that back) or name

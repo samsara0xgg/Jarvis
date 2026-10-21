@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What he was doing in a stretch of the day, said in his own words (ADR 0302, `POST /inherent/day/answer`). She fills almost all of the day herself and asks him only where she is unsure, so this

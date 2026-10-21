@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // Every frame the phone and the host exchange, and nothing else knows the byte layouts (ADR 0209; jarvis/surface/phone_link.py and phone_player.py on the host).

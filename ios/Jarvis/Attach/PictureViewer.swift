@@ -1,3 +1,4 @@
+// words: legacy
 import UIKit
 
 // A picture he sent, full screen over everything: black, pinch and double-tap to zoom, pan when zoomed, swipe left and right between the pictures of the message,

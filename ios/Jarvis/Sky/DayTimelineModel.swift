@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The whole day as one list for the home screen (Sky/DayTimeline.swift draws it), built from the brain's answer for that day (`DayReply`).

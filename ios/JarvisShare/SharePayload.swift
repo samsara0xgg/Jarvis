@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // What the share sheet hands over and what `POST /inherent/share` takes (docs/spec.html: url, text or attachments, one of them; title only with a url;

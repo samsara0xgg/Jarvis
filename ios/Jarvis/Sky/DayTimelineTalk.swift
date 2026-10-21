@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // A talk on the timeline home happens in her place, over the day: while it is on show her sentence, the bar and the chips give way to the latest round of it (his words, when he spoke

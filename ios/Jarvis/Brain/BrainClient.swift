@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 import Security
 

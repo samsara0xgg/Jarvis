@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // What a talk was about: the first words he said in it, read from the day's records (`GET /inherent/memory/day/{day}/records`, jarvis/state/memory_db.py).

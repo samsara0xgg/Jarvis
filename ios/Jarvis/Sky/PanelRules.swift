@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The talk panel's small decisions that do not need a screen to be checked (spec-2c).

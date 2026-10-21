@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // What he can do to a row of the day on the brain (ADR 0296, jarvis/surface/inherent_server.py): mark an item as what mattered (`POST /inherent/day/highlight`), say that an event his mail

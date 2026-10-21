@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The words of each kind of item as one row of the timeline: what it is called, the muted line under it, what stands at the right, and what opening it says in full. They are the

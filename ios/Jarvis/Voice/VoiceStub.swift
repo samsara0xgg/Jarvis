@@ -1,3 +1,4 @@
+// words: legacy
 import AVFoundation
 
 /// A host that is only this phone: it echoes what he said, in text rows and (for spoken says) in AVSpeechSynthesizer's voice through the same player

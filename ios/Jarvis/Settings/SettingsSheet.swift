@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 /// 设置: content for a standard iOS page sheet. Present it with `.sheet(isPresented:) { SettingsSheet() }`.

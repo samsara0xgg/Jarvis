@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What was important about the day: his star on a row, which he can put on and take off from the open row and from the menu of a long press. The star is on the row at once; the brain is

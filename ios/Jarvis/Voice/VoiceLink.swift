@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The phone's line to the host. The session talks to a VoiceLink; which one is behind it is decided by whether a pairing exists.

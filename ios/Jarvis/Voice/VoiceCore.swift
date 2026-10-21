@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The recognizer's decisions, with no UIKit so a Mac harness can compile and check them (ios/Tools/voice_harness).

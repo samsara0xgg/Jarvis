@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 import Observation
 

@@ -1,3 +1,4 @@
+// words: legacy
 import ActivityKit
 import SwiftUI
 import WidgetKit

@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // What the open talk panel lists: the conversation of record by day, then the talk that is on show and not in the conversation yet.

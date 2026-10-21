@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What a row of the day opens to, on its page (Sky/DayTimelineDetail.swift; the menu of a long press shows it as the row's preview): a place's map and words, what a trip, a ride, an event or a payment says that its line does not, the first lines of a talk, the picture,

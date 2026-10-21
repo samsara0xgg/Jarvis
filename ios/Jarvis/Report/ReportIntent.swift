@@ -1,3 +1,4 @@
+// words: legacy
 import AppIntents
 
 /// What a Shortcuts automation can tell Jarvis. iOS has no public way for an app to see an alarm, and Focus

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // One line of the day's list: the time, the icon in its circle (dashed for what has not happened, a lit star on what mattered), the title with its one muted line, and at the right how long

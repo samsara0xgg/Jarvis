@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 enum SettingsPage: Hashable {

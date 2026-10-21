@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The week as she and the phone know it, and what the phone saw minute by minute.

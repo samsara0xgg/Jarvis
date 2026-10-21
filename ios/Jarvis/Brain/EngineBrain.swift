@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // What the engine does with the brain's days: it changes world when the phone is paired, adopts each answer, and asks for the days on screen.

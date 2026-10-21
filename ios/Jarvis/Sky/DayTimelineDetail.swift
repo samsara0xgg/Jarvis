@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // The page of one row of the day, over the list (Sky/DayTimeline.swift slides it in): a way back with the row's title, under it its hours, how long and where, and then what the row opens to

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // Her cards. Held down on the timeline (0.28 s), or touched and slid off at once (Sky/StarFlow.swift), she puts out a few small tiles in the quarter to her right and below, along an arc,

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What he says of an event his mail made (ADR 0274, 0296): it is his (是我的) or it is not (不是). Either is on the row at once, the brain is told (`POST /inherent/commitments/{hex}`), and the

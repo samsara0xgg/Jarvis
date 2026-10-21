@@ -1,4 +1,4 @@
-# ADR 0325 — The phone words what it shows from one zh/en table, in the language the brain's settings name
+# ADR 0327 — The phone words what it shows from one zh/en table, in the language the brain's settings name
 
 **Status:** Accepted
 **Date:** 2026-10-21
@@ -26,7 +26,7 @@
 Word every fixed string the phone shows from one table of its own, each entry with its zh and
 en side by side, in the language the brain's `language` setting names, else the phone's system
 language; and hold Chinese literals in the app's Swift sources to that table and to the files
-that hold them today, a list that only shrinks.
+that hold them today, whose number only goes down.
 
 - The table is `ios/Jarvis/App/Words.swift` and its `Words+<area>.swift` siblings: each entry a
   typed static or function built from both languages, so a missing language does not compile.
@@ -34,10 +34,12 @@ that hold them today, a list that only shrinks.
 - The language is read from `GET /inherent/language` when the phone is paired, at launch and on
   each return to the foreground, and kept for the next launch; before the first read it is the
   phone's first preferred language (zh when it is Chinese, else en). A change redraws the screen.
-- A canary in the Python suite lists every Swift string literal holding CJK under `ios/Jarvis`, `ios/JarvisWidgets` and `ios/JarvisShare`
-  outside the table and fails on one in a file not on its legacy list, and on a listed file
-  that holds none any more. Code that reads his own words (the recognizer's zh lane, word lists)
-  is listed by file and name, as the brain's matchers are.
+- A canary in the Python suite finds every Swift string literal holding CJK under `ios/Jarvis`,
+  `ios/JarvisWidgets` and `ios/JarvisShare` outside the table. Each other file holding one says
+  why on a line of its own, as ADR 0325 has canaries do: `// words: legacy` (screen words from
+  before the table, a count of such files that only goes down), `// words: his` (code that reads
+  his own words) or `// words: sample` (DEBUG made-up data). A mark on a file with no Chinese
+  literal fails too.
 
 ## Alternatives rejected
 
@@ -59,4 +61,5 @@ that hold them today, a list that only shrinks.
   the two languages.
 - A new Swift file with a Chinese literal turns the Python suite red, which CI runs on every
   push to main; iOS work that lands without running it learns there.
-- Moving a file into the table means taking it off the legacy list in the same commit.
+- Moving a file into the table means deleting its legacy mark and lowering the canary's count in
+  the same commit.

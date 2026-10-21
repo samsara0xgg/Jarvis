@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The item he has open when he talks (ADR 0214): `about` on `POST /inherent/submit` and on the phone's `say` frame of /phone/ws.

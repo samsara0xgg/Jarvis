@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // A place he keeps, under another name (ADR 0234): `POST /inherent/memory/places/{id}` with `{name}`, and taking that change back, `POST /inherent/memory/places/undo` with `{change_id}`.

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What opens when a card the brain waits on is looked at (Brain/Waiting): its words, the fields of an ask card, and the buttons.

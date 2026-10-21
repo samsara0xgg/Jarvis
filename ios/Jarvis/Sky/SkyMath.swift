@@ -1,3 +1,4 @@
+// words: legacy
 import CoreGraphics
 import Foundation
 import QuartzCore

@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // The star of what mattered, where the timeline draws it: his mark is a filled star in warm white, her pick the same star outlined. Here are the shape, the star in the corner of a row's

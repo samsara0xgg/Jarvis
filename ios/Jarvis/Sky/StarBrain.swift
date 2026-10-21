@@ -1,3 +1,4 @@
+// words: legacy
 import UIKit
 
 // What he types and attaches, sent to the brain while the phone is paired (Brain/BrainTalk), and her answer as it lands in the conversation.

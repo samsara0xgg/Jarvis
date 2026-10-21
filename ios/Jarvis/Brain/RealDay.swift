@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The brain's days as the dial's own shapes: items become `Ev` stars, and the places, moves and sleep become the ring you walked.

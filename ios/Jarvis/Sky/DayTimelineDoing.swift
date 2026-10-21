@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 // The day's list as one row for each stretch of what he was doing (the brain's doing lane, ADR 0302; docs in .claude/dispatch/doing-rows-spec.md). The brain cuts the waking day into

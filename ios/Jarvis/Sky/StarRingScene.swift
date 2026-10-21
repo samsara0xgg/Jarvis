@@ -1,3 +1,4 @@
+// words: legacy
 #if DEBUG
 import Foundation
 

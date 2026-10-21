@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // His pictures in the talk (ADR 0255): one picture as a rounded image keeping its shape (up to 220 pt wide, 280 pt high), several as a grid of 110 pt squares, a file as its name.

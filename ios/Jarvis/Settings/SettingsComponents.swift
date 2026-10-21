@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // MARK: - Night palette (the prototype's `--ink --muted --faint --line` and `--set-*`)

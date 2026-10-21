@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // What the day's header says besides her sentence and the bar: after the date, `今天` (or on another day the way back to it) and the day's weather; on the row of the grabber how many

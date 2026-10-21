@@ -1,3 +1,4 @@
+// words: legacy
 import UIKit
 import SwiftUI
 import UserNotifications

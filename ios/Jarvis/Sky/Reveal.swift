@@ -1,3 +1,4 @@
+// words: legacy
 import SwiftUI
 
 // How her words appear in the talk: the whole answer is laid out at once, its line breaks final, and each word fades in (opacity only) when it is said. A spoken answer

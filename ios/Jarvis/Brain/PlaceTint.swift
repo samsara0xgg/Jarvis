@@ -1,3 +1,4 @@
+// words: legacy
 import Foundation
 
 /// Where he was, as the dial writes and tints it: a place he keeps has a name and a hue, the phone's own label is only a dimmer name, and a stay with neither is a neutral haze.

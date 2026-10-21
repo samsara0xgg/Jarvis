@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// The phone's fixed words, zh and en side by side (ADR 0325): `Words.swift` and its `Words+<area>.swift` siblings hold every string a screen shows,
+/// The phone's fixed words, zh and en side by side (ADR 0327): `Words.swift` and its `Words+<area>.swift` siblings hold every string a screen shows,
 /// each entry built by `pick(zh:en:)` so a missing language does not compile, a sentence with values a function of them.
 /// The language is the one the brain's settings name (`GET /inherent/language`), kept for the next launch; before the first answer it is the phone's own.
 /// Screens read it inside `body`, so a change redraws them. Python's canary (`tests/canary/test_canary_cjk_only_in_swift_words_table.py`) keeps Chinese literals out of other files.
