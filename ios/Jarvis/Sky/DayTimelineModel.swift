@@ -52,6 +52,8 @@ struct TLClock {
 /// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view. A row someone can touch is at least 44 high.
 enum TLMetrics {
     static let row = 44.0, rowDetail = 56.0, stay = 44.0, now = 30.0, note = 44.0
+    /// a stop on the footprint page's outing, or the stretch with no fixes: a line inside the outing, not a row to touch
+    static let sub = 34.0
     /// between one group (a place, a run of trips) and the next
     static let gap = 12.0
 }
@@ -117,11 +119,12 @@ enum TLRole: String, CaseIterable {
     }
 }
 
-/// how the rail on the left of the list runs through a row: a place's, as a line in its hue, or a trip's, dashed
+/// how the rail on the left of the list runs through a row: a place's, as a line in its hue, a trip's, dashed, or (the footprint page) a stretch with no fixes, dotted
 enum TLRail: Equatable {
     case none
     case place(RGB)
     case trip
+    case gap
 }
 
 /// where a stay was, for the small map when it is opened, and the place he keeps it is in
@@ -278,6 +281,9 @@ struct TLEntry: Identifiable, Equatable {
     var note: String?               // a stretch: the model's one line about it, the first thing it opens to
     var lines: [TLLine] = []        // a stretch: what is inside it, a line each, in time order
     var knows: String?              // a stretch: how she knows what he was doing, and what she went by
+    var token: Int?                 // a stop of an outing (the footprint page): its number in a ring, in the place of the circle
+    var ribbon: [RGB?] = []         // an outing (the footprint page): its speed along it, left to right, the colour of each slice; none where he stood still or nothing was recorded
+    var tapOnly = false             // a tap opens a page of the screen's own (an outing), so it opens and the long press offers no menu
 
     /// It is an item of the brain's day that his mark can go on: not the line for now, not a stop on the way, not the one row that stands for several sessions of Claude Code, and an id
     /// the brain would take.
@@ -288,6 +294,7 @@ struct TLEntry: Identifiable, Equatable {
         switch kind {
         case .stay: TLMetrics.stay
         case .now: TLMetrics.now
+        case .pause where token != nil || rail == .gap: TLMetrics.sub
         default: hasLine ? TLMetrics.rowDetail : TLMetrics.row
         }
     }
@@ -300,7 +307,7 @@ struct TLEntry: Identifiable, Equatable {
     var opens: Bool {
         switch kind {
         case .now, .pause: false
-        default: kind == .talk || kind == .picture || kind == .segment || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut
+        default: kind == .talk || kind == .picture || kind == .segment || !more.isEmpty || !actions.isEmpty || place != nil || work != nil || sleep != nil || holdsSessions || cut || tapOnly
         }
     }
 }

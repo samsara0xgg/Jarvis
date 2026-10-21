@@ -65,7 +65,7 @@ struct TLRowView: View, Equatable {
     }
 
     /// the circle's size: a place's header has a dot, a stop on the way a smaller one
-    private var beadSize: Double { e.kind == .stay ? 8 : e.kind == .pause ? 7 : TLColumns.bead }
+    private var beadSize: Double { e.kind == .stay ? 8 : e.token != nil ? TLStopToken.size : e.kind == .pause ? 7 : TLColumns.bead }
     /// where the title's line begins: the block of a row is centred in its height
     private var titleTop: Double { e.hasLine ? (e.base - 35) / 2 : (e.base - 18) / 2 }
 
@@ -74,6 +74,9 @@ struct TLRowView: View, Equatable {
             Color.clear.frame(height: e.gap)
             line
                 .frame(height: e.base, alignment: .top)
+                .overlay(alignment: .bottomLeading) {          // an outing's speed along it (the footprint page)
+                    if !e.ribbon.isEmpty { TLRibbon(cells: e.ribbon).frame(width: TLColumns.words, height: TLRibbon.height).padding(.leading, TLColumns.text).padding(.bottom, 6) }
+                }
                 .background { TLRowHeat(id: e.id, tl: tl) }
                 .contentShape(Rectangle())
                 .modifier(TLRowTap(opens: e.opens, tap: tap))
@@ -155,7 +158,11 @@ struct TLRowView: View, Equatable {
 
     /// the circle (white 0.06, the kind's icon in it; dashed and outlined for what has not happened; a lit star on its corner for what mattered); a stop on the way is a small dot
     @ViewBuilder private var bead: some View {
-        if e.kind == .pause {
+        if let n = e.token {
+            TLStopToken(number: n).frame(width: TLColumns.bead, height: TLColumns.bead)
+        } else if e.rail == .gap {
+            Color.clear.frame(width: TLColumns.bead, height: TLColumns.bead)
+        } else if e.kind == .pause {
             Circle().fill(ink.opacity(0.5)).frame(width: 7, height: 7).frame(width: TLColumns.bead, height: TLColumns.bead)
         } else {
             ZStack {
@@ -174,7 +181,13 @@ struct TLRowView: View, Equatable {
     /// A place's rail (2 pt in its hue at 0.35) runs from its dot through the rows that happened there, and a trip's (dashed) through all of a run; each piece stops short of the circle it
     /// passes. A row with no rail in or out has none.
     @ViewBuilder private var rails: some View {
-        if e.rail != .none, e.railIn || e.railOut {
+        if e.rail == .gap {          // a stretch with no fixes: dotted through the whole row
+            VStack(spacing: 0) {
+                Color.clear.frame(height: e.gap)
+                rail.frame(maxHeight: .infinity)
+            }
+            .frame(width: 2).padding(.leading, TLColumns.centre - 1)
+        } else if e.rail != .none, e.railIn || e.railOut {
             let air = 3.0, above = max(0, (e.base - beadSize) / 2 - air)
             VStack(spacing: 0) {
                 Color.clear.frame(height: e.gap)
@@ -190,6 +203,7 @@ struct TLRowView: View, Equatable {
         switch e.rail {
         case .place(let hue): Rectangle().fill(hue.color(0.35)).frame(width: 2)
         case .trip: DashedRail().stroke(tripRail.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [2, 3])).frame(width: 2)
+        case .gap: DashedRail().stroke(FootprintPaint.gap.color(FootprintPaint.gapAlpha), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [0.1, 5])).frame(width: 2)
         case .none: Color.clear
         }
     }
@@ -259,7 +273,7 @@ private struct TLMenu: ViewModifier {
     private var actions: [TLAction] { TLAction.menu.filter { e.actions.contains($0) } }
 
     func body(content: Content) -> some View {
-        if actions.isEmpty && !e.opens {
+        if e.tapOnly || (actions.isEmpty && !e.opens) {
             content
         } else {
             content.contextMenu {

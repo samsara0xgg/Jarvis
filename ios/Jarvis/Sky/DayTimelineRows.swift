@@ -401,7 +401,7 @@ extension DayTimelineModel {
     /// how a ride ended, in plain words
     private static let endings = ["left_vehicle": "下车了", "passed_stop": "过了要下的站，就算到了", "said": "你说了下车", "schedule_end": "这趟车到点了，就算结束", "replaced": "换了另一趟车"]
 
-    private static let moves: [String: (String, String)] = [
+    static let moves: [String: (String, String)] = [
         "walking": ("步行", "figure.walk"), "running": ("跑步", "figure.run"), "cycling": ("骑车", "bicycle"), "automotive": ("开车", "car.fill"),
     ]
 
