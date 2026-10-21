@@ -11,10 +11,6 @@ is a ``test_*`` file: ``from tests.integration.test_x import y``,
 and the relative forms. ``tests/canary/_helpers.py`` and the shared fakes in
 ``tests/integration/`` that are not test files (``weatherkit_world.py``, the
 ``mcp_*_server.py`` stand-ins) are not test files and stay importable.
-
-``KNOWN`` is the migration backlog: each entry is a pair a later pass removes
-once it moves the helper out. An entry that no longer matches an import fails
-the check too, so the list can only shrink.
 """
 
 from __future__ import annotations
@@ -22,31 +18,6 @@ from __future__ import annotations
 import ast
 
 from tests.canary._helpers import parse, relative_to_repo, repo_root
-
-# The migration backlog: (importing file, imported test file) pairs, by file name, that still
-# import across test files because the helper lives in a file another pass is rewriting
-# (job_mail, timesink_activity). That pass moves each helper to ``tests/support/`` and deletes
-# its pairs here.
-KNOWN: frozenset[tuple[str, str]] = frozenset(
-    {
-        # The files being rewritten, which still take their helpers from the files they import.
-        ("test_job_mail", "test_audio_output"),
-        ("test_job_mail", "test_lifecycle_commentary"),
-        # Files that take a helper from one of those: the helper stays where it is until its
-        # file is rewritten, so they cannot import it from tests/support yet.
-        ("test_job_ledger_tool", "test_job_mail"),
-        ("test_terminal_device_views", "test_job_mail"),
-        ("test_timesink_moment", "test_job_mail"),
-        ("test_daily_report", "test_timesink_activity"),
-        ("test_projects", "test_timesink_activity"),
-        ("test_terminal_reads", "test_timesink_activity"),
-        ("test_work_state", "test_timesink_activity"),
-        # Moves that wait on the same files: these helpers import from a file listed above.
-        ("test_terminal_device_views", "test_projects"),
-        ("test_terminal_device_views", "test_timesink_moment"),
-        ("test_work_state_live", "test_work_state"),
-    }
-)
 
 
 def _is_test_module(name: str) -> bool:
@@ -88,14 +59,8 @@ def _violations() -> set[tuple[str, str]]:
 
 def test_no_test_file_imports_another_test_file() -> None:
     """Shared helpers come from ``tests/support/``, never from a ``test_*`` file."""
-    found = _violations()
-    new = sorted(found - KNOWN)
-    assert not new, (
+    found = sorted(_violations())
+    assert not found, (
         "move the helper to tests/support/ and import it from there:\n"
-        + "\n".join(f"  {importer} imports {module}" for importer, module in new)
-    )
-    stale = sorted(KNOWN - found)
-    assert not stale, (
-        "these known exceptions no longer import a test file; delete them from KNOWN:\n"
-        + "\n".join(f"  {importer} imports {module}" for importer, module in stale)
+        + "\n".join(f"  {importer} imports {module}" for importer, module in found)
     )

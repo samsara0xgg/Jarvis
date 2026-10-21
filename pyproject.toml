@@ -130,6 +130,8 @@ ignore = [
 "tests/support/daily_report.py" = ["RUF001"]
 # The helpers moved here from test_doing_run.py, which carries its Chinese strings verbatim.
 "tests/support/doing.py" = ["RUF001"]
+# The projects rig moved here from test_projects.py, with the full-width mark of its fixture.
+"tests/support/projects.py" = ["RUF001"]
 # Tests use bare `assert` (pytest), don't need return-type annotations, and
 # carry magic numbers in assertion targets by design.
 "tests/**/*.py" = [

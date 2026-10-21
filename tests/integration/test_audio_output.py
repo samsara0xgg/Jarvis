@@ -16,32 +16,10 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.runtime import audio_output
+from tests.support.audio_output import BT, BUILTIN, audio_profile, default_output
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-BT = "coreaudio_device_type_bluetooth"
-BUILTIN = "coreaudio_device_type_builtin"
-
-
-def _profile(*items: dict[str, Any]) -> str:
-    return json.dumps({"SPAudioDataType": [{"_items": list(items)}]})
-
-
-def _default(
-    name: str,
-    transport: str,
-    source: str = "spaudio_default",
-    **extra: Any,  # noqa: ANN401
-) -> dict[str, Any]:
-    return {
-        "_name": name,
-        "coreaudio_default_audio_output_device": "spaudio_yes",
-        "coreaudio_device_output": 2,
-        "coreaudio_device_transport": transport,
-        "coreaudio_output_source": source,
-        **extra,
-    }
 
 
 # A default input with the same name as the AirPods, and a speaker that is not the default.
@@ -56,17 +34,17 @@ NOISE: list[dict[str, Any]] = [
 ]
 
 CASES = [
-    ("airpods", _default("Allen's AirPods Pro", BT), True),
-    ("any bluetooth device", _default("JBL Flip", BT), True),
-    ("speakers", _default("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers"), False),
-    ("jack", _default("MacBook Pro Speakers", BUILTIN, "Headphones"), True),
-    ("jack, any case", _default("MacBook Pro Speakers", BUILTIN, "HEADPHONES"), True),
-    ("hdmi display", _default("DELL U2720Q", "coreaudio_device_type_displayport"), False),
-    ("usb speaker", _default("Desk Speaker", "coreaudio_device_type_usb"), False),
-    ("usb headphones by name", _default("USB Headphones", "coreaudio_device_type_usb"), True),
-    ("earbuds by name", _default("Cheap Earbuds", "coreaudio_device_type_usb"), True),
-    ("multi-output", _default("Multi-Output Device", "coreaudio_device_type_unknown"), False),
-    ("aggregate", _default("Aggregate Device", "coreaudio_device_type_virtual"), False),
+    ("airpods", default_output("Allen's AirPods Pro", BT), True),
+    ("any bluetooth device", default_output("JBL Flip", BT), True),
+    ("speakers", default_output("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers"), False),
+    ("jack", default_output("MacBook Pro Speakers", BUILTIN, "Headphones"), True),
+    ("jack, any case", default_output("MacBook Pro Speakers", BUILTIN, "HEADPHONES"), True),
+    ("hdmi display", default_output("DELL U2720Q", "coreaudio_device_type_displayport"), False),
+    ("usb speaker", default_output("Desk Speaker", "coreaudio_device_type_usb"), False),
+    ("usb headphones by name", default_output("USB Headphones", "coreaudio_device_type_usb"), True),
+    ("earbuds by name", default_output("Cheap Earbuds", "coreaudio_device_type_usb"), True),
+    ("multi-output", default_output("Multi-Output Device", "coreaudio_device_type_unknown"), False),
+    ("aggregate", default_output("Aggregate Device", "coreaudio_device_type_virtual"), False),
 ]
 
 
@@ -97,7 +75,7 @@ def test_the_default_output_is_private_only_for_headphone_like_devices(
     private: bool,  # noqa: FBT001
 ) -> None:
     """The device the profile marks as default output, and whether it counts as private."""
-    probe(_profile(*NOISE, item))
+    probe(audio_profile(*NOISE, item))
     out = audio_output.current_output()
     assert out["private"] is private
     assert out["name"] == item["_name"]
@@ -116,7 +94,7 @@ def test_the_default_output_is_private_only_for_headphone_like_devices(
         json.dumps({"SPAudioDataType": None}),
         json.dumps({"SPAudioDataType": [{"_items": [{"_name": "No default"}]}]}),
         json.dumps({"SPAudioDataType": ["junk", 3]}),
-        _profile(*NOISE),  # nothing is the default output
+        audio_profile(*NOISE),  # nothing is the default output
     ],
     ids=[
         "timeout",
@@ -144,7 +122,7 @@ def test_off_the_mac_is_not_private(
     probe: Callable[[Any], None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No other OS has a probe; it is never private."""
-    probe(_profile(_default("Allen's AirPods Pro", BT)))
+    probe(audio_profile(default_output("Allen's AirPods Pro", BT)))
     monkeypatch.setattr(sys, "platform", "linux")
     assert audio_output.current_output()["private"] is False
 
@@ -153,19 +131,21 @@ def test_the_answer_is_cached_for_two_seconds_unless_fresh(
     probe: Callable[[Any], None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A look is reused for two seconds; ``fresh`` always looks again."""
-    probe(_profile(_default("Allen's AirPods Pro", BT)))
+    probe(audio_profile(default_output("Allen's AirPods Pro", BT)))
     assert audio_output.current_output()["private"] is True
-    probe(_profile(_default("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers")))
+    probe(audio_profile(default_output("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers")))
     # probe() clears the cache; take a reading, change the world, read again.
     assert audio_output.current_output()["private"] is False
-    probe(_profile(_default("Allen's AirPods Pro", BT)))
+    probe(audio_profile(default_output("Allen's AirPods Pro", BT)))
     assert audio_output.current_output()["private"] is True
-    monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("X", BUILTIN, "X")))
+    monkeypatch.setattr(
+        audio_output, "_probe", lambda: audio_profile(default_output("X", BUILTIN, "X"))
+    )
     assert audio_output.current_output()["private"] is True  # still the cached look
     assert audio_output.current_output(fresh=True)["private"] is False
     assert audio_output.current_output()["private"] is False  # a fresh look refreshes the cache
     monkeypatch.setattr(time, "monotonic", lambda: 1e9)
-    monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("A", BT)))
+    monkeypatch.setattr(audio_output, "_probe", lambda: audio_profile(default_output("A", BT)))
     assert audio_output.current_output()["private"] is True  # the cache expired
 
 
@@ -198,7 +178,7 @@ def test_an_aggregate_output_is_private_only_when_its_real_parts_are(
     private: bool,  # noqa: FBT001
 ) -> None:
     """Virtual parts are ignored; every remaining part must be private, and at least one exists."""
-    probe(_profile(_default("Multi-Output Device 2", "coreaudio_device_type_unknown")))
+    probe(audio_profile(default_output("Multi-Output Device 2", "coreaudio_device_type_unknown")))
     monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: parts)
     out = audio_output.current_output()
     assert out["private"] is private
@@ -211,7 +191,7 @@ def test_the_expanded_parts_are_logged_only_when_they_change(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """One INFO line per distinct sub-device list, naming each part and its transport."""
-    probe(_profile(_default("Multi-Output Device 2", "coreaudio_device_type_unknown")))
+    probe(audio_profile(default_output("Multi-Output Device 2", "coreaudio_device_type_unknown")))
     monkeypatch.setattr(audio_output, "_last_parts", None)
     parts = [SPEAKERS, RESPEAKER]
     monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: parts)
@@ -231,6 +211,6 @@ def test_a_non_aggregate_default_ignores_the_part_rule(
     probe: Callable[[Any], None], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``None`` from the sub-device reader leaves the profile's own verdict alone."""
-    probe(_profile(_default("Allen's AirPods Pro", BT)))
+    probe(audio_profile(default_output("Allen's AirPods Pro", BT)))
     monkeypatch.setattr(audio_output, "_aggregate_parts", lambda: None)
     assert audio_output.current_output()["private"] is True

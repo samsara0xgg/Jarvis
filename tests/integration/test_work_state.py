@@ -8,7 +8,6 @@ assert on what is persisted and served, not on prose.
 from __future__ import annotations
 
 import asyncio
-import json
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
@@ -18,9 +17,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.decision.llm import ChatResult, ToolCall
-from jarvis.decision.work_state import REPORT_TOOL_NAME, build_request, parse_report
-from jarvis.execution.tools import build_default_registry
+from jarvis.decision.llm import ChatResult
+from jarvis.decision.work_state import build_request, parse_report
 from jarvis.runtime.inherent_loop import _poll_timesink_once
 from jarvis.runtime.work_state import WorkStateService, auto_check
 from jarvis.state import daily_store
@@ -37,8 +35,9 @@ from jarvis.state.work_state import (
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.timesink_observer import TimesinkObserver, latest_observation
-from tests.integration.test_timesink_activity import add_capture, add_span, source
-from tests.support.tool_world import ToolWorld, tool_request
+from tests.support.timesink import add_capture, add_span, source
+from tests.support.tool_world import ToolWorld
+from tests.support.work_state import REPORT, WorkStateRig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -46,129 +45,13 @@ if TYPE_CHECKING:
 
 __all__ = ["source"]
 
-_REPORT: dict[str, Any] = {
-    "now": {"text": "在 Chrome 里看 cc rules 文档", "basis": "observed", "refs": ["s1", "zz9"]},
-    "activities": [
-        {"text": "整理 Jarvis 的规则文件", "basis": "observed", "progress": None, "refs": ["a1"]},
-        {"text": "说过要把待办留在本地", "basis": "stated", "progress": "已决定", "refs": ["r1"]},
-        {"text": "可能在准备发布", "basis": "inferred", "progress": None, "refs": []},
-    ],
-    "links": [
-        {"kind": "todo", "key": "t1", "note": "今天的改动都围绕它", "basis": "inferred"},
-        {"kind": "todo", "key": "t99", "note": "不存在的键", "basis": "inferred"},
-    ],
-    "uncertainties": ["没有 Git 数据"],
-}
-
-
-class CannedAnalyst:
-    """Return one fixed report and count calls; ``fail`` raises like a provider outage."""
-
-    def __init__(self, report: dict[str, Any] | None = None) -> None:
-        self.calls = 0
-        self.fail = False
-        self.report = report or _REPORT
-        self.materials: list[str] = []
-        self.tiers: list[str | None] = []
-        self.started = threading.Event()
-        self.release = threading.Event()
-        self.release.set()
-
-    @property
-    def last_material(self) -> str:
-        return self.materials[-1] if self.materials else ""
-
-    def analyze(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        system: str,
-        messages: list[dict[str, Any]],
-        service_tier: str | None = None,
-    ) -> ChatResult:
-        """Mimic a forced tool call."""
-        del conn, system
-        self.calls += 1
-        self.tiers.append(service_tier)
-        self.materials.append(str(messages[0]["content"]))
-        self.started.set()
-        self.release.wait(timeout=5)
-        if self.fail:
-            msg = "provider down"
-            raise ConnectionError(msg)
-        return ChatResult(
-            text=None,
-            tool_calls=(ToolCall("c1", REPORT_TOOL_NAME, json.dumps(self.report)),),
-            finish_reason="tool_calls",
-            input_tokens=10,
-            output_tokens=10,
-            raw={},
-        )
-
-
-class Rig:
-    """The real registry + log + HTTP app around one service and one canned analyst."""
-
-    def __init__(self, root: Path, *, timesink: Path | None) -> None:
-        """Wire the stores exactly as the composition root does, minus the model."""
-        self.memory = root / "memory.db"
-        self.timesink = timesink
-        with open_memory_db(self.memory):
-            pass
-        self.analyst = CannedAnalyst()
-        self.fx = ToolWorld(root, tools=())
-        self.service = WorkStateService(
-            event_log_path=self.fx.paths.event_log,
-            memory_path=self.memory,
-            timesink_path=timesink,
-            repos=(),
-            analyst=self.analyst,
-            model="canned",
-        )
-        self.tools = build_default_registry(
-            memory_db_path=self.memory,
-            timesink_db_path=timesink,
-            work_state_refresh=lambda args, ctx: self.service.refresh(
-                ctx.conn,
-                question=args.get("question"),
-                note=args.get("note"),
-                force=bool(args.get("force", False)),
-                trigger="conversation",
-                action_id=ctx.action_id,
-            ),
-        ).get_definitions()
-        for tool in self.tools:
-            self.fx.registry.register(tool)
-        self.sequence = 0
-
-    def call(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch through the real dispatcher and decode the persisted output."""
-        self.sequence += 1
-        result = self.fx.dispatch(tool_request(name, f"ws{self.sequence}", arguments=args))
-        assert result.slots[0].tool_output is not None
-        return dict(json.loads(result.slots[0].tool_output))
-
-    def events(self, kind: str) -> list[dict[str, Any]]:
-        """Every persisted event of one type, oldest first."""
-        return [dict(e.payload) for e in iter_events_of_types(self.fx.conn, (kind,))]
-
-    def evidence(self, **kwargs: Any) -> Any:  # noqa: ANN401 — Evidence, forwarded kwargs.
-        """Gather exactly what a refresh would gather."""
-        return gather_evidence(
-            self.fx.conn,
-            memory_path=self.memory,
-            timesink_path=self.timesink,
-            repos=(),
-            **kwargs,
-        )
-
 
 @pytest.fixture
-def rig(tmp_path: Path, source: sqlite3.Connection) -> Iterator[Rig]:
+def rig(tmp_path: Path, source: sqlite3.Connection) -> Iterator[WorkStateRig]:
     """A store with today's data: one span, one capture, one record, one todo."""
     add_span(source, _stamp(-90), _stamp(-60), title="cc | rules")
     add_capture(source, _stamp(-30), _stamp(-5), text="rules for jarvis\nkeep todos local")
-    built = Rig(tmp_path, timesink=tmp_path / "timesink.sqlite")
+    built = WorkStateRig(tmp_path, timesink=tmp_path / "timesink.sqlite")
     append_record(built.memory, record_id="rec-1", source="allen", text="待办就留在本地")
     # ADR 0036 retired the todo tools; work state still reads the local store they wrote.
     daily_store.write_revision(
@@ -187,7 +70,7 @@ def _stamp(minutes_from_now: int) -> str:
     return at.isoformat(sep=" ", timespec="milliseconds").removesuffix("+00:00")
 
 
-def _old_record(rig: Rig, identity: str, days_ago: int, text: str) -> None:
+def _old_record(rig: WorkStateRig, identity: str, days_ago: int, text: str) -> None:
     at = (datetime.now(UTC) - timedelta(days=days_ago)).astimezone().isoformat(timespec="seconds")
     with open_memory_db(rig.memory) as memory:
         memory.execute(
@@ -197,7 +80,7 @@ def _old_record(rig: Rig, identity: str, days_ago: int, text: str) -> None:
         memory.commit()
 
 
-def test_refresh_persists_a_sourced_versioned_record(rig: Rig) -> None:
+def test_refresh_persists_a_sourced_versioned_record(rig: WorkStateRig) -> None:
     """The record carries basis per claim, only real refs, and survives a fresh connection."""
     view = rig.call("refresh_work_state", {"question": "我现在在做什么"})
     assert view["outcome"] == "analyzed"
@@ -241,7 +124,9 @@ def test_refresh_persists_a_sourced_versioned_record(rig: Rig) -> None:
     assert view["freshness"]["latest_observed_at"] is not None
 
 
-def test_reuse_needs_same_input_and_same_evidence(rig: Rig, source: sqlite3.Connection) -> None:
+def test_reuse_needs_same_input_and_same_evidence(
+    rig: WorkStateRig, source: sqlite3.Connection
+) -> None:
     """Repeated identical asks are free; a new question, note, row or force is a new analysis."""
     rig.call("refresh_work_state", {"question": "今天做了什么"})
     assert rig.analyst.calls == 1
@@ -271,7 +156,7 @@ def test_reuse_needs_same_input_and_same_evidence(rig: Rig, source: sqlite3.Conn
 
 
 def test_question_directs_retrieval_beyond_the_default_window(
-    rig: Rig, source: sqlite3.Connection
+    rig: WorkStateRig, source: sqlite3.Connection
 ) -> None:
     """Older records and captures come in only when the question names them; keys stay valid."""
     _old_record(rig, "rec-old", 10, "Typlus 的 notarize 下周再弄")
@@ -298,7 +183,7 @@ def test_question_directs_retrieval_beyond_the_default_window(
     ]
 
 
-def test_material_limits_are_explicit(rig: Rig, source: sqlite3.Connection) -> None:
+def test_material_limits_are_explicit(rig: WorkStateRig, source: sqlite3.Connection) -> None:
     """Truncation is stated in the material and the record instead of reading as inactivity."""
     for index in range(35):
         add_capture(source, _stamp(-100 + index * 2), _stamp(-99 + index * 2), text=f"page {index}")
@@ -310,7 +195,9 @@ def test_material_limits_are_explicit(rig: Rig, source: sqlite3.Connection) -> N
     assert "只保留最新的 30 条" in rig.analyst.last_material
 
 
-def test_basis_rules_are_enforced_programmatically(rig: Rig, source: sqlite3.Connection) -> None:
+def test_basis_rules_are_enforced_programmatically(
+    rig: WorkStateRig, source: sqlite3.Connection
+) -> None:
     """Stated needs a record/note, observed needs TimeSink data, inferred forces an uncertainty."""
     rig.analyst.report = {
         "now": {"text": "在写代码", "basis": "observed", "refs": ["s1"]},
@@ -336,7 +223,7 @@ def test_basis_rules_are_enforced_programmatically(rig: Rig, source: sqlite3.Con
     assert noted["state"]["now"] is None
 
 
-def test_failure_keeps_previous_record(rig: Rig, source: sqlite3.Connection) -> None:
+def test_failure_keeps_previous_record(rig: WorkStateRig, source: sqlite3.Connection) -> None:
     """A provider error, an unusable reply or a stale writer never replaces the saved state."""
     rig.call("refresh_work_state", {})
     add_capture(source, _stamp(-3), _stamp(-1), text="new window content")
@@ -362,7 +249,7 @@ def test_failure_keeps_previous_record(rig: Rig, source: sqlite3.Connection) -> 
 
 def test_no_data_is_unknown_not_invented(tmp_path: Path) -> None:
     """Without TimeSink, records or notes the model is never asked and nothing is written."""
-    built = Rig(tmp_path, timesink=tmp_path / "missing.sqlite")
+    built = WorkStateRig(tmp_path, timesink=tmp_path / "missing.sqlite")
     try:
         view = built.call("refresh_work_state", {"question": "我在做什么"})
         assert view["outcome"] == "no_evidence"
@@ -379,7 +266,7 @@ def test_no_data_is_unknown_not_invented(tmp_path: Path) -> None:
         built.fx.close()
 
 
-def test_windows_follow_the_configured_zone(rig: Rig) -> None:
+def test_windows_follow_the_configured_zone(rig: WorkStateRig) -> None:
     """Today starts at local midnight in the configured zone, not the process zone."""
     zone = ZoneInfo("Asia/Shanghai")
     evidence = rig.evidence(tz=zone, now=datetime(2026, 9, 21, 3, 30, tzinfo=UTC))
@@ -387,7 +274,9 @@ def test_windows_follow_the_configured_zone(rig: Rig) -> None:
     assert evidence.window["recent_from"] == "2026-09-21T09:30:00+08:00"
 
 
-def _concurrent(rig: Rig, first: dict[str, Any], second: dict[str, Any]) -> list[dict[str, Any]]:
+def _concurrent(
+    rig: WorkStateRig, first: dict[str, Any], second: dict[str, Any]
+) -> list[dict[str, Any]]:
     class WaitingCondition(threading.Condition):
         def wait(self, timeout: float | None = None) -> bool:
             waiting.set()
@@ -417,7 +306,7 @@ def _concurrent(rig: Rig, first: dict[str, Any], second: dict[str, Any]) -> list
     return results
 
 
-def test_same_input_joins_the_running_analysis(rig: Rig) -> None:
+def test_same_input_joins_the_running_analysis(rig: WorkStateRig) -> None:
     """Two identical triggers at once (dashboard + dashboard) run one analysis, see one version."""
     results = _concurrent(rig, {"trigger": "dashboard"}, {"trigger": "dashboard"})
     assert rig.analyst.calls == 1
@@ -426,7 +315,7 @@ def test_same_input_joins_the_running_analysis(rig: Rig) -> None:
     assert len(rig.events("work_state.revised")) == 1
 
 
-def test_different_question_during_analysis_is_answered_separately(rig: Rig) -> None:
+def test_different_question_during_analysis_is_answered_separately(rig: WorkStateRig) -> None:
     """A new question or fact arriving mid-analysis waits, then gets its own analysis."""
     results = _concurrent(
         rig,
@@ -440,7 +329,7 @@ def test_different_question_during_analysis_is_answered_separately(rig: Rig) -> 
     assert current_state(rig.fx.conn)["question"] == "之前说的 TimeSink 进展如何"  # type: ignore[index]
 
 
-def test_http_routes_share_the_service(rig: Rig) -> None:
+def test_http_routes_share_the_service(rig: WorkStateRig) -> None:
     """GET never analyses; POST answers the same shape with an outcome."""
 
     async def refresh() -> dict[str, Any]:
@@ -534,7 +423,7 @@ def test_head_poll_emits_only_on_change(tmp_path: Path, source: sqlite3.Connecti
         fx.close()
 
 
-def test_request_and_parse_round_trip(rig: Rig) -> None:
+def test_request_and_parse_round_trip(rig: WorkStateRig) -> None:
     """The material is keyed and bounded; the reply parser validates shapes before saving."""
     evidence = rig.evidence(question="进展如何")
     system, messages = build_request(evidence, question="进展如何", previous=None)
@@ -552,7 +441,9 @@ def test_request_and_parse_round_trip(rig: Rig) -> None:
     assert parse_report(text_only)["uncertainties"] == ["无"]
 
 
-def test_lock_and_updated_rows_invalidate_reuse(rig: Rig, source: sqlite3.Connection) -> None:
+def test_lock_and_updated_rows_invalidate_reuse(
+    rig: WorkStateRig, source: sqlite3.Connection
+) -> None:
     """A refresh after lock or a row revision must not claim its old evidence is current."""
     first = rig.call("refresh_work_state", {})
     old_ref = first["state"]["now"]["refs"][0]
@@ -572,7 +463,7 @@ def test_lock_and_updated_rows_invalidate_reuse(rig: Rig, source: sqlite3.Connec
     assert rig.call("refresh_work_state", {})["outcome"] == "analyzed"
 
 
-def test_assistant_records_are_not_allen_statements(rig: Rig) -> None:
+def test_assistant_records_are_not_allen_statements(rig: WorkStateRig) -> None:
     """A valid record reference alone does not establish that Allen said something."""
     append_record(rig.memory, record_id="advice", source="jarvis", text="建议下周发布")
     evidence = rig.evidence()
@@ -604,7 +495,7 @@ def test_assistant_records_are_not_allen_statements(rig: Rig) -> None:
         {"now": None, "activities": [], "links": [], "uncertainties": [123]},
     ],
 )
-def test_malformed_report_preserves_the_last_state(rig: Rig, bad: dict[str, Any]) -> None:
+def test_malformed_report_preserves_the_last_state(rig: WorkStateRig, bad: dict[str, Any]) -> None:
     """Malformed reports are failures, not successful empty replacement documents."""
     saved = rig.call("refresh_work_state", {})["state"]
     rig.analyst.report = bad
@@ -614,7 +505,9 @@ def test_malformed_report_preserves_the_last_state(rig: Rig, bad: dict[str, Any]
     assert len(rig.events("work_state.revised")) == 1
 
 
-def test_finished_request_returns_its_own_result(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_finished_request_returns_its_own_result(
+    rig: WorkStateRig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """B can finish before A sends its response, but A still receives A's saved analysis."""
     original = rig.service._view  # noqa: SLF001 — pause only response delivery, not analysis.
     a_ready, b_done = threading.Event(), threading.Event()
@@ -655,7 +548,7 @@ def test_finished_request_returns_its_own_result(rig: Rig, monkeypatch: pytest.M
 
 
 def test_unchanged_poll_updates_check_clock_without_model(
-    rig: Rig, monkeypatch: pytest.MonkeyPatch
+    rig: WorkStateRig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Polling unchanged data advances checked_at without events or analysis calls."""
     observer = TimesinkObserver(rig.fx.conn, rig.timesink)
@@ -671,7 +564,7 @@ def test_unchanged_poll_updates_check_clock_without_model(
     assert rig.analyst.calls == 0
 
 
-def test_now_uses_the_cited_capture_time(rig: Rig, source: sqlite3.Connection) -> None:
+def test_now_uses_the_cited_capture_time(rig: WorkStateRig, source: sqlite3.Connection) -> None:
     """A newer unrelated app span cannot make an older screen claim appear current."""
     add_span(source, _stamp(-2), _stamp(-1), title="different app activity")
     state = rig.call("refresh_work_state", {})["state"]
@@ -679,7 +572,7 @@ def test_now_uses_the_cited_capture_time(rig: Rig, source: sqlite3.Connection) -
         state["observed_until"]
     )
     evidence = rig.evidence()
-    report = {**_REPORT, "now": {"text": "未知来源", "basis": "observed", "refs": ["a1"]}}
+    report = {**REPORT, "now": {"text": "未知来源", "basis": "observed", "refs": ["a1"]}}
     assert compose_state(report, evidence, question=None, model="test")["now"] is None
 
 
@@ -688,7 +581,10 @@ class _Moment:
 
     def __init__(self, **facts: str) -> None:
         self.facts_now = {
-            "read": "ok", "presence": "active", "front_app": "Chrome", "site_domain": "a.example",
+            "read": "ok",
+            "presence": "active",
+            "front_app": "Chrome",
+            "site_domain": "a.example",
             **facts,
         }
 
@@ -696,7 +592,7 @@ class _Moment:
         return self.facts_now
 
 
-def _auto(rig: Rig, moment: _Moment, last: Any, now: float) -> Any:  # noqa: ANN401 — the last-run token.
+def _auto(rig: WorkStateRig, moment: _Moment, last: Any, now: float) -> Any:  # noqa: ANN401 — the last-run token.
     return asyncio.run(auto_check(rig.service, moment, last, now, 1800.0))  # type: ignore[arg-type]
 
 
@@ -704,7 +600,9 @@ def _auto(rig: Rig, moment: _Moment, last: Any, now: float) -> Any:  # noqa: ANN
     "facts",
     [{"presence": "idle"}, {"presence": "locked"}, {"presence": "unknown"}, {"read": "unknown"}],
 )
-def test_auto_refresh_never_runs_while_away_or_unknown(rig: Rig, facts: dict[str, str]) -> None:
+def test_auto_refresh_never_runs_while_away_or_unknown(
+    rig: WorkStateRig, facts: dict[str, str]
+) -> None:
     """ADR 0180: only a readable moment with Allen present can start a background run."""
     assert _auto(rig, _Moment(**facts), None, 0.0) is None
     assert rig.analyst.calls == 0
@@ -712,7 +610,7 @@ def test_auto_refresh_never_runs_while_away_or_unknown(rig: Rig, facts: dict[str
 
 
 def test_auto_refresh_runs_on_change_or_after_30_minutes(
-    rig: Rig, source: sqlite3.Connection
+    rig: WorkStateRig, source: sqlite3.Connection
 ) -> None:
     """ADR 0180: the first check runs with trigger auto; the same app and site waits 30 minutes."""
     moment = _Moment()

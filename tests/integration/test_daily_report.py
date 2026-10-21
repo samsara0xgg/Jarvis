@@ -48,7 +48,6 @@ from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_report import gather_day, resolve_day, resolve_zone, save_report
 from jarvis.state.event_log import emit_event
 from jarvis.state.memory_db import append_record, open_memory_db
-from tests.integration.test_timesink_activity import add_capture, add_span, source
 from tests.support.daily_report import (
     DAY,
     JUDGE,
@@ -64,6 +63,7 @@ from tests.support.daily_report import (
     report_of_items,
     whole_item,
 )
+from tests.support.timesink import add_capture, add_span, source
 from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:

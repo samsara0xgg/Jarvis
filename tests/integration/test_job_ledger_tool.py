@@ -11,16 +11,19 @@ from jarvis.execution.job_ledger_tool import MAX_APPLICATIONS, build_job_ledger_
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry
 from jarvis.runtime import _job_mail, _register_job_ledger
 from jarvis.shared import CallerPrincipal
-from tests.integration.test_job_mail import (  # noqa: F401 - the fixtures and harness of its sibling
-    _harness,
-    _zh,
-    jev,
+from tests.support import job_mail as job_mail_support
+from tests.support.job_mail import (
+    fixed_zh_words,  # noqa: F401 - autouse, found by name
+    job_harness,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.integration.test_job_mail import _Jev
+    from tests.support.job_mail import JobJev
+
+jev = job_mail_support.jev  # the fixture, found by name in this module
+
 
 _CTX = cast("ToolContext", None)
 
@@ -127,9 +130,9 @@ def test_the_result_is_capped_in_rows_and_fits_the_dispatch_limit() -> None:
     assert empty == {"applications": [], "total": 0, "truncated": False, "held_back_mails": 0}
 
 
-def test_it_reads_the_ledger_the_dashboard_serves(tmp_path: Path, jev: _Jev) -> None:  # noqa: F811
+def test_it_reads_the_ledger_the_dashboard_serves(tmp_path: Path, jev: JobJev) -> None:
     """Wired to ``JobMail.ledger`` (what ``GET /inherent/jobs`` serves), one row per its group."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     served = h.client.get("/inherent/jobs").json()
     assert served["ledger"]

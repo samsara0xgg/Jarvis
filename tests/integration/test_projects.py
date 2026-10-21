@@ -7,194 +7,33 @@ so the checks assert on the persisted answers and the served view.
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
 import threading
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from jarvis.decision.llm import ChatResult, ToolCall
-from jarvis.decision.projects import ASSIGN_TOOL_NAME
 from jarvis.runtime import _load_full_config
 from jarvis.runtime.projects import ProjectsService
-from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.state.projects import Project, parse_catalog
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.integration.test_timesink_activity import source
+from tests.support import projects as projects_support
+from tests.support.projects import NOW, SHORT, ZONE, ProjectsRig, project_of, span
+from tests.support.timesink import source
 
 if TYPE_CHECKING:
     import sqlite3
 
+rig = projects_support.rig  # the fixture, found by name in this module
+
+
 __all__ = ["source"]
 
-ZONE = ZoneInfo("America/Vancouver")
-NOW = datetime(2026, 9, 23, 18, 0, tzinfo=ZONE)
-_SHORT = re.compile(r"^\[(a\d+)\] (.*)$", re.MULTILINE)
 
-
-def _stamp(local: str) -> str:
-    """A local wall-clock instant in TimeSink's stored form (UTC, milliseconds, no suffix)."""
-    at = datetime.fromisoformat(local).replace(tzinfo=ZONE).astimezone(UTC)
-    return at.isoformat(sep=" ", timespec="milliseconds").removesuffix("+00:00")
-
-
-def _span(  # noqa: PLR0913 — the columns TimeSink writes.
-    conn: sqlite3.Connection,
-    start: str,
-    end: str,
-    *,
-    bundle: str,
-    name: str,
-    title: str | None = None,
-    document: str | None = None,
-    domain: str | None = None,
-) -> None:
-    conn.execute(
-        "INSERT INTO span(start,end,appBundleID,appName,title,url,domain,document) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        (_stamp(start), _stamp(end), bundle, name, title, None, domain, document),
-    )
-    conn.commit()
-
-
-def _commit(repo: Path, local: str, subject: str) -> None:
-    stamp = datetime.fromisoformat(local).replace(tzinfo=ZONE).isoformat()
-    env = {"GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp, "PATH": "/usr/bin:/bin"}
-    subprocess.run(  # noqa: S603 — fixed argv on a temp repository.
-        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit",  # noqa: S607
-         "--allow-empty", "-q", "-m", subject],
-        check=True,
-        env=env,
-    )
-
-
-class ScriptedSorter:
-    """Answers by label like a model would; counts calls and keeps each request's material."""
-
-    RULES = (("COOP", "job-search"), ("jarvis full audit", "jarvis"))
-
-    def __init__(self) -> None:
-        self.calls = 0
-        self.materials: list[str] = []
-        self.reply: dict[str, Any] | None = None
-        self.malformed_from: int | None = None
-        self.fail = False
-        self.started = threading.Event()
-        self.release = threading.Event()
-        self.release.set()
-
-    def analyze(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        system: str,
-        messages: list[dict[str, Any]],
-        tools: Any = None,  # noqa: ANN401 — the forced tool catalog.
-    ) -> ChatResult:
-        """Mimic one forced assign_projects call."""
-        del conn, system
-        assert [t["name"] for t in tools] == [ASSIGN_TOOL_NAME]
-        self.calls += 1
-        material = str(messages[0]["content"])
-        self.materials.append(material)
-        self.started.set()
-        self.release.wait(timeout=5)
-        if self.fail:
-            msg = "provider down"
-            raise ConnectionError(msg)
-        groups: dict[str, list[str]] = {}
-        for short, line in _SHORT.findall(material):
-            project = next((pid for word, pid in self.RULES if word in line), "none")
-            groups.setdefault(project, []).append(short)
-        reply = self.reply or {"groups": [{"project": p, "keys": k} for p, k in groups.items()]}
-        if self.malformed_from is not None and self.calls >= self.malformed_from:
-            reply = {"groups": "not a list"}
-        return ChatResult(
-            text=None,
-            tool_calls=(ToolCall("c1", ASSIGN_TOOL_NAME, json.dumps(reply)),),
-            finish_reason="tool_calls",
-            input_tokens=10,
-            output_tokens=10,
-            raw={},
-        )
-
-
-class Rig:
-    """One service over a temp event log, the TimeSink fixture and a real git repository."""
-
-    def __init__(self, root: Path, timesink: Path) -> None:
-        """Seed the repository and wire the service exactly as the composition root does."""
-        self.log = root / "events.sqlite"
-        open_event_log(self.log).close()
-        self.repo = root / "jarvis-repo"
-        git = ["git", "-C", str(self.repo)]
-        subprocess.run([*git[:1], "init", "-q", "-b", "main", str(self.repo)], check=True)  # noqa: S603
-        _commit(self.repo, "2026-09-10T12:00:00", "old work")
-        _commit(self.repo, "2026-09-21T16:00:00", "feat: audit")
-        subprocess.run([*git, "switch", "-q", "-c", "feature"], check=True)  # noqa: S603
-        _commit(self.repo, "2026-09-23T09:00:00", "wip: feature")
-        self.timesink = timesink
-        self.sorter = ScriptedSorter()
-        self.service = self.build()
-
-    def build(self, *, hints: str = "co-op", reverse: bool = False) -> ProjectsService:
-        """A service over this rig's stores; ``hints`` changes the catalog fingerprint."""
-        catalog = (
-            Project("job-search", "求职", (), hints),
-            Project("jarvis", "Jarvis", (str(self.repo),), "Jarvis runtime"),
-            Project("school", "学业", (), "UVic"),
-        )
-        return ProjectsService(
-            event_log_path=self.log,
-            timesink_path=self.timesink,
-            projects=catalog[::-1] if reverse else catalog,
-            sorter=self.sorter,
-            model="scripted",
-            tz=ZONE,
-            clock=lambda: NOW,
-        )
-
-    def events(self) -> list[dict[str, Any]]:
-        """Every persisted sorting answer, oldest first."""
-        conn = open_event_log(self.log)
-        try:
-            kinds = ("project.activity_classified",)
-            return [dict(e.payload) for e in iter_events_of_types(conn, kinds)]
-        finally:
-            conn.close()
-
-
-@pytest.fixture
-def rig(tmp_path: Path, source: sqlite3.Connection) -> Rig:
-    """A week with a chat, a terminal session, a new tab, and spans at both window edges."""
-    chat = {"bundle": "com.openai.chat", "name": "ChatGPT", "title": "ChatGPT"}
-    chat["document"] = "COOP！"
-    term = {"bundle": "com.mitchellh.ghostty", "name": "Ghostty", "title": "cc | jarvis full audit"}
-    _span(source, "2026-09-22T23:50:00", "2026-09-23T00:10:00", **chat)  # crosses midnight
-    _span(source, "2026-09-23T10:00:00", "2026-09-23T10:30:00", **chat)
-    _span(source, "2026-09-16T23:30:00", "2026-09-17T00:30:00", **term)  # half before the window
-    _span(source, "2026-09-21T14:00:00", "2026-09-21T15:00:00", **term)
-    _span(source, "2026-09-10T09:00:00", "2026-09-10T10:00:00", **term)  # outside the window
-    _span(
-        source, "2026-09-23T11:00:00", "2026-09-23T11:05:00",
-        bundle="com.google.Chrome", name="Google Chrome", title="New Tab", domain="newtab",
-    )
-    return Rig(tmp_path, tmp_path / "timesink.sqlite")
-
-
-def _project(view: dict[str, Any], pid: str) -> dict[str, Any]:
-    return next(p for p in view["projects"] if p["id"] == pid)
-
-
-def test_sorting_saves_answers_and_the_view_is_derived(rig: Rig) -> None:
+def test_sorting_saves_answers_and_the_view_is_derived(rig: ProjectsRig) -> None:
     before = rig.service.read()
     week = [1800, 0, 0, 0, 3600, 600, 2700]
     assert before["unsorted"] == {"seconds": 3000 + 5400 + 300, "days": week, "count": 3}
@@ -213,7 +52,7 @@ def test_sorting_saves_answers_and_the_view_is_derived(rig: Rig) -> None:
         ("cc | jarvis full audit", "jarvis"),
     ]
     assert view["days"] == [f"2026-09-{d}" for d in range(17, 24)]
-    job, jarvis, school = (_project(view, p) for p in ("job-search", "jarvis", "school"))
+    job, jarvis, school = (project_of(view, p) for p in ("job-search", "jarvis", "school"))
     assert (job["seconds"], job["today_seconds"]) == (3000, 2400)
     assert job["days"] == [0, 0, 0, 0, 0, 600, 2400]  # the midnight span is split
     assert (jarvis["seconds"], jarvis["days"]) == (5400, [1800, 0, 0, 0, 3600, 0, 0])
@@ -241,29 +80,29 @@ def test_sorting_saves_answers_and_the_view_is_derived(rig: Rig) -> None:
     assert rig.service.read()["projects"] == view["projects"]
 
 
-def test_only_new_activities_reach_the_model(rig: Rig, source: sqlite3.Connection) -> None:
+def test_only_new_activities_reach_the_model(rig: ProjectsRig, source: sqlite3.Connection) -> None:
     rig.service.refresh()
     again = rig.service.refresh()
     assert again["outcome"] == "reused"
     assert rig.sorter.calls == 1
     assert len(rig.events()) == 1
 
-    _span(
+    span(
         source, "2026-09-23T12:00:00", "2026-09-23T12:20:00",
         bundle="com.openai.chat", name="ChatGPT", title="ChatGPT", document="准备这份工作的简历",
     )
-    _span(source, "2026-09-23T13:00:00", "2026-09-23T13:10:00",
+    span(source, "2026-09-23T13:00:00", "2026-09-23T13:10:00",
           bundle="com.openai.chat", name="ChatGPT", title="ChatGPT", document="COOP！")
     view = rig.service.refresh()
     assert view["outcome"] == "classified"
     assert rig.sorter.calls == 2
     assert "准备这份工作的简历" in rig.sorter.materials[-1]
     assert "COOP" not in rig.sorter.materials[-1]  # already answered, extended time only
-    assert _project(view, "job-search")["seconds"] == 3000 + 600
+    assert project_of(view, "job-search")["seconds"] == 3000 + 600
     assert view["other"]["seconds"] == 300 + 1200
 
 
-def test_editing_the_catalog_sorts_everything_again(rig: Rig) -> None:
+def test_editing_the_catalog_sorts_everything_again(rig: ProjectsRig) -> None:
     rig.service.refresh()
     assert rig.build(reverse=True).read()["unsorted"]["count"] == 0  # reordering is not an edit
     edited = rig.build(hints="co-op, internships, resumes")
@@ -271,7 +110,7 @@ def test_editing_the_catalog_sorts_everything_again(rig: Rig) -> None:
     assert edited.refresh()["outcome"] == "classified"
     assert rig.sorter.calls == 2
     # The old catalog's answers still stand for a service built on it.
-    assert _project(rig.service.read(), "job-search")["seconds"] == 3000
+    assert project_of(rig.service.read(), "job-search")["seconds"] == 3000
 
 
 @pytest.mark.parametrize(
@@ -289,7 +128,7 @@ def test_editing_the_catalog_sorts_everything_again(rig: Rig) -> None:
     ],
 )
 def test_unknown_ids_and_keys_are_dropped(
-    rig: Rig, reply: dict[str, Any], sorted_count: int
+    rig: ProjectsRig, reply: dict[str, Any], sorted_count: int
 ) -> None:
     rig.sorter.reply = reply
     view = rig.service.refresh()
@@ -301,7 +140,7 @@ def test_unknown_ids_and_keys_are_dropped(
 @pytest.mark.parametrize(
     "bad", [{"groups": "jarvis"}, {"assignments": []}, {"groups": [{"project": "none"}]}]
 )
-def test_a_malformed_reply_saves_nothing(rig: Rig, bad: dict[str, Any]) -> None:
+def test_a_malformed_reply_saves_nothing(rig: ProjectsRig, bad: dict[str, Any]) -> None:
     rig.sorter.reply = bad
     view = rig.service.refresh()
     assert view["outcome"] == "failed"
@@ -311,11 +150,11 @@ def test_a_malformed_reply_saves_nothing(rig: Rig, bad: dict[str, Any]) -> None:
 
 
 def test_a_later_batch_failing_keeps_the_earlier_ones(
-    rig: Rig, source: sqlite3.Connection
+    rig: ProjectsRig, source: sqlite3.Connection
 ) -> None:
     for n in range(305):  # 308 activities: one batch of 300, then 8
         minute = f"{n // 60 + 1:02d}:{n % 60:02d}"
-        _span(
+        span(
             source, f"2026-09-20T{minute}:00", f"2026-09-20T{minute}:59",
             bundle="com.google.Chrome", name="Google Chrome", title=f"page {n}",
         )
@@ -329,11 +168,11 @@ def test_a_later_batch_failing_keeps_the_earlier_ones(
     rig.sorter.malformed_from = None
     done = rig.service.refresh()
     assert done["outcome"] == "classified"
-    assert len(_SHORT.findall(rig.sorter.materials[-1])) == 8  # only the leftovers
+    assert len(SHORT.findall(rig.sorter.materials[-1])) == 8  # only the leftovers
     assert done["unsorted"]["count"] == 0
 
 
-def test_provider_failure_and_missing_store(rig: Rig, tmp_path: Path) -> None:
+def test_provider_failure_and_missing_store(rig: ProjectsRig, tmp_path: Path) -> None:
     rig.sorter.fail = True
     failed = rig.service.refresh()
     assert failed["outcome"] == "failed"
@@ -350,7 +189,7 @@ def test_provider_failure_and_missing_store(rig: Rig, tmp_path: Path) -> None:
     assert view["projects"][0]["commits"]["count"] == 2  # commits do not depend on TimeSink
 
 
-def test_a_refresh_during_a_run_joins_it(rig: Rig) -> None:
+def test_a_refresh_during_a_run_joins_it(rig: ProjectsRig) -> None:
     rig.sorter.release.clear()
     results: list[dict[str, Any]] = []
     first = threading.Thread(target=lambda: results.append(rig.service.refresh()))
@@ -367,7 +206,7 @@ def test_a_refresh_during_a_run_joins_it(rig: Rig) -> None:
     assert {r["outcome"] for r in results} == {"classified"}
 
 
-def test_http_routes_serve_the_view(rig: Rig) -> None:
+def test_http_routes_serve_the_view(rig: ProjectsRig) -> None:
     async def read() -> dict[str, Any]:
         return rig.service.read()
 
@@ -385,7 +224,7 @@ def test_http_routes_serve_the_view(rig: Rig) -> None:
         assert rig.sorter.calls == 0
         refreshed = client.post("/inherent/projects/refresh").json()
         assert refreshed["outcome"] == "classified"
-        assert _project(refreshed, "jarvis")["seconds"] == 5400
+        assert project_of(refreshed, "jarvis")["seconds"] == 5400
     bare = InherentDeps(submit_callable=lambda _text: None, broadcaster=InherentBroadcaster())
     with TestClient(create_app(bare)) as client:
         assert client.get("/inherent/projects").status_code == 404

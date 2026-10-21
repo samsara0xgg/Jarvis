@@ -23,141 +23,47 @@ from jarvis.runtime import RuntimeBootstrapError, _moment
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.inherent_loop import _moment_hold
 from jarvis.runtime.moment import Moment, MomentSettings
-from jarvis.shared import lang
 from jarvis.state import job_ledger, job_time, timesink_moment
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.integration.test_job_mail import (
-    _Harness,
-    _harness,
-    _Jev,
-    _only,
+from tests.support import job_mail as job_mail_support
+from tests.support.job_mail import (
+    JobHarness,
+    JobJev,
+    fixed_zh_words,  # noqa: F401 - autouse, found by name
     glow_for_rejections,
+    job_harness,
+    only_rows,
+)
+from tests.support.timesink_moment import (
+    CHROME,
+    T0,
+    FakeTimeSink,
+    moment_for,
+    moment_harness,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
-# The two tables exactly as TimeSink's own store creates them (columns the reader never uses stay).
-_SPAN = (
-    'CREATE TABLE "span" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "start" DATETIME NOT NULL, '
-    '"end" DATETIME NOT NULL, "appBundleID" TEXT NOT NULL, "appName" TEXT NOT NULL, "title" TEXT, '
-    '"url" TEXT, "domain" TEXT, "document" TEXT, "deviceID" TEXT, "originID" INTEGER, '
-    '"remoteSeq" TEXT, "keySeconds" INTEGER NOT NULL DEFAULT 0)'
-)
-_EVENT = (
-    'CREATE TABLE "stateEvent" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "at" DATETIME NOT NULL, '
-    '"kind" TEXT NOT NULL)'
-)
+jev = job_mail_support.jev  # the fixture, found by name in this module
+
+
+
 # Words that live only in window titles and URLs; none may ever reach a doc or a snapshot.
 TITLE_WORD = "Quarterly-Plan-TITLE-WORD"
 PATH_WORD = "private-PATH-WORD-4471"
-CHROME = "com.google.Chrome"
-T0 = datetime.now(UTC).replace(microsecond=0)
-
-
-def _text(moment: datetime) -> str:
-    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-
-class FakeTimeSink:
-    """A TimeSink store in a tmp dir; times are given as seconds before ``T0``."""
-
-    def __init__(self, directory: Path) -> None:
-        """Create the store with the two tables."""
-        self.path = directory / "timesink.sqlite"
-        with sqlite3.connect(self.path) as conn:
-            conn.execute(_SPAN)
-            conn.execute(_EVENT)
-
-    def span(  # noqa: PLR0913 - the row's columns
-        self,
-        start: float,
-        end: float,
-        bundle: str,
-        name: str,
-        *,
-        title: str | None = None,
-        url: str | None = None,
-        domain: str | None = None,
-        at: datetime = T0,
-    ) -> None:
-        """Add a span row."""
-        with sqlite3.connect(self.path) as conn:
-            conn.execute(
-                "INSERT INTO span (start,end,appBundleID,appName,title,url,domain)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (
-                    _text(at - timedelta(seconds=start)),
-                    _text(at - timedelta(seconds=end)),
-                    bundle,
-                    name,
-                    title,
-                    url,
-                    domain,
-                ),
-            )
-
-    def event(self, ago: float, kind: str, at: datetime = T0) -> None:
-        """Add a state-event row."""
-        with sqlite3.connect(self.path) as conn:
-            conn.execute(
-                "INSERT INTO stateEvent (at,kind) VALUES (?,?)",
-                (_text(at - timedelta(seconds=ago)), kind),
-            )
-
-
-def _moment_for(
-    store: FakeTimeSink | Path, db: Path, fields: dict[str, bool] | None = None
-) -> Moment:
-    path = store.path if isinstance(store, FakeTimeSink) else store
-    moment = Moment(MomentSettings(fields or dict.fromkeys(rules.FIELDS, True)), path, db)
-    moment.now = lambda: T0
-    return moment
 
 
 def _facts(store: FakeTimeSink, tmp_path: Path) -> dict[str, Any]:
-    return _moment_for(store, tmp_path / "memory.db").facts()
-
-
-@pytest.fixture(autouse=True)
-def _zh(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-a-secret")
-    before = lang.language()
-    lang.set_language("zh")
-    yield
-    lang.set_language(before)
-
-
-@pytest.fixture
-def jev() -> Iterator[_Jev]:
-    """Jev."""
-    fake = _Jev()
-    yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
+    return moment_for(store, tmp_path / "memory.db").facts()
 
 
 @pytest.fixture
 def store(tmp_path: Path) -> FakeTimeSink:
     """Store."""
     return FakeTimeSink(tmp_path)
-
-
-def _job_harness(
-    tmp_path: Path,
-    jev: _Jev,
-    moment_store: FakeTimeSink | Path | None,
-    **settings: Any,  # noqa: ANN401
-) -> _Harness:
-    """The job-mail harness with a moment (and the ledger's time column) over ``moment_store``."""
-    h = _harness(tmp_path, jev, **settings)
-    if moment_store is not None:
-        h.job.moment = _moment_for(moment_store, h.db)
-        h.job.timesink_path = h.job.moment._path  # noqa: SLF001 - the same store
-    return h
 
 
 # --- what is read -----------------------------------------------------------------------
@@ -309,9 +215,9 @@ def test_stale_or_unreadable_store_is_unknown_everywhere(
     broken.write_bytes(b"not a database")
     for facts in (
         stale,
-        _moment_for(tmp_path / "missing.sqlite", tmp_path / "m.db").facts(),
-        _moment_for(broken, tmp_path / "m.db").facts(),
-        _moment_for(tmp_path, tmp_path / "m.db").facts(),  # a directory
+        moment_for(tmp_path / "missing.sqlite", tmp_path / "m.db").facts(),
+        moment_for(broken, tmp_path / "m.db").facts(),
+        moment_for(tmp_path, tmp_path / "m.db").facts(),  # a directory
     ):
         assert facts["read"] in ("stale", "unreadable")
         assert {
@@ -325,7 +231,7 @@ def test_the_store_is_only_read(store: FakeTimeSink, tmp_path: Path) -> None:
     """The store is only read."""
     store.span(100, 3, CHROME, "Google Chrome", domain="a.example")
     before = store.path.read_bytes()
-    _moment_for(store, tmp_path / "memory.db").snapshot()
+    moment_for(store, tmp_path / "memory.db").snapshot()
     assert store.path.read_bytes() == before
 
 
@@ -350,7 +256,7 @@ def test_the_doc_names_apps_and_domains_never_titles_or_urls(
     store: FakeTimeSink, tmp_path: Path
 ) -> None:
     """The doc names apps and domains never titles or urls."""
-    snap = _moment_for(_secret_store(store), tmp_path / "memory.db").snapshot()
+    snap = moment_for(_secret_store(store), tmp_path / "memory.db").snapshot()
     doc = snap["doc"]
     assert doc["text"].startswith("Now: front app Google Chrome, site careers.example, since ")
     assert "Today so far: " in doc["text"]
@@ -364,7 +270,7 @@ def test_the_doc_names_apps_and_domains_never_titles_or_urls(
 def test_each_field_can_be_switched_off(store: FakeTimeSink, tmp_path: Path) -> None:
     """Each field can be switched off."""
     _secret_store(store)
-    on = _moment_for(store, tmp_path / "m.db").snapshot()["doc"]
+    on = moment_for(store, tmp_path / "m.db").snapshot()["doc"]
     assert "site careers.example" in on["text"]
     fields = dict.fromkeys(rules.FIELDS, True)
     for name, gone in (
@@ -373,24 +279,24 @@ def test_each_field_can_be_switched_off(store: FakeTimeSink, tmp_path: Path) -> 
         ("call", "call"),
         ("presence", "at the computer"),
     ):
-        off = _moment_for(store, tmp_path / "m.db", {**fields, name: False}).snapshot()["doc"]
+        off = moment_for(store, tmp_path / "m.db", {**fields, name: False}).snapshot()["doc"]
         assert name not in off["fields"]
         assert gone not in off["text"]
         assert len(off["fields"]) == len(rules.FIELDS) - 1
-    none = _moment_for(store, tmp_path / "m.db", dict.fromkeys(rules.FIELDS, False)).snapshot()[
+    none = moment_for(store, tmp_path / "m.db", dict.fromkeys(rules.FIELDS, False)).snapshot()[
         "doc"
     ]
     assert none == {"text": "", "fields": {}}
     no_today = {**fields, "job_today": False, "apps_today": False}
     assert (
         "Today so far"
-        not in _moment_for(store, tmp_path / "m.db", no_today).snapshot()["doc"]["text"]
+        not in moment_for(store, tmp_path / "m.db", no_today).snapshot()["doc"]["text"]
     )
 
 
 def test_unknown_facts_render_as_unknown_and_the_doc_stays_short(tmp_path: Path) -> None:
     """Unknown facts render as unknown and the doc stays short."""
-    facts = _moment_for(tmp_path / "missing.sqlite", tmp_path / "m.db").facts()
+    facts = moment_for(tmp_path / "missing.sqlite", tmp_path / "m.db").facts()
     doc = rules.render_doc(facts, dict.fromkeys(rules.FIELDS, True))
     assert doc["text"] == "Now: unknown.\nToday so far: unknown."
     many = {**facts, "front_app": "x" * 600, "read": "ok"}
@@ -437,11 +343,11 @@ def _in_a_call(store: FakeTimeSink) -> FakeTimeSink:
 
 
 def test_in_a_call_nothing_is_shown_spoken_or_marked_then_one_summary(
-    tmp_path: Path, jev: _Jev, store: FakeTimeSink
+    tmp_path: Path, jev: JobJev, store: FakeTimeSink
 ) -> None:
     """Held alerts stay pending, never ``shown``; nothing is spoken; the end is one summary."""
     _in_a_call(store)
-    h = _job_harness(tmp_path, jev, store)
+    h = moment_harness(tmp_path, jev, store)
     h.job.poll_once()
     assert h.notices() == []
     assert h.spoken == 0
@@ -458,37 +364,37 @@ def test_in_a_call_nothing_is_shown_spoken_or_marked_then_one_summary(
     (tmp_path / "later").mkdir()
     other = FakeTimeSink(tmp_path / "later")
     other.span(100, 3, "com.mitchellh.ghostty", "Ghostty", title="zsh")
-    h.job.moment = _moment_for(other, h.db)
+    h.job.moment = moment_for(other, h.db)
     notices = h.notices()
     assert [n["kind"] for n in notices] == ["digest"]
     assert len(notices[0]["items"]) >= 2
     assert h.spoken == 0
 
 
-def test_away_holds_until_he_returns(tmp_path: Path, jev: _Jev, store: FakeTimeSink) -> None:
+def test_away_holds_until_he_returns(tmp_path: Path, jev: JobJev, store: FakeTimeSink) -> None:
     """Away holds until he returns."""
     store.span(900, 600, CHROME, "Google Chrome", domain="a.example")
     store.event(600, "lock")
-    h = _job_harness(tmp_path, jev, store)
+    h = moment_harness(tmp_path, jev, store)
     h.job.poll_once()
     assert h.notices() == []
     assert {s for (s,) in h.sql("SELECT state FROM job_alert")} == {"pending"}
     store.event(100, "unlock")
     store.span(90, 3, CHROME, "Google Chrome", domain="a.example")
-    h.job.moment = _moment_for(store, h.db)  # a fresh read: he is back
+    h.job.moment = moment_for(store, h.db)  # a fresh read: he is back
     assert h.notices()
 
 
 @pytest.mark.parametrize("state", ["call", "away"])
 def test_a_glow_goes_through_the_hold_and_only_dnd_keeps_it_back(
-    tmp_path: Path, jev: _Jev, state: str
+    tmp_path: Path, jev: JobJev, state: str
 ) -> None:
     """ADR 0187: a glow is a mark, served beside ``hold`` while the cards wait; dnd holds both."""
-    h = _job_harness(
+    h = moment_harness(
         tmp_path,
         jev,
         _hold_store(tmp_path, state),
-        mails=_only("m-reject", "m-offer"),
+        mails=only_rows("m-reject", "m-offer"),
         judge=glow_for_rejections,
     )
     h.job.poll_once()
@@ -529,11 +435,11 @@ def test_a_glow_goes_through_the_hold_and_only_dnd_keeps_it_back(
 
 @pytest.mark.parametrize("broken", ["missing", "stale", "off"])
 def test_unknown_behaves_exactly_as_before(
-    tmp_path: Path, jev: _Jev, store: FakeTimeSink, broken: str
+    tmp_path: Path, jev: JobJev, store: FakeTimeSink, broken: str
 ) -> None:
     """An unreadable or stale store, or no moment at all, serves the same notices and speaks."""
     (tmp_path / "base").mkdir()
-    baseline = _harness(tmp_path / "base", jev)
+    baseline = job_harness(tmp_path / "base", jev)
     baseline.job.poll_once()
     if broken == "stale":
         store.span(900, 400, CHROME, "Google Chrome", domain="a.example")
@@ -544,10 +450,10 @@ def test_unknown_behaves_exactly_as_before(
     }
     source = sources[broken]
     (tmp_path / "with").mkdir()
-    h = _job_harness(tmp_path / "with", jev, source)
+    h = moment_harness(tmp_path / "with", jev, source)
     h.job.poll_once()
 
-    def shape(one: _Harness) -> list[tuple[str, str, str]]:
+    def shape(one: JobHarness) -> list[tuple[str, str, str]]:
         return sorted((n["kind"], n["level"], n["title"]) for n in one.notices())
 
     assert shape(h) == shape(baseline)
@@ -558,11 +464,11 @@ def test_unknown_behaves_exactly_as_before(
 
 
 def test_every_decision_snapshot_carries_the_moment_and_no_titles(
-    tmp_path: Path, jev: _Jev, store: FakeTimeSink
+    tmp_path: Path, jev: JobJev, store: FakeTimeSink
 ) -> None:
     """Every decision snapshot carries the moment and no titles."""
     _secret_store(store)
-    h = _job_harness(tmp_path, jev, store)
+    h = moment_harness(tmp_path, jev, store)
     h.job.poll_once()
     rows = h.sql("SELECT stage, moment_json FROM job_decision")
     assert {stage for stage, _ in rows} >= {"header", "body"}
@@ -587,7 +493,7 @@ def test_a_card_snapshot_carries_the_moment_and_no_titles(
 ) -> None:
     """A card snapshot (ADR 0160) holds the same moment: app names and domains only."""
     db = tmp_path / "memory.db"
-    cards = CardFeedback(db, lambda: "off", _moment_for(_secret_store(store), db))
+    cards = CardFeedback(db, lambda: "off", moment_for(_secret_store(store), db))
     cards.act("pop-1", {"action": "seen", "kind": "pop", "level": "card", "facts": {"count": 1}})
     (row,) = job_ledger.list_attention(db, "card:pop")
     situation = json.loads(row["pack_json"])["situation"]
@@ -624,11 +530,11 @@ def _day(moment: datetime) -> str:
 
 
 def test_the_ledger_shows_time_per_company_and_the_other_job_sites(
-    tmp_path: Path, jev: _Jev, store: FakeTimeSink
+    tmp_path: Path, jev: JobJev, store: FakeTimeSink
 ) -> None:
     """The ledger shows time per company and the other job sites."""
     now = datetime.now(UTC).replace(microsecond=0)
-    h = _job_harness(tmp_path, jev, store)
+    h = moment_harness(tmp_path, jev, store)
     h.job.poll_once()
     # Ten minutes on LinkedIn jobs with Northwind in the title; 90 s of a company's own career site
     # (Helix, by its mail domain); 30 s on a Workday host that names CGI; 60 s on an unnamed ATS.
@@ -751,9 +657,9 @@ def tmp_unreadable(store: FakeTimeSink) -> Path:
     return store.path.parent / "absent.sqlite"
 
 
-def test_a_missing_store_gives_an_empty_time_column(tmp_path: Path, jev: _Jev) -> None:
+def test_a_missing_store_gives_an_empty_time_column(tmp_path: Path, jev: JobJev) -> None:
     """A missing store gives an empty time column."""
-    h = _job_harness(tmp_path, jev, tmp_path / "absent.sqlite")
+    h = moment_harness(tmp_path, jev, tmp_path / "absent.sqlite")
     h.job.poll_once()
     reply = h.client.get("/inherent/jobs").json()
     assert reply["job_site_other_s"] == 0
@@ -791,10 +697,10 @@ def _hold_store(tmp_path: Path, state: str) -> FakeTimeSink | Path:
     ],
 )
 def test_the_hold_reaches_the_client_on_both_routes(
-    tmp_path: Path, jev: _Jev, state: str, expected: str | None
+    tmp_path: Path, jev: JobJev, state: str, expected: str | None
 ) -> None:
     """``hold`` is call, away or null, the same on the notices poll and on the moment route."""
-    h = _job_harness(tmp_path, jev, _hold_store(tmp_path, state))
+    h = moment_harness(tmp_path, jev, _hold_store(tmp_path, state))
     notices = h.client.get("/inherent/notices").json()
     assert notices["hold"] == expected
     assert h.job.moment is not None
@@ -827,8 +733,8 @@ def test_an_idle_call_holds_as_a_call_and_other_away_states_as_away() -> None:
         assert (rules.hold_reason(facts) is None) == (expected is None)
 
 
-def test_without_a_moment_there_is_no_route_and_no_hold(tmp_path: Path, jev: _Jev) -> None:
+def test_without_a_moment_there_is_no_route_and_no_hold(tmp_path: Path, jev: JobJev) -> None:
     """Moment off: the route is 404 and the notices say ``hold: null``."""
-    h = _job_harness(tmp_path, jev, None)
+    h = moment_harness(tmp_path, jev, None)
     assert h.client.get("/inherent/notices").json()["hold"] is None
     assert h.client.get("/inherent/moment").status_code == 404  # the harness wires job mail only

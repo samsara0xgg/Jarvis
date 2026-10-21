@@ -12,12 +12,9 @@ import asyncio
 import contextlib
 import json
 import sqlite3
-import threading
 import time
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock
-from email.utils import format_datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -34,151 +31,80 @@ from jarvis.decision.attention import (
     replay,
     rule_judge_v1,
 )
-from jarvis.decision.surrogate_route import SurrogateRoute
-from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ToolError
 from jarvis.runtime import RuntimeBootstrapError, _job_mail, audio_output
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.audio_output import TerminalOutput
 from jarvis.runtime.inherent_loop import _job_mail_deps, _say_job_line
 from jarvis.runtime.interview_reminders import InterviewSettings
-from jarvis.runtime.job_mail import JobMail, JobMailSettings, gmail_read, repair
+from jarvis.runtime.job_mail import JobMail, gmail_read, repair
 from jarvis.shared import lang
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state import job_ledger, things
 from jarvis.state import reminders as reminder_state
-from jarvis.state.event_log import open_event_log, open_runtime_event_log
+from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from tests.canary._helpers import repo_root
-from tests.integration.test_audio_output import BT, BUILTIN, _default, _profile
-from tests.integration.test_lifecycle_commentary import _make_runtime, _only_phrase
+from tests.support import job_mail as job_mail_support
+from tests.support.audio_output import BT, BUILTIN, audio_profile, default_output
+from tests.support.job_mail import (
+    AIRPODS,
+    EVENT_SENTENCE,
+    MAILS,
+    NOW,
+    OWNER_ZONE,
+    Connections,
+    Gmail,
+    JobHarness,
+    JobJev,
+    Outlook,
+    fixed_zh_words,  # noqa: F401 - autouse, found by name
+    glow_for_rejections,
+    job_harness,
+    mail_row,
+    only_rows,
+)
+from tests.support.lifecycle_commentary import commentary_runtime, only_phrase
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Mapping
     from pathlib import Path
 
-NOW = datetime.now(UTC)
-OWNER_ZONE = ZoneInfo("America/Vancouver")
-"""Allen's zone as job mail is given it: a time a letter gives no zone for is his clock there."""
-SETTINGS = JobMailSettings(
-    poll_s=300,
-    backfill_days=14,
-    max_messages_per_cycle=25,
-    header_skip_at=0.9,
-    body_min=0.5,
-    max_body_chars=3000,
-    max_calls_per_day=400,
-    speak=True,
-    speak_gap_s=600,
-    linkedin_alerts="card_sound",  # the older behaviour; ledger_only has its own tests
-    exclude_domains=(),  # nothing kept out; the exclusion has its own tests
-)
-AIRPODS = {"name": "AirPods Pro", "transport": "coreaudio_device_type_bluetooth", "private": True}
+jev = job_mail_support.jev  # the fixture, found by name in this module
+
+
 SPEAKERS = {
     "name": "MacBook Pro Speakers",
     "transport": "coreaudio_device_type_builtin",
     "private": False,
 }
-EVENT_SENTENCE = "We would like to invite you to an interview on March 4, 2027 at 2:00 PM PST."
 
 
-def _mail(
-    key: str,
-    sender: str,
-    subject: str,
-    body: str,
-    *,
-    age: timedelta = timedelta(hours=3),
-) -> dict[str, Any]:
-    return {
-        "id": f"m-{key}",
-        "threadId": f"t-{key}",
-        "from": sender,
-        "subject": subject,
-        "date": format_datetime(NOW - age),
-        "body": body,
-    }
-
-
-MAILS = [
-    _mail(
-        "receipt",
-        "CGI Careers <no-reply@cgi.com>",
-        "Thank you for applying to CGI",
-        "We have received your application for the Software Developer Co-op position.",
-    ),
-    _mail(
-        "interview",
-        "Northwind Talent <recruiting@northwind.example>",
-        "Interview invitation: Software Developer Co-op",
-        f"Hi Allen,\nThanks for applying. {EVENT_SENTENCE} Please reply to confirm.",
-    ),
-    _mail(
-        "reject",
-        "Orbital Careers <jobs@orbital.example>",
-        "Update on your application",
-        "Thank you for your interest. We will not be moving forward with your application.",
-    ),
-    _mail(
-        "offer",
-        "Helix HR <hr@helix.example>",
-        "Offer of employment",
-        "We are delighted to offer you the Backend Developer Intern position.",
-    ),
-    _mail(
-        "digest",
-        "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
-        "5 new jobs for Software Developer Intern in Victoria",
-        "Jobs you may like: ...",
-    ),
-    _mail(
-        "followup",
-        "Acme Recruiting <talent@acme.example>",
-        "Following up",
-        "Are you still looking?",
-    ),
-    _mail(
-        "promo", "ResumeBoost <deals@resumeboost.example>", "Boost your resume today!", "50% off"
-    ),
-    _mail(
-        "fair",
-        "UVic Events <events@uvic.example>",
-        "Career fair next week",
-        "Come and meet employers.",
-    ),
-    _mail("news", "Weekly Brew <hello@brew.example>", "Our weekly newsletter", "Coffee news."),
-    _mail("mom", "Mom <mom@example.com>", "Dinner on Sunday?", "Are you coming?"),
-    _mail(
-        "old",
-        "Zenith Careers <careers@zenith.example>",
-        "Your application status",
-        "We regret to inform you that the position has been filled.",
-        age=timedelta(days=5),
-    ),
-]
 LINKEDIN = [
-    _mail("post", "LinkedIn <messages-noreply@linkedin.com>", "Byron Kontou recently posted", "Hi"),
-    _mail(
+    mail_row(
+        "post", "LinkedIn <messages-noreply@linkedin.com>", "Byron Kontou recently posted", "Hi"
+    ),
+    mail_row(
         "near",
         "LinkedIn <notifications-noreply@linkedin.com>",
         "Software Engineer: RBC hired near you",
         "Hi",
     ),
-    _mail(
+    mail_row(
         "alert",
         "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
         "Machine Learning Engineer II at TD",
         "New jobs",
     ),
-    _mail(
+    mail_row(
         "hiring",
         "LinkedIn <jobs-noreply@linkedin.com>",
         "CrowdStrike is hiring for a Remote role",
         "New jobs",
     ),
-    _mail("account", "CGI <no-reply@njoyn.com>", "CGI - User Information", "Your account"),
-    _mail(
+    mail_row("account", "CGI <no-reply@njoyn.com>", "CGI - User Information", "Your account"),
+    mail_row(
         "inmail",
         "Jane Recruiter <inmail-hit-reply@linkedin.com>",
         "Jane, interview for the Software Developer Co-op",
@@ -188,13 +114,13 @@ LINKEDIN = [
 # ADR 0164: LinkedIn profile-activity notices are held back like social news; an interview InMail
 # that mentions the profile in passing and a "Job Alerts" digest are not.
 PROFILE = [
-    _mail(
+    mail_row(
         "searches",
         "LinkedIn <notifications-noreply@linkedin.com>",
         "You appeared in 5 searches",
         "Hi",
     ),
-    _mail(
+    mail_row(
         "views",
         "LinkedIn <notifications-noreply@linkedin.com>",
         "Your profile was viewed 3 times",
@@ -203,307 +129,17 @@ PROFILE = [
     LINKEDIN[2],
     LINKEDIN[5],
 ]
-# subject -> (header probabilities, body probabilities); a body entry only for mail that gets read.
-JOB, MAYBE, NOT = "job_related", "maybe_job", "not_job"
-
-
-def _odds(**given: float) -> dict[str, float]:
-    return {
-        name: given.get(name, 0.0)
-        for name in ("offer", "interview", "rejection", "receipt", "job_other", NOT, JOB, MAYBE)
-    }
-
-
-ANSWERS: dict[str, tuple[dict[str, float], dict[str, float] | None]] = {
-    "Thank you for applying to CGI": (_odds(job_related=0.99), _odds(receipt=0.97)),
-    "Interview invitation: Software Developer Co-op": (
-        _odds(job_related=0.99),
-        _odds(interview=0.98),
-    ),
-    "Update on your application": (_odds(job_related=0.9), _odds(rejection=0.95)),
-    "Offer of employment": (_odds(job_related=0.99), _odds(offer=0.99)),
-    "5 new jobs for Software Developer Intern in Victoria": (
-        _odds(maybe_job=0.6, not_job=0.2),
-        _odds(job_other=0.8, not_job=0.1),
-    ),
-    "Following up": (_odds(maybe_job=0.7, not_job=0.1), _odds(interview=0.4, job_other=0.3)),
-    "Boost your resume today!": (_odds(maybe_job=0.5, not_job=0.3), _odds(not_job=0.9)),
-    "Career fair next week": (
-        _odds(maybe_job=0.4, not_job=0.6),
-        _odds(not_job=0.7, job_other=0.3),
-    ),
-    "Our weekly newsletter": (_odds(not_job=0.97), None),
-    "Dinner on Sunday?": (_odds(not_job=0.95), None),
-    "Your application status": (_odds(job_related=0.95), _odds(rejection=0.9)),
-    # ADR 0158: Allen's real LinkedIn and CGI mail. Social news is held back before its body.
-    "Byron Kontou recently posted": (
-        _odds(maybe_job=0.7, not_job=0.1),
-        _odds(not_job=0.6, job_other=0.3),
-    ),
-    "Software Engineer: RBC hired near you": (_odds(maybe_job=0.7, not_job=0.1), None),
-    "Machine Learning Engineer II at TD": (
-        _odds(job_related=0.8, not_job=0.1),
-        _odds(job_other=0.8),
-    ),
-    "CrowdStrike is hiring for a Remote role": (
-        _odds(job_related=0.8, not_job=0.1),
-        _odds(job_other=0.8),
-    ),
-    "CGI - User Information": (_odds(job_related=0.8, not_job=0.1), _odds(job_other=0.8)),
-    "Jane, interview for the Software Developer Co-op": (
-        _odds(job_related=0.9),
-        _odds(interview=0.9),
-    ),
-    "You appeared in 5 searches": (_odds(maybe_job=0.7, not_job=0.1), None),
-    "Your profile was viewed 3 times": (_odds(maybe_job=0.7, not_job=0.1), None),
-    # ADR 0177: LinkedIn's Easy Apply confirmation is an application, not kept-out mail.
-    "Allen, your application was sent to Cambio Earth": (
-        _odds(job_related=0.95),
-        _odds(receipt=0.9),
-    ),
-}
-
-
-class _Jev:
-    """A fake decisions endpoint: a choice answer by the subject line, for either question."""
-
-    def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-        self.status = 200
-        self._lock = threading.Lock()
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                with outer._lock:
-                    outer.requests.append(request)
-                subject = request["state"].split("Subject: ", 1)[1].split("\n", 1)[0]
-                (key,) = request["questions"]
-                header, body = ANSWERS[subject]
-                odds = header if key == "job" else body
-                assert odds is not None, f"{subject!r} was not to be read in full"
-                top = max(odds, key=lambda name: odds[name])
-                answer = {
-                    "type": "choice",
-                    "choice": top,
-                    "confidence": odds[top],
-                    "probabilities": odds,
-                }
-                reply = json.dumps({"answers": {key: answer}, "usage": {"cost": 0.00002}}).encode()
-                self.send_response(outer.status)
-                self.send_header("Content-Length", str(len(reply)))
-                self.end_headers()
-                with contextlib.suppress(BrokenPipeError):
-                    self.wfile.write(reply)
-
-            def log_message(self, *_args: object) -> None:
-                return
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def route(self) -> SurrogateRoute:
-        return SurrogateRoute(
-            model="typesafe/jev-1.13",
-            min_confidence=1.0,
-            timeout_ms=5000,
-            url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
-        )
-
-    def asked(self, key: str) -> list[dict[str, Any]]:
-        return [one for one in self.requests if key in one["questions"]]
-
-
-class _Gmail:
-    """The connected Workspace server: JSON in a text block, as home.py reads it."""
-
-    def __init__(self, mails: list[dict[str, Any]]) -> None:
-        self.mails = mails
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.search_failures = 0
-        self.search_error = "backend down"
-        self.full_failures: set[str] = set()
-        self.page_size: int | None = None  # None: one page holds every mail
-
-    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        assert server == "gmail"
-        self.calls.append((tool, dict(args)))
-        if tool == "gmail_search":
-            if self.search_failures:
-                self.search_failures -= 1
-                return {"text": json.dumps({"error": self.search_error})}
-            start = int(args.get("pageToken") or 0)
-            size = self.page_size or len(self.mails)
-            hits = [
-                {"id": one["id"], "threadId": one["threadId"]}
-                for one in self.mails[start : start + size]
-            ]
-            reply: dict[str, Any] = {"messages": hits, "resultSizeEstimate": len(self.mails)}
-            if start + size < len(self.mails):
-                reply["nextPageToken"] = str(start + size)
-            return {"text": json.dumps(reply)}
-        assert tool == "gmail_get", f"job mail must only read: {tool}"
-        if args["format"] == "full" and args["messageId"] in self.full_failures:
-            return {"text": json.dumps({"error": "message body unavailable"})}
-        letter = next(one for one in self.mails if one["id"] == args["messageId"])
-        body = letter["body"] if args["format"] == "full" else ""
-        return {"text": json.dumps({**letter, "snippet": "", "body": body})}
-
-    def tools(self) -> set[str]:
-        return {tool for tool, _args in self.calls}
-
-    def searches(self) -> list[dict[str, Any]]:
-        return [args for tool, args in self.calls if tool == "gmail_search"]
-
-    def full_reads(self) -> set[str]:
-        return {a["messageId"] for t, a in self.calls if t == "gmail_get" and a["format"] == "full"}
-
-    def full_read_count(self, message_id: str) -> int:
-        return sum(
-            1
-            for t, a in self.calls
-            if t == "gmail_get" and a["format"] == "full" and a["messageId"] == message_id
-        )
-
-
-class _Outlook:
-    """The connected ``microsoft`` server: keeps every call made to it (ADR 0299 makes none)."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        assert server == "microsoft"
-        self.calls.append((tool, json.loads(json.dumps(args))))
-        return {"text": "{}"}
-
-
-class _Connections:
-    def __init__(self, gmail: _Gmail | None, outlook: _Outlook | None = None) -> None:
-        self.gmail, self.outlook = gmail, outlook
-
-    def client_for(self, server: str) -> Any:  # noqa: ANN401 - either fake
-        found = {"gmail": self.gmail, "microsoft": self.outlook}.get(server)
-        if found is None:
-            msg = f"mcp server {server!r} is not connected"
-            raise ToolError(msg, code="mcp_server")
-        return found
-
-
-class _Harness:
-    def __init__(  # noqa: PLR0913 - the poller's fakes
-        self,
-        tmp_path: Path,
-        jev: _Jev,
-        gmail: _Gmail,
-        settings: JobMailSettings,
-        judge: Any = rule_judge_v1,  # noqa: ANN401 - any Judge
-        outlook: _Outlook | None = None,
-    ) -> None:
-        self.db = tmp_path / "memory.db"
-        self.jev, self.gmail, self.outlook = jev, gmail, outlook
-        self.event_log = bootstrap_runtime(tmp_path / "runtime").event_log
-        open_event_log(self.event_log).close()
-        connections: Any = _Connections(gmail, outlook)  # JobMail only asks it for client_for
-        self.job = JobMail(
-            settings,
-            jev.route(),
-            connections,
-            self.db,
-            judge,
-            zone=OWNER_ZONE,
-            event_log=self.event_log,
-        )
-        self.quiet = "off"
-        self.spoken = 0
-        self.speech_ok = True
-        self.device: dict[str, Any] = dict(AIRPODS)
-        self.job.output = lambda fresh=False: dict(self.device)  # noqa: ARG005
-        self.job.quiet = lambda: self.quiet
-        self.job.may_speak = lambda: self.speech_ok
-        self.job.say = self._say
-        self.client = TestClient(
-            create_app(
-                InherentDeps(
-                    submit_callable=lambda _text: None,
-                    broadcaster=InherentBroadcaster(),
-                    **_job_mail_deps(self.job),
-                )
-            )
-        )
-
-    def _say(self) -> None:
-        self.spoken += 1
-
-    def notices(self) -> list[dict[str, Any]]:
-        reply = self.client.get("/inherent/notices")
-        assert reply.status_code == 200
-        notices: list[dict[str, Any]] = reply.json()["notices"]
-        return notices
-
-    def flat(self) -> list[dict[str, Any]]:
-        """The notices with a summary replaced by the alerts it stands for."""
-        return [one for n in self.notices() for one in n.get("items", [n])]
-
-    def ledger(self) -> list[dict[str, Any]]:
-        ledger: list[dict[str, Any]] = self.client.get("/inherent/jobs").json()["ledger"]
-        return ledger
-
-    def sql(self, query: str, *args: object) -> list[tuple[Any, ...]]:
-        conn = sqlite3.connect(self.db)
-        try:
-            with conn:
-                return conn.execute(query, args).fetchall()
-        finally:
-            conn.close()
-
-    def age_alerts(self, delta: timedelta) -> None:
-        stamp = (NOW - delta).isoformat(timespec="seconds")
-        self.sql("UPDATE job_alert SET created_at = ?", stamp)
-
-
-@pytest.fixture(autouse=True)
-def _zh(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Fixed words come from the language table; a key makes the poller run."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-not-a-secret")
-    before = lang.language()
-    lang.set_language("zh")
-    yield
-    lang.set_language(before)
-
-
-@pytest.fixture
-def jev() -> Iterator[_Jev]:
-    """A fake Jev endpoint for the test's life."""
-    fake = _Jev()
-    yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
-
-
-def _harness(
-    tmp_path: Path,
-    jev: _Jev,
-    mails: list[dict[str, Any]] | None = None,
-    judge: Any = rule_judge_v1,  # noqa: ANN401 - any Judge
-    outlook: _Outlook | None = None,
-    **settings: Any,  # noqa: ANN401
-) -> _Harness:
-    fields = {**SETTINGS.__dict__, **settings}
-    gmail = _Gmail(MAILS if mails is None else mails)
-    return _Harness(tmp_path, jev, gmail, JobMailSettings(**fields), judge, outlook)
 
 
 def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Receipt: ledger. Rejection: card. Other: card with sound. Interview or offer: speak.
 
     The offer is the third alert within the burst window, so it is a card with sound (ADR 0158).
     """
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     assert h.job.poll_once() == len(MAILS)
 
     kinds = {
@@ -573,9 +209,9 @@ def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
     assert ledger["Northwind"]["mails"][0]["event_text"] == EVENT_SENTENCE
 
 
-def test_what_jev_is_sent_and_what_is_read_from_gmail(tmp_path: Path, jev: _Jev) -> None:
+def test_what_jev_is_sent_and_what_is_read_from_gmail(tmp_path: Path, jev: JobJev) -> None:
     """Header first (name, domain, subject), body only for what is left; Gmail is only read."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
 
     assert h.gmail.tools() == {"gmail_search", "gmail_get"}
@@ -614,9 +250,9 @@ def test_what_jev_is_sent_and_what_is_read_from_gmail(tmp_path: Path, jev: _Jev)
     assert "@" not in stored
 
 
-def test_a_seen_mail_is_not_triaged_again(tmp_path: Path, jev: _Jev) -> None:
+def test_a_seen_mail_is_not_triaged_again(tmp_path: Path, jev: JobJev) -> None:
     """A second cycle asks Jev and reads Gmail for nothing already seen."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     asked, gets = len(jev.requests), sum(1 for t, _a in h.gmail.calls if t == "gmail_get")
 
@@ -628,13 +264,13 @@ def test_a_seen_mail_is_not_triaged_again(tmp_path: Path, jev: _Jev) -> None:
 
 def test_the_speak_line_is_only_for_quiet_off_unmuted_and_no_conversation(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """She speaks only at quiet off, unmuted, outside a conversation; decided once at creation."""
     interview_and_offer = [m for m in MAILS if m["id"] in ("m-interview", "m-offer")]
 
     # An alert made while quiet never speaks later, even once the level is off again.
-    held = _harness(tmp_path / "a", jev, interview_and_offer)
+    held = job_harness(tmp_path / "a", jev, interview_and_offer)
     held.quiet = "quiet"
     held.job.poll_once()
     held.quiet = "off"
@@ -646,21 +282,23 @@ def test_the_speak_line_is_only_for_quiet_off_unmuted_and_no_conversation(
     both = {"held", "suppressed", "audio"}
     assert delivery == {"m-interview": both, "m-offer": both}
     # Muted speech or a live conversation: no line either.
-    silent = _harness(tmp_path / "b", jev, interview_and_offer)
+    silent = job_harness(tmp_path / "b", jev, interview_and_offer)
     silent.speech_ok = False
     silent.job.poll_once()
     assert silent.spoken == 0
     # speak: false in the config.
-    assert _harness(tmp_path / "c", jev, interview_and_offer, speak=False).job.poll_once() == 2
+    assert job_harness(tmp_path / "c", jev, interview_and_offer, speak=False).job.poll_once() == 2
     # With no gap left to wait, both are said.
-    ungapped = _harness(tmp_path / "d", jev, interview_and_offer, speak_gap_s=0)
+    ungapped = job_harness(tmp_path / "d", jev, interview_and_offer, speak_gap_s=0)
     ungapped.job.poll_once()
     assert ungapped.spoken == 2
 
 
-def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(tmp_path: Path, jev: _Jev) -> None:
+def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(
+    tmp_path: Path, jev: JobJev
+) -> None:
     """quiet: cards without sound. no-pop and dnd: nothing, alerts stay. Back at off: one digest."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
 
     h.quiet = "quiet"
@@ -697,9 +335,9 @@ def test_quiet_levels_hold_the_alerts_and_release_is_one_digest(tmp_path: Path, 
     assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"shown"}
 
 
-def test_one_waiting_alert_is_a_card_and_old_ones_are_dropped(tmp_path: Path, jev: _Jev) -> None:
+def test_one_waiting_alert_is_a_card_and_old_ones_are_dropped(tmp_path: Path, jev: JobJev) -> None:
     """One waiting alert is its own card; one older than seven days is not served."""
-    h = _harness(tmp_path, jev, [m for m in MAILS if m["id"] in ("m-reject", "m-offer")])
+    h = job_harness(tmp_path, jev, [m for m in MAILS if m["id"] in ("m-reject", "m-offer")])
     h.job.poll_once()
     h.age_alerts(timedelta(minutes=10))
     h.sql(
@@ -712,7 +350,7 @@ def test_one_waiting_alert_is_a_card_and_old_ones_are_dropped(tmp_path: Path, je
     assert only["mail_kind"] == "offer"
 
 
-def _pending(h: _Harness, kinds: list[str], *, level: str, age: timedelta) -> None:
+def _pending(h: JobHarness, kinds: list[str], *, level: str, age: timedelta) -> None:
     """One job_mail row and one pending alert per kind, all made ``age`` before NOW (the clock)."""
     h.job.now = lambda: NOW
     made = NOW - age
@@ -729,7 +367,7 @@ def _pending(h: _Harness, kinds: list[str], *, level: str, age: timedelta) -> No
         job_ledger.create_alert(h.db, f"p-{i}", level, f"T{i}", "line", made)
 
 
-def _thread_mails(h: _Harness, mails: list[dict[str, Any]], *, age: timedelta) -> None:
+def _thread_mails(h: JobHarness, mails: list[dict[str, Any]], *, age: timedelta) -> None:
     """One job_mail row and one pending alert per dict (company, thread, kind, role, event...)."""
     h.job.now = lambda: NOW
     made = NOW - age
@@ -741,9 +379,9 @@ def _thread_mails(h: _Harness, mails: list[dict[str, Any]], *, age: timedelta) -
         job_ledger.create_alert(h.db, f"g-{i}", "card", f"T{i}", "line", at)
 
 
-def test_the_summary_is_one_row_per_company_and_thread(tmp_path: Path, jev: _Jev) -> None:
+def test_the_summary_is_one_row_per_company_and_thread(tmp_path: Path, jev: JobJev) -> None:
     """Allen's three Reliable Controls mails are one row: best kind, longest role, count, latest."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     rc = {"company": "Reliable Controls", "thread_id": "t-rc", "kind": "interview"}
     _thread_mails(
         h,
@@ -783,10 +421,10 @@ def test_the_summary_is_one_row_per_company_and_thread(tmp_path: Path, jev: _Jev
 
 
 def test_a_mixed_summary_groups_by_thread_ranks_kinds_and_keeps_the_old_header(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Offer outranks interview in a thread; threads stay apart; a mail with no thread is alone."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     _thread_mails(
         h,
         [
@@ -810,7 +448,7 @@ def test_a_mixed_summary_groups_by_thread_ranks_kinds_and_keeps_the_old_header(
     assert summary["title"] == lang.t("job.digest.title_interviews", n=5, x=2)
 
     # One company but two kinds of mail is not the company header either.
-    other = _harness(tmp_path / "two", jev, [])
+    other = job_harness(tmp_path / "two", jev, [])
     _thread_mails(
         other,
         [
@@ -825,10 +463,10 @@ def test_a_mixed_summary_groups_by_thread_ranks_kinds_and_keeps_the_old_header(
 
 
 def test_a_summary_row_carries_the_interview_time_when_one_was_read(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """The time is the group's latest dated mail; a short sentence stands in; else nothing."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     long_sentence = "We would like to invite you to an interview next week, please reply."
     _thread_mails(
         h,
@@ -870,9 +508,9 @@ def test_a_summary_row_carries_the_interview_time_when_one_was_read(
     assert (rows["None"]["event_at"], rows["None"]["event_text"]) == (None, None)
 
 
-def test_a_summary_with_no_interview_has_no_interview_clause(tmp_path: Path, jev: _Jev) -> None:
+def test_a_summary_with_no_interview_has_no_interview_clause(tmp_path: Path, jev: JobJev) -> None:
     """The count of interviews is only said when it is more than zero, in both languages."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     _pending(h, ["job_other"] * 3, level="card", age=timedelta(minutes=20))
     for language in ("zh", "en"):
         lang.set_language(language)
@@ -883,9 +521,9 @@ def test_a_summary_with_no_interview_has_no_interview_clause(tmp_path: Path, jev
     assert "interview" not in summary["title"]
 
 
-def test_ten_pending_alerts_are_one_summary_that_never_speaks(tmp_path: Path, jev: _Jev) -> None:
+def test_ten_pending_alerts_are_one_summary_that_never_speaks(tmp_path: Path, jev: JobJev) -> None:
     """Allen's backfill left 10 pending alerts, three at speak: one card, a link, no speech."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     kinds = ["interview"] * 3 + ["job_other"] * 6 + ["offer"]
     _pending(h, kinds, level="card_sound", age=timedelta(minutes=20))
     h.sql("UPDATE job_alert SET level = 'speak' WHERE id IN (SELECT id FROM job_alert LIMIT 3)")
@@ -908,21 +546,21 @@ def test_ten_pending_alerts_are_one_summary_that_never_speaks(tmp_path: Path, je
 
 
 def test_two_alerts_in_a_burst_are_two_cards_and_three_are_one_summary(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Fresh alerts: two stay separate cards; a third within the window merges all of them."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     _pending(h, ["rejection", "job_other"], level="card", age=timedelta(seconds=5))
     assert [n["kind"] for n in h.notices()] == ["mail", "mail"]
 
-    h = _harness(tmp_path / "three", jev, [])
+    h = job_harness(tmp_path / "three", jev, [])
     _pending(h, ["rejection", "job_other", "receipt"], level="card", age=timedelta(seconds=5))
     (summary,) = h.notices()
     assert (summary["kind"], len(summary["items"])) == ("digest", 3)
 
     # One alert that waited 120 s and two fresh ones span more than the window: not a burst.
     assert timedelta(seconds=90) == job_ledger.BURST_WINDOW
-    far = _harness(tmp_path / "far", jev, [])
+    far = job_harness(tmp_path / "far", jev, [])
     _pending(far, ["rejection"], level="card", age=timedelta(seconds=120))
     for i in (1, 2):
         made = NOW - timedelta(seconds=5)
@@ -933,10 +571,10 @@ def test_two_alerts_in_a_burst_are_two_cards_and_three_are_one_summary(
 
 
 def test_a_single_live_interview_speaks_but_a_burst_of_interviews_does_not(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """One interview at quiet off is spoken; the third alert within the window never is."""
-    one = _harness(tmp_path / "one", jev, [m for m in MAILS if m["id"] == "m-interview"])
+    one = job_harness(tmp_path / "one", jev, [m for m in MAILS if m["id"] == "m-interview"])
     one.job.poll_once()
     assert one.spoken == 1
     (notice,) = one.notices()
@@ -946,7 +584,7 @@ def test_a_single_live_interview_speaks_but_a_burst_of_interviews_does_not(
         {**m, "id": f"m-i{i}", "threadId": f"t-i{i}"}
         for i, m in enumerate([next(m for m in MAILS if m["id"] == "m-interview")] * 3)
     ]
-    burst = _harness(tmp_path / "burst", jev, interviews, speak_gap_s=0)
+    burst = job_harness(tmp_path / "burst", jev, interviews, speak_gap_s=0)
     burst.job.poll_once()
     assert burst.spoken == 2  # the third is merged into the summary
     assert [level for (level,) in burst.sql("SELECT level FROM job_alert ORDER BY rowid")] == [
@@ -1158,10 +796,10 @@ def test_linkedin_profile_activity_is_social_and_nothing_else_is(
 
 
 def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Company and role are recomputed from the stored header; no Gmail, nothing changes twice."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     reliable = "Reliable Controls - Invitation to Interview"
     rows = [
         # key, name, domain, subject, stored role, company and role after repair
@@ -1222,10 +860,10 @@ def test_the_repair_pass_fixes_stored_rows_offline_and_is_idempotent(
 
 
 def test_local_rules_keep_linkedin_noise_and_account_notices_off_the_cards(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Social news is held back unread, an account notice is kind other, a digest is ledger only."""
-    h = _harness(tmp_path, jev, LINKEDIN, linkedin_alerts="ledger_only")
+    h = job_harness(tmp_path, jev, LINKEDIN, linkedin_alerts="ledger_only")
     h.job.poll_once()
 
     assert dict(h.sql("SELECT message_id, verdict FROM job_seen")) == {
@@ -1261,7 +899,7 @@ def test_local_rules_keep_linkedin_noise_and_account_notices_off_the_cards(
 
     # card_sound brings the digests back as cards with sound; the account notice stays quiet.
     # The interview is the third alert of the burst, so it is a card with sound, not a line.
-    on = _harness(tmp_path / "on", jev, LINKEDIN, linkedin_alerts="card_sound")
+    on = job_harness(tmp_path / "on", jev, LINKEDIN, linkedin_alerts="card_sound")
     on.job.poll_once()
     assert dict(on.sql("SELECT message_id, level FROM job_alert")) == {
         "m-alert": "card_sound",
@@ -1271,10 +909,10 @@ def test_local_rules_keep_linkedin_noise_and_account_notices_off_the_cards(
 
 
 def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Stored social mail is held back, notices retyped, alerts done; idempotent; flags win."""
-    h = _harness(tmp_path, jev, LINKEDIN, linkedin_alerts="card_sound")
+    h = job_harness(tmp_path, jev, LINKEDIN, linkedin_alerts="card_sound")
     h.job.poll_once()  # card_sound: digests alerted, the social mail never entered the ledger
     # Rows as the first backfill left them: social mail typed job_other, with alerts pending.
     for key, subject in (
@@ -1319,7 +957,7 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
     assert repair(h.db, "ledger_only", zone=OWNER_ZONE) == 0  # a second run changes nothing
 
     # With card_sound the digests keep their alerts.
-    keep = _harness(tmp_path / "keep", jev, LINKEDIN, linkedin_alerts="card_sound")
+    keep = job_harness(tmp_path / "keep", jev, LINKEDIN, linkedin_alerts="card_sound")
     keep.job.poll_once()
     repair(keep.db, "card_sound", zone=OWNER_ZONE)
     assert {m for (m,) in keep.sql("SELECT message_id FROM job_alert WHERE state = 'pending'")} == {
@@ -1329,10 +967,12 @@ def test_the_repair_pass_hides_noise_drops_its_alerts_and_respects_a_flag(
     }
 
 
-def test_excluded_domains_never_reach_jev_the_ledger_or_an_alert(tmp_path: Path, jev: _Jev) -> None:
+def test_excluded_domains_never_reach_jev_the_ledger_or_an_alert(
+    tmp_path: Path, jev: JobJev
+) -> None:
     """Mail from an excluded domain is held back by a local rule before Jev, the rest lands."""
     inmail = LINKEDIN[5]
-    h = _harness(tmp_path, jev, [inmail, MAILS[1]], exclude_domains=("linkedin.com",))
+    h = job_harness(tmp_path, jev, [inmail, MAILS[1]], exclude_domains=("linkedin.com",))
     h.job.poll_once()
 
     assert [one["state"].split("Subject: ", 1)[1].split("\n", 1)[0] for one in jev.requests] == [
@@ -1353,14 +993,17 @@ def test_excluded_domains_never_reach_jev_the_ledger_or_an_alert(tmp_path: Path,
 
 
 def test_his_claude_daily_letter_is_not_mail_to_triage_and_its_body_is_not_read(
-    tmp_path: Path, jev: _Jev,
+    tmp_path: Path,
+    jev: JobJev,
 ) -> None:
     """ADR 0295: the nightly letter on his chats never reaches Jev, the ledger or a body read."""
-    daily = _mail(
-        "daily", "Allen <me@example.com>", "Jarvis Claude 日报 2026-10-18",
+    daily = mail_row(
+        "daily",
+        "Allen <me@example.com>",
+        "Jarvis Claude 日报 2026-10-18",
         "## Job hunt chat\n- summary: applied to Northwind, interview Friday 2 PM",
     )
-    h = _harness(tmp_path, jev, [daily, MAILS[1]])
+    h = job_harness(tmp_path, jev, [daily, MAILS[1]])
     h.job.poll_once()
 
     assert {one["state"].split("Subject: ", 1)[1].split("\n", 1)[0] for one in jev.requests} == {
@@ -1376,10 +1019,10 @@ def test_his_claude_daily_letter_is_not_mail_to_triage_and_its_body_is_not_read(
 
 
 def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """A visible row of an excluded domain is hidden, its alerts done; a flagged one stays."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     for key in ("old1", "old2"):
         mail = {
             "message_id": key,
@@ -1414,10 +1057,10 @@ def test_the_repair_pass_hides_an_existing_excluded_row_and_respects_a_flag(
 
 
 def test_flagging_a_hidden_social_mail_brings_it_back_to_the_ledger(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Allen's flag wins over the local rule: the mail is job mail, in the ledger, with an alert."""
-    h = _harness(tmp_path, jev, LINKEDIN[:1], linkedin_alerts="ledger_only")
+    h = job_harness(tmp_path, jev, LINKEDIN[:1], linkedin_alerts="ledger_only")
     h.job.poll_once()
     assert h.sql("SELECT 1 FROM job_mail") == []
     assert (
@@ -1434,10 +1077,10 @@ def test_flagging_a_hidden_social_mail_brings_it_back_to_the_ledger(
 
 
 def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Reactions land in job_feedback; a card shown and left alone for 30 minutes is ignored."""
-    h = _harness(
+    h = job_harness(
         tmp_path, jev, [m for m in MAILS if m["id"] in ("m-reject", "m-digest", "m-offer")]
     )
     h.job.poll_once()
@@ -1486,7 +1129,7 @@ def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
     assert post("/inherent/notices/nope", json={"action": "seen"}).status_code == 404
 
     # Shown and left alone for 30 minutes: the daemon writes "ignored" at its next cycle.
-    h2 = _harness(tmp_path / "ignore", jev, [m for m in MAILS if m["id"] == "m-reject"])
+    h2 = job_harness(tmp_path / "ignore", jev, [m for m in MAILS if m["id"] == "m-reject"])
     h2.job.poll_once()
     (alert,) = h2.notices()
     h2.client.post(f"/inherent/notices/{alert['id']}", json={"action": "seen"})
@@ -1499,12 +1142,12 @@ def test_feedback_is_recorded_and_an_untouched_alert_ends_ignored(
 
 
 def test_feedback_on_a_summary_is_logged_for_every_alert_it_holds(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """A level or 对 on the summary writes one row per alert at the summary's level."""
     level = lang.JOB_LEVEL_NAMES[3]
     for quiet, shown in (("off", "card_sound"), ("quiet", "card")):
-        h = _harness(tmp_path / quiet, jev, [])
+        h = job_harness(tmp_path / quiet, jev, [])
         _pending(
             h, ["interview", "job_other", "rejection"], level="card", age=timedelta(minutes=20)
         )
@@ -1528,7 +1171,7 @@ def test_feedback_on_a_summary_is_logged_for_every_alert_it_holds(
             h.sql("UPDATE job_alert SET state = 'pending'")
 
     # Dismissed ends every alert in the summary, logged at the summary's level.
-    h = _harness(tmp_path / "gone", jev, [])
+    h = job_harness(tmp_path / "gone", jev, [])
     _pending(h, ["interview", "job_other", "rejection"], level="card", age=timedelta(minutes=20))
     (summary,) = h.notices()
     post = h.client.post
@@ -1540,9 +1183,11 @@ def test_feedback_on_a_summary_is_logged_for_every_alert_it_holds(
     assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"done"}
 
 
-def test_deleting_a_mail_hides_it_from_the_ledger_and_its_alert(tmp_path: Path, jev: _Jev) -> None:
+def test_deleting_a_mail_hides_it_from_the_ledger_and_its_alert(
+    tmp_path: Path, jev: JobJev
+) -> None:
     """Deleting hides the mail and its alert, and a later cycle does not bring it back."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
 
     assert h.client.post("/inherent/jobs/m-offer/delete").status_code == 200
@@ -1555,10 +1200,10 @@ def test_deleting_a_mail_hides_it_from_the_ledger_and_its_alert(tmp_path: Path, 
 
 
 def test_the_daily_cap_stops_jev_calls_and_leaves_the_rest_unseen(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """At the daily cap no more Jev calls are made and the rest stay unseen."""
-    h = _harness(tmp_path, jev, max_calls_per_day=3)
+    h = job_harness(tmp_path, jev, max_calls_per_day=3)
     h.job.poll_once()
     assert len(jev.requests) == 3
     assert h.job.poll_once() == 0
@@ -1566,10 +1211,12 @@ def test_the_daily_cap_stops_jev_calls_and_leaves_the_rest_unseen(
     assert len(h.sql("SELECT message_id FROM job_seen")) < len(MAILS)
 
 
-def test_a_jev_failure_is_an_error_retried_three_times_then_kept(tmp_path: Path, jev: _Jev) -> None:
+def test_a_jev_failure_is_an_error_retried_three_times_then_kept(
+    tmp_path: Path, jev: JobJev
+) -> None:
     """A Jev failure is recorded as an error, retried three times, then kept."""
     jev.status = 500
-    h = _harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-offer"])
+    h = job_harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-offer"])
     for _ in range(3):
         assert h.job.poll_once() == 1
     assert h.sql("SELECT verdict, tries FROM job_seen") == [("error", 3)]
@@ -1581,7 +1228,7 @@ def test_a_jev_failure_is_an_error_retried_three_times_then_kept(tmp_path: Path,
 
 def test_only_gmail_search_and_get_can_be_called() -> None:
     """Any Gmail tool other than search and get is refused before it is sent."""
-    gmail = _Gmail([])
+    gmail = Gmail([])
     for tool in (
         "gmail_modify",
         "gmail_batchModify",
@@ -1598,9 +1245,9 @@ def test_only_gmail_search_and_get_can_be_called() -> None:
     }
 
 
-def test_the_loop_polls_and_survives_a_failed_cycle(tmp_path: Path, jev: _Jev) -> None:
+def test_the_loop_polls_and_survives_a_failed_cycle(tmp_path: Path, jev: JobJev) -> None:
     """The run loop polls and goes on after a cycle that raised."""
-    h = _harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-reject"], poll_s=0.05)
+    h = job_harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-reject"], poll_s=0.05)
     h.gmail.search_failures = 1
 
     async def run() -> None:
@@ -1640,7 +1287,7 @@ def test_off_by_default_no_routes_no_poller_and_bad_values_stop_boot(tmp_path: P
         "backfill_since": date(2026, 9, 10),
     }.items() <= block.items()
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
-    connections: Any = _Connections(None)
+    connections: Any = Connections(None)
 
     # no watcher is built:
     assert _job_mail(shipped, config_path, None, connections, db, OWNER_ZONE) is None
@@ -1699,19 +1346,19 @@ def test_the_spoken_line_is_one_fixed_phrase_through_the_conversation_machinery(
     tmp_path: Path,
 ) -> None:
     """The daemon's speak wrapper says one fixed phrase through the conversation-line machinery."""
-    runtime = _make_runtime(tmp_path, commentary=False)
+    runtime = commentary_runtime(tmp_path, commentary=False)
 
     _say_job_line(runtime)
 
-    assert _only_phrase(runtime.conn) in lang.variants("conversation.job_speak", "zh")
+    assert only_phrase(runtime.conn) in lang.variants("conversation.job_speak", "zh")
 
 
 def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Each decision is logged with its full pack, delivery states and Allen's reactions."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
     assert set(rows) == {
@@ -1756,14 +1403,14 @@ def test_each_decision_is_logged_with_its_pack_delivery_and_feedback(
 
 def test_the_judge_is_the_one_seam_and_replay_runs_another_over_the_stored_packs(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Delivery follows the injected judge; replay runs another judge over the stored packs."""
 
     def always_card(pack: ContextPack) -> Judgement:
         return Judgement("card", f"{pack.facts['kind']} is a card", "always_card", "0")
 
-    h = _harness(tmp_path, jev, judge=always_card)
+    h = job_harness(tmp_path, jev, judge=always_card)
     h.job.poll_once()
     # Delivery followed the injected judge: even the receipt and the interview are plain cards.
     assert {level for (level,) in h.sql("SELECT level FROM job_alert")} == {"card"}
@@ -1788,10 +1435,10 @@ def test_the_judge_is_the_one_seam_and_replay_runs_another_over_the_stored_packs
 
 
 def test_the_audit_list_shows_the_newest_held_back_mail_at_any_probability(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """The audit list is the newest 50 held-back mails, from any job-likelihood."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
 
     skipped = h.client.get("/inherent/jobs").json()["skipped"]
@@ -1830,9 +1477,9 @@ def test_the_audit_list_shows_the_newest_held_back_mail_at_any_probability(
     assert stamps == sorted(stamps, reverse=True)
 
 
-def test_every_decision_keeps_the_snapshot_jev_saw(tmp_path: Path, jev: _Jev) -> None:
+def test_every_decision_keeps_the_snapshot_jev_saw(tmp_path: Path, jev: JobJev) -> None:
     """A job, a not-job and an error each leave header and body snapshots in memory.db."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     columns = (
         "stage, verdict, sender_name, sender_domain, subject, judge, probabilities, body_excerpt"
@@ -1883,7 +1530,7 @@ def test_every_decision_keeps_the_snapshot_jev_saw(tmp_path: Path, jev: _Jev) ->
 
     # An error (Jev down) is a snapshot too, with no probabilities.
     jev.status = 500
-    failing = _harness(tmp_path / "e", jev, [m for m in MAILS if m["id"] == "m-offer"])
+    failing = job_harness(tmp_path / "e", jev, [m for m in MAILS if m["id"] == "m-offer"])
     failing.job.poll_once()
     assert failing.sql(
         "SELECT stage, verdict, subject, probabilities, judge FROM job_decision"
@@ -1891,10 +1538,10 @@ def test_every_decision_keeps_the_snapshot_jev_saw(tmp_path: Path, jev: _Jev) ->
 
 
 def test_every_scanned_mail_keeps_its_sender_address_and_body_locally(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Header-dropped mail keeps name, address, subject, id, date and body, all local."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     columns = (
         "message_id, stage, verdict, sender_name, sender_address, sender_domain, subject,"
@@ -1921,7 +1568,7 @@ def test_every_scanned_mail_keeps_its_sender_address_and_body_locally(
         assert row[9] == "read"
     assert {r[1] for r in rows} == {"header", "body"}
     # The rule row (LinkedIn social news, held back unread by Jev) carries them too.
-    social = _harness(tmp_path / "s", jev, LINKEDIN)
+    social = job_harness(tmp_path / "s", jev, LINKEDIN)
     social.job.poll_once()
     assert social.sql(
         "SELECT sender_address, body_excerpt, body_status FROM job_decision"
@@ -1938,10 +1585,10 @@ def test_every_scanned_mail_keeps_its_sender_address_and_body_locally(
 
 
 def test_an_unreadable_body_is_unavailable_and_never_breaks_the_cycle(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """A failed body read leaves body NULL and 'unavailable'; the triage verdict is unchanged."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.gmail.full_failures = {"m-news", "m-offer"}
     h.job.poll_once()
     news = h.sql(
@@ -1967,10 +1614,10 @@ def test_an_unreadable_body_is_unavailable_and_never_breaks_the_cycle(
 
 
 def test_a_mail_never_read_is_not_read_and_the_flag_keeps_its_body(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """A mail whose header cannot be read has 'not_read'; a flag stores the address and body too."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     original = h.gmail.call
 
     def broken_header(server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -2019,9 +1666,9 @@ def test_an_old_job_decision_table_gets_the_snapshot_columns(tmp_path: Path) -> 
         conn.close()
 
 
-def test_flagging_a_held_back_mail_makes_it_job_mail_once(tmp_path: Path, jev: _Jev) -> None:
+def test_flagging_a_held_back_mail_makes_it_job_mail_once(tmp_path: Path, jev: JobJev) -> None:
     """A flag reads the mail again, types it past the skip, alerts under quiet, logs feedback."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     h.quiet = "quiet"
     reads = len(h.gmail.calls)
@@ -2073,12 +1720,12 @@ def test_flagging_a_held_back_mail_makes_it_job_mail_once(tmp_path: Path, jev: _
 )
 def test_a_down_mail_channel_raises_one_alert_and_recovery_is_silent(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
     error: str,
     reason: str,
 ) -> None:
     """Three failed cycles raise one health alert per 12 hours under the quiet gate."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     h.gmail.search_error, h.gmail.search_failures = error, 4
 
     def fail() -> None:
@@ -2117,9 +1764,9 @@ def test_a_down_mail_channel_raises_one_alert_and_recovery_is_silent(
     assert [n["mail_kind"] for n in h.notices()] == ["health"]
 
 
-def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, jev: _Jev) -> None:
+def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, jev: JobJev) -> None:
     """Only a pending health card is cleared by a good cycle; a shown one keeps its state."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     h.gmail.search_error, h.gmail.search_failures = "backend down", 3
     for _ in range(3):
         with pytest.raises(ToolError):
@@ -2145,10 +1792,10 @@ def test_a_recovery_does_not_touch_a_health_card_already_shown(tmp_path: Path, j
 
 def test_two_hours_without_a_good_cycle_is_down_even_after_one_failure(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Two hours without a good cycle is down even after one failure."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     h.gmail.search_failures = 1
     h.job.now = lambda: NOW + timedelta(hours=3)
     with pytest.raises(ToolError):
@@ -2159,10 +1806,10 @@ def test_two_hours_without_a_good_cycle_is_down_even_after_one_failure(
 
 def test_on_speakers_sound_levels_are_silent_cards_and_the_log_says_why(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Unprompted audio only on private output: speakers turn speak and card_sound into cards."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.device = dict(SPEAKERS)
     h.job.poll_once()
 
@@ -2188,10 +1835,10 @@ def test_on_speakers_sound_levels_are_silent_cards_and_the_log_says_why(
 
 def test_on_private_output_the_levels_stay_and_the_log_names_the_device(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """On Bluetooth headphones speak and card_sound are served as before, with the device logged."""
-    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h = job_harness(tmp_path, jev, speak_gap_s=0)
     h.job.poll_once()
 
     assert h.spoken == 1  # the offer is the third of the burst: no line
@@ -2206,10 +1853,10 @@ def test_on_private_output_the_levels_stay_and_the_log_names_the_device(
 
 def test_a_device_that_flips_to_speakers_before_the_line_is_said_means_no_speech(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Private at decision time, speakers a moment later: the fresh look before speaking wins."""
-    h = _harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-interview"])
+    h = job_harness(tmp_path, jev, [m for m in MAILS if m["id"] == "m-interview"])
     h.job.output = lambda fresh=False: dict(SPEAKERS if fresh else AIRPODS)
     h.job.poll_once()
 
@@ -2222,10 +1869,10 @@ def test_a_device_that_flips_to_speakers_before_the_line_is_said_means_no_speech
 
 def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
     tmp_path: Path,
-    jev: _Jev,
+    jev: JobJev,
 ) -> None:
     """Alerts made on headphones are served as cards the moment the output is not private."""
-    h = _harness(tmp_path, jev)
+    h = job_harness(tmp_path, jev)
     h.job.poll_once()
     assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
 
@@ -2246,7 +1893,7 @@ def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
     assert {item["level"] for item in digest["items"]} == {"speak", "card", "card_sound"}
 
     # A health alert (card_sound) is silenced the same way.
-    health = _harness(tmp_path / "h", jev, [])
+    health = job_harness(tmp_path / "h", jev, [])
     health.gmail.search_error, health.gmail.search_failures = "backend down", 3
     for _ in range(3):
         with pytest.raises(ToolError):
@@ -2261,20 +1908,8 @@ def test_a_disconnect_between_polls_downgrades_what_the_route_serves(
 # No rule judges glow yet, so these drive it with a judge that does: the judge is the one seam.
 
 
-def glow_for_rejections(pack: ContextPack) -> Judgement:
-    """The rule table, except that a fresh rejection is a glow."""
-    judged = rule_judge_v1(pack)
-    if pack.facts.get("kind") == "rejection" and judged.level == "card":
-        return Judgement("glow", "test: a rejection is a glow", "glow_test", "0")
-    return judged
-
-
 def _always_glow(pack: ContextPack) -> Judgement:
     return Judgement("glow", f"test: {pack.facts['kind']} is a glow", "glow_test", "0")
-
-
-def _only(*ids: str) -> list[dict[str, Any]]:
-    return [m for m in MAILS if m["id"] in ids]
 
 
 def test_the_level_lists_agree_on_glow() -> None:
@@ -2285,9 +1920,9 @@ def test_the_level_lists_agree_on_glow() -> None:
     assert len(lang.JOB_LEVEL_NAMES) == len(LEVELS)  # 记下, 亮一下, 卡片, 卡片带声, 开口
 
 
-def test_a_glow_judgement_is_an_alert_served_as_a_glow(tmp_path: Path, jev: _Jev) -> None:
+def test_a_glow_judgement_is_an_alert_served_as_a_glow(tmp_path: Path, jev: JobJev) -> None:
     """A glow is logged as judged, makes a pending alert (not ledger_only) and nothing else."""
-    h = _harness(tmp_path, jev, _only("m-reject"), judge=glow_for_rejections)
+    h = job_harness(tmp_path, jev, only_rows("m-reject"), judge=glow_for_rejections)
     h.job.poll_once()
 
     assert h.sql("SELECT message_id, level, state FROM job_alert") == [
@@ -2313,10 +1948,10 @@ def test_a_glow_judgement_is_an_alert_served_as_a_glow(tmp_path: Path, jev: _Jev
 
 @pytest.mark.parametrize("device", [AIRPODS, SPEAKERS], ids=["private", "speakers"])
 def test_a_glow_never_sounds_never_speaks_and_is_never_folded(
-    tmp_path: Path, jev: _Jev, device: dict[str, Any]
+    tmp_path: Path, jev: JobJev, device: dict[str, Any]
 ) -> None:
     """Every letter a glow, on any output with no speak gap: no line, no cue, no summary."""
-    h = _harness(tmp_path, jev, judge=_always_glow, speak_gap_s=0)
+    h = job_harness(tmp_path, jev, judge=_always_glow, speak_gap_s=0)
     h.device = dict(device)
     h.job.poll_once()
 
@@ -2335,10 +1970,10 @@ def test_a_glow_never_sounds_never_speaks_and_is_never_folded(
         assert [(n["kind"], n["level"]) for n in reply["notices"]] == [("mail", "glow")] * 7
 
 
-def test_a_glow_is_not_counted_by_the_speak_burst_rule(tmp_path: Path, jev: _Jev) -> None:
+def test_a_glow_is_not_counted_by_the_speak_burst_rule(tmp_path: Path, jev: JobJev) -> None:
     """Three glows, then an interview: it is the first card alert in the window, so it speaks."""
     rejects = [
-        _mail(
+        mail_row(
             f"rj{i}",
             "Orbital Careers <jobs@orbital.example>",
             "Update on your application",
@@ -2346,8 +1981,12 @@ def test_a_glow_is_not_counted_by_the_speak_burst_rule(tmp_path: Path, jev: _Jev
         )
         for i in range(3)
     ]
-    h = _harness(
-        tmp_path, jev, [*rejects, *_only("m-interview")], judge=glow_for_rejections, speak_gap_s=0
+    h = job_harness(
+        tmp_path,
+        jev,
+        [*rejects, *only_rows("m-interview")],
+        judge=glow_for_rejections,
+        speak_gap_s=0,
     )
     h.job.poll_once()
 
@@ -2375,19 +2014,19 @@ def test_a_glow_is_not_counted_by_the_speak_burst_rule(tmp_path: Path, jev: _Jev
     ],
 )
 def test_a_glow_is_a_mark_so_only_dnd_holds_it(
-    tmp_path: Path, jev: _Jev, quiet: str, served: list[str]
+    tmp_path: Path, jev: JobJev, quiet: str, served: list[str]
 ) -> None:
     """A glow and an interview card made at off: what each quiet level serves, as what level."""
-    h = _harness(tmp_path, jev, _only("m-reject", "m-interview"), judge=glow_for_rejections)
+    h = job_harness(tmp_path, jev, only_rows("m-reject", "m-interview"), judge=glow_for_rejections)
     h.job.poll_once()
     h.quiet = quiet
     assert sorted(n["level"] for n in h.notices()) == served
     assert {state for (state,) in h.sql("SELECT state FROM job_alert")} == {"pending"}
 
 
-def test_a_glow_made_under_dnd_waits_and_comes_back_as_a_glow(tmp_path: Path, jev: _Jev) -> None:
+def test_a_glow_made_under_dnd_waits_and_comes_back_as_a_glow(tmp_path: Path, jev: JobJev) -> None:
     """Only dnd notes a glow as held; once dnd lifts it is served, long waited, still a glow."""
-    h = _harness(tmp_path, jev, _only("m-reject"), judge=glow_for_rejections)
+    h = job_harness(tmp_path, jev, only_rows("m-reject"), judge=glow_for_rejections)
     h.quiet = "dnd"
     h.job.poll_once()
     (row,) = job_ledger.list_attention(h.db, "job_mail")
@@ -2401,16 +2040,16 @@ def test_a_glow_made_under_dnd_waits_and_comes_back_as_a_glow(tmp_path: Path, je
 
     # No-pop holds a card but not a glow: the card says held, the glow does not.
     for judge, held in ((glow_for_rejections, set()), (rule_judge_v1, {"held"})):
-        other = _harness(tmp_path / judge.__name__, jev, _only("m-reject"), judge=judge)
+        other = job_harness(tmp_path / judge.__name__, jev, only_rows("m-reject"), judge=judge)
         other.quiet = "no-pop"
         other.job.poll_once()
         (made,) = job_ledger.list_attention(other.db, "job_mail")
         assert set(made["delivery"]) == held
 
 
-def test_a_glow_stays_served_until_it_is_seen_or_dismissed(tmp_path: Path, jev: _Jev) -> None:
+def test_a_glow_stays_served_until_it_is_seen_or_dismissed(tmp_path: Path, jev: JobJev) -> None:
     """Polling does not end a glow; seen and dismissed do, as for a card, and ignored follows."""
-    h = _harness(tmp_path, jev, _only("m-reject"), judge=glow_for_rejections)
+    h = job_harness(tmp_path, jev, only_rows("m-reject"), judge=glow_for_rejections)
     h.job.poll_once()
     for _ in range(3):
         assert [n["level"] for n in h.notices()] == ["glow"]
@@ -2433,7 +2072,7 @@ def test_a_glow_stays_served_until_it_is_seen_or_dismissed(tmp_path: Path, jev: 
         ("right", {"action": "feedback", "reaction": "right"}),
         ("level", {"action": "feedback", "reaction": f"level:{lang.JOB_LEVEL_NAMES[1]}"}),
     ):
-        gone = _harness(tmp_path / action, jev, _only("m-reject"), judge=glow_for_rejections)
+        gone = job_harness(tmp_path / action, jev, only_rows("m-reject"), judge=glow_for_rejections)
         gone.job.poll_once()
         (shown,) = gone.notices()
         assert gone.client.post(f"/inherent/notices/{shown['id']}", json=body).status_code == 200
@@ -2447,10 +2086,10 @@ def test_a_glow_stays_served_until_it_is_seen_or_dismissed(tmp_path: Path, jev: 
 
 
 def test_profile_activity_mail_is_held_back_unread_and_job_mail_is_not(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """A profile-activity notice is a rule hold: not asked, not in the ledger, in 被拦下."""
-    h = _harness(tmp_path, jev, PROFILE, linkedin_alerts="ledger_only")
+    h = job_harness(tmp_path, jev, PROFILE, linkedin_alerts="ledger_only")
     h.job.poll_once()
 
     assert dict(h.sql("SELECT message_id, verdict FROM job_seen")) == {
@@ -2477,10 +2116,10 @@ def test_profile_activity_mail_is_held_back_unread_and_job_mail_is_not(
 
 
 def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cambio_row(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Both of today's misreads are mended offline, once, and a flagged mail is left alone."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     head = {
         "received_at": NOW.isoformat(),
         "name": "Maren Ingle",
@@ -2554,10 +2193,10 @@ def test_the_repair_pass_hides_a_stored_profile_activity_row_and_rereads_the_cam
 
 
 def test_the_search_pages_back_to_a_fixed_day_and_stops_at_a_cycles_worth(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """``backfill_since`` replaces the window; pages are read until a cycle's worth is unseen."""
-    h = _harness(tmp_path, jev, max_messages_per_cycle=5, backfill_since=date(2026, 9, 10))
+    h = job_harness(tmp_path, jev, max_messages_per_cycle=5, backfill_since=date(2026, 9, 10))
     h.gmail.page_size = 4
     h.job.poll_once()
 
@@ -2575,10 +2214,10 @@ def test_the_search_pages_back_to_a_fixed_day_and_stops_at_a_cycles_worth(
 
 
 def test_a_linkedin_application_sent_mail_is_job_mail_and_the_rest_of_linkedin_is_not(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """The Easy Apply confirmation is typed and named by its subject; repair does not hide it."""
-    sent = _mail(
+    sent = mail_row(
         "sent",
         "LinkedIn <jobs-noreply@linkedin.com>",
         "Allen, your application was sent to Cambio Earth",
@@ -2589,7 +2228,7 @@ def test_a_linkedin_application_sent_mail_is_job_mail_and_the_rest_of_linkedin_i
     assert not triage.is_application_sent("cgi.com", sent["subject"])
     assert not triage.is_application_sent("linkedin.com", "Jane, interview for the Co-op")
     assert triage.company_of("LinkedIn", "linkedin.com", sent["subject"]) == "Cambio Earth"
-    h = _harness(tmp_path, jev, [sent, LINKEDIN[5]], exclude_domains=("linkedin.com",))
+    h = job_harness(tmp_path, jev, [sent, LINKEDIN[5]], exclude_domains=("linkedin.com",))
     h.job.poll_once()
 
     assert h.sql("SELECT message_id, kind, company FROM job_mail") == [
@@ -2622,7 +2261,7 @@ def test_a_linkedin_application_sent_mail_is_job_mail_and_the_rest_of_linkedin_i
 
 
 def _stored(  # noqa: PLR0913 - a ledger row's fields
-    h: _Harness, key: str, company: str, role: str, kind: str, age: timedelta, event_at: str = ""
+    h: JobHarness, key: str, company: str, role: str, kind: str, age: timedelta, event_at: str = ""
 ) -> None:
     job_ledger.upsert_mail(
         h.db,
@@ -2641,17 +2280,17 @@ def _stored(  # noqa: PLR0913 - a ledger row's fields
     )
 
 
-def _apps(h: _Harness) -> dict[tuple[str, str], dict[str, Any]]:
+def _apps(h: JobHarness) -> dict[tuple[str, str], dict[str, Any]]:
     reply = h.client.get("/inherent/jobs").json()
     assert reply["ledger"] is not None  # older clients keep reading it
     return {(one["company"], one["role"]): one for one in reply["applications"]}
 
 
 def test_applications_group_by_company_and_the_status_follows_the_mail(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Receipt, then interview is interviewing; one company is one application, whatever role."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     soon = (NOW + timedelta(days=2)).isoformat()
     _stored(h, "a1", "Acme", "QA Co-op", "receipt", timedelta(days=10))
     _stored(h, "a2", "Acme", "QA Co-op", "interview", timedelta(days=5), event_at=soon)
@@ -2702,10 +2341,10 @@ def test_applications_group_by_company_and_the_status_follows_the_mail(
 
 
 def test_the_repair_pass_clears_a_role_that_is_the_company_and_cleans_a_kept_one(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Later/Later and Planview/Planview lose the role; a kept role is cleaned as read."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     for key, name, domain, subject, company, role in (
         (
             "a",
@@ -2753,10 +2392,10 @@ def test_the_repair_pass_clears_a_role_that_is_the_company_and_cleans_a_kept_one
 
 
 def test_reliable_controls_mails_are_one_application_and_an_ats_name_joins_by_role(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Allen's real rows: five mails, four role spellings, one application; Bamboohr merges in."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     rc, role = "Reliable Controls", "Firmware QA Analyst Co-op"
     _stored(h, "r1", rc, role, "interview", timedelta(days=5))
     _stored(h, "r2", rc, "Firmware QA Co-op", "interview", timedelta(days=4))
@@ -2799,9 +2438,9 @@ def test_reliable_controls_mails_are_one_application_and_an_ats_name_joins_by_ro
     assert _apps(h)[(rc, role)]["note"] == "newest"
 
 
-def test_allens_own_rows_and_edits_go_through_the_routes(tmp_path: Path, jev: _Jev) -> None:
+def test_allens_own_rows_and_edits_go_through_the_routes(tmp_path: Path, jev: JobJev) -> None:
     """Add a manual row, edit it and a mail-derived one; a newer deciding mail beats an old edit."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     _stored(h, "e1", "Epsilon", "", "receipt", timedelta(days=3))
     _stored(h, "f1", "Zeta", "", "receipt", timedelta(days=3))
     post = h.client.post
@@ -2930,10 +2569,10 @@ def test_a_body_gives_the_interview_mode_platform_place_people_and_links() -> No
 
 
 def test_an_application_carries_its_timeline_interview_and_links(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """The route gives each application its steps, interview and links from the kept bodies."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     rc = "Reliable Controls"
     soon = (NOW + timedelta(days=2)).isoformat()
     _stored(h, "r1", rc, "Firmware QA", "receipt", timedelta(days=9))
@@ -3009,7 +2648,8 @@ def test_event_of_reads_a_bare_teams_time_line_only_for_a_known_interview() -> N
     assert at == "2026-10-08T14:00-07:00"
     # A line with a date but no clock is not a time, even for a known interview.
     assert triage.event_of("Sometime in October 8, 2026.", received, OWNER_ZONE, dated=True) == (
-        None, None,
+        None,
+        None,
     )
 
 
@@ -3095,10 +2735,10 @@ def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
 
 
 def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """An interview row's event is read again from its body: replaced, or cleared if none."""
-    h = _harness(tmp_path, jev, [])
+    h = job_harness(tmp_path, jev, [])
     wrong = "2026-10-02T16:45-07:00"
     for key, kind in (("fix", "interview"), ("none", "interview"), ("other", "rejection")):
         job_ledger.upsert_mail(
@@ -3132,19 +2772,19 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
     assert h.gmail.calls == []
 
 
-def _bodyless(h: _Harness, key: str, kind: str, **fields: Any) -> None:  # noqa: ANN401
+def _bodyless(h: JobHarness, key: str, kind: str, **fields: Any) -> None:  # noqa: ANN401
     _stored(h, f"m-{key}", "Reliable Controls", "Firmware QA", kind, timedelta(days=4), **fields)
 
 
 def test_old_interview_mail_without_a_kept_body_is_read_again_once(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """ADR 0184: one gmail_get, the body kept as a reread row, the time filled, never twice."""
     mails = [
-        _mail(key, "Jill <jill@rc.example>", f"Interview {key}", _TEAMS_INVITE)
+        mail_row(key, "Jill <jill@rc.example>", f"Interview {key}", _TEAMS_INVITE)
         for key in ("rc", "kept", "offer", "reject", "gone")
     ]
-    h = _harness(tmp_path, jev, mails)
+    h = job_harness(tmp_path, jev, mails)
     _bodyless(h, "rc", "interview")
     _bodyless(h, "kept", "interview")
     job_ledger.record_decision(
@@ -3185,11 +2825,13 @@ def test_old_interview_mail_without_a_kept_body_is_read_again_once(
 
 
 def test_a_failed_or_impossible_reread_is_skipped_and_the_poller_goes_on(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """A Gmail failure on one mail is logged and the next is read; no Gmail means no reads."""
-    mails = [_mail(k, "Jill <jill@rc.example>", "Interview", _TEAMS_INVITE) for k in ("bad", "ok")]
-    h = _harness(tmp_path, jev, mails)
+    mails = [
+        mail_row(k, "Jill <jill@rc.example>", "Interview", _TEAMS_INVITE) for k in ("bad", "ok")
+    ]
+    h = job_harness(tmp_path, jev, mails)
     _bodyless(h, "bad", "interview")
     _bodyless(h, "ok", "interview")
     h.gmail.full_failures = {"m-bad"}
@@ -3200,20 +2842,20 @@ def test_a_failed_or_impossible_reread_is_skipped_and_the_poller_goes_on(
     assert h.gmail.full_read_count("m-bad") == 2
     assert h.gmail.full_read_count("m-ok") == 1
 
-    h.job._connections = _Connections(None)  # type: ignore[assignment]  # noqa: SLF001
+    h.job._connections = Connections(None)  # type: ignore[assignment]  # noqa: SLF001
     assert h.job.reread() == 0
 
 
 def test_the_loop_reads_old_bodies_after_the_repair_and_a_start_reads_at_most_twenty(
-    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, jev: JobJev, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The run loop calls the re-read once at start; the cap keeps a start small."""
     monkeypatch.delenv("OPENROUTER_API_KEY")  # the polls do nothing: only the re-read reads
     keys = [f"{i:02d}" for i in range(23)]
-    h = _harness(
+    h = job_harness(
         tmp_path,
         jev,
-        [_mail(k, "Jill <jill@rc.example>", "Interview", _TEAMS_INVITE) for k in keys],
+        [mail_row(k, "Jill <jill@rc.example>", "Interview", _TEAMS_INVITE) for k in keys],
         poll_s=0.05,
     )
     for key in keys:
@@ -3245,14 +2887,18 @@ _OLD_ACTION = "job-interview-reminders"
 
 
 def _reminding(
-    tmp_path: Path, jev: _Jev, *, event_text: str = _RANGE, **settings: Any  # noqa: ANN401
-) -> _Harness:
+    tmp_path: Path,
+    jev: JobJev,
+    *,
+    event_text: str = _RANGE,
+    **settings: Any,  # noqa: ANN401
+) -> JobHarness:
     """A harness with interview things on, a fixed clock and Reliable Controls' invitation."""
-    h = _harness(
+    h = job_harness(
         tmp_path,
         jev,
         [],
-        outlook=_Outlook(),
+        outlook=Outlook(),
         interview_reminders=InterviewSettings(evening_at=clock(20, 0), before_min=30),
         **settings,
     )
@@ -3260,24 +2906,34 @@ def _reminding(
     h.job.now = lambda: _TUE_NOON.astimezone(UTC)
     h.job.interviews.zone = "America/Vancouver"
     _stored(
-        h, "m-rc", "Reliable Controls", "Firmware QA", "interview", timedelta(days=4),
+        h,
+        "m-rc",
+        "Reliable Controls",
+        "Firmware QA",
+        "interview",
+        timedelta(days=4),
         event_at=_INTERVIEW,
     )
     h.sql("UPDATE job_mail SET event_text = ?", event_text)
     job_ledger.record_decision(
-        h.db, "m-rc", "body", "job", NOW, head={"received_at": NOW.isoformat()},
+        h.db,
+        "m-rc",
+        "body",
+        "job",
+        NOW,
+        head={"received_at": NOW.isoformat()},
         body_excerpt=_TEAMS_INVITE,
     )
     return h
 
 
-def _rung(h: _Harness) -> list[reminder_state.Reminder]:
+def _rung(h: JobHarness) -> list[reminder_state.Reminder]:
     """Every reminder ever scheduled in the log, with what became of it."""
     with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
         return list(reminder_state.fold(conn).values())
 
 
-def _things(h: _Harness) -> list[things.Thing]:
+def _things(h: JobHarness) -> list[things.Thing]:
     """Every thing in the log, open or not, in the order it was made."""
     with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
         return list(things.fold(conn).values())
@@ -3287,7 +2943,7 @@ def _utc(text: str) -> int:
     return int(datetime.fromisoformat(text).timestamp() * 1000)
 
 
-def test_an_interview_time_makes_one_thing_with_two_rings_once(tmp_path: Path, jev: _Jev) -> None:
+def test_an_interview_time_makes_one_thing_with_two_rings_once(tmp_path: Path, jev: JobJev) -> None:
     """One ``go`` thing; the evening before at 20:00 and 30 minutes ahead; no Outlook write."""
     h = _reminding(tmp_path, jev)
     assert h.outlook is not None
@@ -3334,7 +2990,7 @@ def test_an_interview_time_makes_one_thing_with_two_rings_once(tmp_path: Path, j
 
 
 def test_an_interview_with_no_end_has_none_and_the_words_are_english_in_english(
-    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, jev: JobJev, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No range in the invitation: no end (an hour in the ledger); the words follow his language."""
     monkeypatch.setattr(lang, "_current", "en")
@@ -3363,7 +3019,7 @@ def test_event_minutes_reads_only_a_clear_range() -> None:
         assert triage.event_minutes(sentence) == minutes, sentence
 
 
-def test_a_changed_time_moves_the_thing_and_its_rings(tmp_path: Path, jev: _Jev) -> None:
+def test_a_changed_time_moves_the_thing_and_its_rings(tmp_path: Path, jev: JobJev) -> None:
     """New time: the one thing is moved, the two old rings are cancelled and two new ones set."""
     h = _reminding(tmp_path, jev)
     h.job.remind()
@@ -3392,7 +3048,7 @@ def test_a_changed_time_moves_the_thing_and_its_rings(tmp_path: Path, jev: _Jev)
     assert [s.what for s in _things(h)[0].history] == ["added", "moved"]
 
 
-def test_a_rejected_or_hidden_application_cancels_its_thing(tmp_path: Path, jev: _Jev) -> None:
+def test_a_rejected_or_hidden_application_cancels_its_thing(tmp_path: Path, jev: JobJev) -> None:
     """A rejection (or hiding it) takes the thing back; a time already past is left alone."""
     h = _reminding(tmp_path, jev)
     assert h.outlook is not None
@@ -3424,7 +3080,7 @@ def test_a_rejected_or_hidden_application_cancels_its_thing(tmp_path: Path, jev:
     assert (done.state, len(done.history)) == ("open", 1)
 
 
-def test_a_ring_already_past_is_skipped_not_set_late(tmp_path: Path, jev: _Jev) -> None:
+def test_a_ring_already_past_is_skipped_not_set_late(tmp_path: Path, jev: JobJev) -> None:
     """Mail read after 20:00 the evening before: only the 30-minute ring is set."""
     h = _reminding(tmp_path, jev)
     h.job.now = lambda: datetime(2026, 10, 7, 21, 0, tzinfo=_VANCOUVER).astimezone(UTC)
@@ -3444,7 +3100,7 @@ def test_a_ring_already_past_is_skipped_not_set_late(tmp_path: Path, jev: _Jev) 
 
 
 def test_the_cancel_route_closes_the_thing_and_that_time_is_not_armed_again(
-    tmp_path: Path, jev: _Jev
+    tmp_path: Path, jev: JobJev
 ) -> None:
     """Cancel: the thing and its rings cancelled, the card says so; a new time is a new thing."""
     h = _reminding(tmp_path, jev)
@@ -3456,7 +3112,9 @@ def test_the_cancel_route_closes_the_thing_and_that_time_is_not_armed_again(
 
     (one,) = _things(h)
     assert (one.state, one.history[-1].by, one.history[-1].why) == (
-        "cancelled", "him", "cancelled on the Jobs card",
+        "cancelled",
+        "him",
+        "cancelled on the Jobs card",
     )
     assert all(r.cancelled for r in _rung(h))
     reminders = _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]
@@ -3475,7 +3133,7 @@ def test_the_cancel_route_closes_the_thing_and_that_time_is_not_armed_again(
     assert h.client.post("/inherent/jobs/applications/nothere/cancel-reminders").status_code == 404
 
 
-def _old_interview(h: _Harness, *, cancelled: bool = False) -> tuple[str, str]:
+def _old_interview(h: JobHarness, *, cancelled: bool = False) -> tuple[str, str]:
     """What ADR 0186 left for Reliable Controls: two pending reminders, an Outlook event, a row."""
     with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
         evening, before = (
@@ -3489,13 +3147,18 @@ def _old_interview(h: _Harness, *, cancelled: bool = False) -> tuple[str, str]:
         "INSERT INTO job_interview_reminder"
         " (app_id, event_at, evening_id, before_id, outlook_id, outlook_sig, cancelled)"
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        job_ledger.application_id("Reliable Controls"), _INTERVIEW, evening, before, "AAMk-old",
-        "sig", int(cancelled),
+        job_ledger.application_id("Reliable Controls"),
+        _INTERVIEW,
+        evening,
+        before,
+        "AAMk-old",
+        "sig",
+        int(cancelled),
     )
     return evening, before
 
 
-def test_the_first_pass_settles_what_the_old_reminders_armed(tmp_path: Path, jev: _Jev) -> None:
+def test_the_first_pass_settles_what_the_old_reminders_armed(tmp_path: Path, jev: JobJev) -> None:
     """The old reminders are cancelled, the Outlook event goes on the thing, the row goes."""
     h = _reminding(tmp_path, jev)
     assert h.outlook is not None
@@ -3521,7 +3184,7 @@ def test_the_first_pass_settles_what_the_old_reminders_armed(tmp_path: Path, jev
     assert h.outlook.calls == []
 
 
-def test_a_time_he_cancelled_before_the_ledger_stays_cancelled(tmp_path: Path, jev: _Jev) -> None:
+def test_a_time_he_cancelled_before_the_ledger_stays_cancelled(tmp_path: Path, jev: JobJev) -> None:
     """The Jobs-card cancel of ADR 0186 is carried over; that time is not made again."""
     h = _reminding(tmp_path, jev)
     _old_interview(h, cancelled=True)
@@ -3530,7 +3193,9 @@ def test_a_time_he_cancelled_before_the_ledger_stays_cancelled(tmp_path: Path, j
 
     (one,) = _things(h)
     assert (one.state, one.history[-1].by, one.history[-1].why) == (
-        "cancelled", "him", "cancelled on the Jobs card",
+        "cancelled",
+        "him",
+        "cancelled on the Jobs card",
     )
     assert not [r for r in _rung(h) if r.pending]
     reminders = _apps(h)[("Reliable Controls", "Firmware QA")]["reminders"]
@@ -3540,7 +3205,7 @@ def test_a_time_he_cancelled_before_the_ledger_stays_cancelled(tmp_path: Path, j
 
 
 def test_the_loop_arms_at_start_and_after_each_cycle_without_gmail(
-    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, jev: JobJev, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The interview pass does not wait on Gmail or a key: the run loop calls it by itself."""
     monkeypatch.delenv("OPENROUTER_API_KEY")
@@ -3578,7 +3243,7 @@ def test_the_interview_reminders_block_is_validated_like_the_other_job_mail_keys
         "before_min": 30,
     }
     config_path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
-    connections: Any = _Connections(None)
+    connections: Any = Connections(None)
     on = {"job_mail": {**block, "enabled": True}}
 
     log = tmp_path / "log.db"
@@ -3624,12 +3289,14 @@ def _terminal_link(monkeypatch: pytest.MonkeyPatch, profile: str) -> Any:  # noq
 
 
 def test_a_brain_speaks_and_sounds_when_its_terminal_reports_headphones(
-    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    jev: JobJev,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The terminal's own default output is private: the line is said and the cues are served."""
-    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h = job_harness(tmp_path, jev, speak_gap_s=0)
     h.job.output = TerminalOutput(
-        _terminal_link(monkeypatch, _profile(_default("Allen's AirPods Pro", BT))),
+        _terminal_link(monkeypatch, audio_profile(default_output("Allen's AirPods Pro", BT))),
     )
     h.job.poll_once()
 
@@ -3639,18 +3306,24 @@ def test_a_brain_speaks_and_sounds_when_its_terminal_reports_headphones(
     assert {n["level"] for n in h.flat()} == {"speak", "card", "card_sound"}
     rows = {r["event_id"]: r for r in job_ledger.list_attention(h.db, "job_mail")}
     assert rows["m-interview"]["delivery"]["audio"] == {
-        "device": "Allen's AirPods Pro", "private": True,
+        "device": "Allen's AirPods Pro",
+        "private": True,
     }
 
 
 def test_a_brain_stays_silent_when_its_terminal_reports_speakers(
-    tmp_path: Path, jev: _Jev, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    jev: JobJev,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The terminal's speakers are not private: no line, and every sound level is a card."""
-    h = _harness(tmp_path, jev, speak_gap_s=0)
-    h.job.output = TerminalOutput(_terminal_link(
-        monkeypatch, _profile(_default("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers")),
-    ))
+    h = job_harness(tmp_path, jev, speak_gap_s=0)
+    h.job.output = TerminalOutput(
+        _terminal_link(
+            monkeypatch,
+            audio_profile(default_output("MacBook Pro Speakers", BUILTIN, "MacBook Pro Speakers")),
+        )
+    )
     h.job.poll_once()
 
     assert h.spoken == 0
@@ -3675,7 +3348,9 @@ def test_a_brain_stays_silent_when_its_terminal_reports_speakers(
     ids=["away", "timeout", "dropped", "old terminal", "null", "text", "not a flag", "no result"],
 )
 def test_a_brain_whose_terminal_cannot_say_is_never_private(
-    tmp_path: Path, jev: _Jev, failure: Any,  # noqa: ANN401
+    tmp_path: Path,
+    jev: JobJev,
+    failure: Any,  # noqa: ANN401
 ) -> None:
     """Away, slow, old or unreadable: no line and no cue, the alerts are silent cards."""
 
@@ -3685,7 +3360,7 @@ def test_a_brain_whose_terminal_cannot_say_is_never_private(
             raise failure
         return dict(failure)
 
-    h = _harness(tmp_path, jev, speak_gap_s=0)
+    h = job_harness(tmp_path, jev, speak_gap_s=0)
     h.job.output = TerminalOutput(link)
     h.job.poll_once()
 
@@ -3701,7 +3376,7 @@ def test_a_brain_looks_again_at_each_decision_and_keeps_a_look_for_two_seconds(
 ) -> None:
     """Headphones come off between looks: a look holds two seconds, ``fresh`` is never held."""
     asked: list[object] = []
-    seen = [_profile(_default("Allen's AirPods Pro", BT))]
+    seen = [audio_profile(default_output("Allen's AirPods Pro", BT))]
     link = _terminal_link(monkeypatch, seen[0])
 
     def counting(op: str, arguments: Any, target: str | None) -> dict[str, Any]:  # noqa: ANN401
@@ -3710,12 +3385,14 @@ def test_a_brain_looks_again_at_each_decision_and_keeps_a_look_for_two_seconds(
 
     output = TerminalOutput(counting)
     assert output()["private"] is True
-    monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("X", BUILTIN, "X")))
+    monkeypatch.setattr(
+        audio_output, "_probe", lambda: audio_profile(default_output("X", BUILTIN, "X"))
+    )
     assert output()["private"] is True  # the brain's own two seconds
     assert len(asked) == 1
     assert output(fresh=True)["private"] is False  # the terminal looks again too
     assert asked[-1] == {"fresh": True}
     assert output()["private"] is False
     monkeypatch.setattr(time, "monotonic", lambda: 1e9)
-    monkeypatch.setattr(audio_output, "_probe", lambda: _profile(_default("A", BT)))
+    monkeypatch.setattr(audio_output, "_probe", lambda: audio_profile(default_output("A", BT)))
     assert output()["private"] is True  # expired, so asked again (and the terminal's expired too)

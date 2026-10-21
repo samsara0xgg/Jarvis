@@ -18,40 +18,20 @@ from jarvis.runtime import _register_workers, _timesink_db_path
 from jarvis.state import daily_activity
 from jarvis.state.daily_contract import ACTIVITY_PAGE_BUDGET
 from jarvis.state.event_log import emit_event
+from tests.support import timesink as timesink_support
 from tests.support.daily_tools import DailyHarness
+from tests.support.timesink import add_capture, add_event, add_span
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+source = timesink_support.source  # the fixture, found by name in this module
+
+
 QUERY = {"from": "2026-09-19T09:00:00Z", "to": "2026-09-19T10:00:00Z", "sources": ["app"]}
 SCREEN_QUERY = {**QUERY, "sources": ["app", "screen"]}
 REV = 8  # hex digits of the row revision inside a short ref
-
-
-@pytest.fixture
-def source(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    """A live WAL writer using the real TimeSink schema and GRDB timestamp encoding."""
-    conn = sqlite3.connect(tmp_path / "timesink.sqlite")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        "CREATE TABLE span (id INTEGER PRIMARY KEY AUTOINCREMENT, start DATETIME NOT NULL, "
-        "end DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
-        "title TEXT, url TEXT, domain TEXT, document TEXT)"
-    )
-    conn.execute(
-        "CREATE TABLE stateEvent (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
-        "kind TEXT NOT NULL)"
-    )
-    conn.execute(
-        "CREATE TABLE capture (id INTEGER PRIMARY KEY AUTOINCREMENT, at DATETIME NOT NULL, "
-        "lastSeenAt DATETIME NOT NULL, appBundleID TEXT NOT NULL, appName TEXT NOT NULL, "
-        "windowID INTEGER NOT NULL, title TEXT, spanID INTEGER, text TEXT NOT NULL, "
-        "imagePath TEXT)"
-    )
-    conn.commit()
-    yield conn
-    conn.close()
 
 
 @pytest.fixture
@@ -67,45 +47,6 @@ def connected(tmp_path: Path, source: sqlite3.Connection) -> Iterator[DailyHarne
     harness = DailyHarness(tmp_path, timesink_path=tmp_path / "timesink.sqlite")
     yield harness
     harness.fx.close()
-
-
-def add_span(  # noqa: PLR0913 — the columns TimeSink writes.
-    conn: sqlite3.Connection,
-    start: str,
-    end: str,
-    *,
-    title: str = "Jarvis notes",
-    bundle: str = "com.google.Chrome",
-    name: str = "Chrome",
-) -> int:
-    """Write source data exactly as the upstream producer would."""
-    cursor = conn.execute(
-        "INSERT INTO span(start,end,appBundleID,appName,title,url,domain) VALUES(?,?,?,?,?,?,?)",
-        (start, end, bundle, name, title, "https://example.test/docs", "example.test"),
-    )
-    conn.commit()
-    assert cursor.lastrowid is not None
-    return cursor.lastrowid
-
-
-def add_capture(
-    conn: sqlite3.Connection, at: str, last_seen: str, *, text: str, image: str | None = "d/1.jpg"
-) -> int:
-    """Write a screen capture exactly as TimeSink's ScreenCollector does."""
-    cursor = conn.execute(
-        "INSERT INTO capture(at,lastSeenAt,appBundleID,appName,windowID,title,spanID,text,"
-        "imagePath) VALUES(?,?,?,?,?,?,?,?,?)",
-        (at, last_seen, "com.google.Chrome", "Chrome", 13117, "cc | rules", None, text, image),
-    )
-    conn.commit()
-    assert cursor.lastrowid is not None
-    return cursor.lastrowid
-
-
-def add_event(conn: sqlite3.Connection, at: str, kind: str) -> None:
-    """Write a tracker state reason exactly as TimeSink's ObservationStore does."""
-    conn.execute("INSERT INTO stateEvent(at,kind) VALUES(?,?)", (at, kind))
-    conn.commit()
 
 
 def read_all(harness: DailyHarness, activity_id: str) -> dict[str, Any]:

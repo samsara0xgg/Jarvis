@@ -23,7 +23,7 @@ from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.state.work_state import current_state
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
-from tests.integration.test_work_state import Rig
+from tests.support.work_state import WorkStateRig
 
 pytestmark = pytest.mark.live_llm
 
@@ -40,7 +40,7 @@ def test_live_work_state_refresh_and_conversation(tmp_path: Path) -> None:  # no
         closing(sqlite3.connect(frozen)) as dst,
     ):
         src.backup(dst)
-    rig = Rig(tmp_path, timesink=frozen)
+    rig = WorkStateRig(tmp_path, timesink=frozen)
     analyst = build_analyst(config, "fast", pricing_path=None, account_cost=False)
     assert analyst is not None
     rig.service = WorkStateService(

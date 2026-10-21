@@ -23,24 +23,22 @@ from jarvis.state import device_reads
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.projects import Project
-from tests.integration.test_projects import NOW, ZONE, Rig, _project, rig, source
-from tests.integration.test_timesink_moment import (
-    CHROME,
-    T0,
-    FakeTimeSink,
-    _job_harness,
-    _moment_for,
-    _zh,
-    jev,
-)
+from tests.support import job_mail as job_mail_support
+from tests.support.job_mail import fixed_zh_words  # noqa: F401 - autouse, found by name
+from tests.support.projects import NOW, ZONE, ProjectsRig, project_of, rig
 from tests.support.terminal import Brain, Terminal, wait_for
+from tests.support.timesink import source
+from tests.support.timesink_moment import CHROME, T0, FakeTimeSink, moment_for, moment_harness
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.integration.test_job_mail import _Jev
+    from tests.support.job_mail import JobJev
 
-__all__ = ["_zh", "jev", "rig", "source"]
+jev = job_mail_support.jev  # the fixture, found by name in this module
+
+
+__all__ = ["rig", "source"]
 
 GONE = "/not/on/the/brain"
 
@@ -95,7 +93,7 @@ def test_a_brains_moment_is_the_terminals_one_machine_moment_and_holds_for_a_cal
     store = FakeTimeSink(tmp_path)
     _in_a_meeting(store)
     db = tmp_path / "memory.db"
-    one = _moment_for(store, db)
+    one = moment_for(store, db)
     with _Link(tmp_path, store.path) as link:
         brain = Moment(MomentSettings(dict.fromkeys(rules.FIELDS, True)), None, db, link.device)
         brain.now = lambda: T0
@@ -153,11 +151,11 @@ def test_the_work_states_auto_refresh_reads_a_brains_moment_off_the_loop(tmp_pat
 
 
 def test_the_ledger_time_column_is_the_terminals_and_a_missing_terminal_is_said(
-    tmp_path: Path, jev: _Jev,
+    tmp_path: Path, jev: JobJev,
 ) -> None:
     """Time per company over the terminal's store equals one machine's; offline there is a note."""
     store = FakeTimeSink(tmp_path)
-    h = _job_harness(tmp_path, jev, store)
+    h = moment_harness(tmp_path, jev, store)
     h.job.poll_once()
     store.span(900, 300, CHROME, "Google Chrome", domain="www.linkedin.com",
                title="Software Developer Co-op - Northwind | LinkedIn",
@@ -191,7 +189,7 @@ def _catalog(repo: str) -> tuple[Project, ...]:
     )
 
 
-def _service(rig_: Rig, log: Path, repo: str, device: Any = None) -> ProjectsService:  # noqa: ANN401
+def _service(rig_: ProjectsRig, log: Path, repo: str, device: Any = None) -> ProjectsService:  # noqa: ANN401
     return ProjectsService(
         event_log_path=log, timesink_path=None if device else rig_.timesink,
         projects=_catalog(repo), sorter=rig_.sorter, model="scripted", tz=ZONE,
@@ -200,12 +198,12 @@ def _service(rig_: Rig, log: Path, repo: str, device: Any = None) -> ProjectsSer
 
 
 def test_a_brains_projects_view_is_built_from_the_terminals_store_and_repositories(
-    tmp_path: Path, rig: Rig,
+    tmp_path: Path, rig: ProjectsRig,
 ) -> None:
     """Week, per-day sums and commits equal the one-machine view; the brain names no path."""
     one = _service(rig, rig.log, str(rig.repo))
     want = one.read()
-    jarvis = _project(want, "jarvis")
+    jarvis = project_of(want, "jarvis")
     assert want["coverage"] == {"timesink": "available", "git": "available"}
     assert want["unsorted"]["count"] == 3
     assert jarvis["commits"]["count"] == 2
@@ -235,7 +233,7 @@ def test_a_brains_projects_view_is_built_from_the_terminals_store_and_repositori
 
 
 def test_sorting_with_no_terminal_says_why_and_never_calls_the_model(
-    tmp_path: Path, rig: Rig,
+    tmp_path: Path, rig: ProjectsRig,
 ) -> None:
     """A refresh with nothing to read is not "no evidence" without a reason."""
     with _Link(tmp_path / "device", rig.timesink) as link:

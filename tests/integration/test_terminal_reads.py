@@ -44,9 +44,9 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
 from jarvis.state.work_state import gather_evidence
 from jarvis.surface import terminal_link
-from tests.integration.test_timesink_activity import add_capture, add_event, add_span, source
 from tests.support.daily_report import DAY, NOW, TZ, ZONE, CannedReporter, git_repo, one_item
 from tests.support.terminal import Brain, Terminal, commit_file, log_rows, make_repo, wait_for
+from tests.support.timesink import add_capture, add_event, add_span, source
 from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:
