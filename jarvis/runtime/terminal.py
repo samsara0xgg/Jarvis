@@ -89,27 +89,29 @@ from jarvis.runtime import (
     _work_state_timezone,
     audio_output,
 )
+from jarvis.runtime.daemon.observers import (
+    agents_port,
+    claude_sessions_read,
+    repo_observer_task,
+    timesink_observer_task,
+    usage_observer_task,
+    usage_poll_interval_s,
+)
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
-    _agents_port,
     _build_echo_canceller,
     _build_tts_pipeline,
     _build_voice_pipeline,
-    _claude_sessions_read,
     _data_sweep_task,
     _install_power_observer_or_degrade,
     _ListenPorts,
     _log_watcher_death,
-    _repo_observer_task,
     _restart_soon,
     _shutdown_power_observer,
     _single_ingress_activation,
     _spawn_single_ingress_session,
     _start_audio_device_watch,
-    _timesink_observer_task,
     _tts_watcher,
-    _usage_observer_task,
-    _usage_poll_interval_s,
     _voice_knobs,
     _voice_models_preflight,
     _VoicePowerCoordinator,
@@ -445,13 +447,13 @@ async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
             repo_observer = RepoObserver(scratch, watched.repos, emit_event=outbox.emit_event)
             repo_observer.recover_baselines()
             tasks.append(asyncio.create_task(
-                _repo_observer_task(repo_observer, interval_s=watched.repo_interval_s),
+                repo_observer_task(repo_observer, interval_s=watched.repo_interval_s),
             ))
         if watched.timesink is not None:
             timesink = TimesinkObserver(scratch, watched.timesink, emit_event=outbox.emit_event)
             timesink.recover_baseline()
             tasks.append(asyncio.create_task(
-                _timesink_observer_task(timesink, interval_s=watched.timesink_interval_s),
+                timesink_observer_task(timesink, interval_s=watched.timesink_interval_s),
             ))
         if watched.usage_interval_s is not None:
             usage = UsageObserver(
@@ -459,7 +461,7 @@ async def _observe(outbox: EventOutbox, watched: _Watched) -> None:
             )
             usage.recover_baselines()
             tasks.append(asyncio.create_task(
-                _usage_observer_task(usage, interval_s=watched.usage_interval_s),
+                usage_observer_task(usage, interval_s=watched.usage_interval_s),
             ))
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
@@ -1121,7 +1123,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
         configured_store = _timesink_db_path(config)
         repos = configured_repos if observers else ()
         store = configured_store if observers else None
-        usage_interval_s = _usage_poll_interval_s(config) if observers else None
+        usage_interval_s = usage_poll_interval_s(config) if observers else None
         ship = ship_config(config, runtime_root) if observers else None
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
@@ -1136,7 +1138,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
             sys.stderr.write(f"jarvis terminal: {exc}\n")
             return 1
     _vision_preset, max_width_px = _screen_tools_config(config)
-    claude = ClaudeSessions() if _claude_sessions_read(config) else None
+    claude = ClaudeSessions() if claude_sessions_read(config) else None
     # ADR 0192: this Mac's night run, held here because a brain has no Mac to keep awake. Its
     # events are the one log a terminal keeps; it recovers an open run from them at start.
     night_log = runtime_root / NIGHT_LOG
@@ -1149,7 +1151,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     # It holds the Mac past the deadline while a session it can see still works. Codex's board
     # is filled by hooks into the brain, so none is read here.
     night.watch = NightWatch(
-        port=_agents_port(), key=functools.partial(local_key, runtime_root), claude=claude,
+        port=agents_port(), key=functools.partial(local_key, runtime_root), claude=claude,
         codex={},
     )
     registry = build_default_registry(

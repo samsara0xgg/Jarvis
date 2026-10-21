@@ -22,7 +22,7 @@ import httpx
 import pytest
 
 from jarvis.runtime import bootstrap_runtime_app
-from jarvis.runtime.inherent_loop import _make_usage_observer
+from jarvis.runtime.daemon.observers import make_usage_observer
 from jarvis.runtime.terminal import _Watched
 from jarvis.state.device_tokens import pair_device
 from jarvis.state.event_log import emit_event, open_event_log
@@ -204,8 +204,8 @@ def test_a_brain_runs_the_keyed_half_and_a_one_machine_daemon_all_of_it(
     try:
         for runtime in built.values():
             assert runtime.config["observer"]["usage"]["enabled"] is True
-        one = _make_usage_observer(built["one"])
-        brain = _make_usage_observer(built["brain"])
+        one = make_usage_observer(built["one"])
+        brain = make_usage_observer(built["brain"])
         assert one is not None
         assert brain is not None
         assert one._services == SERVICES  # noqa: SLF001

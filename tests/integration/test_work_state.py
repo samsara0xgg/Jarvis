@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import ChatResult
 from jarvis.decision.work_state import build_request, parse_report
-from jarvis.runtime.inherent_loop import _poll_timesink_once
+from jarvis.runtime.daemon.observers import poll_timesink_once
 from jarvis.runtime.work_state import WorkStateService, auto_check
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
@@ -562,10 +562,10 @@ def test_unchanged_poll_updates_check_clock_without_model(
     """Polling unchanged data advances checked_at without events or analysis calls."""
     observer = TimesinkObserver(rig.fx.conn, rig.timesink)
     monkeypatch.setattr("jarvis.runtime.work_state.time.time", lambda: 1000.0)
-    asyncio.run(_poll_timesink_once(observer, rig.service.note_checked))
+    asyncio.run(poll_timesink_once(observer, rig.service.note_checked))
     first = rig.service.read(rig.fx.conn)
     monkeypatch.setattr("jarvis.runtime.work_state.time.time", lambda: 1300.0)
-    asyncio.run(_poll_timesink_once(observer, rig.service.note_checked))
+    asyncio.run(poll_timesink_once(observer, rig.service.note_checked))
     second = rig.service.read(rig.fx.conn)
     assert second["freshness"]["checked_at_ms"] - first["freshness"]["checked_at_ms"] == 300000
     assert second["freshness"]["latest_observed_at"] == first["freshness"]["latest_observed_at"]

@@ -15,7 +15,7 @@ import pytest
 
 from jarvis.execution.tools import ToolRegistry, build_default_registry
 from jarvis.runtime import bootstrap_runtime_app, device_tools
-from jarvis.runtime.inherent_loop import _claude_sessions_served
+from jarvis.runtime.daemon.observers import claude_sessions_served
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state.device_tokens import pair_device, unpair_device
@@ -212,6 +212,6 @@ def test_the_agents_page_is_served_wherever_a_terminal_can_connect(
     """A brain ignores its own `observer.claude_sessions.enabled` (off here); `all` honors it."""
     runtime = _brain_runtime(tmp_path / "root", settings, monkeypatch)
     try:
-        assert _claude_sessions_served(runtime) is served
+        assert claude_sessions_served(runtime) is served
     finally:
         runtime.conn.close()
