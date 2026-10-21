@@ -15,11 +15,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import request_confirmation
 from jarvis.deployment.launchd import supervised
-from jarvis.runtime import (
-    JarvisRuntime,
-    _confirmation_ttl_ms,
-    _timesink_db_path,
-)
 from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.job_mail import served_notices, settle_notice
@@ -45,6 +40,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision import ToolRegistryLike
     from jarvis.decision.turn_end_asks import TurnEndAsks
+    from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.card_feedback import CardFeedback
     from jarvis.runtime.dashboard import MailDrafts
     from jarvis.runtime.doing_answers import DoingAnswers
@@ -305,7 +301,7 @@ def day_sources(runtime: JarvisRuntime, memory_db: Path) -> DaySources:
     """The stores a day is folded from, as the routes that write about a day's items read them."""
     return DaySources(
         runtime.config.zone,
-        _timesink_db_path(runtime.config.raw),
+        runtime.config.observer.timesink_db_path,
         memory_db,
         (
             None if runtime.terminal_hub is None
@@ -577,7 +573,7 @@ def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
     try:
         asked = request_confirmation(
             conn, cast("ToolRegistryLike", runtime.tool_registry), "mcp__gmail__gmail_send", args,
-            ttl_ms=_confirmation_ttl_ms(runtime.config.raw), lang=lang.language(),
+            ttl_ms=runtime.config.confirmation.ttl_ms, lang=lang.language(),
         )
     finally:
         with contextlib.suppress(sqlite3.Error):

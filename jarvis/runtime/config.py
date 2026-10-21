@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from jarvis.decision import DEFAULT_MAX_TOOL_ITERATIONS
 from jarvis.deployment.models import (
     default_sensevoice_dir,
     default_silero_vad_path,
@@ -99,6 +100,79 @@ class ResponseActivation:
 
 
 @dataclass(frozen=True)
+class ConfirmationSettings:
+    """The ``confirmation`` block (ADR 0012, 0321).
+
+    ``ttl_ms`` is how long a card waits (the live burn shortens it); ``words_preset`` the
+    ``llm.presets`` entry that reads his words against a waiting card, and ``words_timeout_s``
+    its one attempt's budget.
+    """
+
+    ttl_ms: int
+    words_preset: str
+    words_timeout_s: float
+
+
+@dataclass(frozen=True)
+class ObserverSettings:
+    """The ``observer`` block: what this machine watches and how often.
+
+    ``poll_interval_s`` (ADR-0009 D5) is read twice: the repo observer polls at it, and a turn
+    hands the same number to L3 so the Status Board note's stale threshold (3x the poll interval)
+    moves with the cadence the daemon actually runs at. ``repos`` are the watched repositories,
+    ``~`` expanded (empty: no observer). ``timesink_db_path`` is the local TimeSink store, set only
+    when ``observer.timesink.enabled`` is true (ADR 0023) and polled every
+    ``timesink_poll_interval_s``. ``usage_poll_interval_s`` is set only when ``observer.usage`` is
+    on (ADR 0018). ``claude_sessions`` lets the Agents page read Claude Code's files.
+    """
+
+    poll_interval_s: float
+    repos: tuple[str, ...]
+    timesink_db_path: Path | None
+    timesink_poll_interval_s: float
+    usage_poll_interval_s: float | None
+    claude_sessions: bool
+
+
+@dataclass(frozen=True)
+class SupervisorSettings:
+    """The ``supervisor`` block (ADR 0009 D4).
+
+    The sweep closes overdue actions every ``sweep_interval_s``; ``default_budget_s`` is the
+    budget of an action that names none.
+    """
+
+    sweep_interval_s: float
+    default_budget_s: float
+
+
+@dataclass(frozen=True)
+class VoiceSettings:
+    """The ``voice`` block.
+
+    ``lead_in_ms`` (ADR 0320) is the median call time from which a tool says its line.
+    """
+
+    lead_in_ms: int
+
+
+@dataclass(frozen=True)
+class ToolIterations:
+    """``llm.max_tool_iterations`` and ``max_tool_iterations_voice`` (ADR 0060), resolved.
+
+    How many model calls one turn may chain: ``typed`` for a typed turn, ``spoken`` for one he
+    spoke (the voice key, else the typed bound).
+    """
+
+    typed: int
+    spoken: int
+
+    def for_turn(self, *, spoken: bool) -> int:
+        """The bound for a spoken or a typed turn."""
+        return self.spoken if spoken else self.typed
+
+
+@dataclass(frozen=True)
 class RealtimeSettings:
     """The ``realtime`` block's switches and bounds; its voice knobs stay in ``raw``.
 
@@ -113,6 +187,7 @@ class RealtimeSettings:
     cancel_timeout_ms: int
     input_queue_capacity: int
     input_max_concurrent_turns: int
+    voice_service_tier: str | None
 
 
 @dataclass(frozen=True)
@@ -140,6 +215,11 @@ class RuntimeConfig:
     memory: MemorySettings
     session: SessionSettings
     realtime: RealtimeSettings
+    confirmation: ConfirmationSettings
+    voice: VoiceSettings
+    tool_iterations: ToolIterations
+    observer: ObserverSettings
+    supervisor: SupervisorSettings
     raw: Mapping[str, Any]
 
 
@@ -293,6 +373,137 @@ def _positive_int(block: object, *, key: str, fallback: int, where: str) -> int:
     return value
 
 
+_FALLBACK_CONFIRMATION_TTL_MS: Final = 600_000
+_FALLBACK_CONFIRMATION_WORDS_PRESET: Final = "haiku"
+_FALLBACK_CONFIRMATION_WORDS_TIMEOUT_S: Final = 4.0
+_FALLBACK_LEAD_IN_MS: Final = 2000
+_FALLBACK_OBSERVER_POLL_INTERVAL_S: Final = 60.0
+_FALLBACK_TIMESINK_POLL_INTERVAL_S: Final = 300.0
+_FALLBACK_USAGE_POLL_INTERVAL_S: Final = 300.0
+_FALLBACK_SWEEP_INTERVAL_S: Final = 30.0
+_FALLBACK_SUPERVISOR_BUDGET_S: Final = 700.0
+
+
+def _positive_float(value: object, fallback: float) -> float:
+    """Coerce a YAML scalar to a positive float; ``fallback`` on anything else.
+
+    ``bool`` is excluded explicitly because it is an ``int`` subclass:
+    ``poll_interval_s: true`` would otherwise become a 1-second poll.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return fallback
+    return float(value) if value > 0 else fallback
+
+
+def _confirmation(raw: Mapping[str, Any]) -> ConfirmationSettings:
+    """``confirmation``: ``ttl_ms`` (10 min), ``words_preset`` (haiku), ``words_timeout_s`` (4)."""
+    block = raw.get("confirmation")
+    block = block if isinstance(block, dict) else {}
+    ttl = block.get("ttl_ms")
+    return ConfirmationSettings(
+        ttl_ms=(
+            ttl if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
+            else _FALLBACK_CONFIRMATION_TTL_MS
+        ),
+        words_preset=str(block.get("words_preset") or _FALLBACK_CONFIRMATION_WORDS_PRESET),
+        words_timeout_s=_positive_float(
+            block.get("words_timeout_s"), _FALLBACK_CONFIRMATION_WORDS_TIMEOUT_S,
+        ),
+    )
+
+
+def _voice(raw: Mapping[str, Any]) -> VoiceSettings:
+    """``voice.lead_in_ms``: a whole number of milliseconds, else 2000."""
+    block = raw.get("voice")
+    value = block.get("lead_in_ms") if isinstance(block, dict) else None
+    return VoiceSettings(
+        lead_in_ms=value if isinstance(value, int) and not isinstance(value, bool)
+        else _FALLBACK_LEAD_IN_MS,
+    )
+
+
+def _observer(raw: Mapping[str, Any]) -> ObserverSettings:
+    """The ``observer`` block.
+
+    Malformed rows are dropped rather than refused: a typo in a list Allen manages must not stop
+    the daemon booting. An enabled TimeSink with no path does stop it.
+    """
+    block = raw.get("observer")
+    block = block if isinstance(block, dict) else {}
+
+    def section(name: str) -> dict[str, Any]:
+        value = block.get(name)
+        return value if isinstance(value, dict) else {}
+
+    timesink, usage = section("timesink"), section("usage")
+    repos = block.get("repos")
+    store = None
+    if timesink.get("enabled") is True:
+        path = timesink.get("db_path")
+        if not isinstance(path, str) or not path.strip():
+            message = "observer.timesink.db_path must be a nonempty local path"
+            raise ValueError(message)
+        store = Path(path).expanduser().resolve()
+    return ObserverSettings(
+        poll_interval_s=_positive_float(
+            block.get("poll_interval_s"), _FALLBACK_OBSERVER_POLL_INTERVAL_S,
+        ),
+        repos=tuple(
+            str(Path(item).expanduser())
+            for item in (repos if isinstance(repos, list) else ())
+            if isinstance(item, str) and item.strip()
+        ),
+        timesink_db_path=store,
+        timesink_poll_interval_s=_positive_float(
+            timesink.get("poll_interval_s"), _FALLBACK_TIMESINK_POLL_INTERVAL_S,
+        ),
+        usage_poll_interval_s=(
+            _positive_float(usage.get("poll_interval_s"), _FALLBACK_USAGE_POLL_INTERVAL_S)
+            if usage.get("enabled") is True else None
+        ),
+        claude_sessions=section("claude_sessions").get("enabled") is True,
+    )
+
+
+def _supervisor(raw: Mapping[str, Any]) -> SupervisorSettings:
+    """``supervisor.sweep_interval_s`` (30) and ``supervisor.default_budget_s`` (700)."""
+    block = raw.get("supervisor")
+    block = block if isinstance(block, dict) else {}
+    return SupervisorSettings(
+        sweep_interval_s=_positive_float(
+            block.get("sweep_interval_s"), _FALLBACK_SWEEP_INTERVAL_S,
+        ),
+        default_budget_s=_positive_float(
+            block.get("default_budget_s"), _FALLBACK_SUPERVISOR_BUDGET_S,
+        ),
+    )
+
+
+def _tool_iterations(raw: Mapping[str, Any]) -> ToolIterations:
+    """``llm.max_tool_iterations`` (ADR 0060) and its voice counterpart.
+
+    Unset or not a positive int keeps decide()'s default; a voice bound unset or unusable is the
+    typed bound.
+    """
+    block = raw.get("llm")
+    block = block if isinstance(block, dict) else {}
+
+    def bound(key: str) -> int | None:
+        value = block.get(key)
+        ok = isinstance(value, int) and not isinstance(value, bool) and value > 0
+        return value if ok else None
+
+    typed = bound("max_tool_iterations") or DEFAULT_MAX_TOOL_ITERATIONS
+    return ToolIterations(typed=typed, spoken=bound("max_tool_iterations_voice") or typed)
+
+
+def _voice_service_tier(realtime: dict[str, Any]) -> str | None:
+    """``realtime.response.voice_service_tier``, stripped; none unless it is non-empty text."""
+    response = realtime.get("response")
+    tier = response.get("voice_service_tier") if isinstance(response, dict) else None
+    return tier.strip() if isinstance(tier, str) and tier.strip() else None
+
+
 def _response_activation(realtime: dict[str, Any]) -> ResponseActivation:
     """Resolve the ADR-0008 Step 2 flag graph in exactly one place.
 
@@ -354,6 +565,7 @@ def _realtime(realtime: dict[str, Any]) -> RealtimeSettings:
             realtime.get("input"), key="max_concurrent_turns",
             fallback=_FALLBACK_INPUT_MAX_CONCURRENT_TURNS, where="realtime.input",
         ),
+        voice_service_tier=_voice_service_tier(realtime),
     )
 
 
@@ -490,5 +702,10 @@ def parse_runtime_config(
         memory=MemorySettings.from_config(raw.get("memory"), runtime_root=runtime_root),
         session=SessionSettings.from_config(raw.get("session")),
         realtime=_realtime(realtime),
+        confirmation=_confirmation(raw),
+        voice=_voice(raw),
+        tool_iterations=_tool_iterations(raw),
+        observer=_observer(raw),
+        supervisor=_supervisor(raw),
         raw=raw,
     )

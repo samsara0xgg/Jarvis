@@ -9,17 +9,14 @@ connected anywhere.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from jarvis.cli import main
 from jarvis.runtime.config import RuntimeBootstrapError, load_runtime_config
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
-from tests.support.runtime_config import boot_runtime
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from tests.support.runtime_config import boot_runtime, load_settings, runtime_config
 
 _DOWNGRADE = "realtime.response downgraded"
 _DOWNGRADED_CONFIG = (
@@ -183,3 +180,112 @@ def test_a_malformed_value_stops_the_terminal_before_it_connects(
     assert code == 1
     assert "runtime.role must be all or brain" in capsys.readouterr().err
     assert connected == []
+
+
+@pytest.mark.parametrize(
+    ("block", "ttl_ms"),
+    [({}, 600_000), ({"ttl_ms": 5000}, 5000)]
+    + [({"ttl_ms": bad}, 600_000) for bad in (0, -1, True, "5000", 1.5)],
+)
+def test_the_confirmation_ttl_is_a_positive_int_else_ten_minutes(
+    tmp_path: Path, block: dict[str, object], ttl_ms: int,
+) -> None:
+    """ADR 0012: a card waits ``confirmation.ttl_ms``; anything unusable is the default."""
+    config = load_settings(tmp_path, {"confirmation": block})
+    assert config.confirmation.ttl_ms == ttl_ms
+
+
+@pytest.mark.parametrize(
+    ("block", "preset", "timeout_s"),
+    [
+        ({}, "haiku", 4.0),
+        ({"words_preset": "sonnet", "words_timeout_s": 2.5}, "sonnet", 2.5),
+        ({"words_preset": "", "words_timeout_s": 0}, "haiku", 4.0),
+        ({"words_timeout_s": True}, "haiku", 4.0),
+        ({"words_timeout_s": "slow"}, "haiku", 4.0),
+        ({"words_timeout_s": 3}, "haiku", 3.0),
+    ],
+)
+def test_the_words_against_a_card_read_on_their_preset_with_one_attempts_budget(
+    tmp_path: Path, block: dict[str, object], preset: str, timeout_s: float,
+) -> None:
+    """ADR 0321: ``confirmation.words_preset`` and ``words_timeout_s``, with their defaults."""
+    config = load_settings(tmp_path, {"confirmation": block})
+    assert (config.confirmation.words_preset, config.confirmation.words_timeout_s) == (
+        preset, timeout_s,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "lead_in_ms"),
+    [(1500, 1500), (0, 0), (None, 2000), (True, 2000), ("1500", 2000), (1.5, 2000)],
+)
+def test_the_lead_in_is_a_whole_number_of_milliseconds_else_two_seconds(
+    tmp_path: Path, value: object, lead_in_ms: int,
+) -> None:
+    """ADR 0320: ``voice.lead_in_ms`` is the median call time from which a tool says its line."""
+    config = load_settings(tmp_path, {"voice": {"lead_in_ms": value}})
+    assert config.voice.lead_in_ms == lead_in_ms
+
+
+def test_the_tool_iteration_bounds_resolve_the_voice_key_to_the_typed_one() -> None:
+    """ADR 0060: a spoken turn reads the voice bound, else the typed one, else decide()'s own."""
+
+    def bounds(llm: dict[str, object]) -> tuple[int, int]:
+        iterations = runtime_config({"llm": llm}).tool_iterations
+        return iterations.for_turn(spoken=False), iterations.for_turn(spoken=True)
+
+    assert bounds({"max_tool_iterations": 40, "max_tool_iterations_voice": 8}) == (40, 8)
+    assert bounds({"max_tool_iterations": 40}) == (40, 40)
+    assert bounds({"max_tool_iterations_voice": 8}) == (5, 8)
+    assert bounds({"max_tool_iterations": True, "max_tool_iterations_voice": 0}) == (5, 5)
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected"),
+    [(" priority ", "priority"), ("", None), ("  ", None), (1, None), (None, None)],
+)
+def test_the_voice_service_tier_is_stripped_text_or_nothing(
+    tmp_path: Path, tier: object, expected: str | None,
+) -> None:
+    """``realtime.response.voice_service_tier`` rides a spoken turn's requests when set."""
+    config = load_settings(tmp_path, {"realtime": {"response": {"voice_service_tier": tier}}})
+    assert config.realtime.voice_service_tier == expected
+
+
+def test_the_observer_block_resolves_to_cadences_and_watched_paths(tmp_path: Path) -> None:
+    """Repos expand ``~`` and drop blank or non-text rows; usage is off unless enabled."""
+    config = load_settings(tmp_path / "a", {"observer": {
+        "poll_interval_s": 30, "repos": ["~/x", "", "  ", 3, "/y"],
+        "usage": {"enabled": True, "poll_interval_s": 120},
+        "claude_sessions": {"enabled": True},
+    }})
+    observer = config.observer
+    assert observer.poll_interval_s == 30.0
+    assert observer.repos == (str(Path("~/x").expanduser()), "/y")
+    assert observer.usage_poll_interval_s == 120.0
+    assert observer.claude_sessions is True
+    bare = load_settings(tmp_path / "b", {"observer": {
+        "poll_interval_s": 0, "repos": "~/x", "usage": {"enabled": False},
+        "claude_sessions": {"enabled": "yes"},
+    }}).observer
+    assert (bare.poll_interval_s, bare.repos, bare.usage_poll_interval_s) == (60.0, (), None)
+    assert bare.claude_sessions is False
+    fallback = load_settings(tmp_path / "c", {"observer": {"usage": {"enabled": True}}}).observer
+    assert fallback.usage_poll_interval_s == 300.0
+
+
+def test_the_supervisor_cadences_are_positive_numbers_else_the_shipped_ones(
+    tmp_path: Path,
+) -> None:
+    """ADR 0009 D4: the sweep every 30 s and an action's budget of 700 s, unless told."""
+    shipped = load_settings(tmp_path / "a", {"supervisor": {}}).supervisor
+    assert (shipped.sweep_interval_s, shipped.default_budget_s) == (30.0, 700.0)
+    told = load_settings(
+        tmp_path / "b", {"supervisor": {"sweep_interval_s": 5, "default_budget_s": 60.5}},
+    ).supervisor
+    assert (told.sweep_interval_s, told.default_budget_s) == (5.0, 60.5)
+    bad = load_settings(
+        tmp_path / "c", {"supervisor": {"sweep_interval_s": -1, "default_budget_s": True}},
+    ).supervisor
+    assert (bad.sweep_interval_s, bad.default_budget_s) == (30.0, 700.0)

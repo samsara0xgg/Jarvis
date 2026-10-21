@@ -4,7 +4,8 @@
 load its environment, parse the config, assemble. ``runtime_config`` parses a mapping alone, for
 a test that builds the runtime's parts by hand; whatever the mapping leaves out reads as that
 section's defaults. ``reconfigure`` is a booted runtime over the same config with whole sections
-replaced.
+replaced. ``load_settings`` is the shipped file with a mapping laid over it as a root's
+``settings.yaml``, loaded as an entry point loads it: what a test of a refused value goes through.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import yaml
 
 from jarvis.deployment import bootstrap_runtime
 from jarvis.runtime import bootstrap_runtime_app, load_runtime_env_and_trace
@@ -37,6 +40,13 @@ def runtime_config(
 ) -> RuntimeConfig:
     """The config ``raw`` parses to, with the shipped file's place and ``root`` as the root."""
     return parse_runtime_config(raw or {}, config_path=SHIPPED, runtime_root=root)
+
+
+def load_settings(root: Path, settings: Mapping[str, Any]) -> RuntimeConfig:
+    """The shipped config with ``settings`` as ``root``'s ``settings.yaml``, loaded."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "settings.yaml").write_text(yaml.safe_dump(dict(settings)), encoding="utf-8")
+    return load_runtime_config(None, root)
 
 
 def reconfigure(runtime: JarvisRuntime, **sections: Any) -> JarvisRuntime:  # noqa: ANN401 - YAML

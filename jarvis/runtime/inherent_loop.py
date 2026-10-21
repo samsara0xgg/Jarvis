@@ -126,7 +126,6 @@ from jarvis.runtime import (
     _event_action_id,
     _jev_log,
     _new_turn_id,
-    _timesink_db_path,
     device_voice,
     make_barge_in_interrupt_callable,
     make_compose_callable,
@@ -147,7 +146,6 @@ from jarvis.runtime.daemon.live_backend import LIVE_TERMINAL_TYPES as _LIVE_TERM
 from jarvis.runtime.daemon.live_backend import LiveBackend as _LiveBackend
 from jarvis.runtime.daemon.live_backend import ask_outcome as _ask_outcome
 from jarvis.runtime.daemon.observers import agents_port as _agents_port
-from jarvis.runtime.daemon.observers import claude_sessions_read as _claude_sessions_read
 from jarvis.runtime.daemon.observers import claude_sessions_served as _claude_sessions_served
 from jarvis.runtime.daemon.observers import make_usage_observer as _make_usage_observer
 from jarvis.runtime.daemon.observers import refresh_usage_now as _refresh_usage_now
@@ -632,16 +630,6 @@ def _commentary_turn(
 _LEAD_IN_MIN_CALLS: Final = 5
 """A tool with fewer finished calls in the log than this has no measured time: it says nothing."""
 
-_LEAD_IN_DEFAULT_MS: Final = 2000
-
-
-def _lead_in_ms(config: Mapping[str, Any]) -> int:
-    """``voice.lead_in_ms`` (ADR 0320): the median call time from which a tool says its line."""
-    voice = config.get("voice")
-    value = voice.get("lead_in_ms") if isinstance(voice, Mapping) else None
-    return value if isinstance(value, int) and not isinstance(value, bool) else _LEAD_IN_DEFAULT_MS
-
-
 def _cancel_unheard_commentary(
     runtime: JarvisRuntime,
     entry: _OpenCommentary,
@@ -802,7 +790,7 @@ def _slow_tool_line(
     if call is None:
         return None
     waits = finished_call_ms(conn, call.tool_name)
-    lead_in_ms = _lead_in_ms(runtime.config.raw)
+    lead_in_ms = runtime.config.voice.lead_in_ms
     if len(waits) < _LEAD_IN_MIN_CALLS or statistics.median(waits) < lead_in_ms:
         return None
     return steps.line(
@@ -3124,7 +3112,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 runtime.runtime_paths.event_log,
                 runtime.config.zone,
                 None if runtime.memory is None else runtime.memory.db_path,
-                _timesink_db_path(runtime.config.raw),
+                runtime.config.observer.timesink_db_path,
                 terminal=(
                     None if runtime.terminal_hub is None
                     else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S)
@@ -3471,7 +3459,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # so it is wired after the sweep control plane without disturbing
         # that anchor-then-bootstrap ordering.
         watchers.extend(_start_repo_observer(runtime))
-        watchers.extend(_start_usage_observer(usage_observer, runtime.config.raw))
+        watchers.extend(_start_usage_observer(usage_observer, runtime.config))
         watchers.extend(_start_timesink_observer(runtime))
         watchers.extend(_start_meaning_index(runtime))
         if runtime.job_mail is not None:
@@ -3547,7 +3535,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             runtime.night.watch = NightWatch(
                 port=_agents_port(),
                 key=functools.partial(local_key, runtime.runtime_paths.root),
-                claude=ClaudeSessions() if _claude_sessions_read(runtime.config.raw) else None,
+                claude=ClaudeSessions() if runtime.config.observer.claude_sessions else None,
                 codex=codex_board,
             )
             watchers.append(asyncio.create_task(runtime.night.run(), name="night_run"))
@@ -3603,7 +3591,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 memory_db=runtime.memory.db_path,
                 zone=plan_zone,
                 day_sources=DaySources(
-                    plan_zone, _timesink_db_path(runtime.config.raw),
+                    plan_zone, runtime.config.observer.timesink_db_path,
                     runtime.memory.db_path,
                     None if runtime.terminal_hub is None
                     else TerminalScreen(runtime.terminal_hub.call, wait_s=TURN_WAIT_S),

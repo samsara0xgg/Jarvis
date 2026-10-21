@@ -28,7 +28,7 @@ from tests.support.routine import (
     routine_runtime,
     user_intent,
 )
-from tests.support.runtime_config import reconfigure
+from tests.support.runtime_config import reconfigure, runtime_config
 from tests.support.spoken import SpokenPeer, response_frames, spoken_intent, spoken_runtime
 
 if TYPE_CHECKING:
@@ -222,7 +222,7 @@ def test_only_a_spoken_turn_gets_the_configured_tier(tmp_path: Path) -> None:
                 payload={"transcript": "hi", "turn_id": "t", "channel": channel},
             )
 
-        config = {"realtime": {"response": {"voice_service_tier": " priority "}}}
+        config = runtime_config({"realtime": {"response": {"voice_service_tier": " priority "}}})
         pick = runtime_module._voice_service_tier  # noqa: SLF001
         assert pick(config, trigger("inherent_ptt")) == "priority"
         assert pick(config, trigger("cli_stdin")) is None
@@ -234,7 +234,7 @@ def test_only_a_spoken_turn_gets_the_configured_tier(tmp_path: Path) -> None:
             {"realtime": {"response": {"voice_service_tier": 1}}},
         ]
         for unset in unsets:
-            assert pick(unset, trigger("inherent_ptt")) is None
+            assert pick(runtime_config(unset), trigger("inherent_ptt")) is None
     finally:
         conn.close()
 

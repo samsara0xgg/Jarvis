@@ -18,6 +18,7 @@ from jarvis.decision.stream_envelope import split_envelope
 from jarvis.runtime import _max_tool_iterations
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.model import Failure, ScriptedModel, tool_call
+from tests.support.runtime_config import runtime_config
 from tests.support.turn_guards import guard_context
 
 if TYPE_CHECKING:
@@ -141,6 +142,6 @@ def test_only_a_spoken_turn_reads_the_voice_cap(
             payload={"transcript": "x", "turn_id": "T_cap", "channel": channel},
             correlation={"turn_id": "T_cap"},
         )
-        assert _max_tool_iterations({"llm": config}, trigger) == expected
+        assert _max_tool_iterations(runtime_config({"llm": config}), trigger) == expected
     finally:
         conn.close()

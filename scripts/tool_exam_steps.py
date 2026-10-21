@@ -604,7 +604,7 @@ def _run_case(  # noqa: PLR0913 - the runtime, its baseline, and the case's mode
         conn=runtime.conn, runtime_paths=runtime.runtime_paths,
         tool_registry=cast("Any", runtime.tool_registry), lifecycle=cast("Any", runtime.lifecycle),
         llm_client=cast("LLMClient", sub), system_prompt=system,
-        max_tool_iterations=_max_tool_iterations(runtime.config.raw, trigger),
+        max_tool_iterations=_max_tool_iterations(runtime.config, trigger),
         wave1_features=runtime.wave1_features,
         reply_language=runtime.config.reply_language,
         read_snapshot=partial(read_decision_snapshot, prior=warm),

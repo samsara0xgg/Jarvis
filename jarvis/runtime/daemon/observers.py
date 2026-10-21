@@ -5,18 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.deployment import models
-from jarvis.runtime import (
-    JarvisRuntime,
-    _observer_poll_interval_s,
-    _observer_repo_paths,
-    _positive_float,
-    _timesink_db_path,
-    _timesink_poll_interval_s,
-)
 from jarvis.state import embedding, meaning
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.timesink_observer import TimesinkHead, TimesinkObserver
@@ -26,6 +17,9 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
     from pathlib import Path
+
+    from jarvis.runtime import JarvisRuntime
+    from jarvis.runtime.config import RuntimeConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -107,7 +101,7 @@ def start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     An empty ``observer.repos`` starts no task: the observer is opt-in
     perception, and a zero-repo poll loop would be pure wakeups.
     """
-    repo_paths = _observer_repo_paths(runtime.config.raw)
+    repo_paths = runtime.config.observer.repos
     if not repo_paths:
         LOGGER.info("repo_observer: observer.repos is empty; observer not started.")
         return []
@@ -122,7 +116,7 @@ def start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
         asyncio.create_task(
             repo_observer_task(
                 observer,
-                interval_s=_observer_poll_interval_s(runtime.config.raw),
+                interval_s=runtime.config.observer.poll_interval_s,
             ),
             name="repo_observer",
         ),
@@ -131,7 +125,6 @@ def start_repo_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
 
 # --- ADR-0018 usage observer ---------------------------------------------------
 
-_FALLBACK_USAGE_POLL_INTERVAL_S: Final[float] = 300.0
 _AGENTS_PORT: Final = 8016
 
 
@@ -139,13 +132,6 @@ def agents_port() -> int:
     """The agent host's port (ADR 0073): ``JARVIS_AGENTS_PORT``, 8016 by default."""
     raw = os.environ.get("JARVIS_AGENTS_PORT", "")
     return int(raw) if raw.isdigit() else _AGENTS_PORT
-
-
-def claude_sessions_read(config: Mapping[str, Any]) -> bool:
-    """``observer.claude_sessions.enabled``: may the Agents page read Claude Code's files."""
-    block = config.get("observer")
-    sessions = block.get("claude_sessions") if isinstance(block, Mapping) else None
-    return isinstance(sessions, Mapping) and sessions.get("enabled") is True
 
 
 def claude_sessions_served(runtime: JarvisRuntime) -> bool:
@@ -156,30 +142,12 @@ def claude_sessions_served(runtime: JarvisRuntime) -> bool:
     """
     if runtime.config.role == "brain":
         return bool(runtime.config.listen_addresses)
-    return claude_sessions_read(runtime.config.raw)
-
-
-def _usage_observer_block(config: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Return ``observer.usage`` when ``enabled: true``; None means off."""
-    block = config.get("observer")
-    usage = block.get("usage") if isinstance(block, Mapping) else None
-    if not isinstance(usage, Mapping) or usage.get("enabled") is not True:
-        return None
-    return usage
-
-
-def usage_poll_interval_s(config: Mapping[str, Any]) -> float | None:
-    """The seconds between usage polls when ``observer.usage`` is on; ``None`` when it is off."""
-    usage = _usage_observer_block(config)
-    if usage is None:
-        return None
-    return _positive_float(usage.get("poll_interval_s"), _FALLBACK_USAGE_POLL_INTERVAL_S)
+    return runtime.config.observer.claude_sessions
 
 
 def make_usage_observer(runtime: JarvisRuntime) -> UsageObserver | None:
     """Build the observer with baselines recovered on the loop thread."""
-    usage = _usage_observer_block(runtime.config.raw)
-    if usage is None:
+    if runtime.config.observer.usage_poll_interval_s is None:
         LOGGER.info("usage_observer: observer.usage disabled; observer not started.")
         return None
     # A brain has no Claude Code or Codex login of its own: a terminal reports those two.
@@ -226,10 +194,10 @@ async def usage_observer_task(observer: UsageObserver, *, interval_s: float) -> 
 
 
 def start_usage_observer(
-    observer: UsageObserver | None, config: Mapping[str, Any]
+    observer: UsageObserver | None, config: RuntimeConfig,
 ) -> list[asyncio.Task[None]]:
     """Start the periodic task for an observer :func:`make_usage_observer` built."""
-    interval_s = usage_poll_interval_s(config)
+    interval_s = config.observer.usage_poll_interval_s
     if observer is None or interval_s is None:
         return []
     return [
@@ -280,7 +248,7 @@ async def timesink_observer_task(
 
 def start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
     """Start the head poll when ``observer.timesink`` is enabled; baseline from the log."""
-    path = _timesink_db_path(runtime.config.raw)
+    path = runtime.config.observer.timesink_db_path
     if path is None:
         LOGGER.info("timesink_observer: observer.timesink disabled; observer not started.")
         return []
@@ -290,7 +258,7 @@ def start_timesink_observer(runtime: JarvisRuntime) -> list[asyncio.Task[None]]:
         asyncio.create_task(
             timesink_observer_task(
                 observer,
-                interval_s=_timesink_poll_interval_s(runtime.config.raw),
+                interval_s=runtime.config.observer.timesink_poll_interval_s,
                 on_checked=None if runtime.work_state is None else runtime.work_state.note_checked,
             ),
             name="timesink_observer",

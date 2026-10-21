@@ -69,12 +69,8 @@ from jarvis.runtime import (
     _audio_devices,
     _default_audio_device,
     _install_open_path,
-    _observer_poll_interval_s,
-    _observer_repo_paths,
     _obsidian_vault_root,
     _screen_tools_config,
-    _timesink_db_path,
-    _timesink_poll_interval_s,
     audio_output,
 )
 from jarvis.runtime.config import RuntimeBootstrapError
@@ -86,11 +82,9 @@ from jarvis.runtime.daemon.devices import (
 )
 from jarvis.runtime.daemon.observers import (
     agents_port,
-    claude_sessions_read,
     repo_observer_task,
     timesink_observer_task,
     usage_observer_task,
-    usage_poll_interval_s,
 )
 from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
 from jarvis.runtime.daemon.restart import restart_soon
@@ -1249,11 +1243,11 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     settings_yaml = runtime_root / "settings.yaml"
     try:
         _install_open_path(config.raw)
-        configured_repos = _observer_repo_paths(config.raw)
-        configured_store = _timesink_db_path(config.raw)
+        configured_repos = config.observer.repos
+        configured_store = config.observer.timesink_db_path
         repos = configured_repos if observers else ()
         store = configured_store if observers else None
-        usage_interval_s = usage_poll_interval_s(config.raw) if observers else None
+        usage_interval_s = config.observer.usage_poll_interval_s if observers else None
         ship = ship_config(config.raw, runtime_root) if observers else None
     except (RuntimeBootstrapError, ValueError) as exc:
         sys.stderr.write(f"jarvis terminal: {exc}\n")
@@ -1268,7 +1262,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
             sys.stderr.write(f"jarvis terminal: {exc}\n")
             return 1
     _vision_preset, max_width_px = _screen_tools_config(config.raw)
-    claude = ClaudeSessions() if claude_sessions_read(config.raw) else None
+    claude = ClaudeSessions() if config.observer.claude_sessions else None
     # ADR 0192: this Mac's night run, held here because a brain has no Mac to keep awake. Its
     # events are the one log a terminal keeps; it recovers an open run from them at start.
     night_log = runtime_root / NIGHT_LOG
@@ -1291,8 +1285,8 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     LOGGER.info("this terminal runs %s", sorted(tools))
     watched = (
         _Watched(
-            repos, _observer_poll_interval_s(config.raw), store,
-            _timesink_poll_interval_s(config.raw), usage_interval_s,
+            repos, config.observer.poll_interval_s, store,
+            config.observer.timesink_poll_interval_s, usage_interval_s,
         )
         if repos or store is not None or usage_interval_s is not None
         else None

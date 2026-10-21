@@ -14,12 +14,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.runtime import _register_workers, _timesink_db_path
+from jarvis.runtime import _register_workers
 from jarvis.state import daily_activity
 from jarvis.state.daily_contract import ACTIVITY_PAGE_BUDGET
 from jarvis.state.event_log import emit_event
 from tests.support import timesink as timesink_support
 from tests.support.daily_tools import DailyHarness
+from tests.support.runtime_config import load_settings, runtime_config
 from tests.support.timesink import add_capture, add_event, add_span
 
 if TYPE_CHECKING:
@@ -337,15 +338,16 @@ def test_missing_or_incompatible_database_is_explicit(tmp_path: Path) -> None:
 
 def test_configuration_is_explicit_and_validated(tmp_path: Path) -> None:
     """Hand-built runtimes do not accidentally read the developer's activity history."""
-    assert _timesink_db_path({}) is None
-    assert _timesink_db_path({"observer": {"timesink": {"enabled": False}}}) is None
+    assert runtime_config({}).observer.timesink_db_path is None
+    off = {"observer": {"timesink": {"enabled": False}}}
+    assert load_settings(tmp_path / "off", off).observer.timesink_db_path is None
     path = tmp_path / "span.sqlite"
-    assert (
-        _timesink_db_path({"observer": {"timesink": {"enabled": True, "db_path": str(path)}}})
-        == path
-    )
-    with pytest.raises(ValueError, match="db_path"):
-        _timesink_db_path({"observer": {"timesink": {"enabled": True}}})
+    on = {"observer": {"timesink": {"enabled": True, "db_path": str(path)}}}
+    assert load_settings(tmp_path / "on", on).observer.timesink_db_path == path
+    for bad in (None, "", "  ", 3):
+        broken = {"observer": {"timesink": {"enabled": True, "db_path": bad}}}
+        with pytest.raises(ValueError, match="db_path"):
+            load_settings(tmp_path / f"bad-{bad!r}", broken)
 
 
 @pytest.mark.usefixtures("codex_on_path")

@@ -57,7 +57,6 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jarvis.decision import (
-    DEFAULT_MAX_TOOL_ITERATIONS,
     SPOKEN_REPLY_FORMAT,
     DecideContext,
     EntityResolverLike,
@@ -354,14 +353,12 @@ _DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 # (hand-assembled test runtimes). ``config/jarvis.yaml`` is the real
 # source; mirroring the shipped default here means a missing block reads
 # the same cadence the daemon would actually poll at.
-_FALLBACK_OBSERVER_POLL_INTERVAL_S: float = 60.0
 
 # Fallback for a runtime whose config carries no ``confirmation:`` block.
 # Mirrors ``jarvis.decision._DEFAULT_CONFIRMATION_TTL_MS`` (private in
 # that module — not imported here, same as
 # ``_FALLBACK_OBSERVER_POLL_INTERVAL_S`` above keeps its own mirror
 # rather than importing ``packet.DEFAULT_OBSERVER_POLL_INTERVAL_S``).
-_FALLBACK_CONFIRMATION_TTL_MS: int = 600_000
 
 # Default `tools.screen.vision_preset` (ADR-0011 D7) — the `llm.presets.*`
 # key `screen_look` reads for its one vision call when the config's
@@ -786,51 +783,15 @@ def save_language(settings_path: Path, code: str) -> lang.Language:
     return lang.set_language(chosen)
 
 
-def _positive_float(value: object, fallback: float) -> float:
-    """Coerce a YAML scalar to a positive float; ``fallback`` on anything else.
-
-    ``bool`` is excluded explicitly because it is an ``int`` subclass —
-    ``poll_interval_s: true`` would otherwise become a 1-second poll.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return fallback
-    return float(value) if value > 0 else fallback
-
-
-def _observer_poll_interval_s(config: Mapping[str, Any]) -> float:
-    """Return ``observer.poll_interval_s`` in seconds (ADR-0009 D5).
-
-    Read by TWO consumers, which is the whole reason it lives here in the
-    composition root rather than inside the daemon module: the observer
-    task polls at this cadence, and :func:`drive_turn` hands the same
-    number to L3 so the Status Board note's stale threshold (3x the poll
-    interval, ADR-0009 D6 v0) is derived from the cadence the daemon
-    actually runs at. Configure the interval away from 60 and the note's
-    judgement moves with it instead of silently diverging.
-    """
-    block = config.get("observer")
-    if not isinstance(block, Mapping):
-        return _FALLBACK_OBSERVER_POLL_INTERVAL_S
-    return _positive_float(
-        block.get("poll_interval_s"), _FALLBACK_OBSERVER_POLL_INTERVAL_S,
-    )
-
-
-_FALLBACK_CONFIRMATION_WORDS_PRESET: Final = "haiku"
-_FALLBACK_CONFIRMATION_WORDS_TIMEOUT_S: Final = 4.0
-
-
-def _confirmation_words_client(config: Mapping[str, Any]) -> Callable[[], LLMClient] | None:
+def _confirmation_words_client(config: RuntimeConfig) -> Callable[[], LLMClient] | None:
     """ADR 0321: the client that reads his words against a waiting card, one per reading.
 
-    ``confirmation.words_preset`` (default ``haiku``) and ``confirmation.words_timeout_s``
-    (default 4): one attempt, no retry, so a slow provider leaves the card waiting for its
-    button. A missing preset reads nothing: such words run as an ordinary turn.
+    It runs on ``confirmation.words_preset`` with ``confirmation.words_timeout_s``: one attempt,
+    no retry, so a slow provider leaves the card waiting for its button. A missing preset reads
+    nothing: such words run as an ordinary turn.
     """
-    block = config.get("confirmation")
-    block = block if isinstance(block, Mapping) else {}
-    name = str(block.get("words_preset") or _FALLBACK_CONFIRMATION_WORDS_PRESET)
-    llm_block = config.get("llm")
+    name = config.confirmation.words_preset
+    llm_block = config.raw.get("llm")
     presets = llm_block.get("presets") if isinstance(llm_block, Mapping) else None
     preset = presets.get(name) if isinstance(presets, Mapping) else None
     if not isinstance(preset, Mapping):
@@ -841,9 +802,7 @@ def _confirmation_words_client(config: Mapping[str, Any]) -> Callable[[], LLMCli
             "provider": "openai",
             "presets": {name: dict(preset)},
             "default_preset": name,
-            "timeout_s": _positive_float(
-                block.get("words_timeout_s"), _FALLBACK_CONFIRMATION_WORDS_TIMEOUT_S,
-            ),
+            "timeout_s": config.confirmation.words_timeout_s,
             "max_retries": 0,
         },
     )
@@ -851,37 +810,18 @@ def _confirmation_words_client(config: Mapping[str, Any]) -> Callable[[], LLMCli
     return lambda: factory.create(snapshot, response_id=new_response_id())
 
 
-def _confirmation_ttl_ms(config: Mapping[str, Any]) -> int:
-    """Return ``confirmation.ttl_ms`` (ADR-0012 §3 D4/V2 — default 10 min).
-
-    Config-overridable so the live burn (ADR-0012 §7 acceptance row
-    C3, TTL expiry) can use a short value without touching code. Same
-    fill-only-with-fallback shape as :func:`_observer_poll_interval_s`
-    above; ``bool`` is excluded explicitly for the same reason
-    :func:`_positive_float` excludes it (``bool`` is an ``int``
-    subclass).
-    """
-    block = config.get("confirmation")
-    if not isinstance(block, Mapping):
-        return _FALLBACK_CONFIRMATION_TTL_MS
-    value = block.get("ttl_ms")
-    if isinstance(value, bool) or not isinstance(value, int):
-        return _FALLBACK_CONFIRMATION_TTL_MS
-    return value if value > 0 else _FALLBACK_CONFIRMATION_TTL_MS
-
-
-def _voice_service_tier(config: Mapping[str, Any], trigger: Event) -> str | None:
+def _voice_service_tier(config: RuntimeConfig, trigger: Event) -> str | None:
     """``realtime.response.voice_service_tier``, for a turn Allen spoke; else ``None``.
 
     The tier rides every model request that turn makes through ``decide()`` and
     nothing else: the client still sends it to OpenAI's own host only.
     """
-    realtime = config.get("realtime")
-    response = realtime.get("response") if isinstance(realtime, Mapping) else None
-    tier = response.get("voice_service_tier") if isinstance(response, Mapping) else None
-    if not isinstance(tier, str) or not tier.strip() or not spoken_turn(trigger):
-        return None
-    return tier.strip()
+    return config.realtime.voice_service_tier if spoken_turn(trigger) else None
+
+
+def _max_tool_iterations(config: RuntimeConfig, trigger: Event) -> int:
+    """``llm.max_tool_iterations`` (ADR 0060); a spoken turn reads ``max_tool_iterations_voice``."""
+    return config.tool_iterations.for_turn(spoken=spoken_turn(trigger))
 
 
 def _jev_log(config: Mapping[str, Any], root: Path) -> JevLog | None:
@@ -918,24 +858,6 @@ def _surrogate_route(
     )
 
 
-def _max_tool_iterations(config: Mapping[str, Any], trigger: Event) -> int:
-    """``llm.max_tool_iterations`` (ADR 0060); a spoken turn reads ``max_tool_iterations_voice``.
-
-    Unset or not a positive int keeps decide()'s 5 (voice: the same bound as every other turn).
-    """
-    block = config.get("llm")
-    if not isinstance(block, Mapping):
-        return DEFAULT_MAX_TOOL_ITERATIONS
-    keys = ("max_tool_iterations_voice", "max_tool_iterations") if spoken_turn(trigger) else (
-        "max_tool_iterations",
-    )
-    for key in keys:
-        value = block.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-    return DEFAULT_MAX_TOOL_ITERATIONS
-
-
 def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode | None:
     """``llm.think`` (ADR 0108); a broken block stops boot like a broken tool-cue table."""
     try:
@@ -943,19 +865,6 @@ def _think_mode(llm_config: Mapping[str, Any], config_path: Path) -> ThinkMode |
     except ThinkModeConfigError as exc:
         msg = f"runtime: {config_path} {exc}"
         raise RuntimeBootstrapError(msg) from exc
-
-
-def _timesink_db_path(full_config: Mapping[str, Any]) -> Path | None:
-    """Opt into local TimeSink reads; an absent setting never opens a user's store."""
-    observer = full_config.get("observer")
-    config = observer.get("timesink") if isinstance(observer, Mapping) else None
-    if not isinstance(config, Mapping) or config.get("enabled") is not True:
-        return None
-    raw = config.get("db_path")
-    if not isinstance(raw, str) or not raw.strip():
-        message = "observer.timesink.db_path must be a nonempty local path"
-        raise ValueError(message)
-    return Path(raw).expanduser().resolve()
 
 
 def _ledger(
@@ -971,7 +880,7 @@ def _ledger(
     if settings is None or memory is None:
         return None
     sources = LedgerSources(
-        memory.db_path, event_log, _timesink_db_path(config.raw), config.zone,
+        memory.db_path, event_log, config.observer.timesink_db_path, config.zone,
         None if device is None else TerminalScreen(device), attachments,
     )
     return LedgerContext(sources, settings)
@@ -985,7 +894,7 @@ def _highlight_marks(
     return HighlightMarks(
         paths.event_log,
         DaySources(
-            config.zone, _timesink_db_path(config.raw), memory.db_path,
+            config.zone, config.observer.timesink_db_path, memory.db_path,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
@@ -1004,7 +913,7 @@ def _doing_schedule(
     return DoingSchedule(
         settings=settings,
         sources=DaySources(
-            config.zone, _timesink_db_path(config.raw), memory.db_path,
+            config.zone, config.observer.timesink_db_path, memory.db_path,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
@@ -1023,7 +932,7 @@ def _about_items(
     return AboutItems(
         paths.event_log,
         DaySources(
-            config.zone, _timesink_db_path(config.raw), memory.db_path,
+            config.zone, config.observer.timesink_db_path, memory.db_path,
             attachments=paths.artifacts_root / ATTACHMENTS_DIRNAME,
             shipped=paths.root / imports.IMPORTS_DIRNAME,
         ),
@@ -1042,7 +951,6 @@ def _about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
         return None
 
 
-_FALLBACK_TIMESINK_POLL_INTERVAL_S: Final[float] = 300.0
 _FALLBACK_WORK_STATE_PRESET: Final[str] = "gpt6-luna"
 _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
 """ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
@@ -1050,14 +958,6 @@ _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
 _OUTPUT_TIMEOUT_S: Final[float] = 5.0
 """How long a brain waits for its terminal to say where sound would come out: its probe takes
 at most 3 s, and a slow answer is a no (ADR 0156)."""
-
-
-def _timesink_poll_interval_s(config: Mapping[str, Any]) -> float:
-    """``observer.timesink.poll_interval_s`` — how often the head poll runs (ADR 0023)."""
-    observer = config.get("observer")
-    block = observer.get("timesink") if isinstance(observer, Mapping) else None
-    raw = block.get("poll_interval_s") if isinstance(block, Mapping) else None
-    return _positive_float(raw, _FALLBACK_TIMESINK_POLL_INTERVAL_S)
 
 
 def _work_state_preset(config: Mapping[str, Any]) -> str:
@@ -1378,6 +1278,7 @@ def _mail_reply(
 
 def _moment(
     config: Mapping[str, Any], config_path: Path, db_path: Path, device: DeviceLink | None = None,
+    timesink_path: Path | None = None,
 ) -> Moment | None:
     """``moment`` (ADR 0161): off unless enabled; bad values stop boot.
 
@@ -1403,14 +1304,14 @@ def _moment(
         raise RuntimeBootstrapError(msg)
     if not block["enabled"]:
         return None
-    return Moment(MomentSettings(dict(fields)), _timesink_db_path(config), db_path, device)
+    return Moment(MomentSettings(dict(fields)), timesink_path, db_path, device)
 
 
 def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the clock and the moment
     config: Mapping[str, Any], config_path: Path, log: JevLog | None,
     connections: PluginConnections, db_path: Path, clock: Clock,
     moment: Moment | None = None, device: DeviceLink | None = None,
-    event_log: Path | None = None,
+    event_log: Path | None = None, timesink_path: Path | None = None,
 ) -> JobMail | None:
     """``job_mail`` (ADR 0155): off unless enabled; bad values stop boot.
 
@@ -1477,7 +1378,7 @@ def _job_mail(  # noqa: PLR0913 - the config, its collaborators, the clock and t
     )
     return JobMail(
         settings, route, connections, db_path, rule_judge_v1, clock=clock,
-        moment=moment, timesink_path=_timesink_db_path(config), device=device, event_log=event_log,
+        moment=moment, timesink_path=timesink_path, device=device, event_log=event_log,
     )
 
 
@@ -1992,27 +1893,6 @@ def _work_state_tool_refresh(
         )
 
     return refresh
-
-
-def _observer_repo_paths(config: Mapping[str, Any]) -> tuple[str, ...]:
-    """Return the watched repos from ``observer.repos``; empty = observer off.
-
-    ``~`` is expanded here so a config line like ``~/Projects/jarvis``
-    does not degrade into a silent per-cycle F6 skip. Non-string and
-    blank entries are dropped rather than raising: a typo in one row of
-    an Allen-managed list must not refuse to boot the daemon.
-    """
-    block = config.get("observer")
-    if not isinstance(block, Mapping):
-        return ()
-    raw = block.get("repos")
-    if not isinstance(raw, list):
-        return ()
-    return tuple(
-        str(Path(item).expanduser())
-        for item in raw
-        if isinstance(item, str) and item.strip()
-    )
 
 
 def _obsidian_vault_root(config: Mapping[str, Any]) -> Path | None:
@@ -2686,7 +2566,9 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     terminal_hub = TerminalHub(events=phone_events) if role == "brain" else None
     device = None if terminal_hub is None else terminal_hub.call
     settings_drift = _settings_drift(terminal_hub, paths, config.raw)
-    moment = _moment(config.raw, config_path, memory.db_path, device)
+    moment = _moment(
+        config.raw, config_path, memory.db_path, device, config.observer.timesink_db_path,
+    )
     # ADR 0068: refuse a memory.db a newer Jarvis wrote before anything writes to it.
     open_memory_db(memory.db_path).close()
     local_zone = config.zone
@@ -2698,8 +2580,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     work_state = WorkStateService(
         event_log_path=paths.event_log,
         memory_path=memory.db_path,
-        timesink_path=_timesink_db_path(config.raw),
-        repos=_observer_repo_paths(config.raw),
+        timesink_path=config.observer.timesink_db_path,
+        repos=config.observer.repos,
         analyst=build_analyst(
             config.raw,
             _work_state_preset(config.raw),
@@ -2716,7 +2598,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         if not catalog
         else ProjectsService(
             event_log_path=paths.event_log,
-            timesink_path=_timesink_db_path(config.raw),
+            timesink_path=config.observer.timesink_db_path,
             projects=catalog,
             sorter=build_analyst(
                 config.raw,
@@ -2732,8 +2614,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
     )
     daily_report = DailyReportService(
         memory_path=memory.db_path,
-        timesink_path=_timesink_db_path(config.raw),
-        repos=_observer_repo_paths(config.raw),
+        timesink_path=config.observer.timesink_db_path,
+        repos=config.observer.repos,
         reporter=build_analyst(
             config.raw,
             _daily_report_preset(config.raw),
@@ -2797,7 +2679,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         _wire_plan_reader(daily_report, connections)
         job_mail = _job_mail(
             config.raw, config_path, jev_log, connections, memory.db_path, system_clock,
-            moment, device, paths.event_log,
+            moment, device, paths.event_log, config.observer.timesink_db_path,
         )
         home = Home(
             connections,
@@ -2824,8 +2706,8 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         build_default_registry,
         mail_drafts=mail_drafts,
         memory_db_path=memory.db_path,
-        observed_repos=_observer_repo_paths(config.raw),
-        timesink_db_path=_timesink_db_path(config.raw),
+        observed_repos=config.observer.repos,
+        timesink_db_path=config.observer.timesink_db_path,
         work_state_refresh=_work_state_tool_refresh(work_state, daily_report),
         night=night,
         voice_settings=voice_settings,
@@ -2872,7 +2754,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         memory_db=memory.db_path,
         doing=doing,
         ledger=LedgerSources(
-            memory.db_path, paths.event_log, _timesink_db_path(config.raw), local_zone,
+            memory.db_path, paths.event_log, config.observer.timesink_db_path, local_zone,
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
@@ -3028,7 +2910,7 @@ def bootstrap_runtime_app(  # noqa: PLR0915 - composition root wiring stays expl
         ),
         tier0_table=tier0_table,
         confirm_grammar_table=confirm_grammar_table,
-        confirmation_words=_confirmation_words_client(config.raw),
+        confirmation_words=_confirmation_words_client(config),
         wave1_features=wave1_features,
         response_flags=response_flags,
         llm_session_factory=llm_session_factory,
@@ -4591,8 +4473,8 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             entity_resolver=_make_entity_resolver(runtime.conn, runtime.terminal_hub),
             # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
             # via `confirmation.ttl_ms` so the live burn can shorten it.
-            confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config.raw),
-            max_tool_iterations=_max_tool_iterations(runtime.config.raw, user_intent_event),
+            confirmation_ttl_ms=runtime.config.confirmation.ttl_ms,
+            max_tool_iterations=_max_tool_iterations(runtime.config, user_intent_event),
             # ADR-0012 §3 D6 — answer-path grammar, threaded the same
             # way tier0_table is threaded.
             confirm_grammar_table=runtime.confirm_grammar_table,
@@ -4620,7 +4502,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             oneshot=runtime.oneshot,
             # The same boot value as the system prompt's reply-language line.
             reply_language=runtime.config.reply_language,
-            service_tier=_voice_service_tier(runtime.config.raw, user_intent_event),
+            service_tier=_voice_service_tier(runtime.config, user_intent_event),
             read_attachments=(
                 None if runtime.attachments is None else runtime.attachments.load_many
             ),

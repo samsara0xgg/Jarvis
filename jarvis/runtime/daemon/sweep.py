@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from jarvis.deployment.sleep_wake import sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
-from jarvis.runtime import JarvisRuntime, _event_action_id, _new_turn_id, _positive_float
+from jarvis.runtime import JarvisRuntime, _event_action_id, _new_turn_id
 from jarvis.runtime.daemon.intent_pump import drive_turn_in_worker_thread
 from jarvis.runtime.daemon.output_watchers import emit_turn_failed
 from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S, WATCHER_RETRY_S
@@ -37,26 +36,6 @@ _SYSTEM_TRIGGER_TYPES: tuple[str, ...] = (
     "action.timeout_assumed",
     "action.failed",
 )
-
-# Fallbacks for a runtime whose config carries no ``supervisor:`` block
-# (hand-assembled test runtimes). ``config/jarvis.yaml`` is the real
-# source of both numbers; mirroring them here means a missing block
-# degrades to the shipped cadence instead of silently disabling the
-# sweep.
-_FALLBACK_SWEEP_INTERVAL_S: float = 30.0
-_FALLBACK_SUPERVISOR_BUDGET_S: float = 700.0
-
-
-def _supervisor_settings(config: Mapping[str, Any]) -> tuple[float, float]:
-    """Return ``(sweep_interval_s, default_budget_s)`` from the ``supervisor:`` block."""
-    block = config.get("supervisor")
-    if not isinstance(block, Mapping):
-        return (_FALLBACK_SWEEP_INTERVAL_S, _FALLBACK_SUPERVISOR_BUDGET_S)
-    return (
-        _positive_float(block.get("sweep_interval_s"), _FALLBACK_SWEEP_INTERVAL_S),
-        _positive_float(block.get("default_budget_s"), _FALLBACK_SUPERVISOR_BUDGET_S),
-    )
-
 
 def _run_supervisor_sweep(runtime: JarvisRuntime, *, default_budget_s: float) -> int:
     """Run ONE supervisor sweep pass. Logs and swallows every failure.
@@ -254,7 +233,8 @@ async def start_sweep_control_plane(
     precisely so that ordering lives in a single readable place instead of
     inside ``serve_inherent``'s already-long body.
     """
-    sweep_interval_s, default_budget_s = _supervisor_settings(runtime.config.raw)
+    sweep_interval_s = runtime.config.supervisor.sweep_interval_s
+    default_budget_s = runtime.config.supervisor.default_budget_s
 
     anchor_id = latest_id(runtime.conn)
     anchored = asyncio.Event()

@@ -26,7 +26,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import DecideContext, decide
-from jarvis.runtime import _confirmation_ttl_ms, _max_tool_iterations
+from jarvis.runtime import _max_tool_iterations
 from jarvis.state.event_log import emit_event
 from scripts.tool_exam_steps import ScriptedModel
 from scripts.tool_exam_tools import (
@@ -70,9 +70,9 @@ def play_turn(box: Box, said: str, model: ScriptedModel) -> str:
         llm_client=cast("LLMClient", model),
         system_prompt=runtime.system_prompt,
         tier0_table=(),
-        confirmation_ttl_ms=_confirmation_ttl_ms(runtime.config.raw),
+        confirmation_ttl_ms=runtime.config.confirmation.ttl_ms,
         confirm_grammar_table=runtime.confirm_grammar_table,
-        max_tool_iterations=_max_tool_iterations(runtime.config.raw, trigger),
+        max_tool_iterations=_max_tool_iterations(runtime.config, trigger),
         wave1_features=runtime.wave1_features,
         reply_language=runtime.config.reply_language,
     )
