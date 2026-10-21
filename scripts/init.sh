@@ -127,8 +127,8 @@ follows the data/ symlink this script just created into another checkout):
   .venv/bin/pytest tests -m "not live_llm" -x
   uv audit --frozen --preview-features audit
 
-  daemon   JARVIS_LOG_LEVEL=INFO env -u MINIMAX_API_KEY .venv/bin/python -m jarvis daemon run --force-manual
-           (nothing is logged without JARVIS_LOG_LEVEL; --force-manual does NOT mute
+  daemon   env -u MINIMAX_API_KEY .venv/bin/python -m jarvis serve --force-manual
+           (serve logs at INFO unless JARVIS_LOG_LEVEL says otherwise; --force-manual does NOT mute
             speech — unsetting MINIMAX_API_KEY does)
   desktop  cd desktop/resonance && node scripts/launch.mjs   (npm ci + build when stale)
 
