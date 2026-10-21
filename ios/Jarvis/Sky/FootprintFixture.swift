@@ -1,4 +1,5 @@
 #if DEBUG
+// words: sample — the simulator's made-up day: its place and event names stand in for what the brain sends
 import Foundation
 
 /// A made-up footprint for today, as if the brain had served it, and the `/inherent/day` it goes with (same stay ids and times): home overnight, a lesson in a driving school's car
@@ -169,8 +170,8 @@ enum FootprintFixture {
             (34, 0), (35.5, 19), (37, 33), (39, 46), (41.5, 66), (42.7, 80.5), (44, 62), (46, 36), (48, 17), (50, 16),
             (53, 19), (57, 21), (61, 15), (64, 17), (67, 11), (69, 6), (70, 0),
         ]
-        /// the line's corners in km from home; it ends by the driving school, about 0.9 km from where it began
-        static let corners: [(Double, Double)] = [(0, 0), (0, 1.6), (2.2, 2.4), (2.6, 4.6), (5.4, 5.2), (7.4, 3.2), (8.6, 6.0), (11.6, 6.6), (12.4, 3.6), (10.4, 0.8), (7.0, 0.4), (3.8, -1.2), (0.9, -0.9)]
+        /// the line's corners in km from home; it ends by the driving school, a few km from where it began, so their pins stand apart
+        static let corners: [(Double, Double)] = [(0, 0), (0, 1.6), (2.2, 2.4), (2.6, 4.6), (5.4, 5.2), (7.4, 3.2), (8.6, 6.0), (11.6, 6.6), (12.4, 3.6), (10.4, 0.8), (7.0, 0.4), (3.8, -1.6)]
 
         static func kmh(_ minute: Double) -> Double {
             guard let i = keys.firstIndex(where: { $0.0 >= minute }), i > 0 else { return 0 }

@@ -347,7 +347,7 @@ final class FootprintTests: XCTestCase {
         XCTAssertEqual(drive.heart_rate?.avg_bpm ?? 0, 88, accuracy: 1)
         XCTAssertEqual(drive.heart_rate?.home_avg_bpm, 68)
         XCTAssertNil(walk.heart_rate)
-        XCTAssertEqual(walk.distance_m, 900, accuracy: 300)
+        XCTAssertEqual(walk.distance_m, 3_100, accuracy: 400, "the school stands a few km from home")
 
         // the points: in time order within the outing, every ~10 s where the line bends, none inside the gap, and their length from the stay he left to the stay he reached is the distance
         func xy(_ s: FootprintStay?) -> (Double, Double) { (s!.lat, s!.lng) }
