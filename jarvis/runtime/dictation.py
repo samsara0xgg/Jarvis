@@ -600,8 +600,13 @@ class Dictation:
                 audio, turn_id=name, sample_rate_hz=_BYTES_PER_SECOND // 2, artifacts_dir=folder,
             )
             note["audio"] = Path(str(path)).name
-            (folder / f"{name}.json").write_text(
-                json.dumps(note, ensure_ascii=False, indent=1), encoding="utf-8",
-            )
+            # The retention sweep, an export or Allen may list the folder at any moment: the note
+            # is written beside its name and renamed in, so it is seen whole or not at all.
+            staged = folder / f"{name}.json.tmp"
+            try:
+                staged.write_text(json.dumps(note, ensure_ascii=False, indent=1), encoding="utf-8")
+                staged.replace(folder / f"{name}.json")
+            finally:
+                staged.unlink(missing_ok=True)
         except OSError:
             LOGGER.exception("%s: recording not kept", name)

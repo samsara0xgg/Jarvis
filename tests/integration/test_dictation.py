@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 import threading
 import time
 from array import array
@@ -431,6 +432,42 @@ def test_each_session_leaves_its_recording_and_a_note_beside_it(tmp_path: Path) 
     _dictate(_app(silent), {})
     mic.lanes[0].close()
     assert not any((tmp_path / "off").rglob("dictation-*"))
+
+
+def test_a_note_can_be_seen_only_whole(tmp_path: Path) -> None:
+    """ADR 0084: a sweep, an export or Allen may list the folder while a note is being written.
+
+    Every write into the recordings folder is stopped half way here, and the folder is read
+    there. A note that can be seen then is whole, or it is not there yet.
+    """
+    recordings = tmp_path / "audio"
+    looked: list[list[str]] = []  # the text of every note that could be seen half way
+    write_text = pathlib.Path.write_text
+
+    def stopped_half_way(path: Path, data: str, *args: Any, **kwargs: Any) -> int:  # noqa: ANN401
+        if path.parent != recordings:
+            return write_text(path, data, *args, **kwargs)
+        half = len(data) // 2
+        with path.open("w", encoding="utf-8") as out:
+            out.write(data[:half])
+            out.flush()
+            looked.append([note.read_text(encoding="utf-8") for note in recordings.glob("*.json")])
+            out.write(data[half:])
+        return len(data)
+
+    dictation, ingress = _dictation(
+        tmp_path, lambda _pcm: voice_asr.DictationHeard(RAW, "zh"), _Provider(POLISHED),
+        recordings=recordings,
+    )
+    with patch.object(pathlib.Path, "write_text", stopped_half_way):
+        _dictate(_app(dictation), {"app": "Ghostty", "window": "claude"})
+        _wait(lambda: len(looked) == 1 and len(list(recordings.glob("*.json"))) == 1)
+    ingress.lanes[0].close()
+    for text in (text for texts in looked for text in texts):
+        json.loads(text)  # a note that could be seen half way was whole
+    (kept,) = recordings.glob("*.json")
+    assert json.loads(kept.read_text(encoding="utf-8"))["text"] == POLISHED
+    assert list(recordings.glob("*.tmp")) == []
 
 
 def test_dictation_without_speech_and_with_a_failing_polish(tmp_path: Path) -> None:
