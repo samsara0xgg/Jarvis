@@ -21,7 +21,10 @@ from jarvis.surface import voice_live
 from jarvis.surface.inherent_server import AskOutcome
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
+
+    from jarvis.shared import Event
 
 LOGGER = logging.getLogger(__name__)
 
@@ -225,3 +228,18 @@ def ask_outcome(event_log_path: Path, turn_id: str) -> AskOutcome | None:
     if isinstance(outcome, Failed):
         return AskOutcome(failure=outcome.reason or outcome.event_type)
     return None
+
+
+def live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
+    """Bus subscriber: a response terminal wakes the delegation that owns its turn (D9).
+
+    Runs on the committing thread; ``deliver`` only schedules onto the loop.
+    """
+
+    def _wake(event: Event) -> None:
+        if event.type in LIVE_TERMINAL_TYPES:
+            turn_id = event.payload.get("turn_id")
+            if isinstance(turn_id, str) and turn_id:
+                live_voice.deliver(turn_id)
+
+    return _wake

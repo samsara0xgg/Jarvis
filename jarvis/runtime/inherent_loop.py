@@ -73,10 +73,6 @@ import functools
 import json
 import logging
 import os
-import signal
-import socket
-import sqlite3
-import threading
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -85,18 +81,11 @@ from typing import TYPE_CHECKING, Any
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
     from pathlib import Path
 
     from jarvis.deployment.sleep_wake import PowerObserver
-    from jarvis.shared import Event
-    from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.surface.codex_sessions import CodexSession
 
-from jarvis.decision.response_run import (
-    ResponseTerminalizer,
-    reconcile_open_responses,
-)
 from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import logs_dir, supervised
 from jarvis.runtime import JarvisRuntime, _jev_log, save_language
@@ -117,9 +106,9 @@ from jarvis.runtime.daemon.devices import start_audio_device_watch as _start_aud
 from jarvis.runtime.daemon.devices import watch_board as _watch_board
 from jarvis.runtime.daemon.input_session import spawn_voice_input_owners
 from jarvis.runtime.daemon.intent_pump import start_intent_pump as _start_intent_pump
-from jarvis.runtime.daemon.live_backend import LIVE_TERMINAL_TYPES as _LIVE_TERMINAL_TYPES
 from jarvis.runtime.daemon.live_backend import LiveBackend as _LiveBackend
 from jarvis.runtime.daemon.live_backend import ask_outcome as _ask_outcome
+from jarvis.runtime.daemon.live_backend import live_wake_subscriber
 from jarvis.runtime.daemon.observers import agents_port as _agents_port
 from jarvis.runtime.daemon.observers import claude_sessions_served as _claude_sessions_served
 from jarvis.runtime.daemon.observers import make_usage_observer as _make_usage_observer
@@ -137,6 +126,7 @@ from jarvis.runtime.daemon.output_watchers import turn_devices as _turn_devices
 from jarvis.runtime.daemon.phone_brain import build_brain_listening, build_phone_hub
 from jarvis.runtime.daemon.phone_brain import build_brain_voice as _build_brain_voice
 from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S as _DEFAULT_POLL_INTERVAL_S
+from jarvis.runtime.daemon.reconcile import reconcile_at_boot
 from jarvis.runtime.daemon.restart import fetch_models_then_restart as _fetch_models_then_restart
 from jarvis.runtime.daemon.restart import restart_soon as _restart_soon
 from jarvis.runtime.daemon.retention import clear_media as _clear_media
@@ -180,6 +170,7 @@ from jarvis.runtime.daemon.routes import set_todo as _set_todo
 from jarvis.runtime.daemon.routes import settings_notice_deps as _settings_notice_deps
 from jarvis.runtime.daemon.routes import shipments as _shipments
 from jarvis.runtime.daemon.routes import turn_end_asks as _turn_end_asks
+from jarvis.runtime.daemon.server import Server, listen_sockets
 from jarvis.runtime.daemon.sweep import start_sweep_control_plane as _start_sweep_control_plane
 from jarvis.runtime.daemon.teardown import (
     CHILD_STOP_FLOOR_S,
@@ -231,9 +222,6 @@ from jarvis.state import (
 )
 from jarvis.state.day_line import DaySources
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
-from jarvis.state.event_log import (
-    open_event_log,
-)
 from jarvis.state.imports import IMPORTS_DIRNAME
 from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
 from jarvis.state.plugin_settings import local_key, local_key_matches
@@ -258,7 +246,6 @@ from jarvis.surface.inherent_server import (
     manager_authorize,
     require_local_key,
 )
-from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.usage_observer import (
     latest_usage,
     redeem_codex_reset,
@@ -271,57 +258,6 @@ LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
 # with the legacy ``ui/web/server.py`` default (8000) or the
 # inherent-swift dev server (8001).
 _DEFAULT_PORT: int = 8006
-
-
-def _reconcile_open_responses_in_thread(
-    event_log_path: Path,
-    committed_event_bus: CommittedEventBus | None,
-) -> int:
-    """Close every open ResponseRun once at boot (ADR-0008 F14 / §4.4).
-
-    Runs on an ``asyncio.to_thread`` worker with its OWN connection. The
-    offload is mandatory, not stylistic: ``serve_inherent``'s body executes
-    on the event-loop thread and ``runtime.conn`` was opened there with
-    ``check_same_thread=True``, so the reconciler's ``BEGIN IMMEDIATE``
-    could not legally run on it. Doing this inside the startup barrier,
-    before any watcher task exists, also means the reconciler and a fresh
-    run can never contend.
-
-    Returns the number of runs it closed.
-    """
-    conn = open_event_log(event_log_path)
-    try:
-        events = reconcile_open_responses(
-            conn,
-            ResponseTerminalizer(
-                lambda: conn,
-                close_after=False,
-                committed_event_bus=committed_event_bus,
-            ),
-        )
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-    return len(events)
-
-
-def _reconcile_open_playback_in_thread(
-    event_log_path: Path,
-    committed_event_bus: CommittedEventBus | None,
-) -> int:
-    """Close every playback generation a dead process abandoned (ADR-0008 §4.4).
-
-    Runs on an ``asyncio.to_thread`` worker with its OWN connection, for the
-    same ``check_same_thread`` reason as the reconciler above. Returns
-    the number of generations it closed.
-    """
-    conn = open_event_log(event_log_path)
-    try:
-        events = reconcile_open_playback(conn, committed_event_bus=committed_event_bus)
-    finally:
-        with contextlib.suppress(sqlite3.Error):
-            conn.close()
-    return len(events)
 
 
 def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
@@ -364,60 +300,6 @@ def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
             },
         )
     LOGGER.info("voice startup config: %s", json.dumps(payload, sort_keys=True))
-
-
-def _live_wake_subscriber(live_voice: voice_live.LiveVoice) -> Callable[[Event], None]:
-    """Bus subscriber: a response terminal wakes the delegation that owns its turn (D9).
-
-    Runs on the committing thread; ``deliver`` only schedules onto the loop.
-    """
-
-    def _wake(event: Event) -> None:
-        if event.type in _LIVE_TERMINAL_TYPES:
-            turn_id = event.payload.get("turn_id")
-            if isinstance(turn_id, str) and turn_id:
-                live_voice.deliver(turn_id)
-
-    return _wake
-
-
-class _Server(uvicorn.Server):
-    """uvicorn whose stop signal ends ``serve`` and leaves the process to ``serve_inherent``.
-
-    uvicorn re-raises the signal once it has shut down: SIGTERM then kills the process and
-    SIGINT cancels the main task, both before the daemon's teardown has run.
-    """
-
-    @contextlib.contextmanager
-    def capture_signals(self) -> Generator[None]:
-        if threading.current_thread() is not threading.main_thread():
-            yield
-            return
-        stops = (signal.SIGINT, signal.SIGTERM)
-        before = {sig: signal.signal(sig, self.handle_exit) for sig in stops}
-        try:
-            yield
-        finally:
-            for sig, handler in before.items():
-                signal.signal(sig, handler)
-
-
-def _listen_sockets(host: str, port: int, addresses: tuple[str, ...]) -> list[socket.socket]:
-    """Listening sockets for ``host`` and each private address (ADR 0170).
-
-    uvicorn binds one host, so a brain with more addresses hands it the sockets.
-    """
-    sockets: list[socket.socket] = []
-    for address in (host, *addresses):
-        try:
-            family = socket.AF_INET6 if ":" in address else socket.AF_INET
-            sockets.append(socket.create_server((address, port), family=family, backlog=2048))
-        except OSError as exc:
-            for sock in sockets:
-                sock.close()
-            msg = f"cannot listen on {address}:{port}: {exc}"
-            raise OSError(msg) from exc
-    return sockets
 
 
 async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
@@ -770,7 +652,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             )
             controls.on_mic_muted = live_voice.set_mic_muted
             if runtime.committed_event_bus is not None:
-                runtime.committed_event_bus.subscribe(_live_wake_subscriber(live_voice))
+                runtime.committed_event_bus.subscribe(live_wake_subscriber(live_voice))
             else:
                 LOGGER.info("gpt_live: no committed-event bus; delegations rely on the poll")
             if not os.environ.get(gpt_live_config.api_key_env):
@@ -791,45 +673,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             reason=voice_startup_reason,
         )
 
-        # ADR-0008 F14 / §4.4 — close ResponseRuns a previous process
-        # abandoned, once, inside the startup barrier and before any
-        # watcher task exists.
-        closed_runs = await asyncio.to_thread(
-            _reconcile_open_responses_in_thread,
-            runtime.runtime_paths.event_log,
-            runtime.committed_event_bus,
-        )
-        if closed_runs:
-            LOGGER.info(
-                "boot reconciliation closed %d open response run(s)",
-                closed_runs,
-            )
-
-        # ADR-0008 D9 / F23 — a previous process may have died holding a
-        # repository: its action reached a canonical terminal but never wrote
-        # a cleanup event, and the in-process lease table died with it. Re-take
-        # those leases here, inside the startup barrier, so no new conflicting
-        # work is accepted against a tree whose stash was never restored. The
-        # re-taken lease has no execution context, so nothing in this process
-        # can release it — clearing it is a human's job, which is the point.
-        # ADR-0008 §4.4 — the live playback actor is the only writer of a
-        # playback terminal, so a process killed mid-playback leaves its
-        # generation open forever. Close each one here, third and last, in
-        # the ADR's own bullet order (responses, actions, playback).
-        # Ungated on purpose: the actor that PRODUCES a playback generation
-        # is gated on realtime.enabled, so any gate here admits a legal config
-        # whose orphans no boot ever closes. The fold appends nothing when no
-        # generation is open.
-        closed_playback = await asyncio.to_thread(
-            _reconcile_open_playback_in_thread,
-            runtime.runtime_paths.event_log,
-            runtime.committed_event_bus,
-        )
-        if closed_playback:
-            LOGGER.info(
-                "boot reconciliation closed %d open playback generation(s)",
-                closed_playback,
-            )
+        await reconcile_at_boot(runtime)
 
         cancel_response_callable = (
             make_response_cancel_callable(
@@ -1223,7 +1067,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             log_level="warning",
             lifespan="off",
         )
-        server = _Server(config)
+        server = Server(config)
 
         # ADR-0008 D8 (Step 4). Adoption and the recovery scan happen
         # inside the startup barrier, before any task exists that could
@@ -1560,7 +1404,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         )
 
         await server.serve(
-            sockets=_listen_sockets(host, port, runtime.config.listen_addresses)
+            sockets=listen_sockets(host, port, runtime.config.listen_addresses)
             if runtime.config.listen_addresses
             else None,
         )

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from jarvis.runtime import inherent_loop
+from jarvis.runtime.daemon import reconcile
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.surface.playback_recovery import reconcile_open_playback
@@ -134,7 +134,7 @@ def test_boot_helper_closes_playback_on_its_own_connection(tmp_path: Path) -> No
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         closed = pool.submit(
-            inherent_loop._reconcile_open_playback_in_thread,  # noqa: SLF001
+            reconcile.reconcile_open_playback_in_thread,
             path,
             None,
         ).result(timeout=10)
@@ -145,29 +145,38 @@ def test_boot_helper_closes_playback_on_its_own_connection(tmp_path: Path) -> No
         assert [event.payload["reason"] for event in terminals] == ["daemon_restart"]
 
 
-def test_the_boot_playback_reconciler_stands_under_no_flag_gate() -> None:
+@pytest.mark.parametrize(
+    ("module", "function", "callee"),
+    [
+        ("inherent_loop.py", "serve_inherent", "reconcile_at_boot"),
+        ("daemon/reconcile.py", "reconcile_at_boot", "reconcile_open_playback_in_thread"),
+    ],
+)
+def test_the_boot_playback_reconciler_stands_under_no_flag_gate(
+    module: str, function: str, callee: str,
+) -> None:
     """No config may produce a playback generation no boot can close.
 
     The actor that writes ``surface.playback_started`` is gated on
     ``realtime.streaming_output``; a gate here on any other flag would admit
-    a legal config that accumulates orphans forever.
+    a legal config that accumulates orphans forever. ``serve_inherent`` reaches the
+    reconciler through ``reconcile_at_boot``, and neither call stands under a condition.
     """
     tree = ast.parse(
-        (repo_root() / "jarvis" / "runtime" / "inherent_loop.py").read_text(encoding="utf-8"),
+        (repo_root() / "jarvis" / "runtime" / module).read_text(encoding="utf-8"),
     )
-    serve = next(
+    owner = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "serve_inherent"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == function
     )
-    helper = "_reconcile_open_playback_in_thread"
     references = [
-        node for node in ast.walk(serve) if isinstance(node, ast.Name) and node.id == helper
+        node for node in ast.walk(owner) if isinstance(node, ast.Name) and node.id == callee
     ]
     assert len(references) == 1
     guards = [
         ast.unparse(node.test)
-        for node in ast.walk(serve)
-        if isinstance(node, ast.If) and helper in ast.unparse(node)
+        for node in ast.walk(owner)
+        if isinstance(node, ast.If) and callee in ast.unparse(node)
     ]
     assert guards == []

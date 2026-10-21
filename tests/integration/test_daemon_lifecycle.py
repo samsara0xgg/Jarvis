@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import intent_pump, teardown, voice_power
+from jarvis.runtime.daemon import intent_pump, reconcile, teardown, voice_power
 from jarvis.runtime.turn.start import start_drive_turn_response
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
@@ -116,22 +116,23 @@ async def _locked_async(*_args: object, **_kwargs: object) -> list[asyncio.Task[
 
 
 @pytest.mark.parametrize(
-    ("step", "failure"),
+    ("owner", "step", "failure"),
     [
         # Right after the mic started: a boot reconciler meets a locked database.
-        ("_reconcile_open_playback_in_thread", _locked),
+        (reconcile, "reconcile_open_playback_in_thread", _locked),
         # Late: the intent pump and the response watchers are already running.
-        ("_start_sweep_control_plane", _locked_async),
+        (inherent_loop, "_start_sweep_control_plane", _locked_async),
     ],
 )
 def test_a_setup_failure_after_the_mic_started_closes_it_and_ends_the_daemon(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, failure: Callable[..., Any],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: types.ModuleType, step: str,
+    failure: Callable[..., Any],
 ) -> None:
     """A setup step failing must not leave the mic open, tasks running and the process alive."""
     runtime = _runtime(tmp_path, monkeypatch)
     session = _fake_voice(monkeypatch)
-    monkeypatch.setattr(inherent_loop, step, failure)
-    monkeypatch.setattr(inherent_loop, "_Server", _StubServer)
+    monkeypatch.setattr(owner, step, failure)
+    monkeypatch.setattr(inherent_loop, "Server", _StubServer)
 
     async def run() -> list[asyncio.Task[Any]]:
         try:
@@ -182,7 +183,7 @@ def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
             assert await asyncio.to_thread(entered.wait, 30), "the turn never started"
 
     monkeypatch.setattr(intent_pump, "drive_turn", stuck_turn)
-    monkeypatch.setattr(inherent_loop, "_Server", _EndsWhenTheTurnIsRunning)
+    monkeypatch.setattr(inherent_loop, "Server", _EndsWhenTheTurnIsRunning)
 
     async def run() -> None:
         try:

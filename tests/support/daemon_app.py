@@ -99,7 +99,7 @@ def run_in_daemon[T](
         async def serve(self, sockets: object = None) -> None:  # noqa: ARG002
             answers.append(await scenario(Daemon(runtime, self.app, turns)))
 
-    monkeypatch.setattr(inherent_loop, "_Server", _Server)
+    monkeypatch.setattr(inherent_loop, "Server", _Server)
     monkeypatch.setattr(intent_pump, "drive_turn", record_turn)
     try:
         asyncio.run(inherent_loop.serve_inherent(runtime, port=0))
