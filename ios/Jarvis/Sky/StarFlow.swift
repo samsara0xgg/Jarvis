@@ -643,6 +643,7 @@ extension StarEngine {
         case _ where name.hasPrefix("时间线"): runTimelineScene(name)
         case _ where name.hasPrefix("足迹"): runFootprintScene(name)
         case "footprintMap": MainActor.assumeIsolated { FootprintMapScene.present() }
+        case "footprintTrip", "footprintTrip:held": MainActor.assumeIsolated { FootprintTripScene.present(held: name.hasSuffix("held")) }
         case "放大镜": lensTh = -0.6; lensGoal = 1
         case "打字": ui.typing = true; ui.chipsOn = true
         default: runTalkScene(name)
