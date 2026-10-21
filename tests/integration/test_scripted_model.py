@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from jarvis.decision import decide
 from jarvis.decision.llm import LLMClient
+from jarvis.decision.llm_session import LLMRequestClient, LLMSessionFactory
 from jarvis.decision.llm_stream import (
     LLMResponseCompleted,
     LLMResponseFailed,
@@ -28,8 +31,11 @@ from tests.support.model import (
     Call,
     DecisionClient,
     Failure,
+    Pause,
     Reply,
+    RunClient,
     ScriptedModel,
+    ScriptedSessions,
     ScriptExhaustedError,
     Usage,
 )
@@ -101,15 +107,72 @@ def test_asking_past_the_script_fails_the_test_and_says_which_request() -> None:
         model.chat(messages=_MESSAGES, system="s")
 
 
+_CONFIG = {
+    "provider": "openai",
+    "default_preset": "luna",
+    "presets": {
+        "luna": {"model": "m", "base_url": "https://example.invalid", "max_tokens": 8},
+        "deep": {"model": "d", "base_url": "https://example.invalid", "max_tokens": 8},
+    },
+}
+
+
 def test_the_stand_in_and_the_real_client_both_have_the_shape_decide_reads() -> None:
     """The members exist on both; the type check in model.py holds their signatures."""
-    config = {
-        "provider": "openai",
-        "default_preset": "luna",
-        "presets": {"luna": {"model": "m", "base_url": "https://example.invalid", "max_tokens": 8}},
-    }
     assert isinstance(ScriptedModel(), DecisionClient)
-    assert isinstance(LLMClient(config), DecisionClient)
+    assert isinstance(LLMClient(_CONFIG), DecisionClient)
+
+
+def test_a_request_past_the_script_gets_the_standing_answer_when_there_is_one() -> None:
+    """``otherwise`` serves any number of turns; ``script`` adds the next answer as a test goes."""
+    model = ScriptedModel("first", otherwise="standing")
+    model.script("added")
+    answers = [model.chat(messages=_MESSAGES, system="s").text for _ in range(4)]
+    assert answers == ["first", "added", "standing", "standing"]
+    assert len(model.requests) == 4
+
+
+def test_a_paused_request_waits_for_the_test_and_a_release_that_never_comes_fails_it() -> None:
+    """The test knows when the model is asked, and lets the answer go when it chooses."""
+    entered, released = threading.Event(), threading.Event()
+    model = ScriptedModel(Pause(entered, released, "late"), Pause(entered, released, "x", 0))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(model.chat, messages=_MESSAGES, system="s")
+        assert entered.wait(timeout=5)
+        assert not future.done()
+        released.set()
+        assert future.result(timeout=5).text == "late"
+    released.clear()
+    with pytest.raises(TimeoutError, match="never released"):
+        model.chat(messages=_MESSAGES, system="s")
+
+
+def test_every_run_of_a_session_factory_reads_one_script_and_keeps_its_own_usage() -> None:
+    """A run's client is pinned to its preset; the record and the script are the model's."""
+    model = ScriptedModel(Reply("one", usage=Usage(7, 1)), Reply("two", usage=Usage(9, 2)))
+    sessions = ScriptedSessions(model, _CONFIG)
+    first = sessions.create(sessions.snapshot(None), response_id="R1")
+    second = sessions.create(sessions.snapshot("deep"), response_id="R2")
+    real = LLMRequestClient(snapshot=sessions.snapshot(None), response_id="R")
+    assert isinstance(first, RunClient)
+    assert isinstance(real, RunClient)
+    assert [(c.response_id, c.model) for c in (first, second)] == [("R1", "m"), ("R2", "d")]
+    assert first.chat(messages=_MESSAGES, system="s").text == "one"
+    assert second.chat(messages=_MESSAGES, system="s").text == "two"
+    assert (first.last_input_tokens, second.last_input_tokens) == (7, 9)
+    assert [request.kind for request in model.requests] == ["chat", "chat"]
+    assert isinstance(sessions, LLMSessionFactory)
+
+
+def test_a_claude_preset_keeps_the_files_it_is_given() -> None:
+    """The Files API a picture goes up through: ids count the uploads, deletes are kept."""
+    model = ScriptedModel(provider="anthropic")
+    first = model.upload_file("a.png", b"xx", "image/png")
+    second = model.upload_file("b.png", b"yyy", "image/png")
+    model.delete_file(first)
+    assert (first, second) == ("file_001", "file_002")
+    assert model.uploads == [("a.png", 2, "image/png"), ("b.png", 3, "image/png")]
+    assert model.deleted_files == ["file_001"]
 
 
 def test_decide_runs_a_tool_round_and_an_answer_on_a_script(tmp_path: Path) -> None:

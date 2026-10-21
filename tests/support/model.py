@@ -10,6 +10,11 @@ guard and the spoken route read. ``LLMClient`` is checked against it below, and 
 ``ScriptedModel``; if the real client changes shape, the type check fails here, in one place,
 instead of a stub going quietly stale in some test file.
 
+A runtime that opens a response run asks its ``LLMSessionFactory`` for the run's own request
+client; ``ScriptedSessions`` is that factory with every run answered from the one script, so a
+test drives ``drive_turn`` and the real ``decide()`` and still reads, in one place, what the
+model was sent across all runs.
+
 The streamed request is real from the provider's chunks onward: ``stream_events`` builds the
 production ``LLMStreamHandle`` and ``StreamNormalizer`` over OpenAI chat-completion chunks made
 from the script, so text deltas, tool proposals, usage and failure reach the consumer through
@@ -20,10 +25,12 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
 from jarvis.decision.llm import ChatResult, LLMClient, Provider, ToolCall
+from jarvis.decision.llm_session import LLMPresetSnapshot, LLMRequestClient, LLMSessionFactory
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 
 if TYPE_CHECKING:
@@ -138,7 +145,22 @@ class Failure:
     error: BaseException
 
 
-type Step = Reply | Failure | str
+@dataclass(frozen=True)
+class Pause:
+    """The request holds until the test lets it go, then gets ``then``.
+
+    ``entered`` is set when the request arrives, so the test knows the model is being asked;
+    ``released`` is what the test sets to let the answer go. A request that is not released
+    within ``timeout_s`` fails with ``TimeoutError`` instead of hanging the suite.
+    """
+
+    entered: threading.Event
+    released: threading.Event
+    then: Reply | Failure | str = ""
+    timeout_s: float = 5.0
+
+
+type Step = Reply | Failure | Pause | str
 """One request's outcome; a bare string is a reply of that text."""
 
 
@@ -159,8 +181,47 @@ class ScriptExhaustedError(AssertionError):
     """The model was asked more often than the test scripted."""
 
 
-def _as_step(step: Step) -> Reply | Failure:
+def _as_step(step: Step) -> Reply | Failure | Pause:
     return Reply(text=step) if isinstance(step, str) else step
+
+
+class _Script:
+    """The steps and the record of requests that a model and all its run clients share."""
+
+    def __init__(self, steps: tuple[Step, ...], otherwise: Step | None) -> None:
+        self.steps = [_as_step(step) for step in steps]
+        self.otherwise = None if otherwise is None else _as_step(otherwise)
+        self.requests: list[Request] = []
+        self._lock = threading.Lock()
+
+    def add(self, steps: tuple[Step, ...]) -> None:
+        """Append ``steps`` to the script."""
+        with self._lock:
+            self.steps.extend(_as_step(step) for step in steps)
+
+    def answer(self, request: Request) -> Reply | Failure:
+        """Record ``request`` and return the step it gets, once any pause on it is released."""
+        with self._lock:
+            self.requests.append(request)
+            asked, scripted = len(self.requests), len(self.steps)
+            if asked <= scripted:
+                step = self.steps[asked - 1]
+            elif self.otherwise is not None:
+                step = self.otherwise
+            else:
+                msg = (
+                    f"the model was sent {request.kind} request {asked} "
+                    f"but the script has {scripted} steps"
+                )
+                raise ScriptExhaustedError(msg)
+        if isinstance(step, Pause):
+            step.entered.set()
+            if not step.released.wait(step.timeout_s):
+                msg = f"request {asked} was held {step.timeout_s} s and never released"
+                raise TimeoutError(msg)
+            then = step.then
+            return Reply(text=then) if isinstance(then, str) else then
+        return step
 
 
 class ScriptedModel:
@@ -172,21 +233,39 @@ class ScriptedModel:
     def __init__(
         self,
         *steps: Step,
+        otherwise: Step | None = None,
         provider: Provider = "openai",
         model: str = "scripted-model",
         native_tool_search: bool = False,
     ) -> None:
-        """Answer request ``n`` with ``steps[n]``; a request past the end fails the test."""
+        """Answer request ``n`` with ``steps[n]``, and any request past them with ``otherwise``.
+
+        Without ``otherwise`` a request past the end fails the test.
+        """
         self.provider: Provider = provider
         self.model = model
         self.native_tool_search = native_tool_search
-        self._steps = [_as_step(step) for step in steps]
-        self.requests: list[Request] = []
+        self._script = _Script(steps, otherwise)
         self._last_usage: Usage | None = None
+        self.uploads: list[tuple[str, int, str]] = []
+        self.deleted_files: list[str] = []
+
+    @property
+    def requests(self) -> list[Request]:
+        """Every request the model was sent, in order, across every client made from it."""
+        return self._script.requests
+
+    def script(self, *steps: Step) -> None:
+        """Add ``steps`` after those the model has; a test can decide each answer as it goes."""
+        self._script.add(steps)
 
     def as_llm_client(self) -> LLMClient:
         """This model where an ``LLMClient`` is typed: the one place the stand-in is declared."""
         return cast("LLMClient", self)
+
+    def for_run(self, snapshot: LLMPresetSnapshot, response_id: str) -> ScriptedRun:
+        """The request client of one response run: this script, pinned to the run's preset."""
+        return ScriptedRun(self._script, snapshot, response_id, self.native_tool_search)
 
     @property
     def last_input_tokens(self) -> int | None:
@@ -202,12 +281,14 @@ class ScriptedModel:
         """No tier is sent: only OpenAI's own host gets one, and this is not it."""
         return None
 
-    def _step_for_latest_request(self, kind: str) -> Reply | Failure:
-        asked, scripted = len(self.requests), len(self._steps)
-        if asked > scripted:
-            msg = f"the model was sent {kind} request {asked} but the script has {scripted} steps"
-            raise ScriptExhaustedError(msg)
-        return self._steps[asked - 1]
+    def upload_file(self, name: str, data: bytes, mime: str) -> str:
+        """Keep the upload as a Claude preset's Files API would; the id counts the uploads."""
+        self.uploads.append((name, len(data), mime))
+        return f"file_{len(self.uploads):03d}"
+
+    def delete_file(self, file_id: str) -> None:
+        """Keep the delete as a Claude preset's Files API would."""
+        self.deleted_files.append(file_id)
 
     def chat(
         self,
@@ -219,7 +300,7 @@ class ScriptedModel:
         service_tier: str | None = None,
     ) -> ChatResult:
         """Answer one request with the next step."""
-        self.requests.append(
+        step = self._script.answer(
             Request(
                 "chat",
                 copy.deepcopy(messages),
@@ -229,7 +310,6 @@ class ScriptedModel:
                 service_tier,
             )
         )
-        step = self._step_for_latest_request("chat")
         if isinstance(step, Failure):
             raise step.error
         usage = step.usage
@@ -270,7 +350,7 @@ class ScriptedModel:
         if self.provider != "openai" or responses:
             msg = "a scripted stream is OpenAI chat-completion chunks"
             raise NotImplementedError(msg)
-        self.requests.append(
+        step = self._script.answer(
             Request(
                 "stream",
                 copy.deepcopy(messages),
@@ -284,12 +364,70 @@ class ScriptedModel:
                 },
             )
         )
-        step = self._step_for_latest_request("stream")
         return LLMStreamHandle(
             normalizer=StreamNormalizer("openai", f"scripted-{len(self.requests)}"),
             source=_chunks(step),
             on_settled=on_settled,
         )
+
+
+class ScriptedRun(ScriptedModel):
+    """One response run's request client: the script of its model, pinned to a frozen preset.
+
+    A run reads its own last usage, as the real per-run client does, so two runs overlapping on
+    one script never see each other's token counts.
+    """
+
+    def __init__(
+        self,
+        script: _Script,
+        snapshot: LLMPresetSnapshot,
+        response_id: str,
+        native_tool_search: bool,  # noqa: FBT001 - copied from the model this run belongs to
+    ) -> None:
+        """Pin the shared ``script`` to ``snapshot``'s provider and model."""
+        super().__init__(
+            provider=snapshot.provider,
+            model=snapshot.model,
+            native_tool_search=native_tool_search,
+        )
+        self._script = script
+        self.active_preset = snapshot.preset_name
+        self._preset_snapshot = snapshot
+        self._response_id = response_id
+
+    @property
+    def preset_snapshot(self) -> LLMPresetSnapshot:
+        """The frozen preset identity this run is pinned to."""
+        return self._preset_snapshot
+
+    @property
+    def response_id(self) -> str:
+        """The response run that owns this client."""
+        return self._response_id
+
+
+class ScriptedSessions(LLMSessionFactory):
+    """The session factory of a runtime whose every response run is answered by one model.
+
+    The preset logic is the real factory's, so a snapshot names the provider, model and effort a
+    turn would use; only the client a run is handed is the scripted one.
+    """
+
+    def __init__(self, model: ScriptedModel, llm_config: Mapping[str, Any]) -> None:
+        """Hand every run a client of ``model``; ``llm_config`` is the ``llm:`` block."""
+        super().__init__(llm_config)
+        self._model = model
+
+    def create(
+        self,
+        preset_snapshot: LLMPresetSnapshot,
+        *,
+        response_id: str,
+        tracker: object | None = None,  # noqa: ARG002 - the real factory's signature
+    ) -> LLMRequestClient:
+        """A request client for one run, from the shared script."""
+        return cast("LLMRequestClient", self._model.for_run(preset_snapshot, response_id))
 
 
 async def _chunks(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
@@ -330,6 +468,21 @@ async def _chunks(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
         }
 
 
+@runtime_checkable
+class RunClient(DecisionClient, Protocol):
+    """What a response run reads of its own request client, as ``LLMRequestClient`` offers it."""
+
+    @property
+    def preset_snapshot(self) -> LLMPresetSnapshot:
+        """The frozen preset identity the run is pinned to."""
+        ...
+
+    @property
+    def response_id(self) -> str:
+        """The response run that owns the client."""
+        ...
+
+
 if TYPE_CHECKING:
     # The real client and the stand-in both have the shape the decision layer reads.
     def _real_client_is_a_decision_client(client: LLMClient) -> DecisionClient:
@@ -337,3 +490,10 @@ if TYPE_CHECKING:
 
     def _scripted_model_is_a_decision_client(model: ScriptedModel) -> DecisionClient:
         return model
+
+    # And the real per-run client and the scripted one both have the shape a run reads.
+    def _real_run_client_is_a_run_client(client: LLMRequestClient) -> RunClient:
+        return client
+
+    def _scripted_run_is_a_run_client(run: ScriptedRun) -> RunClient:
+        return run
