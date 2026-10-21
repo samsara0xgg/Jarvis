@@ -35,8 +35,8 @@ from jarvis.decision.response_run import (
     legacy_full_text_policy,
     start_response_run,
 )
-from jarvis.runtime import JarvisRuntime, inherent_loop, tool_status
-from jarvis.runtime.daemon import commentary, output_watchers
+from jarvis.runtime import JarvisRuntime, tool_status
+from jarvis.runtime.daemon import commentary, conversation_lines, output_watchers
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.turn.cancel import (
     make_barge_in_interrupt_callable,
@@ -2237,7 +2237,7 @@ def test_words_that_steer_the_mode_get_one_fixed_line_and_no_turn(
     """ADR 0102: 「等我一下」 or a dismissal is answered by a fixed line, never a model."""
     runtime = commentary_runtime(tmp_path, commentary=False)
 
-    inherent_loop._say_conversation_line(runtime, "T-words", reason, heard)  # noqa: SLF001
+    conversation_lines.say_conversation_line(runtime, "T-words", reason, heard)
 
     assert typed_payloads(runtime.conn, "surface.conversation_words") == [
         {"turn_id": "T-words", "reason": reason, "transcript": heard},
@@ -2255,7 +2255,7 @@ def test_a_pinned_reply_language_picks_the_conversation_line_over_his_words(
     runtime = commentary_runtime(tmp_path, commentary=False)
     runtime = reconfigure(runtime, reply_language="en")
 
-    inherent_loop._say_conversation_line(runtime, "T-words", "wait", "等我一下。")  # noqa: SLF001
+    conversation_lines.say_conversation_line(runtime, "T-words", "wait", "等我一下。")
 
     assert only_phrase(runtime.conn) in lang.variants("conversation.wait", "en")
 

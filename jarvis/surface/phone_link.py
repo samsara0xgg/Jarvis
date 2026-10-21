@@ -139,7 +139,7 @@ with no live socket is asked by a background push instead (the push section of t
 phone sends READY (its audio session is up); the host speaks nothing before it.
 
 The host speaks no line back to a dismissal, 「等我一下」 or a quiet command as the Mac does
-(:func:`jarvis.runtime.inherent_loop._say_conversation_line`); the phone shows its own.
+(:func:`jarvis.runtime.daemon.conversation_lines.say_conversation_line`); the phone shows its own.
 
 Layer rules: stdlib, FastAPI and ``jarvis.surface`` only.
 """
