@@ -33,6 +33,7 @@ from tests.support.model import (
     Failure,
     Pause,
     Reply,
+    Request,
     RunClient,
     ScriptedModel,
     ScriptedSessions,
@@ -141,6 +142,26 @@ def test_a_request_past_the_script_gets_the_standing_answer_when_there_is_one() 
     answers = [model.chat(messages=_MESSAGES, system="s").text for _ in range(4)]
     assert answers == ["first", "added", "standing", "standing"]
     assert len(model.requests) == 4
+
+
+def test_a_step_can_answer_from_the_request_and_fail_or_speak_as_it_chooses() -> None:
+    """A function step sees what the model was sent; a string, a reply or a failure comes back."""
+
+    def echo(request: Request) -> Reply | Failure | str:
+        said = str(request.messages[0]["content"])
+        if said == "boom":
+            return Failure(TimeoutError("slow"))
+        return Reply(f"{request.system}: {said}", usage=None) if said == "plain" else said.upper()
+
+    model = ScriptedModel(echo, otherwise=echo)
+    first = model.chat(messages=[{"role": "user", "content": "plain"}], system="s")
+    assert (first.text, first.usage_status) == ("s: plain", "unavailable")
+    assert model.chat(messages=[{"role": "user", "content": "ice"}], system="s").text == "ICE"
+    with pytest.raises(TimeoutError, match="slow"):
+        model.chat(messages=[{"role": "user", "content": "boom"}], system="s")
+    assert [str(r.messages[0]["content"]) for r in model.requests] == ["plain", "ice", "boom"]
+    streamed, _ = _events(ScriptedModel(echo))  # a stream is answered the same way
+    assert [e.text for e in streamed if isinstance(e, LLMTextDelta)] == ["几点了"]
 
 
 def test_a_paused_request_waits_for_the_test_and_a_release_that_never_comes_fails_it() -> None:

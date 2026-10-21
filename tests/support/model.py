@@ -1,7 +1,8 @@
 """One scripted model for tests that run the decision layer.
 
 ``ScriptedModel`` stands where ``LLMClient`` stands and answers from a script: text, tool calls,
-usage, or a failure per request, in order. It records every request it is sent, so a test
+usage, or a failure per request, in order. A step can also be a function of the request, for a
+model whose answer depends on what it was shown. It records every request it is sent, so a test
 asserts on what the model was shown. It replaces the per-file stubs that each carried their own
 half of the client.
 
@@ -179,7 +180,10 @@ class Pause:
     timeout_s: float = 5.0
 
 
-type Step = Reply | Failure | Pause | str
+type Responder = Callable[[Request], Reply | Failure | str]
+"""A step that answers from the request: its messages and system. A bare string is a reply."""
+
+type Step = Reply | Failure | Pause | Responder | str
 """One request's outcome; a bare string is a reply of that text."""
 
 
@@ -200,7 +204,7 @@ class ScriptExhaustedError(AssertionError):
     """The model was asked more often than the test scripted."""
 
 
-def _as_step(step: Step) -> Reply | Failure | Pause:
+def _as_step(step: Step) -> Reply | Failure | Pause | Responder:
     return Reply(text=step) if isinstance(step, str) else step
 
 
@@ -240,7 +244,10 @@ class _Script:
                 raise TimeoutError(msg)
             then = step.then
             return Reply(text=then) if isinstance(then, str) else then
-        return step
+        if isinstance(step, Reply | Failure):
+            return step
+        answer = step(request)  # outside the lock: it may read the model or change the world
+        return Reply(text=answer) if isinstance(answer, str) else answer
 
 
 class ScriptedModel:
@@ -259,6 +266,8 @@ class ScriptedModel:
     ) -> None:
         """Answer request ``n`` with ``steps[n]``, and any request past them with ``otherwise``.
 
+        A step that is a function is called with the :class:`Request` and returns the reply, a
+        :class:`Failure`, or a string; as ``otherwise`` it answers every request past the steps.
         Without ``otherwise`` a request past the end fails the test.
         """
         self.provider: Provider = provider
