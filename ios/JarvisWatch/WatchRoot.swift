@@ -6,6 +6,7 @@ import WatchKit
 struct WatchRoot: View {
     static let space = "watch-root"
     private static let grow = Animation.smooth(duration: 0.3)
+    private static let cornerAt: CGFloat = 90          // points of scroll for her to travel from the middle to the corner
 
     enum Route: Hashable { case waiting(String), ride }
     private enum Phase { case idle, listening, thinking, answer, failed }
@@ -15,6 +16,8 @@ struct WatchRoot: View {
     @State private var told: Int?
     @State private var answered: Set<String> = []
     @State private var scroll: CGFloat = 0
+    /// scrolled far enough that she has reached the corner: from here the system's own corner item carries her (it also moves the time out of her way)
+    @State private var inList = false
     @State private var herHome: CGRect = .zero
     @State private var size: CGSize = .zero
     private let scrollToList: Bool
@@ -73,7 +76,7 @@ struct WatchRoot: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
-                    WatchHomePage(day: model.day, told: $told, openRide: { path.append(.ride) }, herPlace: { herHome = $0 })
+                    WatchHomePage(day: model.day, aod: aod, told: $told, openRide: { path.append(.ride) }, herPlace: { herHome = $0 })
                         .frame(height: WKInterfaceDevice.current().screenBounds.height)
                     if let day = model.day {
                         WatchList(day: day, answered: answered, open: { path.append($0) }, answer: send)
@@ -81,22 +84,23 @@ struct WatchRoot: View {
                     }
                 }
             }
-            .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.y + $0.contentInsets.top) } action: { _, y in scroll = y }
+            .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.y + $0.contentInsets.top) } action: { _, y in scroll = y; inList = y >= Self.cornerAt }
             .onAppear { if scrollToList { Task { try? await Task.sleep(for: .seconds(0.4)); withAnimation(Self.grow) { proxy.scrollTo("list", anchor: .top) } } } }
         }
-        .overlay { her }
+        .overlay { if !inList { her } }
         .ignoresSafeArea()
         .coordinateSpace(name: Self.space)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
         .task(id: told) { if told != nil { try? await Task.sleep(for: .seconds(4)); if !Task.isCancelled { withAnimation(Self.grow) { told = nil } } } }
         .animation(Self.grow, value: told)
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar { if inList { WatchCornerHer(face: .rest, primary: true) } }
+        .toolbar(inList ? .visible : .hidden, for: .navigationBar)
     }
 
     /// She: the ball in the middle of the ring; as the list scrolls up she shrinks into the top-right corner, and grows back at the top.
     private var her: some View {
-        let p = min(1, scroll / 90)
-        let corner = CGPoint(x: size.width - 22, y: 14)
+        let p = min(1, scroll / Self.cornerAt)
+        let corner = CGPoint(x: size.width - 32.5, y: 35)          // where the system puts a 28 pt top-trailing item
         let at = CGPoint(x: herHome.midX + (corner.x - herHome.midX) * p, y: herHome.midY + (corner.y - herHome.midY) * p)
         let d = 80 + (28 - 80) * p
         return Button { model.startTalk() } label: {

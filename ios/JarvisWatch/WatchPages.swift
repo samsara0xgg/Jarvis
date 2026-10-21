@@ -3,10 +3,13 @@ import SwiftUI
 /// the corner she sits in on every screen but home: top right, 28 pt (watchOS then centres the time)
 struct WatchCornerHer: ToolbarContent {
     var face: HerFace
+    /// the screen's primary action (double tap) is talking to her
+    var primary = false
     var model = WatchModel.shared
     var body: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button { model.startTalk() } label: { HerSprite(face: face, size: 28) }.buttonStyle(.plain)
+            let b = Button { model.startTalk() } label: { HerSprite(face: face, size: 28) }.buttonStyle(.plain)
+            if primary { b.handGestureShortcut(.primaryAction) } else { b }
         }
     }
 }

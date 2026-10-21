@@ -49,10 +49,11 @@ struct ComplicationEntryView: View {
         switch family {
         case .accessoryRectangular: RectangularComplication(day: entry.day)
         case .accessoryInline: InlineComplication(day: entry.day)
-        case .accessoryCorner: CornerComplication(day: entry.day) { her }
-        default: CircularComplication(day: entry.day, now: entry.now) { her }
+        case .accessoryCorner: CornerComplication(day: entry.day) { her("her-comp") }
+        default: CircularComplication(day: entry.day, now: entry.now) { her("her-comp-out") }
         }
     }
 
-    private var her: some View { Image("her-comp").resizable().scaledToFit() }
+    /// her, as the asset catalog has her: `her-comp-out` (surfaced, reads better in the ring) or `her-comp` (the at-home rest look); kept in full colour
+    private func her(_ name: String) -> some View { Image(name).resizable().widgetAccentedRenderingMode(.fullColor).scaledToFit() }
 }

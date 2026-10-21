@@ -4,10 +4,10 @@ import SwiftUI
 /// She herself is drawn by `WatchRoot` (one view that grows from here into the corner as the list scrolls up); this page leaves her a place.
 struct WatchHomePage: View {
     var day: WatchDay?
+    var aod: Bool
     @Binding var told: Int?
     var openRide: () -> Void
     var herPlace: (CGRect) -> Void
-    @Environment(\.isLuminanceReduced) private var aod
 
     var body: some View {
         GeometryReader { g in
@@ -21,7 +21,7 @@ struct WatchHomePage: View {
                     .frame(width: side, height: side)
                     ring(day, side: side, thick: thick)
                 }
-                Color.clear.frame(width: 80, height: 80).offset(y: -side * 0.13)
+                Color.clear.frame(width: 80, height: 80).offset(y: -side * 0.105)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(WatchRoot.space)) } action: { herPlace($0) }
                 if !aod { centre(side: side) }
             }
@@ -41,7 +41,7 @@ struct WatchHomePage: View {
     }
 
     @ViewBuilder private func centre(side: CGFloat) -> some View {
-        let y = side * 0.215
+        let y = side * 0.225
         if let day, let i = told, day.blocks.indices.contains(i) {
             let b = day.blocks[i]
             VStack(spacing: 2) {

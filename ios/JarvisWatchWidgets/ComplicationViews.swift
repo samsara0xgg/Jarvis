@@ -15,8 +15,7 @@ struct CircularComplication<Her: View>: View {
             if let day { WatchRingView(day: day, now: now, thickness: 3) }
             her.padding(7)
             if let day, !day.waiting.isEmpty {
-                Circle().fill(WatchTheme.amber).frame(width: 7, height: 7).widgetAccentable()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(1)
+                Circle().fill(WatchTheme.amber).frame(width: 7, height: 7).widgetAccentable().offset(x: 17, y: -17)          // on the ring's edge, upper right
             }
         }
     }

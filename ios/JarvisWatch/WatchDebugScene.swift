@@ -44,9 +44,8 @@ struct WatchComplicationGallery: View {
         let day = WatchDay.sample
         let now = WatchRing.nowMinute(day, at: .now)
         ScrollView {
-            VStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 card("circular", w: 52, h: 52) { CircularComplication(day: day, now: now) { HerSprite(face: .rest, size: 30) } }
-                card("circular x2", w: 104, h: 104) { CircularComplication(day: day, now: now) { HerSprite(face: .rest, size: 30) }.scaleEffect(2) }
                 card("rectangular", w: 160, h: 64) { RectangularComplication(day: day) }
                 card("inline", w: 170, h: 22) { InlineComplication(day: day) }
                 card("corner", w: 190, h: 44) {
