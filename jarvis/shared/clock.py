@@ -7,6 +7,8 @@ elapsed time or a wait takes it from there. A test hands the same code
 :class:`SystemClock` reads through ``time.time()``, ``time.monotonic()`` and ``datetime.now()``
 and nothing lower, so a freeze that replaces those (the tool exam's ``time_machine``) holds for
 every reader that is already on the clock.
+
+:func:`zone_data_problem` checks the host's tz database for one rule an old one lacks.
 """
 
 from __future__ import annotations
@@ -16,14 +18,23 @@ import time
 from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import TZPATH, ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
     import threading
+    from collections.abc import Callable, Iterable
 
 _LOCALTIME: Final = Path("/etc/localtime")
 _HALF_YEAR_S: Final = 182 * 24 * 3600
 """Far enough from now to land on the other side of a daylight-saving change."""
+_RULE_ZONE: Final = "America/Vancouver"
+_RULE_AT: Final = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
+_RULE_OFFSET: Final = timedelta(hours=-7)
+"""The rule the host's tz database must hold: ``_RULE_ZONE`` is on UTC-7 at 12:00 on 2026-11-02.
+
+``_RULE_AT`` is that wall time; the zone replaces its UTC label. A database older than the rule
+gives UTC-8 there, and every time of day in BC after it is an hour off.
+"""
 
 
 class ZoneError(ValueError):
@@ -142,6 +153,51 @@ def _load(name: str) -> ZoneInfo | None:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, OSError):
         return None
+
+
+def tz_database_version(directories: Iterable[str] = TZPATH) -> str:
+    """The version of the tz database the zone files are read from, else ``unknown``.
+
+    The first directory that holds a zone file names it: ``tzdata.zi`` begins ``# version 2026e``,
+    and some systems keep it in ``+VERSION``.
+    """
+    for directory in directories:
+        root = Path(directory)
+        if not (root / _RULE_ZONE).is_file():
+            continue
+        for name in ("tzdata.zi", "+VERSION"):
+            try:
+                first = (root / name).read_text(encoding="utf-8").splitlines()[0]
+            except (OSError, UnicodeDecodeError, IndexError):
+                continue
+            version = first.removeprefix("#").strip().removeprefix("version").strip()
+            if version:
+                return version
+        return "unknown"
+    return "unknown"
+
+
+def zone_data_problem(
+    load: Callable[[str], tzinfo] = ZoneInfo,
+    version: Callable[[], str] = tz_database_version,
+) -> str | None:
+    """None when the host's tz database gives America/Vancouver UTC-7 at 2026-11-02 12:00.
+
+    Otherwise the sentence that says its tzdata is out of date, naming what it gives there (no
+    offset for a zone it lacks) and its version. ``load`` is the zone provider and ``version``
+    the database's version.
+    """
+    try:
+        offset = _RULE_AT.replace(tzinfo=load(_RULE_ZONE)).utcoffset()
+    except (ZoneInfoNotFoundError, ValueError, OverflowError, OSError):
+        offset = None
+    if offset == _RULE_OFFSET:
+        return None
+    gives = "no offset" if offset is None else f"UTC{_signed(offset)}"
+    return (
+        f"the host's tzdata is out of date: {_RULE_ZONE} gives {gives} at "
+        f"{_RULE_AT:%Y-%m-%d %H:%M}, not UTC{_signed(_RULE_OFFSET)} (tz database {version()})"
+    )
 
 
 def zone_key(zone: tzinfo) -> str | None:
