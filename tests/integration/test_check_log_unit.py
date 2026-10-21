@@ -1,4 +1,4 @@
-"""ADR 0323: the nightly unit, run the way systemd would run it.
+"""ADR 0324: the nightly unit, run the way systemd would run it.
 
 systemd is not available to a test, so this reads ``jarvis-check-log.service``, expands
 its ``ExecStartPre``/``ExecStart`` lines with systemd's own rules (word splitting first, then

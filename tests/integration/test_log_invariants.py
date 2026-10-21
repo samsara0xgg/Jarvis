@@ -1,4 +1,4 @@
-"""ADR 0323: the invariants a runtime root's event log must hold, asked of the log itself.
+"""ADR 0324: the invariants a runtime root's event log must hold, asked of the log itself.
 
 Every log here is built through the real L2 functions (``open_event_log``, ``emit_event``, the
 response, action, playback, confirmation and cost primitives) on a fake clock, so each

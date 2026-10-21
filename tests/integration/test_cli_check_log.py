@@ -1,4 +1,4 @@
-"""ADR 0323: ``jarvis check-log`` through the real CLI entry, against a real WAL event log.
+"""ADR 0324: ``jarvis check-log`` through the real CLI entry, against a real WAL event log.
 
 What the nightly timer relies on: the exit code says clean (0), violated (1) or unusable (2);
 the check changes nothing on disk, even while a writer holds the log open or the daemon holds

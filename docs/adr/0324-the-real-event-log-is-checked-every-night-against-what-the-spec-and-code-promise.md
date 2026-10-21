@@ -1,4 +1,4 @@
-# ADR 0323 — The real event log is checked every night against what the spec and the code promise
+# ADR 0324 — The real event log is checked every night against what the spec and the code promise
 
 **Status:** Accepted
 **Date:** 2026-10-21

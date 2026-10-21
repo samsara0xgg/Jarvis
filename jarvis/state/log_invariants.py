@@ -1,4 +1,4 @@
-"""L2 — read-only invariants over a runtime root's event log (ADR 0323).
+"""L2 — read-only invariants over a runtime root's event log (ADR 0324).
 
 Hermetic tests cannot see the real environment: the Pi has no ``afconvert``, a
 Pi without a battery clock boots in the past, a real device sends what no
@@ -15,7 +15,7 @@ while the daemon runs and on a backup copy. It is anchored at the log's newest
 timestamp, not at the wall clock, so a copy checked a week later still checks
 the days it holds (a "not yet closed" run is judged against the copy's own
 last moment). Each invariant is bounded by the window and by the indexes the
-log already has (``docs/adr/0323``); ``ALL_QUERIES`` lists every statement for
+log already has (``docs/adr/0324``); ``ALL_QUERIES`` lists every statement for
 the ``EXPLAIN QUERY PLAN`` test.
 
 Layer: stdlib plus ``jarvis.state.event_log``'s registry.
@@ -574,14 +574,14 @@ INVARIANTS: Final[tuple[Invariant, ...]] = (
         "Timestamps of events the brain stamps itself never run backwards in id order by more "
         f"than {CLOCK_BACK_TOLERANCE_MS // 1000} s: ts is read inside BEGIN IMMEDIATE, so a step "
         "back is the host clock stepping (a Pi without a battery clock booting in the past).",
-        "jarvis/state/event_log.py (ordering authority is id / ts_epoch_ms); docs/adr/0323",
+        "jarvis/state/event_log.py (ordering authority is id / ts_epoch_ms); docs/adr/0324",
         _clock_does_not_run_backwards,
     ),
     Invariant(
         "event.clock_not_ahead",
         "No brain-stamped event is dated more than "
         f"{CLOCK_FUTURE_TOLERANCE_MS // 1000} s after the time of this check.",
-        "jarvis/state/event_log.py (ts is the append instant); docs/adr/0323",
+        "jarvis/state/event_log.py (ts is the append instant); docs/adr/0324",
         _clock_is_not_ahead,
     ),
     Invariant(

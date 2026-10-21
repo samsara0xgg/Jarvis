@@ -1,4 +1,4 @@
-"""ADR 0323: the Mac's daily Pi backup carries the nightly check-log reports, and nothing else.
+"""ADR 0324: the Mac's daily Pi backup carries the nightly check-log reports, and nothing else.
 
 ``scripts/pi_brain_backup.sh`` is run for real, with ``ssh``, ``scp`` and ``sqlite3`` replaced by
 shims that act on a fake Pi home on this machine (the script's Pi-side Python runs unchanged).

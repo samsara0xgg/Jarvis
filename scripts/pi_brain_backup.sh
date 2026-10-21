@@ -9,7 +9,7 @@
 # quick_check, and removed on the Pi before the next one starts. A database bigger than half of
 # /dev/shm's free space is staged on the Pi's disk beside ~/.jarvis (~/.jarvis-backup-stage-<date>)
 # instead of in RAM, and removed right after the pull. Only *.db files and the nightly event-log
-# reports (~/.jarvis/logs/check-log-*.json, ADR 0323; ids, counts and times, no content) travel: env,
+# reports (~/.jarvis/logs/check-log-*.json, ADR 0324; ids, counts and times, no content) travel: env,
 # tokens and every other file stay on the Pi. The newest 7 days are kept. A day's folder is itself a
 # runtime root for `jarvis check-log --runtime-root <folder>`.
 set -euo pipefail
