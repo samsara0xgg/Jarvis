@@ -11,7 +11,7 @@ struct WatchRoot: View {
     private enum Phase { case idle, listening, thinking, answer, failed }
 
     private let model = WatchModel.shared
-    @State private var path: [Route]
+    @State private var path: [Route] = []
     @State private var told: Int?
     @State private var answered: Set<String> = []
     @State private var scroll: CGFloat = 0
@@ -19,9 +19,12 @@ struct WatchRoot: View {
     @State private var inList = false
     @State private var herHome: CGRect = .zero
     private let scrollToList: Bool
+    /// a screen to push once home is up (the debug scenes): a stack that starts with a path is blank until it finds its destinations
+    private let opening: Route?
+    @State private var opened = false
 
-    init(path: [Route] = [], scrollToList: Bool = false) {
-        _path = State(initialValue: path)
+    init(opening: Route? = nil, scrollToList: Bool = false) {
+        self.opening = opening
         self.scrollToList = scrollToList
     }
 
@@ -53,6 +56,7 @@ struct WatchRoot: View {
         .animation(Self.grow, value: phase)
         .onChange(of: model.day) { old, new in
             answered = []
+            path.removeAll { !Self.exists($0, in: new) }                 // answered on the phone or ended while its screen was open: back to the list, not a blank page
             if let old, let new {
                 let had = Set(old.waiting.map(\.id))
                 if new.waiting.contains(where: { !had.contains($0.id) }) { WatchHaptics.play(.waits) }
@@ -83,7 +87,10 @@ struct WatchRoot: View {
                 }
             }
             .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.y + $0.contentInsets.top) } action: { _, y in scroll = y; inList = y >= Self.cornerAt }
-            .onAppear { if scrollToList { Task { try? await Task.sleep(for: .seconds(0.4)); withAnimation(Self.grow) { proxy.scrollTo("list", anchor: .top) } } } }
+            .onAppear {
+                if let opening, !opened { opened = true; Task { try? await Task.sleep(for: .seconds(0.4)); path = [opening] } }
+                if scrollToList { Task { try? await Task.sleep(for: .seconds(0.4)); withAnimation(Self.grow) { proxy.scrollTo("list", anchor: .top) } } }
+            }
         }
         .ignoresSafeArea()
         .overlay { ZStack { if !inList { her } }.ignoresSafeArea() }          // she is placed in screen coordinates, the ones her place is measured in (`.global`)
@@ -120,6 +127,14 @@ struct WatchRoot: View {
                 send(id, action)
                 path.removeAll()
             }
+        }
+    }
+
+    /// whether the screen of a route still has what it shows in the day the phone sent
+    private static func exists(_ r: Route, in day: WatchDay?) -> Bool {
+        switch r {
+        case .waiting(let id): day?.waiting.contains { $0.id == id } ?? false
+        case .ride: day?.ride != nil
         }
     }
 

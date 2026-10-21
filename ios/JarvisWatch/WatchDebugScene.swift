@@ -29,8 +29,8 @@ struct WatchDebugHost: View {
     var body: some View {
         switch WatchScene.current {
         case .complications: WatchComplicationGallery()
-        case .waiting: WatchRoot(path: [.waiting(WatchDay.sample.waiting[0].id)])
-        case .ride: WatchRoot(path: [.ride])
+        case .waiting: WatchRoot(opening: .waiting(WatchDay.sample.waiting[0].id))
+        case .ride: WatchRoot(opening: .ride)
         case .list: WatchRoot(scrollToList: true)
         case .aod: WatchRoot().transformEnvironment(\.isLuminanceReduced) { $0 = true }
         default: WatchRoot()
