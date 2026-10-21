@@ -61,10 +61,6 @@ _KEPT_SCHEMA: Final[Mapping[str, Any]] = {
     },
     "additionalProperties": False,
 }
-_RETIRED: Final = (
-    "kind", "at", "until", "place", "in_minutes", "cancel", "confirm", "whole_sender",
-)
-"""What ``keep`` took before ADR 0299 moved memos, reminders and appointments to ``schedule``."""
 _RESULT_CHARS: Final = 4000
 _FACT_CHARS: Final = 240
 _TOPIC_CHARS: Final = 40
@@ -125,14 +121,7 @@ class _Keeper:
     def keep(self, args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         """Save the fact the arguments say; the result says whether it was new."""
         if unknown := sorted(set(args) - set(_KEEP_SCHEMA["properties"])):
-            if unknown[0] in _RETIRED:
-                msg = (
-                    f"keep: {unknown[0]} is not a fact's argument; keep holds lasting facts about"
-                    ' him only. For something he has to do or go to, call schedule(action="add",'
-                    " what=..., at=...)"
-                )
-            else:
-                msg = f"keep: no argument {unknown[0]!r}; use text, topic or section"
+            msg = f"keep: no argument {unknown[0]!r}; use text, topic or section"
             raise ToolError(msg, code="invalid_arguments")
         text, topic, section = _text(args, "text"), _text(args, "topic"), _text(args, "section")
         if not text:
@@ -226,7 +215,7 @@ def build_keep_tools(
             description=_KEEP_DESCRIPTION,
             input_schema=_KEEP_SCHEMA,
             handler=keeper.keep,
-            allowed_callers=both,
+            allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L1",
             read_only=False,
             max_result_chars=_RESULT_CHARS,

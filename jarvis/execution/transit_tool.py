@@ -661,11 +661,8 @@ def live_card(trip: Mapping[str, Any]) -> dict[str, Any] | None:
     """The card's trip as served now: no row whose leave time has passed; None if none is left.
 
     A row's ``HH:MM`` is on the day the answer was made (the next day when it is more than an hour
-    before that moment), so a card does not come back after midnight. A card without ``made_at``
-    is from before it was kept and is gone.
+    before that moment), so a card does not come back after midnight.
     """
-    if not trip.get("made_at"):
-        return None
     made_at = datetime.fromisoformat(str(trip["made_at"]))
     floor = _now().replace(second=0, microsecond=0)
     rows = [r for r in trip["options"] if _leaves(made_at, r) >= floor]

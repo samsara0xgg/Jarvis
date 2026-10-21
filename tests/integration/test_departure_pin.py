@@ -190,7 +190,7 @@ class _World:
         self.lifecycle.register(action_id)
         self.lifecycle.transition(action_id, "authorized")
         bundle = self.registry.dispatch(request, self.conn, self.paths, self.lifecycle)
-        out = json.loads(bundle.slots[0].tool_output or "{}")
+        out = json.loads(bundle.tool_output or "{}")
         return out if isinstance(out, dict) else {"value": out}
 
     def at(self, hhmm: str) -> None:
@@ -339,7 +339,7 @@ def test_a_pin_before_any_list_says_to_ask_for_the_times_first(tmp_path: Path) -
     lifecycle = ActionLifecycle()
     lifecycle.register("A1")
     lifecycle.transition("A1", "authorized")
-    out = json.loads(registry.dispatch(request, conn, paths, lifecycle).slots[0].tool_output or "")
+    out = json.loads(registry.dispatch(request, conn, paths, lifecycle).tool_output or "")
     conn.close()
     assert out["code"] == "no_plan"
     assert "ask for the times first with bus(to=...)" in out["error"]
@@ -995,7 +995,7 @@ def test_voice_can_pin_several_options_and_a_single_number_pins_one(world: _Worl
 
 
 def test_a_late_card_keeps_its_after_midnight_row_and_an_unkept_day_is_gone(world: _World) -> None:
-    """A row past midnight belongs to the next day; a trip without ``made_at`` is not served."""
+    """A row past midnight belongs to the next day."""
     made = _local("23:50")
     trip = {
         "offer_id": "offer-late",
@@ -1009,4 +1009,3 @@ def test_a_late_card_keeps_its_after_midnight_row_and_an_unkept_day_is_gone(worl
     assert [o["index"] for o in shown["options"]] == [1]
     world.local_now = made + timedelta(minutes=25)
     assert live_card(trip) is None
-    assert live_card({**trip, "made_at": ""}) is None

@@ -67,7 +67,7 @@ class _World:
         self.lifecycle.register(action_id)
         self.lifecycle.transition(action_id, "authorized")
         bundle = self.registry.dispatch(request, self.conn, self.paths, self.lifecycle)
-        slot = bundle.slots[0]
+        slot = bundle
         assert slot.tool_output is not None
         assert len(slot.tool_output) <= 4000
         out = json.loads(slot.tool_output)
@@ -107,8 +107,9 @@ def test_the_menu_entries_are_two_small_tools_with_the_owner_s_words() -> None:
     keep, kept = build_keep_tools(None, ZONE)
     assert (keep.name, keep.read_only, keep.risk_level) == ("keep", False, "L1")
     assert (kept.name, kept.read_only, kept.risk_level) == ("kept", True, "L0")
+    assert keep.allowed_callers == {CallerPrincipal.JARVIS_LLM}
+    assert kept.allowed_callers == {CallerPrincipal.JARVIS_LLM, CallerPrincipal.REGEX_ROUTER}
     for one in (keep, kept):
-        assert one.allowed_callers == {CallerPrincipal.JARVIS_LLM, CallerPrincipal.REGEX_ROUTER}
         assert len(one.description) <= 600
         assert one.description.isascii()
         assert one.description.startswith("Use ")
@@ -220,19 +221,6 @@ def test_no_text_is_refused(world: _World) -> None:
     assert refused["code"] == "empty_text"
     assert "keep(text=" in refused["error"]
     assert world.call("keep", {})["code"] == "empty_text"
-    assert world.lines() == []
-
-
-@pytest.mark.parametrize(
-    "retired", ["kind", "at", "until", "place", "in_minutes", "cancel", "confirm", "whole_sender"],
-)
-def test_what_keep_took_before_the_ledger_is_sent_to_schedule(
-    world: _World, retired: str,
-) -> None:
-    """A model that still passes a memo's or an appointment's argument hears where to go."""
-    refused = world.call("keep", {"text": "call mum", retired: "x"})
-    assert refused["code"] == "invalid_arguments"
-    assert 'schedule(action="add", what=..., at=...)' in refused["error"]
     assert world.lines() == []
 
 
