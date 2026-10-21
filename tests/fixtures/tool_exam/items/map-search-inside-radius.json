@@ -1,0 +1,52 @@
+{
+  "id": "map-search-inside-radius",
+  "tool": "map_search",
+  "said": "any ramen within a kilometre that's still open",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {
+    "lat": 48.4284,
+    "lng": -123.3656,
+    "age_s": 60
+  },
+  "state": null,
+  "args": {
+    "query": "ramen",
+    "radius_m": 1000
+  },
+  "recording": "map-search-inside-radius.recording.json",
+  "expect": {
+    "summary_must": [
+      "^3 places for 'ramen' within 1000 m of his position",
+      "Fan Tan Ramen, 251 m north-east, 4 min on foot, open now, closes 10:30 pm; Harbour Noodle House",
+      "Ogden Point Ramen, 945 m south, 13 min on foot, closed now, opens tomorrow \\(Thu\\), 11:00 am"
+    ],
+    "result_must_not_mention": [
+      "Corner Box Ramen"
+    ],
+    "result": [
+      {
+        "path": "places",
+        "op": "len",
+        "value": 3
+      }
+    ],
+    "state_after": [
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.sku'), json_extract(payload_json, '$.requests') FROM events WHERE type = 'maps.spend_recorded' ORDER BY id",
+        "answer": [
+          [
+            "places.text_search.enterprise",
+            1
+          ],
+          [
+            "routes.matrix.essentials",
+            3
+          ]
+        ]
+      }
+    ],
+    "checker": "map_search_inside_radius"
+  }
+}

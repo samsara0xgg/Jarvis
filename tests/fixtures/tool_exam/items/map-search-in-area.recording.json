@@ -1,0 +1,26 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"Fairfield, Victoria\", \"maxResultCount\": 1, \"languageCode\": \"en\", \"rankPreference\": \"DISTANCE\", \"locationBias\": {\"circle\": {\"center\": {\"latitude\": 48.4284, \"longitude\": -123.3656}, \"radius\": 50000.0}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamFairfieldArea08\", \"displayName\": {\"text\": \"Fairfield\"}, \"formattedAddress\": \"Fairfield, Victoria, BC, Canada\", \"location\": {\"latitude\": 48.414, \"longitude\": -123.352}, \"viewport\": {\"low\": {\"latitude\": 48.406, \"longitude\": -123.364}, \"high\": {\"latitude\": 48.421, \"longitude\": -123.34}}}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"coffee\", \"maxResultCount\": 5, \"languageCode\": \"en\", \"locationRestriction\": {\"rectangle\": {\"low\": {\"latitude\": 48.406, \"longitude\": -123.364}, \"high\": {\"latitude\": 48.421, \"longitude\": -123.34}}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamMossCoffee00009\", \"displayName\": {\"text\": \"Moss Street Coffee\", \"languageCode\": \"en\"}, \"formattedAddress\": \"1290 Moss St, Victoria, BC V8V 4P2, Canada\", \"location\": {\"latitude\": 48.4155, \"longitude\": -123.348}, \"googleMapsUri\": \"https://maps.google.com/?cid=0009\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T02:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}, {\"id\": \"ChIJexamCookRoasters010\", \"displayName\": {\"text\": \"Cook Street Roasters\", \"languageCode\": \"en\"}, \"formattedAddress\": \"230 Cook St, Victoria, BC V8V 3X3, Canada\", \"location\": {\"latitude\": 48.412, \"longitude\": -123.356}, \"googleMapsUri\": \"https://maps.google.com/?cid=s010\", \"currentOpeningHours\": {\"openNow\": false, \"nextOpenTime\": \"2026-10-22T14:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}]}"
+  }
+ ],
+ "mcp": []
+}

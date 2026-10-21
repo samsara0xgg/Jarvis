@@ -1,0 +1,19 @@
+{
+  "id": "bus-run-for-first-catchable-next",
+  "tool": "bus",
+  "said": "when is the next bus home",
+  "at": "2026-10-14T09:29:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.4284, "lng": -123.3656, "age_s": 30},
+  "state": null,
+  "args": {"to": "48.4634,-123.3117"},
+  "recording": "bus-run-for-first-catchable-next.recording.json",
+  "expect": {
+    "summary_must": ["^Option 1: .*9:31 am.*, only by running", "option 2: .*9:51 am", "Then option 3: .*10:11 am"],
+    "result": [
+      {"path": "options", "op": "len", "value": 3},
+      {"path": "options.0.run_for", "op": "eq", "value": true}
+    ],
+    "checker": "bus_run_for_catch_and_next"
+  }
+}

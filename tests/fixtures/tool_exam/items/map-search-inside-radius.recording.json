@@ -1,0 +1,26 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"ramen\", \"maxResultCount\": 20, \"languageCode\": \"en\", \"locationRestriction\": {\"rectangle\": {\"low\": {\"latitude\": 48.41941688825009, \"longitude\": -123.37913784602974}, \"high\": {\"latitude\": 48.43738311174992, \"longitude\": -123.35206215397027}}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamHarbourNoodle01\", \"displayName\": {\"text\": \"Harbour Noodle House\", \"languageCode\": \"en\"}, \"formattedAddress\": \"1010 Wharf St, Victoria, BC V8W 1T3, Canada\", \"location\": {\"latitude\": 48.4347, \"longitude\": -123.3656}, \"googleMapsUri\": \"https://maps.google.com/?cid=le01\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T04:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}, {\"id\": \"ChIJexamCornerBoxRamen02\", \"displayName\": {\"text\": \"Corner Box Ramen\", \"languageCode\": \"en\"}, \"formattedAddress\": \"2020 Cook St, Victoria, BC V8T 3P5, Canada\", \"location\": {\"latitude\": 48.4359, \"longitude\": -123.3546}, \"googleMapsUri\": \"https://maps.google.com/?cid=en02\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T05:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}, {\"id\": \"ChIJexamFanTanRamen0003\", \"displayName\": {\"text\": \"Fan Tan Ramen\", \"languageCode\": \"en\"}, \"formattedAddress\": \"550 Fisgard St, Victoria, BC V8W 1R4, Canada\", \"location\": {\"latitude\": 48.43, \"longitude\": -123.3632}, \"googleMapsUri\": \"https://maps.google.com/?cid=0003\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T05:30:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}, {\"id\": \"ChIJexamOgdenRamen00004\", \"displayName\": {\"text\": \"Ogden Point Ramen\", \"languageCode\": \"en\"}, \"formattedAddress\": \"199 Dallas Rd, Victoria, BC V8V 1A1, Canada\", \"location\": {\"latitude\": 48.4199, \"longitude\": -123.3656}, \"googleMapsUri\": \"https://maps.google.com/?cid=0004\", \"currentOpeningHours\": {\"openNow\": false, \"nextOpenTime\": \"2026-10-22T18:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix",
+   "request": "{\"origins\": [{\"waypoint\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}}], \"destinations\": [{\"waypoint\": {\"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.3632}}}}, {\"waypoint\": {\"location\": {\"latLng\": {\"latitude\": 48.4347, \"longitude\": -123.3656}}}}, {\"waypoint\": {\"location\": {\"latLng\": {\"latitude\": 48.4199, \"longitude\": -123.3656}}}}], \"travelMode\": \"WALK\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "[{\"originIndex\": 0, \"destinationIndex\": 0, \"duration\": \"240s\", \"condition\": \"ROUTE_EXISTS\"}, {\"originIndex\": 0, \"destinationIndex\": 1, \"duration\": \"530s\", \"condition\": \"ROUTE_EXISTS\"}, {\"originIndex\": 0, \"destinationIndex\": 2, \"duration\": \"760s\", \"condition\": \"ROUTE_EXISTS\"}]"
+  }
+ ],
+ "mcp": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "bus-match-by-direction",
+  "tool": "bus",
+  "said": "when is the next bus home",
+  "at": "2026-10-16T09:55:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.4284, "lng": -123.3656, "age_s": 30},
+  "state": null,
+  "args": {"to": "48.4634,-123.3117"},
+  "recording": "bus-match-by-direction.recording.json",
+  "expect": {
+    "state_after": [
+      {"db": "events", "sql": "SELECT json_extract(payload_json, '$.trip.options[0].bus_trip_id') FROM events WHERE type = 'clarification.requested'", "answer": "T7-north"}
+    ],
+    "checker": "bus_matched_direction"
+  }
+}

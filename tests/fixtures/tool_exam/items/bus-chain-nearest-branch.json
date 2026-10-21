@@ -1,0 +1,14 @@
+{
+  "id": "bus-chain-nearest-branch",
+  "tool": "bus",
+  "said": "how do I get to Bluebird Coffee by bus",
+  "at": "2026-10-17T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.4284, "lng": -123.3656, "age_s": 30},
+  "state": null,
+  "args": {"to": "Bluebird Coffee"},
+  "recording": "bus-chain-nearest-branch.recording.json",
+  "expect": {
+    "checker": "bus_nearest_branch"
+  }
+}

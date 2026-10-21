@@ -1,0 +1,56 @@
+{
+  "id": "map-search-nothing-inside",
+  "tool": "map_search",
+  "said": "is there an ice rink within five k of me",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {
+    "lat": 48.4284,
+    "lng": -123.3656,
+    "age_s": 60
+  },
+  "state": null,
+  "args": {
+    "query": "ice rink",
+    "radius_m": 5000
+  },
+  "recording": "map-search-nothing-inside.recording.json",
+  "expect": {
+    "summary_must": [
+      "^Nothing within 5000 m for 'ice rink'; the nearest is Colwood Ice Centre, 8773 m west, open now, closes 11:00 pm\\.$"
+    ],
+    "result_must_not_mention": [
+      "Gordon Head Arena",
+      "Langford Rink"
+    ],
+    "result": [
+      {
+        "path": "places",
+        "op": "len",
+        "value": 1
+      },
+      {
+        "path": "places.0.outside_radius",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "places.0.walk_min",
+        "op": "absent"
+      }
+    ],
+    "state_after": [
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.sku'), json_extract(payload_json, '$.requests') FROM events WHERE type = 'maps.spend_recorded' ORDER BY id",
+        "answer": [
+          [
+            "places.text_search.enterprise",
+            2
+          ]
+        ]
+      }
+    ],
+    "checker": "map_search_nearest_outside"
+  }
+}
