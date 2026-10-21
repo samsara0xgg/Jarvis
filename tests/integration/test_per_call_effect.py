@@ -16,7 +16,7 @@ import pytest
 from jarvis.decision import CompletionRefused, request_confirmation
 from jarvis.decision.policy import PolicyConsistencyError, validate_requires_confirmation
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
-from jarvis.execution.tools import build_default_registry
+from jarvis.execution.tools import ReadOnlyToolRegistry, build_default_registry
 from jarvis.runtime.bootstrap.catalog import load_tables
 from jarvis.runtime.config import RuntimeBootstrapError, parse_runtime_config
 from jarvis.shared import CallerPrincipal
@@ -29,6 +29,8 @@ from tests.support.tool_world import ToolWorld, tool_request
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from jarvis.decision import DecideContext
 
 
 def _one_call(**args: str) -> Reply:
@@ -263,3 +265,46 @@ def test_the_boot_refuses_a_tier0_row_that_fixes_a_call_that_needs_a_card(tmp_pa
     rows.write_text(row("send"), encoding="utf-8")
     with pytest.raises(RuntimeBootstrapError, match="depot"):
         load_tables(config, registry)
+
+
+def _live(ctx: DecideContext) -> DecideContext:
+    """The same context with the registry as GPT Live sees it: a view that only reads."""
+    return replace(ctx, tool_registry=ReadOnlyToolRegistry(ctx.tool_registry))  # type: ignore[arg-type]
+
+
+def test_the_live_view_keeps_a_varying_tool_and_runs_only_its_reads(tmp_path: Path) -> None:
+    """GPT Live sees a tool whose calls differ; its reads run, its changes fail with no card."""
+    llm = ScriptedModel(_one_call(action="look"), "Looked.")
+    ctx = _live(call_effect.context(tmp_path, llm))
+    try:
+        names = {t.name for t in ctx.tool_registry.get_definitions()}
+        assert "depot" in names
+        assert "keep" not in names  # a tool that only writes stays off the view
+        assert say(ctx, "look", "T1") == "Looked."
+        (done,) = logged_dicts(ctx.conn, "action.result_observed")
+        assert done["receipt"]["reads_only"] is True
+    finally:
+        ctx.conn.close()
+
+
+@pytest.mark.parametrize("action", ["note", "send"])
+def test_the_live_view_fails_a_call_that_changes_something_and_makes_no_card(
+    tmp_path: Path, action: str,
+) -> None:
+    """A note (no card) and a send (a card) both end as a failed receipt in a view that reads."""
+    llm = ScriptedModel(_one_call(action=action, to="Sam", body="hi"), "Not from here.")
+    ctx = _live(call_effect.context(tmp_path, llm))
+    try:
+        say(ctx, action, "T1")
+        assert logged_dicts(ctx.conn, "confirmation.requested") == []
+        (result,) = tool_results(llm, 1)
+        assert (result["code"], result["kind"], result["is_error"]) == (
+            "reads_only_view", "impossible", True,
+        )
+        assert "only reads" in result["error"]
+        assert not [  # the handler never ran: nothing was noted or sent
+            row for row in logged_dicts(ctx.conn, "action.result_observed")
+            if row["receipt"].get("object")
+        ]
+    finally:
+        ctx.conn.close()

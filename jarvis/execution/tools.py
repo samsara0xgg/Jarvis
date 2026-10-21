@@ -3192,6 +3192,17 @@ def _refuse_unleased(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, A
     raise ToolError(msg, code="no_lease", kind="dont_retry")
 
 
+_NOT_A_READ: Final = (
+    "this view only reads: that call would change something and was not run; tell him it needs "
+    "his own session"
+)
+
+
+def _refuse_not_a_read(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    """The handler a call that changes something gets in a view that only reads."""
+    raise ToolError(_NOT_A_READ, code="reads_only_view", kind="impossible")
+
+
 class ToolRegistry:
     """L4 dispatch surface (ADR § Module map L4 row).
 
@@ -3354,8 +3365,13 @@ class ToolRegistry:
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
+        *,
+        reads_only: bool = False,
     ) -> RawResult:
         """Dispatch one ActionRequest and return its :class:`RawResult`.
+
+        ``reads_only`` is a view that only reads (ADR-0016 D6): a call that changes something
+        gets the failure :data:`_NOT_A_READ`, as an unleased one gets L4's refusal.
 
         Preconditions:
             - `action_request.tool_name` is registered → else `UnknownToolError`.
@@ -3381,7 +3397,9 @@ class ToolRegistry:
         return or its raised error into the one `RawResult`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
-        if call_asks(tool_def, action_request.arguments) and not _leased(
+        if reads_only and not only_reads(tool_def, action_request.arguments):
+            tool_def = replace(tool_def, handler=_refuse_not_a_read)
+        elif call_asks(tool_def, action_request.arguments) and not _leased(
             action_request, int(self._clock.time() * 1000),
         ):
             tool_def = replace(tool_def, handler=_refuse_unleased)  # ADR 0321, I7
@@ -3915,11 +3933,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
 class ReadOnlyToolRegistry:
     """Read-only view of a :class:`ToolRegistry` for one turn (ADR-0016 D6).
 
-    Exposes only tools with ``read_only=True``;
-    ``dispatch`` of anything else raises :class:`UnknownToolError` before the
-    inner registry emits ``action.dispatched``. The shared registry is not
-    mutated: the composition root hands this view to ``decide()`` for turns
-    whose ``surface.user_intent.channel`` is ``gpt_live``.
+    Exposes the tools with ``read_only=True`` and the tools whose calls differ in effect
+    (ADR 0361), whose calls that change something fail with :data:`_NOT_A_READ` and make no card;
+    ``dispatch`` of any other tool raises :class:`UnknownToolError` before the inner registry
+    emits ``action.dispatched``. The shared registry is not mutated: the composition root hands
+    this view to ``decide()`` for turns whose ``surface.user_intent.channel`` is ``gpt_live``.
     """
 
     def __init__(self, inner: ToolRegistry) -> None:
@@ -3928,15 +3946,32 @@ class ReadOnlyToolRegistry:
 
     @staticmethod
     def _visible(tool_def: Tool) -> bool:
-        return tool_def.read_only
+        return tool_def.read_only or tool_def.effect is not None
 
     def get_definitions(self) -> tuple[Tool, ...]:
-        """Every read-only tool, in registration order."""
+        """Every tool that can read, in registration order."""
         return tuple(t for t in self._inner.get_definitions() if self._visible(t))
 
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[Tool, ...]:
-        """The caller's tools narrowed to the read-only ones."""
+        """The caller's tools narrowed to the ones that can read."""
         return tuple(t for t in self._inner.for_caller(caller_principal) if self._visible(t))
+
+    def _seen(self, tool_name: str) -> Tool | None:
+        return next((t for t in self.get_definitions() if t.name == tool_name), None)
+
+    def complete(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        turn_id: str | None = None,
+    ) -> Completed:
+        """A call that would ask for a card here fails instead: this view makes no card."""
+        tool_def = self._seen(tool_name)
+        if tool_def is not None and not only_reads(tool_def, arguments):
+            return Completed(None, _NOT_A_READ, "reads_only_view", "impossible")
+        return self._inner.complete(tool_name, arguments, conn, runtime_paths, turn_id)
 
     def dispatch(
         self,
@@ -3945,15 +3980,17 @@ class ReadOnlyToolRegistry:
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
     ) -> RawResult:
-        """Forward a read-only dispatch; refuse everything else without a trace."""
-        if action_request.tool_name not in {t.name for t in self.get_definitions()}:
+        """Forward a read; a call that changes something fails; any other tool is refused."""
+        if self._seen(action_request.tool_name) is None:
             LOGGER.warning(
                 "read-only registry refused %r for action %s (ADR-0016 D6)",
                 action_request.tool_name, action_request.action_id,
             )
             msg = f"unknown tool: {action_request.tool_name!r} (read-only view)"
             raise UnknownToolError(msg)
-        return self._inner.dispatch(action_request, conn, runtime_paths, lifecycle)
+        return self._inner.dispatch(
+            action_request, conn, runtime_paths, lifecycle, reads_only=True,
+        )
 
 
 __all__ = [
