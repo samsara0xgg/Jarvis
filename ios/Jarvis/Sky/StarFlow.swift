@@ -641,6 +641,7 @@ extension StarEngine {
             c.userInfo = ["card": ["kind": gone ? "claude" : kind, "id": gone ? "Rgone" : ["confirmation": "Cdebug01", "question": "Qdebug01"][kind] ?? "Rdebug01"]]
             Task { @MainActor in await PushNotifications.tapped(c) }
         case _ where name.hasPrefix("时间线"): runTimelineScene(name)
+        case "footprintMap": MainActor.assumeIsolated { FootprintMapScene.present() }
         case "放大镜": lensTh = -0.6; lensGoal = 1
         case "打字": ui.typing = true; ui.chipsOn = true
         default: runTalkScene(name)

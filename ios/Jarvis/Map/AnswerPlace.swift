@@ -48,6 +48,11 @@ enum PlaceFit {
         if let me, let c = center(pts), CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: CLLocation(latitude: me.latitude, longitude: me.longitude)) <= meReach {
             pts.append(me)
         }
+        return region(pts)
+    }
+
+    /// The same frame for plain coordinates (a route's points, a day's stays).
+    static func region(_ pts: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
         guard let c = center(pts) else { return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 0, longitude: 0), span: MKCoordinateSpan(latitudeDelta: 100, longitudeDelta: 100)) }
         let lats = pts.map(\.latitude), lngs = pts.map(\.longitude)
         let dLat = max(((lats.max() ?? 0) - (lats.min() ?? 0)) * pad, minSpan), dLng = max(((lngs.max() ?? 0) - (lngs.min() ?? 0)) * pad, minSpan)
