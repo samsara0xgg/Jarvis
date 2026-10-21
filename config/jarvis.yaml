@@ -1666,13 +1666,20 @@ push:
   team_id: ""
   bundle_id: ""
 
-# How long `where_am_i` waits for his phone to take a fresh fix before it answers with the
-# phone's last report (ADR 0281). A phone with a live conversation socket is asked over it
+# How long a call that needs his position (`where_am_i`, `bus`, `weather`...) waits for his
+# phone to take a fresh fix before it answers with the phone's last report (ADR 0281, 0322). A phone with a live conversation socket is asked over it
 # (socket_wait_s); one without, or one that stays silent, is woken by a silent push (push_wait_s,
 # which needs the push: block above). 0 to 30 seconds.
 locate:
   socket_wait_s: 4
   push_wait_s: 8
+  # The phone he carries (ADR 0322): the paired device whose reports are "here" for a turn that no
+  # location-reporting device opened (the Mac terminal on a brain). Empty: the device with the
+  # newest report.
+  phone: ""
+  # A report older than this many seconds is not trusted as where he is: the device is asked for a
+  # fresh fix first (ADR 0322). 900 is also how fresh the state block's place line must be.
+  max_age_s: 900
 
 # The night run (ADR 0093): "我要睡觉了，让它继续跑" keeps the Mac awake this long,
 # screen off and sound muted. Before `morning` an unlock is only a look; from it on,
