@@ -48,6 +48,11 @@ if TYPE_CHECKING:
 
 _SEGMENTS = ("第一句。", "第二句。", "第三句。")
 
+_GUARD_S = 5.0
+"""How long a test waits for the media actor before it fails; not a time anything keeps."""
+_POLL_S = 0.001
+"""How long one ask of the gated settle waits on its gate; the gate ends it, not this."""
+
 
 def test_incremental_trail_with_two_checkpoints_and_completion_stays_consistent(
     tmp_path: Path,
@@ -780,9 +785,15 @@ def test_a_late_response_terminal_cannot_double_release_a_committing_playback(
     )
     real_settle = player.settle_interrupted_generation
     settle_allowed = threading.Event()
+    snapshot_unsettled = threading.Event()
 
     def _gated_settle(**kwargs: Any) -> Any:  # noqa: ANN401 - passthrough seam
-        if not settle_allowed.is_set():
+        # The real settle waits for the device callback, which runs on its own thread. This
+        # one waits for the test's gate, and each ask waits on it a moment: the actor
+        # spins on asking, and a spin that never lets go of the interpreter starves the
+        # submitting thread past the snapshot's own half-second bound.
+        snapshot_unsettled.set()
+        if not settle_allowed.wait(_POLL_S):
             return None
         return real_settle(**kwargs)
 
@@ -823,15 +834,16 @@ def test_a_late_response_terminal_cannot_double_release_a_committing_playback(
                 ),
             )
             # The media side owns an exit already: `_fail_active` has published
-            # `terminal_commit_pending` and is spinning in `_interrupt_snapshot`.
-            _await_commit_pending(pipeline)
+            # `terminal_commit_pending` and is spinning in `_interrupt_snapshot`,
+            # which asks the gated settle again and again.
+            assert snapshot_unsettled.wait(_GUARD_S), "media never reached its own terminal commit"
             late.start()
-            # Give the actor's drain loop the `response.failed` command while
-            # that snapshot is still unsettled, then let the snapshot settle.
-            time.sleep(0.05)
+            # The actor's drain loop has taken the `response.failed` command once
+            # its submit is answered, and the gate is still shut: the answer came
+            # from inside the commit window. Only then let the snapshot settle.
+            late.join(timeout=_GUARD_S)
+            assert not late.is_alive(), "the late terminal was not answered during the commit"
             settle_allowed.set()
-            late.join(timeout=3.0)
-            assert not late.is_alive()
             assert pipeline.wait_until_idle(timeout_s=3.0)
     finally:
         settle_allowed.set()
@@ -856,13 +868,3 @@ def test_a_late_response_terminal_cannot_double_release_a_committing_playback(
         assert tts_rows(verdict, "surface.playback_lane_isolated", "RG") == []
     finally:
         verdict.close()
-
-
-def _await_commit_pending(pipeline: voice_media.StreamingTTSPipeline) -> None:
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        active = pipeline._active  # noqa: SLF001
-        if active is not None and active.terminal_commit_pending:
-            return
-        time.sleep(0.001)
-    pytest.fail("media never reached its own terminal commit window")
