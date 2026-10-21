@@ -1208,12 +1208,22 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "面试：{company} — {role}",
         "en": "Interview: {company} — {role}",
     },
-    # ADR 0368: a time in a Pacific label that US and BC Pacific read differently, both readings
-    # with what the mail wrote; and the note on the interview's thing that carries them.
+    # ADR 0377: a Pacific, Mountain or Central time that its US and its Canadian zone read
+    # differently, both readings with what the mail wrote and the two zones it can mean (only the
+    # zones when the kept sentence lost its label); and the note on the interview's thing that
+    # carries them.
     "job.when.two": {
-        "zh": "{first} 或 {later}（邮件写的是 {said}，按卑诗或美国太平洋时间算）",
-        "en": "{first} or {later} (the mail says {said}, BC or US Pacific)",
+        "zh": "{first} 或 {later}（邮件写的是 {said}，按{zones}算）",
+        "en": "{first} or {later} (the mail says {said}, {zones})",
     },
+    "job.when.two_unsaid": {
+        "zh": "{first} 或 {later}（按{zones}算）",
+        "en": "{first} or {later} ({zones})",
+    },
+    "job.zones.pacific": {"zh": "卑诗或美国太平洋时间", "en": "BC or US Pacific"},
+    "job.zones.mountain": {"zh": "阿尔伯塔或美国山地时间", "en": "Alberta or US Mountain"},
+    "job.zones.central": {"zh": "曼尼托巴或美国中部时间", "en": "Manitoba or US Central"},
+    "job.zones.any": {"zh": "美国或加拿大时间", "en": "US or Canadian time"},
     "job.thing.note": {
         "zh": "可能是两个时间：{when}。提醒按较早的那个算。",
         "en": "Two possible times: {when}. Reminders use the earlier one.",

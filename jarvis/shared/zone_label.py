@@ -1,13 +1,14 @@
-"""A zone label a mail writes beside a time, and the instants that time stands for (ADR 0368).
+"""A zone label a mail writes beside a time, and the instants that time stands for (ADR 0377).
 
 The job-mail reader finds a date and a wall-clock time in a sentence and asks :func:`read` what
-instants that time stands for in his zone. A time with no label is his own. A label is read as
-the zone it names: Mountain, Central and Eastern as Edmonton, Winnipeg and Toronto, ``UTC`` and
-``GMT`` as UTC, and an offset (``UTC-5``, ``GMT+8``, ``UTC+05:30``) as that offset, which beats a
-name in the same sentence. ``PST``, ``PDT``, ``PT`` and ``Pacific`` are read as America/Los_Angeles
-and as America/Vancouver, because a sender writes them loosely ("PST" in summer for PDT, "PT" for
-BC's own time) and the two zones differ whenever US Pacific is on standard time and BC is not. On
-a date where they differ both instants come back, the earlier first; otherwise one.
+instants that time stands for in his zone. A time with no label is his own. Pacific, Mountain and
+Central labels (``PST``, ``PT``, ``Pacific``, ``MST``, ``MT``, ``CT`` ...) are each read as their
+US zone and their Canadian one: Los Angeles and Vancouver, Denver and Edmonton, Chicago and
+Winnipeg. A sender writes them loosely ("PST" in summer for PDT, "PT" or "MST" for BC's own time),
+and since BC, Alberta and Manitoba stopped changing their clocks the two zones of each differ
+whenever the US one is on standard time. On a date where they differ both instants come back, the
+earlier first; otherwise one. Eastern is Toronto, ``UTC`` and ``GMT`` are UTC, and an offset
+(``UTC-5``, ``GMT+8``, ``UTC+05:30``) is that offset, which beats a name in the same sentence.
 
 :func:`said` quotes what the mail wrote for the time, and :func:`when_text` words the readings
 for him: the one place the two-reading text is built.
@@ -30,8 +31,8 @@ if TYPE_CHECKING:
     from jarvis.shared.lang import Language
 
 _PACIFIC: Final[tuple[str, ...]] = ("America/Los_Angeles", "America/Vancouver")
-_MOUNTAIN: Final[tuple[str, ...]] = ("America/Edmonton",)
-_CENTRAL: Final[tuple[str, ...]] = ("America/Winnipeg",)
+_MOUNTAIN: Final[tuple[str, ...]] = ("America/Denver", "America/Edmonton")
+_CENTRAL: Final[tuple[str, ...]] = ("America/Chicago", "America/Winnipeg")
 _EASTERN: Final[tuple[str, ...]] = ("America/Toronto",)
 _UTC: Final[tuple[str, ...]] = ("UTC",)
 _ZONES: Final[dict[str, tuple[str, ...]]] = {
@@ -69,7 +70,14 @@ _CLOCK: Final[str] = r"\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?"
 _TIME_BEFORE: Final = re.compile(
     rf"({_CLOCK}(?:\s*(?:-|\u2013|\u2014|to)\s*{_CLOCK})?)\s*[(\[]?\s*$", re.IGNORECASE
 )
-_UNQUOTED: Final[str] = "Pacific"
+# The two zones a label that reads two ways can mean, as he is told them; ``_ANY`` when the kept
+# sentence no longer holds its label.
+_SIDES: Final[dict[tuple[str, ...], str]] = {
+    _PACIFIC: "job.zones.pacific",
+    _MOUNTAIN: "job.zones.mountain",
+    _CENTRAL: "job.zones.central",
+}
+_ANY: Final[str] = "job.zones.any"
 
 
 def _find(sentence: str) -> tuple[re.Match[str], tuple[tzinfo, ...]] | None:
@@ -90,7 +98,8 @@ def read(sentence: str, day: date, clock: tuple[int, int], zone: tzinfo) -> tupl
 
     ``day`` and ``clock`` (hour, minute) are what ``sentence`` gives, and the label in ``sentence``
     says whose clock it is. With no label it is ``zone``'s, his own, and the answer is one
-    instant. Two come back only for a Pacific label, on a date US and BC Pacific tell differently.
+    instant. Two come back only for a Pacific, Mountain or Central label, on a date its US and its
+    Canadian zone tell differently.
     A ``clock`` that is no time of day is a ValueError.
     """
     found = _find(sentence)
@@ -115,6 +124,14 @@ def said(sentence: str) -> str:
     return " ".join((f"{clock[1]} {label[0]}" if clock else label[0]).split())
 
 
+def _sides(sentence: str) -> str:
+    """The table key naming the two zones the label in ``sentence`` can mean."""
+    found = _find(sentence)
+    if found is None or found[0].re is not _NAME:
+        return _ANY
+    return _SIDES.get(_ZONES[found[0][1]], _ANY)
+
+
 def _clock(at: datetime, minutes: int | None) -> str:
     """``10:00``, or ``10:00-11:00`` when the event runs ``minutes``."""
     end = f"-{at + timedelta(minutes=minutes):%H:%M}" if minutes else ""
@@ -134,8 +151,10 @@ def when_text(  # noqa: PLR0913 - the readings, his zone, the mail's words, a le
 
     With a ``later`` reading it is ``10:00 or 11:00 (the mail says 10 am PT, BC or US Pacific)``,
     worded in ``language`` (the current one by default); the quoted words are :func:`said` of
-    ``sentence``, the mail's own. A ``later`` on another day than ``first`` carries its date.
-    ``minutes`` is how long the event runs, shown as the end of each reading.
+    ``sentence``, the mail's own, and the two zones are the ones its label can mean. A kept
+    sentence that lost its label gives ``10:00 or 11:00 (US or Canadian time)``. A ``later`` on
+    another day than ``first`` carries its date. ``minutes`` is how long the event runs, shown as
+    the end of each reading.
     """
     one = first.astimezone(zone)
     if later is None:
@@ -144,10 +163,18 @@ def when_text(  # noqa: PLR0913 - the readings, his zone, the mail's words, a le
     second = _clock(other, minutes)
     if other.date() != one.date():
         second = f"{other:%m-%d} {second}"
+    zones = lang.t(_sides(sentence), lang=language)
+    quoted = said(sentence)
+    if not quoted:
+        return lang.t(
+            "job.when.two_unsaid", lang=language, first=_clock(one, minutes), later=second,
+            zones=zones,
+        )
     return lang.t(
         "job.when.two",
         lang=language,
         first=_clock(one, minutes),
         later=second,
-        said=said(sentence) or _UNQUOTED,
+        said=quoted,
+        zones=zones,
     )

@@ -140,7 +140,7 @@ def test_an_invitation_time_read_two_ways_shows_both_with_what_the_mail_said(
 
     both = lang.t(
         "job.when.two", lang="en", first="10:00-10:30", later="11:00-11:30",
-        said="10:00 AM - 10:30 AM PST",
+        said="10:00 AM - 10:30 AM PST", zones=lang.t("job.zones.pacific", lang="en"),
     )
     assert line == (
         f"  Echo Systems (Co-op): latest dated invitation Thu 2026-11-12 at {both} "
@@ -161,7 +161,10 @@ def test_a_dated_interview_mail_of_today_is_the_same_line_in_the_today_block(
 
     line = _invitations(src, NOW)["Hotel Systems"]
 
-    both = lang.t("job.when.two", lang="en", first="10:00", later="11:00", said="10:00 AM PST")
+    both = lang.t(
+        "job.when.two", lang="en", first="10:00", later="11:00", said="10:00 AM PST",
+        zones=lang.t("job.zones.pacific", lang="en"),
+    )
     assert f"latest dated invitation Thu 2026-11-12 at {both} [upcoming;" in line
     assert line in today_text(src, NOW).splitlines()
 
