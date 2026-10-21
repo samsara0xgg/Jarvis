@@ -53,8 +53,8 @@ struct FootprintDayLine: View {
                 .frame(width: TLLayout.barW, height: TLLayout.lineH, alignment: .topLeading)
                 .fadeThrough(on: !holding, reduce: reduce)
             if let bar {
-                let t = held ?? last, r = bar.readout(at: t)
-                TLReadoutLines(r: r, second: model.map { FootprintDayContent.heldLine($0, minute: t, elsewhere: r.second) } ?? r.second)
+                let t = held ?? last, r = bar.readout(at: t), head = model.map { FootprintDayContent.heldReadout($0, minute: t, r) } ?? r
+                TLReadoutLines(r: head, second: model.map { FootprintDayContent.heldLine($0, minute: t, elsewhere: r.second) } ?? r.second)
                     .fadeThrough(on: holding, reduce: reduce).accessibilityHidden(!holding)
             }
         }
@@ -145,6 +145,13 @@ struct FootprintDayBar: View {
 
 /// The rows in the timeline's own look, each outing opening its page; a separate `TimelineState` lights the row under the held minute and keeps home's menu and open page out of it.
 struct FootprintDayList: View {
+    /// how much of a row shows while the bar is held at a minute before it
+    static let later = 0.45
+    private static var here: some View {
+        LinearGradient(stops: [.init(color: ink.opacity(0), location: 0), .init(color: ink.opacity(0.5), location: 60 / TLLayout.barW),
+                               .init(color: ink.opacity(0.5), location: 1 - 60 / TLLayout.barW), .init(color: ink.opacity(0), location: 1)], startPoint: .leading, endPoint: .trailing)
+    }
+
     let ui: StarUI
     let engine: StarEngine
     let entries: [TLEntry]
@@ -153,13 +160,20 @@ struct FootprintDayList: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
-        let tl = ui.footprint.list
+        let tl = ui.footprint.list, held = ui.footprint.minute
         var y = 0.0
         let tops = entries.map { e in defer { y += e.height }; return y }
+        let next = held.flatMap { t in entries.firstIndex { $0.t0 > t } }          // the first row after the held minute
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { i, e in
-                    TLRowView(e: e, dim: 1, top: tops[i], room: FootprintDayPage.Y.viewport, tl: tl, engine: engine, tap: { open(e) }).equatable()
+                    TLRowView(e: e, dim: next.map { i >= $0 } == true ? Self.later : 1, top: tops[i], room: FootprintDayPage.Y.viewport, tl: tl, engine: engine, tap: { open(e) }).equatable()
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if let next, next > 0 {
+                    Self.here.frame(height: 1).offset(y: tops[next] + entries[next].gap - 4)          // a hairline between the rows that have happened and the ones that have not
+                        .animation(reduce ? nil : TLMotion.follow, value: next).transition(.opacity)
                 }
             }
             .padding(.horizontal, 30)

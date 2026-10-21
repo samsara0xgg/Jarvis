@@ -204,6 +204,16 @@ struct FootprintDayContent: Equatable {
         return parts.isEmpty ? elsewhere : ([clock(minute)] + parts).joined(separator: " \u{00B7} ")
     }
 
+    /// The readout of the minute under a finger: on an outing (a stop of it too) its first line is the whole outing, `练车 · 13:07–14:17 · 1 时 10 分`, whichever stretch of the bar the finger is
+    /// on; in a long stay, or where he was nowhere, it is the timeline's own.
+    @MainActor static func heldReadout(_ m: FootprintModel, minute: Double, _ r: TLReadout) -> TLReadout {
+        guard let o = m.outing(atMs: m.clock.ms(minute: minute)) else { return r }
+        let t0 = m.clock.minute(ms: o.start_ms), t1 = m.clock.minute(ms: o.end_ms ?? max(m.reply.now_ms, o.start_ms))
+        var out = r
+        out.head = [titleText(m.title(o)), clock(t0) + "\u{2013}" + (o.end_ms == nil ? "" : tlEnd(t1)), tlDur(tlInt(t1 - t0))].joined(separator: " \u{00B7} ")
+        return out
+    }
+
     /// the scrub dot at a minute: where he was, in the colour of how fast; still is the start of the ramp
     @MainActor static func dot(_ m: FootprintModel, minute: Double) -> FootprintMapDot? {
         let ms = m.clock.ms(minute: minute)

@@ -302,6 +302,14 @@ final class FootprintTests: XCTestCase {
         XCTAssertNil(m.reply.outings[1].fastest, "an outing with no fixes")
     }
 
+    @MainActor func testTheReadoutOnAnOutingNamesTheWholeOutingAndInAStayItIsTheTimelinesOwn() throws {
+        let m = try model(), r = TLReadout(hue: nil, head: "bar", elsewhere: [])
+        let on = FootprintDayContent.heldReadout(m, minute: m.clock.minute(ms: b + 1_030_000), r)          // in the stop, which is part of the outing
+        XCTAssertEqual(on.head, "\(Words.Footprint.outingTo("Home")) \u{00B7} \(clock(m.clock.minute(ms: b + 600_000)))\u{2013}\(clock(m.clock.minute(ms: b + 1_800_000))) \u{00B7} \(tlDur(20))")
+        XCTAssertEqual(FootprintDayContent.heldReadout(m, minute: m.clock.minute(ms: b + 300_000), r).head, "bar", "in the stay he left")
+        XCTAssertEqual(FootprintDayContent.heldReadout(m, minute: m.clock.minute(ms: b + 1_900_000), r).head, "bar", "in the stay he reached")
+    }
+
     func testTheCameraStandsAtSixHundredMetresWalkingAndOutToTwoKilometresAt80KmhAndNoFurther() {
         XCTAssertEqual(FootprintMapFollow.distance(speedMps: 0), 600)
         XCTAssertEqual(FootprintMapFollow.distance(speedMps: 1.4), 600, "walking")
