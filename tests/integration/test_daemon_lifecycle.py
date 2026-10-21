@@ -10,15 +10,21 @@ Everything else is the real composition: the intent pump, the watchers, the boot
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import threading
 import types
+from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
 import pytest
 import uvicorn
 
+import jarvis.runtime as runtime_pkg
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
+from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
+from jarvis.state.event_log import open_runtime_event_log
+from jarvis.surface.cli import emit_surface_user_intent
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -140,3 +146,73 @@ def test_a_setup_failure_after_the_mic_started_closes_it_and_ends_the_daemon(
     finally:
         session.close()
         runtime.conn.close()
+
+
+def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon stops within its budget, and records the run it had to leave as cancelled."""
+    runtime = _runtime(tmp_path, monkeypatch)
+    entered, forever = threading.Event(), threading.Event()
+
+    def stuck_turn(worker_runtime: Any, *, user_intent_event: Any, **_kw: object) -> None:  # noqa: ANN401
+        """A model call that does not return: it opens its run, then waits for ``forever``."""
+        runtime_pkg._start_drive_turn_response(  # noqa: SLF001
+            worker_runtime,
+            user_intent_event=user_intent_event,
+            turn_id=str(user_intent_event.payload["turn_id"]),
+        )
+        entered.set()
+        forever.wait()
+
+    class _EndsWhenTheTurnIsRunning(_StubServer):
+        async def serve(self, sockets: object = None) -> None:  # noqa: ARG002
+            def ask() -> None:
+                conn = open_runtime_event_log(runtime.runtime_paths.event_log)
+                try:
+                    emit_surface_user_intent(conn, transcript="hello", turn_id="T-stuck")
+                finally:
+                    conn.close()
+
+            await asyncio.to_thread(ask)
+            assert await asyncio.to_thread(entered.wait, 30), "the turn never started"
+
+    monkeypatch.setattr(inherent_loop, "drive_turn", stuck_turn)
+    monkeypatch.setattr(uvicorn, "Server", _EndsWhenTheTurnIsRunning)
+
+    async def run() -> None:
+        try:
+            # The outer bound only turns a hang into a failure; the budget is what ends the wait.
+            await asyncio.wait_for(
+                inherent_loop.serve_inherent(
+                    runtime,
+                    port=0,
+                    lock_path=tmp_path / "root" / "daemon.lock",
+                    shutdown_budget_s=0.05,
+                ),
+                timeout=30,
+            )
+        finally:
+            # serve_inherent has returned with the turn still stuck; free its thread so the
+            # loop can close (a real process waits for it until the supervisor's kill).
+            forever.set()
+
+    reset_realtime_trace()
+    try:
+        asyncio.run(run())
+    finally:
+        forever.set()
+        runtime.conn.close()
+
+    log = runtime.runtime_paths.event_log
+    with closing(sqlite3.connect(f"file:{log}?mode=ro", uri=True)) as db:
+        cancelled = [
+            json.loads(payload)
+            for (payload,) in db.execute(
+                "SELECT payload_json FROM events WHERE type = 'response.cancelled'",
+            )
+        ]
+    assert [(row["turn_id"], row["reason"]) for row in cancelled] == [("T-stuck", "shutdown")]
+    left = [p for p in realtime_trace_snapshot() if p.name == "shutdown_deadline"]
+    assert len(left) == 1
+    assert "intent_worker" in str(left[0].attributes["unfinished"])

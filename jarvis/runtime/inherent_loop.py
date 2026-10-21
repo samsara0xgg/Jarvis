@@ -89,7 +89,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection, Sequence
     from datetime import date, tzinfo
 
     from jarvis.decision import ToolRegistryLike
@@ -357,6 +357,16 @@ _DEFAULT_POLL_INTERVAL_S: float = 0.01
 # How long a daemon loop waits after a failed poll before it tries again; long
 # enough that a persistent error writes one log line a second, not a hundred.
 _WATCHER_RETRY_S: float = 1.0
+
+# How long serve_inherent's teardown may take from the moment serving ends. launchd kills
+# a daemon 20 s after its stop (ExitTimeOut's default; the agent's plist sets none), so the
+# watchers' wait and the stops of the children it started must end well inside that. A
+# systemd unit waits longer (the brain's sets none, so 90 s); one bound serves both.
+_SHUTDOWN_BUDGET_S: Final[float] = 15.0
+
+# What the stop of a child gets (the codex app-server, the MCP clients) when the budget is
+# already spent by a turn that would not end: a child left running outlives the daemon.
+_CHILD_STOP_FLOOR_S: Final[float] = 2.0
 
 # Default port the Inherent client connects to. Picked to NOT collide
 # with the legacy ``ui/web/server.py`` default (8000) or the
@@ -6819,6 +6829,52 @@ def _request_voice_input_branch_shutdown(
     )
 
 
+def _leave_unfinished_at_shutdown(
+    runtime: JarvisRuntime, unfinished: Collection[asyncio.Task[None]], *, budget_s: float,
+) -> None:
+    """Record what the shutdown budget ran out on, and close the runs it leaves open.
+
+    A task still running after the cancel is a turn in a model call that cannot be
+    interrupted: its thread lives as long as the process does. Its response run is
+    cancelled with the closed reason ``shutdown`` (ADR-0008 D10), so the log says why it
+    ended instead of leaving it for the next boot to close as ``daemon_restart``.
+    """
+    names = sorted(task.get_name() for task in unfinished)
+    LOGGER.warning(
+        "serve_inherent: %d task(s) still running %.1f s into shutdown, left behind: %s",
+        len(names), budget_s, ", ".join(names),
+    )
+    record_realtime_trace("shutdown_deadline", budget_s=budget_s, unfinished=", ".join(names))
+    registry = runtime.response_runs
+    if registry is None or not runtime.response_flags.independent_response_cancel:
+        return
+    cancel = make_response_cancel_callable(runtime)
+    for run in registry.open_runs():
+        with contextlib.suppress(Exception):  # a locked log leaves it to the next boot
+            cancel(run.response_id, "generation", "shutdown")
+
+
+async def _stop_children(runtime: JarvisRuntime, *, timeout_s: float) -> None:
+    """Stop what the daemon started: each stop gets ``timeout_s`` off the loop; log, never raise."""
+    stops: list[tuple[str, Callable[[], object]]] = []
+    if runtime.workers is not None:
+        # ADR 0019: the codex app-server child goes with the daemon; its open worker_edges
+        # rows become closed.
+        stops.append(("workers", runtime.workers.stop))
+    if runtime.plugin_connections is not None:
+        # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
+        stops.append(("plugin connections", runtime.plugin_connections.stop))
+    if runtime.mcp_servers is not None:
+        stops.append(("mcp servers", runtime.mcp_servers.stop))
+    for name, stop in stops:
+        try:
+            await asyncio.wait_for(asyncio.to_thread(stop), timeout=timeout_s)
+        except TimeoutError:
+            LOGGER.warning("serve_inherent: %s did not stop in %.1f s; leaving it", name, timeout_s)
+        except Exception:
+            LOGGER.exception("serve_inherent: stopping %s failed", name)
+
+
 def _v2_runtime_capabilities(
     *,
     voice_input: bool,
@@ -7370,13 +7426,14 @@ def _listen_sockets(host: str, port: int, addresses: tuple[str, ...]) -> list[so
     return sockets
 
 
-async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
+async def serve_inherent(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; the keyword args ARE the daemon contract and the voice-wiring plus boot-reconciliation branches necessarily inflate body length + branch count.
     runtime: JarvisRuntime,
     *,
     host: str = "127.0.0.1",
     port: int = _DEFAULT_PORT,
     lock_path: Path,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
+    shutdown_budget_s: float = _SHUTDOWN_BUDGET_S,
 ) -> None:
     """Run the Inherent daemon (text + voice). Blocks until SIGINT / SIGTERM.
 
@@ -7438,10 +7495,13 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
        serving ends or any step above raises: tear the power observer down
        FIRST (its closed flag must be set before the loop starts winding
        down), then request the wake listener stop (if running), cancel
-       every watcher task, and ``await`` them with ``return_exceptions=True``
-       so a watcher that crashed during runtime does not mask the shutdown
-       path. Then the ``acquire_exclusive`` context manager unwinds and
-       releases the lock file.
+       every watcher task and wait for them, so a watcher that crashed
+       during runtime does not mask the shutdown path. The whole teardown
+       is bounded by ``shutdown_budget_s``: a turn still in a model call at
+       the deadline is left running, its response run cancelled as
+       ``shutdown``, and the children are stopped anyway. Then the
+       ``acquire_exclusive`` context manager unwinds and releases the lock
+       file.
 
     Env vars:
         ``MINIMAX_API_KEY``         — gates the TTS subsystem.
@@ -7455,6 +7515,8 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         lock_path: Per-runtime-root daemon lock file. Resolved by
             ``jarvis.cli._main_serve`` to ``${runtime_root}/daemon.lock``.
         poll_interval_s: Watcher poll cadence (default 10 ms).
+        shutdown_budget_s: How long the teardown waits for the watchers (and the turns they
+            drive) before it leaves them behind and stops the children regardless.
 
     Raises:
         jarvis.deployment.process_lock.ProcessLockHeld: Another daemon
@@ -7584,6 +7646,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
 
         async def _shutdown() -> None:
             LOGGER.info("serve_inherent: shutting down watchers")
+            deadline = time.monotonic() + shutdown_budget_s
+
+            def left() -> float:
+                return max(0.0, deadline - time.monotonic())
+
             # Power observer FIRST: its closed flag must be set before the
             # loop starts winding down, so a notification racing this
             # teardown finds the flag instead of a dead loop. Everything
@@ -7601,7 +7668,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(
                         live_voice.stop(reason="daemon_shutdown"),
-                        timeout=live_voice.stop_budget_s,
+                        timeout=min(live_voice.stop_budget_s, left()),
                     )
             _request_voice_input_branch_shutdown(
                 voice_input_owners,
@@ -7613,16 +7680,11 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # no right to write or invoke fallback.
             for w in watchers:
                 w.cancel()
-            await asyncio.gather(*watchers, return_exceptions=True)
-            # ADR 0019: the codex app-server child goes with the daemon; its
-            # open worker_edges rows become closed.
-            if runtime.workers is not None:
-                await asyncio.to_thread(runtime.workers.stop)
-            # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
-            if runtime.plugin_connections is not None:
-                await asyncio.to_thread(runtime.plugin_connections.stop)
-            if runtime.mcp_servers is not None:
-                await asyncio.to_thread(runtime.mcp_servers.stop)
+            if watchers:
+                _done, unfinished = await asyncio.wait(watchers, timeout=left())
+                if unfinished:
+                    _leave_unfinished_at_shutdown(runtime, unfinished, budget_s=shutdown_budget_s)
+            await _stop_children(runtime, timeout_s=max(left(), _CHILD_STOP_FLOOR_S))
             _shutdown_tts(tts_pipe)
             # Force-restore output volume in case a duck escaped a finally
             # block on the way down (best-effort; idempotent if depth == 0).
