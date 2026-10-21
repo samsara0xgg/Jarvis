@@ -108,31 +108,34 @@ class BusTimes(Protocol):
         ...
 
 
+def here_warning(fix: HereReading) -> dict[str, Any]:
+    """``{}`` unless Here could not confirm the phone's report with a fresh fix (it is too old).
+
+    Then it holds ``from_age_min`` and the ``warning`` line the model must act on before giving
+    any times from that position. The bus planner and the board both carry it.
+    """
+    if not fix.why or fix.device == MAC_NODE:
+        return {}
+    return {
+        "from_age_min": fix.age_s // 60,
+        "warning": (
+            f"The starting point is his phone's report from {describe_age(fix.age_s)} ago"
+            f" ({fix.place or 'no place name'}); he may have moved. Say that first, or ask where"
+            " he is, before giving times from it."
+        ),
+    }
+
+
 def _here_label(
     fix: HereReading, kept: Callable[[], list[place_state.Place]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """How to say Here in the result, and a warning if it is old.
+    """How to say Here in the result, and a warning if it is old (:func:`here_warning`).
 
     A fix inside a kept place's circle is said as that place, not as the street the phone named.
-    The warning is ``{}`` unless Here could not confirm the report with a fresh fix (the report is
-    past its age limit); then it holds ``from_age_min`` and the ``warning`` line the model must
-    act on before giving any times.
     """
     inside = place_state.containing(kept(), fix.lat, fix.lng) if kept else None
     near = f"at {inside.name}, " if inside is not None else f"{fix.place}, " if fix.place else ""
-    label = f"here ({said_where(fix)}, {near}±{round(fix.accuracy_m)} m)"
-    old: dict[str, Any] = {}
-    if fix.why and fix.device != MAC_NODE:
-        where = fix.place or "no place name"
-        old = {
-            "from_age_min": fix.age_s // 60,
-            "warning": (
-                f"The starting point is his phone's report from {describe_age(fix.age_s)} ago"
-                f" ({where}); he may have moved. Say that first, or ask where he is, before"
-                " giving times from it."
-            ),
-        }
-    return label, old
+    return f"here ({said_where(fix)}, {near}±{round(fix.accuracy_m)} m)", here_warning(fix)
 
 
 class _When(NamedTuple):
@@ -1467,6 +1470,7 @@ __all__ = [
     "build_leg_planner",
     "build_planner",
     "first_leave_ms",
+    "here_warning",
     "live_card",
     "pin_listed",
     "pin_offered",

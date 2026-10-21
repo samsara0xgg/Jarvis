@@ -441,7 +441,8 @@ class _Bus:
                 raise ToolError(msg, code="location_unavailable")
             hits = self._stops_for(table, (fix.lat, fix.lng), str(route))
         start = transit_tool_local(given.get("at"), now)
-        return self._buses(table, hits, route, start, now)
+        old = {} if fix is None else transit_tool.here_warning(fix)
+        return self._buses(table, hits, route, start, now, old)
 
     def _which_stop(self, hits: list[stop_finder.StopHit], names: list[str]) -> Receipted:
         best = {h.stop.name: h for h in reversed(hits)}
@@ -479,9 +480,9 @@ class _Bus:
         msg = f"No stop of the {route} was found near him"
         raise ToolError(msg, code="not_found")
 
-    def _buses(
+    def _buses(  # noqa: PLR0913 - the timetable, the stops, the route, the moment, the warning.
         self, table: Any, hits: list[stop_finder.StopHit], route: str | None,  # noqa: ANN401
-        start: datetime, now: datetime,
+        start: datetime, now: datetime, old: Mapping[str, Any],
     ) -> Receipted:
         assert self._bus is not None  # noqa: S101 - `_board` raised without a timetable.
         try:
@@ -516,8 +517,11 @@ class _Bus:
         summary = " ".join(lines) if lines else "No buses were found."
         if total == 0:
             summary = f"No buses at {shown[0]['stop'] if shown else 'that stop'} in {label}."
+        if old:
+            summary = f"{old['warning']} {summary}"
         return _read(
-            {"summary": summary, "stops": shown}, f"read the next buses at {len(shown)} stop(s)",
+            {"summary": summary, "stops": shown, **old},
+            f"read the next buses at {len(shown)} stop(s)",
             Covered(("BC Transit timetable", "BC Transit live"), label, total, 0),
         )
 

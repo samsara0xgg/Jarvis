@@ -27,6 +27,7 @@ from jarvis.state import departures
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from tests.support import gtfs
 from tests.support.bus_world import realtime
+from tests.support.here import FixedHere, reading
 from tests.support.transit import (
     FAKE_KEY,
     PLACES,
@@ -139,6 +140,7 @@ class World:
     offers: TransitOffers = field(default_factory=TransitOffers)
     seen: list[Any] = field(default_factory=list)
     bus_live: BusLive | None = None
+    here: FixedHere = field(default_factory=fix_with)
     n: int = 0
 
     def __post_init__(self) -> None:
@@ -148,7 +150,7 @@ class World:
         self.lifecycle = ActionLifecycle()
         self.registry = build_default_registry(
             transit_api_key=FAKE_KEY, transit_places=lambda: PLACES, transit_offers=self.offers,
-            clock=transit_clock(), here=fix_with(), ride_control=self.follower.control(),
+            clock=transit_clock(), here=self.here, ride_control=self.follower.control(),
             bus_live=self.bus_live,
         )
 
@@ -569,12 +571,15 @@ def board_of(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Callab
     """A world at 17:00 over a chosen export and realtime feed (an empty one by default)."""
     made: list[World] = []
 
-    def make(export: gtfs.Export, feed: bytes = b"") -> World:
+    def make(export: gtfs.Export, feed: bytes = b"", here: FixedHere | None = None) -> World:
         cache = tmp_path / "cache"
         cache.mkdir(exist_ok=True)
         gtfs.write(cache / "bctransit-gtfs.zip", export)
         live = BusLive(cache, feed=lambda: feed, download=lambda _p: None)
-        world = World(tmp_path, seen=serve_routes(monkeypatch, answer=ROUTES), bus_live=live)
+        world = World(
+            tmp_path, seen=serve_routes(monkeypatch, answer=ROUTES), bus_live=live,
+            here=here or fix_with(),
+        )
         made.append(world)
         return world
 
@@ -688,3 +693,26 @@ def test_a_board_with_no_bus_says_the_window_it_searched(board_of: Callable[...,
     out = world.call({"stop": "10001"})
     assert out["summary"] == "No buses at Ring Rd at Oak St in the next 24 h from 5:00 pm."
     assert world.receipt()["covered"]["window"] == "the next 24 h from 5:00 pm"
+
+
+@pytest.mark.parametrize("args", [{"route": "7"}, {"stop": "10001"}], ids=["a route", "a stop"])
+def test_a_board_from_an_old_phone_report_opens_with_the_planners_warning(
+    board_of: Callable[..., World], args: dict[str, Any],
+) -> None:
+    """The stops near him, or how far the named stop is, come from a report two hours old.
+
+    The board says so first, as the planner's answer does; a fresh report or this Mac's fix says
+    nothing.
+    """
+    old = reading(48.46, -123.31, 15.0, age_s=7200, device="phone", why="the phone did not answer")
+    out = board_of(BOARD, here=FixedHere(old)).call(args)
+    warning = (
+        "The starting point is his phone's report from 2 h ago (Ring Rd, Saanich); he may have"
+        " moved. Say that first, or ask where he is, before giving times from it."
+    )
+    assert out["summary"].startswith(warning + " Next at Ring Rd at Oak St (100 m away):")
+    assert (out["from_age_min"], out["warning"]) == (120, warning)
+    fresh = board_of(BOARD, here=FixedHere(reading(48.46, -123.31, 15.0, age_s=5))).call(args)
+    assert not {"from_age_min", "warning"} & fresh.keys()
+    assert fresh["summary"].startswith("Next at Ring Rd at Oak St (100 m away):")
+    assert not {"from_age_min", "warning"} & board_of(BOARD).call(args).keys()
