@@ -34,7 +34,7 @@ import './dashboard-home.css';
 // blocks: the ones you keep, in your order, and the ones that show up when there is something. A block grows
 // into its page in place; the panel follows the blocks up to VIEW_MAX. Her light accents the surface;
 // measurements and agent states keep their own stable colours.
-type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail' | 'memory' | 'jobs';
+export type Page = 'conversation' | 'now' | 'agents' | 'usage' | 'plugins' | 'projects' | 'settings' | 'arrange' | 'brief' | 'mail' | 'memory' | 'jobs';
 export type DashboardView = {
   page: Page | null; plugin: string | null; letter: Mail | null; memory: MemNav; settingsCat: string | null; unfolded: string | null;
   query: string; token: string; homeDraft: string; talkDraft: string; days: number; scroll: number;
@@ -155,19 +155,22 @@ const thoughtRows = (rows: Row[], thoughts: Think['thoughts']) => new Map(though
 }));
 const PULL = 240; // px of fresh upward scroll at the top that adds the day before
 
-export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'dot', onAgents, agentsFocus = null, marksHover = null, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView }: {
+export function AroundDashboard({ open, port = null, onClose, onMood, onHop, talk, plugins: live, pluginFocus = null, marks = 'dot', onAgents, agentsFocus = null, marksHover = null, settingFocus = 0, jobsFocus = 0, present = null, onAnswer, unread, ctl, viewRef, onView, only }: {
   open: boolean; port?: string | null; onClose: () => void; onMood: (expr: ExprId | null) => void; onHop: (height: number) => void;
   talk?: Talk; plugins?: PluginController; pluginFocus?: { plugin: string; key: string } | null;
   marks?: MarkLook; onAgents?: (agents: ShownAgent[]) => void;
   // A mark beside the notch: pressed (the page turns to Agents and lights its group), or under the pointer (that group glows where it shows).
   agentsFocus?: { group: MarkGroup; key: number } | null; marksHover?: MarkGroup | null; settingFocus?: number; jobsFocus?: number; present?: Present | null; onAnswer?: (id: string) => void;
   unread?: ReadonlySet<string>; ctl: Controls; viewRef?: Ref<DashboardViewHandle>; onView?: (value: DashboardView) => void;
+  // Shows this one page alone, no home (the day pane's tool pages, DayTimeline.tsx): the page is up from the first frame and moves with no animation; its ‹ at the page's root calls `onClose`,
+  // and its deeper steps (a memory item, a settings category, a plugin) still go back inside it. A page that is shown alone reads only what it shows.
+  only?: Page;
 }) {
   const [settings, updateSettings] = useCompanionSettings(), lang = settings.lang;
   const t = (l: L) => tr(lang, l);
   const tick = useNow(20_000);
-  const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open), claudeRows = useClaudeSessions(port);
-  const [page, setPage] = useState<Page | null>(null);
+  const quota = useUsage(port), codex = useCodexSessions(port), work = useWorkState(port), projects = useProjects(port, open && (!only || only === 'projects')), claudeRows = useClaudeSessions(port);
+  const [page, setPage] = useState<Page | null>(only ?? null);
   const tokens = useTokenUsage(page === 'usage');
   const [plugin, setPlugin] = useState<string | null>(null);
   // The Mail page: the letter open on it (null = the list) and the list's filter.
@@ -211,7 +214,8 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]), moodTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const pluginTimer = useRef<ReturnType<typeof setTimeout>>(undefined), toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const later = (ms: number, run: () => void) => { timers.current.push(setTimeout(run, ms)); };
-  useEffect(() => () => { timers.current.forEach(clearTimeout); [moodTimer, pluginTimer, toastTimer].forEach(t => clearTimeout(t.current)); }, []);
+  const moodOut = useRef(onMood); moodOut.current = onMood;
+  useEffect(() => () => { timers.current.forEach(clearTimeout); [moodTimer, pluginTimer, toastTimer].forEach(t => clearTimeout(t.current)); if (only) moodOut.current(null); }, []);
 
   // Only presentation and unsent edits cross between the two trusted windows. A
   // pending action or an armed spending confirmation is never replayed by a move.
@@ -258,6 +262,12 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   // Closing the panel puts everything back on the home page, without animation.
   useEffect(() => {
     if (open) return;
+    // Alone, the page stays as it is through a fold (the pane comes back to it); what must not outlive an open panel goes.
+    if (only) {
+      setReset(null); react('02', 0);
+      if (view.current?.contains(document.activeElement)) { (document.activeElement as HTMLElement).blur(); void window.jarvis?.focus(false); }
+      return;
+    }
     conversationRestore.current = null; restoredScroll.current = null; setRestoringConversation(false);
     closing.current = false; setPage(null); setPlugin(null); setLetter(null); setMemory(MEM_HOME); setSettingsCat(null); setUnfolded(null); setReset(null); react('02', 0);
     // Having been on the home once is having seen the brief; the next opening that day leaves it out.
@@ -295,6 +305,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     if (!page || !el) return;
     const start = from(), dy = start ? start.getBoundingClientRect().top - view.current!.getBoundingClientRect().top : 0;
     if (page === 'conversation') { const b = el.querySelector('.pg-body')!; b.scrollTop = b.scrollHeight; } // it opens on the newest turn
+    if (only) return;
     if (start) el.animate([{ clipPath: insetOf(start) }, { clipPath: 'inset(0 0 0 0 round 14px)' }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
     else el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
     el.querySelector('.pg-head')?.animate([{ transform: `translateY(${dy}px)`, opacity: .3 }, { transform: 'none', opacity: 1 }], { duration: dur(PAGE_MS), easing: PAGE_EASE });
@@ -329,7 +340,7 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
       (back?.matches('button') ? back : back?.querySelector('button'))?.focus({ preventScroll: true });
     };
   };
-  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'mail' && letter) setLetter(null); else if (page === 'memory' && memory.stack.length) setMemory(m => ({ ...m, stack: m.stack.slice(0, -1) })); else if (page === 'memory' && (memory.query || memory.tab !== 'items')) setMemory(MEM_HOME); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page) closePage(); else onClose(); };
+  const goUp = () => { if (page === 'plugins' && plugin) setPlugin(null); else if (page === 'mail' && letter) setLetter(null); else if (page === 'memory' && memory.stack.length) setMemory(m => ({ ...m, stack: m.stack.slice(0, -1) })); else if (page === 'memory' && (memory.query || memory.tab !== 'items')) setMemory(MEM_HOME); else if (page === 'settings' && settingsCat) setSettingsCat(null); else if (page && !only) closePage(); else onClose(); };
   const keys = (event: KeyboardEvent) => {
     if (event.key !== 'Escape') return;
     event.stopPropagation();
@@ -559,8 +570,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const sameDay = (ms: number) => new Date(ms).toDateString() === d.toDateString();
   const localDate = d.toLocaleDateString('en-CA');
 
+  // The routes below are read while the panel is open; a page shown alone (`only`) reads just what it shows, and the home's own (today, the notices, the voice) are not read at all.
+  const reads = (...pages: Page[]) => open && (!only || pages.includes(only));
   // Today: the weather, what is left on the calendar, and the to-dos, all from /inherent/today.
-  const todayRoute = useRoute<Today>(port, '/inherent/today', open, 5 * 60_000);
+  const todayRoute = useRoute<Today>(port, '/inherent/today', open && !only, 5 * 60_000);
   const demoDay = useMemo(() => demoToday(), [open]);
   const today = port ? todayRoute.data : demoDay;
   const [checked, setChecked] = useState<Record<string, boolean>>({});
@@ -580,19 +593,19 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
   const wx = today?.weather, forecast = settings.forecast && d.getHours() < 11 && wx?.hours?.length ? wx.hours.slice(0, 4) : null;
 
   // The pop-ups, each keyed by what it shows: closing one hides that; something newer brings the block back.
-  const briefRoute = useRoute<Brief>(port, '/inherent/brief', open, 10 * 60_000);
-  const mailRoute = useRoute<{ unread: Mail[] }>(port, '/inherent/mail', open, 5 * 60_000);
-  const memoryRoute = useRoute<MemoryOverview>(port, '/inherent/memory', open, 60_000);
+  const briefRoute = useRoute<Brief>(port, '/inherent/brief', reads('brief'), 10 * 60_000);
+  const mailRoute = useRoute<{ unread: Mail[] }>(port, '/inherent/mail', reads('mail'), 5 * 60_000);
+  const memoryRoute = useRoute<MemoryOverview>(port, '/inherent/memory', reads('memory'), 60_000);
   const memoryNow = Array.isArray(memoryRoute.data?.sections) ? memoryRoute.data : null; // an answer of another shape counts as no memory page
   // A fact she was told to remember shows when her answer lands, not at the next minute's poll.
   const lastRow = talk?.rows.at(-1)?.seq, seenRow = useRef(lastRow);
   useEffect(() => { if (lastRow === seenRow.current) return; seenRow.current = lastRow; if (open) memoryRoute.reload(); }, [lastRow, open]);
-  const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open, 60_000);
+  const noticeRoute = useRoute<{ notices: Notice[] }>(port, '/inherent/notices', open && !only, 60_000);
   // The job ledger (job mail, ADR 0155): its icon is in the corner only once the daemon serves the route (a 404 means the feature is off).
-  const jobsRoute = useRoute<{ ledger: JobGroup[]; applications?: JobApplication[]; skipped?: Skipped[]; rules?: JobRule[]; job_site_other_s?: number }>(port, '/inherent/jobs', open, 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null; const jobApps = Array.isArray(jobsRoute.data?.applications) ? jobsRoute.data.applications : null;
+  const jobsRoute = useRoute<{ ledger: JobGroup[]; applications?: JobApplication[]; skipped?: Skipped[]; rules?: JobRule[]; job_site_other_s?: number }>(port, '/inherent/jobs', reads('jobs'), 30_000), ledger = Array.isArray(jobsRoute.data?.ledger) ? jobsRoute.data.ledger : null; const jobApps = Array.isArray(jobsRoute.data?.applications) ? jobsRoute.data.applications : null;
   // A first boot fetches the speech models (~240 MB) before she can hear or speak; the corner shows how far, polled until they are in.
   const [voiceIn, setVoiceIn] = useState(false);
-  const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !voiceIn, 3000).data?.voice_models;
+  const models = useRoute<{ voice_models?: { state: 'ready' | 'downloading' | 'failed'; done: number; total: number } }>(port, '/inherent/setup', open && !only && !voiceIn, 3000).data?.voice_models;
   useEffect(() => { if (models?.state === 'ready') setVoiceIn(true); }, [models?.state]);
   const demoPops = useMemo(() => ({ brief: demoBrief(), mail: demoMail(), notices: demoNotices() }), []);
   // Letters archived from the home's junk line, or acted on from the Mail page, leave the list at once (useMailActs.ts); the daemon stops serving them from the next poll.
@@ -913,9 +926,9 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
     </>,
   };
 
-  return <div className="ad" data-page={page ?? undefined} data-deep={page === 'conversation' && talk?.think.on ? '' : undefined} onKeyDown={keys} onScrollCapture={() => publishView.current?.(snapshotView())}>
-    <div className="view" ref={view} style={{ height: viewH }}>
-      <div className="overview" ref={home} inert={!!page}>
+  return <div className={only ? 'ad is-only' : 'ad'} data-page={page ?? undefined} data-deep={page === 'conversation' && talk?.think.on ? '' : undefined} onKeyDown={keys} onScrollCapture={() => publishView.current?.(snapshotView())}>
+    <div className="view" ref={view} style={only ? undefined : { height: viewH }}>
+      {!only && <div className="overview" ref={home} inert={!!page}>
         <div className="corner">
           <span className="next-event" title={nextEvent?.title}>{talk?.offline ? <b className="is-warm">{t(['Offline · reconnecting', '离线 · 重连中'])}</b>
             : models?.state === 'failed' ? <b className="is-warm" title={t(['Her voice didn’t download. Restart Jarvis in Settings › Advanced to try again.', '她的声音没下载下来。到 设置 › 高级 里重启 Jarvis 再试。'])}>{t(['Voice failed', '声音下载失败'])}</b>
@@ -1002,10 +1015,10 @@ export function AroundDashboard({ open, port = null, onClose, onMood, onHop, tal
           }[id]()}</HomeBlock>)}
           {!blocks.length && <p className="muted home-empty">{t(['Everything is hidden. Hold here or open Settings › Home.', '全部隐藏了。去 设置 › 首页 恢复。'])}</p>}</div>
         </div>
-      </div>
+      </div>}
       {page && <section className="page" ref={pageEl} aria-label={t(TITLES[page])}>{pages[page]()}</section>}
     </div>
-    <div className="cmp-hit" onClick={e => { const field = e.currentTarget.querySelector('textarea'); if (field && !(e.target as Element).closest('button,textarea')) focusWindow({ currentTarget: field }); }}><Ask className="cmp" text={homeDraft} setText={setHomeDraft} onAsk={ask}/></div>
+    {!only && <div className="cmp-hit" onClick={e => { const field = e.currentTarget.querySelector('textarea'); if (field && !(e.target as Element).closest('button,textarea')) focusWindow({ currentTarget: field }); }}><Ask className="cmp" text={homeDraft} setText={setHomeDraft} onAsk={ask}/></div>}
     <div className={`toast ${toast ? 'is-on' : ''}`} role="status">{toast?.text}{toast?.undo && <button onClick={() => { toast.undo!(); setToast(null); }}>{t(['Undo', '撤销'])}</button>}</div>
   </div>;
 }
