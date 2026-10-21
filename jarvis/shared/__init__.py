@@ -88,7 +88,7 @@ ADR Result-Interpreter table allows: Execution / Artifact / State / Postconditio
 """
 
 RiskLevel = Literal["L0", "L1", "L2", "L3", "L4"]
-"""Risk ladder shared with `constitution.AUTONOMY_LEVELS`.
+"""The risk ladder, L0 up to L4.
 
 ActionRequest.risk_level is compared against EffectivePolicy.autonomy_ceiling
 in the Pre-action Gate; both speak this vocabulary.

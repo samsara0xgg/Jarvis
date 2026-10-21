@@ -78,7 +78,7 @@ class EffectivePolicy:
     )
 
 
-# Risk ladder L0..L4 (matches `jarvis.constitution.AUTONOMY_LEVELS`).
+# Risk ladder L0..L4 (`RiskLevel`).
 # Index = rank; comparisons in Pre-action Gate use this rank table.
 _RISK_LADDER: tuple[RiskLevel, ...] = ("L0", "L1", "L2", "L3", "L4")
 _RISK_RANK: Mapping[RiskLevel, int] = {level: rank for rank, level in enumerate(_RISK_LADDER)}
