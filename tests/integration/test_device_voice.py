@@ -21,7 +21,9 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from jarvis.decision.response_run import legacy_full_text_policy, start_response_run
-from jarvis.runtime import device_voice, inherent_loop
+from jarvis.runtime import device_voice
+from jarvis.runtime.daemon.listen_ports import local_listen_ports
+from jarvis.runtime.daemon.phone_brain import build_brain_listening
 from jarvis.shared.realtime import new_response_id
 from jarvis.state.event_log import MAC_NODE, emit_event, open_event_log
 from jarvis.surface import word_judge
@@ -117,7 +119,7 @@ def _cancelled(runtime: JarvisRuntime) -> list[tuple[str, str]]:
 
 def _hooks(runtime: JarvisRuntime) -> Any:  # noqa: ANN401 - ListenHooks
     """The hooks the runtime binds for every terminal; the terminal is told per call."""
-    listening = inherent_loop._build_brain_listening(  # noqa: SLF001
+    listening = build_brain_listening(
         runtime, TerminalHub(events=BrainEvents(runtime.conn)),
         controls=VoiceControls(), set_conversation=lambda _on, _why: None,
         set_quiet=lambda _level: None,
@@ -133,7 +135,7 @@ def _trigger(
     """Fire ``trigger`` as ``device``'s voice does: the host's own session, or a terminal's."""
     if via == "local":
         streaming = cast("Any", SimpleNamespace(drop_unspoken=lambda turn_ids: turn_ids))
-        ports = inherent_loop._local_listen_ports(runtime, streaming)  # noqa: SLF001
+        ports = local_listen_ports(runtime, streaming)
         assert ports.interrupt is not None
         assert ports.supersede_unspoken is not None
         assert ports.cancel_voice_runs is not None

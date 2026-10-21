@@ -25,8 +25,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import device_voice, inherent_loop
+from jarvis.runtime import device_voice
 from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon.phone_brain import build_brain_listening
 from jarvis.runtime.turn.cancel import (
     make_compose_callable,
     make_continuation_callable,
@@ -1099,7 +1100,7 @@ class _MacRig:
     listening: Any = field(init=False)
 
     def __post_init__(self) -> None:
-        self.listening = inherent_loop._build_brain_listening(  # noqa: SLF001
+        self.listening = build_brain_listening(
             self.runtime,
             TerminalHub(events=BrainEvents(self.runtime.conn)),
             controls=VoiceControls(),

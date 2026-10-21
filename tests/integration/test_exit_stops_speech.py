@@ -24,8 +24,8 @@ from jarvis.decision.response_run import (
     legacy_full_text_policy,
     start_response_run,
 )
-from jarvis.runtime import inherent_loop
 from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon.listen_ports import make_cancel_voice_runs
 from jarvis.state.event_log import emit_event, latest_id, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -220,7 +220,7 @@ def test_exit_cancels_every_open_run_that_would_speak_and_leaves_the_rest(
     _run(runtime, "R-live", "T-live", trigger="surface.user_intent", intent_channel="gpt_live")
     _run(runtime, "R-sweep", "T-sweep", trigger=None)
 
-    inherent_loop._make_cancel_voice_runs(runtime)()  # noqa: SLF001
+    make_cancel_voice_runs(runtime)()
 
     assert {run.response_id for run in runtime.response_runs.open_runs()} == {
         "R-voice-new", "R-document", "R-live", "R-sweep", "R-typed",
@@ -259,7 +259,7 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
         "",
         output_active=pipeline.is_output_active,
         stop_speaking=lambda: pipeline.stop_foreground_output(None, reason="barge_in"),
-        cancel_voice_runs=inherent_loop._make_cancel_voice_runs(runtime),  # noqa: SLF001
+        cancel_voice_runs=make_cancel_voice_runs(runtime),
     )
     try:
         with CallbackPump(player):
@@ -336,7 +336,7 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
     started = _run(runtime, "R-started", "T-started")
     _answer_started(runtime, "T-started")
 
-    cancel_runs = inherent_loop._make_cancel_voice_runs(runtime)  # noqa: SLF001
+    cancel_runs = make_cancel_voice_runs(runtime)
     reply = _app(VoiceControls(conversation=True), cancel_runs).post(
         "/inherent/controls", json={"conversation": False},
     )

@@ -3,26 +3,39 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from jarvis.runtime import JarvisRuntime, device_voice
+from jarvis.runtime.daemon.listen_ports import local_listen_ports, make_cancel_voice_runs
 from jarvis.runtime.daemon.output_watchers import PhoneRows, SpokenRows
 from jarvis.runtime.daemon.voice_wiring import VoiceKnobs, minimax_client, tts_volume_kwargs
+from jarvis.runtime.dictation import local_polisher
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.runtime.turn.cancel import (
     make_barge_in_interrupt_callable,
+    make_compose_callable,
+    make_continuation_callable,
     make_foreground_decision_callable,
+    make_relation_supersede_callable,
+    make_supersede_unspoken_callable,
+    make_turn_cancel_callable,
 )
+from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import terminal_voice, voice_artifact_store, voice_media
+from jarvis.surface import terminal_listen, terminal_voice, voice_artifact_store, voice_media
+from jarvis.surface.phone_link import PhoneHub
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
+
+    from jarvis.surface import voice_controls
+    from jarvis.surface.terminal_link import TerminalHub
 
 LOGGER = logging.getLogger(__name__)
 
@@ -143,3 +156,138 @@ def per_device[T](make: Callable[[str], T]) -> Callable[[str], T]:
         return made[device]
 
     return get
+
+
+def build_phone_hub(
+    runtime: JarvisRuntime, knobs: VoiceKnobs, *, set_quiet: Callable[[str], None] | None,
+) -> tuple[PhoneHub, Callable[[str], int | None]] | None:
+    """The phone's conversation socket (ADR 0209), on every host that listens.
+
+    ``None`` where the host has nowhere to write a phone's words. A voice phone gets its own
+    media actor when the host can speak; barge-in and cancel reach only that device's turns.
+    Words it hears over her are judged with the Mac's own hooks (ADR 0216,
+    :func:`local_listen_ports`) and ``set_quiet``, the daemon's, which the caller passes in.
+    The second value says which log row a device's actor was built at (``None``: it has none),
+    for :func:`phone_ends_watcher`.
+    """
+    events = runtime.phone_events
+    if events is None:
+        return None
+    rows = PhoneRows(runtime.conn)
+    speech = build_phone_speech(runtime, knobs, rows)
+    registry = runtime.response_runs
+    mine = local_listen_ports(runtime, None)
+    hub = PhoneHub(
+        events=events,
+        rows=rows,
+        open_voice=None if speech is None else speech.open,
+        barge_in=None if registry is None else functools.partial(phone_barge_in, runtime),
+        cancel_turn=None if registry is None else make_turn_cancel_callable(runtime),
+        supersede_turn=None if registry is None else make_continuation_callable(runtime),
+        pick_earlier=None if registry is None else make_compose_callable(runtime),
+        ask_words=mine.ask_words,
+        note_words=mine.note_words,
+        begin_line=mine.begin_line,
+        recent_speech=mine.recent_speech,
+        set_quiet=set_quiet,
+        heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
+            runtime.runtime_paths.event_log, device, text,
+        ),
+        voiceprints=runtime.voiceprints,
+        check_attachments=(
+            None if runtime.attachments is None else runtime.attachments.check_for_turn
+        ),
+    )
+    return hub, (lambda _device: None) if speech is None else speech.owner_boot
+
+
+def build_brain_listening(
+    runtime: JarvisRuntime,
+    hub: TerminalHub,
+    *,
+    controls: voice_controls.VoiceControls,
+    set_conversation: Callable[[bool, str], None],
+    set_quiet: Callable[[str], None],
+) -> terminal_listen.BrainListening | None:
+    """What lets a brain take a voice terminal's listening: its words, its holds, its turns.
+
+    The brain's half of each capture-session callback is the one a daemon runs for its own
+    session (:func:`local_listen_ports`); only supersede and relate differ, since the audio
+    they drop or stop is on the terminal that heard the line (ADR 0172). The voice-driven
+    cancels (interrupt, supersede, cancel_runs) and ``heard_elsewhere`` take the terminal's
+    name and act on the turns it opened alone (ADR 0219); ``hold_runs`` stays global.
+    ``None`` without the brain's log, where an utterance has nowhere to go.
+    """
+    if hub.events is None:
+        return None
+    listening = terminal_listen.BrainListening(hub, hub.events)
+    mine = local_listen_ports(runtime, None)
+    registry = runtime.response_runs
+    if runtime.oneshot is not None and registry is not None:
+        # ADR 0139: a correction stops the answer that is audible, on the terminal that heard it.
+        runtime.oneshot.relate = make_relation_supersede_callable(
+            runtime, listening.drop_unspoken, lambda: listening.stop_output("correction"),
+        )
+
+    def _hold_runs(held: bool) -> None:  # noqa: FBT001 - the capture side's one bit
+        if mine.hold_runs is not None:
+            mine.hold_runs(held)
+        if held and mine.warm is not None:
+            mine.warm()  # his words will end in a request; have its connection open by then
+
+    # ADR 0219: a terminal's voice acts on the turns that terminal opened, nothing else's.
+    event_log_path = runtime.runtime_paths.event_log
+    barge_in = per_device(
+        lambda device: make_barge_in_interrupt_callable(
+            runtime, only_turns=device_voice.device_turns(event_log_path, device),
+        ),
+    )
+    compose = make_compose_callable(runtime)
+    supersede = per_device(
+        lambda device: make_supersede_unspoken_callable(
+            runtime, listening.drop_unspoken,
+            only_turns=device_voice.device_turns(event_log_path, device),
+            # ADR 0278: the device's pending sentence is composed into the next one at its
+            # utterance, so the sweep leaves it to that.
+            leave=lambda turn_id: compose(device, turn_id, None),
+        ),
+    )
+    cancel_runs = per_device(
+        lambda device: make_cancel_voice_runs(
+            runtime, only_turns=device_voice.device_turns(event_log_path, device),
+        ),
+    )
+
+    listening.hooks = terminal_listen.ListenHooks(
+        ask_words=mine.ask_words,
+        note_words=mine.note_words,
+        begin_line=mine.begin_line,
+        answer_words=mine.answer_words,
+        turn_working=mine.turn_working,
+        recent_speech=mine.recent_speech,
+        hold_runs=_hold_runs,
+        interrupt=lambda device, source: barge_in(device)(source),
+        supersede=(
+            (lambda device, turn_id: supersede(device)(turn_id))
+            if registry is not None
+            else None
+        ),
+        cancel_runs=(
+            (lambda device: cancel_runs(device)()) if registry is not None else None
+        ),
+        composes_into=compose if registry is not None else None,
+        take_over=make_continuation_callable(runtime) if registry is not None else None,
+        heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
+            event_log_path, device, text,
+        ),
+        voiceprints=runtime.voiceprints,
+        set_conversation=set_conversation,
+        set_quiet=set_quiet,
+        controls=controls.update,
+        # ADR 0183: a terminal's dictation is polished here, with the key only the brain has.
+        polish=local_polisher(
+            runtime.config.raw, runtime.runtime_paths.event_log,
+            load_pricing_table(runtime.config.pricing_path),
+        ),
+    )
+    return listening

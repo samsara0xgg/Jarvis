@@ -728,7 +728,8 @@ class ListeningHost(_ConfigHost, Protocol):
 class ListenPorts:
     """What the capture session reaches in the turn's state, and how (ADR 0172).
 
-    On one machine every port is a direct call into the runtime (:func:`_local_listen_ports`).
+    On one machine every port is a direct call into the runtime
+    (:func:`~jarvis.runtime.daemon.listen_ports.local_listen_ports`).
     On a voice terminal each is a call over the brain link, or absent. The local halves of
     hold-output, stop-speaking and the like (the player, the input model) stay in
     :func:`_spawn_single_ingress_session`, which runs wherever the microphone is.
