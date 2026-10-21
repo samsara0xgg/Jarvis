@@ -21,8 +21,14 @@ import time
 import unicodedata
 from typing import TYPE_CHECKING, Final
 
+from jarvis.state.device_utterances import (
+    first_utterance_row,
+    latest_utterances,
+    transcripts_heard_elsewhere_since,
+    utterances_before,
+)
 from jarvis.state.event_log import MAC_NODE, open_runtime_event_log, turn_origin
-from jarvis.state.turn_facts import turn_is_over
+from jarvis.state.turn_facts import answer_superseded, turn_cancelled_or_failed, turn_is_over
 from jarvis.surface import voice_asr
 
 if TYPE_CHECKING:
@@ -95,20 +101,12 @@ def heard_elsewhere(event_log_path: Path, device: str, text: str) -> bool:
     with contextlib.closing(
         open_runtime_event_log(event_log_path, deadline=time.monotonic() + _OPEN_DEADLINE_S),
     ) as conn:
-        rows = conn.execute(
-            "SELECT json_extract(payload_json, '$.transcript') FROM events "
-            "WHERE type = 'utterance.received' AND ts_epoch_ms >= ? AND ingestion_node != ?",
-            (since_ms, device),
-        ).fetchall()
-    return any(isinstance(row[0], str) and same_words(text, row[0]) for row in rows)
+        heard = transcripts_heard_elsewhere_since(conn, device, since_ms=since_ms)
+    return any(same_words(text, other) for other in heard)
 
 
 _FILLERS: Final = "嗯哦噢喔唔呃额啊哈"
 """Listening sounds at the edge of a sentence that are not part of what it says."""
-_REPEAT_ENDED = (
-    "SELECT 1 FROM events WHERE type IN ('response.cancelled', 'response.failed', 'turn.failed') "
-    "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1"
-)
 
 
 def repeats(words: str, earlier: str) -> bool:
@@ -139,39 +137,23 @@ def repeat_of(  # noqa: PLR0913 - the turn, its words, and the three facts only 
     since_ms = int((time.time() - window_s) * 1000)
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
         node = turn_origin(conn, turn_id)[1]
-        own = conn.execute(
-            "SELECT id FROM events WHERE type = 'utterance.received' "
-            "AND json_extract(payload_json, '$.turn_id') = ? ORDER BY id LIMIT 1",
-            (turn_id,),
-        ).fetchone()
+        own = first_utterance_row(conn, turn_id)
         if node is None or own is None:
             return None
-        rows = conn.execute(
-            "SELECT json_extract(payload_json, '$.turn_id'), "
-            "json_extract(payload_json, '$.transcript'), ts_epoch_ms FROM events "
-            "WHERE type = 'utterance.received' AND ingestion_node = ? AND id < ? "
-            "ORDER BY id DESC LIMIT 20",
-            (node, own[0]),
-        ).fetchall()
-        for earlier, text, ts_ms in rows:
+        for earlier in utterances_before(conn, node, row_id=own):
             if (
-                isinstance(earlier, str) and isinstance(text, str) and earlier != turn_id
-                and (ts_ms >= since_ms or earlier in in_flight)
-                and repeats(words, text) and usable(earlier)
-                and conn.execute(_REPEAT_ENDED, (earlier,)).fetchone() is None
+                earlier.turn_id != turn_id
+                and (earlier.at_ms >= since_ms or earlier.turn_id in in_flight)
+                and repeats(words, earlier.transcript) and usable(earlier.turn_id)
+                and not turn_cancelled_or_failed(conn, earlier.turn_id)
             ):
-                return earlier
+                return earlier.turn_id
     return None
 
 
 COMPOSE_BOUND_S: Final = 120.0
 """ADR 0278: a safety bound for an earlier turn that never ended, not a heuristic about how
 long a pause may be. Within it, what matters is whether her answer to that turn is over."""
-_CANCELLED_SUPERSEDED = (
-    "SELECT 1 FROM events WHERE type = 'response.cancelled' "
-    "AND json_extract(payload_json, '$.turn_id') = ? "
-    "AND json_extract(payload_json, '$.reason') = 'superseded' LIMIT 1"
-)
 
 
 def compose_target(
@@ -196,18 +178,15 @@ def compose_target(
         return None
     now_ms = int(time.time() * 1000)
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
-        rows = conn.execute(
-            "SELECT json_extract(payload_json, '$.turn_id'), "
-            "json_extract(payload_json, '$.transcript'), ts_epoch_ms FROM events "
-            "WHERE type = 'utterance.received' AND ingestion_node = ? ORDER BY id DESC LIMIT 20",
-            (device,),
-        ).fetchall()
-        for earlier, text, ts_ms in rows:
-            if not isinstance(earlier, str) or not isinstance(text, str) or earlier == turn_id:
+        for earlier in latest_utterances(conn, device):
+            if earlier.turn_id == turn_id:
                 continue
-            if superseded(earlier) or conn.execute(_CANCELLED_SUPERSEDED, (earlier,)).fetchone():
+            if superseded(earlier.turn_id) or answer_superseded(conn, earlier.turn_id):
                 continue  # a later sentence took its place; the one that did is the latest
-            if now_ms - ts_ms > COMPOSE_BOUND_S * 1000 or turn_is_over(conn, earlier):
+            too_old = now_ms - earlier.at_ms > COMPOSE_BOUND_S * 1000
+            if too_old or turn_is_over(conn, earlier.turn_id):
                 return None
-            return None if words is not None and repeats(words, text) else earlier
+            if words is not None and repeats(words, earlier.transcript):
+                return None
+            return earlier.turn_id
     return None
