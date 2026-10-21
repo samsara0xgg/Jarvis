@@ -146,18 +146,17 @@ def test_a_spoken_request_carries_structure_thinking_caching_and_no_openai_field
 def test_a_preset_note_follows_the_system_prompt_only_on_that_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """system_note rides after every system prompt of its preset, and leaves on a switch."""
+    """system_note rides after every system prompt of its preset, and of no other client."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
     client = _preset("", system_note="# Working on this model\n- Call the tool.")
     frames = _reply({"type": "text", "text": '{"spoken": "好", "written": ""}'}, stop="end_turn")
     peer, _ = asyncio.run(_run(client, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
     assert peer.body["system"] == "SYS\n\n# Working on this model\n- Call the tool."
-    client._presets["plain"] = {"provider": "anthropic", "model": "claude-haiku-5-5"}  # noqa: SLF001 — a second preset
     factory = LLMSessionFactory({"presets": {"haiku": {"provider": "anthropic", "model": "claude-haiku-5-5", "system_note": "N"}}})
     run_client = factory.create(factory.snapshot("haiku"), response_id="r")
     assert run_client._system_note == "\n\nN"  # noqa: SLF001 — a run client keeps the note
-    client.switch_model("plain")
-    peer, _ = asyncio.run(_run(client, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
+    plain = _preset("")  # the same model with no note: another model is another client
+    peer, _ = asyncio.run(_run(plain, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
     assert peer.body["system"] == "SYS"
 
 

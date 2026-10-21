@@ -2,8 +2,9 @@
 
 Adapted from legacy ``jarvis-legacy/core/llm.py`` (1650 LOC) per ADR
 § Reference sources. Day-1 keeps the provider switch (``openai`` /
-``anthropic``), presets + :meth:`LLMClient.switch_model`, the metadata
-accessors, and a preserved :meth:`LLMClient.chat_stream` skeleton.
+``anthropic``), presets, the metadata accessors, and a preserved
+:meth:`LLMClient.chat_stream` skeleton. A client is pinned to its preset at
+construction: another model is another client.
 
 Day-1 deviations from legacy:
 
@@ -89,10 +90,6 @@ def _iter_and_close(stream: Iterable[Any]) -> Iterator[Any]:
 
 class MissingLLMSectionError(KeyError):
     """Raised when :func:`load_llm_config` finds no ``llm:`` block."""
-
-
-class UnknownPresetError(KeyError):
-    """Raised by :meth:`LLMClient.switch_model` for unknown preset names."""
 
 
 class MissingAPIKeyError(RuntimeError):
@@ -526,26 +523,14 @@ class LLMClient:
         """
         return dict(self._last_metadata)
 
-    # ---- preset / model switching -------------------------------------
+    # ---- presets ------------------------------------------------------
 
     def get_presets(self) -> Mapping[str, Mapping[str, Any]]:
         """Return a read-only view of registered model presets."""
         return {name: dict(spec) for name, spec in self._presets.items()}
 
-    def switch_model(self, preset_name: str) -> str:
-        """Apply a named preset; return the new ``model`` id.
-
-        Raises:
-            UnknownPresetError: When ``preset_name`` is not registered.
-        """
-        if preset_name not in self._presets:
-            msg = f"unknown preset {preset_name!r}; available: {sorted(self._presets)}"
-            raise UnknownPresetError(msg)
-        self._apply_preset(preset_name)
-        return self._model
-
     def _apply_preset(self, name: str) -> None:
-        """Adopt a preset; reset lazy SDK handles so next chat() rebuilds them."""
+        """Adopt a preset; called once, by the constructor: a client stays on its preset."""
         preset = self._presets[name]
 
         new_provider = preset.get("provider")
@@ -570,9 +555,7 @@ class LLMClient:
         api_key_env = preset.get("api_key_env")
         if api_key_env:
             self._api_key = os.environ.get(str(api_key_env))
-        # else: leave previously-resolved key in place (preset switching
-        # within the same provider/account should not blow away the key
-        # if the new preset doesn't name one explicitly).
+        # else: the preset names no key variable and the client has none.
 
         self._openai_client = None
         self._anthropic_client = None
@@ -1651,7 +1634,6 @@ __all__ = [
     "MissingLLMSectionError",
     "Provider",
     "ToolCall",
-    "UnknownPresetError",
     "UsageStatus",
     "load_llm_config",
 ]

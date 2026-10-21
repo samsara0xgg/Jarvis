@@ -34,7 +34,6 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import (
-    ImmutableRequestClientError,
     LLMSessionFactory,
     UnknownRequestPresetError,
 )
@@ -1025,7 +1024,7 @@ def test_concurrent_response_runs_use_isolated_request_clients(tmp_path: Path) -
     conn.close()
 
 
-def test_request_client_refuses_switch_model_and_pins_its_snapshot() -> None:
+def test_request_client_pins_its_snapshot() -> None:
     """A4: the per-run client is immutable and holds a deep config copy."""
     source: dict[str, Any] = {
         "provider": "openai",
@@ -1036,8 +1035,6 @@ def test_request_client_refuses_switch_model_and_pins_its_snapshot() -> None:
     snapshot = factory.snapshot(None)
     client = factory.create(snapshot, response_id="RESP-pin")
 
-    with pytest.raises(ImmutableRequestClientError):
-        client.switch_model("deep")
     assert client.model == "gpt-fast"
     assert client.provider == "openai"
     assert client.active_preset == "fast"

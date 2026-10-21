@@ -2804,12 +2804,9 @@ def _build_vision_client(
     consults) — so it must not take the whole daemon down at boot.
 
     A DEDICATED `LLMClient` is built here rather than reusing the
-    decision loop's own client (constructed at step 4, below):
-    `LLMClient.switch_model`/`_apply_preset` mutates the client's
-    active provider/model/base_url/key in place, so sharing one
-    instance between the decision loop's `chat()` calls and
-    `screen_look`'s vision calls would risk leaving the WRONG model
-    active for the next turn. This reuses the SAME loader
+    decision loop's own client (constructed at step 4, below): a client
+    is pinned to one preset, so the vision model is a client of its own.
+    This reuses the SAME loader
     (`LLMClient.__init__` / `_apply_preset` reading a `presets` dict) —
     not a parallel YAML parser — just a second instance scoped to one
     preset, with an explicit bounded `timeout_s`/`max_retries`

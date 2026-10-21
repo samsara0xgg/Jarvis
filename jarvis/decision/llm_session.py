@@ -1,10 +1,9 @@
 """Immutable per-ResponseRun LLM request clients (ADR-0008 D4 / F19).
 
-The shared :class:`~jarvis.decision.llm.LLMClient` carries mutable provider
-identity: ``switch_model``/``_apply_preset`` rebind provider, model, base URL
-and key in place, and ``_last_metadata`` is reset wholesale on every
-``chat()`` entry.  With one client per process that is invisible, because at
-most one turn is ever in flight.  The moment two ResponseRuns overlap it
+The shared :class:`~jarvis.decision.llm.LLMClient` carries mutable per-call
+state: ``_last_metadata`` is reset wholesale on every ``chat()`` entry.  With
+one client per process that is invisible, because at most one turn is ever in
+flight.  The moment two ResponseRuns overlap it
 becomes a cost-attribution bug: ``CostRecorder._from_client`` and the legacy
 ``_emit_cost_recorded_from_metadata`` path both read those mutable
 ``last_*`` accessors, so the second run's request id can be stamped onto the
@@ -13,7 +12,8 @@ first run's ``cost.recorded`` row.
 :class:`LLMSessionFactory` removes the shared identity rather than guarding
 it.  Each run gets its own :class:`LLMRequestClient` built from a frozen
 :class:`LLMPresetSnapshot`, so per-instance state is correct by construction
-and no accounting code changes at all.
+and no accounting code changes at all.  A client has no way to change its
+preset (there is no ``switch_model``): another model is another client.
 
 ``LLMRequestClient`` subclasses ``LLMClient`` deliberately.
 ``DecideContext.llm_client``, ``CostRecorder.chat``/``chat_stream`` and
@@ -39,10 +39,6 @@ if TYPE_CHECKING:
     from jarvis.decision.llm import Provider
 
 _SYNTHETIC_PRESET_NAME = "__request__"
-
-
-class ImmutableRequestClientError(RuntimeError):
-    """A per-run request client refused a mutation of its pinned preset."""
 
 
 class UnknownRequestPresetError(KeyError):
@@ -314,20 +310,6 @@ class LLMRequestClient(LLMClient):
         """Return the ResponseRun id that owns this client."""
         return self._response_id
 
-    def switch_model(self, preset_name: str) -> str:
-        """Refuse every preset change (ADR-0008 D4).
-
-        Raises:
-            ImmutableRequestClientError: Always. Provider identity belongs to
-                the ResponseRun; a new identity requires a new run.
-        """
-        msg = (
-            f"LLMRequestClient for response_id={self._response_id!r} is pinned to "
-            f"preset {self._preset_snapshot.preset_name!r}; refusing to switch to "
-            f"{preset_name!r}"
-        )
-        raise ImmutableRequestClientError(msg)
-
 
 def snapshot_fields(snapshot: LLMPresetSnapshot) -> Mapping[str, object]:
     """Return ``snapshot`` as a plain mapping (diagnostics and burn output)."""
@@ -335,7 +317,6 @@ def snapshot_fields(snapshot: LLMPresetSnapshot) -> Mapping[str, object]:
 
 
 __all__ = [
-    "ImmutableRequestClientError",
     "LLMPresetSnapshot",
     "LLMRequestClient",
     "LLMSessionFactory",
