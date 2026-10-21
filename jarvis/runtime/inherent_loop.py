@@ -192,7 +192,6 @@ from jarvis.runtime.dictation import (
 from jarvis.runtime.doing_answers import DoingAnswers
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.highlight_marks import HighlightMarks
-from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.night_watch import NightWatch
@@ -209,8 +208,6 @@ from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
     AlreadyTerminal,
-    new_boot_id,
-    new_connection_id,
     new_response_id,
 )
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -243,7 +240,6 @@ from jarvis.state.event_log import (
     iter_events_of_types,
     open_event_log,
     open_runtime_event_log,
-    read_log_epoch,
     recent_turns_of_device,
     turn_intent_channel,
     turn_origin,
@@ -319,7 +315,6 @@ from jarvis.surface.cli import emit_surface_user_intent, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
 from jarvis.surface.device_pairing import DevicePairing, brain_urls
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import (
     AskOutcome,
     InherentDeps,
@@ -6861,37 +6856,10 @@ async def _stop_children(runtime: JarvisRuntime, *, timeout_s: float) -> None:
             LOGGER.exception("serve_inherent: stopping %s failed", name)
 
 
-def _v2_runtime_capabilities(
-    *,
-    voice_input: bool,
-    response_interrupt: bool,
-    image_input: bool,
-) -> RuntimeCapabilities:
-    """Report what this daemon can actually do, for the D7 server hello.
-
-    Discovered from the wiring rather than declared: ``image_input`` is
-    true while the upload route is open and the conversation model takes
-    pictures (ADR 0211; they ride ``/inherent/submit`` as attachments), and
-    the action / confirmation controls are false because no route accepts
-    them yet. ``aec_profile`` is ``headphones_only`` — there is no acoustic
-    echo canceller, so barge-in over speakers is not offered.
-    """
-    return RuntimeCapabilities(
-        text_input=True,
-        image_input=image_input,
-        voice_input=voice_input,
-        response_interrupt=response_interrupt,
-        action_cancel=False,
-        confirmation_actions=False,
-        natural_barge_in=False,
-        aec_profile="headphones_only",
-    )
-
-
 V2_PRINCIPAL: Final[str] = "inherent_v2"
 """The ADR-0014 D21 ``authenticated_principal``.
 
-The v2 socket authenticates one shared per-boot bearer token, not a user, so
+The v2 input routes authenticate one shared per-boot bearer token, not a user, so
 this constant names that credential rather than a person.  The idempotency key
 still separates clients through ``client_instance_id``; a per-user principal
 arrives with a real identity mechanism.
@@ -7947,20 +7915,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # what makes it safe — no second daemon can be mid-read of the
         # file this one is replacing.
         v2_token = rotate_inherent_v2_token(runtime.runtime_paths.inherent_v2_token)
-        boot_id = new_boot_id()
-        log_epoch = read_log_epoch(runtime.conn)
-        # ADR-0014 D8/D9 — the v2 sequencer and client hub, behind
-        # realtime.inherent.v2_sequencer.enabled. It drains the log through
-        # the current high-water before returning; None leaves the v2 socket
-        # exactly as card 1 left it (hello, then silence) and v1 untouched.
-        inherent_view = await start_inherent_view(
-            runtime,
-            boot_id=boot_id,
-            log_epoch=log_epoch,
-            poll_interval_s=poll_interval_s,
-        )
-        if inherent_view is not None:
-            watchers.extend(inherent_view.tasks)
         # ADR-0018 — usage observer: constructed here (baselines recovered on
         # the loop thread) so the dashboard routes can hold its read model
         # and on-demand poll; its periodic task joins `watchers` below.
@@ -8458,17 +8412,6 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                     if runtime.listen_addresses
                     else None
                 ),
-                mint_connection_id=new_connection_id,
-                boot_id=boot_id,
-                log_epoch=log_epoch,
-                high_water_cursor=functools.partial(_latest_id, runtime.conn),
-                runtime_capabilities=functools.partial(
-                    _v2_runtime_capabilities,
-                    voice_input=voice_pipeline_callable is not None,
-                    response_interrupt=cancel_response_callable is not None,
-                    image_input=images_ok,
-                ),
-                attach_client=None if inherent_view is None else inherent_view.attach_client,
                 submit_text=functools.partial(
                     _submit_text_v2,
                     runtime.runtime_paths.event_log,

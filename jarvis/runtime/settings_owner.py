@@ -65,7 +65,7 @@ _TABLE: Final[dict[Owner, tuple[str, ...]]] = {
         "realtime.tts_between_chunk_timeout_s", "realtime.tts_total_timeout_s",
         "realtime.tts_session_close_timeout_s", "realtime.commentary",
         "realtime.surrogate_route", "realtime.jev_words", "realtime.jev_oneshot",
-        "realtime.input", "realtime.inherent",
+        "realtime.input",
     ),
     "device": (
         "observer.repos", "observer.timesink", "observer.claude_sessions",

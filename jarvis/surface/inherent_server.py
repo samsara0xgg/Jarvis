@@ -42,15 +42,6 @@ inherent-swift client's ``BridgeBackend`` keeps working unchanged):
   once that turn's final answer is in (504 / 502 otherwise), for a one-shot caller (Siri)
 - ``GET  /inherent/waiting``     — everything waiting on Allen in one read, for a paired phone
 - ``WS  /inherent/ws``           — outbound-only; client receives ``{"op", "payload"}`` envelopes
-- ``WS  /inherent/ws/v2``        — ADR-0014 D5-D7; ``Authorization: Bearer <token>``
-  on the upgrade, typed :mod:`jarvis.surface.inherent_protocol` envelopes, and a
-  ``client.hello`` / ``server.hello`` handshake. Registered only when
-  ``InherentDeps.v2`` is injected, so a v1-only deployment's route table is
-  byte-identical to what it was. With ``InherentV2Deps.attach_client``
-  injected (ADR-0014 D8/D11), the hello-completed socket is handed to the
-  runtime's client hub as a :class:`V2Session` and every vetted post-hello
-  frame is routed to the returned :class:`V2ClientHandle`; without it the
-  socket says hello and then only listens, as card 1 left it.
 - ``GET /api/health``            — liveness; ``{"status": "ok"}``
 - ``GET /inherent/work-state``   — ADR 0023 saved current-work-state record + data head
 - ``POST /inherent/work-state/refresh`` — ADR 0023 on-demand analysis (single-flight)
@@ -174,20 +165,10 @@ from jarvis.surface.codex_sessions import (
 )
 from jarvis.surface.device_pairing import CLAIM_PATH, DevicePairing, register_pairing_routes
 from jarvis.surface.inherent_protocol import (
-    HELLO_TIMEOUT_S,
-    INITIAL_MAX_FRAMES_PER_S,
-    MAX_CLIENT_FRAME_BYTES,
-    REQUIRED_CLIENT_CAPABILITIES,
     AsrSubmitV2Request,
     AsrSubmitV2Response,
-    ClientEnvelope,
-    ClientHello,
-    RuntimeCapabilities,
-    ServerHello,
-    ServerHelloPayload,
     SubmitV2Request,
     SubmitV2Response,
-    hello_is_supported,
 )
 from jarvis.surface.phone_events import MAX_BATCH_BYTES, MAX_BATCH_FRAMES, PHONE_EVENTS_PATH
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub, serve_phone
@@ -218,7 +199,7 @@ _ASR_MAX_BYTES = 5 * 1024 * 1024
 _ASR_ACCEPTED_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 _ASR_TARGET_SAMPLE_RATE_HZ = 16000
 # The two authenticated input routes, gated in middleware so the token is the
-# first thing checked — exactly where the v2 socket checks it.
+# first thing checked.
 _V2_INPUT_PATHS: Final[frozenset[str]] = frozenset(
     {"/inherent/submit/v2", "/inherent/asr-submit/v2"},
 )
@@ -235,11 +216,11 @@ _ASK_TEXT_CHARS: Final = 2000
 _ASK_WAIT_S: Final[float] = 25.0
 _ASK_RECHECK_S: Final = 1.0
 _SESSION_ID_CHARS: Final = 128
-# Open without the local key: the liveness probe, and the v2 routes, which
+# Open without the local key: the liveness probe, and the v2 input routes, which
 # check their own per-boot token.
 _HEALTH_PATH: Final = "/api/health"
 _KEYLESS_PATHS: Final[frozenset[str]] = frozenset(
-    {_HEALTH_PATH, "/inherent/ws/v2", *_V2_INPUT_PATHS},
+    {_HEALTH_PATH, *_V2_INPUT_PATHS},
 )
 
 
@@ -398,20 +379,6 @@ class ControlsRequest(BaseModel):
     live: Literal["start", "stop"] | None = None
 
 
-@dataclass(frozen=True)
-class V2Session:
-    """One hello-completed v2 socket, handed to the runtime's client hub.
-
-    Only the connection id and two callables cross this boundary: the hub
-    sends through ``send_text`` and closes through ``close``; the socket
-    object itself never leaves this module.
-    """
-
-    connection_id: str
-    send_text: Callable[[str], Awaitable[None]]
-    close: Callable[[int, str], Awaitable[None]]
-
-
 class SetupRoutes(Protocol):
     """What first-run setup serves (``jarvis.runtime.setup.Setup``)."""
 
@@ -529,16 +496,6 @@ class NightRoutes(Protocol):
         """End the run: put back what it changed."""
 
 
-class V2ClientHandle(Protocol):
-    """What the hub returns for an attached session (ADR-0014 D8/D11)."""
-
-    async def on_frame(self, envelope: ClientEnvelope) -> None:
-        """Receive one vetted post-hello client frame."""
-
-    async def detach(self) -> None:
-        """Release the connection once its socket is gone."""
-
-
 @dataclass(frozen=True)
 class InputSubmissionOutcome:
     """What an injected v2 input callable answers with (ADR-0014 D21).
@@ -562,37 +519,17 @@ class InputSubmissionOutcome:
 
 @dataclass(frozen=True)
 class InherentV2Deps:
-    """Injectable dependencies for the ADR-0014 ``/inherent/ws/v2`` route.
+    """Injectable dependencies for the ADR-0014 D21 input routes.
 
-    Every entry is a value or a callable the runtime binds. That is what
-    keeps the v2 route inside L5's import rules: this module mints no
-    identity, opens no database, and never reads the token file — it only
-    compares, echoes, and asks.
+    Every entry is a callable the runtime binds. That is what keeps the v2
+    routes inside L5's import rules: this module opens no database and never
+    reads the token file — it only compares and asks.
 
     Attributes:
         token_matches: Constant-time comparison of the token presented on
-            the upgrade against the one this boot rotated. The runtime
+            a request against the one this boot rotated. The runtime
             binds ``functools.partial(inherent_v2_token_matches, token)``
             so the secret itself never reaches this layer.
-        mint_connection_id: One fresh ``connection_id`` per accepted
-            socket (``jarvis.shared.realtime.new_connection_id``).
-        boot_id: Minted once per daemon process; lets a client tell a
-            reconnect to the same process from a restart.
-        log_epoch: The Event Log's lineage id, read once at daemon start.
-            A client whose stored epoch differs must resnapshot.
-        high_water_cursor: ``MAX(events.id)`` at hello time — where the
-            durable stream stands when the connection opens.
-        runtime_capabilities: What this daemon can actually do right now,
-            computed from live wiring rather than declared.
-        hello_timeout_s: D7 deadline for the first frame; past it the
-            socket closes with ``hello_timeout``.
-        max_frames_per_s: D5 initial per-connection frame budget; a
-            breach closes with ``protocol_error``.
-        attach_client: ADR-0014 D8/D11 — the runtime hub's entry point.
-            Called once per hello-completed socket with its
-            :class:`V2Session`; the returned handle receives every vetted
-            post-hello frame and is detached when the socket ends. ``None``
-            (the default) keeps card 1's behavior: hello, then listen.
         submit_text: ADR-0014 D21 — bound to the L2 input submission inbox.
             Takes ``(request_id, client_instance_id, text)`` and returns the
             durable receipt or a refusal. Sync (it owns a ``BEGIN
@@ -612,14 +549,6 @@ class InherentV2Deps:
     """
 
     token_matches: Callable[[str], bool]
-    mint_connection_id: Callable[[], str]
-    boot_id: str
-    log_epoch: str
-    high_water_cursor: Callable[[], int]
-    runtime_capabilities: Callable[[], RuntimeCapabilities]
-    hello_timeout_s: float = HELLO_TIMEOUT_S
-    max_frames_per_s: int = INITIAL_MAX_FRAMES_PER_S
-    attach_client: Callable[[V2Session], Awaitable[V2ClientHandle]] | None = None
     submit_text: Callable[[str, str, str], InputSubmissionOutcome] | None = None
     submit_asr: Callable[[bytes, str, str, str, str], InputSubmissionOutcome] | None = None
     device_token_matches: Callable[[str], bool] | None = None
@@ -681,9 +610,9 @@ class InherentDeps:
             ``/inherent/cancel-response`` route is never registered, so
             the route table and OpenAPI schema stay exactly as they are
             today.
-        v2: ADR-0014 D5-D7 — the realtime v2 socket's dependencies.
-            ``None`` (the default) leaves ``/inherent/ws/v2`` unregistered
-            and the route table exactly as v1 deployments know it.
+        v2: ADR-0014 D21 — the input routes' dependencies. ``None`` (the
+            default) leaves ``/inherent/submit/v2`` and ``/inherent/asr-submit/v2``
+            unregistered.
     """
 
     submit_callable: Callable[[str], str | None]
@@ -967,36 +896,6 @@ class InherentDeps:
     codex_board: dict[str, CodexSession] = field(default_factory=dict)
 
 
-class _FrameRateLimiter:
-    """Fixed one-second window admission counter for one v2 socket (D5).
-
-    A fixed window rather than a sliding one: the budget exists to stop a
-    runaway client, not to shape traffic, and a client that behaves never
-    comes near the edge where the two disagree.
-    """
-
-    def __init__(self, max_per_s: int, *, clock: Callable[[], float] = time.monotonic) -> None:
-        """Start the first window now.
-
-        Args:
-            max_per_s: Frames admitted per window before the breach.
-            clock: Monotonic time source; injectable for tests.
-        """
-        self._max_per_s = max_per_s
-        self._clock = clock
-        self._window_start = clock()
-        self._count = 0
-
-    def admit(self) -> bool:
-        """Count one frame and report whether it stays within the budget."""
-        now = self._clock()
-        if now - self._window_start >= 1.0:
-            self._window_start = now
-            self._count = 0
-        self._count += 1
-        return self._count <= self._max_per_s
-
-
 def _v2_presented_token(header: str | None) -> str | None:
     """Extract the Bearer token from an ``Authorization`` header (D5).
 
@@ -1010,166 +909,6 @@ def _v2_presented_token(header: str | None) -> str | None:
     if scheme != "Bearer" or not separator or not token:
         return None
     return token
-
-
-async def _v2_close(ws: WebSocket, code: int, reason: str) -> None:
-    """Close the socket once; a second close (route racing the hub) is a no-op."""
-    with contextlib.suppress(RuntimeError):
-        await ws.close(code=code, reason=reason)
-
-
-async def _v2_receive_text_frame(ws: WebSocket) -> str | None:
-    """Receive one client frame, closing on the two transport-level rejects.
-
-    Both checks are pre-decode by design (D5): a binary frame has no place
-    in a JSON protocol, and an oversized one must be refused before it is
-    parsed, not after.
-
-    Returns:
-        The frame's text, or None when the socket was closed here.
-
-    Raises:
-        WebSocketDisconnect: The client went away.
-    """
-    message = await ws.receive()
-    if message["type"] == "websocket.disconnect":
-        raise WebSocketDisconnect(int(message.get("code", 1000)))
-    text = message.get("text")
-    if text is None:
-        await _v2_close(ws, 1002, "protocol_error")
-        return None
-    if len(text.encode("utf-8")) > MAX_CLIENT_FRAME_BYTES:
-        await _v2_close(ws, 1009, "frame_too_large")
-        return None
-    return str(text)
-
-
-async def _v2_read_hello(deps: InherentV2Deps, ws: WebSocket) -> ClientHello | None:
-    """Await, decode, and vet the first frame on an accepted v2 socket (D7).
-
-    Returns:
-        The decoded hello, or None when the socket was closed here — on
-        the deadline (``hello_timeout``), a frame that is not a valid
-        ``client.hello`` (``protocol_error``), or a client this daemon
-        cannot serve (``upgrade_required``).
-    """
-    try:
-        frame = await asyncio.wait_for(_v2_receive_text_frame(ws), deps.hello_timeout_s)
-    except TimeoutError:
-        await ws.close(code=1008, reason="hello_timeout")
-        return None
-    if frame is None:
-        return None
-    try:
-        hello = ClientHello.model_validate_json(frame)
-    except ValidationError:
-        await ws.close(code=1002, reason="protocol_error")
-        return None
-    if not hello_is_supported(hello):
-        await ws.close(code=1008, reason="upgrade_required")
-        return None
-    return hello
-
-
-def _v2_server_hello(
-    deps: InherentV2Deps,
-    hello: ClientHello,
-    connection_id: str,
-) -> ServerHello:
-    """Build the D7 answer to a supported hello.
-
-    ``resume_mode`` is unconditionally ``snapshot``: this card sends no
-    deltas, so there is nothing a client could resume from yet.
-    """
-    return ServerHello(
-        protocol_version=2,
-        message_type="server.hello",
-        message_id=hello.message_id,
-        delivery_class="protocol",
-        connection_id=connection_id,
-        log_epoch=deps.log_epoch,
-        boot_id=deps.boot_id,
-        sent_at_ms=int(time.time() * 1000),
-        payload=ServerHelloPayload(
-            selected_version=2,
-            view_schema_version=1,
-            resume_mode="snapshot",
-            server_high_water_cursor=deps.high_water_cursor(),
-            required_client_capabilities=list(REQUIRED_CLIENT_CAPABILITIES),
-            runtime_capabilities=deps.runtime_capabilities(),
-        ),
-    )
-
-
-async def _v2_drain_after_hello(
-    deps: InherentV2Deps,
-    ws: WebSocket,
-    on_frame: Callable[[ClientEnvelope], Awaitable[None]] | None,
-) -> None:
-    """Vet every further client frame and route it to the hub, if any (D5/D7/D11).
-
-    A client that goes wrong is closed on the same terms whether or not a
-    hub is attached: size, then budget, then shape.  With ``on_frame`` None
-    nothing is routed — the card 1 contract of hello, then listening.
-    """
-    limiter = _FrameRateLimiter(deps.max_frames_per_s)
-    while True:
-        frame = await _v2_receive_text_frame(ws)
-        if frame is None:
-            return
-        if not limiter.admit():
-            await _v2_close(ws, 1002, "protocol_error")
-            return
-        try:
-            envelope = ClientEnvelope.model_validate_json(frame)
-        except ValidationError:
-            await _v2_close(ws, 1002, "protocol_error")
-            return
-        if envelope.message_type == "client.hello":
-            await _v2_close(ws, 1002, "protocol_error")
-            return
-        if on_frame is not None:
-            await on_frame(envelope)
-
-
-async def _run_v2_session(deps: InherentV2Deps, ws: WebSocket) -> None:
-    """Serve one ``/inherent/ws/v2`` connection end to end (ADR-0014 D5-D7).
-
-    Split out of ``create_app`` so the factory stays under ruff's
-    complexity cap, exactly as ``_run_asr_submit_v2`` is.
-
-    The authorization check runs BEFORE ``accept``: closing a
-    still-connecting socket makes the ASGI server answer the upgrade with
-    HTTP 403, so an unauthenticated client never reaches a frame loop and
-    the daemon never allocates a ``connection_id`` for it (D5).
-    """
-    token = _v2_presented_token(ws.headers.get("authorization"))
-    if token is None or not _v2_token_ok(deps, ws.client, token):
-        await ws.close(code=1008)
-        return
-    await ws.accept()
-    connection_id = deps.mint_connection_id()
-    try:
-        hello = await _v2_read_hello(deps, ws)
-        if hello is None:
-            return
-        await ws.send_text(_v2_server_hello(deps, hello, connection_id).model_dump_json())
-        if deps.attach_client is None:
-            await _v2_drain_after_hello(deps, ws, None)
-            return
-        handle = await deps.attach_client(
-            V2Session(
-                connection_id=connection_id,
-                send_text=ws.send_text,
-                close=functools.partial(_v2_close, ws),
-            ),
-        )
-        try:
-            await _v2_drain_after_hello(deps, ws, handle.on_frame)
-        finally:
-            await handle.detach()
-    except WebSocketDisconnect:
-        return
 
 
 def _v2_token_ok(deps: InherentV2Deps, client: Address | None, token: str) -> bool:
@@ -1190,15 +929,12 @@ def _v2_input_auth_middleware(
 ) -> Callable[[Request, _CallNext], Awaitable[Response]]:
     """Gate the v2 input routes before anything reads their body (D5).
 
-    ``/inherent/ws/v2`` checks the token before ``accept()``, so an
-    unauthenticated client never reaches a frame.  A route-handler check
-    cannot match that: FastAPI parses and validates the body *before* the
-    handler runs, so an anonymous caller would get 422 for a malformed body
-    and 403 only for a well-formed one — which reveals the request schema —
-    and a multipart upload would be buffered in full before being refused.
-    Refusing in middleware makes the token the first gate on both routes, and
-    it touches nothing else: any other path is passed straight through, so v1
-    behaves exactly as it did.
+    A route-handler check would come too late: FastAPI parses and validates
+    the body *before* the handler runs, so an anonymous caller would get 422
+    for a malformed body and 403 only for a well-formed one — which reveals the
+    request schema — and a multipart upload would be buffered in full before
+    being refused. Refusing in middleware makes the token the first gate on both
+    routes, and it touches nothing else: any other path is passed straight through.
     """
 
     async def gate(request: Request, call_next: _CallNext) -> Response:
@@ -2981,21 +2717,11 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: C901, PLR0912, PLR0915 �
         v2_deps = deps.v2
         app.middleware("http")(_v2_input_auth_middleware(v2_deps))
 
-        @app.websocket("/inherent/ws/v2")
-        async def ws_v2_endpoint(ws: WebSocket) -> None:
-            """ADR-0014 D5-D7 realtime socket. See :func:`_run_v2_session`.
-
-            Deliberately NOT registered with the v1 broadcaster: v1 pushes
-            ``{"op", "payload"}`` envelopes, which a v2 client would reject.
-            """
-            await _run_v2_session(v2_deps, ws)
-
         @app.post("/inherent/submit/v2", status_code=200)
         async def submit_v2(req: SubmitV2Request) -> SubmitV2Response:
             """ADR-0014 D21 authenticated idempotent text input.
 
-            Registered beside the v2 socket and behind the same token, so a
-            v1-only deployment's route table is byte-identical to what it was.
+            Registered only when ``InherentDeps.v2`` is injected, behind the boot token.
             """
             return await _run_submit_v2(v2_deps, req)
 
@@ -3687,8 +3413,6 @@ __all__ = [
     "NightRoutes",
     "SettingsRequest",
     "SubmitRequest",
-    "V2ClientHandle",
-    "V2Session",
     "create_app",
     "dictation_stream",
     "manager_authorize",

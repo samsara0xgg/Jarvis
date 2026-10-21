@@ -71,7 +71,7 @@ class RuntimePaths:
             (spec §5.1 + ADR § Configurable paths). Owned by L2 at write
             time; L6 only places it.
         artifacts_root: Artifact store root at `${root}/artifacts/`.
-        inherent_v2_token: Bearer token for the Inherent realtime v2 socket
+        inherent_v2_token: Bearer token for the Inherent v2 input routes
             at `${root}/inherent-v2.token` (ADR-0014 D5). L6 owns the
             placement and, via `rotate_inherent_v2_token`, the file's
             permissions; the daemon rewrites it on every boot.

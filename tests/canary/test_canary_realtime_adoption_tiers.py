@@ -6,16 +6,13 @@ halves against ``config/jarvis.yaml`` so neither half drifts silently.
 
 Turning a tier-B switch on is a normal next step, not a violation - but it
 needs its own live run first, and flipping it here without one is exactly the
-mistake this canary exists to catch.  Tier C is different: each of those
-has a recorded reason it must stay off.
-
-    ``v2_sequencer``  ``RealtimeTransportV2.enabled`` is ``false`` in Swift and
-                      nothing in the card references it, so the server would
-                      build a sequencer and hub no client ever connects to.
+mistake this canary exists to catch.
 
 ``durable_expiry`` and ``barge_in`` (D8's spoken stages, which the
 2026-09-05 VoiceProcessingIO burn measured at 15 times their false-candidate
-target) were tier C until ADR 0047 retired them with their code.
+target) were tier C until ADR 0047 retired them with their code, and
+``v2_sequencer`` (no client ever connected to the sequencer and hub it built)
+until ADR 0327 did.
 
 The evidence for tier A is the live burns ADR 0006 records (4/4, 3/3 and
 10/10).
@@ -61,7 +58,6 @@ _TIER_B_AND_C_DISABLED = (
     "streaming_output.speak_from_segments",
     "single_audio_ingress.partial_asr.enabled",
     "single_audio_ingress.route_observer.enabled",
-    "inherent.v2_sequencer.enabled",
 )
 
 

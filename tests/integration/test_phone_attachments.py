@@ -687,14 +687,6 @@ def test_only_a_preset_that_says_it_reads_pictures_gets_them() -> None:
     assert shipped["attachments"] == {"retention_days": 30}
 
 
-def test_the_v2_hello_reports_pictures_from_the_wiring() -> None:
-    """``image_input`` follows the wiring instead of the retired 501 stub."""
-    caps = inherent_loop._v2_runtime_capabilities  # noqa: SLF001
-
-    assert caps(voice_input=False, response_interrupt=False, image_input=True).image_input is True
-    assert caps(voice_input=False, response_interrupt=False, image_input=False).image_input is False
-
-
 def test_the_stub_route_is_gone(tmp_path: Path) -> None:
     """``/inherent/image-submit`` is no route any more; the upload route replaced it."""
     d = attachments_daemon(tmp_path)

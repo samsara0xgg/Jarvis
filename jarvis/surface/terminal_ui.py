@@ -106,7 +106,7 @@ before the code was read).
 """
 
 NOT_SERVED: Final = frozenset(
-    {TERMINAL_PATH, "/inherent/ws/v2", "/inherent/submit/v2", "/inherent/asr-submit/v2"},
+    {TERMINAL_PATH, "/inherent/submit/v2", "/inherent/asr-submit/v2"},
 )
 """Never forwarded: ``/terminal/ws`` would let any local process register as this device, and
 the v2 routes are the daemon's own keyless ones, which the companion does not use."""

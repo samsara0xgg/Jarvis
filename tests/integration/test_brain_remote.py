@@ -4,7 +4,7 @@ Four acceptance checks, each against the real code: the `pair`, `unpair` and `de
 commands and the file they keep; the whole route table guarded the way the daemon guards it
 when the brain listens beyond loopback (no token, a wrong one, a revoked one, the local key
 and a wrong Host from a remote peer are refused, a paired device's token is accepted, a
-peer on loopback is checked as before); the v2 socket and its HTTP input route taking the
+peer on loopback is checked as before); the v2 HTTP input route taking the
 device token from a remote peer and the boot token from loopback only; `runtime.listen_*`
 open to a brain and to a Mac running alone (ADR 0207); and the one-shot CLI as a remote client
 of a real server, exiting non-zero with a reason when the turn fails.
@@ -25,15 +25,12 @@ from typing import TYPE_CHECKING, Any, Self
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 from jarvis.cli import main
 from jarvis.runtime import RuntimeBootstrapError
-from jarvis.shared.realtime import new_connection_id
 from jarvis.state.device_tokens import device_token_matches
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import (
     InherentDeps,
     InherentV2Deps,
@@ -47,7 +44,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 REMOTE = "100.87.250.92"
-V2 = "/inherent/ws/v2"
 
 
 def _run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
@@ -300,18 +296,7 @@ def test_without_listen_settings_nothing_about_the_guard_changes(tmp_path: Path)
         )
 
 
-# --- the v2 socket and input route -------------------------------------------
-
-_CAPS = RuntimeCapabilities(
-    text_input=True,
-    image_input=False,
-    voice_input=False,
-    response_interrupt=False,
-    action_cancel=False,
-    confirmation_actions=False,
-    natural_barge_in=False,
-    aec_profile="headphones_only",
-)
+# --- the v2 input route --------------------------------------------------------
 
 
 def _v2_client(tmp_path: Path, peer: str) -> tuple[TestClient, str]:
@@ -322,11 +307,6 @@ def _v2_client(tmp_path: Path, peer: str) -> tuple[TestClient, str]:
         v2=InherentV2Deps(
             token_matches=lambda presented: presented == boot_token,
             device_token_matches=functools.partial(device_token_matches, tmp_path),
-            mint_connection_id=new_connection_id,
-            boot_id="Btest00000000000000000000000001",
-            log_epoch="E1",
-            high_water_cursor=lambda: 0,
-            runtime_capabilities=lambda: _CAPS,
         ),
     )
     app = create_app(deps)
@@ -340,49 +320,30 @@ def _v2_client(tmp_path: Path, peer: str) -> tuple[TestClient, str]:
     return TestClient(app, base_url="http://jarvis:8006", client=(peer, 50000)), boot_token
 
 
-def _v2_opens(client: TestClient, token: str | None) -> bool:
-    headers = {} if token is None else {"Authorization": f"Bearer {token}"}
-    try:
-        with client.websocket_connect(f"ws://jarvis:8006{V2}", headers=headers):
-            return True
-    except WebSocketDisconnect as exc:
-        if exc.code != 1008:
-            raise
-        return False
-
-
-def test_the_v2_routes_take_the_device_token_from_a_remote_peer_only(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+def test_the_v2_route_takes_the_device_token_from_a_remote_peer_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A remote peer cannot read the boot token, so it presents its device token instead."""
     token = _pair(tmp_path, "macbook", capsys)
+    body = {"request_id": "R1", "client_instance_id": "I1", "text": "hi",
+            "client_created_at_ms": 1}
+    submit = "/inherent/submit/v2"
+
+    def status(client: TestClient, presented: str | None) -> int:
+        headers = {} if presented is None else {"Authorization": f"Bearer {presented}"}
+        return client.post(submit, json=body, headers=headers).status_code
+
+    # Past the guard the route answers for itself: this rig wires no input inbox.
+    past_the_guard = 501
     remote, boot = _v2_client(tmp_path, REMOTE)
-    assert _v2_opens(remote, token)
-    assert not _v2_opens(remote, boot)
-    assert not _v2_opens(remote, "wrong")
-    assert not _v2_opens(remote, None)
+    assert status(remote, token) == past_the_guard
+    assert status(remote, boot) == 401
+    assert status(remote, "wrong") == 401
+    assert status(remote, None) == 401
 
     loopback, boot = _v2_client(tmp_path, "127.0.0.1")
-    assert _v2_opens(loopback, boot)
-    assert not _v2_opens(loopback, token)
-
-    body = {"request_id": "R1", "client_instance_id": "I1", "text": "hi", "client_created_at_ms": 1}
-    submit = "/inherent/submit/v2"
-    assert remote.post(submit, json=body).status_code == 401
-    assert (
-        remote.post(submit, json=body, headers={"Authorization": f"Bearer {boot}"}).status_code
-        == 401
-    )
-    # Past the guard the route answers for itself: this rig wires no input inbox.
-    assert (
-        remote.post(submit, json=body, headers={"Authorization": f"Bearer {token}"}).status_code
-        == 501
-    )
-    assert (
-        loopback.post(submit, json=body, headers={"Authorization": f"Bearer {token}"}).status_code
-        == 403
-    )
+    assert status(loopback, boot) == past_the_guard
+    assert status(loopback, token) == 403
 
 
 # --- runtime.listen_* ---------------------------------------------------------

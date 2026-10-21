@@ -1650,31 +1650,6 @@ realtime:
     barge_in:
       detection_mode: ptt
       accepted_natural_profiles: []
-  # ADR-0014 D8/D9 (sequencer-and-snapshot card).  v2_sequencer runs the one
-  # ordered InherentViewSequencer and the v2 client hub: committed Event Log
-  # rows become cursor-carrying view.delta frames, and every new
-  # /inherent/ws/v2 client receives a hashed, paged snapshot it must ACK
-  # before the catch-up hands it to the live stream.  It additionally
-  # requires realtime.enabled; an invalid combination downgrades once, with
-  # one warning, to the v1-only wire.  Off means the sequencer and hub are
-  # never constructed and the v1 wire is byte-identical.
-  inherent:
-    v2_sequencer:
-      enabled: false
-      # ADR-0014 D11 (per-client-flow-control card).  Per-client bounds the
-      # hub enforces once the flag is on; an absent key keeps the D11
-      # default shown here.  ack_batch_messages / ack_batch_ms are the
-      # Swift client's ACK cadence (rule 8) recorded beside the ack_stall_s
-      # they make safe; the daemon never negotiates them.
-      flow_control:
-        control_frames: 32
-        durable_frames: 256
-        durable_bytes: 1048576
-        ephemeral_keys: 32
-        ack_batch_messages: 25
-        ack_batch_ms: 100
-        ack_stall_s: 5
-        control_fairness: 8
 
 # memory.db — the append-only store of everything the user said and every answer
 # given (jarvis/state/memory_db.py). Separate file from the event log.

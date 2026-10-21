@@ -9,21 +9,15 @@ fake; ASR quality is not what is under test here.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import hashlib
 import io
 import json
-import socket as socket_module
 import wave
 from typing import TYPE_CHECKING, Any
 
-import httpx
 import pytest
-import uvicorn
 from fastapi.testclient import TestClient
-from websockets.exceptions import InvalidStatus
-from websockets.sync.client import connect as ws_connect
 
 from jarvis.deployment import inherent_v2_token_matches
 from jarvis.runtime.inherent_loop import (
@@ -31,11 +25,9 @@ from jarvis.runtime.inherent_loop import (
     _submit_asr_v2,
     _submit_text_v2,
 )
-from jarvis.shared.realtime import new_connection_id
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_protocol import RuntimeCapabilities
 from jarvis.surface.inherent_server import InherentDeps, InherentV2Deps, create_app
 from jarvis.surface.voice_pipeline import VoiceInputBusyError, VoicePipelineEmptyError
 
@@ -47,16 +39,6 @@ if TYPE_CHECKING:
     from jarvis.shared import Event
 
 _TOKEN = "t" * 64
-_CAPABILITIES = RuntimeCapabilities(
-    text_input=True,
-    voice_input=True,
-    image_input=False,
-    response_interrupt=False,
-    action_cancel=False,
-    confirmation_actions=False,
-    natural_barge_in=False,
-    aec_profile="headphones_only",
-)
 
 
 def _wav(*, duration_s: float = 0.5, sample_rate: int = 16000) -> bytes:
@@ -88,11 +70,6 @@ def _app(
         broadcaster=InherentBroadcaster(),
         v2=InherentV2Deps(
             token_matches=functools.partial(inherent_v2_token_matches, _TOKEN),
-            mint_connection_id=new_connection_id,
-            boot_id="B1",
-            log_epoch="E1",
-            high_water_cursor=lambda: 0,
-            runtime_capabilities=lambda: _CAPABILITIES,
             submit_text=functools.partial(_submit_text_v2, log_path),
             submit_asr=(
                 None
@@ -207,7 +184,7 @@ def test_v2_routes_refuse_an_unauthenticated_request(
     tmp_path: Path,
     headers: dict[str, str],
 ) -> None:
-    """Both routes answer 403, the status ``/inherent/ws/v2`` gives a bad token."""
+    """Both routes answer 403 on a missing or wrong token."""
     client = _app(tmp_path, voice_pipeline_callable=_transcribing_pipeline("你好"))
     wav = _wav()
 
@@ -258,73 +235,6 @@ def test_an_unauthenticated_oversize_upload_is_403_not_413(tmp_path: Path) -> No
         headers={},
     )
     assert resp.status_code == 403
-
-
-def test_a_bad_token_is_http_403_on_the_route_and_on_the_socket(tmp_path: Path) -> None:
-    """The parity claim, on a real ASGI server rather than the test transport.
-
-    ``TestClient`` surfaces the socket's pre-accept close as a
-    ``WebSocketDisconnect``; only a real server turns it into the HTTP 403 the
-    card names.  So this one case runs uvicorn on a free port and asserts the
-    same status from both halves of the v2 surface.
-    """
-
-    async def _body() -> None:
-        log_path = tmp_path / "mac_events.db"
-        open_event_log(log_path).close()
-        deps = InherentDeps(
-            submit_callable=_noop_submit,
-            broadcaster=InherentBroadcaster(),
-            v2=InherentV2Deps(
-                token_matches=functools.partial(inherent_v2_token_matches, _TOKEN),
-                mint_connection_id=new_connection_id,
-                boot_id="B1",
-                log_epoch="E1",
-                high_water_cursor=lambda: 0,
-                runtime_capabilities=lambda: _CAPABILITIES,
-                submit_text=functools.partial(_submit_text_v2, log_path),
-            ),
-        )
-        with socket_module.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = int(probe.getsockname()[1])
-        server = uvicorn.Server(
-            uvicorn.Config(
-                create_app(deps),
-                host="127.0.0.1",
-                port=port,
-                log_level="warning",
-                lifespan="off",
-            ),
-        )
-        serving = asyncio.create_task(server.serve())
-        try:
-            for _ in range(500):
-                if server.started:
-                    break
-                await asyncio.sleep(0.01)
-            bad = {"Authorization": "Bearer wrong"}
-            async with httpx.AsyncClient() as http:
-                posted = await http.post(
-                    f"http://127.0.0.1:{port}/inherent/submit/v2",
-                    json=_text_body("r1", "hello"),
-                    headers=bad,
-                )
-            assert posted.status_code == 403
-
-            def _upgrade() -> None:
-                ws_connect(
-                    f"ws://127.0.0.1:{port}/inherent/ws/v2", additional_headers=bad,
-                ).close()
-
-            with pytest.raises(InvalidStatus) as caught:
-                await asyncio.to_thread(_upgrade)
-            assert caught.value.response.status_code == 403
-        finally:
-            server.should_exit = True
-            await serving
-
-    asyncio.run(_body())
 
 
 def test_v2_routes_are_absent_without_v2_deps(tmp_path: Path) -> None:
