@@ -111,16 +111,27 @@ def _listed(route: str, board: str, leave: str, departs: str, arrive: str) -> di
     }
 
 
-def _static(path: Path) -> None:
-    """The export: route 7 with two trips a minute apart, route 9 with one, along the line."""
+def _static(path: Path, *, both_ways: bool = False) -> None:
+    """The export: route 7 with two trips a minute apart, route 9 with one, along the line.
+
+    ``both_ways`` adds two trips of route 7 that run the line back, toward the Hill, a quarter of
+    a minute apart.
+    """
     stops = tuple(gtfs.StopSpec(s, n, la, lo) for s, n, la, lo in STOPS)
 
     def trip(trip_id: str, route: str, minute: int, headsign: str) -> gtfs.TripSpec:
         calls = tuple((s, f"17:{minute + i:02d}:00") for i, (s, *_rest) in enumerate(STOPS))
         return gtfs.TripSpec(trip_id, route, calls, headsign=headsign)
 
+    def back(trip_id: str, seconds: int) -> gtfs.TripSpec:
+        calls = tuple(
+            (s, f"17:{3 + i:02d}:{seconds:02d}") for i, (s, *_rest) in enumerate(reversed(STOPS))
+        )
+        return gtfs.TripSpec(trip_id, "7", calls, headsign="Hill", direction=1)
+
     gtfs.write(path, gtfs.Export(stops, (
         trip("T7a", "7", 5, "Harbour"), trip("T7b", "7", 6, "Harbour"), trip("T9a", "9", 5, "Hill"),
+        *((back("T7r", 0), back("T7s", 15)) if both_ways else ()),
     )))
 
 
@@ -135,10 +146,16 @@ class Bus:
     dx: float = 0.0
     delay_s: int = 0
     gone: bool = False
+    back: bool = False
+    """It runs the line from its last stop to its first (a trip toward the Hill)."""
+
+    def own(self, now_ms: int) -> float:
+        """Stops along its own trip, clamped to it."""
+        return min(7.0, max(0.0, (now_ms - self.leaves_ms) / 60_000))
 
     def position(self, now_ms: int) -> float:
-        """Stops along the line, clamped to the line."""
-        return min(7.0, max(0.0, (now_ms - self.leaves_ms) / 60_000))
+        """Stops along the line from the first stop, clamped to the line."""
+        return 7.0 - self.own(now_ms) if self.back else self.own(now_ms)
 
     def place(self, now_ms: int) -> tuple[float, float]:
         """Its latitude and longitude."""
@@ -181,6 +198,8 @@ class World:
     phone_fixes: list[tuple[int, float, float]] = field(default_factory=list)
     unpredicted: set[str] = field(default_factory=set)
     """Stop ids the TripUpdates feed leaves out, as BC Transit's often does."""
+    both_ways: bool = False
+    """Whether route 7 also runs the line back (see ``_static``)."""
 
     def __post_init__(self) -> None:
         """Build the daemon's pieces over the scripted feeds."""
@@ -188,7 +207,7 @@ class World:
         self.conn = open_event_log(self.paths.event_log)
         cache = self.root / "cache"
         cache.mkdir()
-        _static(cache / "bctransit-gtfs.zip")
+        _static(cache / "bctransit-gtfs.zip", both_ways=self.both_ways)
         self.live = BusLive(
             cache, feed=self._trip_updates, download=lambda _p: None, vehicles=self._vehicles,
         )
@@ -217,7 +236,7 @@ class World:
             one.trip.trip_id, one.trip.route_id = bus.trip_id, f"{bus.route}-VIC"
             one.trip.start_date = SERVICE_DATE
             one.vehicle.id = bus.vehicle_id
-            place = bus.position(self.clock_ms)
+            place = bus.own(self.clock_ms)
             one.position.latitude, one.position.longitude = bus.place(self.clock_ms)
             one.timestamp = self.clock_ms // 1000
             if place == int(place):
@@ -226,7 +245,8 @@ class World:
             else:
                 one.current_status = gtfs_realtime_pb2.VehiclePosition.IN_TRANSIT_TO
                 one.current_stop_sequence = int(place) + 2
-            one.stop_id = STOPS[min(7, one.current_stop_sequence - 1)][0]
+            ordered = STOPS[::-1] if bus.back else STOPS
+            one.stop_id = ordered[min(7, one.current_stop_sequence - 1)][0]
         return message.SerializeToString()
 
     def _trip_updates(self) -> bytes:
@@ -235,7 +255,7 @@ class World:
         for n, bus in enumerate(b for b in self.buses if not b.gone):
             update = message.entity.add(id=str(n)).trip_update
             update.trip.trip_id = bus.trip_id
-            for i, (stop, *_rest) in enumerate(STOPS):
+            for i, (stop, *_rest) in enumerate(STOPS[::-1] if bus.back else STOPS):
                 if stop in self.unpredicted:
                     continue
                 one = update.stop_time_update.add(stop_id=stop, stop_sequence=i + 1)
@@ -341,6 +361,17 @@ def world(tmp_path: Path) -> Iterator[World]:
     before = lang.language()
     lang.set_language("en")
     made = World(tmp_path)
+    yield made
+    made.conn.close()
+    lang.set_language(before)
+
+
+@pytest.fixture
+def both_ways(tmp_path: Path) -> Iterator[World]:
+    """A world in English where route 7 also runs the line back."""
+    before = lang.language()
+    lang.set_language("en")
+    made = World(tmp_path, both_ways=True)
     yield made
     made.conn.close()
     lang.set_language(before)
@@ -615,6 +646,52 @@ def test_the_unknown_stop_is_asked_once_and_set_by_a_tool(world: World) -> None:
     assert len(world.events("ride.alight_set")) == 1
     nothing = world.tool({"ride": "get_off", "stop": "Zebra"})
     assert nothing.get("code") == "no_such_stop"
+
+
+@pytest.mark.parametrize(
+    ("others", "phone_on", "moves"),
+    [
+        pytest.param(
+            [Bus("v2", "T7r", "7", at("17:03"), back=True)], "v2", True,
+            id="one-other-trip-near-him-serves-the-stop-ahead-and-the-ride-moves-to-it",
+        ),
+        pytest.param(
+            [Bus("v2", "T7r", "7", at("17:03"), dx=0.01, back=True)], "v1", False,
+            id="the-other-trip-is-not-near-him-so-the-stop-is-passed",
+        ),
+        pytest.param(
+            [Bus("v2", "T7r", "7", at("17:03"), back=True),
+             Bus("v3", "T7s", "7", at("17:03", 15), back=True)], "v2", False,
+            id="two-other-trips-near-him-serve-it-so-the-stop-is-passed",
+        ),
+    ],
+)
+def test_a_stop_the_followed_bus_passed_moves_the_ride_to_the_one_other_bus_serving_it(
+    both_ways: World, others: list[Bus], phone_on: str, *, moves: bool,
+) -> None:
+    """ADR 0344: Birch Rd is behind the Harbour bus the ride followed, ahead of a Hill bus.
+
+    The ride moves to that bus when it is the only one near his fix that serves the stop ahead;
+    otherwise the answer says the followed bus has passed the stop and which way it goes.
+    """
+    both_ways.clock_ms = at("17:07", 30)
+    buses = [Bus("v1", "T7a", "7", at("17:05")), *others]
+    both_ways.buses = buses
+    rider = next(b for b in buses if b.vehicle_id == phone_on)
+    both_ways.fix(*both_ways.with_bus(rider)(both_ways.clock_ms))
+    assert both_ways.tool({"ride": "start", "route": "7", "vehicle_id": "v1"})["started"]
+    out = both_ways.tool({"ride": "get_off", "stop": "Birch Rd"})
+    if moves:
+        assert (out["set"], out["moved"], out["headsign"], out["alight_stop"]) == (
+            True, "Harbour", "Hill", "Birch Rd",
+        )
+        assert [e["trip_id"] for e in both_ways.events("ride.moved")] == ["T7r"]
+        assert both_ways.events("ride.alight_set")[-1]["alight_stop"] == "Birch Rd"
+    else:
+        assert out["code"] == "stop_passed"
+        assert "the 7 toward Harbour has already passed Birch Rd" in out["error"]
+        assert both_ways.events("ride.moved") == []
+        assert both_ways.events("ride.alight_set") == []
 
 
 def test_bus_with_no_arguments_is_how_the_ride_is_going_and_without_one_the_times(
