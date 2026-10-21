@@ -48,6 +48,6 @@ answer a request for its location.
 
 - An iPad cannot stand in for a lost or flat phone: while the phone is off, nothing reports where
   he is.
-- What he does on the iPad itself (its screen time, the apps he uses there) is not sensed today.
-  He counts phone and iPad screen use as very important; how to read it is left to its own
-  decision, which this gate does not block.
+- What he does on the iPad itself (its screen time, the apps he uses there) is not sensed by this
+  app: the Mac reads the iPad's app use from its synced Biome streams (ADR 0304), which this gate
+  does not touch.
