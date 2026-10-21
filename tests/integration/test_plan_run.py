@@ -5,7 +5,8 @@ and stub say and push hooks (no key, no network, no model). The examples are inv
 
 - ``woke`` opens the day once (her record and ``plan.opened``); a failed draft opens it too;
 - ``left_late`` is recorded, spoken and pushed time-sensitively; ``outing_soon`` is asked with
-  the weather and the leg read again;
+  the leg read again and the weather of the outing's own hours at its place (kept place, else
+  where the leg ends, else home's and said so; ADR 0355), as the opening gives each outing its own;
 - a non-outing tell at dnd is only recorded, at quiet it is a silent push, past the hour's cap it
   is only recorded; a private item is named by its time on speakers and in a push;
 - ``adjust`` revises the plan by her; an adjust that does not apply is silence; a ``progress``
@@ -32,7 +33,7 @@ from jarvis.execution.plan_tool import build_plan_tool
 from jarvis.execution.tools import ToolContext, ToolError
 from jarvis.runtime import day_plan as runtime
 from jarvis.runtime.plan_run import Hooks, PlanWatch, make_route_legs
-from jarvis.state import memory_db, plan, things
+from jarvis.state import memory_db, places, plan, things
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import append_record, open_memory_db
@@ -93,14 +94,30 @@ class Rig:
             quiet=lambda: self.quiet, may_speak=lambda: True, at_mac=lambda: self.at_mac,
             say=self.said.append, push=lambda *a, **k: self.pushed.append((a, k)),
         )
+        self.outing_asked: list[tuple[tuple[float, float] | None, datetime, datetime]] = []
+        self.outing_down = False
         self.sources = runtime.DayPlanSources(
             self.log, self.memory, ZONE, DaySources(ZONE, None, self.memory),
-            weather=lambda _day: {"summary": "rain"},
+            weather=lambda _day: {"summary": "rain"}, outing_weather=self._outing_weather,
         )
         self.watch = PlanWatch(
             settings=settings, sources=self.sources, ask_decide=self._decide, ask_open=self._open,
             hooks=self.hooks,
         )
+
+    def _outing_weather(
+        self, point: tuple[float, float] | None, start: datetime, end: datetime,
+    ) -> dict[str, Any] | None:
+        """What was asked of the outing's weather, and a stub answer (or a failure)."""
+        self.outing_asked.append((point, start, end))
+        if self.outing_down:
+            msg = "WeatherKit is down"
+            raise ToolError(msg)
+        return {"from": f"{start:%H:%M}", "to": f"{end:%H:%M}", "max_chance_pct": 70}
+
+    def keep(self, name: str, lat: float, lng: float) -> None:
+        """He keeps the place ``name`` at a point."""
+        places.save(self.memory, name=name, lat=lat, lng=lng, origin="user")
 
     def _decide(self, _system: str, user: str) -> str:
         self.asked.append(user)
@@ -222,6 +239,41 @@ def test_the_opening_lists_the_things_he_has_not_confirmed(rig: Rig) -> None:
     ]
 
 
+def test_the_opening_gets_today_at_home_and_each_outing_its_own_weather(rig: Rig) -> None:
+    """Each timed item away from home, soonest first, with the hours of its own stretch."""
+    rig.keep("clinic", 48.46, -123.31)
+    rig.drafted(
+        _item("p1", title="Write the report"),  # no place: not an outing
+        _item("p2", title="Lunch", place="Mayfair Mall", start="12:00", minutes=45),
+        _item("p3", title="Standup", place="Home", start="08:00", minutes=15),  # at home
+        DENTIST,  # 14:00-15:00 at the kept clinic, leaving 13:20
+        _item("p4", title="Errands", place="Downtown", start=None),  # no time: no stretch to give
+    )
+    rig.watch.tick(_at("07:05"))
+    body = json.loads(rig.opened[0])
+    assert body["weather"] == {"summary": "rain"}  # what the source gave for the day, as it is
+    assert [(o["item_id"], o["place"]) for o in body["outings"]] == [
+        ("p2", "Mayfair Mall"), ("p9", "Clinic"),
+    ]
+    assert body["outings"][0]["weather"] == {
+        "at": "home", "from": "12 PM", "to": "12:45 PM", "max_chance_pct": 70,
+        "why_home": "the position of Mayfair Mall is not known",
+    }
+    assert body["outings"][1]["weather"]["at"] == "Clinic"
+    assert rig.outing_asked == [
+        (None, _at("12:00"), _at("12:45")), ((48.46, -123.31), _at("13:20"), _at("15:00")),
+    ]
+
+
+def test_an_opening_with_no_outing_weather_still_comes_without_it(tmp_path: Path) -> None:
+    """A reader that fails leaves the outing out; the day is still opened."""
+    rig = Rig(tmp_path)
+    rig.outing_down = True
+    rig.drafted(DENTIST)
+    assert rig.watch.tick(_at("07:05")) == ["woke", "open"]
+    assert json.loads(rig.opened[0])["outings"] == []
+
+
 def test_a_day_with_no_plan_and_no_failure_is_left_alone(rig: Rig) -> None:
     """Nothing to compare with: no notice, no call."""
     assert rig.watch.tick(_at("07:05")) == []
@@ -244,9 +296,8 @@ def test_left_late_is_recorded_spoken_and_pushed_time_sensitively(rig: Rig) -> N
     assert (told.key, told.act, told.say) == ("left_late:p9", "tell", "Heads up.")
 
 
-def test_outing_soon_is_asked_with_the_weather_and_the_leg_read_again(tmp_path: Path) -> None:
-    """Before she is asked, the forecast and the leg are fetched and ride in the notice."""
-    rig = Rig(tmp_path)
+def _with_leg(rig: Rig, end_at: dict[str, float] | None) -> list[tuple[Any, ...]]:
+    """Give the watcher a leg planner that answers as the real one does; what it was asked."""
     asked: list[tuple[Any, ...]] = []
 
     @contextmanager
@@ -255,24 +306,76 @@ def test_outing_soon_is_asked_with_the_weather_and_the_leg_read_again(tmp_path: 
             asked.append((action_id, args, kwargs))
             option = {"leave_at": "13:25", "arrive_at": "13:58",
                       "legs": [{"route": "28", "board_stop": "Main St"}]}
-            return {"chosen": option, "backup": None}
+            return {"chosen": option, "backup": None, **({"end_at": end_at} if end_at else {})}
 
         yield plan_leg
 
     rig.watch._open_leg = open_leg  # noqa: SLF001
+    return asked
+
+
+def _outing_soon(rig: Rig) -> dict[str, Any]:
+    """The facts she is asked with at 13:00, when the dentist's leg leaves at 13:20."""
     rig.drafted(DENTIST)
-    rig.watch.tick(_at("07:05"))
+    rig.watch.tick(_at("07:05"))  # the opening reads the outing's weather too: not what is asked
+    rig.outing_asked.clear()
     rig.answers = ['{"act": "silent", "why": "fine"}']
     assert "outing_soon:p9" in rig.watch.tick(_at("13:00"))
-    facts = json.loads(rig.asked[0])["notice"]["facts"]
-    assert facts["weather"] == {"summary": "rain"}
+    facts: dict[str, Any] = json.loads(rig.asked[0])["notice"]["facts"]
+    return facts
+
+
+def test_outing_soon_is_asked_with_the_leg_read_again_and_the_weather_where_the_leg_ends(
+    tmp_path: Path,
+) -> None:
+    """The place is not a kept one: its weather is for the end of the leg read just now."""
+    rig = Rig(tmp_path)
+    asked = _with_leg(rig, {"lat": 48.43, "lng": -123.36})
+    facts = _outing_soon(rig)
+    assert facts["weather"] == {  # the hours from the leave time to the end, said as she says it
+        "at": "Clinic", "from": "1:20 PM", "to": "3 PM", "max_chance_pct": 70,
+    }
+    assert rig.outing_asked == [((48.43, -123.36), _at("13:20"), _at("15:00"))]
     assert facts["leg_now"]["leave_at"] == "1:25 PM"  # said as she says it
     assert facts["leg_now"]["line"] == "28"
+    assert "notes" not in facts
     (action_id, args, kwargs), = asked
     assert (action_id, args) == (f"plan-{DAY}-outing_soon:p9", ("Home", "Clinic"))
     assert kwargs == {"arrive_by": f"{DAY.isoformat()} 14:00"}
     assert rig.told == []  # silent: nothing said, nothing pushed
     assert rig.pushed == []
+
+
+def test_outing_soon_at_a_kept_place_reads_the_hours_at_its_position(tmp_path: Path) -> None:
+    """A kept place has a position of its own: it is used, whatever the leg's end says."""
+    rig = Rig(tmp_path)
+    rig.keep("clinic", 48.46, -123.31)
+    _with_leg(rig, {"lat": 1.0, "lng": 2.0})
+    facts = _outing_soon(rig)
+    assert [point for point, _, _ in rig.outing_asked] == [(48.46, -123.31)]
+    assert facts["weather"]["at"] == "Clinic"
+
+
+def test_outing_soon_with_no_position_known_is_home_s_hours_and_says_so(tmp_path: Path) -> None:
+    """Not kept, and the leg gave no end: home's hours, with a note that they are home's."""
+    rig = Rig(tmp_path)
+    _with_leg(rig, None)
+    facts = _outing_soon(rig)
+    assert [point for point, _, _ in rig.outing_asked] == [None]
+    assert facts["weather"]["at"] == "home"
+    assert facts["weather"]["why_home"] == "the position of Clinic is not known"
+    assert facts["weather"]["max_chance_pct"] == 70
+
+
+def test_outing_soon_goes_on_without_weather_the_reader_cannot_give(tmp_path: Path) -> None:
+    """A reader that fails: she is asked with the leg, and the facts say it is unreadable."""
+    rig = Rig(tmp_path)
+    rig.outing_down = True
+    _with_leg(rig, {"lat": 48.43, "lng": -123.36})
+    facts = _outing_soon(rig)
+    assert facts["weather"] is None
+    assert facts["notes"] == ["weather unreadable"]
+    assert facts["leg_now"]["line"] == "28"
 
 
 @pytest.mark.parametrize(

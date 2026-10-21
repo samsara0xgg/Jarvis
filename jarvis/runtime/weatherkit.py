@@ -34,7 +34,16 @@ from zoneinfo import ZoneInfo
 from jarvis.execution.speakable import day_name
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
-from jarvis.runtime.weather_day import LIKELY, NIGHT_TO, first_line, horizon, hours_of, split
+from jarvis.runtime.weather_day import (
+    LIKELY,
+    NIGHT_TO,
+    first_line,
+    horizon,
+    hours_between,
+    hours_of,
+    split,
+    stretch,
+)
 from jarvis.surface.apns import ProviderToken, load_signing_key
 
 if TYPE_CHECKING:
@@ -71,6 +80,8 @@ _HOME_STEP_H: Final = 3
 _HOME_HOURS: Final = 4
 _FULL_ROWS: Final = 6
 """The next hours are given in full this far, then every second one (ADR 0355)."""
+OUTING_ROWS: Final = 8
+"""An outing's hours are given row by row up to this many; a longer one by its figures alone."""
 _COMPASS: Final = (
     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW",
     "NNW",
@@ -638,6 +649,36 @@ def report(  # noqa: PLR0913 - what the tool answers with: the answer and what w
     warned = [str(one.get("headline") or "unnamed warning") for one in in_force]
     line = first_line(label, asked_now, parts, gone, warned, int(out.get("more_alerts", 0)))
     return {"summary": line, **out}
+
+
+def outing(
+    body: Mapping[str, Any], zone_name: str, *, start: datetime, end: datetime,
+) -> dict[str, Any] | None:
+    """The weather of ``start`` to ``end`` at the place ``body`` is for, as a plan reads it.
+
+    The figures of :func:`~jarvis.runtime.weather_day.stretch` and, when they are few, the hours
+    themselves as rows (ADR 0355). Clocks are ``HH:MM`` in the zone of ``start``: the plan's own.
+    None when the answer holds none of those hours.
+    """
+    hours = hours_of(body, ZoneInfo(zone_name))
+    found = stretch(hours, start, end)
+    if found is None:
+        return None
+    rows = hours_between(hours, start, end)
+    if len(rows) > OUTING_ROWS:
+        return found
+    return found | {
+        "hours": [
+            {
+                "at": f"{at.astimezone(start.tzinfo):%H:%M}",
+                "temp_c": _num(row.get("temperature")),
+                "condition": words(row.get("conditionCode", "")),
+                "rain_chance_pct": _pct(row.get("precipitationChance")),
+                "precip_mm": _num(row.get("precipitationAmount")),
+            }
+            for at, row in rows
+        ],
+    }
 
 
 def said_at(moment: float, zone_name: str, now: float) -> str:

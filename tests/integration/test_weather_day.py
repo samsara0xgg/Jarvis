@@ -21,7 +21,10 @@ from jarvis.runtime.weather_day import (
     fit,
     horizon,
     hours_between,
+    padded,
     split,
+    stretch,
+    warning_sentence,
 )
 from jarvis.runtime.weatherkit import words
 
@@ -322,3 +325,51 @@ def test_the_hours_go_before_the_airs_days_and_those_before_the_days() -> None:
     answer = fit(_answer(0, 6), 100)
     assert len(answer["days"]) == 1
     assert answer["left_out"] == {"days": 5}
+
+
+def test_a_stretch_of_the_day_has_its_range_its_chance_and_where_rain_is_likely() -> None:
+    """15:20 to 17:30 over the rain from 14:00: three hours overlap, the rain is cut to it."""
+    out = stretch(_rows(afternoon_rain), _at(15, 20), _at(17, 30))
+    assert out == {
+        "from": "15:20", "to": "17:30", "max_chance_pct": 70, "rain_mm": 2.4,
+        "low_c": 10.5, "high_c": 11.5, "likely_from": "15:20", "likely_to": "17:30",
+    }
+
+
+def test_a_dry_stretch_says_no_rain_expected_and_one_without_hours_has_nothing() -> None:
+    """A morning after the drizzle: dry. Hours the rows do not reach: None."""
+    out = stretch(_rows(drizzle_before_dawn), _at(9, 0), _at(11, 0))
+    assert out is not None
+    assert (out["max_chance_pct"], out["rain_mm"], out["note"]) == (0, 0.0, "no rain expected")
+    assert "likely_from" not in out
+    assert stretch(_rows(drizzle_before_dawn), _at(9, 0, day=30), _at(11, 0, day=30)) is None
+
+
+def test_a_stretch_is_said_in_the_clock_of_its_start_wherever_the_rows_are() -> None:
+    """Rows kept in Tokyo's clock, a stretch asked in Vancouver's: its times are Vancouver's."""
+    tokyo = ZoneInfo("Asia/Tokyo")
+    rows = [(at.astimezone(tokyo), row) for at, row in _rows(afternoon_rain)]
+    out = stretch(rows, _at(15, 0), _at(17, 0))
+    assert out is not None
+    assert (out["from"], out["to"], out["likely_from"], out["likely_to"]) == (
+        "15:00", "17:00", "15:00", "17:00",
+    )
+
+
+def test_a_clock_alone_is_padded_and_a_clock_in_a_sentence_is_left() -> None:
+    """The plan says its clocks as HH:MM; only a string that is a clock is one."""
+    assert padded({
+        "a": "7:00", "b": ["9:30", "12:15", "24:00"], "c": "about 1 mm fell before 7:00", "d": 7,
+        "e": {"f": "6:05"},
+    }) == {
+        "a": "07:00", "b": ["09:30", "12:15", "24:00"], "c": "about 1 mm fell before 7:00", "d": 7,
+        "e": {"f": "06:05"},
+    }
+
+
+def test_the_warnings_the_line_names_are_counted_with_those_it_does_not() -> None:
+    """Three headlines of five in force: five, three named, two more."""
+    assert warning_sentence([]) is None
+    assert warning_sentence(["Rainfall Warning"]) == "official warning in force: Rainfall Warning"
+    assert warning_sentence(["A", "B"]) == "2 official warnings in force: A; B"
+    assert warning_sentence(["A", "B", "C"], 2) == "5 official warnings in force: A; B; C; 2 more"

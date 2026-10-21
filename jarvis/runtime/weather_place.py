@@ -216,10 +216,18 @@ def locate(
         return chosen, others
     if (match := known.get((point[0], point[1]))) is not None:
         return match._replace(label=called), []
+    return spot_at(point, called, home), []
+
+
+def spot_at(point: tuple[float, float], called: str, home: Spot) -> Spot:
+    """The spot of a bare point: the home's zone and country within :data:`_NEAR_HOME_KM` of it.
+
+    Farther away the zone comes from tzfpy's offline map and the country from the zone.
+    """
     if km(point, (home.latitude, home.longitude)) <= _NEAR_HOME_KM:
-        return Spot(*point, called, home.zone, home.country), []
+        return Spot(*point, called, home.zone, home.country)
     zone = get_tz(point[1], point[0])
-    return Spot(*point, called, zone, country_of(zone)), []
+    return Spot(*point, called, zone, country_of(zone))
 
 
 @functools.cache

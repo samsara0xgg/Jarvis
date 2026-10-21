@@ -403,7 +403,8 @@ def _start_day_schedules(
                 None if runtime.attachments is None
                 else runtime.attachments.directory,
             ),
-            weather=None if home is None else home.day_weather,
+            weather=None if home is None else home.plan_weather,
+            outing_weather=None if home is None else home.outing_weather,
         )
         open_leg = (
             None if runtime.leg_planner is None else leg_session(

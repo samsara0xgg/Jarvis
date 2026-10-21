@@ -243,6 +243,21 @@ def test_a_kept_place_is_found_by_its_name(
     assert world.transit()[0]["origin"] == SCHOOL_POINT
 
 
+def test_the_background_call_says_where_the_route_ends_when_google_gave_the_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``end_at`` is the last leg's point (ADR 0355: the weather of the place); none, no key."""
+    route = _bus("26", MORNING, "08:00")
+    route["legs"][0]["endLocation"] = {"latLng": {"latitude": 48.51, "longitude": -123.41}}
+    world = _world(tmp_path, monkeypatch, [route])
+    out = world.leg_planner()("home", "Mayfair Mall", arrive_by=f"{MORNING} 09:30")
+    assert out["end_at"] == {"lat": 48.51, "lng": -123.41}
+    (tmp_path / "bare").mkdir()
+    bare = _world(tmp_path / "bare", monkeypatch, [_bus("26", MORNING, "08:00")])
+    again = bare.leg_planner()("home", "Mayfair Mall", arrive_by=f"{MORNING} 09:30")
+    assert "end_at" not in again
+
+
 def test_the_background_call_keeps_no_card_and_no_offer_but_records_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

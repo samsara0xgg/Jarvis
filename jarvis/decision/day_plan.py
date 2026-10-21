@@ -128,10 +128,13 @@ def build_prompt(
 def build_opening_prompt(  # noqa: PLR0913 - the plan, what is open, the weather, the clock, a failure.
     plan: Plan, *, unconfirmed: Sequence[Mapping[str, Any]], weather: Mapping[str, Any] | None,
     now: datetime, zone: tzinfo, draft_failed: bool = False,
+    outings: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[str, str]:
     """``(system, user)`` of the opening call: the plan, what he has not confirmed, the weather.
 
     ``draft_failed`` says the day's draft did not come, so ``plan`` is empty: she says so and asks.
+    ``weather`` is today at home in parts and ``outings`` the weather of each outing's own hours at
+    its place (ADR 0355); their clocks are said as the plan's are.
     """
     local = now.astimezone(zone)
     said_in = lang.text_language(" ".join(item.title for item in plan.items))
@@ -145,7 +148,8 @@ def build_opening_prompt(  # noqa: PLR0913 - the plan, what is open, the weather
         "draft_failed": draft_failed,
         "plan": _said_clocks([_public(item) for item in plan.items], plan.day, zone, said_in),
         "unconfirmed": list(unconfirmed),
-        "weather": weather,
+        "weather": _said_clocks(weather, plan.day, zone, said_in),
+        "outings": _said_clocks(list(outings), plan.day, zone, said_in),
     }
     return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
 

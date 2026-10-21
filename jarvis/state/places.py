@@ -178,6 +178,21 @@ def containing(places: Iterable[Place], lat: float, lng: float) -> Place | None:
     return best
 
 
+def position_of(candidates: Iterable[Place], name: str) -> tuple[float, float] | None:
+    """The centre of the kept place he calls ``name`` (case and spacing aside), if it has one.
+
+    A place kept by its address alone has no centre until it is found (ADR 0237). Of two places
+    that share the name the first listed answers.
+    """
+    wanted = " ".join(name.casefold().split())
+    for one in candidates:
+        if one.lat is None or one.lng is None:
+            continue
+        if " ".join(one.name.casefold().split()) == wanted:
+            return one.lat, one.lng
+    return None
+
+
 def home_school(path: Path) -> dict[str, str]:
     """The kept home and school as `bus` reads them: ``lat,lng``, else the address.
 
