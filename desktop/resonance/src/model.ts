@@ -133,7 +133,7 @@ export function reducer(s: State, a: Action): State {
       return !a.conversation && s.inFlight ? reducer(next, { type: 'phase', phase: 'listening' }) : next; }
     // What has been heard so far of the words still coming in (ADR 0111); one that arrives after they were accepted is late.
     // The tool this turn is waiting on, as the daemon's fixed line. A tool's line stays until the next one takes its place: the daemon sends an
-    // empty label only once the turn is over (inherent_loop.py `_tool_status_watcher`), never between two tools. An empty label clears the
+    // empty label only once the turn is over (`tool_status_watcher` in jarvis/runtime/daemon/output_watchers.py), never between two tools. An empty label clears the
     // line of its turn whether or not that turn ever opened an answer (a turn can end with none). It also goes when the answer opens (above),
     // or when the turn fails or is cancelled (`failed`).
     case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : s.tool?.turnId === a.turnId ? null : s.tool };

@@ -4,7 +4,7 @@ import Security
 
 // The phone's side of the brain's HTTP contract: claim a pairing code (ADR 0196), ask for a day (ADR 0199), probe liveness.
 // docs/spec.html: the pairing routes and `GET /inherent/day` paragraphs of the daemon chapter. The brain's own words are in
-// jarvis/surface/device_pairing.py (claim) and jarvis/runtime/inherent_loop.py `_read_day` (day).
+// jarvis/surface/device_pairing.py (claim) and jarvis/runtime/daemon/routes.py `read_day` (day).
 
 /// What the QR on the owner's screen holds: `{"code": "...", "brain": ["http://host:port", ...]}`, the one-time code and the base URLs the brain answers on.
 struct PairingLink {

@@ -169,8 +169,8 @@ DEFAULT_MAX_TOOL_ITERATIONS = 5
 
 # ADR-0012 §3 D4/V2 — confirmation TTL default (10 minutes). Config-
 # overridable via `config/jarvis.yaml`'s `confirmation.ttl_ms`
-# (composition root: `jarvis.runtime._confirmation_ttl_ms`) so the
-# live burn can use a short value without touching code.
+# (composition root: `jarvis.runtime.turn.drive` hands `runtime.config.confirmation.ttl_ms`
+# to the context) so the live burn can use a short value without touching code.
 _DEFAULT_CONFIRMATION_TTL_MS: Final[int] = 600_000
 
 # `_dispatch_one_tool_call`'s signal to `_run_tool_use_loop`:
@@ -591,8 +591,8 @@ class DecideContext:
             never expires), in milliseconds.
             Default 10 minutes; the composition root reads
             ``confirmation.ttl_ms`` from ``config/jarvis.yaml``
-            (`jarvis.runtime._confirmation_ttl_ms`) so the live burn
-            can use a short value without touching code.
+            (`jarvis.runtime.turn.drive` passes ``runtime.config.confirmation.ttl_ms``)
+            so the live burn can use a short value without touching code.
         confirm_grammar_table: Compiled exact-sentence yes/no grammar
             (ADR-0012 §3 D6) the composition root loaded from
             ``config/confirm_grammar.yaml``. ``()`` (the default)

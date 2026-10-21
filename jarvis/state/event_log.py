@@ -992,7 +992,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # may fold this into Limitation Claims (spec §3.4.11).
         # owner_layer is L5 because Inherent surface output is L5 and
         # turn.failed is the surface-layer's meta-record of a failed
-        # turn; runtime/inherent_loop is the composition root, not a
+        # turn; ``runtime/`` (which emits it) is the composition root, not a
         # numbered spec layer.
         event_type="turn.failed",
         owner_layer="L5",

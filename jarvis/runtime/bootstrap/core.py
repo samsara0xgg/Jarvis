@@ -156,7 +156,7 @@ def _daemon_idle(event_log_path: Path) -> bool:
     """No turn in flight and no turn, answer or playback row in the last 15 s (ADR 0164).
 
     The same in-flight probe the voice session's quiet clock uses
-    (``_turn_working`` in ``inherent_loop``); an unreadable log counts as busy.
+    (``_turn_working`` in ``runtime/daemon/listen_ports.py``); an unreadable log counts as busy.
     """
     now_ms = int(time.time() * 1000)
     try:

@@ -2,7 +2,7 @@
 
 Per ADR-0003 D4 + spec §3.7.2 the runtime root may host at most one live
 ``jarvis serve`` daemon. This module is the primitive both the daemon
-(``runtime/inherent_loop.py`` via :func:`acquire_exclusive`), the CLI
+(``deployment/__init__.py``'s ``daemon_session`` via :func:`acquire_exclusive`), the CLI
 (``cli/__init__.py``) and ``launchd.py`` (via :func:`is_held` +
 :func:`holder_pid`) call to detect and recover from contention.
 
@@ -48,8 +48,8 @@ _LOCK_FILE_MODE = 0o644
 
 # ADR D7 specifies the exact public name ``ProcessLockHeld`` — the
 # ``-Error`` suffix N818 wants would break the documented contract that
-# downstream surfaces (``cli/__main__.py``, ``runtime/inherent_loop.py``)
-# import. Keep the spec name; silence the lint at the source.
+# downstream users (``cli/__init__.py`` catches it, ``deployment/__init__.py`` raises it)
+# rely on. Keep the spec name; silence the lint at the source.
 class ProcessLockHeld(RuntimeError):  # noqa: N818 — spec-mandated public name
     """Raised by acquire_exclusive when the lock is held by another live process."""
 
