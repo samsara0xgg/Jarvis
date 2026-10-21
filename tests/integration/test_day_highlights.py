@@ -68,15 +68,19 @@ from tests.support.day_highlights import (
 from tests.support.ledger import (
     MIDNIGHT,
     ZONE,
-    ProseWriter,
     ledger_at,
     ledger_rows,
     ledger_world,
+    prompts,
+    prose_steps,
+    prose_writer,
     run_ledger,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from tests.support.model import ScriptedModel
 
 WRITTEN = datetime(2100, 1, 1, tzinfo=ZONE)  # a notes cut-off after the real clock of any write
 MARK_TOOL_TEXT = (
@@ -112,7 +116,7 @@ def test_the_night_stores_prose_line_and_highlights_and_the_day_serves_them(
     src = ledger_world(tmp_path)
     visit_row(src, "v-cafe", ledger_at(7, 12), ledger_at(7, 12, 40), "Corner Cafe")
     work = work_id(7, 13)
-    writer = ProseWriter([_night(
+    writer = prose_writer([_night(
         "He had coffee and worked on the ledger.",
         "Coffee first, then a good stretch on the ledger.",
         [("v-cafe", "Coffee at the cafe"), (work, "Ledger work")],
@@ -121,7 +125,7 @@ def test_the_night_stores_prose_line_and_highlights_and_the_day_serves_them(
     outcomes = run_ledger(src, writer, 2, [])
 
     assert outcomes == {"2026-10-07": "landed (39 chars)"}
-    (asked,) = writer.asked
+    (asked,) = prompts(writer)
     assert "v-cafe | stay | 12:00-12:40 | place=Corner Cafe" in asked
     assert f"{work} | work | 13:00-13:45 | active_s=2700; apps=Chrome" in asked
     assert asked.endswith("LINE LANGUAGE: English")  # his last words, 'hi'
@@ -145,14 +149,14 @@ def test_a_pinned_reply_language_is_the_language_of_the_line(
 ) -> None:
     """The ``reply_language`` setting wins over his last words, as it does for her replies."""
     src = ledger_world(tmp_path)
-    writer = ProseWriter([_night("A quiet day.", "Quiet.")])
+    writer = prose_writer([_night("A quiet day.", "Quiet.")])
     settings = ProseSettings("p", "write", 2, 200, None, pinned)
 
     run_day_prose(
-        src, settings, writer,  # type: ignore[arg-type]
+        src, settings, writer.as_llm_client(),
         event_log_path=src.event_log, pricing_table={}, today=TODAY, sleep=lambda _s: None,
     )
-    assert writer.asked[0].endswith(f"LINE LANGUAGE: {named}")
+    assert prompts(writer)[0].endswith(f"LINE LANGUAGE: {named}")
 
 
 class Gate(NamedTuple):
@@ -274,7 +278,7 @@ def test_a_bad_highlight_drops_the_line_whole_and_the_prose_is_stored_without_it
     """The row lands with its prose; the day serves no line and no highlights."""
     src = ledger_world(tmp_path)
     visit_row(src, "v-cafe", ledger_at(7, 12), ledger_at(7, 12, 40), "Corner Cafe")
-    writer = ProseWriter([_night("He had coffee.", "Coffee, then work.", picks)])
+    writer = prose_writer([_night("He had coffee.", "Coffee, then work.", picks)])
 
     outcomes = run_ledger(src, writer, 2, [])
 
@@ -292,12 +296,12 @@ def test_a_bad_highlight_drops_the_line_whole_and_the_prose_is_stored_without_it
 def test_a_rejected_night_answer_is_asked_once_more_then_stores_nothing(tmp_path: Path) -> None:
     """Bad prose is today's failure: one more ask, then no row, and the next run tries again."""
     src = ledger_world(tmp_path)
-    writer = ProseWriter(["not json at all", _night("## heading", "Out.")])
+    writer = prose_writer(["not json at all", _night("## heading", "Out.")])
 
     outcomes = run_ledger(src, writer, 2, [])
 
     assert outcomes == {"2026-10-07": "rejected (contains markdown headings or bullets)"}
-    assert len(writer.asked) == 2
+    assert len(prompts(writer)) == 2
     assert "2026-10-07" not in prose_days(src.memory_db)
 
 
@@ -320,7 +324,7 @@ def test_a_draft_is_not_prose_for_the_ledger_or_for_the_nights_to_write(tmp_path
     assert standing_text(src, MIDNIGHT, notes_as_of=WRITTEN) == before_text
     assert "A draft line." not in before_text
 
-    writer = ProseWriter([
+    writer = prose_writer([
         _night("Gamma wrote back.", "Mail day."), _night("A short Wednesday.", "Wed."),
     ])
     outcomes = run_ledger(src, writer, 3, [])
@@ -347,7 +351,7 @@ def test_the_nights_row_replaces_the_draft_and_a_night_with_no_line_leaves_the_d
     assert [h["label"] for h in day["highlights"]] == ["Draft coffee"]
 
     unusable = _night("A short Wednesday.", "Out.", [("nope", "Gone")])
-    assert "line dropped" in run_ledger(src, ProseWriter([unusable]), 2, [])[DAY_KEY]
+    assert "line dropped" in run_ledger(src, prose_writer([unusable]), 2, [])[DAY_KEY]
     assert served_day(src)["line"]["text"] == "Draft line."  # the draft stands
 
     append_day_prose(
@@ -401,7 +405,7 @@ def test_a_day_prose_table_from_before_this_adr_is_migrated_and_its_rows_stay_pr
 def _schedule(
     tmp_path: Path,
     src: LedgerSources,
-    writer: ProseWriter,
+    writer: ScriptedModel,
     draft_prompt: str | None = "draft",
 ) -> DaySummarySchedule:
     """The nightly schedule over the ledger's world, its prose client the fake ``writer``."""
@@ -430,17 +434,17 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
     """The cadence on a fake clock: the items (ids, states, ends) and 30 minutes, both."""
     src = ledger_world(tmp_path)  # today 10-08: work 10:00-11:00, one talk at 14:00
     work = work_id(8, 10)
-    writer = ProseWriter([])
+    writer = prose_writer([])
     schedule = _schedule(tmp_path, src, writer)
 
     def tick(hour: int, minute: int, *script: object) -> str:
-        writer.script[:] = list(script)
+        writer.script(*prose_steps(script))
         return schedule.draft(ledger_at(8, hour, minute))
 
     # 10:05 - the first draft of the day, from two items
     first = tick(10, 5, _draft("Working since ten.", [(work, "Ledger work")]))
     assert first == "landed (1 highlights)"
-    (asked,) = writer.asked
+    (asked,) = prompts(writer)
     assert asked.startswith("DAY: 2026-10-08 (still under way; it is 10:05 now)")
     assert f"{work} | work | 10:00-11:00 (now) | active_s=3600; projects=jarvis" in asked
     assert "(next)" in asked.split("DAY LINE ITEMS")[1]  # the talk at 14:00 has not happened
@@ -451,7 +455,7 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
     assert tick(10, 20) == "waiting"
     visit_row(src, "v-cafe", ledger_at(8, 10, 10), None, "Corner Cafe")
     assert tick(10, 34) == "waiting"  # changed, but 29 minutes
-    assert len(writer.asked) == 1
+    assert len(prompts(writer)) == 1
     assert tick(10, 36, _draft("Working, and at the cafe.", [("v-cafe", "Cafe")])) == (
         "landed (1 highlights)"
     )
@@ -461,7 +465,7 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
     assert tick(11, 30, _draft("Work done, still at the cafe.")) == "landed (0 highlights)"
     assert tick(12, 10) == "unchanged"
     assert tick(13, 59) == "unchanged"
-    assert len(writer.asked) == 3
+    assert len(prompts(writer)) == 3
 
     # 14:30 - the talk began (state next -> now -> done); the model fails: the last draft stands
     assert tick(14, 30, RuntimeError("boom")) == "failed"
@@ -476,7 +480,7 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
     assert _line(src) == ("Then a talk with her.", True)
 
     # tomorrow starts clean: the reminder due at 09:00 on 10-09 is its first item
-    writer.script[:] = [_draft("A reminder at nine.")]
+    writer.script(_draft("A reminder at nine."))
     assert schedule.draft(ledger_at(9, 9, 30)) == "landed (0 highlights)"
     assert _line(src, "2026-10-09") == ("A reminder at nine.", True)
 
@@ -484,7 +488,7 @@ def test_a_draft_runs_when_the_day_changed_and_half_an_hour_passed_and_a_failure
 def test_a_draft_needs_a_prompt_a_ledger_and_items(tmp_path: Path) -> None:
     """No ``draft_prompt`` or no ledger is off; a day with nothing on its line is not drafted."""
     src = ledger_world(tmp_path)
-    writer = ProseWriter([])
+    writer = prose_writer([])
     assert _schedule(tmp_path, src, writer, draft_prompt=None).draft(ledger_at(8, 10, 5)) == "off"
     schedule = _schedule(tmp_path, src, writer)
     assert schedule.draft(ledger_at(4, 10, 5)) == "no items"  # nothing was recorded on 10-04
@@ -496,7 +500,7 @@ def test_a_draft_needs_a_prompt_a_ledger_and_items(tmp_path: Path) -> None:
         pricing_table={},
     )
     assert bare.draft(ledger_at(8, 10, 5)) == "off"
-    assert writer.asked == []
+    assert prompts(writer) == []
 
 
 def test_a_restart_keeps_the_half_hour_since_the_last_draft(tmp_path: Path) -> None:
@@ -509,11 +513,11 @@ def test_a_restart_keeps_the_half_hour_since_the_last_draft(tmp_path: Path) -> N
             (TODAY_KEY, ledger_at(8, 10).isoformat()),
         )
     work = work_id(8, 10)
-    writer = ProseWriter([_draft("After the restart.", [(work, "Ledger work")])])
+    writer = prose_writer([_draft("After the restart.", [(work, "Ledger work")])])
     drafts = DayDrafts(
         src,
         ProseSettings("p", "night", 7, 800, "draft"),
-        writer,  # type: ignore[arg-type]
+        writer.as_llm_client(),
         event_log_path=src.event_log,
         pricing_table={},
     )

@@ -7,7 +7,6 @@ from contextlib import closing
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from jarvis.decision.llm import ChatResult
 from jarvis.runtime import terminal as terminal_runtime
 from jarvis.runtime.ledger import ProseSettings, run_day_prose
 from jarvis.shared.device_link import DeviceCallError
@@ -15,9 +14,13 @@ from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.job_ledger import record_seen, upsert_mail
 from jarvis.state.ledger import LedgerSources
 from jarvis.state.memory_db import open_memory_db
+from tests.support.model import Failure, ScriptedModel
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
+
+    from tests.support.model import Step
 
 ZONE = timezone(timedelta(hours=-7))
 
@@ -159,42 +162,31 @@ def ledger_world(tmp_path: Path) -> LedgerSources:
     return LedgerSources(memory, log, ts, ZONE)
 
 
-class ProseWriter:
-    """Stands in for the prose preset's client: answers from a script, records what it is asked."""
+def prose_steps(script: Iterable[object]) -> list[Step]:
+    """A prose script as the model's steps: an exception is a request that fails."""
+    return [Failure(step) if isinstance(step, Exception) else str(step) for step in script]
 
-    provider = "openai"
-    model = "fake-prose"
 
-    def __init__(self, script: list[object]) -> None:
-        self.script = script
-        self.asked: list[str] = []
+def prose_writer(script: Iterable[object] = ()) -> ScriptedModel:
+    """Stands in for the prose preset's client: answers from a script, in order."""
+    return ScriptedModel(*prose_steps(script), provider="openai", model="fake-prose")
 
-    def chat(self, *, messages: list[dict[str, Any]], **_kwargs: object) -> ChatResult:
-        self.asked.append(str(messages[0]["content"]))
-        step = self.script.pop(0)
-        if isinstance(step, Exception):
-            raise step
-        return ChatResult(
-            text=str(step),
-            tool_calls=(),
-            finish_reason="stop",
-            input_tokens=1,
-            output_tokens=1,
-            raw={},
-            model_used=self.model,
-        )
+
+def prompts(writer: ScriptedModel) -> list[str]:
+    """The one message each request carried, in the order they were sent."""
+    return [str(request.messages[0]["content"]) for request in writer.requests]
 
 
 def run_ledger(
     src: LedgerSources,
-    writer: ProseWriter,
+    writer: ScriptedModel,
     days: int,
     sleeps: list[float],
 ) -> dict[str, str]:
     return run_day_prose(
         src,
         ProseSettings("p", "write the day", days, 200),
-        writer,  # type: ignore[arg-type]
+        writer.as_llm_client(),
         event_log_path=src.event_log,
         pricing_table={},
         today=date(2026, 10, 8),

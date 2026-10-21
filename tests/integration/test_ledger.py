@@ -47,10 +47,11 @@ from tests.support.ledger import (
     MIDNIGHT,
     NOW,
     ZONE,
-    ProseWriter,
     ledger_at,
     ledger_rows,
     ledger_world,
+    prompts,
+    prose_writer,
     run_ledger,
     terminal_link,
     utc_text,
@@ -343,7 +344,7 @@ def test_run_day_prose_retries_skips_and_stores_one_row_per_day(tmp_path: Path) 
     """A timeout is retried; days with a line or no activity are skipped."""
     src = ledger_world(tmp_path)  # 10-06 already has a line; 10-04 has no activity at all
     timeout = openai.APITimeoutError(request=httpx.Request("POST", "http://invalid.test"))
-    writer = ProseWriter(
+    writer = prose_writer(
         [
             timeout,
             _answer("Gamma wrote back. Not much else."),
@@ -363,14 +364,14 @@ def test_run_day_prose_retries_skips_and_stores_one_row_per_day(tmp_path: Path) 
         "2026-10-07": ["A short Wednesday."],
     }
     assert sleeps == [2.0]  # the timeout waited once, then the same day went through
-    assert len(writer.asked) == 3
-    wednesday = writer.asked[2]
+    assert len(prompts(writer)) == 3
+    wednesday = prompts(writer)[2]
     assert "NUMBERS (computed by the program):" in wednesday
     assert "active 0h45m" in wednesday
     assert "DAY SUMMARY (conversation with the assistant):\n## 2026-10-07" in wednesday
     assert "DAILY WORK REPORT (excerpt):\n(none yet)" in wednesday
     assert prose_days(src.memory_db) == {"2026-10-05", "2026-10-06", "2026-10-07"}
-    assert run_ledger(src, ProseWriter([]), 4, []) == {
+    assert run_ledger(src, prose_writer([]), 4, []) == {
         "2026-10-04": "no activity"
     }  # nothing left to write
 
@@ -378,7 +379,7 @@ def test_run_day_prose_retries_skips_and_stores_one_row_per_day(tmp_path: Path) 
 def test_run_day_prose_stores_nothing_for_a_rejected_or_failed_day(tmp_path: Path) -> None:
     """Twice rejected or a hard error stores nothing and the next day still runs."""
     src = ledger_world(tmp_path)
-    writer = ProseWriter(
+    writer = prose_writer(
         [
             _answer("## A heading"),
             _answer("- a bullet"),
@@ -392,7 +393,7 @@ def test_run_day_prose_stores_nothing_for_a_rejected_or_failed_day(tmp_path: Pat
     assert outcomes["2026-10-05"] == "rejected (contains markdown headings or bullets)"
     assert outcomes["2026-10-07"] == "failed"
     assert ledger_rows(src) == {"2026-10-06": ["He shipped the ledger and went to bed."]}
-    redo = ProseWriter([_answer("Gamma wrote back."), _answer("Wednesday was quiet.")])
+    redo = prose_writer([_answer("Gamma wrote back."), _answer("Wednesday was quiet.")])
     again = run_ledger(src, redo, 3, [])
     assert [again[k].split(" ")[0] for k in sorted(again)] == ["landed", "landed"]
 
