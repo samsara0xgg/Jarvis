@@ -47,4 +47,17 @@ final class TalkPageTests: XCTestCase {
         HomeModule.shared.kind = .stars
         XCTAssertTrue(e.covered, "under the dial the panel is a sheet over it")
     }
+
+    func testOnTheIPadsOwnHomeTheHistoryIsASheetOverHerNotThePage() {
+        let e = StarEngine(), ui = e.ui
+        ui.padHome = true
+        e.openPanel()          // as her menu on the iPad opens it (Pad/PadHer.swift)
+        e.panelSince = -1e9
+        XCTAssertFalse(ui.talkPage, "the iPad's history is a sheet, not the phone's page")
+        XCTAssertEqual(e.restSeat.at, TLSeat.home, "she stays where she is")
+        XCTAssertTrue(e.covered, "she slows behind the sheet")
+        ui.padHome = false          // Split View or Slide Over: the phone's home, with its page
+        XCTAssertTrue(ui.talkPage)
+        XCTAssertFalse(e.covered)
+    }
 }

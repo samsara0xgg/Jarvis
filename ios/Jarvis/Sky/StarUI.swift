@@ -134,10 +134,12 @@ final class StarUI {
     var tlHome = HomeModule.shared.isTimeline       // she has come up to her place over the timeline (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
     var footprintOpen = false           // the footprint's one-day screen is over the timeline, which and the top row give way to it (Sky/FootprintDayPage.swift)
     let footprint = FootprintDayState()
+    var padHome = false                 // the iPad's own home is on screen, not the phone's: an iPad at regular width (Pad/PadHome.swift's `HomeChoice` sets it)
     /// the page of the home the glass bar at its foot is on (Sky/HomeBar.swift): the day, or over it the history, the footprint's page or settings (`StarEngine.showPage` changes it)
     var page: HomePage { settingsOpen ? .settings : panelOpen ? .talk : footprintOpen ? .map : .day }
-    /// the history is up on the timeline: the conversation's page, the whole screen under her (Sky/StarPanel.swift's `TalkPage`); under the dial it is a panel over it
-    var talkPage: Bool { panelOpen && HomeModule.shared.isTimeline }
+    /// the history is up on the phone's timeline: the conversation's page, the whole screen under her (Sky/StarPanel.swift's `TalkPage`); under the dial it is a panel over it, and on
+    /// the iPad's own home a sheet over it (Pad/PadHome.swift)
+    var talkPage: Bool { panelOpen && HomeModule.shared.isTimeline && !padHome }
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 
     /// The composer is out: always under the dial. On the timeline she is tapped to talk and the field is one of her cards: it is out while he types (he chose 打字, or asked her about a

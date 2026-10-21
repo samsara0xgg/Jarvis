@@ -29,7 +29,9 @@ private struct HomeChoice: View {
     @Environment(\.horizontalSizeClass) private var width
 
     var body: some View {
-        if UIDevice.current.userInterfaceIdiom == .pad && width == .regular { PadHome(engine: engine) } else { StarChartScreen(engine: engine) }
+        let pad = UIDevice.current.userInterfaceIdiom == .pad && width == .regular
+        Group { if pad { PadHome(engine: engine) } else { StarChartScreen(engine: engine) } }
+            .onChange(of: pad, initial: true) { _, p in engine.ui.padHome = p }          // the engine lays the history out as the home on screen has it
     }
 }
 
