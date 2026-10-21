@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import { useLayoutEffect, useRef, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import { ArrowUpRight, CaretDown, CaretLeft, CaretUp } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
 import { fOf } from './barView';
@@ -11,13 +11,30 @@ import './day-doors.css';
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const AMBER = '255 201 143', PALE = '214 222 250';
 
-// The doors at the pane's foot, one pill each, the door he is on lit; a count after the name where the door has one (amber when it waits on him). The last has no name: it is its dots.
+// The doors at the pane's foot: one segmented control, as a Mac's, each door an equal part of it and the one he is on raised by a knob that slides to the next one picked;
+// a count after the name where the door has one (amber when it waits on him). The last has no name: it is its dots.
 export function Doors({ on, pages, pick, t }: { on: DoorKey; pages: Partial<Record<DoorKey, DoorPage | null>>; pick: (door: DoorKey) => void; t: (l: L) => string }) {
-  return <nav className="dt-doors" aria-label={t(['Pages', '页面'])}>
+  const nav = useRef<HTMLElement>(null);
+  // The knob sits under the lit door; it is placed before the first paint without a slide, and slides from then on.
+  useLayoutEffect(() => {
+    const el = nav.current;
+    if (!el) return;
+    const place = () => {
+      const lit = el.querySelector<HTMLElement>('.dt-door.is-on');
+      if (!lit) return;
+      el.style.setProperty('--x', `${lit.offsetLeft}px`); el.style.setProperty('--w', `${lit.offsetWidth}px`);
+    };
+    place();
+    const set = requestAnimationFrame(() => el.classList.add('is-set')), ro = new ResizeObserver(place);
+    ro.observe(el);
+    return () => { cancelAnimationFrame(set); ro.disconnect(); };
+  }, [on]);
+  return <nav ref={nav} className="dt-doors" aria-label={t(['Pages', '页面'])}>
+    <i className="dt-knob" aria-hidden="true"/>
     {DOORS.map(({ key, label, icon: Glyph, bare }) => {
       const page = pages[key], count = page?.count;
       return <button key={key} type="button" className={`dt-door${key === on ? ' is-on' : ''}${bare ? ' is-bare' : ''}`} data-door={key} aria-current={key === on ? 'page' : undefined} aria-label={bare ? t(label) : undefined} title={bare ? t(label) : undefined} onClick={() => pick(key)}>
-        <Glyph size={12} weight={bare ? 'bold' : 'regular'} aria-hidden="true"/>{!bare && <span>{t(label)}</span>}{count && <em className={page?.countAmber ? 'is-amber' : undefined}>{count}</em>}</button>;
+        <Glyph size={14} weight={bare ? 'bold' : key === on ? 'fill' : 'regular'} aria-hidden="true"/>{!bare && <span>{t(label)}</span>}{count && <em className={page?.countAmber ? 'is-amber' : undefined}>{count}</em>}</button>;
     })}
   </nav>;
 }
