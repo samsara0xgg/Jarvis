@@ -941,14 +941,25 @@ def test_no_arguments_is_today_from_now_and_tomorrow_then_late_due_and_waiting(
         ({"at": "yesterday"}, "yesterday (Sun Oct 11)"),
         ({"at": "tomorrow"}, "tomorrow (Tue Oct 13)"),
         ({"at": "Fri"}, "Fri Oct 16"),
-        ({"at": "next fri"}, "Fri Oct 16"),
-        ({"at": "Mon"}, "Mon Oct 19"),  # the next Monday, not today
+        ({"at": "next fri"}, "Fri Oct 23"),  # that day next week; it was this Friday
+        ({"at": "Mon"}, "today (Mon Oct 12)"),  # today's own weekday counts; it was Oct 19
+        ({"at": "next Mon"}, "Mon Oct 19"),
         ({"at": "2026-10-15"}, "Thu Oct 15"),
         ({"at": "2026-10-15T09:30:00"}, "Thu Oct 15"),
+        ({"at": "2026-10-15 09:30"}, "Thu Oct 15"),
         ({"at": "Fri", "to": "Sun"}, "Fri Oct 16 to Sun Oct 18"),
         ({"at": "Sat", "to": "Mon"}, "Sat Oct 17 to Mon Oct 19"),
         ({"at": "2026-10-12", "to": "2026-10-25"}, "today (Mon Oct 12) to Sun Oct 25"),
         ({"to": "Wed"}, "today (Mon Oct 12) to Wed Oct 14"),
+        # His words for a stretch, in either language (ADR 0356).
+        ({"at": "this weekend"}, "Sat Oct 17 to Sun Oct 18"),
+        ({"at": "这周末"}, "Sat Oct 17 to Sun Oct 18"),
+        ({"at": "this week"}, "today (Mon Oct 12) to Sun Oct 18"),
+        ({"at": "下周五"}, "Fri Oct 23"),
+        ({"at": "周五到周日"}, "Fri Oct 16 to Sun Oct 18"),
+        ({"at": "the 15th"}, "Thu Oct 15"),
+        ({"at": "明天"}, "tomorrow (Tue Oct 13)"),
+        ({"at": "Wed", "to": "周五"}, "Wed Oct 14 to Fri Oct 16"),
     ],
 )
 def test_a_day_or_a_span_is_named_the_way_he_says_it(
@@ -1050,9 +1061,12 @@ def test_a_search_finds_a_thing_past_sixty_days_by_its_first_time(make: Maker) -
 
 
 READ_REFUSED = [
-    ({"at": "soon"}, "a day looks like today, tomorrow, Mon or 2026-10-15, not 'soon'"),
+    ({"at": "soon"}, "schedule: I read today, tonight, tomorrow"),
+    ({"at": "soon"}, "not 'soon'"),
     ({"at": "2026-13-45"}, "not '2026-13-45'"),
-    ({"at": "2026-10-20", "to": "2026-10-19"}, "to=2026-10-19 is before at=2026-10-20"),
+    ({"at": "2026-10-20", "to": "2026-10-19"}, "'2026-10-20 to 2026-10-19' ends before it starts"),
+    ({"to": "yesterday"}, "to=yesterday is before today; to is the last day"),
+    ({"at": "past 3 days"}, "not 'past 3 days'"),  # a read looks ahead: back-only words
     ({"at": "2026-10-12", "to": "2026-10-26"}, "a span is at most 14 days"),
     ({"what": "x", "at": "today"}, "what searches everything open and the next 60 days"),
     ({"what": "x", "to": "Fri"}, 'To keep a new thing, pass action="add"'),

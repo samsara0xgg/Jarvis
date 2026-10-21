@@ -9,7 +9,6 @@ the read. Facts about him are ``keep`` (ADR 0245).
 
 from __future__ import annotations
 
-import calendar
 import math
 import re
 from dataclasses import dataclass, replace
@@ -68,8 +67,9 @@ _SCHEMA: Final[Mapping[str, Any]] = {
             "type": "string",
             "description": (
                 "add, move: when it starts, his local time, e.g. 2026-10-20 15:00; a date alone,"
-                " 2026-10-20, is a thing on that day with no hour. read: a day (today, tomorrow,"
-                " Mon, 2026-10-20); leave out for the rest of today and tomorrow."
+                " 2026-10-20, is a thing on that day with no hour. read: his words for the day or"
+                " days (today, Friday, next Monday, this weekend, the 15th, 2026-10-20); leave"
+                " out for the rest of today and tomorrow."
             ),
         },
         "ends": {
@@ -84,7 +84,10 @@ _SCHEMA: Final[Mapping[str, Any]] = {
         },
         "to": {
             "type": "string",
-            "description": "read: the last day (included) of a span of at most 14 days from at.",
+            "description": (
+                "read: the last day of the span, in his words (Sunday, 2026-10-25); at most 14"
+                " days from at."
+            ),
         },
         "kind": {
             "type": "string",
@@ -229,32 +232,9 @@ def _midnight(day: date, zone: tzinfo) -> datetime:
     return datetime.combine(day, time(), zone)
 
 
-def _weekday(word: str) -> int | None:
-    return next(
-        (i for i, name in enumerate(calendar.day_name)
-         if len(word) >= 3 and name.lower().startswith(word)),  # noqa: PLR2004 - mon, tue, ...
-        None,
-    )
-
-
-def _day(value: str, today: date, after: date, *, inclusive: bool = False) -> date:
-    """A local day from today, tomorrow, yesterday, an ISO date or a weekday name.
-
-    A weekday is the next one after ``after`` (``after`` itself too when ``inclusive``).
-    """
-    word = value.strip().lower().removeprefix("next ").removeprefix("this ").rstrip(".")
-    if _ISO_DAY.match(word):
-        word = word[:10]  # a full timestamp names its day
-    if word in ("today", "tomorrow", "yesterday"):
-        return today + timedelta(days={"today": 0, "tomorrow": 1, "yesterday": -1}[word])
-    if (index := _weekday(word)) is not None:
-        ahead = (index - after.weekday()) % 7
-        return after + timedelta(days=ahead if ahead or inclusive else 7)
-    try:
-        return date.fromisoformat(word)
-    except ValueError:
-        msg = f"schedule: a day looks like today, tomorrow, Mon or 2026-10-15, not {value!r}"
-        raise ToolError(msg, code="invalid_arguments") from None
+def _words(text: str) -> str:
+    """His words for a day; a full timestamp (2026-10-20 15:00) names its day."""
+    return text[:10] if _ISO_DAY.match(text.lower()) else text
 
 
 def _clock_span(a: datetime, b: datetime) -> str:
@@ -845,11 +825,15 @@ class _Schedule:
                 today, tomorrow, now.astimezone(self._zone).replace(microsecond=0),
                 _midnight(tomorrow + timedelta(days=1), self._zone), label,
             )
-        first = _day(first_text, today, today) if first_text else today
-        last = _day(last_text, today, first, inclusive=True) if last_text else first
-        if last < first:
-            msg = f"schedule: to={last_text} is before at={first_text}; to is the last day"
-            raise ToolError(msg, code="invalid_arguments")
+        at, to = _words(first_text), _words(last_text)
+        first, last = speakable.resolve_when(
+            f"{at} to {to}" if at and to else at or to, today, back=False, tool="schedule",
+        )
+        if not at:  # a read that gives only its last day starts today
+            first = today
+            if last < first:
+                msg = f"schedule: to={last_text} is before today; to is the last day"
+                raise ToolError(msg, code="invalid_arguments")
         if (last - first).days + 1 > _SPAN_DAYS:
             msg = f"schedule: a span is at most {_SPAN_DAYS} days; ask in parts for longer"
             raise ToolError(msg, code="invalid_arguments")
