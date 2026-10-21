@@ -226,11 +226,6 @@ class StreamingMediaStartupError(RuntimeError):
         self.device_disposition = device_disposition
         self.device_state_uncertain = device_disposition == "uncertain"
 
-    @property
-    def legacy_fallback_safe(self) -> bool:
-        """Return whether no prior physical output ownership can overlap."""
-        return self.device_disposition in {"not_attempted", "failed_closed"}
-
 
 class StreamingTTSProvider(Protocol):
     """Provider factory consumed only by the persistent media loop."""

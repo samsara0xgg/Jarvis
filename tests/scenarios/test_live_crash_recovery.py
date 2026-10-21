@@ -236,7 +236,6 @@ def _build_overlay(root: Path) -> Path:
         realtime["concurrency_safety"][switch] = True
     realtime["response"]["response_run_lifecycle"] = True
     realtime["response"]["routine_streaming"]["enabled"] = True
-    realtime["streaming_output"]["enabled"] = True
     realtime["streaming_output"]["speak_from_segments"] = True
     # The daemon opens this device itself, so the burn is silent without
     # touching the system default output that every other app shares.

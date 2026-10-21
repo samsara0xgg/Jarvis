@@ -15,7 +15,6 @@ import contextlib
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
 
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.runtime import inherent_loop
@@ -57,6 +56,20 @@ class _Wire:
         self.sent.append((phase, turn_id, str(payload.get("output_outcome", ""))))
 
 
+class _Submitted:
+    """A media actor that only records the response rows the watcher hands it."""
+
+    boot_high_water_event_log_id = 0
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str]] = []
+
+    async def submit_event(self, *, row_id: int, event: Any, origin: str) -> SimpleNamespace:  # noqa: ANN401 - Event
+        del row_id, origin
+        self.rows.append((str(event.type), str(event.payload["turn_id"])))
+        return SimpleNamespace(status="accepted")
+
+
 def _answer(conn: sqlite3.Connection, turn_id: str, *, attention_channel: str | None) -> None:
     header: dict[str, object] = {"turn_id": turn_id, "query": "q", "kind": "text"}
     if attention_channel is not None:
@@ -80,7 +93,7 @@ def test_an_answer_no_player_voices_is_announced_spoken_as_suppressed(tmp_path: 
     """A badge_card answer and a GPT-Live delegation each end with one suppressed ``spoken``."""
     conn = open_event_log(tmp_path / "events.db")
     wire = _Wire()
-    pipeline = MagicMock()
+    pipeline = _Submitted()
 
     def emit() -> None:
         _answer(conn, "T-card", attention_channel="badge_card")
@@ -104,7 +117,11 @@ def test_an_answer_no_player_voices_is_announced_spoken_as_suppressed(tmp_path: 
         ("spoken", "T-card", "suppressed"),
         ("spoken", "T-live", "suppressed"),
     ]
-    pipeline.begin_turn.assert_called_once_with("T-voice", gate_mode="sentence")
+    assert pipeline.rows == [
+        ("surface.response_open", "T-voice"),
+        ("surface.response_chunk", "T-voice"),
+        ("surface.response_emitted", "T-voice"),
+    ]
 
 
 def test_a_boot_without_speech_ends_every_answer_with_no_voice(tmp_path: Path) -> None:

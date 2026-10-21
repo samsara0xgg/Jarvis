@@ -156,7 +156,6 @@ from jarvis.surface.timesink_observer import TimesinkObserver, collect
 from jarvis.surface.usage_observer import DEVICE_SERVICES, UsageObserver
 from jarvis.surface.voice_controls import VoiceControls
 from jarvis.surface.voice_ducking import SystemAudioDucker
-from jarvis.surface.voice_media import StreamingTTSPipeline
 
 if TYPE_CHECKING:
     import sqlite3
@@ -165,6 +164,7 @@ if TYPE_CHECKING:
     from jarvis.deployment.sleep_wake import PowerObserver
     from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
     from jarvis.surface import voice_aec, voice_session
+    from jarvis.surface.voice_media import StreamingTTSPipeline
 
 LOGGER = logging.getLogger("jarvis.runtime.terminal")
 
@@ -623,7 +623,7 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
         echo_canceller=canceller, remote=RemoteTTSProvider(link),
         network_lost_dir=speaking.runtime_root / "terminal",
     )
-    if not isinstance(pipeline, StreamingTTSPipeline):
+    if pipeline is None:
         LOGGER.warning("voice is on but the media actor did not start; this terminal is mute")
         return _Speech()
     if speaking.controls is not None:

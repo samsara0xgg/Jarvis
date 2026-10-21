@@ -55,16 +55,6 @@ _DURATIONS: tuple[tuple[str, str, str], ...] = (
         "llm_batch_response_completed",
     ),
     (
-        "permit_to_tts_start_ms",
-        "response_candidate_permitted",
-        "tts_batch_synthesis_started",
-    ),
-    (
-        "tts_start_to_provider_first_pcm_ms",
-        "tts_batch_synthesis_started",
-        "tts_provider_first_pcm_received",
-    ),
-    (
         "provider_first_pcm_to_ring_accept_ms",
         "tts_provider_first_pcm_received",
         "tts_first_pcm_accepted_to_ring",

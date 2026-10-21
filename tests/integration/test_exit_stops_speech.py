@@ -12,8 +12,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -296,6 +296,19 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
 
 
 
+class _Submitted:
+    """A media actor that only records the response rows the watcher hands it."""
+
+    def __init__(self, boot_high_water_event_log_id: int) -> None:
+        self.boot_high_water_event_log_id = boot_high_water_event_log_id
+        self.rows: list[tuple[str, str]] = []
+
+    async def submit_event(self, *, row_id: int, event: Any, origin: str) -> SimpleNamespace:  # noqa: ANN401 - Event
+        del row_id, origin
+        self.rows.append((str(event.type), str(event.payload["turn_id"])))
+        return SimpleNamespace(status="accepted")
+
+
 class _Wire:
     """The ``voice spoken`` words the TTS watcher puts on the wire, in order."""
 
@@ -334,7 +347,8 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
         started.check_cancelled("next sentence")
     assert not registry.turn_stopped("T-pending")
 
-    wire, pipeline = _Wire(), MagicMock()
+    wire = _Wire()
+    pipeline = _Submitted(inherent_loop._latest_id(runtime.conn))  # noqa: SLF001
 
     def answer() -> None:
         for kind in ("response_open", "response_chunk", "response_emitted"):
@@ -347,7 +361,8 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
     async def watch() -> None:
         task = asyncio.create_task(
             inherent_loop._tts_watcher(  # noqa: SLF001 - the production watcher
-                conn=runtime.conn, pipeline=pipeline, poll_interval_s=0.01,
+                conn=runtime.conn, poll_interval_s=0.01,
+                pipeline=pipeline,  # type: ignore[arg-type]
                 broadcaster=wire,  # type: ignore[arg-type]
                 text_only=registry.turn_text_only,
             ),
@@ -360,5 +375,5 @@ def test_leaving_voice_mode_keeps_a_spoken_turn_that_has_not_started_answering(
             await task
 
     asyncio.run(watch())
-    pipeline.begin_turn.assert_not_called()
+    assert pipeline.rows == []
     assert wire.spoken == [("T-pending", "suppressed")]

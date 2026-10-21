@@ -510,11 +510,6 @@ class _VoiceKnobs:
     # MiniMax is asked for the highest rate it natively produces in our config
     # and resampled to the device rate via soxr on the way out.
     tts_sample_rate_in_hz: int = 32000
-    # 30 s of headroom so the full-buffer write() of a long response (typical
-    # 5-30 s of f32 PCM) lands in one shot; the player's own 2 s default forces
-    # write() to block on the drain and hit its 10 s timeout, dropping the tail
-    # of any response longer than ~10 s.
-    tts_ring_seconds: float = 30.0
     tts_connect_timeout_s: float = voice_tts.DEFAULT_TTS_CONNECT_TIMEOUT_S
     tts_task_start_timeout_s: float = voice_tts.DEFAULT_TTS_TASK_START_TIMEOUT_S
     tts_first_chunk_timeout_s: float = voice_tts.DEFAULT_TTS_FIRST_CHUNK_TIMEOUT_S
@@ -715,7 +710,6 @@ def _voice_knobs(config: Mapping[str, Any]) -> _VoiceKnobs:
         tts_sample_rate_in_hz=_knob_count(
             values, "tts_sample_rate_in_hz", d.tts_sample_rate_in_hz,
         ),
-        tts_ring_seconds=_knob_number(values, "tts_ring_seconds", d.tts_ring_seconds),
         tts_connect_timeout_s=_knob_number(
             values, "tts_connect_timeout_s", d.tts_connect_timeout_s,
         ),
@@ -1671,58 +1665,43 @@ async def _tool_status_watcher(
         raise
 
 
-async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
+async def _tts_watcher(  # noqa: C901 - ordered durable dispatch FSM
     *,
     conn: sqlite3.Connection,
-    pipeline: object,  # voice_tts.TTSPipeline protocol; loosely typed to avoid cycles
+    pipeline: voice_media.StreamingTTSPipeline,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
     broadcaster: InherentBroadcaster | None = None,
     text_only: Callable[[str], bool] | None = None,
 ) -> None:
-    """Background task: feed every surface.response_* row into the TTSPipeline.
+    """Background task: feed every surface.response_* row to the streaming media owner.
 
-    Single cursor, three dispatch targets (``begin_turn`` / ``handle_chunk`` /
-    ``handle_emitted``) per ADR-0005 §5.3 + §4.3 row ``_tts_watcher``. Runs
+    Single cursor per ADR-0005 §5.3 + §4.3 row ``_tts_watcher``. Runs
     in parallel with :func:`_response_watcher`; both are read-only polls on
     the same event stream so the D16 race-elimination argument that motivates
     a single in-order cursor for the broadcaster applies here verbatim — TTS
     must observe ``open`` before ``chunk`` and ``chunk`` before ``emitted``,
     which the single-cursor + monotonic SQLite row id gives us by construction.
 
-    The ``pipeline`` parameter is typed as :class:`object` (rather than
-    ``voice_tts.TTSPipeline``) so this composition-root module stays free
-    of an L5 import cycle; the three method calls below pin the structural
-    contract the watcher actually depends on. Production TTSPipeline methods
-    only mutate state/enqueue owned work, so dispatch stays on the event-loop
-    thread without blocking and never creates a default-executor TTS worker.
-
-    Dispatch by ``event.type``:
-
-    - ``surface.response_open``    -> ``pipeline.begin_turn(turn_id, gate_mode=...)``
-      (``required_gate_mode`` from the payload, default ``"sentence"`` so a
-      missing field — older event rows or non-voice-aware emitters — falls
-      back to the safe full-sentence path).
-    - ``surface.response_chunk``   -> ``pipeline.handle_chunk(turn_id, text)``
-    - ``surface.response_emitted`` -> ``pipeline.handle_emitted(turn_id)``
-    - ``response.cancelled`` / ``response.failed`` -> the streaming media
-      owner only, which stops or drops that response's playback; the legacy
-      pipeline has no cancel entry point and ignores them.
+    Every row of ``surface.response_open`` / ``surface.response_chunk`` /
+    ``surface.response_emitted`` / ``response.cancelled`` / ``response.failed`` goes to
+    :meth:`~jarvis.surface.voice_media.StreamingTTSPipeline.submit_event`, which only
+    enqueues owned work, so dispatch stays on the event-loop thread without blocking.
+    When the media owner reports ``overloaded`` the cursor stays on that row and the
+    Event Log, the durable queue, delivers it again.
 
     Per-event dispatch is wrapped in a catch-all: a misbehaving TTS pipeline
-    (e.g. MiniMax WebSocket drop, ``say`` subprocess error) must NOT crash
-    the watcher because that would stall every subsequent turn. We log a
-    warning and continue; the surface broadcaster keeps running on the
-    parallel cursor, so the UI is unaffected.
+    (e.g. a MiniMax WebSocket drop) must NOT crash the watcher because that would
+    stall every subsequent turn. We log a warning and retry the row; the surface
+    broadcaster keeps running on the parallel cursor, so the UI is unaffected.
 
     Channel filter (ADR-0009 D4 — "System turns are silent, enforced"):
     a turn whose ``surface.response_open`` header declares a channel in
     :data:`_TTS_SILENT_CHANNELS`, or which was submitted on one (ADR-0016
     D8 — a ``gpt_live`` delegation), never reaches the pipeline at all —
-    ``begin_turn`` is not called, its chunks are dropped, and its
-    ``emitted`` only clears the bookkeeping. Both labels are read once,
-    at the open, so the suppressed turn ids are remembered until their
-    ``emitted`` row closes them. This is a filter, not a switch: a
-    ``voice_notify`` turn streams exactly as before. The row that closes a
+    its chunks are dropped, and its ``emitted`` only clears the bookkeeping.
+    Both labels are read once, at the open, so the suppressed turn ids are
+    remembered until their ``emitted`` row closes them. This is a filter, not a
+    switch: a ``voice_notify`` turn streams exactly as before. The row that closes a
     suppressed turn is announced as ``voice spoken {output_outcome:
     "suppressed"}`` on ``broadcaster``: the surface shows the turn's text
     with a speaking face until ``spoken``, which no player would send.
@@ -1730,14 +1709,7 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
     Cancellation: re-raises :class:`asyncio.CancelledError` so the daemon
     shutdown path (Task 19) can await the watcher cleanly.
     """
-    streaming_pipeline = (
-        pipeline if isinstance(pipeline, voice_media.StreamingTTSPipeline) else None
-    )
-    after_id = (
-        streaming_pipeline.boot_high_water_event_log_id
-        if streaming_pipeline is not None
-        else _latest_id(conn)
-    )
+    after_id = pipeline.boot_high_water_event_log_id
     silent_turns: set[str] = set()
     LOGGER.info("tts_watcher started (after_id=%d)", after_id)
     try:
@@ -1783,38 +1755,19 @@ async def _tts_watcher(  # noqa: C901, PLR0912 - ordered durable dispatch FSM
                             )
                         after_id = max(after_id, row_id)
                         continue
-                    if streaming_pipeline is not None:
-                        outcome = await streaming_pipeline.submit_event(
-                            row_id=row_id,
-                            event=ev,
-                            origin="watcher",
-                        )
-                        if outcome.status == "overloaded":
-                            # The Event Log is the durable queue. Retain the
-                            # cursor so even the final committed row is retried
-                            # after bounded media capacity becomes available.
-                            advance_cursor = False
-                            break
-                        continue
-                    if ev.type == "surface.response_open":
-                        gate_mode = ev.payload.get("required_gate_mode", "sentence")
-                        pipeline.begin_turn(  # type: ignore[attr-defined]
-                            turn_id,
-                            gate_mode=gate_mode,
-                        )
-                    elif ev.type == "surface.response_chunk":
-                        text = str(ev.payload.get("text", ""))
-                        pipeline.handle_chunk(  # type: ignore[attr-defined]
-                            turn_id,
-                            text,
-                        )
-                    elif ev.type == "surface.response_emitted":
-                        pipeline.handle_emitted(  # type: ignore[attr-defined]
-                            turn_id,
-                        )
-                except Exception as exc:  # noqa: BLE001 — log + continue; TTS must not crash watcher.
-                    if streaming_pipeline is not None:
+                    outcome = await pipeline.submit_event(
+                        row_id=row_id,
+                        event=ev,
+                        origin="watcher",
+                    )
+                    if outcome.status == "overloaded":
+                        # The Event Log is the durable queue. Retain the
+                        # cursor so even the final committed row is retried
+                        # after bounded media capacity becomes available.
                         advance_cursor = False
+                        break
+                except Exception as exc:  # noqa: BLE001 — log + retry the row; TTS must not crash watcher.
+                    advance_cursor = False
                     LOGGER.warning(
                         "tts_watcher: dispatch raised on %s turn_id=%s: %r",
                         ev.type,
@@ -2943,7 +2896,7 @@ class SpeakerHost(Protocol):
     def response_runs(self) -> ResponseRunRegistry | None: ...
 
 
-def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation capability boundary
+def _build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
     runtime: SpeakerHost,
     broadcaster: InherentBroadcaster,
     *,
@@ -2952,21 +2905,18 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
     echo_canceller: voice_aec.EchoCanceller | None = None,
     remote: voice_media.StreamingTTSProvider | None = None,
     network_lost_dir: Path | None = None,
-) -> voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None:
-    """Build the TTS subsystem when ``MINIMAX_API_KEY`` is present.
+) -> voice_media.StreamingTTSPipeline | None:
+    """Build the speech subsystem, or ``None`` for a text-only boot.
 
     ``remote`` (ADR 0172) is a voice terminal's provider, whose sessions run on the brain,
-    which holds the key: the media actor is built around it, with no key here and no
-    legacy fallback, because the legacy pipeline needs the client itself. ``network_lost_dir``
-    is where a terminal keeps the audio of the cut-off line between runs, so a start does not
-    pay the brain for the same sentence again.
+    which holds the key: the media actor is built around it, with no key here.
+    ``network_lost_dir`` is where a terminal keeps the audio of the cut-off line between runs,
+    so a start does not pay the brain for the same sentence again.
 
-    ADR-0005 §5.3 — the env var is the sole credential source for the
-    MiniMax WebSocket. Without it we skip the entire TTS pipeline
-    (instead of falling through to ``macos_say_fallback`` only): the
-    fallback is a per-call escape hatch from inside
-    :class:`TTSPipeline`, not a standalone path, so wiring it on its
-    own would lie about what the daemon can actually do.
+    ADR-0005 §5.3 — the env var is the sole credential source for the MiniMax WebSocket.
+    Without it we skip the whole subsystem. So does every other way the media actor cannot
+    start (an invalid ``realtime.streaming_output``, the event-log features off, no TTS
+    endpoint, a startup error): there is no second speech path to fall back to.
 
     The optional ``ducker`` is the :class:`SystemAudioDucker` the media actor takes
     its output lease from.
@@ -2988,33 +2938,21 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
     playback_volume = float(realtime.get("playback_volume") or 1.0)
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
-    streaming_requested = realtime.get("enabled") is True and streaming.get("enabled") is True
     try:
         media_config = voice_media.streaming_media_config_from_mapping(streaming)
     except ValueError as exc:
-        media_config = None
-        if streaming_requested:
-            LOGGER.warning(
-                "realtime.streaming_output config invalid (%s); downgraded to legacy TTS.",
-                exc,
-            )
-    # THE output rate, for the provider's resampler and both players.
+        LOGGER.warning(
+            "realtime.streaming_output config invalid (%s); this boot will not speak.",
+            exc,
+        )
+        return None
+    # THE output rate, for the provider's resampler and the player.
     # ``realtime.streaming_output.canonical_sample_rate_hz`` is its only source:
     # a second constant here could only ever agree with it or silently disable
     # streaming. The default (48 kHz) is the macOS built-in device rate, so
     # CoreAudio is not forced into a hardware-rate switch on every play — which
     # was producing audible pops for any other app sharing the speaker.
-    streaming_defaults = voice_media.StreamingMediaConfig()
-    output_sample_rate_hz = (
-        streaming_defaults.canonical_sample_rate_hz
-        if media_config is None
-        else media_config.canonical_sample_rate_hz
-    )
-    streaming_ring_seconds = (
-        streaming_defaults.ring_seconds
-        if media_config is None
-        else media_config.ring_seconds
-    )
+    output_sample_rate_hz = media_config.canonical_sample_rate_hz
 
     # ADR 0120: with the diagnostics switch on, her audio is kept beside the recordings.
     recorder = (
@@ -3024,132 +2962,89 @@ def _build_tts_pipeline(  # noqa: C901, PLR0913, PLR0915 - rollout/degradation c
         and runtime.memory is not None
         else None
     )
-
-    def _new_provider() -> voice_tts.MiniMaxWSClient:
-        return _minimax_client(
+    provider: voice_media.StreamingTTSProvider = (
+        remote
+        if remote is not None
+        else _minimax_client(
             knobs, api_key or "", volume_kwargs,
             sample_rate_out=output_sample_rate_hz, recorder=recorder,
             voice_settings=runtime.voice_settings,
         )
-
-    provider = None if remote is not None else _new_provider()
-    streaming_provider = remote or provider
-    streaming_capable = (
-        runtime.wave1_features.transactional_event_append
-        and runtime.wave1_features.lifecycle_terminal_cas
-        and streaming_provider is not None
-        and streaming_provider.streaming_candidate_count > 0
-        and media_config is not None
     )
-    if streaming_requested and streaming_capable and streaming_provider is not None:
-        player = (
-            _native_streaming_player(
-                echo_canceller=echo_canceller,
-                sample_rate_hz=output_sample_rate_hz,
-                ring_seconds=streaming_ring_seconds,
-                device=output_device,
-                volume=playback_volume,
-            )
-            if streaming.get("native_player") is True
-            else None
-        ) or voice_tts.AudioStreamPlayer(
-            sample_rate_hz=output_sample_rate_hz,
-            ring_seconds=streaming_ring_seconds,
-            lazy_open=True,
-            generation_safe=True,
-            # 2048 frames (43 ms) of slack: with 1024 the Python callback still
-            # missed CoreAudio's cycle under load (~40 overloads a minute on the
-            # Multi-Output device, 2026-10-02), each one a pop in her voice.
-            blocksize=2048,
-            # The host buffer behind it: final ASR and turn start still stall the
-            # callback past 43 ms when Allen stops talking, a pop if she is speaking.
-            latency=0.12,
-            device=output_device,
-            playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
-            volume=playback_volume,
-        )
-        text_registry = runtime.response_runs
-        try:
-            return voice_media.StreamingTTSPipeline(
-                provider=streaming_provider,
-                player=player,
-                conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
-                boot_high_water_id=_latest_id(runtime.conn),
-                config=(
-                    media_config if media_config is None or network_lost_dir is None
-                    else dataclasses.replace(media_config, network_lost_cache_dir=network_lost_dir)
-                ),
-                broadcaster=broadcaster,
-                ducker=ducker,
-                foreground_decision_callable=make_foreground_decision_callable(
-                    wait_for_lane=runtime.response_flags.slow_results,
-                ),
-                silent_intent_channels=_TTS_SILENT_CHANNELS,
-                speaks_turn=(
-                    None if text_registry is None
-                    else lambda _conn, turn_id: not text_registry.turn_text_only(turn_id)
-                ),
-            )
-        except voice_media.StreamingMediaStartupError as exc:
-            if not exc.legacy_fallback_safe:
-                LOGGER.warning(
-                    "realtime.streaming_output startup left output ownership "
-                    "uncertain in %s; this boot is downgraded to text-only.",
-                    exc.phase,
-                )
-                if isinstance(player, voice_native_out.NativeAudioStreamPlayer):
-                    player.stop()
-                return None
-            LOGGER.warning(
-                "realtime.streaming_output startup failed closed in %s (%r); "
-                "downgraded using an independent legacy provider.",
-                exc.phase,
-                exc,
-            )
-            provider = _new_provider()
-        except Exception as exc:  # noqa: BLE001 - rollout must fail safe
-            LOGGER.warning(
-                "realtime.streaming_output startup failed (%r); downgraded using "
-                "an independent legacy provider.",
-                exc,
-            )
-            provider = _new_provider()
-        if isinstance(player, voice_native_out.NativeAudioStreamPlayer):
-            player.stop()  # the legacy player below owns the speaker now
-    if remote is not None or provider is None:
+    if not (
+        realtime.get("enabled") is True
+        and runtime.wave1_features.transactional_event_append
+        and runtime.wave1_features.lifecycle_terminal_cas
+        and provider.streaming_candidate_count > 0
+    ):
         LOGGER.warning(
-            "this terminal cannot run streaming speech (realtime.enabled, "
-            "realtime.streaming_output or the event log features are off, or startup "
-            "failed); it will not speak.",
+            "streaming speech cannot run (realtime.enabled or the event log features are "
+            "off, or no TTS endpoint is configured); this boot will not speak.",
         )
         return None
-    if streaming_requested and media_config is not None and not streaming_capable:
-        LOGGER.warning(
-            "realtime.streaming_output capability/config validation failed; "
-            "downgraded to legacy TTS.",
-        )
-    # lazy_open=False so the PortAudio OutputStream is up before the first
-    # MiniMax chunk lands; otherwise `write()` would fill the ring and
-    # never drain, leaving `is_speaking()` permanently True and starving
-    # the wake listener.
-    try:
-        player = voice_tts.AudioStreamPlayer(
+    player = (
+        _native_streaming_player(
+            echo_canceller=echo_canceller,
             sample_rate_hz=output_sample_rate_hz,
-            ring_seconds=knobs.tts_ring_seconds,
-            lazy_open=False,
+            ring_seconds=media_config.ring_seconds,
             device=output_device,
             volume=playback_volume,
         )
-        return voice_tts.TTSPipeline(
+        if streaming.get("native_player") is True
+        else None
+    ) or voice_tts.AudioStreamPlayer(
+        sample_rate_hz=output_sample_rate_hz,
+        ring_seconds=media_config.ring_seconds,
+        lazy_open=True,
+        generation_safe=True,
+        # 2048 frames (43 ms) of slack: with 1024 the Python callback still
+        # missed CoreAudio's cycle under load (~40 overloads a minute on the
+        # Multi-Output device, 2026-10-02), each one a pop in her voice.
+        blocksize=2048,
+        # The host buffer behind it: final ASR and turn start still stall the
+        # callback past 43 ms when Allen stops talking, a pop if she is speaking.
+        latency=0.12,
+        device=output_device,
+        playback_tap=echo_canceller.add_playback if echo_canceller is not None else None,
+        volume=playback_volume,
+    )
+    text_registry = runtime.response_runs
+    try:
+        return voice_media.StreamingTTSPipeline(
             provider=provider,
             player=player,
-            fallback=voice_tts.macos_say_fallback,
+            conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
+            boot_high_water_id=_latest_id(runtime.conn),
+            config=(
+                media_config if network_lost_dir is None
+                else dataclasses.replace(media_config, network_lost_cache_dir=network_lost_dir)
+            ),
             broadcaster=broadcaster,
             ducker=ducker,
+            foreground_decision_callable=make_foreground_decision_callable(
+                wait_for_lane=runtime.response_flags.slow_results,
+            ),
+            silent_intent_channels=_TTS_SILENT_CHANNELS,
+            speaks_turn=(
+                None if text_registry is None
+                else lambda _conn, turn_id: not text_registry.turn_text_only(turn_id)
+            ),
         )
-    except Exception as exc:  # noqa: BLE001 - final voice degradation boundary
-        LOGGER.warning("legacy TTS startup failed (%r); downgraded to text-only.", exc)
-        return None
+    except voice_media.StreamingMediaStartupError as exc:
+        LOGGER.warning(
+            "realtime.streaming_output startup failed in %s (output device %s); "
+            "this boot is text-only.",
+            exc.phase,
+            exc.device_disposition,
+        )
+    except Exception as exc:  # noqa: BLE001 - the speech subsystem fails to text-only
+        LOGGER.warning(
+            "realtime.streaming_output startup failed (%r); this boot is text-only.",
+            exc,
+        )
+    if isinstance(player, voice_native_out.NativeAudioStreamPlayer):
+        player.stop()
+    return None
 
 
 class _SpokenCursor:
@@ -3461,7 +3356,6 @@ def _build_phone_speech(
         return None
     if not (
         realtime.get("enabled") is True
-        and streaming.get("enabled") is True
         and runtime.wave1_features.transactional_event_append
         and runtime.wave1_features.lifecycle_terminal_cas
     ):
@@ -4401,7 +4295,7 @@ def _local_listen_ports(
 def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
     runtime: _IngressHost,
     *,
-    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts: voice_media.StreamingTTSPipeline | None,
 ) -> _SingleIngressActivation:
     """Validate feature flags, Wave-1/2 dependencies, and strict input bounds."""
     realtime_raw = runtime.config.get("realtime")
@@ -4447,16 +4341,11 @@ def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite
             capable=False,
             reason="wave1_capability_missing",
         )
-    streaming_raw = realtime.get("streaming_output")
-    streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
-    if streaming.get("enabled") is not True or not isinstance(
-        tts,
-        voice_media.StreamingTTSPipeline,
-    ):
+    if tts is None:
         return _SingleIngressActivation(
             requested=True,
             capable=False,
-            reason="wave2_streaming_output_missing",
+            reason="streaming_output_missing",
         )
     return _SingleIngressActivation(
         requested=True,
@@ -4473,7 +4362,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
-    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts: voice_media.StreamingTTSPipeline | None,
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
@@ -4594,9 +4483,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             model_path=silero_path,
             profiles=knobs.vad_profiles,
         )
-        streaming = tts if isinstance(tts, voice_media.StreamingTTSPipeline) else None
         listen = (
-            _local_listen_ports(cast("JarvisRuntime", runtime), streaming)
+            _local_listen_ports(cast("JarvisRuntime", runtime), tts)
             if ports is None
             else ports
         )
@@ -4607,7 +4495,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             # so it cannot start speaking over his new question.
             playback = (
                 tts.stop_foreground_output(None, reason="barge_in")
-                if isinstance(tts, voice_media.StreamingTTSPipeline)
+                if tts is not None
                 else "no_streaming_player"
             )
             generation = (
@@ -4626,8 +4514,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             # no queued answer starts playing.
             if listen.hold_runs is not None:
                 listen.hold_runs(held)
-            if streaming is not None:
-                streaming.hold_output(held=held)
+            if tts is not None:
+                tts.hold_output(held=held)
             if held:
                 # His words will end in a request; have its connection open by then.
                 if listen.warm is not None:
@@ -4666,8 +4554,8 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
             heard_elsewhere=listen.heard_elsewhere,
             voiceprints=listen.voiceprints,
             judged_on_send=listen.judged_on_send,
-            yield_speaking=streaming.set_yield_gain if streaming is not None else None,
-            pause_speaking=streaming.pause_speaking if streaming is not None else None,
+            yield_speaking=tts.set_yield_gain if tts is not None else None,
+            pause_speaking=tts.pause_speaking if tts is not None else None,
             ambient=listen.ambient,
         )
     except Exception:
@@ -4727,7 +4615,7 @@ def _spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - ea
 def _input_owner_reason(
     runtime: JarvisRuntime,
     *,
-    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts: voice_media.StreamingTTSPipeline | None,
     duplex_session: voice_session.DuplexVoiceSession | None,
     attempted: bool,
 ) -> str:
@@ -4754,7 +4642,7 @@ def _spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenc
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
-    tts: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts: voice_media.StreamingTTSPipeline | None,
     voice: _VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
@@ -6399,13 +6287,13 @@ def _shutdown_power_observer(power_observer: PowerObserver | None) -> None:
 
 
 def _shutdown_tts(
-    tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts_pipe: voice_media.StreamingTTSPipeline | None,
 ) -> None:
     """Bound TTS owners, then stop the player and release PortAudio.
 
     The caller has already installed the pipeline's close gate and cancelled
-    the watcher. TTS provider/fallback work belongs to the pipeline's daemon
-    worker rather than asyncio's default executor; :meth:`TTSPipeline.close`
+    the watcher. TTS provider/fallback work belongs to the media actor's daemon
+    worker rather than asyncio's default executor; :meth:`StreamingTTSPipeline.close`
     cancels its owned task/process and joins that worker up to a hard bound.
     """
     if tts_pipe is None:
@@ -6417,7 +6305,7 @@ def _shutdown_tts(
 
 
 def _request_tts_close(
-    tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts_pipe: voice_media.StreamingTTSPipeline | None,
 ) -> None:
     """Install the late-output gate before watcher cancellation; never raise."""
     if tts_pipe is None:
@@ -6495,7 +6383,7 @@ def _shutdown_duplex_voice_session(
 
 def _request_voice_input_branch_shutdown(
     owners: _VoiceInputOwners,
-    tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None,
+    tts_pipe: voice_media.StreamingTTSPipeline | None,
 ) -> None:
     """Revoke input before output, the order serve uses (ADR-0006 F14)."""
     if owners.duplex_session is not None:
@@ -7161,9 +7049,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
     3. ADR-0005 §12 pre-flight — call :func:`_voice_models_preflight`
        on the configured SenseVoice + Silero paths. When models are
        present, construct :class:`VoicePipeline`, optionally
-       :class:`TTSPipeline` (if ``MINIMAX_API_KEY`` is set), and (when
-       ``JARVIS_VOICE_DISABLE_WAKE`` is unset) start the single audio
-       ingress. Missing models or any construction
+       :class:`~jarvis.surface.voice_media.StreamingTTSPipeline` (if
+       ``MINIMAX_API_KEY`` is set), and (when ``JARVIS_VOICE_DISABLE_WAKE`` is
+       unset) start the single audio ingress. Missing models or any construction
        failure: log ERROR and continue text-only — the text path stays
        healthy.
     4. Build the FastAPI app via :func:`create_app` with
@@ -7275,7 +7163,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # downgrades the daemon to text-only — text path must stay
         # healthy when models / SDKs / mics are missing (CI default).
         voice_pipe: voice_pipeline.VoicePipeline | None = None
-        tts_pipe: voice_tts.TTSPipeline | voice_media.StreamingTTSPipeline | None = None
+        tts_pipe: voice_media.StreamingTTSPipeline | None = None
         duplex_voice_session: voice_session.DuplexVoiceSession | None = None
         # ADR-0015: the two mute switches the desktop surface flips over
         # POST /inherent/controls: mic on the input session, speech as the player's gain.
@@ -7565,9 +7453,10 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         # generation open forever. Close each one here, third and last, in
         # the ADR's own bullet order (responses, actions, playback).
         # Ungated on purpose: the actor that PRODUCES a playback generation
-        # is gated on realtime.streaming_output, not on response_run_lifecycle,
-        # so any flag gate here admits a legal config whose orphans no boot
-        # ever closes. The fold appends nothing when no generation is open.
+        # is gated on realtime.enabled and the wave-1 event-log switches, not on
+        # response_run_lifecycle, so any flag gate here admits a legal config
+        # whose orphans no boot ever closes. The fold appends nothing when no
+        # generation is open.
         closed_playback = await asyncio.to_thread(
             _reconcile_open_playback_in_thread,
             runtime.runtime_paths.event_log,
@@ -7586,7 +7475,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 # of a run the registry has already released.
                 stop_foreground_output=(
                     tts_pipe.stop_foreground_output
-                    if isinstance(tts_pipe, voice_media.StreamingTTSPipeline)
+                    if tts_pipe is not None
                     else None
                 ),
             )
@@ -8450,8 +8339,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 session=duplex_voice_session,
                 media=tts_pipe,
             )
-            if duplex_voice_session is not None
-            and isinstance(tts_pipe, voice_media.StreamingTTSPipeline)
+            if duplex_voice_session is not None and tts_pipe is not None
             else None
         )
         if power_coordinator is not None and duplex_voice_session is not None:

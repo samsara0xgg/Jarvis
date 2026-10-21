@@ -1861,7 +1861,7 @@ def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None
 
 
 def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
-    """Feature-off is legacy; flag-on requires accepted Wave-1/2 capability."""
+    """Feature-off does not listen; flag-on needs Wave-1 capability and a speech actor."""
     runtime = MagicMock()
     runtime.config = {"realtime": {"enabled": False}}
     runtime.wave1_features = Wave1FeatureFlags()
@@ -1873,7 +1873,6 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
-            "streaming_output": {"enabled": True},
         },
     }
     missing = inherent_loop._single_ingress_activation(runtime, tts=None)
@@ -1885,6 +1884,10 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
         transactional_event_append=True,
         lifecycle_terminal_cas=True,
     )
+    no_speech = inherent_loop._single_ingress_activation(runtime, tts=None)
+    assert no_speech.requested
+    assert not no_speech.capable
+    assert no_speech.reason == "streaming_output_missing"
     wave2 = object.__new__(voice_media.StreamingTTSPipeline)
     enabled = inherent_loop._single_ingress_activation(runtime, tts=wave2)
     assert enabled.requested
@@ -3901,7 +3904,6 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
-            "streaming_output": {"enabled": True},
         },
     }
     pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")
@@ -3938,7 +3940,6 @@ def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner(
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
-            "streaming_output": {"enabled": True},
         },
     }
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
@@ -3980,7 +3981,6 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
-            "streaming_output": {"enabled": True},
         },
     }
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
@@ -4067,7 +4067,6 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
         "realtime": {
             "enabled": True,
             "single_audio_ingress": {"enabled": True},
-            "streaming_output": {"enabled": True},
         },
     }
     pipeline.prewarm_input_model.side_effect = RuntimeError("injected prewarm")

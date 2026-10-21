@@ -454,14 +454,12 @@ def test_the_phone_channel_is_spoken_for_l3_and_silent_for_the_macs_speaker(
         conn.close()
 
 
-def test_the_speech_builder_needs_a_key_and_the_streaming_config(
+def test_the_speech_builder_needs_a_key_and_realtime_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No key or streaming off: ``voice: false``. Otherwise a speech builder."""
+    """No key or realtime off: ``voice: false``. Otherwise a speech builder."""
     conn = voice_log(tmp_path / "events.db")
-    config: dict[str, Any] = {
-        "realtime": {"enabled": True, "streaming_output": {"enabled": True}},
-    }
+    config: dict[str, Any] = {"realtime": {"enabled": True}}
     host = SimpleNamespace(
         config=config,
         wave1_features=Wave1FeatureFlags(
@@ -481,7 +479,7 @@ def test_the_speech_builder_needs_a_key_and_the_streaming_config(
     assert isinstance(
         inherent_loop._build_phone_speech(runtime, knobs, rows), PhoneSpeech,  # noqa: SLF001
     )
-    config["realtime"]["streaming_output"]["enabled"] = False
+    config["realtime"]["enabled"] = False
     assert inherent_loop._build_phone_speech(runtime, knobs, rows) is None  # noqa: SLF001
 
 

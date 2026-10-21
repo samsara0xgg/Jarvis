@@ -1197,8 +1197,7 @@ realtime:
   # own 0.97 cutoff; lower it (0.95 trades the quiet/far takes for margin) in
   # your settings.yaml.
   wake_threshold: 0.97
-  # MiniMax request shape.  These reach MiniMaxWSClient whatever wave is on:
-  # the streaming and legacy TTS paths share one provider.
+  # MiniMax request shape.  These reach MiniMaxWSClient, the one TTS provider.
   # tts_voice: a MiniMax voice id; unset = the first of the language's setup
   # voices (jarvis/runtime/settings.py SETUP_VOICES).
   tts_model: speech-2.8-turbo
@@ -1208,11 +1207,6 @@ realtime:
   # which is streaming_output.canonical_sample_rate_hz below and is written in
   # exactly that one place.
   tts_sample_rate_in_hz: 32000
-  # Ring depth of the LEGACY player only (streaming has its own, below).  30 s
-  # because the legacy path writes a whole response in one shot: at the 2 s
-  # player default that write blocks on the drain, times out at 10 s, and drops
-  # the tail of any response longer than about ten seconds.
-  tts_ring_seconds: 30.0
   # MiniMax deadlines, in seconds.  Every one of them fails the request closed
   # rather than hanging a response; raise them for a slow link, not to paper
   # over a dead endpoint.
@@ -1462,11 +1456,11 @@ realtime:
     # Outbound mic backlog tolerated before stale audio is dropped wholesale.
     input_backlog_s: 0.5
     input_chunk_ms: 100
-  # Wave 2 rollout.  Enabling this also requires realtime.enabled plus the
-  # transactional append and lifecycle terminal CAS switches above.  Invalid
-  # combinations downgrade once to the complete legacy batch path.
+  # The speech path: the one media actor that plays every answer.  It needs
+  # realtime.enabled plus the transactional append and lifecycle terminal CAS
+  # switches above; without them, or when this block is invalid, the boot is
+  # text-only.
   streaming_output:
-    enabled: true
     canonical_sample_rate_hz: 48000
     command_queue_capacity: 64
     response_lane_capacity: 8

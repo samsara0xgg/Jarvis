@@ -237,8 +237,6 @@ def _block_real_audio_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     # ``/usr/bin/osascript``.
     monkeypatch.setattr(notify, "deliver_voice", lambda *_a, **_kw: None)
     monkeypatch.setattr(notify, "deliver_banner", lambda *_a, **_kw: None)
-    # F7 ``macos_say`` fallback inside the TTS pipeline.
-    monkeypatch.setattr(voice_tts, "macos_say_fallback", lambda *_a, **_kw: None)
 
 
 @pytest.fixture

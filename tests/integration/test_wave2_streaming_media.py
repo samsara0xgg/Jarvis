@@ -2887,24 +2887,18 @@ def test_minimax_session_single_reader_writer_backpressure_and_watchdog() -> Non
     asyncio.run(_body())
 
 
-def test_streaming_rollout_default_on_and_production_builder_gate(  # noqa: PLR0915
+def test_production_builder_gate_and_text_only_degradation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Shipped config is on; valid flags select the real persistent actor."""
+    """Valid config builds the real persistent actor; every way it cannot start is text-only."""
     config = yaml.safe_load(Path("config/jarvis.yaml").read_text())
     assert config["realtime"]["enabled"] is True
-    assert config["realtime"]["streaming_output"]["enabled"] is True
     db_path = tmp_path / "builder.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={
-            "realtime": {
-                "enabled": True,
-                "streaming_output": {"enabled": True},
-            },
-        },
+        config={"realtime": {"enabled": True}},
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,
             lifecycle_terminal_cas=True,
@@ -2927,78 +2921,48 @@ def test_streaming_rollout_default_on_and_production_builder_gate(  # noqa: PLR0
         assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
         assert pipeline.close()
         runtime.config = {"realtime": {"enabled": False}}
-        legacy = inherent_loop._build_tts_pipeline(  # noqa: SLF001
-            cast("Any", runtime),
-            cast("Any", SimpleNamespace()),
+        assert (
+            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
+            is None
         )
-        assert isinstance(legacy, voice_tts.TTSPipeline)
-        assert legacy.close()
         runtime.config = {
             "realtime": {
                 "enabled": True,
-                "streaming_output": {
-                    "enabled": True,
-                    "command_queue_capacity": 0,
-                },
+                "streaming_output": {"command_queue_capacity": 0},
             },
         }
-        invalid_config_fallback = inherent_loop._build_tts_pipeline(  # noqa: SLF001
-            cast("Any", runtime),
-            cast("Any", SimpleNamespace()),
+        assert (
+            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
+            is None
         )
-        assert isinstance(invalid_config_fallback, voice_tts.TTSPipeline)
-        assert invalid_config_fallback.close()
-    runtime.config = {
-        "realtime": {
-            "enabled": True,
-            "streaming_output": {"enabled": True},
-        },
-    }
-    startup_error = OSError("injected PortAudio start failure")
-    failed_stream = _FakeOutputStream(start_error=startup_error)
-    legacy_stream = _FakeOutputStream()
-    streaming_provider = FakeProvider(candidate_count=1)
-    legacy_provider = FakeProvider(candidate_count=1)
+    runtime.config = {"realtime": {"enabled": True}}
+    failed_stream = _FakeOutputStream(start_error=OSError("injected PortAudio start failure"))
     with (
-        patch.object(
-            voice_tts,
-            "_open_output_stream",
-            side_effect=[failed_stream, legacy_stream],
-        ),
+        patch.object(voice_tts, "_open_output_stream", return_value=failed_stream),
         patch.object(
             voice_tts,
             "MiniMaxWSClient",
-            side_effect=[streaming_provider, legacy_provider],
+            return_value=FakeProvider(candidate_count=1),
         ),
     ):
-        startup_fallback = inherent_loop._build_tts_pipeline(  # noqa: SLF001
-            cast("Any", runtime),
-            cast("Any", SimpleNamespace()),
+        assert (
+            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
+            is None
         )
-        assert isinstance(startup_fallback, voice_tts.TTSPipeline)
-        assert cast("object", startup_fallback._provider) is legacy_provider  # noqa: SLF001
-        assert startup_fallback.close()
     assert not failed_stream.active
-    assert not legacy_stream.active
-    first_failure = _FakeOutputStream(start_error=startup_error)
-    second_failure = _FakeOutputStream(start_error=startup_error)
-    with patch.object(
-        voice_tts,
-        "_open_output_stream",
-        side_effect=[
-            first_failure,
-            second_failure,
-        ],
-    ):
-        text_only = inherent_loop._build_tts_pipeline(  # noqa: SLF001
-            cast("Any", runtime),
-            cast("Any", SimpleNamespace()),
-        )
-        assert text_only is None
-    assert not first_failure.active
-    assert not second_failure.active
 
-    runtime.config["realtime"]["streaming_output"]["shutdown_timeout_s"] = 0.06
+    runtime.config = {
+        "realtime": {"enabled": True, "streaming_output": {"shutdown_timeout_s": 0.06}},
+    }
     stuck_player = make_player()
     player_start_gate = threading.Event()
     late_player_stopped = threading.Event()
@@ -3039,21 +3003,16 @@ def test_streaming_rollout_default_on_and_production_builder_gate(  # noqa: PLR0
     conn.close()
 
 
-def test_production_builder_falls_back_only_after_typed_closed_startup(
+def test_production_builder_is_text_only_after_any_typed_startup_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Uncertain Wave-2 output debt forbids an independent legacy owner."""
+    """Uncertain or failed-closed output startup leaves the boot text-only, with no second owner."""
     db_path = tmp_path / "typed-output-startup.db"
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={
-            "realtime": {
-                "enabled": True,
-                "streaming_output": {"enabled": True},
-            },
-        },
+        config={"realtime": {"enabled": True}},
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,
             lifecycle_terminal_cas=True,
@@ -3103,27 +3062,19 @@ def test_production_builder_falls_back_only_after_typed_closed_startup(
         21,
         "already_closed",
     )
-    legacy_player = MagicMock(spec=voice_tts.AudioStreamPlayer)
-    legacy_player.stop.return_value = voice_tts.PlayerStopResult(
-        "closed",
-        22,
-        "closed",
-    )
     with (
-        patch.object(
-            voice_tts,
-            "AudioStreamPlayer",
-            side_effect=[failed_closed_player, legacy_player],
-        ) as factory,
+        patch.object(voice_tts, "AudioStreamPlayer", return_value=failed_closed_player) as factory,
         patch.object(voice_tts, "MiniMaxWSClient", return_value=provider),
     ):
-        fallback = inherent_loop._build_tts_pipeline(  # noqa: SLF001
-            cast("Any", runtime),
-            cast("Any", SimpleNamespace()),
+        assert (
+            inherent_loop._build_tts_pipeline(  # noqa: SLF001
+                cast("Any", runtime),
+                cast("Any", SimpleNamespace()),
+            )
+            is None
         )
-    assert isinstance(fallback, voice_tts.TTSPipeline)
-    assert factory.call_count == 2
-    assert fallback.close()
+    assert factory.call_count == 1
+    assert failed_closed_player.start.call_count == 1
     conn.close()
 
 
@@ -3303,15 +3254,13 @@ def test_heard_prefix_quality_survives_an_earlier_report_gap(tmp_path: Path) -> 
         conn.close()
 
 
-def test_realtime_output_device_reaches_both_builder_player_sites(
+def test_realtime_output_device_reaches_the_builder_player(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`realtime.output_device` routes the player; absent keeps the system default.
 
-    Both construction sites matter: the legacy fallback is not under
-    `realtime.streaming_output` and must honour the same setting. The real
-    player is still constructed; only `_open_output_stream` is faked, so no
+    The real player is still constructed; only `_open_output_stream` is faked, so no
     audio device is opened.
     """
     db_path = tmp_path / "device.db"
@@ -3336,18 +3285,16 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
         seen.append(kwargs.get("device"))
         return real_player(**cast("Any", kwargs))
 
-    def _build(realtime: dict[str, object], expected: type) -> None:
+    def _build(realtime: dict[str, object]) -> None:
         runtime.config = {"realtime": realtime}
         pipeline = inherent_loop._build_tts_pipeline(  # noqa: SLF001
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
-        assert pipeline is not None
-        assert isinstance(pipeline, expected)
+        assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
         assert pipeline.close()
 
-    streaming = {"enabled": True, "streaming_output": {"enabled": True}}
-    legacy = {"enabled": False}
+    streaming: dict[str, object] = {"enabled": True}
     monkeypatch.setattr(
         voice_backend, "coreaudio_devices", lambda _kind: (1, {"BlackHole 16ch": 7}),
     )
@@ -3355,20 +3302,18 @@ def test_realtime_output_device_reaches_both_builder_player_sites(
         patch.object(voice_tts, "_open_output_stream", return_value=_FakeOutputStream()),
         patch.object(voice_tts, "AudioStreamPlayer", _recording_player),
     ):
-        _build({**streaming, "output_device": "BlackHole 16ch"}, voice_media.StreamingTTSPipeline)
-        _build({**legacy, "output_device": "BlackHole 16ch"}, voice_tts.TTSPipeline)
-        assert seen == ["BlackHole 16ch", "BlackHole 16ch"]
+        _build({**streaming, "output_device": "BlackHole 16ch"})
+        assert seen == ["BlackHole 16ch"]
         seen.clear()
-        _build(dict(streaming), voice_media.StreamingTTSPipeline)
-        _build(dict(legacy), voice_tts.TTSPipeline)
-        assert seen == [None, None]
+        _build(dict(streaming))
+        assert seen == [None]
         seen.clear()
         # sounddevice also takes an integer index, passed through as it is.
-        _build({**legacy, "output_device": 3}, voice_tts.TTSPipeline)
+        _build({**streaming, "output_device": 3})
         assert seen == [3]
         seen.clear()
         # A name CoreAudio does not list plays on the system default (ADR 0054).
-        _build({**legacy, "output_device": "Unplugged"}, voice_tts.TTSPipeline)
+        _build({**streaming, "output_device": "Unplugged"})
         assert seen == [None]
     conn.close()
 
@@ -3382,7 +3327,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     conn = open_event_log(db_path)
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
-        config={"realtime": {"enabled": False}},
+        config={"realtime": {"enabled": True}},
         wave1_features=Wave1FeatureFlags(
             transactional_event_append=True,
             lifecycle_terminal_cas=True,
@@ -3415,7 +3360,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
-            assert isinstance(pipeline, voice_tts.TTSPipeline)
+            assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
             provider = pipeline._provider  # noqa: SLF001
 
             async def _open_then_close() -> None:
@@ -3436,8 +3381,8 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
         assert ws.sent[0]["event"] == "task_start"
         return cast("dict[str, object]", ws.sent[0]["voice_setting"])["vol"]
 
-    assert _emitted_vol({"enabled": False}) == 1
-    assert _emitted_vol({"enabled": False, "tts_volume": 7}) == 7
+    assert _emitted_vol({"enabled": True}) == 1
+    assert _emitted_vol({"enabled": True, "tts_volume": 7}) == 7
     conn.close()
 
 

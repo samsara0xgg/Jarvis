@@ -29,7 +29,7 @@ import jarvis.runtime as runtime_pkg
 from jarvis.runtime import bootstrap_runtime_app, inherent_loop
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import voice_tts
+from jarvis.surface import voice_media
 from jarvis.surface.cli import emit_surface_user_intent
 
 if TYPE_CHECKING:
@@ -276,17 +276,11 @@ def test_a_stop_signal_runs_the_daemons_whole_teardown_and_ends_it_clean(
     assert returncode == 0, text[-2000:]
 
 
-def test_shutdown_tts_closes_player() -> None:
+def test_shutdown_tts_closes_pipeline() -> None:
     """``_shutdown_tts`` must call ``tts_pipe.close()`` to release the PortAudio device."""
-    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
-    player.bytes_pending.return_value = 0
-    tts_pipe = voice_tts.TTSPipeline(
-        provider=MagicMock(spec=voice_tts.MiniMaxWSClient),
-        player=player,
-        fallback=None,
-    )
+    tts_pipe = MagicMock(spec=voice_media.StreamingTTSPipeline)
     inherent_loop._shutdown_tts(tts_pipe)  # noqa: SLF001
-    player.stop.assert_called_once()
+    tts_pipe.close.assert_called_once_with()
 
 
 def test_shutdown_tts_none_is_noop() -> None:

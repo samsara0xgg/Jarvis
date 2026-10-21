@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -24,40 +22,6 @@ from tools.realtime_trace_report import load_trace, summarize_trace
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-def test_tts_trace_points_share_one_monotonic_clock() -> None:
-    """TTS provider timing uses telemetry, not wall-clock/Event Log facts."""
-    reset_realtime_trace()
-    before_ns = time.monotonic_ns()
-    provider = MagicMock(spec=voice_tts.MiniMaxWSClient)
-    provider.synthesize = AsyncMock(return_value=b"\x00" * 960)
-    player = MagicMock(spec=voice_tts.AudioStreamPlayer)
-    player.bytes_pending.return_value = 0
-    pipeline = voice_tts.TTSPipeline(
-        provider=provider,
-        player=player,
-        fallback=None,
-    )
-
-    pipeline.begin_turn("T-trace", gate_mode="sentence")
-    pipeline.handle_chunk("T-trace", "<voice>你好</voice>")
-    assert pipeline.wait_until_idle(timeout_s=1.0)
-
-    points = [
-        point for point in realtime_trace_snapshot()
-        if point.attributes.get("turn_id") == "T-trace"
-    ]
-    assert [point.name for point in points] == [
-        "tts_batch_synthesis_started",
-        "tts_batch_synthesis_completed",
-    ]
-    assert [point.monotonic_ns for point in points] == sorted(
-        point.monotonic_ns for point in points
-    )
-    assert all(point.monotonic_ns >= before_ns for point in points)
-    assert all(point.telemetry_only for point in points)
-    assert pipeline.close(wait_timeout_s=1.0)
 
 
 def test_jsonl_export_is_correlated_diagnostic_only_and_reportable(
