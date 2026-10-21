@@ -585,7 +585,8 @@ async function marksIn() {
 // ---------- the routes ----------
 type Req0 = http.IncomingMessage;
 // ADR 0095: the host's own key opens it, so the window connects with no daemon running. The daemon's local key, which
-// this process also uses to reach the daemon, still opens it for a companion from before the host had a key.
+// this process also uses to reach the daemon, opens it too: the daemon's night run reads the sessions with it
+// (jarvis/surface/agent_host.py), and a companion from before the host had a key sent it.
 let key = '', token = '';
 async function readToken() {
   try { token = JSON.parse(await readFile(path.join(ROOT, 'plugin-access.json'), 'utf8')).token ?? ''; } catch { token = ''; }
