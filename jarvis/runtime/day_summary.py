@@ -201,11 +201,13 @@ class DaySummarySchedule:
         poll_s: float = 60.0,
         client: LLMClient | None = None,
         core_client: LLMClient | None = None,
+        prose_client: LLMClient | None = None,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`.
 
-        ``client`` stands in for the one built from ``settings.preset`` on first use, and
-        ``core_client`` for the one built from the ``core_memory`` preset.
+        ``client`` stands in for the one built from ``settings.preset`` on first use,
+        ``core_client`` for the one built from the ``core_memory`` preset, and ``prose_client``
+        for the one built from the ledger's prose preset.
         """
         self._memory = memory
         self._settings = settings
@@ -216,7 +218,7 @@ class DaySummarySchedule:
         self._jev_log = jev_log
         self._review: SurrogateRoute | None = None
         self._ledger = ledger
-        self._prose_client: LLMClient | None = None
+        self._prose_client = prose_client
         self._drafts: DayDrafts | None = None
         self._poll_s = poll_s
         self._client = client

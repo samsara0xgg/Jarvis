@@ -408,18 +408,17 @@ def _schedule(
     writer: ScriptedModel,
     draft_prompt: str | None = "draft",
 ) -> DaySummarySchedule:
-    """The nightly schedule over the ledger's world, its prose client the fake ``writer``."""
+    """The nightly schedule over the ledger's world, its prose client the scripted ``writer``."""
     prose = ProseSettings("p", "night", 7, 800, draft_prompt)
-    schedule = DaySummarySchedule(
+    return DaySummarySchedule(
         memory=MemorySettings(db_path=src.memory_db, audio_dir=tmp_path / "audio"),
         settings=DaySummarySettings(at=time(5, 0), preset="p", prompt="summarise", max_chars=500),
         llm_config={},
         event_log_path=src.event_log,
         pricing_table={},
         ledger=LedgerContext(src, LedgerSettings(prose=prose)),
+        prose_client=writer.as_llm_client(),
     )
-    schedule._prose_client = writer  # type: ignore[assignment]  # noqa: SLF001 — the provider seam
-    return schedule
 
 
 def _line(src: LedgerSources, day: str = TODAY_KEY) -> tuple[str, bool] | None:
