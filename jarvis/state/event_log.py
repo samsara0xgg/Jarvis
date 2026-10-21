@@ -1417,9 +1417,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
-    # What he says he did or is doing (ADR 0300): one set of doings per record of his and extractor
-    # version, as the post-turn pass read it; the latest set per record stands
-    # (`jarvis.state.stated_doings`).
+    # What he said he did or was doing, as the post-turn pass read it (ADR 0300): no longer written
+    # since ADR 0328; kept so the sets already in a log still read.
     EventTypeSchema(
         event_type="doings.stated",
         owner_layer="L2",

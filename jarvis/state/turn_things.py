@@ -4,8 +4,8 @@ One additive table in memory.db (``CREATE TABLE IF NOT EXISTS``, so no schema ve
 ``turn_things`` holds a row per record of his the pass knows of. ``pending`` is work owed: the loop
 reads the record when her answer and its pictures' notes are in, or their wait is over. ``none``
 and ``written`` end it; an ``error`` is owed again after a pause, up to ``MAX_ERROR_TRIES`` times.
-What a record wrote is in the event log (``thing.*`` by the pass, ``doings.stated``); the row keeps
-what the model was given and said, and the extractor that said it.
+What a record wrote is in the event log (``thing.*`` by the pass); the row keeps what the model
+was given and said, and the extractor that said it.
 
 Also here, because they read the same records: :func:`read` gives one record of his with the few
 messages before it, her answer to it and the notes of its pictures.
