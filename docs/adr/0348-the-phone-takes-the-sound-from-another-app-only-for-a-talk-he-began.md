@@ -1,4 +1,4 @@
-# ADR 0342 — The phone takes the sound from another app only for a talk he began
+# ADR 0348 — The phone takes the sound from another app only for a talk he began
 
 **Status:** Accepted
 **Date:** 2026-10-21
