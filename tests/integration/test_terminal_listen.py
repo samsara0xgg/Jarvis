@@ -41,9 +41,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jarvis.runtime import inherent_loop
 from jarvis.runtime import terminal as terminal_module
-from jarvis.runtime.daemon import voice_power
+from jarvis.runtime.daemon import devices, voice_power
 from jarvis.runtime.dictation import load_vocab
 from jarvis.runtime.settings import Settings
 from jarvis.shared.realtime_trace import configure_realtime_trace_jsonl, reset_realtime_trace
@@ -752,7 +751,7 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
         "coreaudio_devices",
         lambda kind: (default_mic[0] if kind == "input" else 9, {}),
     )
-    monkeypatch.setattr(inherent_loop, "_AUDIO_DEVICE_POLL_S", 0.05)
+    monkeypatch.setattr(devices, "AUDIO_DEVICE_POLL_S", 0.05)
     refreshed: list[tuple[str | None, str | None]] = []
 
     def refresh(_self: object, *, input_device: str | None, output_device: str | None) -> str:
@@ -762,13 +761,13 @@ def test_a_listening_terminal_runs_the_device_watch_and_the_power_observer_and_e
 
     monkeypatch.setattr(voice_power.VoicePowerCoordinator, "refresh_devices", refresh)
     watches: list[asyncio.Task[None]] = []
-    start_watch = inherent_loop._start_audio_device_watch  # noqa: SLF001
+    start_watch = devices.start_audio_device_watch
 
     def record(*args: Any) -> asyncio.Task[None]:  # noqa: ANN401
         watches.append(start_watch(*args))
         return watches[-1]
 
-    monkeypatch.setattr(terminal_module, "_start_audio_device_watch", record)
+    monkeypatch.setattr(terminal_module, "start_audio_device_watch", record)
     page = Settings(tmp_path / "page", LISTEN_CONFIG, lambda _kind: [])
     token = pair_device(tmp_path, "macbook")
     brain = VoiceBrain(tmp_path)
@@ -823,7 +822,7 @@ def test_the_reSpeaker_look_is_kept_while_a_terminal_runs_and_a_pick_on_the_page
         return "kept"
 
     monkeypatch.setattr(respeaker_board, "ensure", ensure)
-    monkeypatch.setattr(inherent_loop, "_BOARD_POLL_S", 0.02)
+    monkeypatch.setattr(devices, "BOARD_POLL_S", 0.02)
 
     async def link(*_args: object, **_kwargs: object) -> None:
         await asyncio.Event().wait()

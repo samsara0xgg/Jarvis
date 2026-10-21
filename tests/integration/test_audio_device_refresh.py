@@ -21,8 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import voice_power
+from jarvis.runtime.daemon import devices, voice_power
 from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -281,7 +280,7 @@ def _system(
             (defaults["in"], dict(inputs)) if kind == "input" else (defaults["out"], dict(outputs))
         ),
     )
-    monkeypatch.setattr(inherent_loop, "_AUDIO_DEVICE_POLL_S", 0.01)
+    monkeypatch.setattr(devices, "AUDIO_DEVICE_POLL_S", 0.01)
     return defaults
 
 
@@ -309,11 +308,11 @@ def test_the_watch_re_reads_only_when_the_device_to_be_on_changes(
     coordinator = MagicMock(spec=voice_power.VoicePowerCoordinator)
     coordinator.quiet.side_effect = lambda: quiet["now"]
     coordinator.refresh_devices.side_effect = _refresh
-    choice = inherent_loop._AudioDeviceChoice(None, "Speakers")
+    choice = devices.AudioDeviceChoice(None, "Speakers")
 
     async def _scenario() -> None:
         watch = asyncio.create_task(
-            inherent_loop._watch_audio_devices(coordinator, ingress, None, choice),
+            devices.watch_audio_devices(coordinator, ingress, None, choice),
         )
         await asyncio.sleep(0.1)
         del inputs["allen Microphone"]  # the phone's mic leaves and comes back
@@ -357,9 +356,9 @@ def test_an_absent_pick_follows_the_default_and_the_pick_coming_back_switches_to
     inputs = {"reSpeaker": 142, "MacBook Pro Microphone": 86}
     outputs = {"Multi-Output Device 2": 63, "MacBook Pro Speakers": 55}
     defaults = _system(monkeypatch, inputs, outputs)
-    choice = inherent_loop._AudioDeviceChoice("reSpeaker", "Multi-Output Device 2")
-    assert inherent_loop._device_targets(choice) == (142, 63)
-    assert inherent_loop._output_or_default("Multi-Output Device 2") == "Multi-Output Device 2"
+    choice = devices.AudioDeviceChoice("reSpeaker", "Multi-Output Device 2")
+    assert devices.device_targets(choice) == (142, 63)
+    assert devices.output_or_default("Multi-Output Device 2") == "Multi-Output Device 2"
     ingress = MagicMock()
     ingress.capability = _capability(voice_audio.InputCapabilityState.AVAILABLE, 1)
     coordinator = MagicMock(spec=voice_power.VoicePowerCoordinator)
@@ -368,13 +367,13 @@ def test_an_absent_pick_follows_the_default_and_the_pick_coming_back_switches_to
 
     async def _scenario() -> None:
         watch = asyncio.create_task(
-            inherent_loop._watch_audio_devices(coordinator, ingress, None, choice),
+            devices.watch_audio_devices(coordinator, ingress, None, choice),
         )
         await asyncio.sleep(0.1)
         assert coordinator.refresh_devices.call_count == 0
         del inputs["reSpeaker"], outputs["Multi-Output Device 2"]  # unplugged
         defaults["in"], defaults["out"] = 86, 55
-        assert inherent_loop._device_targets(choice) == (86, 55)
+        assert devices.device_targets(choice) == (86, 55)
         await asyncio.sleep(0.1)
         # The mic's own name stays: the backend finds it absent and opens the default.
         assert coordinator.refresh_devices.call_args_list[0].kwargs == {
@@ -404,7 +403,7 @@ def test_the_watch_keeps_trying_a_microphone_that_is_there_but_shut(
     A microphone parked by a failed wake counts as down once awake; asleep it waits.
     """
     _system(monkeypatch, {"reSpeaker": 142}, {"Speakers": 55})
-    monkeypatch.setattr(inherent_loop, "_MIC_RETRY_S", (0.05, 0.15))
+    monkeypatch.setattr(devices, "MIC_RETRY_S", (0.05, 0.15))
     ingress = MagicMock()
     ingress.capability = _capability(_LOST, 1)
     opens_after = {"tries": 4}
@@ -426,11 +425,11 @@ def test_the_watch_keeps_trying_a_microphone_that_is_there_but_shut(
 
     async def _scenario() -> None:
         watch = asyncio.create_task(
-            inherent_loop._watch_audio_devices(
+            devices.watch_audio_devices(
                 coordinator,
                 ingress,
                 None,
-                inherent_loop._AudioDeviceChoice(None, None),
+                devices.AudioDeviceChoice(None, None),
             ),
         )
         await _until(lambda: len(refreshes) == 4)
@@ -479,11 +478,11 @@ def test_the_watch_waits_while_gpt_live_talks(monkeypatch: pytest.MonkeyPatch) -
 
     async def _scenario() -> None:
         watch = asyncio.create_task(
-            inherent_loop._watch_audio_devices(
+            devices.watch_audio_devices(
                 coordinator,
                 ingress,
                 live,
-                inherent_loop._AudioDeviceChoice(None, None),
+                devices.AudioDeviceChoice(None, None),
             ),
         )
         await asyncio.sleep(0.05)

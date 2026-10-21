@@ -89,6 +89,7 @@ from jarvis.runtime import (
     _work_state_timezone,
     audio_output,
 )
+from jarvis.runtime.daemon.devices import start_audio_device_watch, watch_board
 from jarvis.runtime.daemon.observers import (
     agents_port,
     claude_sessions_read,
@@ -111,11 +112,9 @@ from jarvis.runtime.inherent_loop import (
     _shutdown_power_observer,
     _single_ingress_activation,
     _spawn_single_ingress_session,
-    _start_audio_device_watch,
     _tts_watcher,
     _voice_knobs,
     _voice_models_preflight,
-    _watch_board,
 )
 from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
@@ -762,7 +761,7 @@ def _start_mac_watch(
     observer marshals its callbacks onto it, and the log belongs to its thread.
     """
     coordinator = VoicePowerCoordinator(session=session, media=pipeline)
-    devices = _start_audio_device_watch(
+    devices = start_audio_device_watch(
         speaking.config, page, coordinator, session.ingress, None,
     )
     devices.add_done_callback(_log_watcher_death)
@@ -976,7 +975,7 @@ def _start_board(page: Settings | None) -> asyncio.Task[None] | None:
     """Keep the Settings page's reSpeaker look on the board (ADR 0147); no look saved, no writes."""
     if page is None:
         return None
-    task = asyncio.create_task(_watch_board(page), name="board_watch")
+    task = asyncio.create_task(watch_board(page), name="board_watch")
     task.add_done_callback(_log_watcher_death)
     return task
 
