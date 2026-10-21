@@ -114,6 +114,7 @@ STUB = frozenset({
     "start_night_run", "end_night_run", "refresh_work_state", "daily_work_report", "set_voice",
     "write_mail_draft", "open_plugin", "disable_plugin", "remove_plugin",
     "tidy_day",  # asks the doing lane's model (Opus) and writes a run
+    "spawn_worker", "wait_worker", "send_input", "close_worker",  # Codex threads (tools.workers)
 })
 _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}
