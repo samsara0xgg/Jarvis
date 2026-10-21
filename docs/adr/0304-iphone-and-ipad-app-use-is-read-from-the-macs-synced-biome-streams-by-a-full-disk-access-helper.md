@@ -56,10 +56,12 @@ runs at most every 15 minutes and sends two kinds of entry:
 - `app_name`, once a bundle id is resolved: `{bundle_id, app, category}`, key
   `app_name:<bundle id>:<12 hex>`, sent again only if the resolved value changes. Names are
   separate rows so that a failing lookup never holds back the stretches. They come from a table
-  of Apple's own apps, else Apple's public lookup (`itunes.apple.com/lookup`, China store, then
-  US) on the Mac, at most 20 lookups a pass (3 seconds apart, this pass's bundles first), cached
-  beside the shipper's state. A miss is asked again after 7 days; a bundle the store could not be
-  asked about (network error, 403, 429, 5xx, or no lookups left) is asked again next pass.
+  of Apple's own apps (named in the settings language), else Apple's public lookup
+  (`itunes.apple.com/lookup`, the store of the settings language first: China for `zh`, US for
+  `en`, the other after) on the Mac, at most 20 lookups a pass (3 seconds apart, this pass's
+  bundles first), cached beside the shipper's state. A miss is asked again after 7 days; a bundle
+  the store could not be asked about (network error, 403, 429, 5xx, or no lookups left) is asked
+  again next pass.
 
 The day line (ADR 0199) folds these into kind `screen`, in his lane: one item per block of
 foreground use on one device, stretches of any app joined when the gap is at most 5 minutes,

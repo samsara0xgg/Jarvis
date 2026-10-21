@@ -1206,6 +1206,37 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     },
 }
 
+# ADR 0304: what iOS calls its own apps, by bundle id. The Mac's shipper names the apps of his
+# iPhone and iPad from here (the store does not list Apple's own), and the name reaches the day line.
+APPLE_APP_NAMES: Final[dict[str, dict[Language, str]]] = {
+    "com.apple.camera": {"zh": "相机", "en": "Camera"},
+    "com.apple.mobileslideshow": {"zh": "照片", "en": "Photos"},
+    "com.apple.mobilesafari": {"zh": "Safari", "en": "Safari"},
+    "com.apple.Preferences": {"zh": "设置", "en": "Settings"},
+    "com.apple.Maps": {"zh": "地图", "en": "Maps"},
+    "com.apple.MobileSMS": {"zh": "信息", "en": "Messages"},
+    "com.apple.mobilephone": {"zh": "电话", "en": "Phone"},
+    "com.apple.InCallService": {"zh": "电话", "en": "Phone"},
+    "com.apple.mobiletimer": {"zh": "时钟", "en": "Clock"},
+    "com.apple.findmy": {"zh": "查找", "en": "Find My"},
+    "com.apple.Health": {"zh": "健康", "en": "Health"},
+    "com.apple.Bridge": {"zh": "Watch", "en": "Watch"},
+    "com.apple.mobilenotes": {"zh": "备忘录", "en": "Notes"},
+    "com.apple.Music": {"zh": "音乐", "en": "Music"},
+    "com.apple.Passbook": {"zh": "钱包", "en": "Wallet"},
+    "com.apple.weather": {"zh": "天气", "en": "Weather"},
+    "com.apple.mobilecal": {"zh": "日历", "en": "Calendar"},
+    "com.apple.mobilemail": {"zh": "邮件", "en": "Mail"},
+    "com.apple.facetime": {"zh": "FaceTime", "en": "FaceTime"},
+    "com.apple.AppStore": {"zh": "App Store", "en": "App Store"},
+}
+
+
+def apple_app_name(bundle_id: str, lang: Language | None = None) -> str:
+    """What one of Apple's own apps is called in ``lang`` (default: the current language)."""
+    return APPLE_APP_NAMES[bundle_id][lang or _current]
+
+
 # Sentences with several wordings of one thing to say; the caller picks one
 # at random (ADR 0116: the wait line; ADR 0102: the conversation lines).
 VARIANTS: Final[dict[str, dict[Language, tuple[str, ...]]]] = {

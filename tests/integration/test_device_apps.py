@@ -7,7 +7,8 @@ events (no helper, no network):
   overlays, stretches under five seconds and Macs are dropped; a stretch still open is not shipped
   and holds the cursor, and a send again adds nothing;
 - names come from Apple's table, then the cache, then the (mocked) store, each bundle once, with
-  its genre; a store that cannot be asked holds the whole pass;
+  its genre; a store that cannot be asked holds the whole pass; Apple's own apps are named in the
+  settings language and the store of that language is asked first;
 - the day line joins one device's stretches within five minutes into a ``screen`` block of at
   least five active minutes, keeps two devices apart, tops the apps, and says how far each device
   is synced; ``screen`` is missing only when a shipped store holds no device record.
@@ -20,8 +21,10 @@ from contextlib import closing
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
+from jarvis.shared import lang
 from jarvis.state import imports
 from jarvis.state.day_line import DaySources, day_window, fold_day, parse_day
 from jarvis.state.event_log import open_event_log
@@ -257,6 +260,76 @@ def test_names_are_rows_of_their_own_sent_once_and_a_miss_is_asked_again_after_a
     mac.pass_(at(700) + 8 * 24 * H)
     assert mac.looked_up[2:] == ["com.unlisted.app"]  # a week on, only the miss is asked
     assert mac.held_names()["com.unlisted.app"] == ("Unlisted", None)
+
+
+@pytest.mark.parametrize(
+    ("language", "settings", "camera"),
+    [("zh", "设置", "相机"), ("en", "Settings", "Camera")],
+)
+def test_apples_own_apps_are_named_in_the_settings_language(
+    mac: Mac, language: lang.Language, settings: str, camera: str
+) -> None:
+    """Apple's own apps reach the day line in the settings language, with the store's genre."""
+    lang.set_language(language)
+    mac.events = [
+        *stretch(PHONE, "com.apple.Preferences", at(600), at(601)),
+        *stretch(PHONE, "com.apple.camera", at(602), at(603)),
+    ]
+    mac.pass_(at(700))
+    assert mac.held_names() == {
+        "com.apple.Preferences": (settings, "Utilities"),
+        "com.apple.camera": (camera, "Photo & Video"),
+    }
+    assert mac.looked_up == []
+
+
+def test_the_genre_table_and_the_name_table_list_the_same_apple_apps() -> None:
+    """Every one of Apple's own apps has a genre here and a name in each language there."""
+    assert set(devices.APPLE_GENRES) == set(lang.APPLE_APP_NAMES)
+    assert all(set(names) == set(lang.LANGUAGES) for names in lang.APPLE_APP_NAMES.values())
+
+
+class _Store:
+    """``itunes.apple.com/lookup`` in place of HTTP: a name per country, none if absent."""
+
+    def __init__(self, names: dict[str, str]) -> None:
+        """``names`` maps a country code to what that store calls the app."""
+        self.names = names
+        self.asked: list[str] = []
+
+    def get(self, url: str, *, params: dict[str, str], timeout: float) -> httpx.Response:
+        """The store's answer for the country in ``params``."""
+        assert (url, timeout) == (devices.LOOKUP_URL, devices.LOOKUP_TIMEOUT_S)
+        country = params["country"]
+        self.asked.append(country)
+        name = self.names.get(country)
+        found = [{"trackName": name, "primaryGenreName": "Games"}] if name else []
+        return httpx.Response(200, json={"results": found})
+
+
+@pytest.mark.parametrize(
+    ("language", "stores", "name", "asked"),
+    [
+        ("zh", {"cn": "接龙", "us": "Chain"}, "接龙", ["cn"]),
+        ("en", {"cn": "接龙", "us": "Chain"}, "Chain", ["us"]),
+        ("zh", {"us": "Chain"}, "Chain", ["cn", "us"]),
+        ("en", {"cn": "接龙"}, "接龙", ["us", "cn"]),
+    ],
+)
+def test_the_store_of_the_settings_language_is_asked_first(
+    monkeypatch: pytest.MonkeyPatch,
+    language: lang.Language,
+    stores: dict[str, str],
+    name: str,
+    asked: list[str],
+) -> None:
+    """The store asked first is the one of the settings language; the other answers if it cannot."""
+    lang.set_language(language)
+    store = _Store(stores)
+    monkeypatch.setattr(httpx, "get", store.get)
+    monkeypatch.setattr("jarvis.surface.mac_ship_devices.time.sleep", lambda _s: None)
+    assert devices.itunes_lookup("com.new.app") == (name, "Games")
+    assert store.asked == asked
 
 
 def test_a_store_that_cannot_be_asked_never_holds_the_stretches_back(mac: Mac) -> None:

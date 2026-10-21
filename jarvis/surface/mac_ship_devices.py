@@ -23,12 +23,14 @@ the brain kept the batch. System overlays (Control Center, the app library, Spri
 stretches under five seconds are dropped. Devices whose model is unknown, and Macs (TimeSink covers
 those), are skipped.
 
-Names never hold the stretches back. A bundle resolves through a short table of Apple's own apps,
-else Apple's public lookup (China store, then US), at most ``LOOKUPS_PER_PASS`` a pass, the bundles
-of this pass first. The answers are cached in ``app-names.json`` beside the shipper's state as
-``[name, genre, checked_ms]``: a miss is asked again after ``MISS_RETRY_MS``, and a bundle the
-store could not be asked about (network, 403, 429, 5xx, or no lookups left this pass) is
-``checked_ms`` 0, asked again next pass. Until a name arrives the day line shows the bundle id.
+Names never hold the stretches back. A bundle resolves through a short table of Apple's own apps
+(named in the settings language, :data:`jarvis.shared.lang.APPLE_APP_NAMES`), else Apple's public
+lookup (the store of the settings language first, the other after), at most ``LOOKUPS_PER_PASS`` a
+pass, the bundles of this pass first. The answers are cached in ``app-names.json`` beside the
+shipper's state as ``[name, genre, checked_ms]``: a miss is asked again after ``MISS_RETRY_MS``,
+and a bundle the store could not be asked about (network, 403, 429, 5xx, or no lookups left this
+pass) is ``checked_ms`` 0, asked again next pass. Until a name arrives the day line shows the
+bundle id.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
+from jarvis.shared import lang
 from jarvis.state import imports
 from jarvis.surface.mac_screen_time import (
     ScreenTimeUnavailable,
@@ -70,7 +73,11 @@ OVERLAP_MS: Final = 10 * 60 * 1000
 MIN_STRETCH_MS: Final = 5 * 1000
 GIVE_UP_MS: Final = 24 * 60 * 60 * 1000
 LOOKUP_URL: Final = "https://itunes.apple.com/lookup"
-LOOKUP_COUNTRIES: Final = ("cn", "us")
+LOOKUP_COUNTRIES: Final[dict[lang.Language, tuple[str, str]]] = {
+    "zh": ("cn", "us"),
+    "en": ("us", "cn"),
+}
+"""The stores asked, in order, for a user of each language: the app's name in his own language."""
 LOOKUP_TIMEOUT_S: Final = 5.0
 LOOKUP_GAP_S: Final = 3.0
 """The store answers about 20 lookups a minute."""
@@ -90,29 +97,30 @@ _NOISE: Final = re.compile(
     re.IGNORECASE,
 )
 
-APPLE_APPS: Final[dict[str, tuple[str, str | None]]] = {
-    "com.apple.camera": ("相机", "Photo & Video"),
-    "com.apple.mobileslideshow": ("照片", "Photo & Video"),
-    "com.apple.mobilesafari": ("Safari", "Utilities"),
-    "com.apple.Preferences": ("设置", "Utilities"),
-    "com.apple.Maps": ("地图", "Navigation"),
-    "com.apple.MobileSMS": ("信息", "Social Networking"),
-    "com.apple.mobilephone": ("电话", "Utilities"),
-    "com.apple.InCallService": ("电话", "Utilities"),
-    "com.apple.mobiletimer": ("时钟", "Utilities"),
-    "com.apple.findmy": ("查找", "Utilities"),
-    "com.apple.Health": ("健康", "Health & Fitness"),
-    "com.apple.Bridge": ("Watch", "Utilities"),
-    "com.apple.mobilenotes": ("备忘录", "Productivity"),
-    "com.apple.Music": ("音乐", "Music"),
-    "com.apple.Passbook": ("钱包", "Finance"),
-    "com.apple.weather": ("天气", "Weather"),
-    "com.apple.mobilecal": ("日历", "Productivity"),
-    "com.apple.mobilemail": ("邮件", "Productivity"),
-    "com.apple.facetime": ("FaceTime", "Social Networking"),
-    "com.apple.AppStore": ("App Store", None),
+APPLE_GENRES: Final[dict[str, str | None]] = {
+    "com.apple.camera": "Photo & Video",
+    "com.apple.mobileslideshow": "Photo & Video",
+    "com.apple.mobilesafari": "Utilities",
+    "com.apple.Preferences": "Utilities",
+    "com.apple.Maps": "Navigation",
+    "com.apple.MobileSMS": "Social Networking",
+    "com.apple.mobilephone": "Utilities",
+    "com.apple.InCallService": "Utilities",
+    "com.apple.mobiletimer": "Utilities",
+    "com.apple.findmy": "Utilities",
+    "com.apple.Health": "Health & Fitness",
+    "com.apple.Bridge": "Utilities",
+    "com.apple.mobilenotes": "Productivity",
+    "com.apple.Music": "Music",
+    "com.apple.Passbook": "Finance",
+    "com.apple.weather": "Weather",
+    "com.apple.mobilecal": "Productivity",
+    "com.apple.mobilemail": "Productivity",
+    "com.apple.facetime": "Social Networking",
+    "com.apple.AppStore": None,
 }
-"""Apple's own apps, as he sees them: the store does not list these."""
+"""Apple's own apps, as he sees them: the store does not list these. Their names are
+:data:`jarvis.shared.lang.APPLE_APP_NAMES`; the genres are the store's, in English."""
 
 type Lookup = Callable[[str], tuple[str | None, str | None] | None]
 """A bundle id to ``(name, genre)``, ``(None, None)`` for an app the store does not know, ``None``
@@ -122,7 +130,7 @@ when the store could not be asked."""
 def itunes_lookup(bundle_id: str) -> tuple[str | None, str | None] | None:
     """The store's name and primary genre for ``bundle_id``; see :data:`Lookup`."""
     try:
-        for country in LOOKUP_COUNTRIES:
+        for country in LOOKUP_COUNTRIES[lang.language()]:
             time.sleep(LOOKUP_GAP_S)
             answer = httpx.get(
                 LOOKUP_URL,
@@ -174,7 +182,7 @@ class AppNames:
         asked; the rest stays due for the next pass.
         """
         wanted = list(dict.fromkeys(wanted))
-        order = [b for b in wanted if b not in APPLE_APPS]
+        order = [b for b in wanted if b not in APPLE_GENRES]
         order += [b for b in self._known if b not in order]
         asking = True
         for bundle in order:
@@ -186,7 +194,8 @@ class AppNames:
             self._known[bundle] = [*(found or (None, None)), self._now if found else 0]
             self._dirty = True
         named = {b: (str(v[0]), v[1]) for b, v in self._known.items() if v[0] is not None}
-        return {**named, **{b: APPLE_APPS[b] for b in wanted if b in APPLE_APPS}}
+        apple = {b: (lang.apple_app_name(b), APPLE_GENRES[b]) for b in wanted if b in APPLE_GENRES}
+        return {**named, **apple}
 
     def save(self) -> None:
         """Write the cache when it changed; whole or not at all."""
