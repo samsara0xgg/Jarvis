@@ -197,6 +197,10 @@ from jarvis.runtime.daemon.output_watchers import tool_status_watcher as _tool_s
 from jarvis.runtime.daemon.output_watchers import tts_watcher as _tts_watcher
 from jarvis.runtime.daemon.output_watchers import turn_devices as _turn_devices
 from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S as _DEFAULT_POLL_INTERVAL_S
+from jarvis.runtime.daemon.restart import fetch_models_then_restart as _fetch_models_then_restart
+from jarvis.runtime.daemon.restart import restart_soon as _restart_soon
+from jarvis.runtime.daemon.restart import restart_when_idle as _restart_when_idle
+from jarvis.runtime.daemon.restart import restarting as _restarting
 from jarvis.runtime.daemon.sweep import start_sweep_control_plane as _start_sweep_control_plane
 from jarvis.runtime.daemon.voice_power import SingleIngressActivation as _SingleIngressActivation
 from jarvis.runtime.daemon.voice_power import VoiceInputOwners as _VoiceInputOwners
@@ -3055,18 +3059,6 @@ def _notice_deps(
     }
 
 
-_IDLE_POLL_S = 5.0
-_restarting: set[asyncio.Task[None]] = set()
-
-
-async def _restart_when_idle(idle: Callable[[], bool]) -> None:
-    """ADR 0227: restart once no conversation or speech is going on; checked every few seconds."""
-    while not idle():  # noqa: ASYNC110 — idle is a plain predicate, there is no event for it.
-        await asyncio.sleep(_IDLE_POLL_S)
-    LOGGER.info("settings: restarting to take in the settings the owner chose")
-    _restart_soon()
-
-
 def _settings_notice_deps(
     deps: dict[str, Any], drift: SettingsDrift | None, idle: Callable[[], bool],
 ) -> dict[str, Any]:
@@ -3302,38 +3294,6 @@ async def _turn_end_asks(asks: TurnEndAsks, session_id: str, text: str) -> bool 
 async def _save_settings(settings: Settings, changes: dict[str, Any]) -> dict[str, Any]:
     """``POST /inherent/settings``: one file write, off the loop thread."""
     return await asyncio.to_thread(settings.update, changes)
-
-
-def _fetch_models_then_restart(
-    sensevoice_dir: Path,
-    silero_path: Path,
-    loop: asyncio.AbstractEventLoop,
-    progress: models.Progress,
-) -> None:
-    """First boot: fetch the speech models in the background, then come back with voice."""
-
-    def run() -> None:
-        try:
-            models.fetch_missing(sensevoice_dir, silero_path, progress)
-        except Exception:
-            progress.failed = True
-            LOGGER.exception("models: download failed; voice stays off until the next boot")
-            return
-        if supervised():
-            LOGGER.info("models: ready; restarting so voice comes up")
-            loop.call_soon_threadsafe(_restart_soon)
-        else:
-            LOGGER.warning("models: ready; restart Jarvis to turn voice on")
-
-    threading.Thread(target=run, name="jarvis-models", daemon=True).start()
-
-
-def _restart_soon() -> None:
-    """``POST /inherent/restart``: TERM ourselves once the answer is out.
-
-    launchd's KeepAlive or systemd's ``Restart=always`` (ADR 0227) brings us back.
-    """
-    asyncio.get_running_loop().call_later(0.5, os.kill, os.getpid(), signal.SIGTERM)
 
 
 _DATA_SWEEP_INTERVAL_S = 3600.0

@@ -99,6 +99,7 @@ from jarvis.runtime.daemon.observers import (
     usage_poll_interval_s,
 )
 from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
+from jarvis.runtime.daemon.restart import restart_soon
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.inherent_loop import (
@@ -108,7 +109,6 @@ from jarvis.runtime.inherent_loop import (
     _data_sweep_task,
     _install_power_observer_or_degrade,
     _ListenPorts,
-    _restart_soon,
     _shutdown_power_observer,
     _single_ingress_activation,
     _spawn_single_ingress_session,
@@ -990,7 +990,7 @@ def _ui_device(
             None if speaking is None
             else _DeviceSettings(page or _device_page(ui.config, ui.runtime_root))
         ),
-        restart=_restart_soon if spawned_by_terminal_agent() else None,
+        restart=restart_soon if spawned_by_terminal_agent() else None,
         release=functools.partial(release, ui.runtime_root / "settings.yaml", ui.runtime_root),
         dictation=None if speaking is None else lambda: _dictation_of(speech()),
         speaks=lambda: speech().pipeline is not None,
