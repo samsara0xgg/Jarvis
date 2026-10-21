@@ -102,7 +102,7 @@ from jarvis.runtime.daemon.voice_wiring import (
 )
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
 from jarvis.runtime.mail_codes import copy_code
-from jarvis.runtime.night_run import NightRun, night_settings
+from jarvis.runtime.night_run import NightRun
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.settings import Settings
 from jarvis.runtime.settings_owner import check_own, page_keys, release, terminal_report
@@ -1264,7 +1264,7 @@ def run_terminal(  # noqa: PLR0913 — one keyword per switch of the command.
     night_log.parent.mkdir(parents=True, exist_ok=True)
     open_event_log(night_log).close()
     night = NightRun(
-        night_log, night_settings(config.raw), MacPower(), zone=config.zone,
+        night_log, config.night, MacPower(), zone=config.zone,
     )
     # It holds the Mac past the deadline while a session it can see still works. Codex's board
     # is filled by hooks into the brain, so none is read here.

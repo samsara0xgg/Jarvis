@@ -15,7 +15,6 @@ from jarvis.runtime.bootstrap.day import (
     _DAILY_REPORT_TIMEOUT_S,
     _codex_sessions_path,
     _doing_schedule,
-    _moment,
 )
 from jarvis.runtime.bootstrap.jev import build_jev_log
 from jarvis.runtime.bootstrap.places import _here_location, _locator
@@ -25,7 +24,8 @@ from jarvis.runtime.daily_report import DailyReportService
 from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.locate import HerePolicy
-from jarvis.runtime.night_run import NightRun, night_settings
+from jarvis.runtime.moment import Moment
+from jarvis.runtime.night_run import NightRun
 from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.rides import Rides
 from jarvis.runtime.weatherkit import WeatherKit
@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from jarvis.runtime.config import DashboardSettings, RuntimeConfig
     from jarvis.runtime.doing_run import DoingSchedule
     from jarvis.runtime.locate import Locator
-    from jarvis.runtime.moment import Moment
 
 
 @dataclass(frozen=True)
@@ -99,9 +98,9 @@ def _dashboard_state(
 def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Features:
     """Build the services that read the config, the stores and the paired devices."""
     memory, device, clock = core.memory, core.device, core.clock
-    moment = _moment(
-        config.raw, config.config_path, memory.db_path, device,
-        config.observer.timesink_db_path,
+    moment = (
+        None if config.moment is None
+        else Moment(config.moment, config.observer.timesink_db_path, memory.db_path, device)
     )
     maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
     kept_places = partial(place_state.home_school, memory.db_path)
@@ -162,7 +161,7 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         if config.role == "brain"  # ADR 0170: holding a Mac awake and dark is the terminal's job
         else NightRun(
             paths.event_log,
-            night_settings(config.raw),
+            config.night,
             MacPower(),
             zone=config.zone,
         )

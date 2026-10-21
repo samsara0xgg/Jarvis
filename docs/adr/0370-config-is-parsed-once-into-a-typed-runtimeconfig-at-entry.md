@@ -54,17 +54,15 @@ sounds), `confirmation`, `voice`, `llm` tool-iteration bounds, `observer`, `supe
 `work_state`, `daily_report`, `locate`, `home.weather`, `transit`, `maps`, `dashboard`,
 `diagnostics`, `voiceprint.gate`, `commitments.remind_before_min`, `day_plan.day_ends`, the built-in
 `tools` (web, screen, vault, workers), Jev's routes (`jev_log`, `realtime.surrogate_route`,
-`realtime.jev_words`, `realtime.jev_oneshot`, `agents.turn_end_asks`) and the mail and record
-intakes (`home.mail_reply`, `job_mail`, `mail_codes`, `commitments`, `claude_daily`, `turn_things`).
-Each keeps the default, the error text and the exception type it had: `RuntimeBootstrapError` for a
-refused value, `TypeError` for the two bool switches that always raised it, `ValueError` for the
-timesink path and the zone name.
+`realtime.jev_words`, `realtime.jev_oneshot`, `agents.turn_end_asks`), the mail and record intakes
+(`home.mail_reply`, `job_mail`, `mail_codes`, `commitments`, `claude_daily`, `turn_things`) and the
+day's blocks (`moment`, `night`, `ledger`, `doing`). Each keeps the default, the error text and the
+exception type it had: `RuntimeBootstrapError` for a refused value, `TypeError` for the two bool
+switches that always raised it, `ValueError` for the timesink path and the zone name.
 
-Not moved: the feature blocks `bootstrap_runtime_app` hands whole to a builder that parses and
-builds in one function (`moment`, `push`, `weatherkit`, `night`, `projects`, `ledger`, `doing`,
-`highlight`, `about`). Each of those is its own owner's parse; moving one means splitting it into a
-parser on the tree and a builder, with its tests, which is the next step of this ADR and not a
-precondition of it.
+Not moved: `push` and `weatherkit`, which read a key file and build a signing client in the same
+step and never raise, and `projects`, which the terminal tolerates malformed (its own catalog is a
+warning, the brain's is a refusal) where a tree field would stop the terminal from starting.
 
 Secrets are not in the tree: a key is resolved from the environment where the thing that needs it
 is built.

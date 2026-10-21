@@ -847,3 +847,86 @@ def test_an_intake_that_is_off_is_not_read(tmp_path: Path) -> None:
         config.job_mail, config.commitments, config.turn_things, config.claude_daily,
         config.mail_codes, config.mail_reply,
     ) == (None,) * 6
+
+
+_MOMENT_FIELDS = r"jarvis\.yaml moment\.fields must set each of"
+
+
+@pytest.mark.parametrize(
+    ("moment", "message"),
+    [
+        ({"enabled": "yes"}, r"jarvis\.yaml moment\.enabled must be true or false"),
+        ({"fields": {"site": "yes"}}, _MOMENT_FIELDS),
+        ({"fields": {"titles": True}}, _MOMENT_FIELDS),
+        ({"fields": None}, _MOMENT_FIELDS),
+        ({"enabled": False, "fields": {"site": 1}}, _MOMENT_FIELDS),
+    ],
+)
+def test_a_moment_block_that_is_not_valid_stops_the_load_on_or_off(
+    tmp_path: Path, moment: dict[str, object], message: str,
+) -> None:
+    """ADR 0161: the switch and each field are booleans; the fields are exactly the known ones."""
+    with pytest.raises(RuntimeBootstrapError, match=message):
+        load_settings(tmp_path, {"moment": moment})
+
+
+def test_the_moment_block_reads_its_fields_and_is_none_while_off(tmp_path: Path) -> None:
+    """ADR 0161: shipped on with every field; a field switched off stays in the settings."""
+    fields = load_settings(tmp_path, {}).moment
+    assert fields is not None
+    assert all(fields.fields.values())
+    quieter = load_settings(tmp_path / "q", {"moment": {"fields": {"site": False}}}).moment
+    assert quieter is not None
+    assert quieter.fields["site"] is False
+    assert quieter.fields["front_app"] is True
+    assert load_settings(tmp_path / "off", {"moment": {"enabled": False}}).moment is None
+    assert runtime_config({}).moment is None
+    complete = dict.fromkeys(fields.fields, True)
+    del complete["site"]
+    with pytest.raises(RuntimeBootstrapError, match=r"moment\.fields must set each of"):
+        runtime_config({"moment": {"enabled": True, "fields": complete}})
+
+
+def test_the_night_block_reads_hours_and_morning_and_a_bad_one_keeps_the_default(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0170: the shipped night is two hours to 06:00; a value that does not parse warns."""
+    shipped = load_settings(tmp_path, {}).night
+    assert (shipped.hours, shipped.morning) == (2.0, time(6, 0))
+    told = load_settings(tmp_path / "told", {"night": {"hours": 3, "morning": "07:30"}}).night
+    assert (told.hours, told.morning) == (3.0, time(7, 30))
+    with caplog.at_level(logging.WARNING):
+        bad = load_settings(tmp_path / "bad", {"night": {"hours": 40, "morning": "late"}}).night
+    assert (bad.hours, bad.morning) == (2.0, time(6, 0))
+    assert len(_warnings(caplog, "night.hours")) == 1
+    assert len(_warnings(caplog, "night.morning")) == 1
+
+
+def test_the_ledger_and_doing_blocks_are_read_at_the_load(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """ADR 0201, 0302: shipped on; the line's language is the top-level setting; off is None."""
+    shipped = load_settings(tmp_path, {})
+    assert shipped.ledger is not None
+    assert (shipped.ledger.full_days, shipped.ledger.compact_days) == (7, 7)
+    assert shipped.ledger.prose is not None
+    assert (shipped.ledger.prose.preset, shipped.ledger.prose.reply_language) == (
+        "sonnet-medium", "follow",
+    )
+    assert shipped.doing is not None
+    assert (shipped.doing.preset, shipped.doing.clock_drafts) == ("opus-long", False)
+    zh = load_settings(tmp_path / "zh", {"reply_language": "zh"}).ledger
+    assert zh is not None
+    assert zh.prose is not None
+    assert zh.prose.reply_language == "zh"
+    off = load_settings(tmp_path / "off", {"ledger": {"enabled": False}, "doing": {"enabled": 1}})
+    assert (off.ledger, off.doing) == (None, None)
+    with caplog.at_level(logging.WARNING):
+        bare = load_settings(tmp_path / "bare", {
+            "ledger": {"prose": {"prompt": " "}}, "doing": {"prompt": " "},
+        })
+    assert bare.ledger is not None
+    assert bare.ledger.prose is None
+    assert bare.doing is None
+    assert len(_warnings(caplog, "ledger.prose needs a prompt")) == 1
+    assert len(_warnings(caplog, "doing needs a prompt")) == 1

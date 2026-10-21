@@ -33,6 +33,7 @@ import yaml
 
 from jarvis.decision import DEFAULT_MAX_TOOL_ITERATIONS
 from jarvis.decision.jev_oneshot import TOOL_GROUPS
+from jarvis.decision.moment import FIELDS as MOMENT_FIELDS
 from jarvis.deployment.models import (
     default_sensevoice_dir,
     default_silero_vad_path,
@@ -49,10 +50,14 @@ from jarvis.execution.tools import (
 from jarvis.runtime.claude_daily import ClaudeDailySettings
 from jarvis.runtime.commitment_intake import CommitmentSettings
 from jarvis.runtime.day_plan import day_ends_of
+from jarvis.runtime.doing_run import DoingSettings
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMailSettings
+from jarvis.runtime.ledger import LedgerSettings
 from jarvis.runtime.locate import MAX_AGE_S, PUSH_WAIT_S, SOCKET_WAIT_S
 from jarvis.runtime.mail_codes import MailCodesSettings
+from jarvis.runtime.moment import MomentSettings
+from jarvis.runtime.night_run import NightSettings, night_settings
 from jarvis.runtime.settings import SETUP_VOICES, apply_settings
 from jarvis.runtime.turn_things import TurnThingsSettings
 from jarvis.shared import lang
@@ -449,6 +454,10 @@ class RuntimeConfig:
     commitments: CommitmentSettings | None
     claude_daily: ClaudeDailySettings | None
     turn_things: TurnThingsSettings | None
+    moment: MomentSettings | None
+    night: NightSettings
+    ledger: LedgerSettings | None
+    doing: DoingSettings | None
     raw: Mapping[str, Any]
 
 
@@ -1403,6 +1412,34 @@ def _turn_things(raw: Mapping[str, Any], config_path: Path) -> TurnThingsSetting
     return TurnThingsSettings(days, preset.strip())
 
 
+def _moment(raw: Mapping[str, Any], config_path: Path) -> MomentSettings | None:
+    """``moment`` (ADR 0161): None while off or absent; bad values stop the load.
+
+    It reads TimeSink only through ``observer.timesink``: with that off every fact is unknown
+    and nothing is held. The block is checked whether or not it is on.
+    """
+    block = raw.get("moment")
+    if not isinstance(block, Mapping):
+        return None
+    if not isinstance(block.get("enabled"), bool):
+        msg = f"runtime: {config_path} moment.enabled must be true or false"
+        raise RuntimeBootstrapError(msg)
+    fields = block.get("fields")
+    if (
+        not isinstance(fields, Mapping)
+        or set(fields) != set(MOMENT_FIELDS)
+        or not all(isinstance(on, bool) for on in fields.values())
+    ):
+        msg = (
+            f"runtime: {config_path} moment.fields must set each of {MOMENT_FIELDS} "
+            "to true or false"
+        )
+        raise RuntimeBootstrapError(msg)
+    if not block["enabled"]:
+        return None
+    return MomentSettings(dict(fields))
+
+
 def _claude_daily(raw: Mapping[str, Any], config_path: Path) -> ClaudeDailySettings | None:
     """``claude_daily`` (ADR 0295): None while Gmail letters are off; bad values stop the load."""
     block = raw.get("claude_daily")
@@ -1480,6 +1517,7 @@ def parse_runtime_config(
     raw["realtime"] = realtime
     if not realtime.get("tts_voice"):
         realtime["tts_voice"] = SETUP_VOICES[language][0]
+    reply_language = str(raw.get("reply_language", "follow"))
     zone_name, zone = resolve_zone(None, _owner_zone(raw))
     config_dir = config_path.resolve().parent
     work_state = _work_state(raw, config_path)
@@ -1495,7 +1533,7 @@ def parse_runtime_config(
         listen_hosts=listen_hosts,
         language=language,
         assistant_name=name,
-        reply_language=str(raw.get("reply_language", "follow")),
+        reply_language=reply_language,
         zone=zone,
         zone_name=zone_name,
         models=ModelPaths(
@@ -1539,5 +1577,9 @@ def parse_runtime_config(
         commitments=_commitments(raw, config_path),
         claude_daily=_claude_daily(raw, config_path),
         turn_things=_turn_things(raw, config_path),
+        moment=_moment(raw, config_path),
+        night=night_settings(raw),
+        ledger=LedgerSettings.from_config(raw.get("ledger"), reply_language),
+        doing=DoingSettings.from_config(raw.get("doing")),
         raw=raw,
     )

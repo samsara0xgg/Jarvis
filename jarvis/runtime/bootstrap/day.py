@@ -7,21 +7,18 @@ import logging
 from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
-from jarvis.decision.moment import FIELDS as MOMENT_FIELDS
 from jarvis.runtime.about_item import AboutItems
-from jarvis.runtime.config import DailyReportSettings, RuntimeBootstrapError, RuntimeConfig
 from jarvis.runtime.daily_report import (
     PLAN_SERVER,
     DailyReportService,
     DailySchedule,
     microsoft_plan,
 )
-from jarvis.runtime.doing_run import DoingSchedule, DoingSettings
+from jarvis.runtime.doing_run import DoingSchedule
 from jarvis.runtime.highlight_marks import HighlightMarks
-from jarvis.runtime.ledger import LedgerContext, LedgerSettings
-from jarvis.runtime.moment import Moment, MomentSettings
+from jarvis.runtime.ledger import LedgerContext
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state import device_reads, imports
 from jarvis.state import places as place_state
@@ -35,6 +32,7 @@ if TYPE_CHECKING:
     from datetime import datetime, tzinfo
 
     from jarvis.deployment import RuntimePaths
+    from jarvis.runtime.config import DailyReportSettings, RuntimeConfig
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.shared.device_link import DeviceLink
     from jarvis.state.memory_db import (
@@ -55,7 +53,7 @@ def _ledger(
     On a brain (``device``, ADR 0170) its TimeSink is the terminal's. ``attachments`` is where his
     pictures are kept, which the day line of ADR 0235 reads.
     """
-    settings = LedgerSettings.from_config(config.raw.get("ledger"), config.reply_language)
+    settings = config.ledger
     if settings is None or memory is None:
         return None
     sources = LedgerSources(
@@ -85,7 +83,7 @@ def _doing_schedule(
     config: RuntimeConfig, memory: MemorySettings, paths: RuntimePaths, device: DeviceLink | None,
 ) -> DoingSchedule | None:
     """ADR 0302, 0310: the writer of the doing lane, over the day line `GET /inherent/day` folds."""
-    settings = DoingSettings.from_config(config.raw.get("doing"))
+    settings = config.doing
     if settings is None:
         return None
     llm_config = config.raw.get("llm")
@@ -139,37 +137,6 @@ def _shares_line(event_log_path: Path) -> str | None:
     """ADR 0211: the line naming what Allen last saved from other apps, folded from the log."""
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
         return shares_line(conn)
-
-
-def _moment(
-    config: Mapping[str, Any], config_path: Path, db_path: Path, device: DeviceLink | None = None,
-    timesink_path: Path | None = None,
-) -> Moment | None:
-    """``moment`` (ADR 0161): off unless enabled; bad values stop boot.
-
-    It reads TimeSink only through ``observer.timesink``: with that off every fact is unknown
-    and nothing is held. On a brain (``device``) it is the terminal's TimeSink that is read.
-    """
-    block = config.get("moment")
-    if not isinstance(block, Mapping):
-        return None
-    if not isinstance(block.get("enabled"), bool):
-        msg = f"runtime: {config_path} moment.enabled must be true or false"
-        raise RuntimeBootstrapError(msg)
-    fields = block.get("fields")
-    if (
-        not isinstance(fields, Mapping)
-        or set(fields) != set(MOMENT_FIELDS)
-        or not all(isinstance(on, bool) for on in fields.values())
-    ):
-        msg = (
-            f"runtime: {config_path} moment.fields must set each of {MOMENT_FIELDS} "
-            "to true or false"
-        )
-        raise RuntimeBootstrapError(msg)
-    if not block["enabled"]:
-        return None
-    return Moment(MomentSettings(dict(fields)), timesink_path, db_path, device)
 
 
 def _codex_sessions_path(settings: DailyReportSettings) -> Path | None:

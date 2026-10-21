@@ -19,9 +19,7 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision import moment as rules
 from jarvis.decision.attention import replay, rule_judge_v1
-from jarvis.runtime.bootstrap.day import _moment
 from jarvis.runtime.card_feedback import CardFeedback
-from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.daemon.routes import moment_hold
 from jarvis.runtime.moment import Moment, MomentSettings
 from jarvis.state import job_ledger, job_time, timesink_moment
@@ -38,6 +36,7 @@ from tests.support.job_mail import (
     job_harness,
     only_rows,
 )
+from tests.support.runtime_config import runtime_config
 from tests.support.timesink_moment import (
     CHROME,
     T0,
@@ -308,24 +307,15 @@ def test_unknown_facts_render_as_unknown_and_the_doc_stays_short(tmp_path: Path)
     )
 
 
-def test_the_moment_block_is_validated_at_boot(tmp_path: Path) -> None:
-    """The moment block is validated at boot."""
+def test_the_shipped_moment_block_is_on_with_every_field() -> None:
+    """The moment block ships on and names each field; absent or off it is no settings."""
     shipped = yaml.safe_load((repo_root() / "config/jarvis.yaml").read_text())
     block = shipped["moment"]
     assert block["enabled"] is True
     assert set(block["fields"]) == set(rules.FIELDS)
-    path, db = tmp_path / "jarvis.yaml", tmp_path / "memory.db"
-    assert isinstance(_moment(shipped, path, db), Moment)
-    assert _moment({}, path, db) is None
-    assert _moment({"moment": {**block, "enabled": False}}, path, db) is None
-    for bad in (
-        {**block, "enabled": "yes"},
-        {**block, "fields": {**block["fields"], "site": "yes"}},
-        {**block, "fields": {k: v for k, v in block["fields"].items() if k != "site"}},
-        {**block, "fields": {**block["fields"], "titles": True}},
-    ):
-        with pytest.raises(RuntimeBootstrapError, match="moment"):
-            _moment({"moment": bad}, path, db)
+    assert runtime_config(shipped).moment == MomentSettings(dict(block["fields"]))
+    assert runtime_config({}).moment is None
+    assert runtime_config({"moment": {**block, "enabled": False}}).moment is None
 
 
 # --- delivery ----------------------------------------------------------------------------
