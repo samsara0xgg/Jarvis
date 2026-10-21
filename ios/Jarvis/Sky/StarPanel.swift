@@ -340,7 +340,7 @@ struct TalkPanel: View {
     var body: some View {
         let top = panelTop(ui, pull), p = panelOpenness(top), held = pull != nil
         // while he types the stream ends 8 pt over the composer (which is 8 pt over the keys); at rest, and while the voice's status line is up, it leaves that line its place
-        let bottom = (ui.typing && ui.voiceNote == nil ? H - StarUI.restGap - 48 - StarUI.keyGap : 836) - ui.attach.rise - ui.kbLift
+        let bottom = (ui.typing && ui.voiceNote == nil ? H - StarUI.restGap - 48 - StarUI.keyGap : 836) - ui.attach.rise - ui.footLift
         let chip = PanelRules.chip(waits: ui.pinned.first { $0.id == "等你的" }?.rows.count ?? 0, works: ui.pinned.first { $0.id == "她在做" }?.rows.count ?? 0)
         let chipH = chip == nil ? 0 : Self.chipH
         let pinH = chip != nil && ui.chipOpen ? min(pinContent, 0.4 * (bottom - StarEngine.panelOpen)) : 0

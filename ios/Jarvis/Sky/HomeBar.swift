@@ -1,20 +1,23 @@
 import SwiftUI
 
-// The home's pages in one glass bar at the foot of the screen (yilun, 2026-10-21: the map and settings leave the top row, whose right end is hers): the day, the map of where he went,
-// and settings. A tap on a tab changes the page, and so does a finger slid along the bar, as the system's own tab bar does: the light follows the finger with a tick at each tab it
-// reaches, and the page is the one it lets go on; a tap on the day while it is on show goes back to now. The bar floats over the page, which runs on under it, and gives way while the field
-// he types in is out (with the history, or what he is sending), a place is being named or the near view tuned. Under the dial there is no bar: settings is a sheet from its button
-// there. Design points, as the chrome (Sky/StarChartScreen.swift).
+// The home's pages in one glass bar at the foot of the screen (yilun, 2026-10-21: every page goes there, and the top row's right end is hers): the day, the conversation with her
+// (the history, which comes up over the day), the map of where he went, and settings. A tap on a tab changes the page, and so does a finger slid along the bar, as the system's own
+// tab bar does: the light follows the finger with a tick at each tab it reaches, and the page is the one it lets go on; a tap on the day while it is on show goes back to now. The bar
+// floats over the page, which runs on under it. On the conversation it stays, with the field he types in over it, and gives way only to the keyboard and what he picks to send;
+// on the other pages it gives way while the field is out. It goes too while a place is being named or the near view tuned. Under the dial there is no bar: settings is a sheet from
+// its button there. Design points, as the chrome (Sky/StarChartScreen.swift).
 
 /// the home's pages, in the bar's order
 enum HomePage: CaseIterable {
-    case day, map, settings
+    case day, talk, map, settings
 }
 
 enum HomeBar {
     static let h = 62.0, side = 30.0, foot = 21.0          // how tall it is, in from each side, and up from the foot of the screen
     static let inset = 4.0                                   // the light round the tab it is on, inside the bar
     static var top: Double { H - foot - h }
+    /// how far the field rests over its place on the conversation's page: 8 pt over the bar
+    static var fieldLift: Double { h + foot + 8 - StarUI.restGap }
     static var width: Double { W - 2 * side }
     /// how wide a tab is
     static var slot: Double { (width - 2 * inset) / Double(HomePage.allCases.count) }
@@ -33,14 +36,28 @@ enum HomeBar {
     }
 }
 
+extension StarEngine {
+    /// The home's page `p`: the history comes up for the conversation and goes for any other page, which the map's and settings' flags name. Quietly: a tab is no pull of the panel.
+    func showPage(_ p: HomePage) {
+        if p == .talk { openPanel(quiet: true) } else { closePanel(quiet: true) }
+        ui.footprintOpen = p == .map
+        ui.settingsOpen = p == .settings
+    }
+}
+
 struct HomeTabBar: View {
-    let ui: StarUI
+    let engine: StarEngine
     @State private var finger: Double?          // a finger on the bar, from its left edge
     @State private var under: HomePage?         // the tab that finger is on, for the tick when it reaches another
     @Environment(\.accessibilityReduceMotion) private var reduce
 
-    /// on the timeline only, and not while the field is out, a place is being named or the near view tuned
-    private var shows: Bool { HomeModule.shared.isTimeline && !ui.composerOut && ui.tl.renaming == nil && !ui.tuning }
+    private var ui: StarUI { engine.ui }
+
+    /// On the timeline only, not while a place is being named or the near view tuned; on the conversation not under the keyboard or what he picks to send, elsewhere not while the field is out.
+    private var shows: Bool {
+        guard HomeModule.shared.isTimeline, ui.tl.renaming == nil, !ui.tuning else { return false }
+        return ui.panelOpen ? !ui.typing && !ui.attach.isOpen : !ui.composerOut
+    }
 
     var body: some View {
         let lit = finger.map { HomeBar.page(at: $0) } ?? ui.page
@@ -95,6 +112,7 @@ struct HomeTabBar: View {
     private func symbol(_ p: HomePage) -> String {
         switch p {
         case .day: "calendar.day.timeline.left"
+        case .talk: "text.bubble"
         case .map: "map"
         case .settings: "gearshape"
         }
@@ -103,6 +121,7 @@ struct HomeTabBar: View {
     private func title(_ p: HomePage) -> String {
         switch p {
         case .day: Words.Home.pageDay
+        case .talk: Words.Home.pageTalk
         case .map: Words.Home.pageMap
         case .settings: Words.Home.pageSettings
         }
@@ -126,7 +145,7 @@ struct HomeTabBar: View {
 
     private func go(_ p: HomePage) {
         if p == .day && ui.page == .day { ui.tl.goToday(); return }          // the day's tab on the day: back to now, as a tab bar goes back to the top
-        ui.page = p
+        engine.showPage(p)
     }
 }
 

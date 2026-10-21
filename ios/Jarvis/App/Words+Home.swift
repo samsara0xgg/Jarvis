@@ -12,12 +12,12 @@ extension Words {
         static var tidying: String { pick(zh: "在理…", en: "Tidying…") }
         static var tidyNothing: String { pick(zh: "没有要改的", en: "Nothing to change") }
         static var tidyFailed: String { pick(zh: "没理成，等会儿再试", en: "Couldn't tidy it. Try again later") }
-        static var history: String { pick(zh: "聊天记录", en: "History") }
         static var backToToday: String { pick(zh: "回到今天", en: "Back to today") }
         static var backToNow: String { pick(zh: "回到现在", en: "Back to now") }
 
         // the glass bar at the foot (Sky/HomeBar.swift): the home's pages
         static var pageDay: String { pick(zh: "今天", en: "Today") }
+        static var pageTalk: String { pick(zh: "聊天", en: "Chat") }
         static var pageMap: String { pick(zh: "地图", en: "Map") }
         static var pageSettings: String { pick(zh: "设置", en: "Settings") }
         static var pageSettingsRecording: String { pick(zh: "设置，正在随身录音", en: "Settings, recording") }

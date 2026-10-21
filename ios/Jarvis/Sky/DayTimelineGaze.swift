@@ -32,7 +32,7 @@ extension StarEngine {
         guard ui.tlHome else { return nil }
         if let p = ui.tl.finger { return TLGaze.toward(p, from: seat) }
         if let p = ui.tl.arcHoverAt { return TLGaze.toward(p, from: seat) }
-        if ui.typing { return TLGaze.toward(CGPoint(x: W / 2, y: H - StarUI.restGap - 48 - ui.kbLift), from: seat) }
+        if ui.typing { return TLGaze.toward(CGPoint(x: W / 2, y: H - StarUI.restGap - 48 - ui.footLift), from: seat) }
         return nil
     }
 

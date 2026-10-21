@@ -1,26 +1,26 @@
 import SwiftUI
 
 // Her cards. Held down on the timeline (0.28 s), or touched and slid off at once (Sky/StarFlow.swift), she puts out a few small tiles on a fan under her, over everything else, like thoughts:
-// two dots leave her first and each tile pops up where it sits, a little after the one before. 打字, 理一下, the history, the way back to today.
+// two dots leave her first and each tile pops up where it sits, a little after the one before. 打字, 理一下, the way back to today (the history is a page of the bar at the foot).
 // A finger that is still down slides from tile to tile (a tick for each) and lifting it on one chooses it; lifting it anywhere else leaves the tiles out for a tap. A tap on a tile
 // chooses it, a tap anywhere else puts them away without a choice. The chosen tile pulses once and they all go.
 
 /// what she offers, and whether each can be chosen now
 struct TLHerMenu {
-    enum Kind { case type, tidy, history, today }
+    enum Kind { case type, tidy, today }
     struct Item: Equatable { let kind: Kind, title: String, symbol: String, enabled: Bool }
 
-    /// The field to type to her in; 理一下 only where it can be asked for (today, with a brain), as 在理… and not to be chosen while the brain works; the history; the way back to today.
+    /// The field to type to her in; 理一下 only where it can be asked for (today, with a brain), as 在理… and not to be chosen while the brain works; the way back to today.
     @MainActor static func items(tidy: TLTidy, tidyShown: Bool) -> [Item] {
         let running = tidy == .running, w = Words.Home.self
         return [Item(kind: .type, title: w.type, symbol: "keyboard", enabled: true)]
             + (tidyShown ? [Item(kind: .tidy, title: running ? w.tidying : w.tidy, symbol: "wand.and.rays", enabled: !running)] : [])
-            + [Item(kind: .history, title: w.history, symbol: "text.bubble", enabled: true), Item(kind: .today, title: w.backToToday, symbol: "arrow.uturn.backward", enabled: true)]
+            + [Item(kind: .today, title: w.backToToday, symbol: "arrow.uturn.backward", enabled: true)]
     }
 }
 
 /// Where the tiles lie: on a fan under her, its middle 120° round from her right (down and to the left, toward the middle of the screen she sits right of), a tile every 40°, in the chrome's
-/// design points. With four that is from down and to the right (60°) round to her left at her own height (180°).
+/// design points. With three that is from down and a little to the right (80°) round to down and to the left (160°).
 enum TLArc {
     static let tile = 52.0, corner = 14.0, radius = 110.0, middle = 120.0, step = 40.0
     static let dots: [(d: Double, r: Double)] = [(13, 2.5), (25, 4)]      // the thought dots off her toward the middle of the fan: how far past her edge, radius
@@ -96,7 +96,6 @@ extension TimelineState {
         switch k {
         case .type: engine.beginEditing?()
         case .tidy: tidyDay()
-        case .history: engine.openPanel()
         case .today: goToday()
         }
     }

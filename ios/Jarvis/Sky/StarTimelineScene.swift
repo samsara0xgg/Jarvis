@@ -283,6 +283,7 @@ extension StarEngine {
             ui.tl.tidyDay()
         }
         case "她菜单": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.openArc(holding: false) }          // her cards out (`-scene 时间线:她菜单`)
+        case "聊天": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }          // the conversation's page of the bar at the foot
         case "飘":          // her drift, without the wait for it
             if let k = Int(parts.count > 2 ? parts[2] : ""), TLSeat.perches.indices.contains(k) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in wander = (TLSeat.perches[k], nowMs() + 60_000) }

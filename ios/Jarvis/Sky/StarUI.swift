@@ -117,6 +117,8 @@ final class StarUI {
     /// The keyboard's frame runs to the bottom of the screen, so its height already holds the home-indicator inset that restGap is: lifting the composer by the whole height
     /// would count that inset twice (a 34 pt gap over the keys). It is lifted by the height less the difference of the two gaps.
     static func lift(keyboardHeight h: Double) -> Double { h > 0 ? max(0, h - (restGap - keyGap)) : 0 }
+    /// how far the composer is raised over its rest place: by the keyboard, and on the timeline's conversation at least over the bar at the foot (Sky/HomeBar.swift)
+    var footLift: Double { max(kbLift, panelOpen && HomeModule.shared.isTimeline ? HomeBar.fieldLift : 0) }
     var mic: MicState = .mic
     var chipsOn = false
     var settingsOpen = false            // settings is open: on the timeline the third page of the bar at the foot, under the dial and on the iPad a sheet
@@ -132,11 +134,8 @@ final class StarUI {
     var tlHome = HomeModule.shared.isTimeline       // she has come up to her place over the timeline (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
     var footprintOpen = false           // the footprint's one-day screen is over the timeline, which and the top row give way to it (Sky/FootprintDayPage.swift)
     let footprint = FootprintDayState()
-    /// the page of the home the glass bar at its foot is on (Sky/HomeBar.swift): the day, or the footprint's page or settings over it
-    var page: HomePage {
-        get { settingsOpen ? .settings : footprintOpen ? .map : .day }
-        set { footprintOpen = newValue == .map; settingsOpen = newValue == .settings }
-    }
+    /// the page of the home the glass bar at its foot is on (Sky/HomeBar.swift): the day, or over it the history, the footprint's page or settings (`StarEngine.showPage` changes it)
+    var page: HomePage { settingsOpen ? .settings : panelOpen ? .talk : footprintOpen ? .map : .day }
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 
     /// The composer is out: always under the dial. On the timeline she is tapped to talk and the field is one of her cards: it is out while he types (he chose 打字, or asked her about a

@@ -59,11 +59,11 @@ final class DayTimelineArcTests: XCTestCase {
     func testWhatSheOffersWhenHeldDown() {
         let w = Words.Home.self
         func list(_ tidy: TLTidy, shown: Bool = true) -> [String] { TLHerMenu.items(tidy: tidy, tidyShown: shown).map { "\($0.kind) \($0.title)\($0.enabled ? "" : " (off)")" } }
-        XCTAssertEqual(list(.idle), ["type \(w.type)", "tidy \(w.tidy)", "history \(w.history)", "today \(w.backToToday)"])
+        XCTAssertEqual(list(.idle), ["type \(w.type)", "tidy \(w.tidy)", "today \(w.backToToday)"], "the history is a page of the bar at the foot, not a card")
         XCTAssertEqual(list(.nothing), list(.idle), "what an answer came to is said in her sentence's place, not on the card")
-        XCTAssertEqual(list(.running), ["type \(w.type)", "tidy \(w.tidying) (off)", "history \(w.history)", "today \(w.backToToday)"])
-        XCTAssertEqual(list(.idle, shown: false), ["type \(w.type)", "history \(w.history)", "today \(w.backToToday)"], "not on another day, and not with no brain: there is nothing to tidy")
-        XCTAssertEqual(TLHerMenu.items(tidy: .idle, tidyShown: true).map(\.symbol), ["keyboard", "wand.and.rays", "text.bubble", "arrow.uturn.backward"],
+        XCTAssertEqual(list(.running), ["type \(w.type)", "tidy \(w.tidying) (off)", "today \(w.backToToday)"])
+        XCTAssertEqual(list(.idle, shown: false), ["type \(w.type)", "today \(w.backToToday)"], "not on another day, and not with no brain: there is nothing to tidy")
+        XCTAssertEqual(TLHerMenu.items(tidy: .idle, tidyShown: true).map(\.symbol), ["keyboard", "wand.and.rays", "arrow.uturn.backward"],
                        "the four-point star is only for what matters: tidying has a symbol of its own")
     }
 
@@ -76,7 +76,7 @@ final class DayTimelineArcTests: XCTestCase {
         XCTAssertTrue(tl.arcMounted)
         let cs = TLArc.centers(count: tl.herItems.count)
         tl.arcFollow(cs[2])
-        XCTAssertEqual(tl.arcHover, .history)
+        XCTAssertEqual(tl.arcHover, .today)
         XCTAssertEqual(tl.arcHoverAt, cs[2], "her eyes go to it")
         tl.arcFollow(CGPoint(x: cs[2].x + 100, y: cs[2].y + 300))
         XCTAssertNil(tl.arcHover)
@@ -88,13 +88,13 @@ final class DayTimelineArcTests: XCTestCase {
 
     func testLiftingOnACardChoosesItAndTheyGoBack() async {
         let (tl, _, e) = state()
-        XCTAssertFalse(e.ui.panelOpen)
+        let asked = tl.request.n
         tl.openArc(holding: true)
         await until("out") { tl.arcOpen }
         tl.arcFollow(TLArc.centers(count: tl.herItems.count)[2])
         tl.arcLetGo(engine: e, cancelled: false)
-        XCTAssertEqual(tl.arcPicked, .history, "it pulses first")
-        await until("the history opened") { e.ui.panelOpen }
+        XCTAssertEqual(tl.arcPicked, .today, "it pulses first")
+        await until("the list is sent back to now") { tl.request.n > asked }
         await until("and they are back in her") { !tl.arcMounted }
         XCTAssertFalse(tl.arcOpen)
         XCTAssertNil(tl.arcPicked)
@@ -125,7 +125,7 @@ final class DayTimelineArcTests: XCTestCase {
             XCTAssertNil(tl.arcPicked)
             XCTAssertEqual(stub.tidies, 0)
             XCTAssertFalse(tl.arcHolding)
-            tl.arcFollow(cs[3])
+            tl.arcFollow(cs[2])
             XCTAssertNil(tl.arcHover, "the finger is up: moving is no sliding")
         }
     }

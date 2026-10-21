@@ -40,12 +40,12 @@ struct StarChartScreen: View {
         // over the chrome, the home's settings page in the screen's own points (it is a sheet anywhere else), and over everything the bar at the foot that picks the page (Sky/HomeBar.swift)
         .overlay {
             ZStack {
-                if settings { SettingsSheet(asPage: true, tuneNear: { engine.ui.page = .day; engine.setLevel(-1); engine.ui.tuning = true }).transition(.opacity) }
+                if settings { SettingsSheet(asPage: true, tuneNear: { engine.showPage(.day); engine.setLevel(-1); engine.ui.tuning = true }).transition(.opacity) }
             }
             .animation(.easeOut(duration: 0.2), value: settings)
         }
         .overlay {
-            GeometryReader { geo in HomeTabBar(ui: engine.ui).modifier(InDesign(fit: Self.fit(geo.size))) }
+            GeometryReader { geo in HomeTabBar(engine: engine).modifier(InDesign(fit: Self.fit(geo.size))) }
                 .ignoresSafeArea()
         }
         .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255))
@@ -104,7 +104,7 @@ struct StarChrome: View {
             AttachDim(model: ui.attach)
             if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
             composer
-            AttachOverlay(model: ui.attach, kbLift: ui.kbLift)
+            AttachOverlay(model: ui.attach, kbLift: ui.footLift)
             TapbackOverlay(engine: engine, ui: ui).animation(.easeOut(duration: 0.15), value: ui.tapback != nil)
             HerArc(engine: engine, ui: ui)          // her cards, over everything
         }
@@ -225,7 +225,7 @@ struct StarChrome: View {
     /// She is drawn on the stage under the chrome, which VoiceOver does not see: on the timeline an element stands in for her at her place. Its action is her tap (she listens, or a talk
     /// stops), and her cards are its other actions, done at once.
     @ViewBuilder private var herElement: some View {
-        if HomeModule.shared.isTimeline && ui.tlHome && ui.page == .day {
+        if HomeModule.shared.isTimeline && ui.tlHome && !ui.footprintOpen && !ui.settingsOpen {
             Color.clear.frame(width: 2 * TLSeat.radius, height: 2 * TLSeat.radius)
                 .accessibilityElement()
                 .accessibilityLabel(Words.Home.her).accessibilityHint(Words.Home.herHint).accessibilityAddTraits(.isButton)
@@ -399,7 +399,7 @@ struct StarChrome: View {
         .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
         .opacity(out ? 1 : 0).offset(y: out || reduce ? 0 : 16).allowsHitTesting(out).accessibilityHidden(!out)
         .animation(.easeOut(duration: out ? 0.25 : 0.2), value: out)
-        .offset(x: 20, y: H - StarUI.restGap - 48 - at.rise - ui.kbLift)
+        .offset(x: 20, y: H - StarUI.restGap - 48 - at.rise - ui.footLift)
     }
 }
 
