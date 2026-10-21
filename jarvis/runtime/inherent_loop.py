@@ -192,7 +192,7 @@ from jarvis.runtime.dictation import (
     whisper_ears,
 )
 from jarvis.runtime.doing_answers import DoingAnswers
-from jarvis.runtime.doing_day import read_day_doing
+from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.inherent_hub import start_inherent_view
 from jarvis.runtime.job_mail import served_notices, settle_notice
@@ -248,7 +248,7 @@ from jarvis.state.event_log import (
     turn_intent_channel,
     turn_origin,
 )
-from jarvis.state.imports import IMPORTS_DIRNAME
+from jarvis.state.imports import IMPORTS_DIRNAME, shared_reads
 from jarvis.state.input_claim import (
     REALTIME_INTENT_CONSUMER,
     ConflictingTurnClaimError,
@@ -5795,7 +5795,11 @@ def _read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked 
     zone_name, zone = resolve_zone(None, configured)
     on = datetime.fromtimestamp(now_ms / 1000, zone).date() if day is None else day
     start_ms, end_ms = day_window(on, zone)
-    with contextlib.closing(open_runtime_event_log(event_log)) as conn:
+    before_ms, after_ms = page_reach(on, zone)
+    with (
+        contextlib.closing(open_runtime_event_log(event_log)) as conn,
+        shared_reads(before_ms=before_ms, after_ms=after_ms),
+    ):
         sources = DaySources(zone, timesink, memory_db, terminal, attachments, shipped)
         line = fold_day(conn, start_ms, end_ms, now_ms, sources)
         try:

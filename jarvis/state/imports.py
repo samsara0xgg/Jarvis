@@ -29,14 +29,17 @@ import sqlite3
 import time
 import uuid
 import zipfile
-from dataclasses import dataclass, replace
+from bisect import bisect_left
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final
 from xml.etree import ElementTree as ET
 
 from jarvis.state import import_parsers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
     from pathlib import Path
 
     from jarvis.state.import_parsers import Parsed
@@ -371,6 +374,70 @@ def around(conn: sqlite3.Connection, one: Entry, count: int) -> tuple[list[Entry
     return rows[max(0, at - count) : at], rows[at + 1 : at + 1 + count]
 
 
+@dataclass
+class _Held:
+    """What one read of :func:`newest` found, over its window (an end None reaches all rows)."""
+
+    version: int
+    start_ms: int | None
+    end_ms: int | None
+    entries: list[Entry]
+    moments: list[int] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.moments = [one.at_ms for one in self.entries]
+
+    def covers(self, start_ms: int | None, end_ms: int | None) -> bool:
+        return (self.start_ms is None or (start_ms is not None and self.start_ms <= start_ms)) and (
+            self.end_ms is None or (end_ms is not None and end_ms <= self.end_ms)
+        )
+
+    def within(self, start_ms: int | None, end_ms: int | None) -> list[Entry]:
+        lo = 0 if start_ms is None else bisect_left(self.moments, start_ms)
+        hi = len(self.entries) if end_ms is None else bisect_left(self.moments, end_ms)
+        return self.entries[lo:hi]
+
+
+@dataclass
+class _Reads:
+    """The reads of one :func:`shared_reads`, by database, source, kinds and how it was bounded."""
+
+    before_ms: int
+    after_ms: int
+    held: dict[tuple[str, str, tuple[str, ...], bool], _Held] = field(default_factory=dict)
+
+
+_SHARED: ContextVar[_Reads | None] = ContextVar("imports_shared_reads", default=None)
+
+
+@contextmanager
+def shared_reads(*, before_ms: int = 0, after_ms: int = 0) -> Iterator[None]:
+    """Within it, :func:`newest` reads each shipped row once, however often it is asked.
+
+    A read is kept, and a later one whose window it covers is cut from it: the newest revisions
+    in a window are the newest of a wider one that fall inside it. Rows are only ever added, so a
+    kept read stands while the database holds the same last row; a row added since is read anew.
+    The first read of a source is made ``before_ms`` earlier and ``after_ms`` later than asked,
+    so that what is asked later in the same scope, as far apart as that, finds it. One thread's
+    scope: a day page drawn by the brain (ADR 0313) folds three overlapping days.
+    """
+    token = _SHARED.set(_Reads(before_ms, after_ms))
+    try:
+        yield
+    finally:
+        _SHARED.reset(token)
+
+
+def _version(conn: sqlite3.Connection) -> tuple[str, int] | None:
+    """The database's file and its last row, or None when it has no file or no table."""
+    try:
+        path = str(conn.execute("PRAGMA database_list").fetchone()[2])
+        last = conn.execute("SELECT max(rowid) FROM import_entries").fetchone()[0]
+    except sqlite3.OperationalError:
+        return None
+    return (path, int(last or 0)) if path else None
+
+
 def newest(  # noqa: PLR0913 — the source, a window, the kinds and how the scan is bounded.
     conn: sqlite3.Connection, source: str, *,
     start_ms: int | None = None, end_ms: int | None = None, kinds: tuple[str, ...] = (),
@@ -386,8 +453,31 @@ def newest(  # noqa: PLR0913 — the source, a window, the kinds and how the sca
     that start ``<kind>:`` (what a terminal ships, ADR 0294) for the ``kinds`` asked, an index
     range instead of a scan, and gives the same rows when every such key does. With both ends
     of a window only the rows with a revision inside it are read, each newest found by its key:
-    a row whose newest revision is in the window has one there.
+    a row whose newest revision is in the window has one there. Inside :func:`shared_reads` a
+    read already made is reused.
     """
+    reads = _SHARED.get()
+    version = None if reads is None else _version(conn)
+    if reads is None or version is None:
+        return _newest(conn, source, start_ms, end_ms, kinds, by_prefix=by_prefix)
+    path, last = version
+    key = (path, source, kinds, by_prefix)
+    held = reads.held.get(key)
+    if held is None or held.version != last or not held.covers(start_ms, end_ms):
+        lo = None if start_ms is None else start_ms - reads.before_ms
+        hi = None if end_ms is None else end_ms + reads.after_ms
+        if held is not None and held.version == last:
+            lo = None if lo is None or held.start_ms is None else min(lo, held.start_ms)
+            hi = None if hi is None or held.end_ms is None else max(hi, held.end_ms)
+        held = _Held(last, lo, hi, _newest(conn, source, lo, hi, kinds, by_prefix=by_prefix))
+        reads.held[key] = held
+    return held.within(start_ms, end_ms)
+
+
+def _newest(  # noqa: PLR0913 — newest's own arguments.
+    conn: sqlite3.Connection, source: str, start_ms: int | None, end_ms: int | None,
+    kinds: tuple[str, ...], *, by_prefix: bool,
+) -> list[Entry]:
     row = f"substr(key, 1, length(key) - {REVISION_SUFFIX})"
     held = ["source = ?"]
     params: list[Any] = [source]

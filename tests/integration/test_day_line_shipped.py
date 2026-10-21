@@ -182,6 +182,49 @@ def test_a_window_reads_each_row_it_touches_at_its_newest_revision(tmp_path: Pat
             ]
 
 
+def test_shared_reads_read_a_covered_window_once_and_a_row_shipped_since_anew(
+    tmp_path: Path,
+) -> None:
+    """Inside the scope a window inside an earlier read, widened, is cut from it, row for row."""
+
+    def ship(row: str, rev: str, minute: int) -> None:
+        with closing(imports.open_shipped(tmp_path / "imports")) as conn, conn:
+            imports.add_entries(conn, "digest", [
+                Parsed("timesink", f"{row}:{rev * 12}", "0", minute * MINUTE, "UTC", "span", "",
+                       {"rev": rev}),
+            ], imports.Counts())
+
+    for n, minute in enumerate((300, 450, 600, 640, 900, 1300)):
+        ship(f"span:{n}", "a", minute)
+    reads: list[str] = []
+    asks = [(540, 720), (480, 780), (60, 960)]  # the last starts more than before_ms earlier
+    with closing(sqlite3.connect(tmp_path / "imports" / imports.SHIPPED_DB)) as conn:
+        plain = [
+            imports.newest(conn, "timesink", start_ms=a * MINUTE, end_ms=b * MINUTE,
+                           kinds=("span",), by_prefix=True)
+            for a, b in asks
+        ]
+        conn.set_trace_callback(lambda sql: reads.append(sql) if "rowid IN" in sql else None)
+        with imports.shared_reads(before_ms=120 * MINUTE, after_ms=60 * MINUTE):
+            shared = [
+                imports.newest(conn, "timesink", start_ms=a * MINUTE, end_ms=b * MINUTE,
+                               kinds=("span",), by_prefix=True)
+                for a, b in asks
+            ]
+            assert shared == plain
+            assert len(reads) == 2  # 540-720 read as 420-780, which holds 480-780; 60-960 is not
+            ship("span:1", "b", 610)  # the row at 450 moves into the window
+            ship("span:6", "a", 700)
+            again = imports.newest(conn, "timesink", start_ms=540 * MINUTE, end_ms=720 * MINUTE,
+                                   kinds=("span",), by_prefix=True)
+            assert len(reads) == 3
+        assert [(e.at_ms // MINUTE, e.fields["rev"]) for e in again] == [
+            (600, "a"), (610, "b"), (640, "a"), (700, "a"),
+        ]
+        assert again == imports.newest(conn, "timesink", start_ms=540 * MINUTE,
+                                       end_ms=720 * MINUTE, kinds=("span",), by_prefix=True)
+
+
 def test_the_live_read_is_preferred_and_the_shipped_one_fills_in_when_it_has_nothing(
     tmp_path: Path,
 ) -> None:

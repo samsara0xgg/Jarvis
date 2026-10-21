@@ -56,6 +56,17 @@ def lane_line(
     return fold_day(conn, start_ms, end_ms + WAKING_BED_REACH_MS, now_ms, sources)
 
 
+def page_reach(day: date, zone: tzinfo) -> tuple[int, int]:
+    """How far before and after ``day`` the folds of its page reach: the day before, the bed reach.
+
+    What :func:`read_day_doing` may fold beside the page's own line, for
+    :func:`jarvis.state.imports.shared_reads`.
+    """
+    start_ms, _ = day_window(day, zone)
+    before_ms, _ = day_window(day - timedelta(days=1), zone)
+    return start_ms - before_ms, WAKING_BED_REACH_MS
+
+
 def reach_past_start(
     items: Sequence[Mapping[str, Any]], day: date, zone: tzinfo, now_ms: int,
 ) -> int:
@@ -165,4 +176,4 @@ def _threads(memory_db: Path | None) -> dict[str, Thread]:
         return {}
 
 
-__all__ = ["DayDoing", "Lane", "lane_line", "reach_past_start", "read_day_doing"]
+__all__ = ["DayDoing", "Lane", "lane_line", "page_reach", "reach_past_start", "read_day_doing"]
