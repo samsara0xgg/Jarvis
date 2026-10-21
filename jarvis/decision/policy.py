@@ -1,8 +1,6 @@
 """L3 Effective Policy Resolver — Collaborate mode preset (Day-1 only).
 
-Per ADR 0001 § Stub strategy L3 row + spec §3.4.6 / §3.6. Extended by
-ADR 0011 D1: ``EffectivePolicy`` now carries all nine spec §3.4.5
-output fields, six of them declared placeholders pending Phase 4.
+Per ADR 0001 § Stub strategy L3 row + spec §3.4.6 / §3.6.
 
 Day-1 ships the Collaborate preset as static config — the runtime mode
 state projection is deferred Stage 2 (ADR § Six-layer boundary contract:
@@ -43,14 +41,9 @@ class EffectivePolicy:
     Frozen so the gate decision is auditable: passing the same policy
     object and ledger snapshot twice MUST produce the same GateResult.
 
-    Carries ``mode`` plus all nine spec §3.4.5 output fields (ADR
-    0011 D1 added the nine; ``mode`` predates them). Four fields are
-    live-consumed today: ``mode`` (interpolated into the
-    ``caller_allowed`` refuse-reason string, ``gates.py:205``),
-    ``autonomy_ceiling``, ``confirmation_threshold``, and
-    ``allowed_tool_surface``. The remaining six §3.4.5 fields are
-    declared placeholders — each holds its v1 constant and names the
-    ADR that will give it a real consumer.
+    Carries the four fields the gate reads: ``mode`` (interpolated into
+    the ``caller_allowed`` refuse-reason string), ``autonomy_ceiling``,
+    ``confirmation_threshold``, and ``allowed_tool_surface``.
 
     Attributes:
         mode: Active mode preset name (Day-1: always ``"Collaborate"``).
@@ -75,34 +68,6 @@ class EffectivePolicy:
             names that caller may dispatch. Derived from the
             ToolRegistry at composition time and cached here so gate
             decisions don't re-query the registry mid-evaluation.
-        output_form: Declared placeholder carrying its v1 constant
-            ``"conversational"``. Future consumer: the response
-            rendering layer, wired when the policy engine (Phase 4)
-            lands per ADR 0011 D1.
-        verification_level: Declared placeholder carrying its v1
-            constant ``"standard"``. Future consumer: verification
-            depth selection, wired when the policy engine (Phase 4)
-            lands per ADR 0011 D1.
-        interrupt_policy: Declared placeholder carrying its v1
-            constant ``"collaborate_default"``. Future consumer:
-            interrupt handling, wired when the policy engine
-            (Phase 4) lands per ADR 0011 D1.
-        memory_write_policy: Declared placeholder carrying its v1
-            constant ``"propose_only"``. Future consumer: memory
-            write gating, wired when the policy engine (Phase 4)
-            lands per ADR 0011 D1.
-        task_policy: Declared placeholder carrying its v1 constant
-            ``"explicit_only"``. Future consumer: task-creation
-            gating, wired when the policy engine (Phase 4) lands per
-            ADR 0011 D1.
-        attention_defaults: Declared placeholder carrying its v1
-            constant ``{}`` (empty map). Value type ``object`` is
-            provisional: ``attention_policy()`` (``gates.py`` ~line
-            482) actually computes an ``AttentionChannel`` from the
-            situation packet, the claim-evidence projection, and two
-            review flags — not a str-to-str mapping — so no real
-            shape is settled until Phase 4 folds ``attention_policy()``
-            into the policy engine (ADR 0011 D1).
     """
 
     mode: PolicyMode
@@ -111,12 +76,6 @@ class EffectivePolicy:
     allowed_tool_surface: Mapping[CallerPrincipal, frozenset[str]] = field(
         default_factory=dict,
     )
-    output_form: str = "conversational"
-    verification_level: str = "standard"
-    interrupt_policy: str = "collaborate_default"
-    memory_write_policy: str = "propose_only"
-    task_policy: str = "explicit_only"
-    attention_defaults: Mapping[str, object] = field(default_factory=dict)
 
 
 # Risk ladder L0..L4 (matches `jarvis.constitution.AUTONOMY_LEVELS`).
@@ -176,7 +135,7 @@ def effective_policy(
     *,
     mode_state: ModeRuntimeState = COLLABORATE_MODE_STATE,
 ) -> EffectivePolicy:
-    """Build the Collaborate policy preset (ADR 0011 D1: nine §3.4.5 fields).
+    """Build the Collaborate policy preset.
 
     Day-1 ships exactly one mode (``Collaborate``) — multi-mode runtime
     state is deferred Stage 2 per ADR § Stub strategy. The
@@ -225,12 +184,6 @@ def effective_policy(
         autonomy_ceiling="L3",
         confirmation_threshold="L3",
         allowed_tool_surface=dict(allowed_tool_surface),
-        output_form="conversational",
-        verification_level="standard",
-        interrupt_policy="collaborate_default",
-        memory_write_policy="propose_only",
-        task_policy="explicit_only",
-        attention_defaults={},
     )
 
 
