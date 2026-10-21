@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import intent_pump, voice_power
+from jarvis.runtime.daemon import intent_pump, teardown, voice_power
 from jarvis.runtime.turn.start import start_drive_turn_response
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
@@ -279,12 +279,12 @@ def test_a_stop_signal_runs_the_daemons_whole_teardown_and_ends_it_clean(
 
 
 def test_shutdown_tts_closes_pipeline() -> None:
-    """``_shutdown_tts`` must call ``tts_pipe.close()`` to release the PortAudio device."""
+    """``shutdown_tts`` must call ``tts_pipe.close()`` to release the PortAudio device."""
     tts_pipe = MagicMock(spec=voice_media.StreamingTTSPipeline)
-    inherent_loop._shutdown_tts(tts_pipe)  # noqa: SLF001
+    teardown.shutdown_tts(tts_pipe)
     tts_pipe.close.assert_called_once_with()
 
 
 def test_shutdown_tts_none_is_noop() -> None:
-    """``_shutdown_tts(None)`` must not raise (voice subsystem may be absent)."""
-    inherent_loop._shutdown_tts(None)  # noqa: SLF001 — must not raise
+    """``shutdown_tts(None)`` must not raise (voice subsystem may be absent)."""
+    teardown.shutdown_tts(None)  # must not raise

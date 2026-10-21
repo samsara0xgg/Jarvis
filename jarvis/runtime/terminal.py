@@ -88,7 +88,12 @@ from jarvis.runtime.daemon.observers import (
 from jarvis.runtime.daemon.output_watchers import log_watcher_death, tts_watcher
 from jarvis.runtime.daemon.restart import restart_soon
 from jarvis.runtime.daemon.retention import data_sweep_task
-from jarvis.runtime.daemon.voice_power import SessionAttempt, VoicePowerCoordinator
+from jarvis.runtime.daemon.voice_power import (
+    SessionAttempt,
+    VoicePowerCoordinator,
+    install_power_observer_or_degrade,
+    shutdown_power_observer,
+)
 from jarvis.runtime.daemon.voice_wiring import (
     ListenPorts,
     build_echo_canceller,
@@ -99,10 +104,6 @@ from jarvis.runtime.daemon.voice_wiring import (
     voice_models_preflight,
 )
 from jarvis.runtime.dictation import Dictation, build_dictation, load_vocab
-from jarvis.runtime.inherent_loop import (
-    _install_power_observer_or_degrade,
-    _shutdown_power_observer,
-)
 from jarvis.runtime.mail_codes import copy_code
 from jarvis.runtime.night_run import NightRun, night_settings
 from jarvis.runtime.night_watch import NightWatch
@@ -854,7 +855,7 @@ def _start_retry_watch(speaking: _Speaking, retry: _Retry) -> _RetryWatch:
     devices = start_device_change_watch(speaking.config.raw, retry.now)
     devices.add_done_callback(log_watcher_death)
     log = open_event_log(speaking.runtime_root / NIGHT_LOG)
-    power = _install_power_observer_or_degrade(
+    power = install_power_observer_or_degrade(
         log, asyncio.get_running_loop(),
         before_sleep_hook=lambda: None, on_wake_hook=retry.now,
     )
@@ -863,7 +864,7 @@ def _start_retry_watch(speaking: _Speaking, retry: _Retry) -> _RetryWatch:
 
 async def _stop_retry_watch(watch: _RetryWatch) -> None:
     """Power observer first, as a listening terminal's watch ends: a wake now finds it shut."""
-    _shutdown_power_observer(watch.power)
+    shutdown_power_observer(watch.power)
     watch.devices.cancel()
     await asyncio.gather(watch.devices, return_exceptions=True)
     watch.log.close()
@@ -885,7 +886,7 @@ def _start_mac_watch(
     )
     devices.add_done_callback(log_watcher_death)
     log = open_event_log(speaking.runtime_root / NIGHT_LOG)
-    power = _install_power_observer_or_degrade(
+    power = install_power_observer_or_degrade(
         log, asyncio.get_running_loop(),
         before_sleep_hook=coordinator.before_sleep, on_wake_hook=coordinator.on_wake,
     )
@@ -894,7 +895,7 @@ def _start_mac_watch(
 
 async def _stop_mac_watch(watch: _MacWatch) -> None:
     """Power observer first, as a daemon's teardown has it: a sleep landing now finds it shut."""
-    _shutdown_power_observer(watch.power)
+    shutdown_power_observer(watch.power)
     watch.coordinator.close(timeout_s=0.1)
     watch.devices.cancel()
     await asyncio.gather(watch.devices, return_exceptions=True)

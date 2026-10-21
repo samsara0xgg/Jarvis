@@ -6,10 +6,18 @@ import dataclasses
 import logging
 import threading
 import time
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+from jarvis.deployment.sleep_wake import install_power_observer
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.surface import voice_audio, voice_backend, voice_media, voice_session
+
+if TYPE_CHECKING:
+    import asyncio
+    import sqlite3
+    from collections.abc import Callable
+
+    from jarvis.deployment.sleep_wake import PowerObserver
 
 LOGGER = logging.getLogger(__name__)
 
@@ -590,3 +598,53 @@ class VoicePowerCoordinator:
         if pending is not None:
             pending.join(timeout=max(0.0, deadline - time.monotonic()))
         return pending is None or not pending.is_alive()
+
+
+def install_power_observer_or_degrade(
+    conn: sqlite3.Connection,
+    loop: asyncio.AbstractEventLoop,
+    *,
+    before_sleep_hook: Callable[[], object] | None = None,
+    on_wake_hook: Callable[[], object] | None = None,
+) -> PowerObserver | None:
+    """Install the ADR-0009 D3 power observer; ``None`` if it cannot register.
+
+    ``loop`` is mandatory here (unlike the one-shot CLI's install): the
+    observer fires its callbacks on the CFRunLoop thread while ``conn``
+    is loop-thread-only, so ``install_power_observer`` marshals the
+    ``mac.sleeping`` / ``mac.awake`` emits back onto the loop.
+
+    F4 — fail-open residency. A dead IOKit path costs live sleep/wake
+    events, never the daemon; the bootstrap sweep closes actions
+    orphaned by an unobserved sleep on the next restart instead.
+    """
+    try:
+        return install_power_observer(
+            conn,
+            loop=loop,
+            before_sleep_hook=before_sleep_hook,
+            on_wake_hook=on_wake_hook,
+        )
+    except Exception:
+        LOGGER.exception(
+            "power observer install failed; serving without sleep/wake "
+            "notifications (ADR-0009 F4).",
+        )
+        return None
+
+
+def shutdown_power_observer(power_observer: PowerObserver | None) -> None:
+    """De-register the power observer. Idempotent, never raises.
+
+    ADR-0009 D3 pins this FIRST in the serve teardown: ``shutdown()``
+    sets the closed flag that a racing kernel notification consults, so
+    a sleep landing mid-teardown returns instead of marshaling an emit
+    onto a loop that is about to stop — and onto ``runtime.conn``, which
+    the caller closes as soon as ``serve_inherent`` returns.
+    """
+    if power_observer is None:
+        return
+    try:
+        power_observer.shutdown()
+    except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
+        LOGGER.debug("power observer shutdown failed", exc_info=True)

@@ -9,8 +9,8 @@ import sqlite3
 import threading
 from typing import TYPE_CHECKING, Any
 
-from jarvis.runtime import inherent_loop
 from jarvis.runtime import terminal as terminal_module
+from jarvis.runtime.daemon import voice_power
 from jarvis.runtime.terminal import _Speaking, _Speech, _start_speech, _stop_speech
 from jarvis.state.device_tokens import pair_device
 from jarvis.surface import voice_asr, voice_audio, voice_backend, voice_tts, voice_wake
@@ -227,7 +227,7 @@ def heard_session(
     power registration is a stand-in, so no test registers with the real machine.
     """
     power = _Power()
-    monkeypatch.setattr(inherent_loop, "install_power_observer", power.install)
+    monkeypatch.setattr(voice_power, "install_power_observer", power.install)
     monkeypatch.setattr(voice_backend, "coreaudio_devices", lambda _kind: None)
     monkeypatch.setattr(terminal_module, "voice_models_preflight", lambda **_k: (True, []))
     monkeypatch.setattr(voice_asr, "SenseVoiceRecognizer", _Ears)

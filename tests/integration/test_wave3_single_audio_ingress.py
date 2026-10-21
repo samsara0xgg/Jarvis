@@ -16,8 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import input_session, voice_power, voice_wiring
+from jarvis.runtime.daemon import input_session, teardown, voice_power, voice_wiring
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -3761,7 +3760,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         assert player.start_entered.wait(timeout=1.0)
         coordinator.close(timeout_s=0.01)
         shutdown = threading.Thread(
-            target=lambda: inherent_loop._request_voice_input_branch_shutdown(
+            target=lambda: teardown.request_voice_input_branch_shutdown(
                 owners,
                 media,
             ),
@@ -4214,20 +4213,20 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     )
     with (
         patch.object(
-            inherent_loop,
+            teardown,
             "_shutdown_duplex_voice_session",
             side_effect=lambda _session: actions.append("input_stop"),
         ),
         patch.object(
-            inherent_loop,
+            teardown,
             "_request_tts_close",
             side_effect=lambda _tts: actions.append("output_stop"),
         ),
     ):
-        inherent_loop._request_voice_input_branch_shutdown(wave3_owners, wave2)
+        teardown.request_voice_input_branch_shutdown(wave3_owners, wave2)
         assert actions == ["input_stop", "output_stop"]
         actions.clear()
-        inherent_loop._request_voice_input_branch_shutdown(no_owner, wave2)
+        teardown.request_voice_input_branch_shutdown(no_owner, wave2)
         assert actions == ["output_stop"]
 
 

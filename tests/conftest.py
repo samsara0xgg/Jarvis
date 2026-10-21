@@ -45,7 +45,7 @@ Tests that exercise voice paths (``test_voice_*``, integration
 locally; the session fixture and the local patches stack cleanly because
 both target the same module attributes. The same is true of the
 power-observer seam: ADR-0009 Step 4's ``serve_inherent`` tests patch
-``inherent_loop.install_power_observer`` one layer above it, and the
+``daemon.voice_power.install_power_observer`` one layer above it, and the
 ``sleep_wake`` unit tests pass an explicit ``observer_factory=`` (which
 takes precedence over the module default by contract — see
 ``tests/canary/test_canary_power_observer_seam.py``). A test that

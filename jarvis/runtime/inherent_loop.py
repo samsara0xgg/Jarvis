@@ -86,7 +86,7 @@ from typing import TYPE_CHECKING, Any, Final
 import uvicorn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Generator, Sequence
+    from collections.abc import Callable, Generator, Sequence
     from datetime import date, tzinfo
     from pathlib import Path
 
@@ -101,7 +101,6 @@ from jarvis.decision.response_run import (
 )
 from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent_v2_token
 from jarvis.deployment.launchd import logs_dir, supervised
-from jarvis.deployment.sleep_wake import install_power_observer
 from jarvis.execution.transit_tool import live_card
 from jarvis.runtime import JarvisRuntime, _jev_log, save_language
 from jarvis.runtime.card_feedback import CardFeedback
@@ -180,7 +179,19 @@ from jarvis.runtime.daemon.routes import settings_notice_deps as _settings_notic
 from jarvis.runtime.daemon.routes import shipments as _shipments
 from jarvis.runtime.daemon.routes import turn_end_asks as _turn_end_asks
 from jarvis.runtime.daemon.sweep import start_sweep_control_plane as _start_sweep_control_plane
-from jarvis.runtime.daemon.voice_power import VoiceInputOwners as _VoiceInputOwners
+from jarvis.runtime.daemon.teardown import (
+    CHILD_STOP_FLOOR_S,
+    SHUTDOWN_BUDGET_S,
+    leave_unfinished_at_shutdown,
+    request_voice_input_branch_shutdown,
+    shutdown_tts,
+    stop_children,
+)
+from jarvis.runtime.daemon.voice_power import (
+    VoiceInputOwners,
+    install_power_observer_or_degrade,
+    shutdown_power_observer,
+)
 from jarvis.runtime.daemon.voice_power import VoicePowerCoordinator as _VoicePowerCoordinator
 from jarvis.runtime.daemon.voice_wiring import VoiceKnobs as _VoiceKnobs
 from jarvis.runtime.daemon.voice_wiring import build_echo_canceller as _build_echo_canceller
@@ -215,7 +226,6 @@ from jarvis.runtime.turn.start import new_turn_id as _new_turn_id
 from jarvis.runtime.work_state import auto_refresh
 from jarvis.shared import Event, lang
 from jarvis.shared.pricing import load_pricing_table
-from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import (
     footprint,
     phone_track,
@@ -295,16 +305,6 @@ from jarvis.surface.usage_observer import (
 )
 
 LOGGER = logging.getLogger("jarvis.runtime.inherent_loop")
-
-# How long serve_inherent's teardown may take from the moment serving ends. launchd kills
-# a daemon 20 s after its stop (ExitTimeOut's default; the agent's plist sets none), so the
-# watchers' wait and the stops of the children it started must end well inside that. A
-# systemd unit waits longer (the brain's sets none, so 90 s); one bound serves both.
-_SHUTDOWN_BUDGET_S: Final[float] = 15.0
-
-# What the stop of a child gets (the codex app-server, the MCP clients) when the budget is
-# already spent by a turn that would not end: a child left running outlives the daemon.
-_CHILD_STOP_FLOOR_S: Final[float] = 2.0
 
 # Default port the Inherent client connects to. Picked to NOT collide
 # with the legacy ``ui/web/server.py`` default (8000) or the
@@ -417,93 +417,13 @@ def _reconcile_open_playback_in_thread(
     return len(events)
 
 
-def _install_power_observer_or_degrade(
-    conn: sqlite3.Connection,
-    loop: asyncio.AbstractEventLoop,
-    *,
-    before_sleep_hook: Callable[[], object] | None = None,
-    on_wake_hook: Callable[[], object] | None = None,
-) -> PowerObserver | None:
-    """Install the ADR-0009 D3 power observer; ``None`` if it cannot register.
-
-    ``loop`` is mandatory here (unlike the one-shot CLI's install): the
-    observer fires its callbacks on the CFRunLoop thread while ``conn``
-    is loop-thread-only, so ``install_power_observer`` marshals the
-    ``mac.sleeping`` / ``mac.awake`` emits back onto the loop.
-
-    F4 — fail-open residency. A dead IOKit path costs live sleep/wake
-    events, never the daemon; the bootstrap sweep closes actions
-    orphaned by an unobserved sleep on the next restart instead.
-    """
-    try:
-        return install_power_observer(
-            conn,
-            loop=loop,
-            before_sleep_hook=before_sleep_hook,
-            on_wake_hook=on_wake_hook,
-        )
-    except Exception:
-        LOGGER.exception(
-            "power observer install failed; serving without sleep/wake "
-            "notifications (ADR-0009 F4).",
-        )
-        return None
-
-
-def _shutdown_power_observer(power_observer: PowerObserver | None) -> None:
-    """De-register the power observer. Idempotent, never raises.
-
-    ADR-0009 D3 pins this FIRST in the serve teardown: ``shutdown()``
-    sets the closed flag that a racing kernel notification consults, so
-    a sleep landing mid-teardown returns instead of marshaling an emit
-    onto a loop that is about to stop — and onto ``runtime.conn``, which
-    the caller closes as soon as ``serve_inherent`` returns.
-    """
-    if power_observer is None:
-        return
-    try:
-        power_observer.shutdown()
-    except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
-        LOGGER.debug("power observer shutdown failed", exc_info=True)
-
-
-def _shutdown_tts(
-    tts_pipe: voice_media.StreamingTTSPipeline | None,
-) -> None:
-    """Bound TTS owners, then stop the player and release PortAudio.
-
-    The caller has already installed the pipeline's close gate and cancelled
-    the watcher. TTS provider/fallback work belongs to the media actor's daemon
-    worker rather than asyncio's default executor; :meth:`StreamingTTSPipeline.close`
-    cancels its owned task/process and joins that worker up to a hard bound.
-    """
-    if tts_pipe is None:
-        return
-    try:
-        tts_pipe.close()
-    except Exception:  # noqa: BLE001 — shutdown errors must not mask uvicorn return
-        LOGGER.debug("tts pipeline close failed", exc_info=True)
-
-
-def _request_tts_close(
-    tts_pipe: voice_media.StreamingTTSPipeline | None,
-) -> None:
-    """Install the late-output gate before watcher cancellation; never raise."""
-    if tts_pipe is None:
-        return
-    try:
-        tts_pipe.request_close()
-    except Exception:  # noqa: BLE001 — continue the remaining teardown.
-        LOGGER.debug("tts pipeline close request failed", exc_info=True)
-
-
 def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
     *,
     knobs: _VoiceKnobs,
     sensevoice_dir: Path,
     silero_vad_path: Path,
     models_ok: bool,
-    owners: _VoiceInputOwners,
+    owners: VoiceInputOwners,
     reason: str,
 ) -> None:
     """Emit the one per-boot record naming every resolved voice value.
@@ -537,85 +457,6 @@ def _log_voice_startup(  # noqa: PLR0913 - the record's fields ARE its contract
             },
         )
     LOGGER.info("voice startup config: %s", json.dumps(payload, sort_keys=True))
-
-
-def _shutdown_duplex_voice_session(
-    session: voice_session.DuplexVoiceSession | None,
-) -> voice_session.VoiceSessionCloseResult | None:
-    """Close Wave-3 input ownership and retain a typed shutdown trace."""
-    if session is None:
-        return None
-    try:
-        result = session.close()
-    except Exception:
-        LOGGER.exception("duplex voice session close raised")
-        return None
-    if not result.definitively_closed:
-        LOGGER.error(
-            "duplex voice session close incomplete: backend=%s workers=%s "
-            "pending_detections=%d pending_commits=%d",
-            result.ingress.backend_result,
-            result.alive_threads,
-            result.pending_detections,
-            result.pending_commits,
-        )
-    return result
-
-
-def _request_voice_input_branch_shutdown(
-    owners: _VoiceInputOwners,
-    tts_pipe: voice_media.StreamingTTSPipeline | None,
-) -> None:
-    """Revoke input before output, the order serve uses (ADR-0006 F14)."""
-    if owners.duplex_session is not None:
-        _shutdown_duplex_voice_session(owners.duplex_session)
-    _request_tts_close(tts_pipe)
-
-
-def _leave_unfinished_at_shutdown(
-    runtime: JarvisRuntime, unfinished: Collection[asyncio.Task[None]], *, budget_s: float,
-) -> None:
-    """Record what the shutdown budget ran out on, and close the runs it leaves open.
-
-    A task still running after the cancel is a turn in a model call that cannot be
-    interrupted: its thread lives as long as the process does. Its response run is
-    cancelled with the closed reason ``shutdown`` (ADR-0008 D10), so the log says why it
-    ended instead of leaving it for the next boot to close as ``daemon_restart``.
-    """
-    names = sorted(task.get_name() for task in unfinished)
-    LOGGER.warning(
-        "serve_inherent: %d task(s) still running %.1f s into shutdown, left behind: %s",
-        len(names), budget_s, ", ".join(names),
-    )
-    record_realtime_trace("shutdown_deadline", budget_s=budget_s, unfinished=", ".join(names))
-    registry = runtime.response_runs
-    if registry is None:
-        return
-    cancel = make_response_cancel_callable(runtime)
-    for run in registry.open_runs():
-        with contextlib.suppress(Exception):  # a locked log leaves it to the next boot
-            cancel(run.response_id, "generation", "shutdown")
-
-
-async def _stop_children(runtime: JarvisRuntime, *, timeout_s: float) -> None:
-    """Stop what the daemon started: each stop gets ``timeout_s`` off the loop; log, never raise."""
-    stops: list[tuple[str, Callable[[], object]]] = []
-    if runtime.workers is not None:
-        # ADR 0019: the codex app-server child goes with the daemon; its open worker_edges
-        # rows become closed.
-        stops.append(("workers", runtime.workers.stop))
-    if runtime.plugin_connections is not None:
-        # ADR 0031: every MCP client exits on its own task, then its loop thread ends.
-        stops.append(("plugin connections", runtime.plugin_connections.stop))
-    if runtime.mcp_servers is not None:
-        stops.append(("mcp servers", runtime.mcp_servers.stop))
-    for name, stop in stops:
-        try:
-            await asyncio.wait_for(asyncio.to_thread(stop), timeout=timeout_s)
-        except TimeoutError:
-            LOGGER.warning("serve_inherent: %s did not stop in %.1f s; leaving it", name, timeout_s)
-        except Exception:
-            LOGGER.exception("serve_inherent: stopping %s failed", name)
 
 
 V2_PRINCIPAL: Final[str] = "inherent_v2"
@@ -958,7 +799,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
     host: str = "127.0.0.1",
     port: int = _DEFAULT_PORT,
     poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
-    shutdown_budget_s: float = _SHUTDOWN_BUDGET_S,
+    shutdown_budget_s: float = SHUTDOWN_BUDGET_S,
 ) -> None:
     """Run the Inherent daemon (text + voice). Blocks until SIGINT / SIGTERM.
 
@@ -1120,7 +961,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             LOGGER.info("controls: conversation=%s (%s)", on, reason)
             broadcaster.broadcast_op_sync("controls", **state, reason=reason)
 
-        voice_input_owners = _VoiceInputOwners(
+        voice_input_owners = VoiceInputOwners(
             duplex_session=None,
             single_ingress_attempted=False,
         )
@@ -1173,7 +1014,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             # teardown finds the flag instead of a dead loop. Everything
             # below (input / TTS / ducker / watcher cancel) is loop-thread
             # work that would otherwise be racing that notification.
-            _shutdown_power_observer(power_observer)
+            shutdown_power_observer(power_observer)
             if power_coordinator is not None:
                 power_coordinator.close(timeout_s=0.1)
             # ADR-0006 F14: input is revoked before output.
@@ -1186,7 +1027,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                         live_voice.stop(reason="daemon_shutdown"),
                         timeout=min(live_voice.stop_budget_s, left()),
                     )
-            _request_voice_input_branch_shutdown(voice_input_owners, tts_pipe)
+            request_voice_input_branch_shutdown(voice_input_owners, tts_pipe)
             # Cancel/await watcher ownership before PortAudio teardown. A
             # provider thread may still exist, but the closed generation owns
             # no right to write or invoke fallback.
@@ -1195,9 +1036,9 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
             if watchers:
                 _done, unfinished = await asyncio.wait(watchers, timeout=left())
                 if unfinished:
-                    _leave_unfinished_at_shutdown(runtime, unfinished, budget_s=shutdown_budget_s)
-            await _stop_children(runtime, timeout_s=max(left(), _CHILD_STOP_FLOOR_S))
-            _shutdown_tts(tts_pipe)
+                    leave_unfinished_at_shutdown(runtime, unfinished, budget_s=shutdown_budget_s)
+            await stop_children(runtime, timeout_s=max(left(), CHILD_STOP_FLOOR_S))
+            shutdown_tts(tts_pipe)
             LOGGER.info("serve_inherent: shutdown complete")
 
         unwind.push_async_callback(_shutdown)
@@ -1276,7 +1117,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
                 voice_pipeline_callable = None
                 tts_pipe = None
                 duplex_voice_session = None
-                voice_input_owners = _VoiceInputOwners(
+                voice_input_owners = VoiceInputOwners(
                     duplex_session=None,
                     single_ingress_attempted=False,
                 )
@@ -2264,7 +2105,7 @@ async def serve_inherent(  # noqa: C901, PLR0912, PLR0915 — composition-root e
         power_observer = (
             None
             if brain
-            else _install_power_observer_or_degrade(
+            else install_power_observer_or_degrade(
                 runtime.conn,
                 asyncio.get_running_loop(),
                 before_sleep_hook=before_sleep_hook,
