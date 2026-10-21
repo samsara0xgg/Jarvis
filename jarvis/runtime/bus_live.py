@@ -403,19 +403,26 @@ class BusLive:
     # --- the export ---------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Download the export over the old copy; with no copy at all, a failure raises."""
+        """Download the export over the old copy; with no copy at all, a failure raises.
+
+        One download at a time, across threads and processes; a caller that waited finds the copy
+        the other fetched and keeps it.
+        """
         self._zip.parent.mkdir(parents=True, exist_ok=True)
-        part = self._zip.with_suffix(".part")
-        try:
-            self._download(part)
-            part.replace(self._zip)
-        except Exception:
-            part.unlink(missing_ok=True)
-            if not self._zip.exists():
-                raise
-            # An old copy still names the trips; its age restarts, so a day without the
-            # export is the price of a failed download, not a retry every refresh.
-            self._zip.touch()
+        with timetable.exclusive(self._zip.with_name(self._zip.name + ".lock")):
+            if self._fresh():
+                return
+            part = timetable.scratch(self._zip, ".part")
+            try:
+                self._download(part)
+                part.replace(self._zip)
+            except Exception:
+                part.unlink(missing_ok=True)
+                if not self._zip.exists():
+                    raise
+                # An old copy still names the trips; its age restarts, so a day without the
+                # export is the price of a failed download, not a retry every refresh.
+                self._zip.touch()
 
     def _refresh_then_release(self) -> None:
         try:

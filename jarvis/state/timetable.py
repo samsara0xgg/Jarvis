@@ -1,9 +1,11 @@
 """BC Transit's timetable, indexed once from the static GTFS export into one SQLite file (ADR 0342).
 
 :func:`build` reads the export's zip into a temporary file and renames it over the store, so a
-reader sees the old store or the new one, never a half. :class:`Timetable` opens the store and
-answers: the stops near a point or by code, the buses calling at a stop in a window, a trip's stops
-in order, the trips of a route running on a service day, the next trip after a given one.
+reader sees the old store or the new one, never a half. One builder works at a time, across threads
+and processes (:func:`exclusive`); a builder that waited finds the store the other made and leaves
+it. :class:`Timetable` opens the store and answers: the stops near a point or by code, the buses
+calling at a stop in a window, a trip's stops in order, the trips of a route running on a service
+day, the next trip after a given one.
 
 A stop time may read past 24:00:00; it belongs to the service day the trip started on, so a call is
 always dated by its service day and placed on the clock by that day's start (noon minus twelve hours
@@ -16,13 +18,17 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import fcntl
 import io
 import math
+import os
 import sqlite3
 import sys
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
 
@@ -31,7 +37,6 @@ from jarvis.state.ride_progress import StopTime
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
 DEFAULT_ZONE: Final = "America/Vancouver"
 _DAY_S: Final = 86_400
@@ -177,24 +182,65 @@ def _stop_time_rows(archive: zipfile.ZipFile) -> Iterator[tuple[str, int, str, i
         )
 
 
+@contextlib.contextmanager
+def exclusive(lock: Path) -> Iterator[None]:
+    """Hold the lock file ``lock``, made if need be: one holder at a time, in any thread or process.
+
+    ``flock`` belongs to the open file, so two callers in one process wait for each other as two
+    processes do. Closing the file lets go, whether the holder finished or died.
+    """
+    with lock.open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def scratch(final: Path, suffix: str) -> Path:
+    """A new empty file beside ``final`` for one writer to fill and rename over it.
+
+    Call it holding :func:`exclusive`: the files an earlier writer left when it was killed go.
+    """
+    for stale in final.parent.glob(f"{final.name}.*{suffix}"):
+        stale.unlink(missing_ok=True)
+    handle, name = tempfile.mkstemp(dir=final.parent, prefix=f"{final.name}.", suffix=suffix)
+    os.close(handle)
+    return Path(name)
+
+
+def _built_from(source: Path, dest: Path) -> bool:
+    """Whether ``dest`` is a readable store made from the export ``source`` as it is now."""
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{dest}?mode=ro", uri=True)) as db:
+            row = db.execute("SELECT value FROM meta WHERE key = 'source'").fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None and str(row[0]) == str(source.stat().st_mtime_ns)
+
+
 def build(source: Path, dest: Path) -> None:
     """Index the export zip ``source`` into the store ``dest``, replacing it whole.
 
-    The store is written to a neighbour file and renamed over ``dest``. Errors propagate and
-    leave ``dest`` as it was.
+    One builder at a time (the lock file beside ``dest``); one that waited finds the store made
+    from this export and leaves it. The store is written to a file of the builder's own and
+    renamed over ``dest``. Errors propagate and leave ``dest`` as it was.
     """
-    part = dest.with_name(dest.name + ".building")
-    part.unlink(missing_ok=True)
-    try:
-        with contextlib.closing(sqlite3.connect(part)) as db, zipfile.ZipFile(source) as archive:
-            db.executescript(_SCHEMA)
-            db.execute("INSERT INTO meta VALUES ('zone', ?)", (_zone_of(archive),))
-            db.execute("INSERT INTO meta VALUES ('source', ?)", (str(source.stat().st_mtime_ns),))
-            _fill(db, archive)
-            db.commit()
-        part.replace(dest)
-    finally:
-        part.unlink(missing_ok=True)
+    with exclusive(dest.with_name(dest.name + ".lock")):
+        if _built_from(source, dest):
+            return
+        part = scratch(dest, ".building")
+        try:
+            with (
+                contextlib.closing(sqlite3.connect(part)) as db, zipfile.ZipFile(source) as archive,
+            ):
+                db.executescript(_SCHEMA)
+                db.execute("INSERT INTO meta VALUES ('zone', ?)", (_zone_of(archive),))
+                db.execute(
+                    "INSERT INTO meta VALUES ('source', ?)", (str(source.stat().st_mtime_ns),),
+                )
+                _fill(db, archive)
+                db.commit()
+            part.replace(dest)
+        finally:
+            part.unlink(missing_ok=True)
 
 
 def _fill(db: sqlite3.Connection, archive: zipfile.ZipFile) -> None:
