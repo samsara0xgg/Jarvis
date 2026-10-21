@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from jarvis.shared.here import Here, HereReading
+from jarvis.shared.here import Coarse, Here, HereReading
 from jarvis.state.event_log import MAC_NODE
 
 if TYPE_CHECKING:
@@ -35,20 +35,26 @@ def mac_reading(**changes: object) -> HereReading:
 
 
 class FixedHere:
-    """A source whose every Here answers ``answer`` (a reading, or a call that makes one)."""
+    """A source whose every Here answers ``answer`` (a reading, or a call that makes one).
+
+    ``coarse`` is what each Here's :meth:`~jarvis.shared.here.Here.coarse` says, never counted
+    in ``asked``: it asks no device.
+    """
 
     def __init__(
         self, answer: HereReading | Callable[[], HereReading] | None = None,
-        *, error: Exception | None = None,
+        *, error: Exception | None = None, coarse: Coarse | None = None,
     ) -> None:
         self._answer = answer
         self._error = error
+        self._coarse = coarse
         self.asked: list[tuple[str | None, bool]] = []
         """``(turn id, fresh?)`` of each reading asked for."""
 
     def bind(self, turn_id: str | None) -> Here:
         return Here(
             lambda: self._give(turn_id, fresh=False), lambda: self._give(turn_id, fresh=True),
+            lambda: self._coarse,
         )
 
     def _give(self, turn_id: str | None, *, fresh: bool) -> HereReading:
