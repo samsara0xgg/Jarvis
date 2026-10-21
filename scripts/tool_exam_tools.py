@@ -92,6 +92,7 @@ from jarvis.deployment import load_env_file
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.shared import ActionRequest, CallerPrincipal
+from jarvis.shared.receipts import call_risk
 from jarvis.state.event_log import emit_event
 from jarvis.state.ride_progress import StopTime
 from jarvis.state.rides import Ride
@@ -875,7 +876,7 @@ def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
         tool_name=tool,
         target_entity_ref=None,
         caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level=definitions[tool].risk_level,
+        risk_level=call_risk(definitions[tool], args),
         arguments=args,
         authorization_lease=None,
         run_id=None,
