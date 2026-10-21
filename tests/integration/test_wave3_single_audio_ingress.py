@@ -1572,6 +1572,54 @@ def test_uncertain_close_keeps_capability_lane_until_definitive_retry() -> None:
     assert dispatcher.dropped == 0
 
 
+@pytest.mark.parametrize(
+    ("status", "state"),
+    [
+        (
+            voice_backend.BackendStartStatus.FAILED_CLOSED,
+            voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE,
+        ),
+        (
+            voice_backend.BackendStartStatus.OWNER_BUSY,
+            voice_audio.InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE,
+        ),
+        (
+            voice_backend.BackendStartStatus.OPEN_UNCERTAIN,
+            voice_audio.InputCapabilityState.CLOSE_UNCERTAIN,
+        ),
+    ],
+)
+def test_a_start_that_did_not_open_the_microphone_says_why_in_its_result(
+    status: voice_backend.BackendStartStatus,
+    state: voice_audio.InputCapabilityState,
+) -> None:
+    """The result of a failed start carries the backend's reason, not the idle ``not_started``.
+
+    2026-10-21 04:03: a terminal's microphone did not open and its log said only that the
+    capability was stopped; the reason of the failed open was published nowhere.
+    """
+    backend = FakeBackend()
+    backend.fail_starts(status)
+    observed: list[voice_audio.InputCapabilitySnapshot] = []
+
+    def _observe(snapshot: voice_audio.InputCapabilitySnapshot) -> None:
+        observed.append(snapshot)
+
+    ingress = voice_audio.AudioIngress(
+        backend=backend,
+        config=replace(voice_audio.AudioIngressConfig(), route_poll_s=60.0),
+        capability_sink=_observe,
+    )
+    result = ingress.start()
+    assert not result.started
+    assert result.capability.state is state
+    assert result.capability.reason == f"injected_{status.value}"
+    assert not result.capability.local_capture_available
+    assert ingress.close().definitively_closed
+    wait_until_true(lambda: bool(observed) and observed[-1].reason == "shutdown_complete")
+    assert [(one.state, one.reason) for one in observed[:-1]] == [(state, result.capability.reason)]
+
+
 def test_duplex_session_runs_two_silero_utterances_without_second_round_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

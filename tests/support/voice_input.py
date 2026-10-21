@@ -51,6 +51,15 @@ class FakeBackend:
         self.active_owner_count = 0
         self.max_active_owner_count = 0
         self.ownership_version = 0
+        self._failing_starts: list[voice_backend.BackendStartStatus] = []
+
+    def fail_starts(self, *statuses: voice_backend.BackendStartStatus) -> None:
+        """Make the next starts end in these statuses, in order, then open for real.
+
+        ``OPEN_UNCERTAIN`` is a foreign open that may own the device: the owner stays
+        claimed until ``stop`` (which ``stop_status`` decides); the others claim nothing.
+        """
+        self._failing_starts.extend(statuses)
 
     def start(
         self,
@@ -61,6 +70,16 @@ class FakeBackend:
         timeout_s: float | None = None,
     ) -> voice_backend.BackendStartResult:
         del timeout_s
+        failing = self._failing_starts.pop(0) if self._failing_starts else None
+        if failing is not None and failing is not voice_backend.BackendStartStatus.OPEN_UNCERTAIN:
+            self.start_count += 1
+            return voice_backend.BackendStartResult(
+                status=failing,
+                stream_epoch=stream_epoch,
+                profile=None,
+                reason=f"injected_{failing.value}",
+                attempt_id=attempt_id,
+            )
         assert self.active_epoch is None, "a second physical owner was opened"
         self.start_count += 1
         self.active_epoch = stream_epoch
@@ -79,6 +98,14 @@ class FakeBackend:
             backend="fake",
             input_format=self.format,
         )
+        if failing is not None:
+            return voice_backend.BackendStartResult(
+                status=failing,
+                stream_epoch=stream_epoch,
+                profile=None,
+                reason=f"injected_{failing.value}",
+                attempt_id=attempt_id,
+            )
         return voice_backend.BackendStartResult(
             status=voice_backend.BackendStartStatus.STARTED,
             stream_epoch=stream_epoch,

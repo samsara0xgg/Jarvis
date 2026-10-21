@@ -1354,20 +1354,22 @@ class AudioIngress:
                     capability=snapshot,
                     backend_result=backend_result,
                 )
+            state = (
+                InputCapabilityState.CLOSE_UNCERTAIN
+                if backend_result.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
+                else InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
+            )
+            # Publish before the worker is told to stop: a stopped worker is a generation
+            # that no longer runs, and the failure would be published to nobody.
+            snapshot = self._publish_capability_if_current(
+                control_generation,
+                state,
+                reason=backend_result.reason or backend_result.status.value,
+            )
             self._worker_stop.set()
             worker = self._worker
         if worker is not None:
             worker.join(timeout=self._config.shutdown_timeout_s)
-        state = (
-            InputCapabilityState.CLOSE_UNCERTAIN
-            if backend_result.status is voice_backend.BackendStartStatus.OPEN_UNCERTAIN
-            else InputCapabilityState.LOCAL_CAPTURE_UNAVAILABLE
-        )
-        snapshot = self._publish_capability_if_current(
-            control_generation,
-            state,
-            reason=backend_result.reason or backend_result.status.value,
-        )
         if snapshot is None:
             snapshot = self.capability
         return IngressStartResult(
