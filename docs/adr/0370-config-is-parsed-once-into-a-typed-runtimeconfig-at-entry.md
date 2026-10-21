@@ -89,15 +89,16 @@ is built.
 
 ## Consequences
 
-An entry point that does not read a section now fails on that section being malformed: the
-terminal and the one-off CLI commands (`mcp-login`, `import`, `voiceprint`) refuse a bad
-`job_mail` block they never use. The Settings page's store is applied for those commands too,
-where before only the daemon applied it.
+An entry point that does not read a section now fails on that section being malformed: the terminal
+and the one-off CLI commands (`mcp-login`, `import`, `voiceprint`) refuse a bad `job_mail` block, or
+any other feature block moved onto the tree, that they never use. The Settings page's store is
+applied for those commands too, where before only the daemon applied it.
 
 A new setting is a field on the tree and a line in its parser; a reader that goes to `raw` for
 a key that has a field is a defect a review should catch, and the remaining `raw` readers are the
-ones that address by key path, hand a block to its layer, or are the unmoved feature builders
-listed under Decision.
+ones that address by key path, or hand a block to its layer: `llm` and its presets (`build_analyst`,
+the vision and deep-search clients, the day's doing lane), `tools.mcp`, `tools.plugins`, the
+`tools.web` deep-search keys, and `projects` (see Decision).
 
 Tests that build a runtime by hand pass `runtime_config(mapping)` (`tests/support/runtime_config.py`)
 instead of a dict, and change a section with `reconfigure`; a test of a refused value goes through
@@ -105,8 +106,8 @@ instead of a dict, and change a section with `reconfigure`; a test of a refused 
 
 `serve --check-config` and `terminal --check-config` load the config through `load_runtime_config`
 and nothing else of the entry point, so a deploy can refuse a root whose settings the stricter parse
-rejects before it restarts; they cover the load, not the feature builders listed above, which still
-validate when bootstrap assembles them.
+rejects before it restarts, the feature blocks included; the one thing they do not check is
+`projects`, which bootstrap still parses when it assembles the services.
 
 L6's launchd agent still finds the repo root itself: its install and status commands do not load a
 config, and `deployment` cannot import `runtime`. Passing the root in would make every launchd
