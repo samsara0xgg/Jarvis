@@ -24,7 +24,7 @@ from jarvis.decision.stream_json import SpokenJsonExtractor
 from jarvis.runtime.turn import drive as drive_module
 from jarvis.state.memory_db import MemorySettings, append_record
 from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.voice_media import _ResponseBuffer, _ResponseChunk
+from jarvis.surface.voice_media.response import ResponseBuffer, ResponseChunk
 from tests.support.routine import drive_streaming_turn, logged_payloads, logged_rows, wait_for
 from tests.support.runtime_config import reconfigure
 from tests.support.spoken import (
@@ -237,7 +237,7 @@ def test_the_surface_never_speaks_the_written_part(tmp_path: Path) -> None:
         runtime = _structured_runtime(tmp_path, peer.url)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-quiet", "今天有什么安排"))
     (emitted,) = logged_payloads(runtime.conn, "surface.response_emitted")
-    buffer = _ResponseBuffer(
+    buffer = ResponseBuffer(
         row_id=1,
         source_event_id="e",
         response_id="r",
@@ -249,7 +249,7 @@ def test_the_surface_never_speaks_the_written_part(tmp_path: Path) -> None:
         stream=True,
     )
     for sequence, text in enumerate(_chunks(runtime)):
-        buffer.chunks[sequence] = _ResponseChunk(sequence, text, "hash")
+        buffer.chunks[sequence] = ResponseChunk(sequence, text, "hash")
     buffer.append_voice_suffix(emitted["voice_text"], source_event_uid="e")
     spoken = buffer.speech_text()
     assert "三件事" in spoken

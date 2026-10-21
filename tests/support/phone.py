@@ -43,7 +43,7 @@ from jarvis.state.event_log import (
 from jarvis.state.memory_db import append_record, conversation_rows, render_context
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.turn_steps import answer_receipts
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface import voice_tts
 from jarvis.surface.cli import emit_surface_user_intent
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
@@ -53,6 +53,7 @@ from jarvis.surface.inherent_server.guards import require_local_key
 from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 from jarvis.surface.terminal_events import BrainEvents
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from jarvis.surface.voice_tts import TTSAudioChunk, TTSResponseSegment, TTSSegmentFinished
 from tests.support.media import CallbackPump
 from tests.support.media import media_config as _mac_config
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision import LifecycleLike, RuntimePathsLike, ToolRegistryLike
     from jarvis.state.voiceprint import VoiceprintBook
+    from jarvis.surface.voice_media.config import StreamingMediaConfig
 
 
 def own_private_address() -> str | None:
@@ -619,7 +621,7 @@ def _speak32(segment: TTSResponseSegment) -> list[Any]:
     ]
 
 
-def _config32() -> voice_media.StreamingMediaConfig:
+def _config32() -> StreamingMediaConfig:
     return replace(
         _mac_config(),
         canonical_sample_rate_hz=RATE,
@@ -660,8 +662,8 @@ class VoiceHost:
         player: PhoneAudioStreamPlayer,
         speaks_turn: Callable[[sqlite3.Connection, str], bool],
         boot: int,
-    ) -> voice_media.StreamingTTSPipeline:
-        return voice_media.StreamingTTSPipeline(
+    ) -> StreamingTTSPipeline:
+        return StreamingTTSPipeline(
             provider=cast("Any", self.phone_provider),
             player=player,
             conn_factory=lambda: open_event_log(self.log),
@@ -722,7 +724,7 @@ class VoiceHost:
             generation_safe=True,
             estimated_output_latency_s=0.0,
         )
-        mac = voice_media.StreamingTTSPipeline(
+        mac = StreamingTTSPipeline(
             provider=cast("Any", self.mac_provider),
             player=mac_player,
             conn_factory=lambda: open_event_log(self.log),

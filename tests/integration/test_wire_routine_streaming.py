@@ -26,9 +26,9 @@ from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import compose_envelope
 from jarvis.runtime.turn.cancel import make_response_cancel_callable
 from jarvis.state.event_log import iter_events_of_types, open_event_log
-from jarvis.surface import voice_media
 from jarvis.surface.cli import parse_response_channels, record_pre_emit_token
 from jarvis.surface.cli_render import render_response
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import (
     CallbackPump,
     FakeProvider,
@@ -534,7 +534,7 @@ def _play(db_path: Path, rows: list[tuple[int, Event]]) -> None:
     """Hand the trail to the real L5 media owner with the A3 test doubles."""
     provider = FakeProvider(candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),

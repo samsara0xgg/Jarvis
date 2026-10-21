@@ -23,12 +23,14 @@ from jarvis.surface import (
     voice_asr,
     voice_audio,
     voice_ducking,
-    voice_media,
     voice_native_out,
     voice_pipeline,
     voice_session,
     voice_tts,
 )
+from jarvis.surface.voice_media.config import streaming_media_config_from_mapping
+from jarvis.surface.voice_media.contract import StreamingMediaStartupError, StreamingTTSProvider
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from jarvis.surface.voice_print import load_extractor
 
 if TYPE_CHECKING:
@@ -542,9 +544,9 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
     ducker: voice_ducking.SystemAudioDucker | None = None,
     voice: VoiceKnobs | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
-    remote: voice_media.StreamingTTSProvider | None = None,
+    remote: StreamingTTSProvider | None = None,
     network_lost_dir: Path | None = None,
-) -> voice_media.StreamingTTSPipeline | None:
+) -> StreamingTTSPipeline | None:
     """Build the speech subsystem, or ``None`` for a text-only boot.
 
     ``remote`` (ADR 0172) is a voice terminal's provider, whose sessions run on the brain,
@@ -578,7 +580,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     try:
-        media_config = voice_media.streaming_media_config_from_mapping(streaming)
+        media_config = streaming_media_config_from_mapping(streaming)
     except ValueError as exc:
         LOGGER.warning(
             "realtime.streaming_output config invalid (%s); this boot will not speak.",
@@ -601,7 +603,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
         and runtime.memory is not None
         else None
     )
-    provider: voice_media.StreamingTTSProvider = (
+    provider: StreamingTTSProvider = (
         remote
         if remote is not None
         else minimax_client(
@@ -643,7 +645,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
     )
     text_registry = runtime.response_runs
     try:
-        return voice_media.StreamingTTSPipeline(
+        return StreamingTTSPipeline(
             provider=provider,
             player=player,
             conn_factory=lambda: open_runtime_event_log(runtime.runtime_paths.event_log),
@@ -663,7 +665,7 @@ def build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
                 else lambda _conn, turn_id: not text_registry.turn_text_only(turn_id)
             ),
         )
-    except voice_media.StreamingMediaStartupError as exc:
+    except StreamingMediaStartupError as exc:
         LOGGER.warning(
             "realtime.streaming_output startup failed in %s (output device %s); "
             "this boot is text-only.",
@@ -765,7 +767,7 @@ class ListenPorts:
 def single_ingress_activation(
     runtime: _ConfigHost,
     *,
-    tts: voice_media.StreamingTTSPipeline | None,
+    tts: StreamingTTSPipeline | None,
 ) -> SingleIngressActivation:
     """Validate feature flags, Wave-1/2 dependencies, and strict input bounds."""
     realtime_raw = runtime.config.raw.get("realtime")

@@ -26,9 +26,11 @@ from jarvis.runtime.turn.cancel import (
 )
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import terminal_listen, terminal_voice, voice_artifact_store, voice_media
+from jarvis.surface import terminal_listen, terminal_voice, voice_artifact_store
 from jarvis.surface.phone_link import PhoneHub
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
+from jarvis.surface.voice_media.config import streaming_media_config_from_mapping
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 if TYPE_CHECKING:
     import sqlite3
@@ -99,7 +101,7 @@ def build_phone_speech(
     streaming_raw = realtime.get("streaming_output")
     streaming = streaming_raw if isinstance(streaming_raw, Mapping) else {}
     try:
-        base = voice_media.streaming_media_config_from_mapping(streaming)
+        base = streaming_media_config_from_mapping(streaming)
     except ValueError as exc:
         LOGGER.warning("realtime.streaming_output config invalid (%s); a phone gets no voice.", exc)
         return None
@@ -119,13 +121,13 @@ def build_phone_speech(
         player: PhoneAudioStreamPlayer,
         speaks_turn: Callable[[sqlite3.Connection, str], bool],
         boot_high_water_id: int,
-    ) -> voice_media.StreamingTTSPipeline | None:
+    ) -> StreamingTTSPipeline | None:
         provider = minimax_client(
             knobs, api_key, volume_kwargs,
             recorder=None, voice_settings=runtime.voice_settings,
         )
         try:
-            return voice_media.StreamingTTSPipeline(
+            return StreamingTTSPipeline(
                 provider=provider,
                 player=player,
                 conn_factory=lambda: open_runtime_event_log(event_log_path),

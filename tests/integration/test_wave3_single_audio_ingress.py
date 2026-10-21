@@ -23,13 +23,15 @@ from jarvis.surface import (
     voice_asr,
     voice_audio,
     voice_backend,
-    voice_media,
     voice_pipeline,
     voice_session,
     voice_tts,
     voice_wake,
 )
 from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.voice_media.config import StreamingMediaConfig
+from jarvis.surface.voice_media.contract import MediaPowerTransitionResult
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.hold import HANG_S, never_waits_for
 from tests.support.runtime_config import runtime_config
 from tests.support.stderr_log import stderr_in, stderr_sent_nowhere
@@ -1929,7 +1931,7 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
     assert no_speech.requested
     assert not no_speech.capable
     assert no_speech.reason == "streaming_output_missing"
-    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    wave2 = object.__new__(StreamingTTSPipeline)
     enabled = voice_wiring.single_ingress_activation(runtime, tts=wave2)
     assert enabled.requested
     assert enabled.capable
@@ -2619,15 +2621,15 @@ def test_power_coordinator_orders_input_then_output_and_fresh_output_before_inpu
     session.ingress.resume_after_wake.side_effect = lambda **_kwargs: actions.append(
         "input_start",
     )
-    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    media = MagicMock(spec=StreamingTTSPipeline)
 
-    def _stop_output(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+    def _stop_output(**_kwargs: object) -> MediaPowerTransitionResult:
         actions.append("output_stop")
-        return voice_media.MediaPowerTransitionResult("suspended", 1, "closed")
+        return MediaPowerTransitionResult("suspended", 1, "closed")
 
-    def _start_output(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+    def _start_output(**_kwargs: object) -> MediaPowerTransitionResult:
         actions.append("output_start")
-        return voice_media.MediaPowerTransitionResult("resumed", 2, "opened")
+        return MediaPowerTransitionResult("resumed", 2, "opened")
 
     media.suspend_for_sleep.side_effect = _stop_output
     media.resume_after_wake.side_effect = _start_output
@@ -2664,14 +2666,14 @@ def test_power_coordinator_admits_output_only_after_typed_input_start(
             attempt_id="typed-input-a2",
         )
     session.ingress.resume_after_wake.return_value = input_result
-    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
-    media.resume_after_wake.return_value = voice_media.MediaPowerTransitionResult(
+    media = MagicMock(spec=StreamingTTSPipeline)
+    media.resume_after_wake.return_value = MediaPowerTransitionResult(
         "resumed",
         81,
         "fresh_output",
     )
     media.admit_wake_start.return_value = True
-    media.abort_wake_start.return_value = voice_media.MediaPowerTransitionResult(
+    media.abort_wake_start.return_value = MediaPowerTransitionResult(
         "suspended",
         81,
         "input_failure_aborted_output",
@@ -2715,8 +2717,8 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
     backend.next_start_status = status
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress = ingress
-    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
-    media.resume_after_wake.return_value = voice_media.MediaPowerTransitionResult(
+    media = MagicMock(spec=StreamingTTSPipeline)
+    media.resume_after_wake.return_value = MediaPowerTransitionResult(
         "resumed",
         101,
         "fresh_output",
@@ -2724,10 +2726,10 @@ def test_unadmitted_typed_input_result_rolls_back_real_ingress_and_retries(
     media.admit_wake_start.return_value = True
     abort_saw_closed_input = threading.Event()
 
-    def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+    def _abort_after_input_close(**_kwargs: object) -> MediaPowerTransitionResult:
         assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
         abort_saw_closed_input.set()
-        return voice_media.MediaPowerTransitionResult(
+        return MediaPowerTransitionResult(
             "suspended",
             101,
             "output_aborted_after_input_rollback",
@@ -2766,17 +2768,17 @@ def test_started_input_is_exactly_closed_when_output_admit_cas_loses() -> None:
     assert initial_stop.definitively_closed
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress = ingress
-    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
-    media.resume_after_wake.return_value = voice_media.MediaPowerTransitionResult(
+    media = MagicMock(spec=StreamingTTSPipeline)
+    media.resume_after_wake.return_value = MediaPowerTransitionResult(
         "resumed",
         111,
         "fresh_output",
     )
     media.admit_wake_start.side_effect = [False, True]
 
-    def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+    def _abort_after_input_close(**_kwargs: object) -> MediaPowerTransitionResult:
         assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
-        return voice_media.MediaPowerTransitionResult(
+        return MediaPowerTransitionResult(
             "suspended",
             111,
             "output_admit_cas_lost",
@@ -2814,25 +2816,25 @@ def test_pending_wake_input_failure_rolls_back_real_ingress_before_output_abort(
     backend.next_start_status = voice_backend.BackendStartStatus.FAILED_CLOSED
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
     session.ingress = ingress
-    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    media = MagicMock(spec=StreamingTTSPipeline)
     media.resume_after_wake.side_effect = [
-        voice_media.MediaPowerTransitionResult(
+        MediaPowerTransitionResult(
             "uncertain",
             121,
             "prior_stop_debt",
             helper_thread_alive=True,
         ),
-        voice_media.MediaPowerTransitionResult("resumed", 122, "debt_closed"),
-        voice_media.MediaPowerTransitionResult("resumed", 123, "retry_output"),
+        MediaPowerTransitionResult("resumed", 122, "debt_closed"),
+        MediaPowerTransitionResult("resumed", 123, "retry_output"),
     ]
     media.admit_wake_start.return_value = True
     rollback_before_abort = threading.Event()
 
-    def _abort_after_input_close(**_kwargs: object) -> voice_media.MediaPowerTransitionResult:
+    def _abort_after_input_close(**_kwargs: object) -> MediaPowerTransitionResult:
         assert ingress._control_intent == "suspended"
         assert backend.ownership_snapshot().state is voice_backend.BackendLifecycleState.CLOSED
         rollback_before_abort.set()
-        return voice_media.MediaPowerTransitionResult(
+        return MediaPowerTransitionResult(
             "suspended",
             122,
             "pending_output_aborted",
@@ -2886,12 +2888,12 @@ def test_typed_input_start_debt_re_suspends_real_media_owner(tmp_path: Path) -> 
     player = _TypedInputGatePlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -2954,13 +2956,13 @@ def test_power_coordinator_real_media_debt_keeps_real_ingress_suspended(
     provider.streaming_candidate_count = 1
     with patch.object(voice_tts, "_open_output_stream", return_value=stream) as opened:
         player = voice_tts.AudioStreamPlayer(lazy_open=True, generation_safe=True)
-        media = voice_media.StreamingTTSPipeline(
+        media = StreamingTTSPipeline(
             provider=provider,
             player=player,
             conn_factory=lambda: open_event_log(db_path),
             boot_high_water_id=0,
             config=replace(
-                voice_media.StreamingMediaConfig(),
+                StreamingMediaConfig(),
                 shutdown_timeout_s=0.5,
             ),
         )
@@ -3047,12 +3049,12 @@ def test_power_coordinator_real_media_success_preserves_cross_device_order(
         "_open_output_stream",
         side_effect=lambda **_kwargs: _OrderedOutputStream(),
     ):
-        media = voice_media.StreamingTTSPipeline(
+        media = StreamingTTSPipeline(
             provider=provider,
             player=voice_tts.AudioStreamPlayer(lazy_open=True, generation_safe=True),
             conn_factory=lambda: open_event_log(db_path),
             boot_high_water_id=0,
-            config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.5),
+            config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.5),
         )
         actions.clear()
         coordinator = voice_power.VoicePowerCoordinator(session=session, media=media)
@@ -3107,12 +3109,12 @@ def test_pending_wake_auto_resumes_output_then_input_after_late_sleep_stop(
     player = _PendingWakePlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     input_resumed = threading.Event()
@@ -3192,12 +3194,12 @@ def test_pending_wake_retries_one_exact_debt_beyond_two_transition_bounds(
     player = _VeryLateStopPlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     input_resumed = threading.Event()
@@ -3239,21 +3241,21 @@ def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
     """Deadline-consuming continuation cannot starve or outlive a newer sleep."""
     debt_release = threading.Event()
     resume_calls = 0
-    media = MagicMock(spec=voice_media.StreamingTTSPipeline)
-    media.suspend_for_sleep.return_value = voice_media.MediaPowerTransitionResult(
+    media = MagicMock(spec=StreamingTTSPipeline)
+    media.suspend_for_sleep.return_value = MediaPowerTransitionResult(
         "suspended",
         1,
         "closed",
     )
 
-    def _resume_output(*, deadline: float) -> voice_media.MediaPowerTransitionResult:
+    def _resume_output(*, deadline: float) -> MediaPowerTransitionResult:
         nonlocal resume_calls
         resume_calls += 1
         while not debt_release.is_set() and time.monotonic() < deadline:
             time.sleep(0.001)
         if debt_release.is_set():
-            return voice_media.MediaPowerTransitionResult("resumed", 50, "late_closed")
-        return voice_media.MediaPowerTransitionResult(
+            return MediaPowerTransitionResult("resumed", 50, "late_closed")
+        return MediaPowerTransitionResult(
             "uncertain",
             50,
             "exact_debt_still_alive",
@@ -3262,7 +3264,7 @@ def test_new_sleep_revokes_pending_wake_before_operation_lock_wait() -> None:
         )
 
     media.resume_after_wake.side_effect = _resume_output
-    media.abort_wake_start.return_value = voice_media.MediaPowerTransitionResult(
+    media.abort_wake_start.return_value = MediaPowerTransitionResult(
         "suspended",
         50,
         "stale_wake_aborted",
@@ -3325,12 +3327,12 @@ def test_late_actor_resume_future_rejoins_and_resumes_input_exactly_once(
     player = _ActorResumePlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     actor_resume_release = threading.Event()
@@ -3387,12 +3389,12 @@ def test_stale_actor_resume_future_cannot_undo_newer_sleep(
     player.stop.return_value = voice_tts.PlayerStopResult("closed", 72, "closed")
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3461,16 +3463,16 @@ def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
     player = _SleepRevokedStartPlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
-    wake_results: list[voice_media.MediaPowerTransitionResult] = []
+    wake_results: list[MediaPowerTransitionResult] = []
     waking = threading.Thread(
         target=lambda: wake_results.append(media.resume_after_wake(timeout_s=0.5)),
     )
@@ -3520,12 +3522,12 @@ def test_pending_wake_is_revoked_by_shutdown_without_output_reopen(
     player = _ShutdownPendingPlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     session = MagicMock(spec=voice_session.DuplexVoiceSession)
@@ -3574,12 +3576,12 @@ def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
         32,
         "stream_started",
     )
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.2),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.2),
         start_player=False,
     )
     release_terminalization = threading.Event()
@@ -3654,12 +3656,12 @@ def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
     provider = MagicMock()
     provider.streaming_candidate_count = 1
     player = _BlockedWakePlayer()
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.04),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.04),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3713,12 +3715,12 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
     player = _ShutdownBarrierPlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.05),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.05),
         start_player=False,
     )
     input_close_entered = threading.Event()
@@ -3824,12 +3826,12 @@ def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
     player = _LateCompensationPlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.03),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.03),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3893,12 +3895,12 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
     player = _OpenUnadmittedDebtPlayer()
     provider = MagicMock()
     provider.streaming_candidate_count = 1
-    media = voice_media.StreamingTTSPipeline(
+    media = StreamingTTSPipeline(
         provider=provider,
         player=player,  # type: ignore[arg-type]
         conn_factory=lambda: open_event_log(db_path),
         boot_high_water_id=0,
-        config=replace(voice_media.StreamingMediaConfig(), shutdown_timeout_s=0.03),
+        config=replace(StreamingMediaConfig(), shutdown_timeout_s=0.03),
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
@@ -3931,7 +3933,7 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
     runtime.config = runtime_config({"realtime": {"enabled": True}})
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
-    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    wave2 = object.__new__(StreamingTTSPipeline)
     disabled = input_session.spawn_single_ingress_session(
         runtime=runtime,
         pipeline=pipeline,
@@ -3989,7 +3991,7 @@ def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner(
     engine = MagicMock()
     vad = MagicMock(spec=voice_audio.SileroVad)
     vad.prepare_utterance.side_effect = RuntimeError("injected Silero prepare failure")
-    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    wave2 = object.__new__(StreamingTTSPipeline)
     with (
         patch.object(voice_wake, "MicroWakeWordEngine", return_value=engine),
         patch.object(voice_audio, "SileroVad", return_value=vad),
@@ -4052,7 +4054,7 @@ def test_a_microphone_that_does_not_open_while_portaudio_starts_up_stuck_logs_wh
             pipeline=MagicMock(spec=voice_pipeline.VoicePipeline),
             broadcaster=MagicMock(),
             silero_path=MagicMock(),
-            tts=object.__new__(voice_media.StreamingTTSPipeline),
+            tts=object.__new__(StreamingTTSPipeline),
         )
         wait_until_true(
             lambda: "reason=shutdown_complete" in err.read_text(encoding="utf-8"),
@@ -4086,7 +4088,7 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
     broadcaster = MagicMock()
     backend = FakeBackend()
     engine = MagicMock()
-    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    wave2 = object.__new__(StreamingTTSPipeline)
     before = sum(
         thread.name == "jarvis-audio-capability-dispatch" and thread.is_alive()
         for thread in threading.enumerate()
@@ -4147,7 +4149,7 @@ def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_bran
     ptt_callable(b"RIFF", "T-ptt", "U-ptt", "S-ptt")
     pipeline.run_turn.assert_called_once()
     broadcaster = MagicMock()
-    wave2 = object.__new__(voice_media.StreamingTTSPipeline)
+    wave2 = object.__new__(StreamingTTSPipeline)
 
     disabled = input_session.spawn_voice_input_owners(
         runtime=runtime,

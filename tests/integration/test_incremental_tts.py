@@ -44,7 +44,8 @@ if TYPE_CHECKING:
     import sqlite3
     from pathlib import Path
 
-    from jarvis.surface import voice_media, voice_tts
+    from jarvis.surface import voice_tts
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 _SEGMENTS = ("第一句。", "第二句。", "第三句。")
 
@@ -652,7 +653,7 @@ def _budget_pipeline(
     db_path: Path,
     *,
     segment_delay_s: float,
-) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer, FakeProvider]:
+) -> tuple[StreamingTTSPipeline, voice_tts.AudioStreamPlayer, FakeProvider]:
     """A non-live pipeline whose provider spends ``segment_delay_s`` on every segment."""
     provider = FakeProvider(candidate_count=1)
     provider.behaviors[("RB", 0)] = Behavior(final_delay_s=segment_delay_s)

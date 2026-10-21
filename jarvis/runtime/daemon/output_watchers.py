@@ -30,7 +30,7 @@ from jarvis.state.event_log import (
     turn_origin,
 )
 from jarvis.state.turn_steps import answer_places, answer_steps
-from jarvis.surface import terminal_voice, voice_media
+from jarvis.surface import terminal_voice
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
     from jarvis.runtime import JarvisRuntime
     from jarvis.surface.inherent_output import InherentBroadcaster
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -434,7 +435,7 @@ async def tool_status_watcher(
 async def tts_watcher(  # noqa: C901 - ordered durable dispatch FSM
     *,
     conn: sqlite3.Connection,
-    pipeline: voice_media.StreamingTTSPipeline,
+    pipeline: StreamingTTSPipeline,
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     broadcaster: InherentBroadcaster | None = None,
     text_only: Callable[[str], bool] | None = None,
@@ -450,7 +451,7 @@ async def tts_watcher(  # noqa: C901 - ordered durable dispatch FSM
 
     Every row of ``surface.response_open`` / ``surface.response_chunk`` /
     ``surface.response_emitted`` / ``response.cancelled`` / ``response.failed`` goes to
-    :meth:`~jarvis.surface.voice_media.StreamingTTSPipeline.submit_event`, which only
+    :meth:`~jarvis.surface.voice_media.pipeline.StreamingTTSPipeline.submit_event`, which only
     enqueues owned work, so dispatch stays on the event-loop thread without blocking.
     When the media owner reports ``overloaded`` the cursor stays on that row and the
     Event Log, the durable queue, delivers it again.

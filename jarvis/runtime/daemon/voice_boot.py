@@ -38,8 +38,9 @@ if TYPE_CHECKING:
     from jarvis.runtime.daemon.voice_wiring import VoiceKnobs
     from jarvis.runtime.dictation import Dictation
     from jarvis.shared import Event
-    from jarvis.surface import voice_audio, voice_controls, voice_media, voice_pipeline
+    from jarvis.surface import voice_audio, voice_controls, voice_pipeline
     from jarvis.surface.inherent_output import InherentBroadcaster
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class Voice:
     )
     pipe: voice_pipeline.VoicePipeline | None = None
     pipeline_callable: Callable[[bytes, str, str, str], Event] | None = None
-    tts: voice_media.StreamingTTSPipeline | None = None
+    tts: StreamingTTSPipeline | None = None
     owners: VoiceInputOwners = dataclasses.field(
         default_factory=lambda: VoiceInputOwners(
             duplex_session=None,

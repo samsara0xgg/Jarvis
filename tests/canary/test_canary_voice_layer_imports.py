@@ -1,4 +1,6 @@
-"""ADR-0005 §11 canary: jarvis/surface/voice_*.py do not name forbidden layers.
+"""ADR-0005 §11 canary: the surface voice modules do not name forbidden layers.
+
+The modules are jarvis/surface/voice_*.py and jarvis/surface/voice_media/*.py.
 
 `lint-imports` (gate 3) already enforces this at the package level; this
 canary makes the failure surface inside pytest with a per-file diagnostic
@@ -23,7 +25,7 @@ def test_canary_voice_layer_imports() -> None:
     """voice_*.py must not import from forbidden L3/L4/L6 layers."""
     surface_dir = repo_root() / "jarvis" / "surface"
     violations: list[str] = []
-    for path in surface_dir.glob("voice_*.py"):
+    for path in [*surface_dir.glob("voice_*.py"), *surface_dir.glob("voice_media/*.py")]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             mods: list[str]

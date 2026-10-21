@@ -1,11 +1,4 @@
-"""Persistent L5 media owner for generation-safe streaming speech output.
-
-The owner runs one asyncio loop for the daemon lifetime.  Surface watchers
-submit committed response events into its bounded command queue; only this
-actor may open TTS sessions, mutate playback generations, or own fallback
-processes.  The PortAudio callback remains a lock-free consumer and reports
-bounded software milestones back to the actor.
-"""
+"""The persistent L5 media owner: the one class the daemon builds, on its bounded bridge."""
 
 from __future__ import annotations
 
@@ -14,19 +7,14 @@ import contextlib
 import hashlib
 import logging
 import math
-import re
 import sqlite3
 import tempfile
 import threading
 import time
-import uuid
 import wave
 from collections import deque
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
-
-import numpy as np
+from typing import TYPE_CHECKING, Any, Literal
 
 from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -36,10 +24,25 @@ from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import (
     AcceptedSamples,
     ForegroundBusy,
-    GenerationLease,
     OutputTimelineSnapshot,
     StalePlaybackGeneration,
     settle_boundaries,
+)
+from jarvis.surface.voice_media.config import StreamingMediaConfig
+from jarvis.surface.voice_media.contract import (
+    MediaPowerTransitionResult,
+    MediaSubmitOutcome,
+    StreamingMediaStartupError,
+    StreamingTTSProvider,
+)
+from jarvis.surface.voice_media.pcm import SegmentResampler, cut_off_cue, head_dropped
+from jarvis.surface.voice_media.registry import ActivePlaybackRegistry
+from jarvis.surface.voice_media.response import (
+    CHANNEL_TAG_RE,
+    ActiveResponse,
+    MediaCommand,
+    ResponseBuffer,
+    ResponseChunk,
 )
 from jarvis.surface.voice_tts import (
     AudioStreamPlayer,
@@ -49,7 +52,6 @@ from jarvis.surface.voice_tts import (
     TTSResponseSegment,
     TTSSegmentFinished,
     TTSSession,
-    _preprocess_for_speech,
 )
 
 if TYPE_CHECKING:
@@ -60,27 +62,18 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-_MAX_MEDIA_COMMANDS = 1024
-_MAX_AFTER_DRAIN_RESPONSES = 64
-_MAX_RESPONSE_TEXT_BYTES = 1_048_576
-_MAX_SESSION_COMMANDS = 32
-_MAX_SESSION_AUDIO_EVENTS = 256
-_MAX_RESPONSE_TIMEOUT_S = 300.0
-_MAX_SHUTDOWN_TIMEOUT_S = 10.0
-_MAX_EVENT_DRAIN_BATCH = 1024
-_MAX_DURABILITY_RETRY_ATTEMPTS = 10
 # A barge-in yield lowers or restores the speech within one spoken syllable.
-_YIELD_RAMP_MS = 30.0
+YIELD_RAMP_MS = 30.0
 # A stop or a barge-in hold first fades her out on the real waveform: the cut's
 # own declick (ADR-0006 D11) starts from the last sample played, and from
 # mid-word that truncation was a pop even at the yield's 0.2 (live test
 # 2026-09-29). The wait is bounded for a player whose callback is not running.
-_CUT_FADE_MS = 20.0
+CUT_FADE_MS = 20.0
 _CUT_FADE_WAIT_S = 0.1
 # A session connected while Allen is still talking spares his answer the
 # transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
 # 2026-09-29). MiniMax closes a started task after 120 s without an event.
-_SPARE_SESSION_MAX_AGE_S = 60.0
+SPARE_SESSION_MAX_AGE_S = 60.0
 # The cut-off line is synthesized ahead of time as a response of its own; this
 # id never reaches the Event Log's response rows, only tts.usage_observed.
 _NETWORK_LOST_RESPONSE_ID = "network-lost-line"
@@ -89,7 +82,6 @@ _NETWORK_LOST_PREFETCH_TIMEOUT_S = 20.0
 _NETWORK_LOST_KEEP_S = 30 * 24 * 3600.0
 # The rate the say fallback renders at; the player resamples it like provider PCM.
 _SAY_RATE_HZ = 24_000
-_CHANNEL_TAG_RE = re.compile(r"</?(?:voice|document)>")
 _RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
     {"surface.response_open", "surface.response_chunk", "surface.response_emitted"}
@@ -108,514 +100,6 @@ _SELECT_EVENT_ROWS_THROUGH = (
 def _response_id(event: Event) -> str | None:
     value = event.payload.get("response_id")
     return value if isinstance(value, str) else None
-
-
-_ChannelMode = Literal["plain", "voice", "document"]
-
-
-def _structured_voice_spans(raw_text: str) -> list[tuple[int, int]]:
-    """Return voice-only spans after lexing the complete bounded response text.
-
-    Parsing the joined response is the lexical carry: a tag may be split at
-    any byte boundary between renderer chunks, while the returned spans are
-    later projected back onto those original chunk identities.
-    """
-    spans: list[tuple[int, int]] = []
-    mode: _ChannelMode = "plain"
-    cursor = 0
-    for match in _CHANNEL_TAG_RE.finditer(raw_text):
-        if mode == "voice" and cursor < match.start():
-            spans.append((cursor, match.start()))
-        tag = match.group(0)
-        if tag == "<voice>":
-            mode = "voice"
-        elif tag == "<document>":
-            mode = "document"
-        elif (tag == "</voice>" and mode == "voice") or (
-            tag == "</document>" and mode == "document"
-        ):
-            mode = "plain"
-        cursor = match.end()
-    if mode == "voice" and cursor < len(raw_text):
-        spans.append((cursor, len(raw_text)))
-    return spans
-
-MediaSubmitStatus = Literal[
-    "accepted",
-    "duplicate",
-    "historical",
-    "unregistered",
-    "terminal",
-    "closed",
-    "overloaded",
-    "invalid",
-]
-
-
-@dataclass(frozen=True)
-class MediaSubmitOutcome:
-    """Bounded watcher/direct-delivery disposition."""
-
-    status: MediaSubmitStatus
-    event_uid: str
-    response_id: str | None = None
-    detail: str = ""
-
-
-@dataclass(frozen=True)
-class MediaPowerTransitionResult:
-    """Bounded power-lifecycle result for the persistent output owner."""
-
-    status: Literal["suspended", "resumed", "uncertain", "closed"]
-    attempt_id: int
-    reason: str
-    helper_thread_alive: bool = False
-    deadline_exhausted: bool = False
-
-    @property
-    def succeeded(self) -> bool:
-        """Return whether the requested output state is proven."""
-        return self.status in {"suspended", "resumed", "closed"}
-
-
-class StreamingMediaStartupError(RuntimeError):
-    """Bounded startup failure with an explicit audio-device isolation debt."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        phase: str,
-        device_disposition: Literal["not_attempted", "failed_closed", "uncertain"],
-    ) -> None:
-        """Record the phase and exact typed output-ownership disposition."""
-        super().__init__(message)
-        self.phase = phase
-        self.device_disposition = device_disposition
-        self.device_state_uncertain = device_disposition == "uncertain"
-
-
-class StreamingTTSProvider(Protocol):
-    """Provider factory consumed only by the persistent media loop."""
-
-    @property
-    def streaming_candidate_count(self) -> int:
-        """Return ordered prefix-safe endpoint candidates."""
-
-    def create_tts_session(
-        self,
-        *,
-        endpoint_index: int,
-        language: lang.Language,
-        idle_close_s: float,
-        command_queue_capacity: int,
-        audio_queue_capacity: int,
-    ) -> TTSSession:
-        """Create a closed response-scoped session that reads ``language``."""
-
-
-@dataclass(frozen=True)
-class StreamingMediaConfig:
-    """All queues and network/presentation waits are explicitly bounded."""
-
-    canonical_sample_rate_hz: int = 48_000
-    command_queue_capacity: int = 64
-    response_lane_capacity: int = 8
-    response_text_bytes: int = 256 * 1024
-    session_command_capacity: int = 2
-    session_audio_capacity: int = 16
-    session_idle_close_s: float = 10.0
-    response_timeout_s: float = 45.0
-    ring_retry_s: float = 0.002
-    # Seconds of PCM the streaming player's ring holds. Small on purpose: the
-    # streaming path writes as chunks arrive, so headroom buys nothing and
-    # costs interrupt latency, unlike the legacy player's whole-buffer write.
-    ring_seconds: float = 2.0
-    presentation_poll_s: float = 0.005
-    shutdown_timeout_s: float = 3.0
-    event_drain_batch: int = 128
-    terminal_retry_attempts: int = 3
-    checkpoint_retry_attempts: int = 3
-    durability_retry_s: float = 0.02
-    enable_macos_say_fallback: bool = True
-    speak_from_segments: bool = False
-    prefetch_network_lost_line: bool = True
-    # Where the line's audio is kept between runs; ``None`` keeps it in memory only. A voice
-    # terminal sets it: the audio of a fixed line is not the owner's state (ADR 0172).
-    network_lost_cache_dir: Path | None = None
-    # ADR 0165: drop the provider's silence at generation start and junctions.
-    trim_silence: bool = False
-    trim_threshold_db: float = -50.0
-    trim_window_ms: float = 5.0
-    trim_preroll_ms: float = 20.0
-    trim_fade_ms: float = 5.0
-    trim_max_cut_ms: float = 400.0
-    trim_clause_pause_ms: float = 120.0
-    trim_sentence_pause_ms: float = 250.0
-
-    def __post_init__(self) -> None:
-        """Reject unbounded or non-positive actor budgets."""
-        positive_ints = (
-            self.canonical_sample_rate_hz,
-            self.command_queue_capacity,
-            self.response_lane_capacity,
-            self.response_text_bytes,
-            self.session_command_capacity,
-            self.session_audio_capacity,
-            self.event_drain_batch,
-            self.terminal_retry_attempts,
-            self.checkpoint_retry_attempts,
-        )
-        positive_floats = (
-            self.session_idle_close_s,
-            self.response_timeout_s,
-            self.ring_retry_s,
-            self.ring_seconds,
-            self.presentation_poll_s,
-            self.shutdown_timeout_s,
-            self.durability_retry_s,
-            self.trim_window_ms,
-            self.trim_preroll_ms,
-            self.trim_fade_ms,
-            self.trim_max_cut_ms,
-            self.trim_clause_pause_ms,
-            self.trim_sentence_pause_ms,
-        )
-        if self.trim_threshold_db >= 0:
-            msg = "trim_threshold_db must be below 0 dBFS"
-            raise ValueError(msg)
-        if any(value <= 0 for value in positive_ints + positive_floats):
-            msg = "streaming media bounds must all be positive"
-            raise ValueError(msg)
-        if (
-            self.command_queue_capacity > _MAX_MEDIA_COMMANDS
-            or self.response_lane_capacity > _MAX_AFTER_DRAIN_RESPONSES
-            or self.response_text_bytes > _MAX_RESPONSE_TEXT_BYTES
-            or self.session_command_capacity > _MAX_SESSION_COMMANDS
-            or self.session_audio_capacity > _MAX_SESSION_AUDIO_EVENTS
-            or self.response_timeout_s > _MAX_RESPONSE_TIMEOUT_S
-            or self.shutdown_timeout_s > _MAX_SHUTDOWN_TIMEOUT_S
-            or self.event_drain_batch > _MAX_EVENT_DRAIN_BATCH
-            or self.terminal_retry_attempts > _MAX_DURABILITY_RETRY_ATTEMPTS
-            or self.checkpoint_retry_attempts > _MAX_DURABILITY_RETRY_ATTEMPTS
-        ):
-            msg = "streaming media bounds exceed validated production maxima"
-            raise ValueError(msg)
-
-
-@dataclass(frozen=True)
-class _ResponseChunk:
-    sequence: int
-    raw_text: str
-    segment_hash: str
-    source_event_uid: str = ""
-
-
-@dataclass
-class _ResponseBuffer:
-    row_id: int
-    source_event_id: str
-    response_id: str
-    response_group_id: str
-    turn_id: str
-    phase: str
-    channel: str
-    gate_mode: str
-    chunks: dict[int, _ResponseChunk] = field(default_factory=dict)
-    emitted: bool = False
-    stream: bool = False
-    incremental: bool = False
-    scheduled: bool = False
-    tagged: bool = False
-    updated: asyncio.Event = field(default_factory=asyncio.Event)
-
-    def append_voice_suffix(self, voice_text: object, *, source_event_uid: str) -> None:
-        """Speak the emitted voice text no chunk carried as one final segment."""
-        sequences = sorted(self.chunks)
-        if not isinstance(voice_text, str) or sequences != list(range(len(sequences))):
-            return
-        committed = "".join(self.chunks[index].raw_text for index in sequences)
-        if len(voice_text) <= len(committed) or not voice_text.startswith(committed):
-            return
-        suffix = voice_text[len(committed) :]
-        self.chunks[len(sequences)] = _ResponseChunk(
-            sequence=len(sequences),
-            raw_text=suffix,
-            segment_hash=hashlib.sha256(suffix.encode()).hexdigest(),
-            source_event_uid=source_event_uid,
-        )
-
-    def speech_segments(self) -> list[tuple[int, str, str]]:
-        """Map joined structured spans back to exact renderer identities."""
-        ordered = [self.chunks[key] for key in sorted(self.chunks)]
-        raw = "".join(chunk.raw_text for chunk in ordered)
-        structured = _CHANNEL_TAG_RE.search(raw) is not None
-        voice_spans = _structured_voice_spans(raw) if structured else []
-        segments: list[tuple[int, str, str]] = []
-        chunk_start = 0
-        for chunk in ordered:
-            if structured:
-                chunk_end = chunk_start + len(chunk.raw_text)
-                raw_speech = "".join(
-                    raw[max(chunk_start, start) : min(chunk_end, end)]
-                    for start, end in voice_spans
-                    if start < chunk_end and end > chunk_start
-                )
-            else:
-                raw_speech = chunk.raw_text
-            text = _preprocess_for_speech(raw_speech)
-            if text:
-                segments.append((chunk.sequence, text, chunk.segment_hash))
-            chunk_start += len(chunk.raw_text)
-        return segments
-
-    def speech_text(self) -> str:
-        return "".join(text for _sequence, text, _hash in self.speech_segments())
-
-
-@dataclass
-class _ActiveResponse:
-    response: _ResponseBuffer
-    lease: GenerationLease
-    task: asyncio.Task[None] | None = None
-    presentation_task: asyncio.Task[None] | None = None
-    session: TTSSession | None = None
-    fallback_process: asyncio.subprocess.Process | None = None
-    fallback_spawn_task: asyncio.Task[asyncio.subprocess.Process] | None = None
-    fallback_janitor_task: asyncio.Task[bool] | None = None
-    output_lease: bool = False
-    last_checkpoint_text: str = ""
-    provider_label: str = "minimax_ws_streaming"
-    advance_after_cleanup: bool = False
-    terminal_commit_pending: bool = False
-    activation_event_uid: str | None = None
-    prepared_text: str = ""
-    starvation_gaps_at_start: int = 0
-    host_underflows_at_start: int = 0
-    last_position: tuple[int, int, bool] | None = None
-    position_stopped: bool = False
-
-
-@dataclass(frozen=True)
-class _MediaCommand:
-    row_id: int
-    event: Event
-    origin: str
-    acknowledged: asyncio.Future[MediaSubmitOutcome]
-
-
-class ActivePlaybackRegistry:
-    """Current-boot high-water, registration, dedup, and tombstone boundary."""
-
-    _RECENT_EVENT_LIMIT = 8192
-    _RECENT_TERMINAL_LIMIT = 8192
-    _ACTIVE_RESPONSE_LIMIT = 1024
-    _SEQUENCES_PER_RESPONSE_LIMIT = 4096
-
-    def __init__(self, *, boot_high_water_id: int) -> None:
-        """Capture the only replay boundary accepted for this boot."""
-        self.boot_id = "BOOT" + uuid.uuid4().hex
-        self.boot_high_water_id = boot_high_water_id
-        self._seen_events: set[str] = set()
-        self._seen_order: deque[str] = deque()
-        self._registered: set[str] = set()
-        self._terminal: set[str] = set()
-        self._terminal_order: deque[str] = deque()
-        self._sequences: set[tuple[str, int]] = set()
-        self._sequence_counts: dict[str, int] = {}
-        self._emitted: set[str] = set()
-
-    def classify(  # noqa: C901, PLR0911, PLR0912 - lifecycle disposition table
-        self,
-        *,
-        row_id: int,
-        event: Event,
-    ) -> MediaSubmitOutcome:
-        """Reject pre-boot, duplicate, unregistered, and terminal deliveries."""
-        response_raw = event.payload.get("response_id")
-        response_id = response_raw if isinstance(response_raw, str) else None
-        if row_id <= self.boot_high_water_id:
-            return MediaSubmitOutcome(
-                status="historical",
-                event_uid=event.event_uid,
-                response_id=response_id,
-            )
-        if event.event_uid in self._seen_events:
-            return MediaSubmitOutcome(
-                status="duplicate",
-                event_uid=event.event_uid,
-                response_id=response_id,
-            )
-        self._remember_event(event.event_uid)
-        if response_id is None or not response_id:
-            return MediaSubmitOutcome(
-                status="invalid",
-                event_uid=event.event_uid,
-                detail="streaming response event requires stable response_id",
-            )
-        if response_id in self._terminal:
-            return MediaSubmitOutcome(
-                status="terminal",
-                event_uid=event.event_uid,
-                response_id=response_id,
-            )
-        if event.type == "surface.response_open":
-            if response_id in self._registered:
-                return MediaSubmitOutcome(
-                    status="duplicate",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                )
-            if len(self._registered) >= self._ACTIVE_RESPONSE_LIMIT:
-                return MediaSubmitOutcome(
-                    status="overloaded",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                    detail="current-boot active response registry is full",
-                )
-            self._registered.add(response_id)
-            return MediaSubmitOutcome("accepted", event.event_uid, response_id)
-        if response_id not in self._registered:
-            return MediaSubmitOutcome(
-                status="unregistered",
-                event_uid=event.event_uid,
-                response_id=response_id,
-            )
-        if event.type == "surface.response_chunk":
-            if response_id in self._emitted:
-                return MediaSubmitOutcome(
-                    status="terminal",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                    detail="response chunk arrived after response_emitted",
-                )
-            sequence_raw = event.payload.get("sequence")
-            if not isinstance(sequence_raw, int) or isinstance(sequence_raw, bool):
-                return MediaSubmitOutcome(
-                    status="invalid",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                    detail="streaming response chunk requires integer sequence",
-                )
-            key = (response_id, sequence_raw)
-            if key in self._sequences:
-                return MediaSubmitOutcome(
-                    status="duplicate",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                )
-            if (
-                self._sequence_counts.get(response_id, 0)
-                >= self._SEQUENCES_PER_RESPONSE_LIMIT
-            ):
-                self.terminalize(response_id)
-                return MediaSubmitOutcome(
-                    status="overloaded",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                    detail="bounded response segment registry is full",
-                )
-            self._sequences.add(key)
-            self._sequence_counts[response_id] = (
-                self._sequence_counts.get(response_id, 0) + 1
-            )
-        elif event.type == "surface.response_emitted":
-            if response_id in self._emitted:
-                return MediaSubmitOutcome(
-                    status="duplicate",
-                    event_uid=event.event_uid,
-                    response_id=response_id,
-                )
-            self._emitted.add(response_id)
-        return MediaSubmitOutcome("accepted", event.event_uid, response_id)
-
-    def has_seen(self, event_uid: str) -> bool:
-        """Return whether the actor already drained this committed event."""
-        return event_uid in self._seen_events
-
-    def terminalize(self, response_id: str) -> None:
-        """Prevent every late same-boot delivery after playback terminal."""
-        if response_id not in self._terminal:
-            self._terminal.add(response_id)
-            self._terminal_order.append(response_id)
-            if len(self._terminal_order) > self._RECENT_TERMINAL_LIMIT:
-                self._terminal.discard(self._terminal_order.popleft())
-        self._registered.discard(response_id)
-        self._emitted.discard(response_id)
-        self._sequences = {key for key in self._sequences if key[0] != response_id}
-        self._sequence_counts.pop(response_id, None)
-
-    def _remember_event(self, event_uid: str) -> None:
-        self._seen_events.add(event_uid)
-        self._seen_order.append(event_uid)
-        if len(self._seen_order) > self._RECENT_EVENT_LIMIT:
-            self._seen_events.discard(self._seen_order.popleft())
-
-
-def _cut_off_cue(rate_hz: int) -> bytes:
-    """Two soft falling notes (E5, A4), 90 ms each, as canonical float32 PCM."""
-    notes = []
-    for frequency in (659.25, 440.0):
-        t = np.arange(int(rate_hz * 0.09)) / rate_hz
-        envelope = np.minimum(1.0, np.minimum(t, t[::-1]) / 0.012)  # 12 ms ramps
-        notes.append(0.18 * envelope * np.sin(2 * np.pi * frequency * t))
-        notes.append(np.zeros(int(rate_hz * 0.03)))
-    return np.concatenate(notes).astype("<f4").tobytes()
-
-
-def _head_dropped(trimmer: SilenceTrimmer | None) -> int:
-    return 0 if trimmer is None else trimmer.head_dropped
-
-
-class _SegmentResampler:
-    """Independent int16-LE provider segment to canonical float32-LE PCM."""
-
-    def __init__(self, *, input_rate_hz: int, output_rate_hz: int) -> None:
-        self._input_rate_hz = input_rate_hz
-        self._output_rate_hz = output_rate_hz
-        self._carry = b""
-        self._closed = False
-        self._resampler: Any | None = None
-        if input_rate_hz != output_rate_hz:
-            import soxr  # noqa: PLC0415
-
-            self._resampler = soxr.ResampleStream(
-                input_rate_hz,
-                output_rate_hz,
-                1,
-                dtype="float32",
-                quality="HQ",
-            )
-
-    def feed(self, pcm: bytes) -> bytes:
-        """Decode and incrementally resample one provider chunk."""
-        if self._closed:
-            msg = "cannot feed a finalized segment resampler"
-            raise RuntimeError(msg)
-        raw = self._carry + pcm
-        aligned = len(raw) - (len(raw) % 2)
-        self._carry = raw[aligned:]
-        if aligned == 0:
-            return b""
-        samples = np.frombuffer(raw[:aligned], dtype="<i2").astype(np.float32)
-        samples /= 32768.0
-        if self._resampler is not None:
-            samples = self._resampler.resample_chunk(samples)
-        return samples.astype(np.float32, copy=False).tobytes()
-
-    def finish(self) -> bytes:
-        """Finalize only after TTSSegmentFinished; discard one impossible odd byte."""
-        if self._closed:
-            return b""
-        self._closed = True
-        self._carry = b""
-        if self._resampler is None:
-            return b""
-        tail = self._resampler.resample_chunk(
-            np.zeros(0, dtype=np.float32),
-            last=True,
-        )
-        return np.asarray(tail, dtype=np.float32).tobytes()
 
 
 class StreamingTTSPipeline:
@@ -681,7 +165,7 @@ class StreamingTTSPipeline:
         self._unadmitted_wake_attempt_id: int | None = None
         self._power_abort_attempt_id: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._queue: asyncio.Queue[_MediaCommand | object] | None = None
+        self._queue: asyncio.Queue[MediaCommand | object] | None = None
         self._conn: sqlite3.Connection | None = None
         self._startup_error: BaseException | None = None
         self._startup_error_phase: str | None = None
@@ -702,18 +186,18 @@ class StreamingTTSPipeline:
         self._provider_stop_done = threading.Event()
         self._provider_stop_thread: threading.Thread | None = None
         self._lane_isolated = False
-        self._terminal_debt: _ActiveResponse | None = None
+        self._terminal_debt: ActiveResponse | None = None
         self._fallback_janitors: set[asyncio.Task[bool]] = set()
         self._event_cursor = boot_high_water_id
-        self._responses: dict[str, _ResponseBuffer] = {}
-        self._after_drain: deque[_ResponseBuffer] = deque()
-        self._active: _ActiveResponse | None = None
+        self._responses: dict[str, ResponseBuffer] = {}
+        self._after_drain: deque[ResponseBuffer] = deque()
+        self._active: ActiveResponse | None = None
         # ADR 0053: while Allen's words are coming in no answer starts; it
         # parks here. A turn that ever started playing is never dropped.
         self._held = False
         # ADR 0054: the same parking while the audio devices are re-read.
         self._device_held = False
-        self._parked: deque[_ResponseBuffer] = deque()
+        self._parked: deque[ResponseBuffer] = deque()
         # ponytail: only grows, one short id per spoken turn; trim it if a
         # daemon ever runs for months.
         self._started_turns: set[str] = set()
@@ -849,7 +333,7 @@ class StreamingTTSPipeline:
             # Whatever is speaking fades now, not once the actor gets here: an
             # actor busy on SQLite could let her play on for seconds.
             with self._gain_lock:
-                self._player.set_gain(0.0, _CUT_FADE_MS)
+                self._player.set_gain(0.0, CUT_FADE_MS)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._stop_foreground_output_owned(response_id, reason),
@@ -1022,7 +506,7 @@ class StreamingTTSPipeline:
         """
         with self._gain_lock:
             self._yield_gain = gain
-            self._player.set_gain(self._mute_gain * gain, _YIELD_RAMP_MS)
+            self._player.set_gain(self._mute_gain * gain, YIELD_RAMP_MS)
 
     def pause_speaking(self, paused: bool) -> None:  # noqa: FBT001 - the capture side's one bit
         """Hold her answer where it is while Allen's words are judged, or let it go on.
@@ -1682,7 +1166,7 @@ class StreamingTTSPipeline:
     async def _fade_out(self) -> None:
         """Ramp her to silence on the real waveform before the player cuts or holds her."""
         with self._gain_lock:
-            self._player.set_gain(0.0, _CUT_FADE_MS)
+            self._player.set_gain(0.0, CUT_FADE_MS)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _CUT_FADE_WAIT_S
         while loop.time() < deadline:
@@ -1693,7 +1177,7 @@ class StreamingTTSPipeline:
     def _restore_gain(self) -> None:
         """Give the gain back to the mute and the yield after a fade."""
         with self._gain_lock:
-            self._player.set_gain(self._mute_gain * self._yield_gain, _YIELD_RAMP_MS)
+            self._player.set_gain(self._mute_gain * self._yield_gain, YIELD_RAMP_MS)
 
     async def _hold_output_owned(self, *, held: bool) -> None:
         self._held = held
@@ -1786,11 +1270,11 @@ class StreamingTTSPipeline:
                         text=lang.t("tts.network_lost", lang=code),
                     ),
                 )
-                resampler: _SegmentResampler | None = None
+                resampler: SegmentResampler | None = None
                 async for event in session.audio_events():
                     if isinstance(event, TTSAudioChunk):
                         if event.pcm:
-                            resampler = resampler or _SegmentResampler(
+                            resampler = resampler or SegmentResampler(
                                 input_rate_hz=event.sample_rate_hz,
                                 output_rate_hz=self._config.canonical_sample_rate_hz,
                             )
@@ -1852,7 +1336,7 @@ class StreamingTTSPipeline:
             LOGGER.debug("network-lost line was not kept on disk", exc_info=True)
 
     def _spare_fresh(self) -> bool:
-        return asyncio.get_running_loop().time() - self._spare_ready_at <= _SPARE_SESSION_MAX_AGE_S
+        return asyncio.get_running_loop().time() - self._spare_ready_at <= SPARE_SESSION_MAX_AGE_S
 
     async def _take_spare(self, language: lang.Language) -> TTSSession | None:
         """The connected spare for an answer's first endpoint, if fresh and in its language.
@@ -1931,7 +1415,7 @@ class StreamingTTSPipeline:
         )
         try:
             queue_.put_nowait(
-                _MediaCommand(
+                MediaCommand(
                     row_id=row_id,
                     event=event,
                     origin=origin,
@@ -2241,7 +1725,7 @@ class StreamingTTSPipeline:
             except TimeoutError:
                 continue
             try:
-                if not isinstance(command, _MediaCommand):
+                if not isinstance(command, MediaCommand):
                     continue
                 try:
                     outcome = await self._handle_command(command)
@@ -2269,7 +1753,7 @@ class StreamingTTSPipeline:
 
     async def _handle_command(
         self,
-        command: _MediaCommand,
+        command: MediaCommand,
     ) -> MediaSubmitOutcome:
         if command.row_id <= self._registry.boot_high_water_id:
             return MediaSubmitOutcome(
@@ -2365,7 +1849,7 @@ class StreamingTTSPipeline:
                     response_id,
                     "streaming response open requires stable response_group_id",
                 )
-            opened = _ResponseBuffer(
+            opened = ResponseBuffer(
                 row_id=row_id,
                 source_event_id=event.event_uid,
                 response_id=response_id,
@@ -2409,7 +1893,7 @@ class StreamingTTSPipeline:
                 if isinstance(segment_hash_raw, str) and segment_hash_raw
                 else hashlib.sha256(text.encode()).hexdigest()
             )
-            response.chunks[sequence] = _ResponseChunk(
+            response.chunks[sequence] = ResponseChunk(
                 sequence=sequence,
                 raw_text=text,
                 segment_hash=segment_hash,
@@ -2423,7 +1907,7 @@ class StreamingTTSPipeline:
             await self._response_terminal(response, event)
         return outcome
 
-    async def _response_terminal(self, response: _ResponseBuffer, event: Event) -> None:
+    async def _response_terminal(self, response: ResponseBuffer, event: Event) -> None:
         """L3 ended the run: stop an active playback, or drop a buffered one."""
         reason = event.type.replace(".", "_")
         active = self._active
@@ -2450,7 +1934,7 @@ class StreamingTTSPipeline:
         self._record_dropped(response, reason=reason)
         self._broadcast_spoken(response, event_type="dropped")
 
-    async def _response_emitted(self, response: _ResponseBuffer, event: Event) -> None:
+    async def _response_emitted(self, response: ResponseBuffer, event: Event) -> None:
         """Complete the buffer; a scheduled response finishes its own segment loop."""
         response.emitted = True
         response.source_event_id = event.event_uid
@@ -2462,10 +1946,10 @@ class StreamingTTSPipeline:
         if not response.scheduled:
             await self._schedule_response(response)
 
-    async def _chunk_buffered(self, response: _ResponseBuffer, text: str) -> None:
+    async def _chunk_buffered(self, response: ResponseBuffer, text: str) -> None:
         """Wake the segment loop; a tag ends incremental speaking for this response."""
         response.updated.set()
-        if response.stream and _CHANNEL_TAG_RE.search(text) is not None:
+        if response.stream and CHANNEL_TAG_RE.search(text) is not None:
             active = self._active
             if active is not None and active.response is response:
                 response.tagged = True
@@ -2486,7 +1970,7 @@ class StreamingTTSPipeline:
             self._record_dropped(old, reason="displaced")
             self._broadcast_spoken(old, event_type="dropped")
 
-    def _admit_open(self, opened: _ResponseBuffer) -> bool:
+    def _admit_open(self, opened: ResponseBuffer) -> bool:
         """Apply ADR 0121 to a response's open row; ``False`` when it is dropped.
 
         A wait line whose group's answer is already out would queue behind the
@@ -2522,7 +2006,7 @@ class StreamingTTSPipeline:
                 self._registry.terminalize(line.response_id)
                 self._record_dropped(line, reason="answer_started")
 
-    def _unschedule(self, response: _ResponseBuffer) -> None:
+    def _unschedule(self, response: ResponseBuffer) -> None:
         response.scheduled = False
         if response in self._after_drain:
             self._after_drain.remove(response)
@@ -2531,7 +2015,7 @@ class StreamingTTSPipeline:
 
     async def _schedule_response(  # noqa: C901, PLR0911 - explicit lane disposition table
         self,
-        response: _ResponseBuffer,
+        response: ResponseBuffer,
     ) -> None:
         speech = response.speech_text()
         if not speech:
@@ -2616,7 +2100,7 @@ class StreamingTTSPipeline:
         self._purge_after_drain()
         self._start_response(response)
 
-    def _enqueue_after_drain(self, response: _ResponseBuffer, *, behind: str | None = None) -> None:
+    def _enqueue_after_drain(self, response: ResponseBuffer, *, behind: str | None = None) -> None:
         """Queue ``response`` for the lane; ``behind`` keeps that group's answer together.
 
         The playing answer's own continuation goes ahead of another turn's
@@ -2649,7 +2133,7 @@ class StreamingTTSPipeline:
             lane_depth=len(self._after_drain),
         )
 
-    def _start_response(self, response: _ResponseBuffer) -> None:
+    def _start_response(self, response: ResponseBuffer) -> None:
         if (
             self._power_suspended
             or self._lane_isolated
@@ -2674,7 +2158,7 @@ class StreamingTTSPipeline:
         if isinstance(result, ForegroundBusy):
             msg = "media owner/player foreground state diverged"
             raise RuntimeError(msg)  # noqa: TRY004 - runtime state, not caller type
-        active = _ActiveResponse(
+        active = ActiveResponse(
             response=response,
             lease=result,
             starvation_gaps_at_start=self._player.starvation_gaps,
@@ -2702,7 +2186,7 @@ class StreamingTTSPipeline:
 
     async def _play_response(  # noqa: C901 - bounded lifecycle cleanup FSM
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
     ) -> None:
         response = active.response
         live = response.incremental and not response.emitted
@@ -2788,7 +2272,7 @@ class StreamingTTSPipeline:
                     self._active = None
                 self._advance_after_drain()
 
-    async def _presentation_owner(self, active: _ActiveResponse) -> None:
+    async def _presentation_owner(self, active: ActiveResponse) -> None:
         """Persist whole-segment heard checkpoints while provider I/O continues."""
         try:
             while self._active is active and not self._lane_isolated:
@@ -2811,7 +2295,7 @@ class StreamingTTSPipeline:
 
     async def _stream_with_prefix_fallback(  # noqa: C901, PLR0911, PLR0912, PLR0915 - bounded endpoint FSM
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         segments: list[tuple[int, str, str]],
         *,
         budget: asyncio.Timeout,
@@ -2883,7 +2367,7 @@ class StreamingTTSPipeline:
                             text=text,
                         ),
                     )
-                    resampler: _SegmentResampler | None = None
+                    resampler: SegmentResampler | None = None
                     pending_alignment: list[TTSAudioChunk] = []
                     if trimmer is not None:
                         trimmer.begin_segment(text)
@@ -2904,7 +2388,7 @@ class StreamingTTSPipeline:
                             if not event.pcm:
                                 continue
                             if resampler is None:
-                                resampler = _SegmentResampler(
+                                resampler = SegmentResampler(
                                     input_rate_hz=event.sample_rate_hz,
                                     output_rate_hz=self._config.canonical_sample_rate_hz,
                                 )
@@ -2941,7 +2425,7 @@ class StreamingTTSPipeline:
                         if accepted_segment and pending_alignment:
                             self._record_alignment(
                                 active, pending_alignment, segment_start=segment_start,
-                                segment_samples=accepted_segment, trimmed=_head_dropped(trimmer),
+                                segment_samples=accepted_segment, trimmed=head_dropped(trimmer),
                             )
                         finished = self._player.finish_generation_segment(
                             expected_playback_generation_id=lease.playback_generation_id,
@@ -3048,10 +2532,10 @@ class StreamingTTSPipeline:
             active.session = None
         return True
 
-    async def _play_cut_off_cue(self, active: _ActiveResponse, *, sequence: int) -> None:
+    async def _play_cut_off_cue(self, active: ActiveResponse, *, sequence: int) -> None:
         """Play what was accepted to its end, then her spoken line or tones, before the terminal."""
         line = self._network_lost_pcm.get(lang.language())
-        cue = line or _cut_off_cue(self._config.canonical_sample_rate_hz)
+        cue = line or cut_off_cue(self._config.canonical_sample_rate_hz)
         await self._write_all(active, cue, sequence=sequence)
         record_realtime_trace(
             "tts_cut_off_cue",
@@ -3070,7 +2554,7 @@ class StreamingTTSPipeline:
             await asyncio.sleep(self._config.presentation_poll_s)
 
     def _prepare_segment(
-        self, active: _ActiveResponse, sequence: int, text: str, segment_hash: str,
+        self, active: ActiveResponse, sequence: int, text: str, segment_hash: str,
     ) -> None:
         """Record the segment about to be synthesized; the cursor maps onto these rows."""
         emit_event(
@@ -3111,7 +2595,7 @@ class StreamingTTSPipeline:
         )
 
     def _record_alignment(
-        self, active: _ActiveResponse, events: list[TTSAudioChunk], *, segment_start: int,
+        self, active: ActiveResponse, events: list[TTSAudioChunk], *, segment_start: int,
         segment_samples: int, trimmed: int = 0,
     ) -> None:
         """Persist exact text/sample mappings before allowing a word checkpoint.
@@ -3155,7 +2639,7 @@ class StreamingTTSPipeline:
 
     async def _await_segments(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         segments: list[tuple[int, str, str]],
     ) -> bool:
         """Extend ``segments`` with newly durable ones; False once the buffer is complete."""
@@ -3176,7 +2660,7 @@ class StreamingTTSPipeline:
 
     async def _write_all(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         pcm: bytes,
         *,
         sequence: int,
@@ -3203,7 +2687,7 @@ class StreamingTTSPipeline:
 
     async def _run_macos_say(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         segments: list[tuple[int, str, str]],
         *,
         budget: asyncio.Timeout,
@@ -3243,7 +2727,7 @@ class StreamingTTSPipeline:
                 LOGGER.warning("say could not render to a file; saying the rest aloud directly")
                 return await self._run_macos_say_aloud(active, segments[index:])
             pcm, rate_hz = rendered
-            resampler = _SegmentResampler(
+            resampler = SegmentResampler(
                 input_rate_hz=rate_hz, output_rate_hz=self._config.canonical_sample_rate_hz,
             )
             await self._write_all(
@@ -3258,7 +2742,7 @@ class StreamingTTSPipeline:
         return True
 
     async def _say_process(
-        self, active: _ActiveResponse, *args: str,
+        self, active: ActiveResponse, *args: str,
     ) -> int | None:
         """Run ``say *args`` under the fallback's cancel ownership; its exit code."""
         spawn_task = asyncio.create_task(
@@ -3288,7 +2772,7 @@ class StreamingTTSPipeline:
         return return_code
 
     async def _render_macos_say(
-        self, active: _ActiveResponse, text: str,
+        self, active: ActiveResponse, text: str,
     ) -> tuple[bytes, int] | None:
         """``text`` as ``say``'s mono int16 samples and their rate, or None."""
         with tempfile.TemporaryDirectory(prefix="jarvis-say-") as folder:
@@ -3313,7 +2797,7 @@ class StreamingTTSPipeline:
 
     async def _run_macos_say_aloud(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         segments: list[tuple[int, str, str]],
     ) -> bool:
         """Say ``segments`` straight to the speakers; the cursor stays unknown."""
@@ -3341,7 +2825,7 @@ class StreamingTTSPipeline:
 
     async def _cancel_fallback(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
     ) -> None:
         existing_janitor = active.fallback_janitor_task
         if existing_janitor is not None:
@@ -3441,7 +2925,7 @@ class StreamingTTSPipeline:
             return False
         return True
 
-    def _isolate_fallback_cleanup(self, active: _ActiveResponse) -> None:
+    def _isolate_fallback_cleanup(self, active: ActiveResponse) -> None:
         """Fail closed when exact subprocess quiescence cannot be established."""
         self._lane_isolated = True
         self._accepting.clear()
@@ -3463,7 +2947,7 @@ class StreamingTTSPipeline:
 
     async def _drain_and_complete(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         segment_hash: str,
     ) -> None:
@@ -3529,7 +3013,7 @@ class StreamingTTSPipeline:
 
     async def _fail_active(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         reason: str,
         retryable: bool,
@@ -3600,7 +3084,7 @@ class StreamingTTSPipeline:
         )
         return True
 
-    async def _cancel_active_io(self, active: _ActiveResponse, *, reason: str) -> None:
+    async def _cancel_active_io(self, active: ActiveResponse, *, reason: str) -> None:
         task = active.task
         if task is not None and task is not asyncio.current_task():
             task.cancel()
@@ -3627,7 +3111,7 @@ class StreamingTTSPipeline:
 
     async def _checkpoint_if_advanced(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         snapshot: OutputTimelineSnapshot,
     ) -> None:
         sequence = snapshot.heard_through_sequence
@@ -3687,7 +3171,7 @@ class StreamingTTSPipeline:
 
     async def _commit_terminal_durable(  # noqa: PLR0913 - mirrors terminal payload owner
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         event_type: str,
         snapshot: OutputTimelineSnapshot,
@@ -3734,7 +3218,7 @@ class StreamingTTSPipeline:
 
     async def _interrupt_snapshot(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
     ) -> OutputTimelineSnapshot | None:
         """Tombstone first, then settle the callback publication linearization."""
         self._player.interrupt_generation(
@@ -3794,7 +3278,7 @@ class StreamingTTSPipeline:
 
     def _commit_terminal(  # noqa: PLR0913 - exact terminal shape is explicit
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         event_type: str,
         snapshot: OutputTimelineSnapshot,
@@ -3838,7 +3322,7 @@ class StreamingTTSPipeline:
 
     async def _release_active(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         event_type: str,
         start_successor: bool,
@@ -3873,7 +3357,7 @@ class StreamingTTSPipeline:
         else:
             self._output_active.clear()
 
-    def _record_dropped(self, response: _ResponseBuffer, *, reason: str) -> None:
+    def _record_dropped(self, response: ResponseBuffer, *, reason: str) -> None:
         """Leave the durable fact that none of ``response`` was spoken.
 
         Best effort: letting the answer go must not fail on its record.
@@ -3897,7 +3381,7 @@ class StreamingTTSPipeline:
 
     def _broadcast_position(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         snapshot: OutputTimelineSnapshot,
         *,
         stopped: bool = False,
@@ -3927,12 +3411,12 @@ class StreamingTTSPipeline:
             )
 
     @staticmethod
-    def _wait_line_mark(response: _ResponseBuffer) -> dict[str, str]:
+    def _wait_line_mark(response: ResponseBuffer) -> dict[str, str]:
         """``response_phase`` for a wait line's voice ops, nothing for an answer (ADR 0121)."""
         return {"response_phase": "commentary"} if response.phase == "commentary" else {}
 
     def _broadcast_spoken(
-        self, response: _ResponseBuffer, *, event_type: str = "no_speech",
+        self, response: ResponseBuffer, *, event_type: str = "no_speech",
     ) -> None:
         callback = getattr(self._broadcaster, "broadcast_voice_sync", None)
         if callable(callback):
@@ -3946,7 +3430,7 @@ class StreamingTTSPipeline:
 
     def _emit_lane_isolated(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         terminal_type: str | None,
         error_type: str | None,
@@ -3987,7 +3471,7 @@ class StreamingTTSPipeline:
 
     def _isolate_terminal_debt(
         self,
-        active: _ActiveResponse,
+        active: ActiveResponse,
         *,
         event_type: str,
         error: BaseException,
@@ -4066,7 +3550,7 @@ class StreamingTTSPipeline:
             except asyncio.QueueEmpty:
                 return
             try:
-                if isinstance(command, _MediaCommand) and not command.acknowledged.done():
+                if isinstance(command, MediaCommand) and not command.acknowledged.done():
                     command.acknowledged.set_result(
                         MediaSubmitOutcome("closed", command.event.event_uid),
                     )
@@ -4111,140 +3595,3 @@ class StreamingTTSPipeline:
             )
         except Exception:  # bookkeeping never fails playback.
             LOGGER.exception("tts usage: emit failed for %s#%d", response_id, sequence)
-
-
-def streaming_media_config_from_mapping(  # noqa: C901 - one typed reader per key kind
-    raw: Mapping[str, object] | None,
-) -> StreamingMediaConfig:
-    """Parse bounded rollout values; reject malformed explicit entries."""
-    values = {} if raw is None else raw
-    defaults = StreamingMediaConfig()
-
-    def _positive_int(key: str, fallback: int) -> int:
-        value = values.get(key)
-        if value is None:
-            return fallback
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            msg = f"realtime.streaming_output.{key} must be a positive integer"
-            raise ValueError(msg)
-        return value
-
-    def _positive_float(key: str, fallback: float) -> float:
-        value = values.get(key)
-        if value is None:
-            return fallback
-        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-            msg = f"realtime.streaming_output.{key} must be a positive number"
-            raise ValueError(msg)
-        return float(value)
-
-    def _negative_float(key: str, fallback: float) -> float:
-        value = values.get(key)
-        if value is None:
-            return fallback
-        if isinstance(value, bool) or not isinstance(value, int | float) or value >= 0:
-            msg = f"realtime.streaming_output.{key} must be a negative number"
-            raise ValueError(msg)
-        return float(value)
-
-    def _boolean(key: str, fallback: bool) -> bool:  # noqa: FBT001 - config default
-        value = values.get(key)
-        if value is None:
-            return fallback
-        if not isinstance(value, bool):
-            msg = f"realtime.streaming_output.{key} must be boolean"
-            raise ValueError(msg)  # noqa: TRY004 - malformed config value, not a caller type
-        return value
-
-    return StreamingMediaConfig(
-        canonical_sample_rate_hz=_positive_int(
-            "canonical_sample_rate_hz",
-            defaults.canonical_sample_rate_hz,
-        ),
-        command_queue_capacity=_positive_int(
-            "command_queue_capacity",
-            defaults.command_queue_capacity,
-        ),
-        response_lane_capacity=_positive_int(
-            "response_lane_capacity",
-            defaults.response_lane_capacity,
-        ),
-        response_text_bytes=_positive_int(
-            "response_text_bytes",
-            defaults.response_text_bytes,
-        ),
-        session_command_capacity=_positive_int(
-            "session_command_capacity",
-            defaults.session_command_capacity,
-        ),
-        session_audio_capacity=_positive_int(
-            "session_audio_capacity",
-            defaults.session_audio_capacity,
-        ),
-        session_idle_close_s=_positive_float(
-            "session_idle_close_s",
-            defaults.session_idle_close_s,
-        ),
-        response_timeout_s=_positive_float(
-            "response_timeout_s",
-            defaults.response_timeout_s,
-        ),
-        ring_retry_s=_positive_float("ring_retry_s", defaults.ring_retry_s),
-        ring_seconds=_positive_float("ring_seconds", defaults.ring_seconds),
-        presentation_poll_s=_positive_float(
-            "presentation_poll_s",
-            defaults.presentation_poll_s,
-        ),
-        shutdown_timeout_s=_positive_float(
-            "shutdown_timeout_s",
-            defaults.shutdown_timeout_s,
-        ),
-        event_drain_batch=_positive_int(
-            "event_drain_batch",
-            defaults.event_drain_batch,
-        ),
-        terminal_retry_attempts=_positive_int(
-            "terminal_retry_attempts",
-            defaults.terminal_retry_attempts,
-        ),
-        checkpoint_retry_attempts=_positive_int(
-            "checkpoint_retry_attempts",
-            defaults.checkpoint_retry_attempts,
-        ),
-        durability_retry_s=_positive_float(
-            "durability_retry_s",
-            defaults.durability_retry_s,
-        ),
-        enable_macos_say_fallback=_boolean(
-            "enable_macos_say_fallback",
-            defaults.enable_macos_say_fallback,
-        ),
-        speak_from_segments=_boolean("speak_from_segments", defaults.speak_from_segments),
-        prefetch_network_lost_line=_boolean(
-            "prefetch_network_lost_line", defaults.prefetch_network_lost_line,
-        ),
-        trim_silence=_boolean("trim_silence", defaults.trim_silence),
-        trim_threshold_db=_negative_float("trim_threshold_db", defaults.trim_threshold_db),
-        trim_window_ms=_positive_float("trim_window_ms", defaults.trim_window_ms),
-        trim_preroll_ms=_positive_float("trim_preroll_ms", defaults.trim_preroll_ms),
-        trim_fade_ms=_positive_float("trim_fade_ms", defaults.trim_fade_ms),
-        trim_max_cut_ms=_positive_float("trim_max_cut_ms", defaults.trim_max_cut_ms),
-        trim_clause_pause_ms=_positive_float(
-            "trim_clause_pause_ms", defaults.trim_clause_pause_ms,
-        ),
-        trim_sentence_pause_ms=_positive_float(
-            "trim_sentence_pause_ms", defaults.trim_sentence_pause_ms,
-        ),
-    )
-
-
-__all__ = [
-    "ActivePlaybackRegistry",
-    "MediaPowerTransitionResult",
-    "MediaSubmitOutcome",
-    "StreamingMediaConfig",
-    "StreamingMediaStartupError",
-    "StreamingTTSPipeline",
-    "StreamingTTSProvider",
-    "streaming_media_config_from_mapping",
-]

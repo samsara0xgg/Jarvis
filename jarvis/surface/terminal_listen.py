@@ -515,7 +515,8 @@ class BrainListening:
     def drop_unspoken(self, turn_ids: frozenset[str]) -> frozenset[str]:
         """Drop, on the terminals that hold them, the answers of ``turn_ids`` not yet spoken.
 
-        The ``drop_unspoken`` of :class:`~jarvis.surface.voice_media.StreamingTTSPipeline`, over
+        The ``drop_unspoken`` of
+        :class:`~jarvis.surface.voice_media.pipeline.StreamingTTSPipeline`, over
         the link: each turn goes to the terminal that heard it (else the one connected last),
         and the turns that come back are those none of whose answers began playing. A terminal
         that does not answer drops nothing, so its turns' runs are left running. Call from a

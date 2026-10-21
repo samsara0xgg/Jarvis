@@ -156,7 +156,7 @@ if TYPE_CHECKING:
     from jarvis.shared.realtime import Wave4ResponseFlags
     from jarvis.state.memory_db import MemorySettings
     from jarvis.surface import voice_aec, voice_session
-    from jarvis.surface.voice_media import StreamingTTSPipeline
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
     from jarvis.surface.voice_pipeline import VoicePipeline
 
 LOGGER = logging.getLogger("jarvis.runtime.terminal")

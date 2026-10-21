@@ -11,9 +11,14 @@ import numpy as np
 import pytest
 
 from jarvis.state.event_log import iter_events, open_event_log
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface import voice_tts
 from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import OutputTimelineSnapshot, StalePlaybackGeneration
+from jarvis.surface.voice_media.config import (
+    StreamingMediaConfig,
+    streaming_media_config_from_mapping,
+)
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import (
     CallbackPump,
     FakeProvider,
@@ -177,8 +182,8 @@ def test_an_all_silent_segment_does_not_stall_the_next_junction() -> None:
 
 def test_the_switch_and_bounds_are_config_keys() -> None:
     """The switch is off by default; every bound parses and a bad value is refused."""
-    assert voice_media.StreamingMediaConfig().trim_silence is False
-    parsed = voice_media.streaming_media_config_from_mapping({
+    assert StreamingMediaConfig().trim_silence is False
+    parsed = streaming_media_config_from_mapping({
         "trim_silence": True, "trim_threshold_db": -45, "trim_preroll_ms": 30,
         "trim_clause_pause_ms": 100, "trim_sentence_pause_ms": 200,
     })
@@ -188,7 +193,7 @@ def test_the_switch_and_bounds_are_config_keys() -> None:
     for bad in ({"trim_threshold_db": 3}, {"trim_threshold_db": True}, {"trim_fade_ms": 0},
                 {"trim_silence": "yes"}):
         with pytest.raises(ValueError, match=r"realtime\.streaming_output"):
-            voice_media.streaming_media_config_from_mapping(bad)
+            streaming_media_config_from_mapping(bad)
     with pytest.raises(ValueError, match="trim_threshold_db"):
         replace(media_config(), trim_threshold_db=0.0)
 
@@ -245,7 +250,7 @@ class _Speech:
         db = tmp_path / f"speech-{trim}.db"
         self.conn = open_event_log(db)
         self.player = make_player(ring_seconds=2.0)
-        self.pipeline = voice_media.StreamingTTSPipeline(
+        self.pipeline = StreamingTTSPipeline(
             provider=_TrimProvider(candidate_count=1), player=self.player,
             conn_factory=lambda: open_event_log(db), boot_high_water_id=0,
             config=replace(media_config(), trim_silence=trim), start_player=False,

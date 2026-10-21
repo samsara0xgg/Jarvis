@@ -85,7 +85,7 @@ def reconcile_open_playback(
     row is closed as ``media_lane_isolated``: the lane went deaf first and the
     restart is a consequence, not the cause.  Every other orphan is closed as
     ``daemon_restart``.  The isolation append is best effort
-    (:meth:`~jarvis.surface.voice_media.StreamingTTSPipeline._emit_lane_isolated`),
+    (:meth:`~jarvis.surface.voice_media.pipeline.StreamingTTSPipeline._emit_lane_isolated`),
     so an isolation with no row reads as ``daemon_restart`` — the honest
     reading of a log that holds no evidence of it.  The specific
     ``isolation_reason`` is never copied here; it stays one join away on the

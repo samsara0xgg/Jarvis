@@ -39,7 +39,6 @@ from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_
 from jarvis.state.memory_db import MemorySettings, render_context
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.state.projections import PendingConfirmations
-from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
@@ -48,6 +47,7 @@ from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
 from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_controls import VoiceControls
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.answer_hold import AcceptingPipeline, answer_of, played_texts
 from tests.support.conversation_mode import ModeSession
 from tests.support.media import (
@@ -428,14 +428,14 @@ def test_a_relation_to_a_turn_with_no_open_answer_does_nothing(tmp_path: Path) -
 
 def _media(
     tmp_path: Path, *response_ids: str,
-) -> tuple[voice_media.StreamingTTSPipeline, Any, Any]:
+) -> tuple[StreamingTTSPipeline, Any, Any]:
     db_path = tmp_path / "hold.db"
     provider = FakeProvider(
         {(rid, 0): Behavior("success", final_delay_s=0.01) for rid in response_ids},
         candidate_count=1,
     )
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),

@@ -20,7 +20,8 @@ if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.daemon.voice_boot import Voice
     from jarvis.runtime.daemon.voice_power import VoiceInputOwners, VoicePowerCoordinator
-    from jarvis.surface import voice_media, voice_session
+    from jarvis.surface import voice_session
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class Running:
 
 
 def shutdown_tts(
-    tts_pipe: voice_media.StreamingTTSPipeline | None,
+    tts_pipe: StreamingTTSPipeline | None,
 ) -> None:
     """Bound TTS owners, then stop the player and release PortAudio.
 
@@ -69,7 +70,7 @@ def shutdown_tts(
 
 
 def _request_tts_close(
-    tts_pipe: voice_media.StreamingTTSPipeline | None,
+    tts_pipe: StreamingTTSPipeline | None,
 ) -> None:
     """Install the late-output gate before watcher cancellation; never raise."""
     if tts_pipe is None:
@@ -105,7 +106,7 @@ def _shutdown_duplex_voice_session(
 
 def request_voice_input_branch_shutdown(
     owners: VoiceInputOwners,
-    tts_pipe: voice_media.StreamingTTSPipeline | None,
+    tts_pipe: StreamingTTSPipeline | None,
 ) -> None:
     """Revoke input before output, the order serve uses (ADR-0006 F14)."""
     if owners.duplex_session is not None:

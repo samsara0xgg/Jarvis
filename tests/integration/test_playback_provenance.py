@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
-from jarvis.surface import voice_media
+from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import (
     FakeProvider,
     emit_response,
@@ -37,7 +38,7 @@ def test_uncommitted_playback_mapping_never_reaches_provider_or_player(
     """A durable mapping failure terminates the lease without issuing a TTS request."""
     path = tmp_path / "events.db"
     provider = FakeProvider()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=make_player(),
         conn_factory=lambda: open_event_log(path),
@@ -52,7 +53,7 @@ def test_uncommitted_playback_mapping_never_reaches_provider_or_player(
             raise RuntimeError(message)
         return emit_event(*args, **kwargs)
 
-    monkeypatch.setattr(voice_media, "emit_event", fail_mapping)
+    monkeypatch.setattr(media_pipeline, "emit_event", fail_mapping)
     try:
         with contextlib.closing(open_event_log(path)) as conn:
             rows = emit_response(

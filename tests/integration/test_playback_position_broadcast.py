@@ -8,7 +8,8 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from jarvis.state.event_log import open_event_log
-from jarvis.surface import voice_ledger, voice_media, voice_tts
+from jarvis.surface import voice_ledger, voice_tts
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import (
     RATE,
     SAMPLES_PER_WORD,
@@ -51,13 +52,13 @@ class _Wire:
 
 
 def _start(tmp_path: Path) -> tuple[
-    voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer, CallbackPump, _Wire,
+    StreamingTTSPipeline, voice_tts.AudioStreamPlayer, CallbackPump, _Wire,
 ]:
     db = tmp_path / "position.db"
     conn = open_event_log(db)
     player = make_player(ring_seconds=1.0)
     wire = _Wire()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=AlignedProvider(candidate_count=1), player=player,
         conn_factory=lambda: open_event_log(db), boot_high_water_id=0,
         config=media_config(), broadcaster=wire, start_player=False,

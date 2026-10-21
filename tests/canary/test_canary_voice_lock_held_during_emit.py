@@ -62,7 +62,7 @@ def test_canary_voice_lock_held_during_emit() -> None:
     """
     surface_dir = repo_root() / "jarvis" / "surface"
     violations: list[str] = []
-    for path in surface_dir.glob("voice_*.py"):
+    for path in [*surface_dir.glob("voice_*.py"), *surface_dir.glob("voice_media/*.py")]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):

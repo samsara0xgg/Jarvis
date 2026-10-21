@@ -15,13 +15,16 @@ import numpy as np
 import pytest
 
 from jarvis.state.event_log import emit_event
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface import voice_tts
+from jarvis.surface.voice_media.config import StreamingMediaConfig
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import AsyncIterator, Callable
 
     from jarvis.shared import Event
+    from jarvis.surface.voice_media.contract import MediaSubmitOutcome
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 
 @dataclass(frozen=True)
@@ -272,8 +275,8 @@ def make_player(*, ring_seconds: float = 0.25) -> voice_tts.AudioStreamPlayer:
     )
 
 
-def media_config() -> voice_media.StreamingMediaConfig:
-    return voice_media.StreamingMediaConfig(
+def media_config() -> StreamingMediaConfig:
+    return StreamingMediaConfig(
         canonical_sample_rate_hz=8_000,
         command_queue_capacity=8,
         response_lane_capacity=4,
@@ -356,9 +359,9 @@ def emit_response(  # noqa: PLR0913 - exact three-event fixture identity
 
 
 async def submit_response(
-    pipeline: voice_media.StreamingTTSPipeline,
+    pipeline: StreamingTTSPipeline,
     rows: list[tuple[int, Event]],
-) -> list[voice_media.MediaSubmitOutcome]:
+) -> list[MediaSubmitOutcome]:
     return [
         await pipeline.submit_event(row_id=row_id, event=event, origin="direct")
         for row_id, event in rows

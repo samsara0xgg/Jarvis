@@ -2,7 +2,7 @@
 
 The route (:mod:`jarvis.surface.phone_link`) is L5 and cannot reach the provider, the log or the
 decision layer; this is the runtime's wiring for it. For each voice connection it builds a
-:class:`~jarvis.surface.voice_media.StreamingTTSPipeline` around a
+:class:`~jarvis.surface.voice_media.pipeline.StreamingTTSPipeline` around a
 :class:`~jarvis.surface.phone_player.PhoneAudioStreamPlayer` (the actor is unchanged except for
 its player), and feeds it the response rows of the turns that phone opened by voice. The Mac's
 own actor never speaks those turns (``phone_voice`` is a silent channel for it), and the phone's
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
     from jarvis.shared import Event
     from jarvis.surface.phone_link import PhoneRows, PhoneVoice
-    from jarvis.surface.voice_media import StreamingTTSPipeline
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 

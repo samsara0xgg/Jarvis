@@ -23,13 +23,13 @@ def _find(tree: ast.Module) -> ast.AsyncFunctionDef:
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == _TARGET:
             return node
-    msg = f"{_TARGET} not found in jarvis/surface/voice_media.py"
+    msg = f"{_TARGET} not found in jarvis/surface/voice_media/pipeline.py"
     raise AssertionError(msg)
 
 
 def test_canary_playback_budget_not_liveness() -> None:
     """Assert a non-optional budget, a separate liveness flag, and no None compare."""
-    path = repo_root() / "jarvis" / "surface" / "voice_media.py"
+    path = repo_root() / "jarvis" / "surface" / "voice_media" / "pipeline.py"
     fn = _find(ast.parse(path.read_text(encoding="utf-8")))
     names = [arg.arg for arg in fn.args.kwonlyargs]
     assert "budget" in names, f"{_TARGET} lost its keyword-only budget parameter"

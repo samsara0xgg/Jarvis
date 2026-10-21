@@ -12,8 +12,9 @@ import pytest
 
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
-from jarvis.surface import voice_ledger, voice_media, voice_tts
+from jarvis.surface import voice_ledger, voice_tts
 from jarvis.surface.voice_ledger import StalePlaybackGeneration
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import (
     SAMPLES_PER_WORD,
     TEXT,
@@ -50,7 +51,7 @@ def test_counting_cut_at_fifteen_keeps_fifteen_in_next_turn(
     db = tmp_path / "words.db"
     conn = open_event_log(db)
     player = make_player(ring_seconds=1.0)
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=AlignedProvider(candidate_count=1), player=player,
         conn_factory=lambda: open_event_log(db), boot_high_water_id=0,
         config=media_config(), start_player=False,
@@ -247,7 +248,7 @@ def test_squeezed_provider_timing_keeps_no_word_ends(tmp_path: Path) -> None:
     player = make_player(ring_seconds=1.0)
     provider = AlignedProvider(candidate_count=1)
     provider.session = _SqueezedSession
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider, player=player, conn_factory=lambda: open_event_log(db),
         boot_high_water_id=0, config=media_config(), start_player=False,
     )

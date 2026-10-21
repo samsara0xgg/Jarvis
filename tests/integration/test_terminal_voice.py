@@ -34,7 +34,7 @@ from jarvis.state.device_tokens import (
     pair_device,
 )
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
-from jarvis.surface import terminal_voice, voice_media, voice_tts
+from jarvis.surface import terminal_voice, voice_tts
 from jarvis.surface.terminal_events import (
     OBSERVER_EVENT_TYPES,
     PLAYBACK_EVENT_TYPES,
@@ -48,6 +48,8 @@ from jarvis.surface.terminal_speaker import (
     VoiceLink,
 )
 from jarvis.surface.terminal_voice import BrainVoice, encode_event
+from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from jarvis.surface.voice_tts import (
     TTSAudioChunk,
     TTSConcurrentSendError,
@@ -798,7 +800,7 @@ def test_playback_rows_are_taken_from_a_voice_terminal_only_and_once(tmp_path: P
 
 def test_the_allowlists_are_what_the_media_actor_writes() -> None:
     """Every row type the media actor emits is forwardable, and observer types are unchanged."""
-    source = Path(voice_media.__file__).read_text(encoding="utf-8")
+    source = Path(media_pipeline.__file__).read_text(encoding="utf-8")
     emitted = {kind for kind in PLAYBACK_EVENT_TYPES if f'"{kind}"' in source}
     assert emitted == PLAYBACK_EVENT_TYPES
     assert not PLAYBACK_EVENT_TYPES & OBSERVER_EVENT_TYPES
@@ -885,7 +887,7 @@ def test_the_media_actor_builder_runs_around_a_remote_provider_with_no_key(
         remote=remote,
         network_lost_dir=tmp_path / "kept",
     )
-    assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
+    assert isinstance(pipeline, StreamingTTSPipeline)
     assert pipeline._provider is remote  # noqa: SLF001
     assert pipeline._config.network_lost_cache_dir == tmp_path / "kept"  # noqa: SLF001
     assert pipeline.close()

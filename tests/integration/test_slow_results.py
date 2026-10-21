@@ -26,7 +26,7 @@ from jarvis.runtime.turn.cancel import make_foreground_decision_callable
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight
-from jarvis.surface import voice_media
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.arbitration import emit_open_chunk, emit_terminal, emit_whole_response
 from tests.support.media import (
     Behavior,
@@ -56,9 +56,9 @@ _WAIT = partial(decide_foreground, wait_for_lane=True)
 
 def _pipeline(
     db_path: Path, provider: FakeProvider, decision: Callable[..., str],
-) -> tuple[voice_media.StreamingTTSPipeline, Any]:
+) -> tuple[StreamingTTSPipeline, Any]:
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),

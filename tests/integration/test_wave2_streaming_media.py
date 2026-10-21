@@ -25,7 +25,7 @@ from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
-from jarvis.surface import voice_backend, voice_media, voice_tts
+from jarvis.surface import voice_backend, voice_tts
 from jarvis.surface.playback_recovery import reconcile_open_playback
 from jarvis.surface.voice_ledger import (
     ForegroundBusy,
@@ -33,6 +33,9 @@ from jarvis.surface.voice_ledger import (
     PlaybackLedger,
     StalePlaybackGeneration,
 )
+from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media.contract import MediaSubmitOutcome, StreamingMediaStartupError
+from jarvis.surface.voice_media.pipeline import CUT_FADE_MS, YIELD_RAMP_MS, StreamingTTSPipeline
 from tests.support.hold import HANG_S, never_waits_for
 from tests.support.media import (
     Behavior,
@@ -58,6 +61,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from jarvis.shared import Event
+    from jarvis.surface.voice_media.response import MediaCommand
 
 
 def test_media_power_transition_stops_then_reopens_fresh_player_stream(
@@ -68,7 +72,7 @@ def test_media_power_transition_stops_then_reopens_fresh_player_stream(
     conn = open_event_log(db_path)
     conn.close()
     player = MagicMock(spec=voice_tts.AudioStreamPlayer)
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=FakeProvider(),
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -127,7 +131,7 @@ def test_mid_generation_ring_starvation_lands_on_the_playback_terminal(
     second_segment = threading.Event()
     provider.segment_gates[("RS", 1)] = second_segment
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -172,7 +176,7 @@ def test_a_clean_response_reports_no_starvation_for_its_end_of_generation_tail(
     segment_final = threading.Event()
     provider.final_gates[("RC", 0)] = segment_final
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -696,7 +700,7 @@ def test_streaming_owner_first_accept_replay_dedup_and_prefix_safety(  # noqa: P
         },
     )
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -832,7 +836,7 @@ def test_aborted_provider_late_pcm_cannot_pollute_active_successor(  # noqa: PLR
     )
     provider.final_gates[("RLATE-N", 0)] = old_final
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -924,7 +928,7 @@ def test_terminal_debt_blocks_every_successor_until_durable(
     actions = provider.actions
     broadcaster = RecordingBroadcaster(actions)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -952,7 +956,7 @@ def test_terminal_debt_blocks_every_successor_until_durable(
 
     try:
         with (
-            patch.object(voice_media, "terminalize_playback", side_effect=_faulted_terminalize),
+            patch.object(media_pipeline, "terminalize_playback", side_effect=_faulted_terminalize),
             CallbackPump(player),
         ):
             first = emit_response(
@@ -1014,7 +1018,7 @@ def test_checkpoint_persists_during_later_provider_feed_and_retries(  # noqa: PL
     second_gate = threading.Event()
     provider.segment_gates[("RCP", 1)] = second_gate
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1052,7 +1056,7 @@ def test_checkpoint_persists_during_later_provider_feed_and_retries(  # noqa: PL
             text=["first checkpoint. ", "blocked second."],
         )
         with (
-            patch.object(voice_media, "emit_event", side_effect=_transient_checkpoint),
+            patch.object(media_pipeline, "emit_event", side_effect=_transient_checkpoint),
             CallbackPump(player),
         ):
             asyncio.run(submit_response(pipeline, rows))
@@ -1098,7 +1102,7 @@ def test_ordered_event_log_drain_handles_cross_source_reordering(tmp_path: Path)
     conn = open_event_log(db_path)
     provider = FakeProvider(candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1224,7 +1228,7 @@ def test_watcher_retries_overloaded_final_row_without_a_later_wakeup(  # noqa: C
     )
     provider = FakeProvider(candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1240,8 +1244,8 @@ def test_watcher_retries_overloaded_final_row_without_a_later_wakeup(  # noqa: C
     blocked_once = False
 
     async def _blocked_handle(
-        command: voice_media._MediaCommand,
-    ) -> voice_media.MediaSubmitOutcome:
+        command: MediaCommand,
+    ) -> MediaSubmitOutcome:
         nonlocal blocked_once
         if not blocked_once:
             blocked_once = True
@@ -1255,7 +1259,7 @@ def test_watcher_retries_overloaded_final_row_without_a_later_wakeup(  # noqa: C
         row_id: int,
         event: Event,
         origin: str = "watcher",
-    ) -> voice_media.MediaSubmitOutcome:
+    ) -> MediaSubmitOutcome:
         outcome = await original_submit(row_id=row_id, event=event, origin=origin)
         if origin == "watcher":
             watcher_statuses.append(outcome.status)
@@ -1351,7 +1355,7 @@ def test_structured_chunks_preserve_heard_prefix_on_mid_second_interrupt(
     second_final = threading.Event()
     provider.final_gates[("RSTRUCT", 1)] = second_final
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1439,7 +1443,7 @@ def test_structured_lexer_carries_every_split_tag_without_losing_chunk_identity(
     conn = open_event_log(db_path)
     provider = FakeProvider(candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1500,7 +1504,7 @@ def test_after_drain_same_group_and_foreground_supersede(tmp_path: Path) -> None
         candidate_count=1,
     )
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1579,7 +1583,7 @@ def test_a_normal_response_reports_no_starvation_for_its_prefill(
     conn = open_event_log(db_path)
     provider = FakeProvider(candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1620,7 +1624,7 @@ def test_an_unsettled_callback_publication_writes_a_durable_lane_isolated_row(
     hold = threading.Event()
     provider.final_gates[("RISO", 0)] = hold
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1681,7 +1685,7 @@ def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
     hold = threading.Event()
     provider.final_gates[("RISOF", 0)] = hold
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1701,7 +1705,7 @@ def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
         with (
             CallbackPump(player),
             patch.object(player, "settle_interrupted_generation", return_value=None),
-            patch.object(voice_media, "emit_event", side_effect=_faulted_emit),
+            patch.object(media_pipeline, "emit_event", side_effect=_faulted_emit),
         ):
             rows = emit_response(
                 conn,
@@ -1763,7 +1767,7 @@ def test_stop_foreground_output_interrupts_only_the_named_response(
     hold = threading.Event()
     provider.final_gates[("RSTOP", 0)] = hold
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1855,7 +1859,7 @@ def test_stop_foreground_output_drops_the_queued_sibling_without_a_row(
     hold = threading.Event()
     provider.final_gates[("RA", 0)] = hold
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1923,7 +1927,7 @@ def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0
         enable_macos_say_fallback=True,
         response_timeout_s=0.05,
     )
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -1949,8 +1953,9 @@ def test_macos_say_process_ownership_timeout_and_terminal_payload(  # noqa: PLR0
         )
 
     try:
-        with patch(
-            "jarvis.surface.voice_media.asyncio.create_subprocess_exec",
+        with patch.object(
+            asyncio,
+            "create_subprocess_exec",
             side_effect=_spawn,
         ):
             old = emit_response(
@@ -2026,7 +2031,7 @@ def test_macos_say_plays_through_the_player_the_echo_canceller_listens_to(
     db_path = tmp_path / "macos-say-rendered.db"
     conn = open_event_log(db_path)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=FakeProvider(candidate_count=0),
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -2043,7 +2048,7 @@ def test_macos_say_plays_through_the_player_the_echo_canceller_listens_to(
 
     try:
         with (
-            patch("jarvis.surface.voice_media.asyncio.create_subprocess_exec", side_effect=_spawn),
+            patch.object(asyncio, "create_subprocess_exec", side_effect=_spawn),
             CallbackPump(player, record=True) as pump,
         ):
             rows = emit_response(
@@ -2080,7 +2085,7 @@ def test_a_voice_that_breaks_mid_sentence_plays_out_then_sounds_the_cut_off_cue(
     conn = open_event_log(db_path)
     provider = FakeProvider({("RCUT", 0): Behavior("fail_after")}, candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -2124,7 +2129,7 @@ def test_a_voice_that_breaks_between_sentences_sounds_the_cut_off_cue_not_say(
     reset_realtime_trace()
     provider = FakeProvider({("RGAP", 0): Behavior(fail_at_sequence=1)}, candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -2139,7 +2144,7 @@ def test_a_voice_that_breaks_between_sentences_sounds_the_cut_off_cue_not_say(
 
     try:
         with (
-            patch("jarvis.surface.voice_media.asyncio.create_subprocess_exec", side_effect=_spawn),
+            patch.object(asyncio, "create_subprocess_exec", side_effect=_spawn),
             CallbackPump(player, record=True) as pump,
         ):
             rows = emit_response(
@@ -2181,7 +2186,7 @@ def test_a_break_after_a_good_answer_says_the_cached_network_lost_line_not_the_t
         candidate_count=1,
     )
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -2232,7 +2237,7 @@ def test_a_kept_network_lost_line_is_read_from_disk_not_synthesized_again(
             {("R-" + name, 0): Behavior(), ("network-lost-line", 0): Behavior(amplitude=5_000)},
             candidate_count=1,
         )
-        pipeline = voice_media.StreamingTTSPipeline(
+        pipeline = StreamingTTSPipeline(
             provider=provider,
             player=make_player(),
             conn_factory=lambda: open_event_log(db_path),
@@ -2268,7 +2273,7 @@ def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
     """A failed render falls back to the old way, straight to the speakers."""
     db_path = tmp_path / "macos-say-aloud.db"
     conn = open_event_log(db_path)
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=FakeProvider(candidate_count=0),
         player=make_player(),
         conn_factory=lambda: open_event_log(db_path),
@@ -2285,7 +2290,7 @@ def test_a_say_that_cannot_render_says_the_rest_aloud(tmp_path: Path) -> None:
         return process
 
     try:
-        with patch("jarvis.surface.voice_media.asyncio.create_subprocess_exec", side_effect=_spawn):
+        with patch.object(asyncio, "create_subprocess_exec", side_effect=_spawn):
             rows = emit_response(
                 conn, response_id="RALOUD", group_id="GALOUD", turn_id="TALOUD",
                 text=["first line. ", "second line."],
@@ -2309,7 +2314,7 @@ def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) 
     conn = open_event_log(db_path)
     provider = FakeProvider(candidate_count=0)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -2336,8 +2341,9 @@ def test_macos_say_spawn_in_progress_cancellation_has_no_orphan(tmp_path: Path) 
         return _FakeSayProcess("new", actions, complete_immediately=True, args=args)
 
     try:
-        with patch(
-            "jarvis.surface.voice_media.asyncio.create_subprocess_exec",
+        with patch.object(
+            asyncio,
+            "create_subprocess_exec",
             side_effect=_spawn,
         ):
             old = emit_response(
@@ -2382,7 +2388,7 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
     """A spawn ignoring its first cancellation remains actor-owned lane debt."""
     db_path = tmp_path / "macos-say-late-spawn.db"
     conn = open_event_log(db_path)
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=FakeProvider(candidate_count=0),
         player=make_player(),
         conn_factory=lambda: open_event_log(db_path),
@@ -2422,8 +2428,9 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
 
     successor_thread: threading.Thread | None = None
     try:
-        with patch(
-            "jarvis.surface.voice_media.asyncio.create_subprocess_exec",
+        with patch.object(
+            asyncio,
+            "create_subprocess_exec",
             side_effect=_spawn,
         ):
             old = emit_response(
@@ -2475,7 +2482,7 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
     db_path = tmp_path / "owner-bounds.db"
     baseline = len(_live_media_owner_threads())
     with pytest.raises(RuntimeError, match="failed to start"):
-        voice_media.StreamingTTSPipeline(
+        StreamingTTSPipeline(
             provider=FakeProvider(candidate_count=1),
             player=make_player(),
             conn_factory=lambda: (_ for _ in ()).throw(OSError("conn failed")),
@@ -2489,7 +2496,7 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
         patch.object(player_start_failure, "start", side_effect=OSError("device failed")),
         pytest.raises(RuntimeError, match="failed to start"),
     ):
-        voice_media.StreamingTTSPipeline(
+        StreamingTTSPipeline(
             provider=FakeProvider(candidate_count=1),
             player=player_start_failure,
             conn_factory=lambda: open_event_log(db_path),
@@ -2506,7 +2513,7 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
         turn_id="TQUEUE",
         text="queue",
     )
-    queue_pipeline = voice_media.StreamingTTSPipeline(
+    queue_pipeline = StreamingTTSPipeline(
         provider=FakeProvider(candidate_count=1),
         player=make_player(),
         conn_factory=lambda: open_event_log(db_path),
@@ -2523,8 +2530,8 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
     original_handle = queue_pipeline._handle_command  # noqa: SLF001
 
     async def _blocked_handle(
-        command: voice_media._MediaCommand,
-    ) -> voice_media.MediaSubmitOutcome:
+        command: MediaCommand,
+    ) -> MediaSubmitOutcome:
         command_entered.set()
         while not command_release.is_set():  # noqa: ASYNC110
             await asyncio.sleep(0.001)
@@ -2566,7 +2573,7 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
         provider_gate.wait()
 
     stuck_provider.request_close = _stuck_provider_close  # type: ignore[method-assign]
-    provider_pipeline = voice_media.StreamingTTSPipeline(
+    provider_pipeline = StreamingTTSPipeline(
         provider=stuck_provider,
         player=make_player(),
         conn_factory=lambda: open_event_log(db_path),
@@ -2586,7 +2593,7 @@ def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
 
     player_gate = threading.Event()
     stuck_player = make_player()
-    player_pipeline = voice_media.StreamingTTSPipeline(
+    player_pipeline = StreamingTTSPipeline(
         provider=FakeProvider(candidate_count=1),
         player=stuck_player,
         conn_factory=lambda: open_event_log(db_path),
@@ -2623,10 +2630,10 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
     # The connection stays held until construction has raised: the owner gives up on it at its
     # startup deadline. That deadline is long enough for the owner thread to reach the factory.
     with (
-        pytest.raises(voice_media.StreamingMediaStartupError) as conn_error,
+        pytest.raises(StreamingMediaStartupError) as conn_error,
         never_waits_for(conn_gate),
     ):
-        voice_media.StreamingTTSPipeline(
+        StreamingTTSPipeline(
             provider=FakeProvider(candidate_count=1),
             player=make_player(),
             conn_factory=_stuck_conn,
@@ -2660,10 +2667,10 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
         patch.object(stuck_player, "stop", side_effect=_late_stop),
     ):
         with (
-            pytest.raises(voice_media.StreamingMediaStartupError) as player_error,
+            pytest.raises(StreamingMediaStartupError) as player_error,
             never_waits_for(player_gate),
         ):
-            voice_media.StreamingTTSPipeline(
+            StreamingTTSPipeline(
                 provider=FakeProvider(candidate_count=1),
                 player=stuck_player,
                 conn_factory=lambda: open_event_log(db_path),
@@ -2680,7 +2687,7 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
 
 
 def _publish_deadlines_together(
-    pipeline: voice_media.StreamingTTSPipeline,
+    pipeline: StreamingTTSPipeline,
     *,
     short_s: float,
     long_s: float,
@@ -2719,7 +2726,7 @@ def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
     # Which request lands last is up to the scheduler, and only the long one landing last can
     # overwrite the short one, so the race is run on a fresh pipeline each round.
     for _ in range(16):
-        pipeline = voice_media.StreamingTTSPipeline(
+        pipeline = StreamingTTSPipeline(
             provider=FakeProvider(candidate_count=1),
             player=make_player(),
             conn_factory=lambda: open_event_log(db_path),
@@ -2937,7 +2944,7 @@ def test_production_builder_gate_and_text_only_degradation(
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
-        assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
+        assert isinstance(pipeline, StreamingTTSPipeline)
         assert pipeline.close()
         runtime.config = runtime_config({"realtime": {"enabled": False}})
         assert (
@@ -3105,7 +3112,7 @@ def test_segment_closed_before_audible_horizon_still_becomes_heard(tmp_path: Pat
         generation_safe=True,
         estimated_output_latency_s=latency_s,
     )
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -3227,7 +3234,7 @@ def test_heard_prefix_quality_survives_an_earlier_report_gap(tmp_path: Path) -> 
         real_write(**report)
 
     reports.write = _drop_second_segment_head  # type: ignore[method-assign]
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -3301,7 +3308,7 @@ def test_realtime_output_device_reaches_the_builder_player(
             cast("Any", runtime),
             cast("Any", SimpleNamespace()),
         )
-        assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
+        assert isinstance(pipeline, StreamingTTSPipeline)
         assert pipeline.close()
 
     streaming: dict[str, object] = {"enabled": True}
@@ -3366,7 +3373,7 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
                 cast("Any", runtime),
                 cast("Any", SimpleNamespace()),
             )
-            assert isinstance(pipeline, voice_media.StreamingTTSPipeline)
+            assert isinstance(pipeline, StreamingTTSPipeline)
             provider = pipeline._provider  # noqa: SLF001
 
             async def _open_then_close() -> None:
@@ -3436,7 +3443,7 @@ def test_playback_started_carries_the_host_output_latency_or_the_configured_one(
     with patch.object(voice_tts, "_open_output_stream", return_value=stream):
         # The owner opens the device on its own startup, so the patched stream
         # must be in place before the pipeline exists.
-        pipeline = voice_media.StreamingTTSPipeline(
+        pipeline = StreamingTTSPipeline(
             provider=provider,
             player=player,
             conn_factory=lambda: open_event_log(db_path),
@@ -3488,7 +3495,7 @@ def _declick_pipeline(
     response_id: str,
     samples: int = _DECLICK_RESPONSE_SAMPLES,
 ) -> tuple[
-    voice_media.StreamingTTSPipeline,
+    StreamingTTSPipeline,
     voice_tts.AudioStreamPlayer,
     FakeProvider,
 ]:
@@ -3503,7 +3510,7 @@ def _declick_pipeline(
         candidate_count=1,
     )
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -3602,8 +3609,8 @@ def test_a_user_stop_fades_the_output_instead_of_stepping_to_silence(
 
 
 # `_player()` runs at 8 kHz.
-_CUT_FADE_SAMPLES = int(8_000 * voice_media._CUT_FADE_MS / 1000)  # noqa: SLF001
-_RESTORE_SAMPLES = int(8_000 * voice_media._YIELD_RAMP_MS / 1000)  # noqa: SLF001
+_CUT_FADE_SAMPLES = int(8_000 * CUT_FADE_MS / 1000)
+_RESTORE_SAMPLES = int(8_000 * YIELD_RAMP_MS / 1000)
 # A gain ramp recomputes its value at each block edge; float32 rounding there
 # is not a step, and a ramp that ends mid-block is a little steeper in it.
 _RAMP_ROUNDING = 1e-6

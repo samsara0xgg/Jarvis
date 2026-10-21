@@ -18,7 +18,8 @@ from jarvis.decision.response_run import decide_foreground
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.arbitration import emit_open_chunk, emit_terminal, emit_whole_response
 from tests.support.media import (
     Behavior,
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
     from typing import Any
+
+    from jarvis.surface import voice_tts
 
 
 
@@ -59,7 +62,7 @@ def test_older_cross_group_straggler_declines_instead_of_superseding(
     gate = threading.Event()
     provider.segment_gates[("RNEW", 0)] = gate
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -147,8 +150,8 @@ def _debt_pipeline(
     db_path: Path,
     provider: FakeProvider,
     player: voice_tts.AudioStreamPlayer,
-) -> voice_media.StreamingTTSPipeline:
-    return voice_media.StreamingTTSPipeline(
+) -> StreamingTTSPipeline:
+    return StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -177,7 +180,7 @@ def test_draining_lane_is_granted_to_a_cross_group_winner_and_purged(
     reset_realtime_trace()
     try:
         with (
-            patch.object(voice_media, "terminalize_playback", side_effect=faulted),
+            patch.object(media_pipeline, "terminalize_playback", side_effect=faulted),
             CallbackPump(player),
         ):
             asyncio.run(submit_response(pipeline, emit_whole_response(
@@ -228,7 +231,7 @@ def test_draining_lane_still_declines_a_cross_group_loser(tmp_path: Path) -> Non
     reset_realtime_trace()
     try:
         with (
-            patch.object(voice_media, "terminalize_playback", side_effect=faulted),
+            patch.object(media_pipeline, "terminalize_playback", side_effect=faulted),
             CallbackPump(player),
         ):
             # The straggler opens FIRST (lower row id) and emits LAST.

@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Literal
 
 from jarvis.deployment.sleep_wake import install_power_observer
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.surface import voice_audio, voice_backend, voice_media, voice_session
+from jarvis.surface import voice_audio, voice_backend, voice_session
+from jarvis.surface.voice_media.contract import MediaPowerTransitionResult
 
 if TYPE_CHECKING:
     import asyncio
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.deployment.sleep_wake import PowerObserver
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +73,7 @@ class VoicePowerTransition:
     """Auditable ordered input/output transition at the power boundary."""
 
     input_result: object | None
-    output_result: voice_media.MediaPowerTransitionResult | None
+    output_result: MediaPowerTransitionResult | None
     deadline_monotonic: float
     elapsed_s: float
     input_skipped_reason: str | None = None
@@ -90,7 +92,7 @@ class VoicePowerCoordinator:
         self,
         *,
         session: voice_session.DuplexVoiceSession,
-        media: voice_media.StreamingTTSPipeline,
+        media: StreamingTTSPipeline,
     ) -> None:
         """Bind the input session and the speech pipeline the power transitions drive."""
         self._session = session
@@ -132,7 +134,7 @@ class VoicePowerCoordinator:
         if not self._lock.acquire(
             timeout=max(0.0, deadline - time.monotonic()),
         ):
-            output_result = voice_media.MediaPowerTransitionResult(
+            output_result = MediaPowerTransitionResult(
                 "uncertain",
                 0,
                 "coordinator_lock_timeout",
@@ -188,7 +190,7 @@ class VoicePowerCoordinator:
             timeout=max(0.0, deadline - time.monotonic()),
         ):
             reason = "coordinator_lock_timeout"
-            output_result = voice_media.MediaPowerTransitionResult(
+            output_result = MediaPowerTransitionResult(
                 "uncertain",
                 0,
                 reason,
@@ -210,7 +212,7 @@ class VoicePowerCoordinator:
                 self._pending_wake_state = "idle"
             if self._pending_wake_state in {"in_flight", "recovered"}:
                 pending_alive = pending is not None and pending.is_alive()
-                output_result = voice_media.MediaPowerTransitionResult(
+                output_result = MediaPowerTransitionResult(
                     (
                         "resumed"
                         if self._pending_wake_state == "recovered"
@@ -347,7 +349,7 @@ class VoicePowerCoordinator:
         self._pending_wake_done = done
 
         def _continue_wake() -> None:  # noqa: C901, PLR0912, PLR0915 - exact debt loop
-            output_result: voice_media.MediaPowerTransitionResult | None = None
+            output_result: MediaPowerTransitionResult | None = None
             input_result: object | None = None
             reason = ""
             deadline = time.monotonic()

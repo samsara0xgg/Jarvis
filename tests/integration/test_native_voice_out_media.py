@@ -21,7 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from jarvis.state.event_log import open_event_log
-from jarvis.surface import voice_media
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from jarvis.surface.voice_native_out import NativeAudioStreamPlayer
 from tests.support.media import (
     Behavior,
@@ -67,7 +67,7 @@ def test_a_slow_settle_does_not_let_the_response_task_fail_the_turn_first(tmp_pa
             return None
         return real_settle(**kwargs)
 
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),
@@ -120,7 +120,7 @@ def test_a_stop_while_audio_is_still_being_written_is_an_interruption_not_a_fail
         extra_args=("--null-device",),
     )
     assert player.start().started
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),

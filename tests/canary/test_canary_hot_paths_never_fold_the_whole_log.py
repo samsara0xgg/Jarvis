@@ -38,6 +38,12 @@ _TURN_MODULES: Final[tuple[str, ...]] = tuple(
     for path in sorted((repo_root() / "jarvis/runtime/turn").glob("*.py"))
 )
 
+# The media owner's code lives here, one module per concern.
+_MEDIA_MODULES: Final[tuple[str, ...]] = tuple(
+    path.relative_to(repo_root()).as_posix()
+    for path in sorted((repo_root() / "jarvis/surface/voice_media").glob("*.py"))
+)
+
 _HOT_PATH_MODULES: Final[tuple[str, ...]] = (
     "jarvis/runtime/__init__.py",
     "jarvis/runtime/inherent_loop.py",
@@ -48,7 +54,7 @@ _HOT_PATH_MODULES: Final[tuple[str, ...]] = (
     "jarvis/decision/packet.py",
     "jarvis/execution/path_resolver.py",
     "jarvis/execution/tools.py",
-    "jarvis/surface/voice_media.py",
+    *_MEDIA_MODULES,
 )
 
 # (module, name) -> calls allowed. Each entry needs a reason; remove it when the call goes.

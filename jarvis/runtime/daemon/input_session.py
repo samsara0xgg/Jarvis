@@ -21,7 +21,6 @@ from jarvis.surface import (
     voice_aec,
     voice_audio,
     voice_backend,
-    voice_media,
     voice_pipeline,
     voice_session,
     voice_wake,
@@ -33,6 +32,7 @@ if TYPE_CHECKING:
 
     from jarvis.runtime import JarvisRuntime
     from jarvis.surface.inherent_output import InherentBroadcaster
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - eac
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
-    tts: voice_media.StreamingTTSPipeline | None,
+    tts: StreamingTTSPipeline | None,
     voice: VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,
@@ -312,7 +312,7 @@ def _closed_for_good(session: voice_session.DuplexVoiceSession) -> bool:
 def _input_owner_reason(
     runtime: JarvisRuntime,
     *,
-    tts: voice_media.StreamingTTSPipeline | None,
+    tts: StreamingTTSPipeline | None,
     duplex_session: voice_session.DuplexVoiceSession | None,
     attempted: bool,
 ) -> str:
@@ -339,7 +339,7 @@ def spawn_voice_input_owners(  # noqa: PLR0913 - composition boundary dependenci
     pipeline: voice_pipeline.VoicePipeline,
     broadcaster: InherentBroadcaster,
     silero_path: Path,
-    tts: voice_media.StreamingTTSPipeline | None,
+    tts: StreamingTTSPipeline | None,
     voice: VoiceKnobs | None = None,
     mic_muted: Callable[[], bool] | None = None,
     conversation: Callable[[], bool] | None = None,

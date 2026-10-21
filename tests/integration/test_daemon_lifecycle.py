@@ -38,8 +38,8 @@ from jarvis.runtime.daemon import (
 from jarvis.runtime.turn.start import start_drive_turn_response
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import voice_media
 from jarvis.surface.cli import emit_surface_user_intent
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
@@ -289,7 +289,7 @@ def test_a_stop_signal_runs_the_daemons_whole_teardown_and_ends_it_clean(
 
 def test_shutdown_tts_closes_pipeline() -> None:
     """``shutdown_tts`` must call ``tts_pipe.close()`` to release the PortAudio device."""
-    tts_pipe = MagicMock(spec=voice_media.StreamingTTSPipeline)
+    tts_pipe = MagicMock(spec=StreamingTTSPipeline)
     teardown.shutdown_tts(tts_pipe)
     tts_pipe.close.assert_called_once_with()
 

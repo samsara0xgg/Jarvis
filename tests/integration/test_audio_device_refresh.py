@@ -28,10 +28,11 @@ from jarvis.surface import (
     voice_audio,
     voice_backend,
     voice_live,
-    voice_media,
     voice_session,
     voice_tts,
 )
+from jarvis.surface.voice_media.contract import MediaPowerTransitionResult
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.answer_hold import answer_of, played_texts
 from tests.support.media import (
     Behavior,
@@ -167,7 +168,7 @@ def test_a_wake_that_left_the_microphone_parked_re_reads_and_wakes_again(
     coordinator = _coordinator(actions, monkeypatch, parked=True)
     woke = voice_power.VoicePowerTransition(
         voice_backend.BackendStartResult(voice_backend.BackendStartStatus.STARTED, 5, None),
-        voice_media.MediaPowerTransitionResult("resumed", 2, "fresh"),
+        MediaPowerTransitionResult("resumed", 2, "fresh"),
         0.0,
         0.0,
     )
@@ -227,7 +228,7 @@ def test_an_answer_arriving_during_the_refresh_plays_after_it(tmp_path: Path) ->
         candidate_count=1,
     )
     player = make_player(ring_seconds=2.0)
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),

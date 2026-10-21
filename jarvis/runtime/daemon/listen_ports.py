@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.runtime import JarvisRuntime
-    from jarvis.surface import voice_media
+    from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def make_cancel_voice_runs(
 
 def local_listen_ports(
     runtime: JarvisRuntime,
-    streaming: voice_media.StreamingTTSPipeline | None,
+    streaming: StreamingTTSPipeline | None,
 ) -> ListenPorts:
     """The ports of a daemon that holds the turn itself: direct calls into ``runtime``.
 

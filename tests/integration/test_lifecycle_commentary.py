@@ -53,11 +53,11 @@ from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime
 from jarvis.state import projections
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, fetch_events_after, iter_events, open_event_log
-from jarvis.surface import voice_media
 from jarvis.surface.cli import parse_response_channels
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.canary._helpers import repo_root
 from tests.support.lifecycle_commentary import (
     CommentaryObserver,
@@ -1585,7 +1585,7 @@ def _replay(
     """Run the media owner over this log, in its order; return its terminals and drops."""
     reset_realtime_trace()
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=FakeProvider(candidate_count=1),
         player=player,
         conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),
@@ -1817,7 +1817,7 @@ def test_final_shares_the_group_keeps_phase_final_and_plays_after_the_commentary
     reset_realtime_trace()
     provider = FakeProvider(candidate_count=1)
     player = make_player()
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(runtime.runtime_paths.event_log),

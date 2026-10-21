@@ -13,7 +13,7 @@ import pytest
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback, terminalize_response
-from jarvis.surface import voice_media, voice_tts
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import FakeProvider, RecordingBroadcaster, make_player, media_config
 
 if TYPE_CHECKING:
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.shared import Event
+    from jarvis.surface import voice_tts
 
 
 def sha256_of(text: str) -> str:
@@ -179,12 +180,12 @@ def make_pipeline(  # noqa: PLR0913 - one knob per pipeline option a test sets
     response_timeout_s: float | None = None,
     broadcaster: RecordingBroadcaster | None = None,
     silent_intent_channels: frozenset[str] = frozenset(),
-) -> tuple[voice_media.StreamingTTSPipeline, voice_tts.AudioStreamPlayer]:
+) -> tuple[StreamingTTSPipeline, voice_tts.AudioStreamPlayer]:
     player = make_player()
     config = replace(media_config(), speak_from_segments=speak_from_segments)
     if response_timeout_s is not None:
         config = replace(config, response_timeout_s=response_timeout_s)
-    pipeline = voice_media.StreamingTTSPipeline(
+    pipeline = StreamingTTSPipeline(
         provider=provider,
         player=player,
         conn_factory=lambda: open_event_log(db_path),

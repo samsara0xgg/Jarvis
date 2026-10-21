@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
     from jarvis.shared import Event
-    from jarvis.surface.voice_media import StreamingTTSProvider
+    from jarvis.surface.voice_media.contract import StreamingTTSProvider
 
 LOGGER = logging.getLogger("jarvis.surface.terminal_voice")
 
