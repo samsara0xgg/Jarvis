@@ -6,8 +6,9 @@ and, for a background job, the agent-view ``state`` (working / blocked /
 done). Two files Claude Code keeps per session fill in the rest: a background
 job's ``~/.claude/jobs/<id>/state.json`` (its one-line ``detail``) and the
 tail of the transcript ``~/.claude/projects/*/<sessionId>.jsonl`` (last
-prompt, branch, current tool, last answer). Nothing is installed into Claude
-Code. ``GET /inherent/claude-sessions`` serves :meth:`ClaudeSessions.read`.
+prompt, branch, current tool, last answer) and its head (the first moment it records is
+``started_ms``; the registry's process start when there is none, else null). Nothing is
+installed into Claude Code. ``GET /inherent/claude-sessions`` serves :meth:`ClaudeSessions.read`.
 
 A row's title is the name he sees in Claude Desktop when it has one: Desktop keeps it in
 ``~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json`` (``title``, keyed by
@@ -191,40 +192,52 @@ def _said_at(entry: dict[str, Any]) -> float | None:
     return ms / 1000 if ms else None
 
 
-def _opening_title(path: Path) -> str:
-    """The title the session's first message gives, read from the transcript's head; "" if none.
+def _entry_title(entry: dict[str, Any]) -> str:
+    """The title one transcript entry gives when it is his own opening message; else ""."""
+    if entry.get("type") != "user":
+        return ""
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") != "human":
+        return ""
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        content = " ".join(
+            str(block.get("text") or "") for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    if not isinstance(content, str):
+        return ""
+    # Remote Control injects the wake and relay envelopes as meta entries; other meta
+    # entries (command output, caveats) are not his words.
+    if entry.get("isMeta") and not _ENVELOPE.match(content.lstrip()):
+        return ""
+    return _prompt_title(content)
 
-    Claude Code keeps only 200 characters of a ``last-prompt``, which a wake envelope fills
-    before his words, so the whole user entry is read instead.
+
+def _opening(path: Path) -> tuple[str, int]:
+    """(title, start in epoch ms) the transcript's head gives; "" and 0 for what it does not say.
+
+    The title is what the session's first message gives. Claude Code keeps only 200 characters of
+    a ``last-prompt``, which a wake envelope fills before his words, so the whole user entry is
+    read instead. The start is the first moment the transcript records: when the session began,
+    which a resumed session's newer process (the registry's ``startedAt``) is not.
     """
     with path.open("rb") as fh:
         lines = fh.read(_TAIL_BYTES).decode("utf-8", "replace").splitlines()
+    title, started = "", 0
     for line in lines:
         try:
             entry = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(entry, dict) or entry.get("type") != "user" or entry.get("isSidechain"):
+        if not isinstance(entry, dict) or entry.get("isSidechain"):
             continue
-        origin = entry.get("origin")
-        if isinstance(origin, dict) and origin.get("kind") != "human":
-            continue
-        message = entry.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        if isinstance(content, list):
-            content = " ".join(
-                str(block.get("text") or "") for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            )
-        if not isinstance(content, str):
-            continue
-        # Remote Control injects the wake and relay envelopes as meta entries; other meta
-        # entries (command output, caveats) are not his words.
-        if entry.get("isMeta") and not _ENVELOPE.match(content.lstrip()):
-            continue
-        if title := _prompt_title(content):
-            return title
-    return ""
+        started = started or _iso_ms(entry.get("timestamp"))
+        title = title or _entry_title(entry)
+        if title and started:
+            break
+    return title, started
 
 
 def read_transcript(path: Path) -> dict[str, Any]:
@@ -463,8 +476,8 @@ class ClaudeSessions:
         self._at = -REFRESH_S
         self._board: dict[str, Any] = {"sessions": [], "error": None}
         self._transcripts: dict[Path, tuple[int, dict[str, Any]]] = {}
-        # The title each transcript's opening gives, once found.
-        self._openings: dict[Path, str] = {}
+        # The (title, start) each transcript's opening gives, once its title is found.
+        self._openings: dict[Path, tuple[str, int]] = {}
         # Claude Desktop's session files: path -> (mtime, CLI session id, title).
         self._desktop: dict[Path, tuple[int, str, str]] = {}
         self._reply_lock = threading.Lock()
@@ -584,18 +597,20 @@ class ClaudeSessions:
         if path is None:
             return {
                 "prompt": "", "branch": "", "tool": "", "last_message": "", "tail": "", "said": [],
-                "title": "",
+                "title": "", "started_ms": 0,
             }
         cached = self._transcripts.get(path)
         if cached is None or cached[0] != mtime_ns:
             tx = read_transcript(path)
             # A session's opening never changes: read once from the head of what can be a
             # transcript of many megabytes, then kept; the last prompt stands in until then.
-            if path not in self._openings:
-                opening = _opening_title(path)
-                if opening:
+            opening = self._openings.get(path)
+            if opening is None:
+                opening = _opening(path)
+                if opening[0]:
                     self._openings[path] = opening
-            tx["title"] = self._openings.get(path) or tx["title"]
+            tx["title"] = opening[0] or tx["title"]
+            tx["started_ms"] = opening[1]
             cached = self._transcripts[path] = (mtime_ns, tx)
         return cached[1]
 
@@ -712,7 +727,8 @@ class ClaudeSessions:
                     "replyable": agent.get("kind") == "background"
                     and agent.get("status") == "idle"
                     and bool(agent.get("id")),
-                    "started_ms": int(agent.get("startedAt") or 0),
+                    # When it began: the transcript's first moment, else its process's start.
+                    "started_ms": tx["started_ms"] or int(agent.get("startedAt") or 0) or None,
                     "updated_ms": updated_ms,
                 }
             )

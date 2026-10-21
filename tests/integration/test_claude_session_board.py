@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import sys
@@ -364,3 +365,49 @@ def test_a_session_is_named_as_claude_desktop_names_it(
         "s-cited": "手机推送收不到",
         "s-thread-named": "让她懂你",
     }
+
+
+def test_a_row_says_when_the_session_began(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``started_ms`` is the transcript's first moment, else the process's start, else null."""
+    began = dt.datetime(2026, 3, 2, 9, 15, tzinfo=dt.UTC)
+    process_ms = 1_772_000_000_000  # a fixed start; nothing here reads the clock
+    starts = {
+        "s-resumed": process_ms + 2 * 3_600_000,  # picked up hours later: a newer process
+        "s-bare": process_ms,  # a transcript that records no moment
+        "s-no-file": process_ms,
+        "s-unknown": 0,
+    }
+    bin_dir = board_home(tmp_path, [
+        {"sessionId": sid, "kind": "interactive", "status": "busy", "cwd": "/x/jarvis",
+         **({"startedAt": at} if at else {})}
+        for sid, at in starts.items()
+    ])
+    project = tmp_path / ".claude" / "projects" / "-x-jarvis"
+    resumed = [
+        {"type": "permission-mode", "permissionMode": "default"},  # records no moment
+        _said("a subagent's", isSidechain=True, timestamp="2026-03-02T08:00:00.000Z"),
+        {"type": "system", "timestamp": "not a time"},
+        _said("wire the door", timestamp="2026-03-02T09:15:00.000Z"),
+        _answer("On it.", timestamp="2026-03-02T09:16:30.000Z"),
+    ]
+    (project / "s-resumed.jsonl").write_text("\n".join(json.dumps(e) for e in resumed))
+    (project / "s-bare.jsonl").write_text(json.dumps(_said("no moment recorded")))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    client = TestClient(
+        create_app(InherentDeps(
+            submit_callable=noop, broadcaster=InherentBroadcaster(), claude_sessions_read=True
+        ))
+    )
+
+    rows = {r["session_id"]: r for r in client.get("/inherent/claude-sessions").json()["sessions"]}
+
+    assert {sid: row["started_ms"] for sid, row in rows.items()} == {
+        "s-resumed": int(began.timestamp() * 1000),  # the first valid moment, not the process
+        "s-bare": process_ms,
+        "s-no-file": process_ms,
+        "s-unknown": None,
+    }
+    assert rows["s-resumed"]["title"] == "wire the door"  # the same head read gives the title
