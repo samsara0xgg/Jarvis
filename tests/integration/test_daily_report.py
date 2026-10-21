@@ -955,18 +955,43 @@ def test_a_session_continued_later_shows_only_that_days_turns(
         rig.fx.close()
 
 
+def path_of_length(parent: Path, name: str, chars: int) -> Path:
+    """``parent/name`` with directories added above it until the path is ``chars`` long.
+
+    A path already longer than that (a deep temp directory) is returned as it is.
+    """
+    room = max(chars - len(str(parent / name)), 0)
+    for _ in range(room // 201):  # whole 200-character directories, and one for their slash
+        parent /= "d" * 200
+        room -= 201
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / (name + "x" * room)
+
+
+ROLLOUT_TAIL = "/2026/09/19/rollout-2026-09-19T13-00-00-sess-read.jsonl"
+
+
+@pytest.mark.parametrize(
+    "ref_chars", [0, 201, 241, 560],
+    ids=["as_the_temp_dir_has_it", "past_200", "past_240", "deep_codex_home"],
+)
 def test_saved_git_and_session_refs_read_back_through_read_activity(
-    tmp_path: Path, source: sqlite3.Connection
+    tmp_path: Path, source: sqlite3.Connection, ref_chars: int
 ) -> None:
     """The references a saved report carries resolve later through the ordinary tool.
 
     A git: ref reads as the commit (git show --stat); a codex-session: ref as
-    the session's dated turns; a missing one is not_found.
+    the session's dated turns; a missing one is not_found. A reference carries a whole path,
+    so what saves also reads, whatever the length of the path it holds: a pytest temp
+    directory on macOS puts a rollout's reference past 200 characters, and a Codex home
+    deep in a synced folder far past 240. ``ref_chars`` is the least length of both references.
     """
     add_span(source, "2026-09-19 16:00:00.000", "2026-09-19 17:00:00.000")
-    repo = tmp_path / "repo"
+    repo = path_of_length(tmp_path, "repo", ref_chars - len("git::") - 40)
     shas = git_repo(repo, [("feat: readable later", "2026-09-19T10:00:00-07:00", "main")])
-    sessions = tmp_path / "sessions"
+    sessions = path_of_length(
+        tmp_path, "sessions", ref_chars - len("codex-session:") - len(ROLLOUT_TAIL)
+    )
     talked = codex_session_file(
         sessions,
         "2026-09-19T20:00:00Z",
@@ -986,6 +1011,7 @@ def test_saved_git_and_session_refs_read_back_through_read_activity(
         saved = rig.call("get_briefing", {"local_date": "2026-09-19", "timezone": ZONE})
         git_ref = f"git:{repo}:{shas['feat: readable later']}"
         assert saved["source_refs"] == [git_ref, f"codex-session:{talked}"]
+        assert all(len(ref) >= ref_chars for ref in saved["source_refs"])
         commit = rig.call("read_activity", {"activity_id": git_ref})
         assert commit["kind"] == "git.commit"
         assert commit["complete"] is True

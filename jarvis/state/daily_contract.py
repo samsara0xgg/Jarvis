@@ -57,12 +57,17 @@ def object_fields(fields: dict[str, Any], *required: str) -> dict[str, Any]:
     }
 
 
+# `git:<repo path>:<sha>` and `codex-session:<file path>` carry a whole path (ADR 0025 reads the
+# original from where it lives). macOS caps a path at 1024 characters, so a reference is that plus
+# its kind and revision. One bound serves where a reference is cited (source_refs) and where it is
+# read back (read_activity): a reference that saved must read.
+_REF_CHARS = 1024 + 64
 _CURSOR = text_field(4096)
 _PAGE = {"limit": {"type": "integer", "minimum": 1, "maximum": 50}, "cursor": _CURSOR}
 _VERSION = {"type": "integer", "minimum": 0}
 _REFS = {
     "type": "array",
-    "items": text_field(240),
+    "items": text_field(_REF_CHARS),
     "maxItems": 20,
     "uniqueItems": True,
     "description": (
@@ -127,7 +132,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "to",
     ),
     "read_activity": object_fields(
-        {"activity_id": text_field(200), "cursor": _CURSOR}, "activity_id"
+        {"activity_id": text_field(_REF_CHARS), "cursor": _CURSOR}, "activity_id"
     ),
     "refresh_work_state": object_fields(
         {
