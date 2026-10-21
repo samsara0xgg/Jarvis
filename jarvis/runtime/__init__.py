@@ -13,16 +13,9 @@ Responsibilities (Day-1):
    default registry + lifecycle, instantiate the L3 LLM client, and
    return a frozen :class:`JarvisRuntime`. No LLM call happens during
    bootstrap.
-2. :func:`run_turn` — drive ONE conversation turn end-to-end:
-   emit ``surface.user_intent`` (L5), call :func:`jarvis.decision.decide`
-   (re-entering as more triggers arrive), record the Pre-emit token,
-   and render the final ``ResponsePlan`` to stdout (L5).
-3. :func:`_wait_for_next_trigger` — poll the event log for the next
-   L3 trigger event (``action.result_observed``, ``action.timeout_assumed``,
-   ``action.failed`` or ``action.cancelled``). ``time.sleep`` is intentional
-   here per spec §3.4.1: the composition root polls across thread
-   boundaries; the "no time.sleep" rule applies only to L3 / L4 gate
-   machinery.
+2. The turn lives in :mod:`jarvis.runtime.turn` (ADR 0371): this module
+   holds only the public types it shares with bootstrap, :class:`JarvisRuntime`
+   and :class:`RunTurnResult`.
 
 Layer rules: ``jarvis.runtime`` may import everything below it. It is
 imported by ``jarvis.cli`` only.
@@ -30,11 +23,8 @@ imported by ``jarvis.cli`` only.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import contextlib
-import io
-import json
 import logging
 import mimetypes
 import os
@@ -45,30 +35,15 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 import webbrowser
 from collections.abc import Mapping  # runtime use: isinstance in the config readers.
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from datetime import time as clock
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.decision import (
-    SPOKEN_REPLY_FORMAT,
-    DecideContext,
-    EntityResolverLike,
-    LifecycleLike,
-    ResolvedEntityLike,
-    ToolRegistryLike,
-    decide,
-    emit_turn_ended,
-    open_prefix_warm,
-    spoken_reply_rules,
-    turn_timing,
-)
 from jarvis.decision.attention import rule_judge_v1
 from jarvis.decision.confirm_grammar import ConfirmGrammarConfigError, load_confirm_grammar
 from jarvis.decision.cost_guard import CostRecorder
@@ -78,43 +53,19 @@ from jarvis.decision.llm_anthropic import set_stale_files_handler
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.moment import FIELDS as MOMENT_FIELDS
-from jarvis.decision.packet import assemble_packet
 from jarvis.decision.policy import (
     PolicyConsistencyError,
     effective_policy,
     validate_requires_confirmation,
 )
 from jarvis.decision.pre_route import (
-    ROUTINE_ATTENTION_CHANNEL,
-    RoutineStreamRoute,
-    StreamCorrection,
     ToolCueConfigError,
     ToolCueTable,
     load_tool_cues,
-    pre_route,
-    routine_risk_context,
-    spoken_risk_context,
-    spoken_turn,
-    typed_turn,
 )
 from jarvis.decision.response_run import (
-    CancelAccepted,
-    CancelAlreadyTerminal,
-    CancelPlaybackAuthorized,
-    CancelTimedOut,
-    ResponseCancelledError,
-    ResponseCancelRequest,
-    ResponseRun,
     ResponseRunRegistry,
-    ResponseTerminalizer,
-    decide_foreground,
-    evidence_snapshot_hash,
-    legacy_full_text_policy,
-    request_response_cancel,
-    start_response_run,
-    wait_out_hold,
 )
-from jarvis.decision.stream_gate import routine_stream_policy, spoken_stream_policy
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute, offered
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
@@ -141,23 +92,18 @@ from jarvis.execution.path_resolver import (
     FileTargetsConfigError,
     configure_file_targets,
 )
-from jarvis.execution.path_resolver import resolve as resolve_file_entity
-from jarvis.execution.places_api import turn_places
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.execution.tools import (
     ActionLifecycle,
-    ReadOnlyToolRegistry,
     Tool,
     ToolContext,
     ToolRegistry,
     VisionClient,
     build_default_registry,
-    release_turn_actions,
-    turn_action_ids,
 )
-from jarvis.execution.transit_tool import TransitOffers, build_leg_planner, first_leave_ms
+from jarvis.execution.transit_tool import TransitOffers, build_leg_planner
 from jarvis.execution.workers import Workers, make_worker_tools
-from jarvis.runtime import answer_hold, audio_output, device_tools, device_voice
+from jarvis.runtime import audio_output, device_tools
 from jarvis.runtime.about_item import AboutItems
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.claude_daily import ClaudeDailyIntake, ClaudeDailySettings
@@ -181,12 +127,8 @@ from jarvis.runtime.daily_report import (
 )
 from jarvis.runtime.dashboard import (
     CLOSE,
-    DRAFT_LINE_CHARS,
-    DRAFT_LINE_PREFIX,
     PAGES,
     SETTINGS_CATEGORIES,
-    VIEW_LINE_CHARS,
-    VIEW_LINE_PREFIX,
     MailDrafts,
     ViewState,
 )
@@ -195,7 +137,7 @@ from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.departures import Departures
 from jarvis.runtime.doing_run import DoingSchedule, DoingSettings
 from jarvis.runtime.highlight_marks import HighlightMarks
-from jarvis.runtime.home import Home, mail_body, mail_summarizer, mail_text, weather_lookup
+from jarvis.runtime.home import Home, mail_summarizer, mail_text, weather_lookup
 from jarvis.runtime.interview_reminders import InterviewSettings
 from jarvis.runtime.job_mail import LINKEDIN_ALERTS, JobMail, JobMailSettings
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
@@ -211,11 +153,10 @@ from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.push import Push
 from jarvis.runtime.reminders import Reminders
-from jarvis.runtime.rides import RIDE_LINE_CHARS, RIDE_LINE_PREFIX, Rides
+from jarvis.runtime.rides import Rides
 from jarvis.runtime.settings import REPLY_LINES, Settings
 from jarvis.runtime.settings_owner import SettingsDrift, check_own, page_keys
 from jarvis.runtime.setup import write_setting
-from jarvis.runtime.stream_bridge import LoopBoundTokenStream
 from jarvis.runtime.things_ledger import ThingsLedger
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.runtime.turn_things import TurnThings, TurnThingsSettings
@@ -223,40 +164,24 @@ from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.whereabouts import Whereabouts
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.shared import CallerPrincipal, Event, lang, llm_io_log
-from jarvis.shared.about import clean_about
-from jarvis.shared.action_admission import bind_action_admission
 from jarvis.shared.clock import Clock, SystemClock, ZoneError
-from jarvis.shared.device_link import DeviceCallError, DeviceLink
-from jarvis.shared.lang import is_filler, language_name
+from jarvis.shared.lang import language_name
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import (
-    RESPONSE_CANCEL_REASONS,
-    AlreadyTerminal,
     Wave1FeatureFlags,
     Wave4ResponseFlags,
     new_response_id,
 )
 from jarvis.shared.realtime_trace import (
     configure_realtime_trace_jsonl,
-    record_realtime_trace,
 )
-from jarvis.shared.system_prompt import SplitSystem
-from jarvis.state import device_reads, embedding, imports, reactions
-from jarvis.state import picture_notes as note_records
+from jarvis.state import device_reads, embedding, imports
 from jarvis.state import places as place_state
-from jarvis.state.action_facts import action_result
-from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments, marker
-from jarvis.state.authorized_dispatch_outbox import (
-    ConfirmationRevalidationError,
-    answer_confirmation_once,
-)
+from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import (
     emit_event,
-    fetch_events_after,
-    iter_events_for_turn,
-    latest_id,
     open_event_log,
     open_runtime_event_log,
 )
@@ -264,43 +189,20 @@ from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
 from jarvis.state.locate_wait import LocateWaits
 from jarvis.state.memory_db import (
     MemorySettings,
-    PictureFileId,
     PlacesBlock,
-    ReceiptsOf,
-    append_record,
     open_memory_db,
-    record_sent,
-    render_context,
 )
 from jarvis.state.projects import parse_catalog
-from jarvis.state.reminders import scheduled_by_actions
-from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX, shares_line
-from jarvis.state.stream_emission import committed_text_prefix
-from jarvis.state.trigger_consumption import mark_trigger_consumed
-from jarvis.state.turn_facts import (
-    card_requested_by_turn,
-    clarifications_asked_in_turn,
-    turn_dispatched_action,
-    turn_has_run,
-    turn_is_over,
-    turns_closed_since,
-    turns_dispatching_since,
-    turns_of_his_words_since,
-)
+from jarvis.state.shares import shares_line
 from jarvis.state.turn_overlap import any_turn_in_flight, turn_activity_since
-from jarvis.state.turn_steps import answer_receipts
 from jarvis.state.voice_settings import VoiceSettings
 from jarvis.state.voiceprint import VoiceprintBook
 from jarvis.surface.ambient_sounds import AmbientSounds
 from jarvis.surface.cli import (
     PreEmitTokenError,
-    emit_surface_user_intent,
     parse_response_channels,
-    record_pre_emit_token,
 )
-from jarvis.surface.cli_render import render_response
 from jarvis.surface.mac_location import read_mac_location
-from jarvis.surface.stream_emission import emit_permitted_segment
 from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_cues import VoiceCues
@@ -311,45 +213,15 @@ if TYPE_CHECKING:
 
     from jarvis.decision import ResponsePlan
     from jarvis.decision.confirm_grammar import ConfirmGrammarTable
-    from jarvis.decision.llm_stream import LLMStreamHandle
-    from jarvis.decision.packet import SnapshotReader
     from jarvis.decision.tier0 import Tier0Table
     from jarvis.runtime.work_state import LLMAnalyst
-    from jarvis.shared.realtime_trace import TraceValue
+    from jarvis.shared.device_link import DeviceLink
 
 
 LOGGER = logging.getLogger("jarvis.runtime")
 
 
 # --- Defaults ---------------------------------------------------------------
-
-# Trigger event types the runtime loop expects from L4 paths.
-# ``action.result_observed`` is defensive — sync tools emit it inline
-# so decide() consumes it within one invocation, but we accept it here
-# so a late-firing scheduled re-entry does not deadlock the poll loop.
-# ``action.timeout_assumed`` / ``action.failed`` / ``action.cancelled``
-# are the terminal failure events (supervisor sweep, dispatcher): the
-# runtime must wake decide() so L3 can emit a canonical limitation
-# response.
-_RUNTIME_TRIGGER_TYPES: tuple[str, ...] = (
-    "action.result_observed",
-    "action.timeout_assumed",
-    "action.failed",
-    "action.cancelled",
-)
-
-# Default polling cadence for ``_wait_for_next_trigger``. 10 ms balances
-# CPU usage with first-byte latency once the Timer fires.
-_DEFAULT_POLL_INTERVAL_S: float = 0.01
-
-# Default per-turn iteration ceiling. Protects ``run_turn`` from a stuck
-# trigger chain. 50 is ample headroom.
-_DEFAULT_MAX_ITERATIONS: int = 50
-
-# Conversational per-trigger wait. 5 s is generous, and small enough that
-# a stuck ordinary turn cannot pin one of ``max_concurrent_turns`` for
-# long — see :func:`_trigger_wait_budget`.
-_DEFAULT_TRIGGER_TIMEOUT_S: float = 5.0
 
 # System prompt for the injected vision client (`_LLMVisionClient` below).
 # Asking for the user's language means `screen_look`'s text observation
@@ -358,14 +230,6 @@ _VISION_SYSTEM_PROMPT: str = (
     "You are a screen-reading assistant. Describe what is currently "
     "visible in the screenshot factually and concisely. Respond in {language}."
 )
-
-
-
-# --- Exceptions -------------------------------------------------------------
-
-
-class TriggerWaitTimeout(RuntimeError):  # noqa: N818 — Day-1 vocabulary keeps `Timeout` suffix per ADR § Multi-trigger loop.
-    """Raised by :func:`_wait_for_next_trigger` when no trigger arrives in time."""
 
 
 # --- ADR 0170 — the process's role ------------------------------------------
@@ -416,68 +280,6 @@ def _no_audio_devices(_kind: str) -> list[str]:
 
 def _no_default_audio_device(_kind: str) -> None:
     """The brain has no default speaker or microphone to name."""
-
-
-# --- ADR-0011 D4 — resolve-on-propose wiring --------------------------------
-
-
-@dataclass(frozen=True)
-class _ResolvedFileEntity:
-    """Adapts `path_resolver.ResolvedTarget` to L3's `ResolvedEntityLike`.
-
-    `jarvis.runtime` is the only module allowed to know both the L3
-    Protocol shape and the L4 `ResolvedTarget` dataclass it adapts —
-    that is the whole point of the resolve-on-propose seam (ADR-0011
-    D4): L3 never imports `jarvis.execution.path_resolver` directly.
-    """
-
-    entity_id: str
-    canonical: str
-    confidence: str
-    match_basis: str
-
-
-def _make_entity_resolver(
-    conn: sqlite3.Connection, terminals: TerminalHub | None = None,
-) -> EntityResolverLike:
-    """Build the resolve-on-propose callable (ADR-0011 D4), closing over `conn`.
-
-    Wired into `DecideContext.entity_resolver`; `_dispatch_one_tool_call`
-    calls it for a `requires_entity=True` tool whose `target_entity_ref`
-    is still unset. `path_resolver.resolve` never raises for a bad or
-    unresolvable query (its own docstring's contract) — a miss is the
-    normal `None` return, not an exception, so this wrapper adds no
-    try/except of its own; a real bug inside `resolve` should surface,
-    not be swallowed here.
-
-    On a brain (ADR 0170) the file is on the terminal's disk, so the terminal resolves
-    the name; no terminal connected is a miss.
-    """
-
-    def _resolve(query: str) -> ResolvedEntityLike | None:
-        path: str
-        source: str
-        if terminals is None:
-            target = resolve_file_entity(query, "file", conn)
-            if target is None:
-                return None
-            path, source = str(target.path), target.source
-        else:
-            try:
-                found = terminals.call("resolve_file", {"query": query}, None)
-            except DeviceCallError:
-                return None
-            path, source = str(found.get("path", "")), str(found.get("source", ""))
-            if not path:
-                return None
-        return _ResolvedFileEntity(
-            entity_id=f"file:{path}",
-            canonical=path,
-            confidence="bookmark" if source == "bookmark" else "fuzzy",
-            match_basis=source,
-        )
-
-    return _resolve
 
 
 # --- Public dataclasses -----------------------------------------------------
@@ -672,7 +474,7 @@ class JarvisRuntime:
 
 @dataclass(frozen=True)
 class RunTurnResult:
-    """Outcome of :func:`run_turn` for one conversation turn.
+    """Outcome of :func:`~jarvis.runtime.turn.drive.run_turn` for one conversation turn.
 
     Attributes:
         response_text: The exact text the surface adapter wrote to
@@ -698,32 +500,6 @@ class RunTurnResult:
     attention_channel: str
 
 
-@dataclass(frozen=True)
-class WaitingTurn:
-    """Connection-free checkpoint while L4 works; live turn ownership stays held."""
-
-    intent: Event
-    run: ResponseRun | None
-    after_id: int
-    action_ids: frozenset[str]
-    deadline: float
-    iterations: int
-    events: tuple[Event, ...]
-    trigger: Event | None = None
-    failure: Exception | None = None
-    queued: bool = False
-    timer: turn_timing.TurnTimer | None = None  # ADR 0276: the turn's clock runs through the wait
-
-
-class TurnSuspended(Exception):  # noqa: N818 — internal scheduler handoff, not a failure.
-    """Transfer a quiet turn back to the runtime scheduler."""
-
-    def __init__(self, checkpoint: WaitingTurn) -> None:
-        """Carry only connection-free state across worker invocations."""
-        super().__init__(checkpoint.intent.payload["turn_id"])
-        self.checkpoint = checkpoint
-
-
 _IDLE_WORKING_WINDOW_MS: Final[int] = 5 * 60 * 1000
 _IDLE_QUIET_MS: Final[int] = 15 * 1000
 
@@ -745,11 +521,6 @@ def _daemon_idle(event_log_path: Path) -> bool:
             )
     except sqlite3.Error:
         return False
-
-
-def _snapshot_reader(runtime: JarvisRuntime) -> SnapshotReader | None:
-    """The shared incremental reader every read of a turn goes through (ADR 0164)."""
-    return runtime.decision_state.read if runtime.decision_state is not None else None
 
 
 # --- bootstrap_runtime_app --------------------------------------------------
@@ -794,20 +565,6 @@ def _confirmation_words_client(config: RuntimeConfig) -> Callable[[], LLMClient]
     )
     snapshot = factory.snapshot()
     return lambda: factory.create(snapshot, response_id=new_response_id())
-
-
-def _voice_service_tier(config: RuntimeConfig, trigger: Event) -> str | None:
-    """``realtime.response.voice_service_tier``, for a turn Allen spoke; else ``None``.
-
-    The tier rides every model request that turn makes through ``decide()`` and
-    nothing else: the client still sends it to OpenAI's own host only.
-    """
-    return config.realtime.voice_service_tier if spoken_turn(trigger) else None
-
-
-def _max_tool_iterations(config: RuntimeConfig, trigger: Event) -> int:
-    """``llm.max_tool_iterations`` (ADR 0060); a spoken turn reads ``max_tool_iterations_voice``."""
-    return config.tool_iterations.for_turn(spoken=spoken_turn(trigger))
 
 
 def _jev_log(config: Mapping[str, Any], root: Path) -> JevLog | None:
@@ -925,18 +682,6 @@ def _about_items(
     )
 
 
-def _about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
-    """ADR 0298: the record of the item this turn's phone has open; never fails the turn."""
-    raw = trigger.payload.get("about")
-    if runtime.about_items is None or raw is None:
-        return None
-    try:
-        return runtime.about_items.record(clean_about(raw))
-    except Exception:  # a producer must never fail a turn.
-        LOGGER.exception("live context: the about record failed, skipped")
-        return None
-
-
 _DAILY_REPORT_TIMEOUT_S: Final[float] = 900.0
 """ADR 0028 — a whole day served whole: the draft call read 300k tokens in 175 s on v4-pro
 (2026-09-12), and a retry after a timeout would resend it all."""
@@ -1043,24 +788,10 @@ def _register_dashboard_tool(registry: ToolRegistry, view: ViewState | None) -> 
         registry.register(tool)
 
 
-_LIVE_LINE_CHARS: Final = 200
-
-
 def _shares_line(event_log_path: Path) -> str | None:
     """ADR 0211: the line naming what Allen last saved from other apps, folded from the log."""
     with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
         return shares_line(conn)
-
-
-def _turn_device(runtime: JarvisRuntime, turn_id: str) -> str | None:
-    """ADR 0226: the device that opened this turn, for its channel line; never fails it."""
-    if runtime.whereabouts is None:
-        return None
-    try:
-        return runtime.whereabouts.origin(runtime.conn, turn_id)
-    except Exception:  # a producer must never fail a turn.
-        LOGGER.exception("live context: the turn's device could not be read, skipped")
-        return None
 
 
 def _places_block(
@@ -1073,39 +804,6 @@ def _places_block(
     except Exception:  # a prompt block must never fail a turn.
         LOGGER.exception("places: the prompt block failed, left out")
         return ""
-
-
-def _whereabouts_lines(runtime: JarvisRuntime, turn_id: str | None) -> tuple[str, ...]:
-    """ADR 0217: the devices there are and the phone's place; never fails the turn."""
-    if runtime.whereabouts is None:
-        return ()
-    try:
-        return runtime.whereabouts.lines(runtime.conn, turn_id)
-    except Exception:  # a producer must never fail a turn.
-        LOGGER.exception("live context: the whereabouts lines failed, skipped")
-        return ()
-
-
-def _live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ...]:
-    """ADR 0148: what each live-context producer says now; a raising one is skipped, logged."""
-    lines: list[str] = []
-    for produce in producers:
-        try:
-            line = produce()
-        except Exception:  # a producer must never fail a turn.
-            LOGGER.exception("live context: a producer failed, skipped")
-            continue
-        if line:
-            # The open letter's draft and the Dashboard's view are the lines that may run long.
-            limit = (
-                DRAFT_LINE_CHARS if line.startswith(DRAFT_LINE_PREFIX)
-                else VIEW_LINE_CHARS if line.startswith(VIEW_LINE_PREFIX)
-                else SHARES_LINE_CHARS if line.startswith(SHARES_LINE_PREFIX)
-                else RIDE_LINE_CHARS if line.startswith(RIDE_LINE_PREFIX)
-                else _LIVE_LINE_CHARS
-            )
-            lines.append(line[:limit])
-    return tuple(lines)
 
 
 def _mail_reply(
@@ -2727,1880 +2425,15 @@ def _follow_conversation_setting(settings: Settings | None, factory: LLMSessionF
         factory.choose(*chosen)
 
 
-# --- ADR-0008 Wave 4A ResponseRun seams -------------------------------------
-
-
-def _labels_phases(base_url: str | None) -> bool:
-    """Whether the host labels each message ``commentary`` or ``final_answer``.
-
-    Only OpenAI's own /v1/responses does. On a compatible host (the x.ai
-    presets) the line before a call would stream as the answer.
-    """
-    return "api.openai.com" in (base_url or "api.openai.com")
-
-
-def _warm_next_prefix(  # noqa: PLR0913 — the next turn's request: client, prompt, shape, format
-    runtime: JarvisRuntime,
-    memory: MemorySettings,
-    *,
-    llm_client: LLMClient,
-    system_prompt: str,
-    responses: bool,
-    text_format: Mapping[str, Any] | None = None,
-) -> None:
-    """Send the next turn's prompt prefix in the background (``open_prefix_warm``).
-
-    The history is read the way the next turn will read it, now that this
-    turn's rows are in. Its own thread and Event Log connection: the answer is
-    already on its way and nothing waits for this.
-    """
-
-    async def _drain(handle: LLMStreamHandle) -> None:
-        async for _event in handle.events():
-            pass
-
-    def _run() -> None:
-        try:
-            history = render_context(
-                memory.db_path, exclude_id="", since=runtime.config.session.history_since,
-                recent=runtime.config.session.recent_records,
-                context=runtime.config.session.context,
-                raw_max_chars=runtime.config.session.context_raw_max_chars,
-                ledger=runtime.ledger,
-                places=runtime.places_block,
-                pictures=_history_pictures(runtime, llm_client),
-                receipts=_history_receipts(runtime),
-            ).history
-            with contextlib.closing(
-                open_runtime_event_log(runtime.runtime_paths.event_log),
-            ) as conn:
-                handle = open_prefix_warm(
-                    conn,
-                    llm_client=llm_client,
-                    system_prompt=system_prompt,
-                    history=history,
-                    tool_registry=cast("ToolRegistryLike", runtime.tool_registry),
-                    responses=responses,
-                    committed_event_bus=runtime.committed_event_bus,
-                    text_format=text_format,
-                )
-                if handle is not None:
-                    asyncio.run(_drain(handle))
-        except Exception:  # noqa: BLE001 — a failed warm-up costs only the cache it tried to fill
-            LOGGER.warning("prefix warm failed", exc_info=True)
-
-    threading.Thread(target=_run, name="jarvis-prefix-warm", daemon=True).start()
-
-
-def _late_cancel_reason(registry: ResponseRunRegistry, run: ResponseRun) -> str | None:
-    """Why a run that just opened is already cancelled: a stop or a newer sentence came first."""
-    if registry.turn_stopped(run.turn_id):
-        return "user_stop"
-    if (
-        run.phase == "final"
-        and run.interrupt_policy.generation_action == "cancel"
-        and registry.turn_superseded(run.turn_id)
-    ):
-        return "superseded"
-    return None
-
-
-def _start_drive_turn_response(
-    runtime: JarvisRuntime,
-    *,
-    user_intent_event: Event,
-    turn_id: str,
-    correction: StreamCorrection | None = None,
-) -> tuple[ResponseRun, ResponseTerminalizer, RoutineStreamRoute | None]:
-    """Open one durable ResponseRun for this turn.
-
-    ``runtime`` here is ``drive_turn``'s own runtime — in the daemon that is
-    the ``dataclasses.replace(conn=worker_conn)`` copy, so the run's
-    ``BEGIN IMMEDIATE`` lands on the worker thread's own connection and never
-    on the asyncio event loop's.
-
-    ADR-0008 Step 8: with ``routine_streaming`` on, the route is decided here,
-    before the run opens, and a ``casual_or_explanatory`` turn opens under
-    ``routine_stream_policy`` with the streaming seam bound. With
-    ``spoken_streaming`` on, a turn Allen spoke or typed opens as ``spoken``
-    under ``spoken_stream_policy`` first (a typed one is never played, ADR 0181).
-    Every other turn (and every correction run) keeps ``legacy_full_text_policy``.
-    """
-    response_id = new_response_id()
-    think = runtime.think_mode
-    preset = think.preset_for(runtime.conn, user_intent_event) if think else None
-    snapshot = runtime.llm_session_factory.snapshot(preset, think=preset is not None)
-    request_client = runtime.llm_session_factory.create(snapshot, response_id=response_id)
-    policy = legacy_full_text_policy(
-        evidence_snapshot_hash=evidence_snapshot_hash(runtime.conn),
-        preset_snapshot_hash=snapshot.snapshot_hash,
-    )
-    route: str | None = None
-    context = None
-    if (
-        runtime.response_flags.spoken_streaming
-        and correction is None
-        and (spoken_turn(user_intent_event) or typed_turn(user_intent_event))
-        and (
-            snapshot.provider == "anthropic"
-            or (snapshot.provider == "openai" and _labels_phases(snapshot.base_url))
-        )
-    ):
-        # docs/plans/speak-as-written-proposal.md: a turn Allen spoke streams
-        # every request through /v1/responses, whose phase labels tell the line
-        # before a call from the answer, and speaks the answer as it is written.
-        # Anthropic labels none: a line it writes before a call is read as part of the
-        # answer, and a structured reply has no place for one.
-        route = "spoken"
-        context = spoken_risk_context(
-            assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime)),
-            response_id=response_id,
-            turn_id=turn_id,
-        )
-        policy = spoken_stream_policy(context, preset_snapshot_hash=snapshot.snapshot_hash)
-    elif runtime.response_flags.routine_streaming and correction is None:
-        packet = assemble_packet(user_intent_event, runtime.conn, _snapshot_reader(runtime))
-        route = pre_route(
-            packet,
-            tier0_table=runtime.tier0_table,
-            tool_cues=runtime.tool_cues,
-            now_ms=int(time.time() * 1000),
-        )
-        if route == "casual_or_explanatory":
-            context = routine_risk_context(packet, response_id=response_id, turn_id=turn_id)
-            routine = routine_stream_policy(context, preset_snapshot_hash=snapshot.snapshot_hash)
-            if routine.emission_mode == "routine_stream":
-                policy = routine
-            else:
-                # The risk floor of the request itself refused; D2 rule 1.
-                route, context = "unknown", None
-    run = start_response_run(
-        runtime.conn,
-        turn_id=turn_id,
-        trigger_event_uid=user_intent_event.event_uid,
-        request_client=request_client,
-        policy=policy,
-        response_id=response_id,
-        committed_event_bus=runtime.committed_event_bus,
-        corrects_response_id=correction.corrects_response_id if correction else None,
-        route=route,
-    )
-    terminalizer = ResponseTerminalizer(
-        lambda: runtime.conn,
-        close_after=False,
-        committed_event_bus=runtime.committed_event_bus,
-    )
-    if runtime.response_runs is not None:
-        runtime.response_runs.register(run)
-        # Checked after registering, so a stop (or a sweep, ADR 0074) landing at
-        # any moment either sees the run or is seen here.
-        late_cancel = _late_cancel_reason(runtime.response_runs, run)
-        if late_cancel is not None:
-            request_response_cancel(
-                runtime.response_runs,
-                terminalizer,
-                ResponseCancelRequest(
-                    request_id="CREQ" + uuid.uuid4().hex,
-                    response_id=run.response_id,
-                    scope="generation",
-                    reason=late_cancel,
-                    source_turn_id=(
-                        runtime.response_runs.superseded_by(run.turn_id)
-                        if late_cancel == "superseded"
-                        else None
-                    ),
-                ),
-            )
-    if context is None:
-        return run, terminalizer, None
-    transcript_raw = user_intent_event.payload.get("transcript", "")
-    query = transcript_raw if isinstance(transcript_raw, str) else ""
-    seam = RoutineStreamRoute(
-        policy=policy,
-        context=context,
-        open_stream=lambda handle: LoopBoundTokenStream(
-            handle, cancellation_token=run.cancellation_token,
-        ),
-        emit_segment=lambda permit, text: emit_permitted_segment(
-            runtime.conn,
-            permit,
-            text,
-            query=query,
-            attention_channel=ROUTINE_ATTENTION_CHANNEL,
-            committed_event_bus=runtime.committed_event_bus,
-        ).event,
-        segment_guard=run.admission_guard,
-        committed_event_bus=runtime.committed_event_bus,
-        first_clause_chars=(
-            runtime.response_flags.spoken_first_clause_chars if route == "spoken" else 0
-        ),
-        structured=(
-            route == "spoken"
-            and runtime.response_flags.spoken_structured
-            and snapshot.spoken_structured
-        ),
-    )
-    record_realtime_trace(
-        "routine_stream_route_opened", turn_id=turn_id, response_id=response_id,
-    )
-    return run, terminalizer, seam
-
-
-class ResponseCancel(Protocol):
-    """``(response_id, scope, reason, by_turn) -> outcome``; ``by_turn`` took the run's place."""
-
-    def __call__(
-        self, response_id: str, scope: str, reason: str, by_turn: str | None = None,
-    ) -> str: ...
-
-
-def make_response_cancel_callable(  # noqa: C901 - one seam, two scopes' exact outcome words
-    runtime: JarvisRuntime,
-    *,
-    stop_foreground_output: Callable[[str], str] | None = None,
-) -> ResponseCancel:
-    """Build the injectable ``(response_id, scope, reason) -> outcome`` seam.
-
-    Returned strings for ``scope="generation"``: ``"cancelled"``,
-    ``"already_terminal"``, ``"unknown_response"``, ``"unsupported_scope"``,
-    ``"timeout"``. ``scope="foreground_output"`` adds L5's own words
-    ``"applied"``, ``"stale"`` and ``"uncertain"``, plus
-    ``"policy_hash_mismatch"`` and ``"policy_ignore"`` from L3's policy
-    check. Without ``stop_foreground_output`` there is no playback actor to
-    reach, so that scope answers ``"unsupported_scope"``.
-
-    The callable opens its OWN connection per call. That is mandatory, not
-    stylistic: ``open_event_log`` uses ``check_same_thread=True`` and the
-    surface offloads this onto an ``asyncio.to_thread`` worker. The
-    connection also carries ``PRAGMA busy_timeout = cancel_timeout_ms``,
-    which is what gives ``realtime.response.cancel_timeout_ms`` a concrete
-    meaning: a contended ``BEGIN IMMEDIATE`` gives up after that many
-    milliseconds, no terminal is written, and the caller may retry.
-    """
-    cancel_timeout_ms = runtime.config.realtime.cancel_timeout_ms
-    event_log_path = runtime.runtime_paths.event_log
-    committed_event_bus = runtime.committed_event_bus
-    registry = runtime.response_runs
-
-    def _cancel(  # noqa: PLR0911 - policy, timeout, CAS and playback outcomes stay distinct
-        response_id: str,
-        scope: str,
-        reason: str,
-        by_turn: str | None = None,
-    ) -> str:
-        deadline = time.monotonic() + cancel_timeout_ms / 1000
-
-        def _connect() -> sqlite3.Connection:
-            return open_runtime_event_log(event_log_path, deadline=deadline)
-
-        if registry is None:  # pragma: no cover - bootstrap always builds the registry
-            return "unknown_response"
-        if scope not in ("generation", "foreground_output"):
-            return "unsupported_scope"
-        normalized_reason = reason
-        if normalized_reason not in RESPONSE_CANCEL_REASONS:
-            LOGGER.warning(
-                "cancel-response: reason %r is outside the closed vocabulary; "
-                "recording it as 'operator_request'",
-                reason,
-            )
-            normalized_reason = "operator_request"
-        outcome = request_response_cancel(
-            registry,
-            ResponseTerminalizer(
-                _connect,
-                close_after=True,
-                committed_event_bus=committed_event_bus,
-            ),
-            ResponseCancelRequest(
-                request_id="CREQ" + uuid.uuid4().hex,
-                response_id=response_id,
-                scope="generation" if scope == "generation" else "foreground_output",
-                reason=normalized_reason,
-                source_turn_id=by_turn,
-            ),
-            deadline=deadline,
-        )
-        if isinstance(outcome, CancelAccepted):
-            return "cancelled"
-        if isinstance(outcome, CancelAlreadyTerminal):
-            return "already_terminal"
-        if isinstance(outcome, CancelTimedOut):
-            return "timeout"
-        if isinstance(outcome, CancelPlaybackAuthorized):
-            if stop_foreground_output is None:
-                return "unsupported_scope"
-            return stop_foreground_output(response_id)
-        return outcome.reason
-
-    return _cancel
-
-
-def make_foreground_decision_callable(
-    *, wait_for_lane: bool = False,
-) -> Callable[[str, int, str, int], str]:
-    """Build the injectable foreground-lane arbitration seam.
-
-    ``(incumbent_group, incumbent_row_id, candidate_group, candidate_row_id)
-    -> outcome``, where the outcome is ``"enqueue_after_drain"``,
-    ``"supersede"`` or ``"decline"``.
-
-    The policy is a pure L3 function with no clock and no IO, so there is
-    nothing to bind but ``realtime.response.slow_results``; the builder exists
-    because ``jarvis.decision`` and ``jarvis.surface`` are siblings
-    (``.importlinter``) and the runtime is the only layer allowed to wire them.
-    """
-    return partial(decide_foreground, wait_for_lane=True) if wait_for_lane else decide_foreground
-
-
-def _turn_has_run(event_log_path: Path, turn_id: str) -> bool:
-    """Whether the turn already opened a response run (its answer is out or over)."""
-    with contextlib.closing(open_runtime_event_log(event_log_path)) as conn:
-        return turn_has_run(conn, turn_id)
-
-
-def make_turn_cancel_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
-    """Build the ``(turn_id, reason) -> outcome`` seam behind a turn stop.
-
-    The surface's stop while Jarvis is still thinking: that turn's answer has
-    no response id on the wire until it is whole (ADR 0108), so the surface
-    names the turn and every run of it still open is cancelled as
-    ``generation``. ``no_open_run`` when none is open: the answer is out, and
-    the surface stops that by its response id.
-    """
-    cancel = make_response_cancel_callable(runtime)
-    registry = runtime.response_runs
-    event_log_path = runtime.runtime_paths.event_log
-
-    def _cancel_turn(turn_id: str, reason: str) -> str:
-        if registry is not None and reason == "user_stop":
-            # Before the scan: a run opening meanwhile checks this on its own.
-            registry.mark_turn_stopped(turn_id)
-        runs = [] if registry is None else [
-            run for run in registry.open_runs() if run.turn_id == turn_id
-        ]
-        outcomes = [cancel(run.response_id, "generation", reason) for run in runs]
-        if outcomes:
-            return "cancelled" if "cancelled" in outcomes else outcomes[0]
-        if registry is None or reason != "user_stop" or _turn_has_run(event_log_path, turn_id):
-            return "no_open_run"
-        return "stopped_before_start"
-
-    return _cancel_turn
-
-
-def make_barge_in_interrupt_callable(
-    runtime: JarvisRuntime,
-    *,
-    only_turns: Callable[[str], bool] | None = None,
-) -> Callable[[str], str]:
-    """Build the injectable ``(confirm_source) -> outcome`` barge-in seam.
-
-    ADR-0006 D8: the runtime is a mechanical applier of the interrupt policy
-    the run was started with, never its author.  The target is resolved from
-    the live-run index rather than supplied by L5 — the voice session never
-    learns a response id — and a confirmed barge-in cancels only when that
-    run's own ``ResponseInterruptPolicy`` permits it.
-
-    Returned strings beyond ``make_response_cancel_callable``'s own outcomes:
-    ``"no_open_run"``, ``"ambiguous_open_runs"``, ``"policy_ignore"``,
-    ``"policy_generation_continue"``.
-
-    ``only_turns`` (ADR 0209, 0219) narrows the target to the open runs of the turns it
-    accepts: a device's barge-in interrupts that device's answer, whatever else is open.
-    """
-    cancel = make_response_cancel_callable(runtime)
-    registry = runtime.response_runs
-
-    def _interrupt(confirm_source: str) -> str:
-        if registry is None:  # pragma: no cover - bootstrap always builds the registry
-            return "no_open_run"
-        # A commentary run for the same turn is legitimately open while the
-        # final run waits on its action (ADR-0006 D8): counting it would make
-        # every action-dispatching turn read as `ambiguous_open_runs`.
-        open_runs = tuple(
-            run
-            for run in registry.open_runs()
-            if run.phase == "final" and (only_turns is None or only_turns(run.turn_id))
-        )
-        if not open_runs:
-            return "no_open_run"
-        if len(open_runs) > 1:
-            return "ambiguous_open_runs"
-        run = open_runs[0]
-        policy = run.interrupt_policy
-        if policy.confirmed_playback != "interrupt_expected_playback_generation":
-            return "policy_ignore"
-        if policy.generation_action != "cancel":
-            return "policy_generation_continue"
-        LOGGER.info(
-            "barge-in confirmed via %s; cancelling response %s generation",
-            confirm_source,
-            run.response_id,
-        )
-        return cancel(run.response_id, "generation", "barge_in")
-
-    return _interrupt
-
-
-# ADR 0053: a hold that is never released (a lost release) delays an answer by
-# at most this; an utterance itself ends by max_utterance_s (30 s).
-_ALLEN_TALKING_CEILING_S: Final[float] = 60.0
-# How far back a voice sentence still counts as the first half of a split one.
-_SUPERSEDE_WINDOW_S: Final[float] = 10.0
-
-
-def make_supersede_unspoken_callable(
-    runtime: JarvisRuntime,
-    drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
-    *,
-    only_turns: Callable[[str], bool] | None = None,
-    leave: Callable[[str], str | None] | None = None,
-) -> Callable[[str], None]:
-    """Build the ADR 0074 ``(accepted_turn_id) -> None`` seam.
-
-    Called for a voice utterance just accepted, before its
-    ``utterance.received`` is written. Every other turn of the last
-    ``_SUPERSEDE_WINDOW_S`` that answers a voice sentence or a filled-in ask
-    card (``clarify`` intent) whose run is still open, whose policy lets its
-    generation be cancelled, and whose answer never reached the speaker is
-    dropped: L5 discards its queued audio (``drop_unspoken``), then the run is
-    cancelled with reason ``superseded``. Its run is open because no run
-    completes while Allen is talking, so nothing of it reaches memory.db and
-    the new turn's prompt folds its words in (ADR 0044). A card it put up and
-    that still waits is rejected with rule ``superseded`` (ADR 0074), so the
-    new turn asks afresh.
-
-    A turn whose run has not opened yet (a line accepted under 0.5 s before
-    this one) is remembered and cancelled the same way as its run registers.
-
-    With ``slow_results`` on, a turn that already dispatched an action is
-    skipped: it is working on a lookup, not half of a split sentence, and the
-    new question gets its own answer while the lookup's follows. Live test
-    2026-10-01: a weekday question 7 s after a Micron search was dispatched
-    cancelled it, re-ran the search for 24 s and never answered the weekday.
-
-    ``only_turns`` (ADR 0219) narrows both the open runs and the turns marked superseded to
-    the turns it accepts: a device's voice replaces its own earlier sentence, never another
-    device's answer.
-
-    ``leave`` (ADR 0278) names the one turn the sweep leaves alone for ``turn_id``: the
-    earlier sentence the new one is composed into at the utterance, which takes it over
-    whether or not it dispatched a tool or any of it is audible. Without it the sweep is the
-    whole of how a sentence replaces the one before.
-    """
-    cancel = make_response_cancel_callable(runtime)
-    registry = runtime.response_runs
-    event_log_path = runtime.runtime_paths.event_log
-
-    def _supersede(turn_id: str) -> None:
-        if registry is None:  # pragma: no cover - bootstrap always builds the registry
-            return
-        kept = leave(turn_id) if leave is not None else None
-        runs = [
-            run
-            for run in registry.open_runs()
-            if run.phase == "final"
-            and run.turn_id not in {turn_id, kept}
-            and run.interrupt_policy.generation_action == "cancel"
-            and (only_turns is None or only_turns(run.turn_id))
-        ]
-        any_open = bool(runs)
-        since_ms = int((time.time() - _SUPERSEDE_WINDOW_S) * 1000)
-        with contextlib.closing(
-            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
-        ) as conn:
-            recent = turns_of_his_words_since(conn, since_ms=since_ms)
-            if only_turns is not None:
-                recent = {recent_turn for recent_turn in recent if only_turns(recent_turn)}
-            if kept is not None:
-                recent.discard(kept)
-            working: set[str] = set()
-            if runtime.response_flags.slow_results:
-                # The action names its turn in its correlation (L4 stamps it
-                # from the ActionRequest), so this is a durable read, and it is
-                # after `since_ms` because the turn's utterance was.
-                working = turns_dispatching_since(conn, since_ms=since_ms)
-                runs = [run for run in runs if run.turn_id not in working]
-            # A line accepted within ~0.5 s of the one before it is swept before
-            # that line's run opens (its request is built after its words): mark
-            # every recent turn with no run yet, and `register` cancels it on open.
-            registry.mark_turns_superseded(
-                recent - {turn_id} - working
-                - {run.turn_id for run in registry.open_runs()}
-                - turns_closed_since(conn, since_ms=since_ms),
-                for_s=_SUPERSEDE_WINDOW_S,
-                by_turn=turn_id,
-            )
-            # ponytail: a run that passed the completion hold just before Allen
-            # started talking can complete between this drop and its cancel; its
-            # queued audio is then lost while its row stays. A millisecond window.
-            dropped = (
-                drop_unspoken(frozenset(run.turn_id for run in runs) & recent)
-                if any_open
-                else frozenset()
-            )
-            for run in runs:
-                if run.turn_id not in dropped:
-                    continue
-                outcome = cancel(run.response_id, "generation", "superseded", turn_id)
-                LOGGER.info(
-                    "unspoken answer superseded by %s: turn %s response %s -> %s",
-                    turn_id, run.turn_id, run.response_id, outcome,
-                )
-                if outcome == "cancelled":
-                    _withdraw_card(conn, run.turn_id, turn_id)
-
-    return _supersede
-
-
-def make_relation_supersede_callable(
-    runtime: JarvisRuntime,
-    drop_unspoken: Callable[[frozenset[str]], frozenset[str]],
-    stop_playback: Callable[[], object],
-) -> Callable[[str, str, str], str]:
-    """Build the ADR 0139 ``(earlier_turn_id, turn_id, relation) -> outcome`` seam.
-
-    Jev read a line as a supplement or correction of the one before it, confidently enough. The
-    earlier turn's open answer run is cancelled as ``superseded`` (the new turn's prompt then
-    folds the earlier words in, ADR 0044) and its card withdrawn, the way ADR 0074 does it for
-    an accepted line, but aimed at that one turn and not bounded by the 10 s window. A turn
-    that dispatched an action is left alone (it is working on a lookup). An answer that has
-    begun playing is left to barge-in, except for a correction, which stops it and cancels the
-    run. Outcomes: ``superseded``, ``stopped``, ``audible``, ``working``, ``no_open_run``,
-    ``no_registry``.
-    """
-    cancel = make_response_cancel_callable(runtime)
-    registry = runtime.response_runs
-    event_log_path = runtime.runtime_paths.event_log
-
-    def _relate(earlier: str, turn_id: str, relation: str) -> str:
-        if registry is None:  # pragma: no cover - bootstrap always builds the registry
-            return "no_registry"
-        runs = [
-            run
-            for run in registry.open_runs()
-            if run.phase == "final"
-            and run.turn_id == earlier
-            and run.interrupt_policy.generation_action == "cancel"
-        ]
-        if not runs:
-            return "no_open_run"
-        with contextlib.closing(
-            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
-        ) as conn:
-            if turn_dispatched_action(conn, earlier):
-                return "working"
-            unspoken = earlier in drop_unspoken(frozenset({earlier}))
-            if not unspoken:
-                if relation != "correction":
-                    return "audible"
-                stop_playback()
-            for run in runs:
-                outcome = cancel(run.response_id, "generation", "superseded", turn_id)
-                LOGGER.info(
-                    "earlier answer %s by %s (%s): response %s -> %s",
-                    "superseded" if unspoken else "stopped", turn_id, relation,
-                    run.response_id, outcome,
-                )
-                if outcome == "cancelled":
-                    _withdraw_card(conn, run.turn_id, turn_id)
-        return "superseded" if unspoken else "stopped"
-
-    return _relate
-
-
-def make_compose_callable(
-    runtime: JarvisRuntime,
-) -> Callable[[str, str, str | None], str | None]:
-    """Build the ADR 0278 ``(device, turn_id, words) -> earlier_turn_id | None`` seam.
-
-    For a spoken sentence from any device, the earlier turn of that device it goes on from:
-    its latest earlier spoken sentence when her answer to it is not over, within
-    ``device_voice.COMPOSE_BOUND_S``. A stop request, a repeat of the earlier words and a
-    host without run bookkeeping answer ``None``. With ``words`` ``None`` the words checks
-    are left out. Blocks on SQLite; call from a worker thread.
-    """
-    registry = runtime.response_runs
-    event_log_path = runtime.runtime_paths.event_log
-
-    def _compose(device: str, turn_id: str, words: str | None) -> str | None:
-        if registry is None:  # pragma: no cover - bootstrap always builds the registry
-            return None
-        return device_voice.compose_target(
-            event_log_path, device, turn_id, words, superseded=registry.turn_superseded,
-        )
-
-    return _compose
-
-
-def make_continuation_callable(runtime: JarvisRuntime) -> Callable[[str, str], str]:
-    """Build the ADR 0271 ``(earlier_turn_id, turn_id) -> outcome`` seam.
-
-    The words of ``turn_id`` go on from the sentence of ``earlier_turn_id``, the same device's
-    (the brain's pick, ADR 0278: :func:`make_compose_callable`), and ``turn_id`` will answer
-    both. The earlier turn is marked superseded by it, so a run that opens later is cancelled
-    as it opens, and every run of it still open is cancelled as
-    ``superseded`` naming ``turn_id``, spoken to the speaker or not (the sweep of ADR 0074 leaves
-    an audible answer to barge-in; here the words are known to go on from it), whether or not
-    it dispatched an action; a card it put up that still waits is rejected. The caller has
-    already dropped the earlier turn's unspoken audio and stopped what was audible.
-
-    Outcomes: ``superseded``; ``over`` when the earlier turn has ended, failed or had its final
-    answer completed, cancelled or failed (its answer is a record that cannot be taken back,
-    ADR 0053); ``no_registry`` without run bookkeeping.
-    """
-    cancel = make_response_cancel_callable(runtime)
-    registry = runtime.response_runs
-    event_log_path = runtime.runtime_paths.event_log
-
-    def _continue(earlier: str, turn_id: str) -> str:
-        if registry is None:  # pragma: no cover - bootstrap always builds the registry
-            return "no_registry"
-        with contextlib.closing(
-            open_runtime_event_log(event_log_path, deadline=time.monotonic() + 1.0),
-        ) as conn:
-            if turn_is_over(conn, earlier):
-                return "over"
-            registry.mark_turns_superseded(
-                [earlier], for_s=_SUPERSEDE_WINDOW_S, by_turn=turn_id,
-            )
-            for run in registry.open_runs():
-                if run.turn_id != earlier:
-                    continue
-                outcome = cancel(run.response_id, "generation", "superseded", turn_id)
-                LOGGER.info(
-                    "turn %s goes on from %s: response %s -> %s",
-                    turn_id, earlier, run.response_id, outcome,
-                )
-                if outcome == "cancelled":
-                    _withdraw_card(conn, earlier, turn_id)
-        return "superseded"
-
-    return _continue
-
-
-def _withdraw_card(conn: sqlite3.Connection, dropped_turn_id: str, turn_id: str) -> None:
-    """ADR 0074: reject the card a dropped turn put up, if it still waits.
-
-    Through the one-answer-per-ask primitive, so a button press racing this
-    either lands first (and this finds the card answered) or finds it gone.
-    """
-    confirmation_id = card_requested_by_turn(conn, dropped_turn_id)
-    if confirmation_id is None:
-        return
-    try:
-        answer_confirmation_once(
-            conn,
-            confirmation_id=confirmation_id,
-            accepted=False,
-            utterance_raw="",
-            grammar_rule_id="superseded",
-            correlation={"turn_id": turn_id},
-        )
-    except ConfirmationRevalidationError:
-        return  # already answered, or a newer ask replaced it
-    LOGGER.info("card %s of dropped turn %s withdrawn", confirmation_id, dropped_turn_id)
-
-
-# --- run_turn ---------------------------------------------------------------
-
-
-def _new_turn_id() -> str:
-    """Mint a fresh turn id (``"T" + 8-hex``)."""
-    return "T" + uuid.uuid4().hex[:8]
-
-
-def _absorbed_inline(lifecycle: ActionLifecycle, action_id: str | None) -> bool:
-    """True when this process already moved ``action_id`` past ``running``.
-
-    Sync tool handlers transition the FSM inline before ``dispatch`` returns,
-    so their ``action.result_observed`` row is history to the waiter, not a
-    trigger. ``None`` (unknown here — another process wrote it) is not
-    treated as absorbed.
-    """
-    if action_id is None:
-        return False
-    state = lifecycle.state_of(action_id)
-    return state is not None and state != "running"
-
-
-def _event_action_id(event: Event) -> str | None:
-    """Return the action_id this event belongs to, or ``None``.
-
-    Correlation first (the canonical slot every L4 emitter fills via
-    ``_action_correlation``), payload second (all four trigger types
-    mirror the id there, and the supervisor sweep's
-    ``action.timeout_assumed`` fills both).
-
-    ADR-0009 D4 partitions terminal events between two consumers — the
-    in-turn waiter (``action_id`` IS one of the turn's own) and
-    ``_system_trigger_watcher`` (``action_id`` is in NO live turn's set).
-    Both predicates read the key through THIS function, so the two
-    filters are complements of one another by construction and no event
-    can be claimed twice or dropped by both.
-    """
-    for source in (event.correlation, event.payload):
-        if source is None:
-            continue
-        value = source.get("action_id")
-        if isinstance(value, str):
-            return value
-    return None
-
-
-def _wait_for_next_trigger(  # noqa: PLR0913 — one defaulted cancel predicate on top of the existing waiter contract.
-    conn: sqlite3.Connection,
-    *,
-    after_id: int,
-    action_ids: frozenset[str],
-    lifecycle: ActionLifecycle,
-    timeout: float,
-    poll_interval_s: float = _DEFAULT_POLL_INTERVAL_S,
-    cancelled: Callable[[], bool] | None = None,
-) -> tuple[Event, int]:
-    """Poll the event log for the next L3 trigger event after ``after_id``.
-
-    Trigger types: ``action.result_observed`` (defensive — sync
-    tools emit this inline so decide() already absorbed it, but a
-    late re-entry is accepted to keep the poll loop drainable), and
-    ``action.timeout_assumed`` / ``action.failed`` / ``action.cancelled``
-    (terminal failures emitted by the dispatcher or the supervisor
-    sweep when the
-    subprocess crashes; the runtime waiter must wake decide() so L3
-    can fold a Limitation Claim).
-
-    Scoping (ADR-0009 D4 / F9). Type + ``after_id`` alone is NOT a
-    correlation: a supervisor sweep or wake reconciliation closing some
-    *foreign* orphan writes an ``action.timeout_assumed`` into the same
-    log, and the pre-D4 waiter would hand it to whichever turn happened
-    to be in flight — which then adopts the orphan's correlation and
-    ends the wrong turn with the wrong limitation. Every candidate row
-    is therefore matched against ``action_ids``, the set of actions THIS
-    turn dispatched; foreign rows are skipped over (the local cursor
-    still advances past them, so they are examined once, not once per
-    poll). This is a filter, not a new trigger type — the
-    ``_RUNTIME_TRIGGER_TYPES`` tuple is untouched.
-
-    The runtime composition root explicitly polls across thread
-    boundaries; ``time.sleep`` is the cleanest primitive here. The
-    "no time.sleep" rule is for L3/L4 gate machinery that must not
-    block on wall-clock; the orchestration loop is a different
-    concern (spec §3.4.1).
-
-    Args:
-        conn: Open Event Log connection. NOTE: this is the same
-            connection :func:`bootstrap_runtime_app` opened — the
-            ``threading.Timer`` callback opens its OWN connection per
-            ``jarvis.execution.tools`` so ``check_same_thread=True``
-            stays honored.
-        after_id: The most recent SQLite row id the caller has
-            already consumed. Returned events all have ``id >
-            after_id``.
-        action_ids: The action_ids this turn owns — read fresh per call
-            from :func:`jarvis.execution.tools.turn_action_ids` so an
-            action dispatched during the previous decide() iteration is
-            already in scope. A row whose ``action_id`` is outside this
-            set belongs to somebody else and is never returned.
-        lifecycle: The process-local action FSM. An
-            ``action.result_observed`` row is only a wake-up for an action
-            this process still holds at ``running``; a sync tool writes
-            the same row inline and moves its action past ``running``
-            before ``dispatch`` returns, so decide() has already absorbed
-            it. An action unknown to this process (crash recovery) is not
-            filtered.
-        timeout: Hard wall-clock cap in seconds; raise
-            :class:`TriggerWaitTimeout` if exceeded.
-        poll_interval_s: Sleep between polls (default 10 ms).
-        cancelled: ADR-0008 Wave 4A — optional predicate checked once
-            per poll tick. When it returns True the wait aborts with
-            :class:`~jarvis.decision.response_run.ResponseCancelledError`.
-            This is the single line that makes a response cancel land
-            within one poll interval during a 600 s action wait instead
-            of after it. ``None`` (the default) polls without a cancel check.
-
-    Returns:
-        Tuple of ``(event, new_after_id)`` — the freshly-folded
-        :class:`Event` plus the SQLite row id to use for the next
-        wait call.
-
-    Raises:
-        TriggerWaitTimeout: No matching trigger arrived within
-            ``timeout`` seconds.
-        ResponseCancelledError: ``cancelled`` reported that this turn's
-            ResponseRun already reached a cancelled terminal.
-    """
-    deadline = time.monotonic() + timeout
-    cursor_id = after_id
-    while True:
-        for row_id, event in fetch_events_after(
-            conn, after_id=cursor_id, event_types=_RUNTIME_TRIGGER_TYPES,
-        ):
-            cursor_id = row_id
-            if _event_action_id(event) in action_ids:
-                if event.type == "action.result_observed" and _absorbed_inline(
-                    lifecycle, _event_action_id(event),
-                ):
-                    continue
-                return event, cursor_id
-        if cancelled is not None and cancelled():
-            msg = (
-                "runtime: response run cancelled while waiting for a trigger of "
-                f"types {_RUNTIME_TRIGGER_TYPES!r} (after_id={after_id})."
-            )
-            raise ResponseCancelledError(msg)
-        if time.monotonic() >= deadline:
-            msg = (
-                f"runtime: no trigger event of types {_RUNTIME_TRIGGER_TYPES!r} "
-                f"for action_ids={sorted(action_ids)!r} arrived within "
-                f"{timeout!r}s (after_id={after_id})."
-            )
-            raise TriggerWaitTimeout(msg)
-        time.sleep(poll_interval_s)
-
-
-def _trigger_wait_budget(override: float | None) -> float:
-    """Return this iteration's per-trigger wait budget, in seconds.
-
-    An explicit caller value always wins. Scenarios and any surface that
-    wants its own budget keep it; otherwise the conversational default, so
-    an ordinary turn cannot pin one of ``max_concurrent_turns`` for long.
-    """
-    if override is not None:
-        return override
-    return _DEFAULT_TRIGGER_TIMEOUT_S
-
-
-def run_turn(
-    runtime: JarvisRuntime,
-    *,
-    utterance: str,
-    turn_id: str | None = None,
-    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-    trigger_timeout_s: float | None = None,
-) -> RunTurnResult:
-    """Drive one conversation turn end-to-end (CLI / scenario entrypoint).
-
-    Steps (spec §3.4.1 multi-trigger loop):
-
-    1. Mint or accept a ``turn_id`` (composition root owns this; L3
-       sees the same id on the trace correlation).
-    2. Emit ``surface.user_intent`` via L5 surface adapter (spec
-       §3.6.1) — this is the first trigger event.
-    3. Delegate the post-emit body to :func:`drive_turn`, which drives
-       the L3 decide loop, runs the stash-pop finalizer, and renders
-       the final :class:`ResponsePlan` across the surfaces dictated by
-       the L3 Attention Policy.
-
-    The split into :func:`run_turn` (emit + delegate) and
-    :func:`drive_turn` (post-emit body) exists so non-CLI surfaces can
-    drive a turn without re-emitting ``surface.user_intent``. The
-    daemon HTTP handler (ADR-0003 Step 7) writes the intent event from
-    the request body, and the daemon watcher (Step 8) picks it up and
-    calls :func:`drive_turn` directly — both bypass :func:`run_turn`.
-
-    Args:
-        runtime: Assembled :class:`JarvisRuntime`.
-        utterance: User text to drive the turn.
-        turn_id: Optional explicit turn id (tests). Default: minted.
-        max_iterations: Hard ceiling on decide() invocations.
-        trigger_timeout_s: Explicit per-trigger wait timeout. ``None``
-            (production) resolves per iteration via
-            :func:`_trigger_wait_budget`.
-
-    Returns:
-        Frozen :class:`RunTurnResult` describing what was written and
-        the events emitted.
-    """
-    effective_turn_id = turn_id if turn_id is not None else _new_turn_id()
-
-    utterance_event = emit_surface_user_intent(
-        runtime.conn,
-        transcript=utterance,
-        turn_id=effective_turn_id,
-    )
-
-    return drive_turn(
-        runtime,
-        user_intent_event=utterance_event,
-        max_iterations=max_iterations,
-        trigger_timeout_s=trigger_timeout_s,
-    )
-
-
-def _record_reaction(
-    runtime: JarvisRuntime, memory_db: Path, target: str, emoji: str, answer: Event,
-) -> None:
-    """ADR 0257: put her ``emoji`` on his message ``target``; the answer's uid keeps a retry to one.
-
-    The reply is already out, so a reaction that cannot be written is logged, not raised.
-    """
-    try:
-        reactions.jarvis_reacts(
-            runtime.conn, memory_db, target=target, emoji=emoji,
-            record_id=f"reaction:{answer.event_uid}",
-        )
-    except Exception:
-        LOGGER.exception("drive_turn: could not write her reaction to %s", target)
-
-
-def _queue_picture_notes(
-    runtime: JarvisRuntime, event: Event, record_id: str, answer: str,
-) -> None:
-    """ADR 0223: when a turn that came with files ends, queue the notes of its pictures.
-
-    Off the turn's path and never raising into it: a failure here costs the notes only.
-    """
-    ids = event.payload.get("attachments")
-    if runtime.picture_notes is None or runtime.memory is None:
-        return
-    if not isinstance(ids, list) or not ids:
-        return
-    words = str(event.payload.get("transcript", ""))
-    try:
-        runtime.picture_notes.submit(
-            record_id, [str(one) for one in ids], "" if is_filler(words) else words, answer,
-        )
-    except Exception:
-        LOGGER.exception("picture notes: could not queue the notes of turn %s", record_id)
-
-
-_MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
-_MAIL: Final[str] = "mail"
-
-
-def _record_words(store: Attachments | None, payload: Mapping[str, Any]) -> str:
-    """Allen's words as memory.db keeps them; files sent with them are named (ADR 0211).
-
-    A sentence that goes on from an earlier one keeps its own words as its row; the earlier row
-    keeps the rest, and the history reads them as one message (ADR 0271).
-    """
-    segment = payload.get("segment")
-    words = segment if isinstance(segment, str) and segment else str(payload.get("transcript", ""))
-    ids = payload.get("attachments")
-    if store is None or not isinstance(ids, list) or not ids:
-        return words
-    return f"{words}\n{marker(store.get(str(one)) for one in ids)}"
-
-
-def _history_pictures(runtime: JarvisRuntime, client: LLMClient) -> PictureFileId | None:
-    """ADR 0255: how history gets a picture's file id on ``client``; none off a Claude preset."""
-    if runtime.picture_files is None:
-        return None
-    return runtime.picture_files.resolver(client)
-
-
-def _history_receipts(runtime: JarvisRuntime) -> ReceiptsOf:
-    """ADR 0319: how history learns the receipts of the turn behind an answer, from the log."""
-
-    def receipts(answer_ids: Sequence[str]) -> Mapping[str, str]:
-        path = runtime.runtime_paths.event_log
-        try:
-            with contextlib.closing(open_runtime_event_log(path)) as conn:
-                return answer_receipts(conn, answer_ids)
-        except sqlite3.Error:
-            LOGGER.warning("history: the receipts of its answers could not be read", exc_info=True)
-            return {}
-
-    return receipts
-
-
-def _record_attachments(
-    store: Attachments | None, payload: Mapping[str, Any],
-) -> list[AttachmentRef]:
-    """The kept files that came with his words, in the order he sent them (ADR 0255)."""
-    ids = payload.get("attachments")
-    if store is None or not isinstance(ids, list):
-        return []
-    return [ref for one in ids if (ref := store.get(str(one))) is not None]
-
-
-def _read_mail_id(action: Mapping[str, Any]) -> str | None:
-    """The id of the message a proposed call reads whole (``mail(read=...)``, ``gmail_get``)."""
-    arguments = action.get("arguments")
-    arguments = arguments if isinstance(arguments, dict) else {}
-    if action.get("tool_name") == _MAIL and arguments.get("read"):
-        return str(arguments["read"])
-    if action.get("tool_name") == _MAIL_GET and arguments.get("format", "full") == "full":
-        return str(arguments.get("messageId"))
-    return None
-
-
-def _fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
-    """ADR 0063: the message this turn read whole, as a mail record.
-
-    By ``mail(read=...)`` (ADR 0242) or ``gmail_get``. Only when the turn read exactly one
-    message in full: a turn that read several is a list, answered in words. The record is
-    headers, a blank line, then the body, and its id is the result's event uid.
-    """
-    gets = [
-        event.payload
-        for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
-        if _read_mail_id(event.payload) is not None
-    ]
-    if len({_read_mail_id(get) for get in gets}) != 1:
-        return None
-    action_id = gets[-1].get("action_id")
-    found = action_result(conn, action_id) if isinstance(action_id, str) else None
-    if found is None:
-        return None  # no answer yet: the call has no message to show
-    _row_id, result = found
-    message: Any
-    try:
-        output = json.loads(result.payload["tool_output"])
-        if gets[-1].get("tool_name") == _MAIL:
-            # `mail` has cleaned the body; the card reads gmail_get's field names.
-            message = {**output, "date": output.get("at"), "threadId": output.get("thread_id")}
-            body = str(output.get("body") or "")
-        else:
-            message = json.loads(output.get("text", "")) if isinstance(output, dict) else None
-            body = mail_body(str(message.get("body") or "")) if isinstance(message, dict) else ""
-    except (ValueError, KeyError, TypeError):
-        return None  # a windowed (over-long) or failed answer shows no card
-    if not isinstance(message, dict) or "error" in message or not message.get("id"):
-        return None
-    headers = [
-        f"{name}: {message[key]}"
-        for name, key in (
-            ("From", "from"), ("To", "to"), ("Date", "date"), ("Subject", "subject"),
-            ("Thread-Id", "threadId"), ("Gmail-Id", "id"),
-        )
-        if isinstance(message.get(key), str) and message[key]
-    ]
-    return result.event_uid, "\n".join(headers) + "\n\n" + body
-
-
-_CALENDAR_WRITES: Final[frozenset[str]] = frozenset(
-    {"mcp__microsoft__create-calendar-event", "mcp__microsoft__update-calendar-event"},
-)
-_TIMES_MAX: Final[int] = 5
-_TIME_LABEL_CHARS: Final[int] = 40
-
-
-def _event_start_ms(body: object) -> int | None:
-    """Epoch ms of a Graph event body's ``start``; None if absent or its zone is not IANA's."""
-    start = body.get("start") if isinstance(body, dict) else None
-    if not isinstance(start, dict):
-        return None
-    try:
-        at = datetime.fromisoformat(str(start["dateTime"]))
-        if at.tzinfo is None:  # a Windows zone name ("Pacific Standard Time") has no ZoneInfo
-            at = at.replace(tzinfo=ZoneInfo(str(start["timeZone"])))
-        return int(at.timestamp() * 1000)
-    except (KeyError, ValueError, ZoneInfoNotFoundError):
-        return None
-
-
-def _calendar_time(
-    conn: sqlite3.Connection, action: Mapping[str, Any],
-) -> tuple[int, dict[str, Any]] | None:
-    """``(result row id, time entry)`` of one Outlook write that went through; else None."""
-    action_id = action.get("action_id")
-    found = action_result(conn, action_id) if isinstance(action_id, str) else None
-    arguments = action.get("arguments")
-    arguments = arguments if isinstance(arguments, dict) else {}
-    body = arguments.get("body")
-    at_ms = _event_start_ms(body)
-    if found is None or at_ms is None:
-        return None
-    row_id, result_event = found
-    result = result_event.payload
-    if result.get("semantics") == "error" or result.get("error"):
-        return None
-    event_id = arguments.get("eventId")
-    if not event_id:  # a created event: its id is in the server's answer
-        try:
-            answer = json.loads(json.loads(result.get("tool_output", "{}")).get("text", ""))
-            event_id = answer.get("id")
-        except (ValueError, AttributeError, TypeError):
-            event_id = None
-    return row_id, {
-        "kind": "event", "at_ms": at_ms,
-        "label": str(body.get("subject", ""))[:_TIME_LABEL_CHARS] if isinstance(body, dict) else "",
-        "ref": str(event_id or action.get("action_id", "")),
-    }
-
-
-def _turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
-    """The times this turn's own log gives for the answer, or none if the log cannot give them.
-
-    The answer is written either way: an unreadable row costs the phone its dial, not the turn.
-    """
-    try:
-        return _read_turn_times(conn, turn_id)
-    except (sqlite3.Error, ValueError, KeyError, TypeError):
-        LOGGER.warning("turn %s: the times of its answer could not be read", turn_id, exc_info=True)
-        return []
-
-
-def _turn_places(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
-    """The places this turn's tools returned (ADR 0283); none if the log cannot give them.
-
-    As with the times, an unreadable row costs the phone its map, not the turn its answer.
-    """
-    try:
-        return turn_places(conn, turn_id)
-    except (sqlite3.Error, ValueError, KeyError, TypeError):
-        LOGGER.warning("turn %s: its answer's places could not be read", turn_id, exc_info=True)
-        return []
-
-
-def _read_turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
-    """The turn's times: ``[{kind, at_ms, label, ref}]``.
-
-    From what the turn did, never from the model's words (ADR 0215): reminders it scheduled,
-    Outlook events it created or updated without error, and the first leave time of the transit
-    card it showed. In log order, at most five; an Outlook time in a zone name that is not
-    IANA's is left out.
-    """
-    found: list[tuple[int, dict[str, Any]]] = []
-    actions = [
-        event.payload for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
-    ]
-    ids = [str(one["action_id"]) for one in actions if one.get("action_id")]
-    for row_id, reminder in scheduled_by_actions(conn, ids):
-        found.append((row_id, {
-            "kind": "reminder", "at_ms": reminder.due_at_ms,
-            "label": reminder.text[:_TIME_LABEL_CHARS], "ref": reminder.reminder_id,
-        }))
-    found.extend(
-        done for action in actions
-        if action.get("tool_name") in _CALENDAR_WRITES and (done := _calendar_time(conn, action))
-    )
-    for row_id, card in clarifications_asked_in_turn(conn, turn_id):
-        trip = card.payload.get("trip")
-        if not isinstance(trip, dict):
-            continue
-        leave_ms = first_leave_ms(trip)
-        if leave_ms is not None:
-            found.append((row_id, {
-                "kind": "departure", "at_ms": leave_ms,
-                "label": str(trip.get("to", ""))[:_TIME_LABEL_CHARS],
-                "ref": str(card.payload.get("clarification_id", "")),
-            }))
-    return [entry for _id, entry in sorted(found, key=lambda one: one[0])[:_TIMES_MAX]]
-
-
-def _emit_turn_timing(conn: sqlite3.Connection, timer: turn_timing.TurnTimer) -> None:
-    """ADR 0276: write the answered turn's timing fact; a measurement never fails a turn."""
-    try:
-        emit_event(
-            conn,
-            type="turn.timing",
-            payload=timer.payload(),
-            correlation={"turn_id": timer.turn_id},
-        )
-    except Exception:
-        LOGGER.exception("turn %s: its timing could not be written, skipped", timer.turn_id)
-
-
-def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root entrypoint; argument set + traced multi-trigger loop are the cross-surface contract, and every ResponseRun branch is flag-guarded.
-    runtime: JarvisRuntime,
-    *,
-    user_intent_event: Event,
-    available_surfaces: frozenset[str] | None = None,
-    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-    trigger_timeout_s: float | None = None,
-    streaming_enabled: bool = False,
-    suspend_when_waiting: bool = False,
-    continuation: WaitingTurn | None = None,
-) -> RunTurnResult:
-    """Drive the post-emit body of one turn from an already-emitted intent event.
-
-    Same body as the pre-extract ``run_turn`` (decide loop + finalize +
-    render). The ``surface.user_intent`` event is supplied externally;
-    :func:`drive_turn` does NOT re-emit it. The effective ``turn_id``
-    is read from ``user_intent_event.payload["turn_id"]``.
-
-    The caller is responsible for emitting ``surface.user_intent``
-    first. This function exists so non-CLI surfaces — specifically the
-    ADR-0003 daemon HTTP handler (writes the intent) and the daemon
-    watcher (picks it up and drives) — can drive a turn from a
-    pre-emitted event without double-emitting and looping the watcher.
-
-    Steps (spec §3.4.1 multi-trigger loop):
-
-    1. Call :func:`jarvis.decision.decide` with ``user_intent_event``
-       as the first trigger. If it returns a :class:`ResponsePlan`,
-       finalize immediately.
-    2. Otherwise the decide() call paused on an action; poll the event
-       log for the next ``action.result_observed`` /
-       ``action.timeout_assumed`` / ``action.failed`` /
-       ``action.cancelled`` row, re-enter decide() with that trigger,
-       repeat.
-    3. Release the turn's live action ids from the ``finally``.
-    4. Record the Pre-emit token on a fresh :class:`SurfaceState`, then
-       call :func:`jarvis.surface.cli_render.render_response` which
-       routes the channel-split text across the L3 attention channel's
-       physical surfaces (say / banner / stdout when attached) AND
-       enforces the Pre-emit token check (canary H3) AND emits the
-       audit ``surface.response_emitted`` event. When
-       ``streaming_enabled=True`` (daemon path, ADR-0003 Step 2),
-       render_response ALSO emits ``surface.response_open`` plus N
-       ``surface.response_chunk`` rows BEFORE the audit
-       ``surface.response_emitted``; the user transcript (lifted from
-       ``user_intent_event.payload["transcript"]``) lands on the open
-       payload as ``query``.
-
-    The Pre-emit token check protects against a runtime that
-    accidentally re-uses an old plan or fails to refresh the token —
-    :class:`PreEmitTokenError` propagates out. It — and every other
-    exception — still passes through the ``finally`` that releases this
-    turn's live action_ids (ADR-0009 D4).
-
-    Args:
-        runtime: Assembled :class:`JarvisRuntime`.
-        user_intent_event: The already-emitted ``surface.user_intent``
-            :class:`Event`. Its ``payload["turn_id"]`` is the
-            canonical turn id used through this turn.
-        available_surfaces: Passed through to
-            :func:`jarvis.surface.cli_render.render_response`; daemon
-            callers use ``frozenset()`` to suppress physical surfaces.
-        max_iterations: Hard ceiling on decide() invocations.
-        trigger_timeout_s: Explicit per-trigger wait timeout. ``None``
-            (production) resolves per iteration via
-            :func:`_trigger_wait_budget`.
-        streaming_enabled: Forwarded to
-            :func:`jarvis.surface.cli_render.render_response`; the
-            daemon watcher (ADR-0003 Step 2 Build 5) passes ``True``
-            so the renderer emits the 3-event Inherent taxonomy.
-            Default ``False`` preserves CLI single-emit semantics.
-        suspend_when_waiting: Yield a connection-free checkpoint instead of
-            occupying an input worker while L4 runs.
-        continuation: Resume a previously suspended turn with a ready trigger
-            or failure supplied by the runtime scheduler.
-
-    Returns:
-        Frozen :class:`RunTurnResult` describing what was written and
-        the events emitted.
-    """
-    effective_turn_id = str(user_intent_event.payload["turn_id"])
-    timer = (
-        continuation.timer
-        if continuation is not None and continuation.timer is not None
-        else turn_timing.TurnTimer(
-            turn_id=effective_turn_id,
-            channel=str(user_intent_event.payload.get("channel") or "") or None,
-            trigger=user_intent_event.type,
-            queue_ms=max(0, int(time.time() * 1000) - user_intent_event.ts_epoch_ms),
-        )
-    )
-    record_realtime_trace(
-        "intent_queue_accepted" if continuation is None else "turn_continuation_resumed",
-        turn_id=effective_turn_id,
-        source="runtime_drive_turn",
-    )
-    # memory.db: Allen's utterance lands before any routing (Tier 0 included).
-    # The event uid is the record id, so a retried turn cannot double-write.
-    # ADR-0016 D3: a Live delegation arrives with ``record_id`` because the
-    # voice surface already wrote the row; that id is then what the prompt
-    # note excludes, so the request appears once.
-    memory = runtime.memory
-    surface_record_id = user_intent_event.payload.get("record_id")
-    memory_exclude_id = (
-        surface_record_id
-        if isinstance(surface_record_id, str) and surface_record_id
-        else user_intent_event.event_uid
-    )
-    surface_wrote_row = memory_exclude_id != user_intent_event.event_uid
-    # ADR 0062: a card's button is Allen's act, not his words; it writes no row.
-    card_button = isinstance(user_intent_event.payload.get("confirmation_decision"), Mapping)
-    # ADR 0271: a phone's sentence that goes on from earlier ones carries their whole thought as
-    # its words; the rows they left are its own history already, so this turn's prompt skips them.
-    folded_raw = user_intent_event.payload.get("folded")
-    folded = [str(one) for one in folded_raw] if isinstance(folded_raw, list) else []
-    # ADR 0272: the model request below goes at once; what leaves her waits until this time.
-    output_hold = answer_hold.output_not_before(runtime.config.raw, user_intent_event)
-    if memory is not None and continuation is None and not surface_wrote_row and not card_button:
-        audio_ref = user_intent_event.payload.get("audio_artifact_ref")
-        append_record(
-            memory.db_path,
-            record_id=user_intent_event.event_uid,
-            source="allen",
-            text=_record_words(runtime.attachments, user_intent_event.payload),
-            audio_path=audio_ref if isinstance(audio_ref, str) else None,
-            attachments=_record_attachments(runtime.attachments, user_intent_event.payload),
-        )
-    # ADR 0268: the same words again from the same device, while the turn that heard them first
-    # is still answering, are kept as his row but start no second answer: this turn is cancelled
-    # as superseded by that one the moment its run opens.
-    if continuation is None and runtime.response_runs is not None:
-        runs = runtime.response_runs
-        twin = device_voice.repeat_of(
-            runtime.runtime_paths.event_log,
-            effective_turn_id,
-            str(user_intent_event.payload.get("transcript", "")),
-            window_s=_SUPERSEDE_WINDOW_S,
-            in_flight={run.turn_id for run in runs.open_runs()},
-            usable=lambda turn: not (runs.turn_superseded(turn) or runs.turn_stopped(turn)),
-        )
-        if twin is not None:
-            LOGGER.info("turn %s repeats turn %s; it starts no answer", effective_turn_id, twin)
-            runs.mark_turns_superseded(
-                [effective_turn_id], for_s=_SUPERSEDE_WINDOW_S, by_turn=twin,
-            )
-    # docs/plans/replay-as-sent-proposal.md: this turn's message is kept as
-    # sent for later histories; a card's button wrote no row to keep it under.
-    record_sent_message: Callable[[str], None] | None = None
-    if memory is not None and runtime.config.session.replay_sent:
-        record_sent_message = (
-            (lambda _text: None)
-            if card_button or folded  # a thought of several rows replays from the rows
-            else partial(record_sent, memory.db_path, memory_exclude_id)
-        )
-    # ADR-0008 Step 2 (Wave 4A) — open the durable ResponseRun before the
-    # decide loop so the per-run request client, the terminal owner and the
-    # L5 ids all name the same response. A continuation resumes the run it
-    # suspended with.
-    run_pair = None if continuation is not None else _start_drive_turn_response(
-        runtime,
-        user_intent_event=user_intent_event,
-        turn_id=effective_turn_id,
-    )
-    run: ResponseRun | None = continuation.run if continuation is not None else None
-    terminalizer: ResponseTerminalizer | None = None
-    stream_route: RoutineStreamRoute | None = None
-    if run_pair is not None:
-        run, terminalizer, stream_route = run_pair
-    elif run is not None:
-        terminalizer = ResponseTerminalizer(
-            lambda: runtime.conn, close_after=False,
-            committed_event_bus=runtime.committed_event_bus,
-        )
-    # One consistent read of memory.db for this turn's prompt: the history
-    # block goes ahead of every per-turn note, the time line after them.
-    with timer.part("memory"):
-        memory_context = (
-            render_context(
-                memory.db_path, exclude_id=memory_exclude_id,
-                since=runtime.config.session.history_since,
-                recent=runtime.config.session.recent_records,
-                context=runtime.config.session.context,
-                raw_max_chars=runtime.config.session.context_raw_max_chars,
-                ledger=timer.timed("ledger", runtime.ledger),
-                places=timer.timed("places", runtime.places_block),
-                pictures=timer.timed("pictures", _history_pictures(
-                    runtime, run.request_client if run is not None else runtime.llm_client,
-                )),
-                receipts=timer.timed("receipts", _history_receipts(runtime)),
-                also_exclude=folded,
-            )
-            if memory is not None
-            else None
-        )
-    suspended = False
-    answered = ""  # the answer text, for the note of a picture sent with this turn (ADR 0223)
-
-    def _run_cancelled() -> bool:
-        """Return whether this turn's ResponseRun has been cancelled."""
-        return run is not None and run.cancellation_token.is_cancelled
-
-    def _raise_if_cancelled(where: str) -> None:
-        """Abort the turn when this run's cancel already won its terminal.
-
-        Called at every point where the run's FSM would otherwise advance.
-        The cancel path commits ``response.cancelled`` before it sets the
-        token, so observing the token means the terminal is already durable
-        and there is nothing left for this turn to write.
-        """
-        if run is not None and run.cancellation_token.is_cancelled:
-            msg = (
-                f"drive_turn: response run cancelled {where} "
-                f"(turn_id={effective_turn_id!r})."
-            )
-            raise ResponseCancelledError(msg)
-
-    response_trace_ids: dict[str, TraceValue] = (
-        {}
-        if run is None
-        else {"response_id": run.response_id, "response_group_id": run.response_group_id}
-    )
-    record_realtime_trace(
-        "response_started" if continuation is None else "response_resumed",
-        turn_id=effective_turn_id,
-        trigger_type=user_intent_event.type,
-        **response_trace_ids,
-    )
-    # ADR-0009 D4 — every action this turn dispatches registers itself
-    # in the L4 live set (`ToolRegistry.dispatch`). The release MUST run
-    # even when the turn raises: a leaked action_id is one the supervisor
-    # sweep will refuse to close for the life of the process, so a crashed
-    # turn would permanently protect the very orphan it created.
-    timer_token = turn_timing.bind(timer)
-    try:
-        _raise_if_cancelled("before the model")  # a stop that came before the run opened
-        if continuation is not None:
-            _raise_if_cancelled("before continuation")
-            if continuation.failure is not None:
-                raise continuation.failure  # noqa: TRY301 — resume through the same failure owner
-            if run is not None:
-                run.mark("generating")
-        turn_system_prompt = runtime.system_prompt
-        if runtime.plugin_connections is not None:
-            turn_system_prompt += "\n\n" + runtime.plugin_connections.skills_prompt()
-        connected_apps = (
-            runtime.plugin_connections.connected_apps_line()
-            if runtime.plugin_connections is not None
-            else None
-        )
-        route_rules: list[str] = []
-        if runtime.config.session.replay_sent:
-            # What every turn would repeat rides the system prompt, cached once,
-            # instead of each replayed state block; it follows the cached prefix.
-            if stream_route is not None and stream_route.context.route == "spoken":
-                route_rules.append(spoken_reply_rules(structured=stream_route.structured))
-            if connected_apps is not None:
-                route_rules.append(connected_apps)
-                connected_apps = None
-        decide_ctx = DecideContext(
-            conn=runtime.conn,
-            runtime_paths=runtime.runtime_paths,
-            # ``ToolRegistry`` / ``ActionLifecycle`` satisfy the L3
-            # Protocols structurally; the casts pin the boundary because
-            # mypy's invariant generic stance over Protocol attribute
-            # types treats the more-specific RawResult / LifecycleState
-            # return types as a conflict.
-            # ADR-0016 D6 — a Live delegation sees only read-only tools; the
-            # shared registry is untouched, the view lives for this call.
-            tool_registry=cast(
-                "ToolRegistryLike",
-                ReadOnlyToolRegistry(runtime.tool_registry)
-                if (
-                    user_intent_event.payload.get("channel") == "gpt_live"
-                    or user_intent_event.payload.get("plugin_origin_channel") == "gpt_live"
-                )
-                else runtime.tool_registry,
-            ),
-            lifecycle=cast("LifecycleLike", runtime.lifecycle),
-            # ADR-0008 D4 — this turn's provider identity is the run's own
-            # immutable client, so two overlapping runs can never read each
-            # other's last-call metadata. A turn without a run (a hand-built
-            # runtime) uses the shared client.
-            llm_client=run.request_client if run is not None else runtime.llm_client,
-            # The profile rides the system prompt: stable across turns, so it
-            # sits in the cached prefix rather than in the per-turn context.
-            system_prompt=SplitSystem(
-                f"{turn_system_prompt.rstrip()}\n\n{memory_context.profile}"
-                if memory_context is not None and memory_context.profile
-                else turn_system_prompt,
-                "\n\n".join(route_rules),
-            ),
-            tier0_table=runtime.tier0_table,
-            # ADR-0011 D4 — resolve-on-propose. Built fresh per turn (a
-            # trivial closure) rather than stored on JarvisRuntime: it
-            # closes over `runtime.conn`, which the JarvisRuntime fields
-            # above already carry, so there is nothing to cache.
-            entity_resolver=_make_entity_resolver(runtime.conn, runtime.terminal_hub),
-            # ADR-0012 §3 D4/V2 — confirmation TTL, config-overridable
-            # via `confirmation.ttl_ms` so the live burn can shorten it.
-            confirmation_ttl_ms=runtime.config.confirmation.ttl_ms,
-            max_tool_iterations=_max_tool_iterations(runtime.config, user_intent_event),
-            # ADR-0012 §3 D6 — answer-path grammar, threaded the same
-            # way tier0_table is threaded.
-            confirm_grammar_table=runtime.confirm_grammar_table,
-            words_client=runtime.confirmation_words,
-            wave1_features=runtime.wave1_features,
-            history=memory_context.history if memory_context is not None else (),
-            time_note=memory_context.now if memory_context is not None else None,
-            connected_apps=connected_apps,
-            turn_device=_turn_device(runtime, effective_turn_id),
-            about_record=_about_record(runtime, user_intent_event),
-            live_context=(
-                *_live_lines(runtime.live_context),
-                *_whereabouts_lines(runtime, effective_turn_id),
-            ),
-            record_sent_message=record_sent_message,
-            cancellation_checkpoint=run.check_cancelled if run is not None else None,
-            request_admission=(
-                partial(run.admit_request, runtime.conn) if run is not None else None
-            ),
-            output_not_before=output_hold,
-            routine_stream=stream_route,
-            read_snapshot=_snapshot_reader(runtime),
-            slow_results=runtime.response_flags.slow_results,
-            surrogate_route=runtime.surrogate_route,
-            oneshot=runtime.oneshot,
-            # The same boot value as the system prompt's reply-language line.
-            reply_language=runtime.config.reply_language,
-            service_tier=_voice_service_tier(runtime.config, user_intent_event),
-            read_attachments=(
-                None if runtime.attachments is None else runtime.attachments.load_many
-            ),
-            last_words=(
-                note_records.last_words(memory.db_path, memory_exclude_id)
-                if memory is not None and user_intent_event.payload.get("attachments")
-                else ""
-            ),
-        )
-
-        timer.device = decide_ctx.turn_device
-        # SQLite row id of the surface.user_intent event — used as the
-        # "after_id" anchor for the trigger poll loop.
-        last_seen_id = (
-            continuation.after_id if continuation is not None else latest_id(runtime.conn)
-        )
-
-        collected_events: list[Event] = list(continuation.events) if continuation else []
-        trigger_event: Event = (
-            continuation.trigger
-            if continuation is not None and continuation.trigger is not None
-            else user_intent_event
-        )
-        response_plan: ResponsePlan | None = None
-        # Track the attention_channel from the final decide() iteration so
-        # we can route the response to the right surfaces in Step 18.
-        # Default ``"voice_notify"`` covers the flagship ADR-0002 scenario
-        # when an L3 branch returns a plan without explicitly setting the
-        # field; the L3 Attention Policy emits one of the 9 channels for
-        # canonical branches today.
-        final_attention_channel: str = "voice_notify"
-        iterations = continuation.iterations if continuation is not None else 0
-        streamed = False
-        written_apart = False
-        reaction: str | None = None  # ADR 0257: her <react> on the message that opened the turn
-        last_gate_event_uid: str | None = None
-
-        while response_plan is None and iterations < max_iterations:
-            _raise_if_cancelled("before a decide iteration")
-            iterations += 1
-            with bind_action_admission(
-                run.admission_guard if run is not None else contextlib.nullcontext,
-            ):
-                result = decide(trigger_event, decide_ctx)
-            if trigger_event.type in {
-                "action.failed", "action.timeout_assumed", "action.cancelled",
-            }:
-                mark_trigger_consumed(runtime.conn, trigger_event.event_uid, effective_turn_id)
-            collected_events.extend(result.events_emitted)
-            if result.stream_failure is not None and run is not None and terminalizer is not None:
-                # ADR-0008 D3: the stream could not be finalized. The run
-                # fails naming what it exposed, and a full-text correction
-                # run continues that prefix for the same turn.
-                failure = result.stream_failure
-                terminalizer.fail(
-                    run.facts,
-                    reason=failure.reason,
-                    retryable=False,
-                    committed_prefix_hash=failure.committed_prefix_hash,
-                )
-                run.mark("failed")
-                if runtime.response_runs is not None:
-                    runtime.response_runs.unregister(run.response_id)
-                correction = StreamCorrection(
-                    corrects_response_id=run.response_id,
-                    committed_prefix=committed_text_prefix(runtime.conn, run.response_id).text,
-                )
-                record_realtime_trace(
-                    "routine_stream_correction_opened",
-                    turn_id=effective_turn_id,
-                    failed_response_id=run.response_id,
-                    reason=failure.reason,
-                )
-                replacement = _start_drive_turn_response(
-                    runtime,
-                    user_intent_event=user_intent_event,
-                    turn_id=effective_turn_id,
-                    correction=correction,
-                )
-                run, terminalizer, _ = replacement
-                decide_ctx = replace(
-                    decide_ctx,
-                    llm_client=run.request_client,
-                    routine_stream=None,
-                    stream_correction=correction,
-                    cancellation_checkpoint=run.check_cancelled,
-                    request_admission=partial(run.admit_request, runtime.conn),
-                )
-                continue
-            response_plan = result.response_plan
-            if response_plan is not None:
-                final_attention_channel = result.attention_channel
-                streamed = result.route in {"casual_or_explanatory", "spoken"}
-                written_apart = result.written_apart
-                reaction = result.reaction
-                last_gate_event_uid = result.last_gate_event_uid
-                break
-
-            # No final plan -> decide() paused on an action. Wait for the
-            # next L4-side trigger event.
-            # ADR-0009 D4 / F9 — the waiter is scoped to the actions THIS
-            # turn dispatched. Read fresh each iteration: the action
-            # that paused decide() was registered inside the call above.
-            owned_action_ids = turn_action_ids(effective_turn_id)
-            wait_timeout_s = _trigger_wait_budget(trigger_timeout_s)
-            record_realtime_trace(
-                "action_wait_started",
-                turn_id=effective_turn_id,
-                action_count=len(owned_action_ids),
-                timeout_s=wait_timeout_s,
-            )
-            if run is not None:
-                _raise_if_cancelled("before the action wait")
-                run.mark("waiting_action")
-            if suspend_when_waiting:
-                suspended = True
-                raise TurnSuspended(WaitingTurn(  # noqa: TRY301 — scheduler handoff preserves finally ownership
-                    intent=user_intent_event, run=run, after_id=last_seen_id,
-                    action_ids=owned_action_ids, deadline=time.monotonic() + wait_timeout_s,
-                    iterations=iterations, events=tuple(collected_events), timer=timer,
-                ))
-            try:
-                next_event, last_seen_id = _wait_for_next_trigger(
-                    runtime.conn,
-                    after_id=last_seen_id,
-                    action_ids=owned_action_ids,
-                    lifecycle=runtime.lifecycle,
-                    timeout=wait_timeout_s,
-                    cancelled=_run_cancelled if run is not None else None,
-                )
-            except TriggerWaitTimeout:
-                record_realtime_trace(
-                    "action_wait_completed",
-                    turn_id=effective_turn_id,
-                    outcome="bounded_timeout",
-                    timeout_s=wait_timeout_s,
-                )
-                raise
-            if run is not None:
-                _raise_if_cancelled("while waiting on an action")
-                run.mark("generating")
-            action_id = _event_action_id(next_event)
-            record_realtime_trace(
-                "action_wait_completed",
-                turn_id=effective_turn_id,
-                outcome="trigger_observed",
-                trigger_type=next_event.type,
-                action_id=action_id,
-            )
-            record_realtime_trace(
-                "action_result_available",
-                turn_id=effective_turn_id,
-                action_id=action_id,
-                result_source=next_event.type,
-            )
-            trigger_event = next_event
-
-        if response_plan is None:
-            if run is not None and terminalizer is not None:
-                terminalizer.fail(
-                    run.facts,
-                    reason="turn_exhausted_iterations",
-                    retryable=False,
-                )
-            msg = (
-                f"drive_turn: exhausted max_iterations={max_iterations} without a final "
-                f"ResponsePlan (turn_id={effective_turn_id!r})."
-            )
-            raise RuntimeBootstrapError(msg)  # noqa: TRY301 — the turn's own failure, not a helper's.
-
-        # L5 emission (Step 18 — channel-split + multi-surface dispatch).
-        # The Pre-emit token guard inside render_response() preserves the
-        # canary H3 runtime check — calling record_pre_emit_token() then
-        # render_response() in this order is the only legal path.
-        # SurfaceState is allocated fresh per turn (spec §3.6.7 — local
-        # surface state owns no truth and doesn't survive across turns)
-        # and discarded once render_response returns the cleared state.
-        primed_state = record_pre_emit_token(response_plan.response_hash)
-
-        # ADR-0008 D1 — generation completion, not physical delivery, is the
-        # ResponseRun's terminal condition, so the terminal is written BEFORE
-        # render. The accepted consequence is pinned by
-        # `test_completed_without_delivery_when_render_raises`: if render
-        # then raises, the log holds response.completed with no
-        # surface.response_emitted. The opposite ordering is unrecoverable —
-        # it would let a cancel land after the words were already spoken.
-        if run is not None and terminalizer is not None:
-            # ADR 0053: no answer completes while Allen's words are coming in,
-            # so his next sentence can still drop it unwritten and unheard.
-            registry = runtime.response_runs
-            if registry is not None:
-                waiting_since = time.monotonic_ns()
-                hold_ends = time.monotonic() + _ALLEN_TALKING_CEILING_S
-                while (
-                    not registry.wait_completion_allowed(0.05)
-                    and time.monotonic() < hold_ends
-                ):
-                    _raise_if_cancelled("while Allen was talking")
-                timer.hold("completion_hold", waiting_since)
-            # ADR 0272: and not before the turn's own hold for his next words is past.
-            waiting_since = time.monotonic_ns()
-            wait_out_hold(output_hold, run.check_cancelled, "while Allen may go on")
-            timer.hold("answer_hold", waiting_since)
-            _raise_if_cancelled("before finalizing")
-            run.mark("finalizing")
-            completion = terminalizer.complete(
-                run.facts,
-                response_hash=response_plan.response_hash,
-            )
-            if isinstance(completion, AlreadyTerminal):
-                # A cancel won the CAS between the check above and this
-                # append. Nothing is rendered — the words must not be spoken
-                # for a response the operator already stopped — and the turn
-                # ends the same way every other cancelled turn does, so the
-                # daemon watcher does not record it as a completed answer.
-                msg = (
-                    "drive_turn: response run reached "
-                    f"{completion.event.type} before its completion CAS "
-                    f"(turn_id={effective_turn_id!r})."
-                )
-                raise ResponseCancelledError(msg)  # noqa: TRY301 — the turn's own outcome, not a helper's.
-            run.mark("completed")
-            if streamed:
-                # The finalizer wrote nothing; the turn closes after the
-                # terminal, sourced on the last stream gate verdict.
-                collected_events.append(
-                    emit_turn_ended(
-                        runtime.conn,
-                        turn_id=effective_turn_id,
-                        final_response_hash=response_plan.response_hash,
-                        consumed_trigger_event_uid=user_intent_event.event_uid,
-                        source_event_id=last_gate_event_uid or run.facts.started_event_uid,
-                    ),
-                )
-
-        timer.mark("first_chunk")  # a streamed answer's first chunk went out long before this
-        # The in-memory capture stream serves two ends at once. First the
-        # operator console: render_response() writes the cli_stdout slice
-        # into it so the runtime can re-emit the same bytes to the real
-        # sys.stdout. Second the test / programmatic caller: the returned
-        # RunTurnResult.response_text is the captured string. Beyond
-        # stdout, render_response also routes voice text to say and
-        # document text to the notify banner per the channel mapping, and
-        # emits the audit surface.response_emitted event itself.
-        capture: io.StringIO = io.StringIO()
-        transcript_raw = user_intent_event.payload.get("transcript", "")
-        query = transcript_raw if isinstance(transcript_raw, str) else ""
-        _, render_event = render_response(
-            primed_state,
-            response_plan,
-            conn=runtime.conn,
-            turn_id=effective_turn_id,
-            attention_channel=final_attention_channel,
-            stream=capture,
-            available_surfaces=available_surfaces,
-            streaming_enabled=streaming_enabled,
-            query=query,
-            response_id=run.response_id if run is not None else None,
-            response_group_id=run.response_group_id if run is not None else None,
-            delivery_terminal_only=streamed,
-            written_apart=written_apart,
-            times=_turn_times(runtime.conn, effective_turn_id),
-            places=_turn_places(runtime.conn, effective_turn_id),
-        )
-        rendered = capture.getvalue()
-        sys.stdout.write(rendered)
-        sys.stdout.flush()
-        collected_events.append(render_event)
-        timer.mark("rendered")
-        _emit_turn_timing(runtime.conn, timer)
-        if memory is not None:
-            # ADR 0063: the one message this turn read whole shows above the answer.
-            mail = _fetched_mail(runtime.conn, effective_turn_id)
-            if mail is not None:
-                append_record(memory.db_path, record_id=mail[0], source="mail", text=mail[1])
-            # The full answer text, not the spoken form (ADR 0040), which
-            # lives only in the voice channel; the audit event's uid is the
-            # record id. A written part that only adds to the spoken part
-            # (ADR 0114) is not the full answer: both go in.
-            answer = str(
-                render_event.payload.get("document_text")
-                or render_event.payload.get("text", ""),
-            )
-            if render_event.payload.get("written_apart") is True:
-                answer = f"{render_event.payload.get('voice_text', '')}\n\n{answer}"
-            answered = answer
-            # ADR 0257: a typed reply that is only her reaction has no words to keep as a row.
-            reaction_only = (
-                reaction is not None and not answer.strip() and typed_turn(user_intent_event)
-            )
-            if not reaction_only:
-                append_record(
-                    memory.db_path,
-                    record_id=render_event.event_uid,
-                    source="jarvis",
-                    text=answer,
-                )
-            if reaction is not None and not card_button:
-                _record_reaction(runtime, memory.db_path, memory_exclude_id, reaction, render_event)
-            if (
-                runtime.response_flags.prefix_warm
-                and run is not None
-                and user_intent_event.payload.get("channel") != "gpt_live"
-            ):
-                spoken = stream_route is not None and stream_route.context.route == "spoken"
-                _warm_next_prefix(
-                    runtime,
-                    memory,
-                    llm_client=run.request_client,
-                    system_prompt=decide_ctx.system_prompt,
-                    responses=spoken or run.request_client.preset_snapshot.api == "responses",
-                    text_format=(
-                        SPOKEN_REPLY_FORMAT
-                        if spoken and stream_route is not None and stream_route.structured
-                        else None
-                    ),
-                )
-        record_realtime_trace(
-            "response_completed",
-            turn_id=effective_turn_id,
-            iterations=iterations,
-            gate_mode=response_plan.required_gate_mode,
-        )
-
-        return RunTurnResult(
-            response_text=rendered,
-            response_plan=response_plan,
-            turn_id=effective_turn_id,
-            iterations=iterations,
-            events_emitted=tuple(collected_events),
-            attention_channel=final_attention_channel,
-        )
-    except TurnSuspended:
-        raise
-    except ResponseCancelledError:
-        # The cancel caller already committed response.cancelled. Re-raise so
-        # the daemon watcher can tell a cancelled turn from a failed one.
-        raise
-    except Exception:
-        if run is not None and terminalizer is not None:
-            # The turn's own exception is the one the caller must see. A CAS
-            # that cannot reach the log here leaves the run open, and the boot
-            # reconciler closes it as daemon_restart — losing the terminal is
-            # recoverable, masking the real failure is not.
-            try:
-                terminalizer.fail(
-                    run.facts,
-                    reason="turn_raised",
-                    retryable=False,
-                    committed_prefix_hash=terminalizer.committed_prefix_hash(run),
-                )
-            except Exception:
-                LOGGER.exception(
-                    "drive_turn: could not write response.failed (response_id=%r)",
-                    run.response_id,
-                )
-        raise
-    finally:
-        turn_timing.release(timer_token)
-        if not suspended:
-            if run is not None and runtime.response_runs is not None:
-                runtime.response_runs.unregister(run.response_id)
-            release_turn_actions(effective_turn_id)
-            _queue_picture_notes(runtime, user_intent_event, memory_exclude_id, answered)
-
-
 __all__ = [
     "JarvisRuntime",
     "PreEmitTokenError",
     "RunTurnResult",
-    "TriggerWaitTimeout",
     "bootstrap_runtime_app",
-    "drive_turn",
     "import_exports",
     "open_voiceprints",
     # Re-exported for jarvis.cli: H13 forbids a single file importing two
     # middle-layer siblings, and the CLI already imports jarvis.deployment.
     # Same route PreEmitTokenError above already takes.
     "parse_response_channels",
-    "run_turn",
 ]

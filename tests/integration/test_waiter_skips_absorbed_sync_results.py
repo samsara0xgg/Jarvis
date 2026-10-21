@@ -11,7 +11,7 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from jarvis.execution.tools import ActionLifecycle
-from jarvis.runtime import _wait_for_next_trigger
+from jarvis.runtime.turn.wait import wait_for_next_trigger
 from jarvis.state.event_log import emit_event, open_event_log
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ def test_waiter_skips_the_absorbed_row_and_returns_the_running_actions_terminal(
             correlation={"action_id": _WORKER, "turn_id": "T1"},
         )
 
-        event, _cursor = _wait_for_next_trigger(
+        event, _cursor = wait_for_next_trigger(
             conn,
             after_id=0,
             action_ids=frozenset({_SYNC, _WORKER}),

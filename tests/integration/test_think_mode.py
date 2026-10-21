@@ -21,12 +21,14 @@ import yaml
 from fastapi.testclient import TestClient
 
 import jarvis.decision.think_mode as think_mode_module
-import jarvis.runtime as runtime_module
+import jarvis.runtime.turn.drive as drive_module
+import jarvis.runtime.turn.start as start_module
 import jarvis.state.event_log as event_log_module
 from jarvis.decision.think_mode import ThinkMode, ThinkModeConfigError, load_think_mode
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, drive_turn
+from jarvis.runtime import JarvisRuntime
+from jarvis.runtime.turn.drive import drive_turn
 from jarvis.shared import Event
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
@@ -97,7 +99,7 @@ def _words(conn: sqlite3.Connection, said: str, turn_id: str, at_ms: int) -> Eve
 def _clocked(monkeypatch: pytest.MonkeyPatch, start_ms: int) -> _Clock:
     """One wall clock for the runtime, the event log and the mode, so every row is stamped by it."""
     clock = _Clock(start_ms)
-    for module in (runtime_module, think_mode_module, event_log_module):
+    for module in (drive_module, start_module, think_mode_module, event_log_module):
         monkeypatch.setattr(module, "time", clock)
     return clock
 

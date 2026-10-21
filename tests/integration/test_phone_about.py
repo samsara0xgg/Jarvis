@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis import runtime as runtime_module
 from jarvis.runtime.about_item import AboutItems
 from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.turn import start as start_module
 from jarvis.shared.about import MAX_START_MS, clean_about, prompt_title
 from jarvis.state.day_line import DaySources, day_window, parse_day
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -322,7 +322,7 @@ def test_a_resent_say_with_about_writes_one_row_and_gets_the_same_answer(tmp_pat
 @pytest.fixture(autouse=True)
 def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
-    monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    monkeypatch.setattr(start_module, "labels_phases", lambda _base_url: True)
     before = os.environ.get("TZ")
     monkeypatch.setenv("TZ", "America/Vancouver")
     time.tzset()

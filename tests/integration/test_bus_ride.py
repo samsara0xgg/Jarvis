@@ -34,11 +34,11 @@ from google.transit import gtfs_realtime_pb2
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.execution.transit_tool import TransitOffers
-from jarvis.runtime import _live_lines
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.push import Push
 from jarvis.runtime.rides import RIDE_LINE_PREFIX, Rides
+from jarvis.runtime.turn.context import live_lines
 from jarvis.shared import ActionRequest, CallerPrincipal, lang
 from jarvis.state import departures as pins
 from jarvis.state import push_tokens
@@ -564,7 +564,7 @@ def test_the_state_line_is_about_his_bus_and_not_another_of_the_route(world: Wor
     assert "arrives about 17:10" in line
     assert "17:20" not in line
     # It is in the state block of a turn, whole (the live-line cap is not 200 characters).
-    assert _live_lines((world.rides.line,)) == (line,)
+    assert live_lines((world.rides.line,)) == (line,)
     assert len(line) > 200
     assert world.rides.view()["stops_left"] in {3, 2}  # type: ignore[index]
 

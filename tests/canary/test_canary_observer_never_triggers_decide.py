@@ -14,7 +14,7 @@ turn — 1440 unbid turns a day, each one speaking, per repo.
 Two static statements, both drift-proof by construction:
 
 1. **No trigger tuple names either observation type.** Rather than
-   hard-coding today's three tuples (``_RUNTIME_TRIGGER_TYPES``,
+   hard-coding today's three tuples (``RUNTIME_TRIGGER_TYPES``,
    ``_USER_INTENT_TRIGGER_TYPES``, ``_SYSTEM_TRIGGER_TYPES``), this
    scans every top-level ``*_TRIGGER_TYPES`` assignment under
    ``jarvis/``, so a *fourth* watcher added later is covered the day it

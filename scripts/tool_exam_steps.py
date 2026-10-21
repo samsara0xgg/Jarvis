@@ -61,10 +61,10 @@ from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.deployment import load_env_file
 from jarvis.execution.tools import Tool, _device_proxy, release_turn_actions
-from jarvis.runtime import _max_tool_iterations
 from jarvis.runtime.plugin_catalog import PluginPackage
 from jarvis.runtime.plugin_connections import _Active
 from jarvis.runtime.plugins import Plugins
+from jarvis.runtime.turn.context import max_tool_iterations
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.decision_snapshot import read_decision_snapshot
@@ -604,7 +604,7 @@ def _run_case(  # noqa: PLR0913 - the runtime, its baseline, and the case's mode
         conn=runtime.conn, runtime_paths=runtime.runtime_paths,
         tool_registry=cast("Any", runtime.tool_registry), lifecycle=cast("Any", runtime.lifecycle),
         llm_client=cast("LLMClient", sub), system_prompt=system,
-        max_tool_iterations=_max_tool_iterations(runtime.config, trigger),
+        max_tool_iterations=max_tool_iterations(runtime.config, trigger),
         wave1_features=runtime.wave1_features,
         reply_language=runtime.config.reply_language,
         read_snapshot=partial(read_decision_snapshot, prior=warm),

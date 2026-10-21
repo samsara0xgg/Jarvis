@@ -22,8 +22,8 @@ import pytest
 import uvicorn
 from websockets.sync.client import connect as _connect
 
-from jarvis.runtime import make_turn_cancel_callable
 from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.turn.cancel import make_turn_cancel_callable
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster

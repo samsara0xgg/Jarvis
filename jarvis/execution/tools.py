@@ -3319,7 +3319,7 @@ class ToolRegistry:
 
         On precondition pass, registers the action_id in the live set
         (ADR-0009 D4 — the supervisor sweep skips live action_ids;
-        `jarvis.runtime.drive_turn` releases the turn's entries in a
+        `jarvis.runtime.turn.drive.drive_turn` releases the turn's entries in a
         `finally`), then emits:
             1. `action.dispatched(action_id)` → lifecycle authorized →
                dispatched. The event_uid is the `source_event_id` of
@@ -3510,7 +3510,7 @@ def _clear_running_event_uid(
 # per-process dict, empty in the sweep's own view after any restart.
 #
 # So the dispatch path publishes each action_id here, and the composition
-# root (`jarvis.runtime.drive_turn`) drops the turn's whole entry in a
+# root (`jarvis.runtime.turn.drive.drive_turn`) drops the turn's whole entry in a
 # `finally` — including when the turn raises, because an entry nobody
 # removes pins its action_id "active" for the life of the process and the
 # sweep could never close the very orphan that crash created.

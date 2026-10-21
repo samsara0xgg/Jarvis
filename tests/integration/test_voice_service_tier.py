@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import runtime as runtime_module
 from jarvis.decision import llm as llm_module
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
+from jarvis.runtime.turn import start as start_module
+from jarvis.runtime.turn.context import voice_service_tier
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.canary._helpers import repo_root
@@ -43,7 +44,7 @@ _TABLE = load_pricing_table(repo_root() / "data" / "pricing.json")
 def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
     monkeypatch.setenv("TIER_FIXTURE_KEY", "synthetic")
-    monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    monkeypatch.setattr(start_module, "labels_phases", lambda _base_url: True)
 
 
 def _client(base_url: str, *, provider: str = "openai", api: str | None = None) -> LLMClient:
@@ -223,7 +224,7 @@ def test_only_a_spoken_turn_gets_the_configured_tier(tmp_path: Path) -> None:
             )
 
         config = runtime_config({"realtime": {"response": {"voice_service_tier": " priority "}}})
-        pick = runtime_module._voice_service_tier  # noqa: SLF001
+        pick = voice_service_tier
         assert pick(config, trigger("inherent_ptt")) == "priority"
         assert pick(config, trigger("cli_stdin")) is None
         assert pick(config, trigger("gpt_live")) is None

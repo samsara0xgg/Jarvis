@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from jarvis.runtime import _warm_next_prefix
+from jarvis.runtime.turn.context import warm_next_prefix
 from jarvis.state.memory_db import append_record
 from tests.support.prefix_warm import (
     assert_prefix_of,
@@ -64,7 +64,7 @@ def test_words_left_unanswered_are_left_to_the_next_turn(tmp_path: Path) -> None
         append_record(memory.db_path, record_id="a-open", source="allen", text="停")
         run_client = runtime.llm_session_factory
         assert run_client is not None
-        _warm_next_prefix(
+        warm_next_prefix(
             runtime,
             memory,
             llm_client=run_client.create(run_client.snapshot(), response_id="warm-test"),

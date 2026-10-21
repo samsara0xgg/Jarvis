@@ -1,6 +1,6 @@
 """ADR 0249: the state block says what he is doing now and what is next on his calendar.
 
-Real Event Log, the real producers and ``_live_lines``, then the one-turn request builder with a
+Real Event Log, the real producers and ``live_lines``, then the one-turn request builder with a
 stub model (no provider is called). Each check is an input and the exact line or request it
 gives: what he is doing with its age, the stale warning, the next things read from the ledger of
 his things (ADR 0299) and how many wait on his word, every line present and absent, the size
@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis.runtime import _live_lines
 from jarvis.runtime.now_block import (
     CALENDAR_PREFIX,
     DOING_PREFIX,
@@ -23,6 +22,7 @@ from jarvis.runtime.now_block import (
     calendar_line,
     doing_now_line,
 )
+from jarvis.runtime.turn.context import live_lines
 from jarvis.state import things
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.ledger import NOW, ZONE, ledger_at
@@ -282,7 +282,7 @@ def test_each_line_is_present_only_when_it_has_content(
     tmp_path: Path,
     expected: tuple[str, ...],
 ) -> None:
-    """Through ``_live_lines``: the state line and the calendar line come and go separately."""
+    """Through ``live_lines``: the state line and the calendar line come and go separately."""
     rows = (
         [_claim(ledger_at(8, 14, 30), "Writing the my_day tool tests")]
         if "doing" in expected
@@ -291,7 +291,7 @@ def test_each_line_is_present_only_when_it_has_content(
     log = _world(tmp_path, rows)
     if "calendar" in expected:
         _ledger(log, _go("Dentist", _iso(8, 15, 30)))
-    lines = _live_lines(
+    lines = live_lines(
         (
             lambda: doing_now_line(log, ZONE, _clock),
             lambda: calendar_line(log, ZONE, _clock),
@@ -314,8 +314,8 @@ def test_the_lines_ride_the_end_of_the_block_and_leave_the_cached_prefix_alone(
     log = _world(tmp_path, [_claim(ledger_at(8, 14, 30), "Writing the my_day tool tests")])
     _ledger(log, _go("Dentist", _iso(8, 15, 30)))
     dashboard = "Dashboard: Allen is on the Mail page."
-    old = _live_lines((lambda: RIDE, lambda: dashboard))
-    new = _live_lines(
+    old = live_lines((lambda: RIDE, lambda: dashboard))
+    new = live_lines(
         (
             lambda: RIDE,
             lambda: dashboard,
@@ -346,7 +346,7 @@ def test_the_order_is_the_same_whatever_the_ages(tmp_path: Path) -> None:
         (tmp_path / str(n)).mkdir()
         log = _world(tmp_path / str(n), [_claim(analysed, "Reading a paper")])
         _ledger(log, _go("Gym", _iso(8, 16)))
-        lines = _live_lines(
+        lines = live_lines(
             (
                 lambda: RIDE,
                 partial(doing_now_line, log, ZONE, _clock),

@@ -25,15 +25,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import (
-    device_voice,
-    inherent_loop,
+from jarvis.runtime import device_voice, inherent_loop
+from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.turn.cancel import (
     make_compose_callable,
     make_continuation_callable,
     make_relation_supersede_callable,
     make_supersede_unspoken_callable,
 )
-from jarvis.runtime.daemon import output_watchers
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import MemorySettings, render_context

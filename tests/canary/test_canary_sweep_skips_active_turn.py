@@ -37,7 +37,7 @@ import ast
 from tests.canary._helpers import parse, repo_root
 
 _SLEEP_WAKE_RELPATH: str = "jarvis/deployment/sleep_wake.py"
-_RUNTIME_RELPATH: str = "jarvis/runtime/__init__.py"
+_DRIVE_RELPATH: str = "jarvis/runtime/turn/drive.py"
 _SWEEP_RELPATH: str = "jarvis/runtime/daemon/sweep.py"
 
 _SWEEP_FN: str = "sweep_overdue_actions"
@@ -133,10 +133,10 @@ def test_canary_sweep_skips_actions_in_the_active_set() -> None:
 
 def test_canary_drive_turn_releases_live_actions_in_a_finally() -> None:
     """A crashed ``drive_turn`` MUST NOT pin its action_ids active forever."""
-    module = parse(repo_root() / _RUNTIME_RELPATH)
+    module = parse(repo_root() / _DRIVE_RELPATH)
     drive_turn = _find_function_def(module, name=_DRIVE_TURN_FN)
     assert drive_turn is not None, (
-        f"{_RUNTIME_RELPATH} must define a top-level {_DRIVE_TURN_FN!r}."
+        f"{_DRIVE_RELPATH} must define a top-level {_DRIVE_TURN_FN!r}."
     )
 
     released_in_finally = [

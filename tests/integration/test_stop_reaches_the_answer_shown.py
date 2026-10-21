@@ -20,7 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import drive_turn, make_response_cancel_callable, make_turn_cancel_callable
+from jarvis.runtime.turn.cancel import make_response_cancel_callable, make_turn_cancel_callable
+from jarvis.runtime.turn.drive import drive_turn
 from jarvis.state.event_log import open_event_log
 from jarvis.state.turn_facts import turn_over_or_answering
 from jarvis.surface.inherent_output import InherentBroadcaster

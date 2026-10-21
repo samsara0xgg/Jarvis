@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from jarvis.runtime import _live_lines
+from jarvis.runtime.turn.context import live_lines
 from jarvis.surface.voice_cues import VoiceCues
 from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.prompt_assembly import HISTORY, REPLY_LINE, STATUS, drive_one_turn
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 def _request(tmp_path: Path, cues: VoiceCues) -> str:
     (tmp_path / "turn").mkdir()
     _, messages = drive_one_turn(
-        tmp_path / "turn", HISTORY, live_context=_live_lines((cues.line,)),
+        tmp_path / "turn", HISTORY, live_context=live_lines((cues.line,)),
     )
     content = messages[2]["content"]
     assert isinstance(content, str)

@@ -82,7 +82,7 @@ _BRIEF_MAX_CHARS = 1500
 # are covered by this slow safety poll of the Event Log.
 _RESULT_POLL_S = 5.0
 # ``response.completed`` commits before the renderer writes the
-# ``surface.response_emitted`` row (runtime/__init__.py, terminalizer.complete
+# ``surface.response_emitted`` row (runtime/turn/drive.py, terminalizer.complete
 # precedes render_response); the bus wakes on both, and a wake re-reads briefly
 # instead of waiting a poll.
 _WAKE_RETRY_S = 0.2

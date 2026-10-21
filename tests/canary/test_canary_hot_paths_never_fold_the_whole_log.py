@@ -32,10 +32,17 @@ _DAEMON_MODULES: Final[tuple[str, ...]] = tuple(
     for path in sorted((repo_root() / "jarvis/runtime/daemon").glob("*.py"))
 )
 
+# The turn's code lives here, one module per concern.
+_TURN_MODULES: Final[tuple[str, ...]] = tuple(
+    path.relative_to(repo_root()).as_posix()
+    for path in sorted((repo_root() / "jarvis/runtime/turn").glob("*.py"))
+)
+
 _HOT_PATH_MODULES: Final[tuple[str, ...]] = (
     "jarvis/runtime/__init__.py",
     "jarvis/runtime/inherent_loop.py",
     *_DAEMON_MODULES,
+    *_TURN_MODULES,
     "jarvis/runtime/decision_state.py",
     "jarvis/decision/__init__.py",
     "jarvis/decision/packet.py",

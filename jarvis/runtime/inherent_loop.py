@@ -18,7 +18,7 @@ and rewired for Step 2 (three-envelope ``open`` / ``append`` x N /
 
    - :func:`_intent_pump_watcher` — polls the Event Log for new
      ``surface.user_intent`` and ``utterance.received`` rows, claims each
-     once, and drives the turn via :func:`jarvis.runtime.drive_turn` on a
+     once, and drives the turn via :func:`jarvis.runtime.turn.drive.drive_turn` on a
      worker thread with ``streaming_enabled=True`` so
      :func:`render_response` emits the ADR-0003 Step 2 three-event
      Inherent taxonomy (``surface.response_open`` +
@@ -121,21 +121,7 @@ from jarvis.deployment import inherent_v2_token_matches, models, rotate_inherent
 from jarvis.deployment.launchd import logs_dir, supervised
 from jarvis.deployment.sleep_wake import install_power_observer
 from jarvis.execution.transit_tool import live_card
-from jarvis.runtime import (
-    JarvisRuntime,
-    _event_action_id,
-    _jev_log,
-    _new_turn_id,
-    device_voice,
-    make_barge_in_interrupt_callable,
-    make_compose_callable,
-    make_continuation_callable,
-    make_relation_supersede_callable,
-    make_response_cancel_callable,
-    make_supersede_unspoken_callable,
-    make_turn_cancel_callable,
-    save_language,
-)
+from jarvis.runtime import JarvisRuntime, _jev_log, device_voice, save_language
 from jarvis.runtime.card_feedback import CardFeedback
 from jarvis.runtime.core_memory import CoreMemorySettings, section_caps
 from jarvis.runtime.daemon.devices import output_or_default as _output_or_default
@@ -240,6 +226,17 @@ from jarvis.runtime.plan_run import Hooks, build_watch, leg_session, make_route_
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.setup import Setup
 from jarvis.runtime.spend_cap import SpendCap, SpendCapSettings
+from jarvis.runtime.turn.cancel import (
+    make_barge_in_interrupt_callable,
+    make_compose_callable,
+    make_continuation_callable,
+    make_relation_supersede_callable,
+    make_response_cancel_callable,
+    make_supersede_unspoken_callable,
+    make_turn_cancel_callable,
+)
+from jarvis.runtime.turn.start import new_turn_id as _new_turn_id
+from jarvis.runtime.turn.wait import event_action_id as _event_action_id
 from jarvis.runtime.work_state import auto_refresh
 from jarvis.shared import Event, lang, steps
 from jarvis.shared.pricing import load_pricing_table
@@ -476,7 +473,7 @@ def _reconcile_open_playback_in_thread(
 # commits unpublished and a subscriber would silently lose the acknowledge
 # row. The Event Log is the only place it is guaranteed to appear.
 #
-# Nothing here re-enters `decide()`: `_RUNTIME_TRIGGER_TYPES` is untouched and
+# Nothing here re-enters `decide()`: `RUNTIME_TRIGGER_TYPES` is untouched and
 # no model is ever called to produce a phrase (ADR-0008 D6, "a deep model is
 # never called only to generate 我在查"). A turn he spoke says one fixed line
 # when it is taking a while (ADR 0116, 0121, 0136): at the dispatch of a tool
@@ -558,7 +555,7 @@ def _commentary_terminalizer(
     The run outlives the worker call that opened it, so the terminal owner
     cannot close over that call's connection; ``close_after=True`` with a
     per-call ``open_runtime_event_log`` is the established shape
-    (:func:`jarvis.runtime.make_response_cancel_callable`).
+    (:func:`jarvis.runtime.turn.cancel.make_response_cancel_callable`).
 
     ``deadline`` becomes the connection's SQLite ``busy_timeout``. The
     teardown path passes one because it runs on the event-loop thread: an
@@ -716,7 +713,7 @@ def _render_commentary(  # noqa: PLR0913 - the run's identity plus what it says
     if trigger_event.type == "action.dispatched":
         run.link_action(intent.subject_ref)
     # The registry the normal response path registers under
-    # (`jarvis/runtime/__init__.py`), so the commentary run is reachable by id
+    # (`jarvis/runtime/turn/start.py`), so the commentary run is reachable by id
     # like any final run; a runtime without one keeps a private registry.
     registry = runtime.response_runs if runtime.response_runs is not None else ResponseRunRegistry()
     # No subject is in scope for a fixed lifecycle phrase, so the Pre-emit

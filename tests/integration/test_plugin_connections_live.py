@@ -7,7 +7,8 @@ import pytest
 from jarvis.decision.llm import LLMClient, load_llm_config
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import load_env_file
-from jarvis.runtime import JarvisRuntime, drive_turn, run_turn
+from jarvis.runtime import JarvisRuntime
+from jarvis.runtime.turn.drive import drive_turn, run_turn
 from jarvis.state.event_log import get_event
 from tests.support.mcp import ECHO
 from tests.support.plugin_connections import make_service, wait_for_request, write_package

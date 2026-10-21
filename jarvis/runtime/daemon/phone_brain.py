@@ -8,15 +8,14 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from jarvis.runtime import (
-    JarvisRuntime,
-    device_voice,
-    make_barge_in_interrupt_callable,
-    make_foreground_decision_callable,
-)
+from jarvis.runtime import JarvisRuntime, device_voice
 from jarvis.runtime.daemon.output_watchers import PhoneRows, SpokenRows
 from jarvis.runtime.daemon.voice_wiring import VoiceKnobs, minimax_client, tts_volume_kwargs
 from jarvis.runtime.phone_voice import PhoneSpeech
+from jarvis.runtime.turn.cancel import (
+    make_barge_in_interrupt_callable,
+    make_foreground_decision_callable,
+)
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface import terminal_voice, voice_artifact_store, voice_media
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer

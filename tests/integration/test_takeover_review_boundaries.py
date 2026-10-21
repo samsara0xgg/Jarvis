@@ -15,7 +15,7 @@ import pytest
 
 from jarvis import decision
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import make_response_cancel_callable
+from jarvis.runtime.turn.cancel import make_response_cancel_callable
 from jarvis.shared.realtime import AuthorizedDispatch
 from jarvis.state import authorized_dispatch_outbox as outbox
 from jarvis.state.event_log import open_event_log

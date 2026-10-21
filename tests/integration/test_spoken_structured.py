@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import runtime as runtime_module
 from jarvis.decision import _SPOKEN_REPLY_NOTE, SPOKEN_REPLY_FORMAT
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.stream_envelope import compose_envelope
 from jarvis.decision.stream_json import SpokenJsonExtractor
+from jarvis.runtime.turn import drive as drive_module
 from jarvis.state.memory_db import MemorySettings, append_record
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.voice_media import _ResponseBuffer, _ResponseChunk
@@ -533,7 +533,7 @@ def test_the_prefix_warm_gets_the_text_format_the_turn_sent(
 ) -> None:
     """Anthropic's cache is keyed on the text format, so the warm request takes the turn's own."""
     warmed: list[dict[str, Any]] = []
-    monkeypatch.setattr(runtime_module, "_warm_next_prefix", lambda *_a, **kw: warmed.append(kw))
+    monkeypatch.setattr(drive_module, "warm_next_prefix", lambda *_a, **kw: warmed.append(kw))
     with SpokenPeer([[("final_answer", "今天是晴天。")]]) as peer:
         runtime = _preset_runtime(
             tmp_path,

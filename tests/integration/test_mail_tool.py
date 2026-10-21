@@ -21,8 +21,8 @@ from jarvis.decision.turn_guards import REPEATED_CALL, TurnCall, call_key, repea
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.tools import ActionLifecycle, Tool, ToolContext, ToolError, ToolRegistry
-from jarvis.runtime import _fetched_mail
 from jarvis.runtime.home import Home, mail_text
+from jarvis.runtime.turn.finish import fetched_mail
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.state.event_log import emit_event, open_event_log
 from scripts import tool_exam
@@ -493,7 +493,7 @@ def test_a_message_read_by_the_tool_still_shows_as_the_mail_card(tmp_path: Path)
         ),
         conn, paths, lifecycle,
     )
-    record = _fetched_mail(conn, "T1")
+    record = fetched_mail(conn, "T1")
     assert record is not None
     assert record[1] == (
         f"From: {LEE}\nTo: allen@example.com\nDate: 2026-09-25T14:40-07:00\nSubject: Re: Hours\n"

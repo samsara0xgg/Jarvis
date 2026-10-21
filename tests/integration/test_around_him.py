@@ -465,7 +465,7 @@ def test_the_runtime_gives_the_state_block_the_line_and_makes_no_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, google: Google,
 ) -> None:
     """Through the function every turn calls: a kept place under the phone's fix is a line."""
-    from jarvis.runtime import _whereabouts_lines  # noqa: PLC0415
+    from jarvis.runtime.turn.context import whereabouts_lines  # noqa: PLC0415
 
     root = tmp_path / "root"
     root.mkdir()
@@ -479,7 +479,7 @@ def test_the_runtime_gives_the_state_block_the_line_and_makes_no_request(
             runtime.conn, type="phone.location_observed", ingestion_node="iphone",
             payload={"lat": HERE[0], "lng": HERE[1], "accuracy_m": 15.0},
         )
-        assert "Around him: at Home." in _whereabouts_lines(runtime, None)
+        assert "Around him: at Home." in whereabouts_lines(runtime, None)
         assert google.seen == []
     finally:
         runtime.conn.close()

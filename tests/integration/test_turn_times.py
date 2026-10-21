@@ -2,7 +2,7 @@
 
 Acceptance checks over a real event log:
 
-- ``_turn_times`` reads the turn's own rows, as a table of what the turn did to the entries it
+- ``turn_times`` reads the turn's own rows, as a table of what the turn did to the entries it
   gets: reminders it scheduled (``ref`` is the reminder's id, the day line's id for it), Outlook
   events it created or updated without error, the first leave time of its transit card; a turn
   that did none of these, or only failed ones, gets nothing; another turn's rows are not read;
@@ -20,8 +20,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis import runtime as runtime_module
-from jarvis.runtime import _turn_times
+from jarvis.runtime.turn import start as start_module
+from jarvis.runtime.turn.finish import turn_times
 from jarvis.state import reminders
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface.cli import emit_surface_user_intent
@@ -41,7 +41,7 @@ EVENT_ID = "AAMkAGI2TG93AAA="
 @pytest.fixture(autouse=True)
 def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
-    monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    monkeypatch.setattr(start_module, "labels_phases", lambda _base_url: True)
 
 
 def _ms(moment: datetime) -> int:
@@ -130,7 +130,7 @@ def test_each_thing_the_turn_set_or_showed_is_one_time(tmp_path: Path) -> None:
     )
     _card(conn, "T1", "08:20", "2026-10-10T08:00-07:00")
 
-    assert _turn_times(conn, "T1") == [
+    assert turn_times(conn, "T1") == [
         {"kind": "reminder", "at_ms": _ms(due), "label": "给妈妈打电话", "ref": rid},
         {"kind": "event", "at_ms": _ms(datetime(2026, 10, 12, 15, 0, tzinfo=ZONE)),
          "label": "Dentist", "ref": EVENT_ID},
@@ -146,7 +146,7 @@ def test_a_reminders_ref_is_its_reminder_id_the_day_lines_id_for_it(tmp_path: Pa
     conn = open_event_log(tmp_path / "events.db")
     due = datetime(2026, 10, 11, 9, 0, tzinfo=ZONE)
     rid = _reminder(conn, "T1", "A-1", due, "x" * 100)
-    [one] = _turn_times(conn, "T1")
+    [one] = turn_times(conn, "T1")
     assert rid.startswith(reminders.ID_PREFIX)
     assert (one["kind"], one["ref"]) == ("reminder", rid)
     assert len(one["label"]) == 40, "labels are clipped to 40"
@@ -161,7 +161,7 @@ def test_a_move_gives_only_the_new_time(tmp_path: Path) -> None:
     new = _reminder(conn, "T-move", "A-new", new_due, "call mom")
     _proposed(conn, "T-move", "A-cancel", "cancel_reminder", {"reminder_id": old})
     reminders.cancel(conn, old, action_id="A-cancel")
-    assert _turn_times(conn, "T-move") == [
+    assert turn_times(conn, "T-move") == [
         {"kind": "reminder", "at_ms": _ms(new_due), "label": "call mom", "ref": new},
     ]
 
@@ -183,8 +183,8 @@ def test_what_failed_or_cannot_be_read_gives_no_time(tmp_path: Path) -> None:
         payload={"clarification_id": "old", "question": "x", "fields": [], "turn_id": "T1",
                  "trip": {"offer_id": "old", "to": "x", "options": [{"leave_at": "08:00"}]}},
     )
-    assert _turn_times(conn, "T1") == []
-    assert _turn_times(conn, "T-none") == []
+    assert turn_times(conn, "T1") == []
+    assert turn_times(conn, "T-none") == []
 
 
 def test_another_turns_rows_are_not_this_turns(tmp_path: Path) -> None:
@@ -194,7 +194,7 @@ def test_another_turns_rows_are_not_this_turns(tmp_path: Path) -> None:
     _card(conn, "T-other", "08:20", "2026-10-10T08:00-07:00")
     mine = datetime(2026, 10, 11, 10, 0, tzinfo=ZONE)
     rid = _reminder(conn, "T-mine", "A-mine", mine, "mine")
-    assert [t["ref"] for t in _turn_times(conn, "T-mine")] == [rid]
+    assert [t["ref"] for t in turn_times(conn, "T-mine")] == [rid]
 
 
 def test_at_most_five_in_log_order(tmp_path: Path) -> None:
@@ -204,7 +204,7 @@ def test_at_most_five_in_log_order(tmp_path: Path) -> None:
     ids = [
         _reminder(conn, "T1", f"A-{n}", first + timedelta(hours=7 - n), f"r{n}") for n in range(7)
     ]
-    got = _turn_times(conn, "T1")
+    got = turn_times(conn, "T1")
     assert [t["ref"] for t in got] == ids[:5], "the first five as they ran, not the earliest"
     assert [t["label"] for t in got] == ["r0", "r1", "r2", "r3", "r4"]
 

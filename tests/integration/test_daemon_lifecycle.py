@@ -25,9 +25,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import jarvis.runtime as runtime_pkg
 from jarvis.runtime import inherent_loop
 from jarvis.runtime.daemon import intent_pump, voice_power
+from jarvis.runtime.turn.start import start_drive_turn_response
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.surface import voice_media
@@ -161,7 +161,7 @@ def test_a_turn_that_never_ends_cannot_hold_the_shutdown(
 
     def stuck_turn(worker_runtime: Any, *, user_intent_event: Any, **_kw: object) -> None:  # noqa: ANN401
         """A model call that does not return: it opens its run, then waits for ``forever``."""
-        runtime_pkg._start_drive_turn_response(  # noqa: SLF001
+        start_drive_turn_response(
             worker_runtime,
             user_intent_event=user_intent_event,
             turn_id=str(user_intent_event.payload["turn_id"]),

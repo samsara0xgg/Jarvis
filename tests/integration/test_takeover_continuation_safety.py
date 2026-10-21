@@ -15,16 +15,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-import jarvis.runtime as runtime_module
 from jarvis.decision import DecideContext, _append_cost_recorded
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.execution import tools as execution_tools
-from jarvis.runtime import (
-    _start_drive_turn_response,
-    drive_turn,
-    make_response_cancel_callable,
-)
 from jarvis.runtime.daemon import intent_pump, sweep
+from jarvis.runtime.turn import drive as drive_module
+from jarvis.runtime.turn.cancel import make_response_cancel_callable
+from jarvis.runtime.turn.drive import drive_turn
+from jarvis.runtime.turn.start import start_drive_turn_response
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.trigger_consumption import mark_trigger_consumed, trigger_was_consumed
 from tests.support.hold import HANG_S
@@ -76,7 +74,7 @@ def test_cancel_deadline_includes_admission_lock(tmp_path: Path) -> None:
     """A blocked admission fence consumes the same total budget as SQLite setup."""
     runtime = make_runtime(tmp_path, cancel_timeout_ms=50)
     intent = emit_intent(runtime.conn, "lock-budget", "fixture")
-    opened = _start_drive_turn_response(runtime, user_intent_event=intent, turn_id="lock-budget")
+    opened = start_drive_turn_response(runtime, user_intent_event=intent, turn_id="lock-budget")
     assert opened is not None
     run, _terminalizer, _route = opened
     cancel = make_response_cancel_callable(runtime)
@@ -145,7 +143,7 @@ async def _held_terminal_scenario(  # noqa: PLR0915 - live-turn and orphan watch
             raise sqlite3.OperationalError(message)
         mark(conn, uid, turn_id)
 
-    monkeypatch.setattr(runtime_module, "mark_trigger_consumed", marker)
+    monkeypatch.setattr(drive_module, "mark_trigger_consumed", marker)
     execution_tools.register_live_action(turn_id="held-turn", action_id="held-action")
     terminal = emit_event(
         runtime.conn,

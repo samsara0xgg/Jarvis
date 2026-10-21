@@ -28,7 +28,7 @@ import pytest
 from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, WaitingTurn
+from jarvis.runtime import JarvisRuntime
 from jarvis.runtime.daemon import intent_pump, sweep
 from jarvis.runtime.daemon.intent_pump import (
     IntentPumpBoot,
@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from jarvis.runtime.turn.wait import WaitingTurn
     from jarvis.shared import Event
 
 

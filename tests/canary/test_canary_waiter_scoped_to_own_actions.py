@@ -9,12 +9,12 @@ orphan's correlation, and end with a limitation about work it never did.
 
 Two filters, one key. This canary pins all three parts:
 
-1. ``_wait_for_next_trigger`` takes ``action_ids`` and tests membership
+1. ``wait_for_next_trigger`` takes ``action_ids`` and tests membership
    against it before returning a row — the turn accepts only actions it
    dispatched.
 2. ``system_trigger_watcher`` skips rows whose action_id IS in
    ``live_action_ids()`` — the exact complement.
-3. Both read the action_id through the same ``_event_action_id`` helper.
+3. Both read the action_id through the same ``event_action_id`` helper.
    Two hand-rolled extractors that disagree (correlation-only here,
    payload-fallback there) would reopen the hole from the other side: a
    row both filters reject is a turn that hangs until its 5 s timeout and
@@ -22,7 +22,7 @@ Two filters, one key. This canary pins all three parts:
 
 A fourth assertion keeps the fix honest about its own blast radius: the
 waiter must gain a *filter*, never a trigger type. ``drive_turn`` has to
-pass ``action_ids=`` at the call site, and ``_RUNTIME_TRIGGER_TYPES``
+pass ``action_ids=`` at the call site, and ``RUNTIME_TRIGGER_TYPES``
 stays the business of ``test_canary_runtime_trigger_types``.
 
 Implementation: stdlib AST only — no jarvis imports, no mock.
@@ -34,14 +34,15 @@ import ast
 
 from tests.canary._helpers import parse, repo_root
 
-_RUNTIME_RELPATH: str = "jarvis/runtime/__init__.py"
+_WAIT_RELPATH: str = "jarvis/runtime/turn/wait.py"
+_DRIVE_RELPATH: str = "jarvis/runtime/turn/drive.py"
 _SWEEP_RELPATH: str = "jarvis/runtime/daemon/sweep.py"
 
-_WAITER_FN: str = "_wait_for_next_trigger"
+_WAITER_FN: str = "wait_for_next_trigger"
 _DRIVE_TURN_FN: str = "drive_turn"
 _SYSTEM_WATCHER_FN: str = "system_trigger_watcher"
 _ACTION_IDS_PARAM: str = "action_ids"
-_ACTION_ID_EXTRACTOR: str = "_event_action_id"
+_ACTION_ID_EXTRACTOR: str = "event_action_id"
 _LIVE_SET_CALL: str = "live_action_ids"
 
 
@@ -102,11 +103,11 @@ def _compares_against_call(compare: ast.Compare, *, name: str) -> bool:
 
 
 def test_canary_waiter_takes_and_applies_an_action_id_filter() -> None:
-    """``_wait_for_next_trigger`` MUST filter candidate rows by ``action_ids``."""
-    module = parse(repo_root() / _RUNTIME_RELPATH)
+    """``wait_for_next_trigger`` MUST filter candidate rows by ``action_ids``."""
+    module = parse(repo_root() / _WAIT_RELPATH)
     waiter = _find_function_def(module, name=_WAITER_FN)
     assert waiter is not None, (
-        f"{_RUNTIME_RELPATH} must define a top-level {_WAITER_FN!r}."
+        f"{_WAIT_RELPATH} must define a top-level {_WAITER_FN!r}."
     )
 
     kwonly = [arg.arg for arg in waiter.args.kwonlyargs]
@@ -143,10 +144,10 @@ def test_canary_waiter_takes_and_applies_an_action_id_filter() -> None:
 
 def test_canary_drive_turn_scopes_the_waiter_to_its_own_actions() -> None:
     """``drive_turn`` MUST pass ``action_ids=`` at every waiter call site."""
-    module = parse(repo_root() / _RUNTIME_RELPATH)
+    module = parse(repo_root() / _DRIVE_RELPATH)
     drive_turn = _find_function_def(module, name=_DRIVE_TURN_FN)
     assert drive_turn is not None, (
-        f"{_RUNTIME_RELPATH} must define a top-level {_DRIVE_TURN_FN!r}."
+        f"{_DRIVE_RELPATH} must define a top-level {_DRIVE_TURN_FN!r}."
     )
 
     waiter_calls = _iter_calls_with_name(drive_turn, name=_WAITER_FN)

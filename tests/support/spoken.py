@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Self
 
 import pytest
 
-from jarvis import runtime as runtime_module
+from jarvis.runtime.turn import start as start_module
 from jarvis.state.event_log import emit_event
 from tests.support.routine import routine_runtime
 
@@ -209,7 +209,7 @@ class SpokenPeer:
 def fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
     # The peer is localhost; the route opens only where messages carry labels.
-    monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    monkeypatch.setattr(start_module, "labels_phases", lambda _base_url: True)
 
 
 def spoken_runtime(

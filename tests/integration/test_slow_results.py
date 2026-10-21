@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from jarvis.decision.response_run import decide_foreground
-from jarvis.runtime import make_foreground_decision_callable
+from jarvis.runtime.turn.cancel import make_foreground_decision_callable
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.turn_overlap import any_turn_in_flight, turns_in_flight

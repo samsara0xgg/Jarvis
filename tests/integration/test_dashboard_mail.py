@@ -13,10 +13,10 @@ from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import ChatResult
 from jarvis.execution.tools import ToolContext, ToolError, build_default_registry
-from jarvis.runtime import _live_lines
 from jarvis.runtime.daemon.routes import mail_letter, mail_summary
 from jarvis.runtime.dashboard import DRAFT_CHARS, DRAFT_LINE_CHARS, MailDrafts, ViewState
 from jarvis.runtime.home import Home, mail_layout, mail_summarizer
+from jarvis.runtime.turn.context import live_lines
 from jarvis.shared import CallerPrincipal, lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -67,11 +67,11 @@ def test_live_lines_skip_none_and_a_raising_producer_and_cap_at_200(
 
     draft = "Draft reply under it (revision 3, last edited by Allen): " + "y" * 3000
     with caplog.at_level(logging.ERROR, logger="jarvis.runtime"):
-        lines = _live_lines((lambda: "a" * 500, lambda: None, boom, lambda: "", lambda: draft))
+        lines = live_lines((lambda: "a" * 500, lambda: None, boom, lambda: "", lambda: draft))
     assert [len(one) for one in lines] == [200, DRAFT_LINE_CHARS]
     assert lines[1].startswith("Draft reply under it (revision 3")
     assert "a producer failed" in caplog.text
-    assert _live_lines(()) == ()
+    assert live_lines(()) == ()
 
 
 def test_the_switch_is_off_unless_dashboard_mail_enabled_is_true() -> None:

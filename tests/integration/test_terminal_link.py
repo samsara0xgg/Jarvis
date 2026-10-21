@@ -38,10 +38,11 @@ from jarvis.execution.tools import (
     build_default_registry,
     make_screen_capture,
 )
-from jarvis.runtime import _make_entity_resolver, _sound_output, audio_output
+from jarvis.runtime import _sound_output, audio_output
 from jarvis.runtime.night_run import NightRun, NightSettings
 from jarvis.runtime.reminders import Reminders
 from jarvis.runtime.terminal import _declared, make_executor
+from jarvis.runtime.turn.context import make_entity_resolver
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.state.device_tokens import (
     device_name_for_token,
@@ -416,7 +417,7 @@ def test_a_brain_resolves_a_spoken_file_name_on_the_terminal(tmp_path: Path) -> 
     async def scenario() -> tuple[Any, Any, Any]:
         hub = TerminalHub(call_timeout_s=5)
         conn = open_event_log(tmp_path / "events.db")
-        resolve = _make_entity_resolver(conn, hub)
+        resolve = make_entity_resolver(conn, hub)
         before = await asyncio.to_thread(resolve, "my notes")
         _FakeTerminal(hub, {"resolve_file"}, _ok({"path": "/Users/a/notes.md", "source": "search"}))
         found = await asyncio.to_thread(resolve, "my notes")

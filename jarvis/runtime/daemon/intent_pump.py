@@ -12,16 +12,15 @@ from typing import TYPE_CHECKING, Final
 
 from jarvis.decision.pre_route import typed_turn
 from jarvis.decision.response_run import ResponseCancelledError
-from jarvis.runtime import (
-    JarvisRuntime,
+from jarvis.runtime.daemon.output_watchers import emit_turn_failed
+from jarvis.runtime.daemon.polling import WATCHER_RETRY_S
+from jarvis.runtime.turn.drive import drive_turn
+from jarvis.runtime.turn.wait import (
     TriggerWaitTimeout,
     TurnSuspended,
     WaitingTurn,
-    _wait_for_next_trigger,
-    drive_turn,
+    wait_for_next_trigger,
 )
-from jarvis.runtime.daemon.output_watchers import emit_turn_failed
-from jarvis.runtime.daemon.polling import WATCHER_RETRY_S
 from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.state import reactions
 from jarvis.state.event_log import (
@@ -44,6 +43,7 @@ from jarvis.state.turn_overlap import turns_in_flight
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from jarvis.runtime import JarvisRuntime
     from jarvis.shared import Event
 
 LOGGER = logging.getLogger(__name__)
@@ -397,7 +397,7 @@ def _poll_waiting_turn(runtime: JarvisRuntime, waiting: WaitingTurn) -> WaitingT
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
         try:
-            event, cursor = _wait_for_next_trigger(
+            event, cursor = wait_for_next_trigger(
                 conn, after_id=waiting.after_id, action_ids=waiting.action_ids,
                 lifecycle=runtime.lifecycle, timeout=0,
             )

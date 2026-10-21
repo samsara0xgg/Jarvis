@@ -27,7 +27,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis import runtime as runtime_module
 from jarvis.execution import maps_spend, places_api, transit_tool
 from jarvis.execution.tools import (
     ToolError,
@@ -35,6 +34,7 @@ from jarvis.execution.tools import (
     register_live_action,
     release_turn_actions,
 )
+from jarvis.runtime.turn import start as start_module
 from jarvis.state.event_log import open_event_log
 from jarvis.state.phone_location import NoPhoneReport
 from jarvis.surface.cli import emit_surface_user_intent
@@ -662,7 +662,7 @@ def test_at_most_eight_places_the_latest_and_none_twice(
 def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fixture key."""
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
-    monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    monkeypatch.setattr(start_module, "labels_phases", lambda _base_url: True)
 
 
 @pytest.mark.usefixtures("_fixture_key")

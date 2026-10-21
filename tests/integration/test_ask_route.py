@@ -20,8 +20,8 @@ import httpx
 import pytest
 
 from jarvis.deployment import bootstrap_runtime
-from jarvis.runtime import _new_turn_id
 from jarvis.runtime.daemon import live_backend, output_watchers
+from jarvis.runtime.turn.start import new_turn_id
 from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.plugin_settings import local_key_matches
 from jarvis.surface import inherent_server
@@ -196,7 +196,7 @@ class _Daemon:
         def submit(text: str) -> str:
             """The daemon's `submit_callable`: a fresh turn id, one `surface.user_intent` row."""
             self.submitted.append(text)
-            turn_id = _new_turn_id()
+            turn_id = new_turn_id()
             conn = open_event_log(self.paths.event_log)
             try:
                 emit_surface_user_intent(conn, transcript=text, turn_id=turn_id)

@@ -19,7 +19,8 @@ from jarvis.decision.response_run import (
 )
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, drive_turn
+from jarvis.runtime import JarvisRuntime
+from jarvis.runtime.turn.drive import drive_turn
 from jarvis.shared.realtime import stable_response_group_id
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log

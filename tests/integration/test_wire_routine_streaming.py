@@ -24,9 +24,7 @@ from jarvis import decision as decision_module
 from jarvis.decision.gates import ResponsePlan
 from jarvis.decision.response_run import ResponseCancelledError
 from jarvis.decision.stream_envelope import compose_envelope
-from jarvis.runtime import (
-    make_response_cancel_callable,
-)
+from jarvis.runtime.turn.cancel import make_response_cancel_callable
 from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface import voice_media
 from jarvis.surface.cli import parse_response_channels, record_pre_emit_token

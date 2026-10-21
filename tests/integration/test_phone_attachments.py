@@ -40,8 +40,10 @@ from jarvis.decision.llm_session import LLMSessionFactory
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.deployment import bootstrap_runtime, data
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, _live_lines, _record_words, _shares_line
+from jarvis.runtime import JarvisRuntime, _shares_line
 from jarvis.runtime.daemon import retention, routes
+from jarvis.runtime.turn.context import live_lines
+from jarvis.runtime.turn.finish import record_words
 from jarvis.shared import llm_io_log
 from jarvis.state import attachments as attachments_module
 from jarvis.state.attachments import (
@@ -557,7 +559,7 @@ def test_saved_shares_reach_the_model_in_the_state_block(tmp_path: Path) -> None
     d.remote.post("/inherent/share", headers=d.auth(), json={
         "url": "https://example.com/menu", "title": "Menu", "note": "for friday",
     })
-    lines = _live_lines((functools.partial(_shares_line, d.log),))
+    lines = live_lines((functools.partial(_shares_line, d.log),))
 
     model = _turn_without_files_with_live(d, "what did I send you?", lines)
 
@@ -625,11 +627,11 @@ def test_the_memory_record_names_the_files(tmp_path: Path) -> None:
     picture = store.save(PNG, "IMG_9.png", images_ok=True)
     notes = store.save(NOTES, "notes.txt", images_ok=True)
 
-    assert _record_words(store, {"transcript": "look", "attachments": [picture.id, notes.id]}) == (
+    assert record_words(store, {"transcript": "look", "attachments": [picture.id, notes.id]}) == (
         "look\n[attached: image IMG_9.png, text notes.txt]"
     )
-    assert _record_words(store, {"transcript": "look"}) == "look"
-    assert _record_words(None, {"transcript": "look", "attachments": [picture.id]}) == "look"
+    assert record_words(store, {"transcript": "look"}) == "look"
+    assert record_words(None, {"transcript": "look", "attachments": [picture.id]}) == "look"
 
 
 def _runtime(tmp_path: Path, config: dict[str, Any]) -> JarvisRuntime:

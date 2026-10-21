@@ -11,11 +11,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
-from jarvis.runtime import make_foreground_decision_callable
 from jarvis.runtime.daemon.devices import output_or_default
 from jarvis.runtime.daemon.output_watchers import TTS_SILENT_CHANNELS
 from jarvis.runtime.daemon.voice_power import SingleIngressActivation
 from jarvis.runtime.dictation import COMMAND_PROMPT, load_user_terms, whisper_ears
+from jarvis.runtime.turn.cancel import make_foreground_decision_callable
 from jarvis.state.event_log import latest_id, open_runtime_event_log
 from jarvis.surface import (
     voice_aec,

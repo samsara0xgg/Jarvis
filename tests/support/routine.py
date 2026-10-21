@@ -16,7 +16,8 @@ from jarvis.decision.pre_route import load_tool_cues
 from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import JarvisRuntime, drive_turn
+from jarvis.runtime import JarvisRuntime
+from jarvis.runtime.turn.drive import drive_turn
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from tests.support.runtime_config import runtime_config

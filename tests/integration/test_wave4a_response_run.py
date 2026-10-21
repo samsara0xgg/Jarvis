@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis import runtime as runtime_module
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm_session import (
     LLMSessionFactory,
@@ -50,11 +49,9 @@ from jarvis.decision.response_run import (
 from jarvis.execution.tools import (
     register_live_action,
 )
-from jarvis.runtime import (
-    JarvisRuntime,
-    drive_turn,
-    make_response_cancel_callable,
-)
+from jarvis.runtime.turn import drive as drive_module
+from jarvis.runtime.turn.cancel import make_response_cancel_callable
+from jarvis.runtime.turn.drive import drive_turn
 from jarvis.shared.realtime import (
     AlreadyTerminal,
     TerminalCommitted,
@@ -90,6 +87,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
+    from jarvis.runtime import JarvisRuntime
     from jarvis.shared import Event
     from jarvis.shared.realtime import TerminalOutcome
 
@@ -611,7 +609,7 @@ def test_completed_without_delivery_when_render_raises(
         msg = "render exploded"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(runtime_module, "render_response", _boom)
+    monkeypatch.setattr(drive_module, "render_response", _boom)
     intent = emit_intent(runtime.conn, "T-render")
 
     with pytest.raises(RuntimeError, match="render exploded"):
@@ -887,7 +885,7 @@ def test_cancel_winning_the_completion_cas_never_renders(
     def _record_render(*_args: object, **kwargs: object) -> None:
         rendered.append(kwargs)
 
-    monkeypatch.setattr(runtime_module, "render_response", _record_render)
+    monkeypatch.setattr(drive_module, "render_response", _record_render)
 
     real_complete = ResponseTerminalizer.complete
 

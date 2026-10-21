@@ -7,8 +7,8 @@ from contextlib import closing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from jarvis.runtime import JarvisRuntime, drive_turn
 from jarvis.runtime.picture_notes import PictureNotes
+from jarvis.runtime.turn.drive import drive_turn
 from jarvis.shared import lang
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, Attachments
 from jarvis.state.memory_db import MemorySettings
@@ -19,6 +19,8 @@ from tests.support.response_run import make_runtime
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from jarvis.runtime import JarvisRuntime
 
 WORDS = "这是什么"
 

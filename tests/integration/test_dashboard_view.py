@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.tools import ToolContext, ToolError
-from jarvis.runtime import _live_lines
 from jarvis.runtime.dashboard import (
     CLOSE,
     PAGES,
@@ -23,6 +22,7 @@ from jarvis.runtime.dashboard import (
     VIEW_STALE_S,
     ViewState,
 )
+from jarvis.runtime.turn.context import live_lines
 from jarvis.shared import CallerPrincipal
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
@@ -127,9 +127,9 @@ def test_the_view_goes_stale_after_sixty_seconds_and_a_close_clears_it() -> None
 
 
 def test_the_live_context_lets_the_view_line_run_to_1200_and_the_rest_to_200() -> None:
-    """``_live_lines`` caps by what the line is."""
+    """``live_lines`` caps by what the line is."""
     view_line = "Dashboard: Allen is on the Mail page. " + "z" * 3000
-    lines = _live_lines((lambda: "a" * 500, lambda: view_line))
+    lines = live_lines((lambda: "a" * 500, lambda: view_line))
     assert [len(one) for one in lines] == [200, VIEW_LINE_CHARS]
 
 

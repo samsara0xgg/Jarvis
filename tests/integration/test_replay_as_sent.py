@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from jarvis import runtime as runtime_module
+from jarvis.runtime.turn import start as start_module
 from jarvis.state.memory_db import (
     MemorySettings,
     append_record,
@@ -34,7 +34,7 @@ _SENT_HEAD = "[State when this was said | from the program, not the user's words
 @pytest.fixture(autouse=True)
 def _fixture_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROUTINE_STREAM_FIXTURE_KEY", "synthetic")
-    monkeypatch.setattr(runtime_module, "_labels_phases", lambda _base_url: True)
+    monkeypatch.setattr(start_module, "labels_phases", lambda _base_url: True)
 
 
 def _two_turns(tmp_path: Path, *, replay_sent: bool) -> tuple[dict[str, Any], dict[str, Any]]:

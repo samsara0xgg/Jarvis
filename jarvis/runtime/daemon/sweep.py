@@ -9,14 +9,16 @@ from typing import TYPE_CHECKING
 
 from jarvis.deployment.sleep_wake import sweep_overdue_actions
 from jarvis.execution.tools import live_action_ids
-from jarvis.runtime import JarvisRuntime, _event_action_id, _new_turn_id
 from jarvis.runtime.daemon.intent_pump import drive_turn_in_worker_thread
 from jarvis.runtime.daemon.output_watchers import emit_turn_failed
 from jarvis.runtime.daemon.polling import DEFAULT_POLL_INTERVAL_S, WATCHER_RETRY_S
+from jarvis.runtime.turn.start import new_turn_id
+from jarvis.runtime.turn.wait import event_action_id
 from jarvis.state.event_log import fetch_events_after, latest_id
 from jarvis.state.trigger_consumption import trigger_was_consumed
 
 if TYPE_CHECKING:
+    from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.session_compaction import CompactionSweep
     from jarvis.shared import Event
 
@@ -69,7 +71,7 @@ def system_trigger_event(terminal_event: Event) -> Event:
 
     In-memory only — the append-only log row is never rewritten. The copy
     carries a freshly-minted ``turn_id`` in BOTH slots because the turn
-    machinery reads it from two places: :func:`jarvis.runtime.drive_turn`
+    machinery reads it from two places: :func:`jarvis.runtime.turn.drive.drive_turn`
     from ``payload["turn_id"]``, and L3's
     ``_handle_action_terminal_failure`` from ``correlation["turn_id"]``
     (whose fallback, the packet's ``current_turn_id``, would be some
@@ -77,7 +79,7 @@ def system_trigger_event(terminal_event: Event) -> Event:
     left untouched, so the Limitation claim's evidence still points at
     the real ``action.timeout_assumed`` row.
     """
-    turn_id = _new_turn_id()
+    turn_id = new_turn_id()
     return dataclasses.replace(
         terminal_event,
         payload={**terminal_event.payload, "turn_id": turn_id},
@@ -106,9 +108,9 @@ async def system_trigger_watcher(
        orphan closure would emit events and drive nothing, silently.
     2. **It handles only events NO live turn owns.** ``action_id`` in the
        live set means an in-flight turn's waiter is going to consume that
-       row (:func:`jarvis.runtime._wait_for_next_trigger` filters on
+       row (:func:`jarvis.runtime.turn.wait.wait_for_next_trigger` filters on
        exactly the complement, through the same
-       :func:`jarvis.runtime._event_action_id` key), so this watcher
+       :func:`jarvis.runtime.turn.wait.event_action_id` key), so this watcher
        skips it and advances the cursor past it. The two predicates
        partition the terminal-event stream: no row is claimed twice, and
        no row with an ``action_id`` is dropped by both.
@@ -143,7 +145,7 @@ async def system_trigger_watcher(
                     # reaching the outer handler came from this row's checks:
                     # the next poll resumes at this row, not past the batch.
                     resume_id, after_id = after_id, max(after_id, row_id)
-                    action_id = _event_action_id(ev)
+                    action_id = event_action_id(ev)
                     if action_id is None:
                         continue
                     if action_id in live_action_ids():

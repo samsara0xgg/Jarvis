@@ -7,7 +7,7 @@ back through the daemon's watchers (which invoke the REAL LLM). See
 ADR-0003 § Step 2 D11 (``docs/adr/0003-inherent-text.md``) for the
 canonical envelope mapping.
 
-Marked ``live_llm`` because :func:`jarvis.runtime.drive_turn` issues a
+Marked ``live_llm`` because :func:`jarvis.runtime.turn.drive.drive_turn` issues a
 real LLM call inside the daemon's intent pump thread; the test
 is skipped by default in CI without credentials.
 """
