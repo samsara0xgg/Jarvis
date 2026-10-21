@@ -10,10 +10,11 @@ frames go in through ``POST /inherent/device/events`` as they do from his phone,
   long stay it starts at the first move, and with none after it it is still going; across midnight
   it is whole on both days; the stays carry the day line's ids;
 - the route: the device with the most fixes, its track and the sampled fixes where the track has
-  none, a bad or simulated fix left out, a gap reported and its straight line counted, speeds as
-  10 s means with the top speed their highest, and a simplification that leaves no dropped fix more
-  than 5 m from the kept points;
-- heart rate against the same day at his kept home;
+  none, a bad or simulated fix left out, run on into the stay after while it still closes in, a
+  gap reported with the stops in it left out and its straight line counted, the distance from
+  stay to stay, speeds as 10 s means with the top speed their highest, and a simplification that
+  leaves no dropped fix more than 5 m from the kept points;
+- heart rate against the same day at his kept home, awake;
 - the route itself: no date is today, a bad date is a 400, and the guard is the day's.
 
 Every position is made up, in metres from an origin that is nowhere in particular, and every fix
@@ -64,6 +65,7 @@ MINUTE = 60 * SECOND
 HOUR = 60 * MINUTE
 VISIT, MOTION = "phone.visit_observed", "phone.motion_observed"
 SAMPLED, MEASURE = "phone.location_observed", "phone.measure_observed"
+HEALTH = "phone.health_observed"
 TRACK = "phone.track_observed"
 FOOTPRINT = "/inherent/footprint"
 DAY = datetime.now(ZONE).date() - timedelta(days=2)  # past, and inside the week a phone is trusted
@@ -204,13 +206,22 @@ def beat(number: int, at: int, bpm: float, *, length: int = 0, uuid: int | None 
     }, at + length)
 
 
-def trip(clock: Clock, minutes: int, *, hour: int = 8) -> list[dict[str, Any]]:
-    """Home until ``hour``:00, one drive of ``minutes``, then home again for three hours."""
+def slept(number: int, start: int, end: int) -> dict[str, Any]:
+    """A core sleep stage of the Watch from ``start`` to ``end``."""
+    return frame(u(number), HEALTH, {
+        "metric": "sleep", "start_ms": start, "end_ms": end, "value": 3, "detail": "core",
+    }, end)
+
+
+def trip(
+    clock: Clock, minutes: int, *, hour: int = 8, to: tuple[float, float] = HOME,
+) -> list[dict[str, Any]]:
+    """Home until ``hour``:00, one drive of ``minutes``, then three hours ``to`` (home again)."""
     left, back = clock(hour), clock(hour, minutes)
     return [
         visit(HOME_AM, clock(hour - 2), left, HOME),
         move(u(3), "automotive", left, back),
-        visit(HOME_PM, back, clock(hour + 3, minutes), HOME),
+        visit(HOME_PM, back, clock(hour + 3, minutes), to),
     ]
 
 
@@ -490,6 +501,8 @@ def test_a_stretch_is_an_outing_only_with_a_move_in_it_or_300_metres_between_its
     assert [(o["start_ms"], o["end_ms"]) for o in body["outings"]] == [
         (clock(8), clock(8, 10)), (clock(9), clock(9, 20)),
     ]
+    # no fix at all: the distance is the straight line from stay to stay
+    assert [o["distance_m"] for o in body["outings"]] == [pytest.approx(700, abs=0.1), 0]
 
 
 def test_a_drive_motion_never_named_is_an_outing_its_speed_names(tmp_path: Path) -> None:
@@ -630,7 +643,7 @@ def test_an_outing_across_midnight_is_whole_on_both_days(tmp_path: Path) -> None
     brain.send("iphone", [
         visit(HOME_AM, midnight - 4 * HOUR, left, HOME),
         move(u(3), "automotive", left, back),
-        visit(HOME_PM, back, back + 4 * HOUR, HOME),
+        visit(HOME_PM, back, back + 4 * HOUR, fixes[-1].where),
         *brain.ride(fixes),
     ])
 
@@ -726,7 +739,7 @@ def test_a_gap_is_reported_and_its_straight_line_counts_in_the_distance(tmp_path
     left = clock(8)
     before = run(left, range(241), eastward(10.0))  # 2,400 m in four minutes
     after = run(left, range(540, 781), lambda t: (3900.0 + 10.0 * (t - 540), 0.0))  # 1,500 m on
-    brain.send("iphone", [*trip(clock, 20), *brain.ride([*before, *after])])
+    brain.send("iphone", [*trip(clock, 20, to=after[-1].where), *brain.ride([*before, *after])])
 
     outing = only(brain.footprint(DAY)["outings"])
 
@@ -750,13 +763,90 @@ def test_a_halt_or_a_brief_hole_in_the_fixes_is_no_gap(tmp_path: Path) -> None:
         *run(left, range(210, 271), lambda t: (850.0 + 10.0 * (t - 210), 0.0)),  # 150 s, 250 m on
         *run(left, range(330, 391), lambda t: (1450.0 + 10.0 * (t - 270), 0.0)),  # 60 s, 600 m on
     ]
-    brain.send("iphone", [*trip(clock, 10), *brain.ride(fixes)])
+    brain.send("iphone", [*trip(clock, 10, to=fixes[-1].where), *brain.ride(fixes)])
 
     outing = only(brain.footprint(DAY)["outings"])
 
     assert outing["gaps"] == []
     assert outing["distance_m"] == pytest.approx(2650, abs=0.5)
     assert [outing["points"][0][0], outing["points"][-1][0]] == [fixes[0].at, fixes[-1].at]
+
+
+def test_a_gap_leaves_out_the_stops_in_it(tmp_path: Path) -> None:
+    """GPS was off through two stops: only the time on the road with no fix is a gap.
+
+    The first stop's last fix is at its start, and the next is 1.8 km on, three minutes after he
+    left it: the gap is those three minutes. The second stop ends at the next fix, 400 m on: no
+    time is left on the road, and there is no gap.
+    """
+    brain, clock = Brain(tmp_path), Clock(DAY)
+    fixes = [
+        *run(clock(8), range(0, 301, 30), eastward(10.0)),  # 3 km to the first stop at 08:05
+        *run(clock(8, 16), range(0, 121, 30), lambda t: (4800.0 + 10.0 * t, 0.0)),  # to 6 km
+        *run(clock(8, 25), range(0, 181, 30), lambda t: (6400.0 + 10.0 * t, 0.0)),  # to 8.2 km
+    ]
+    brain.send("iphone", [
+        visit(HOME_AM, clock(6), clock(8), HOME),
+        move(u(3), "automotive", clock(8), clock(8, 28)),
+        visit(u(31), clock(8, 5), clock(8, 13), spot(3000)),
+        visit(u(32), clock(8, 18), clock(8, 25), spot(6000)),
+        visit(HOME_PM, clock(8, 28), clock(11), spot(8200)),
+        *brain.samples(fixes),
+    ])
+
+    outing = only(brain.footprint(DAY)["outings"])
+
+    assert [stop["id"] for stop in outing["stops"]] == [u(31), u(32)]
+    assert outing["gaps"] == [{"start_ms": clock(8, 13), "end_ms": clock(8, 16)}]
+    assert outing["distance_m"] == pytest.approx(8200, abs=0.5)
+
+
+def test_the_route_runs_on_into_the_stay_after_while_his_fixes_still_close_in_on_it(
+    tmp_path: Path,
+) -> None:
+    """His arrival is dated half a minute before he is there: the outing runs on to it.
+
+    At the stay's start he is still 400 m out. The next fix is 100 m out, inside the stay's
+    150 m: there he arrived. The one after it, nearer still, is him at the place, not on the way.
+    """
+    brain, clock = Brain(tmp_path), Clock(DAY)
+    there = spot(6400)
+    fixes = [*run(clock(8), range(0, 631, 30), eastward(10.0)), Fix(clock(8, 11), 6400.0)]
+    brain.send("iphone", [
+        visit(HOME_AM, clock(6), clock(8), HOME),
+        move(u(3), "automotive", clock(8), clock(8, 10)),
+        visit(u(31), clock(8, 10), clock(11), there),
+        *brain.samples(fixes),
+    ])
+
+    body = brain.footprint(DAY)
+
+    outing = only(body["outings"])
+    assert (outing["start_ms"], outing["end_ms"]) == (clock(8), clock(8, 10, 30))
+    stays = {stay["id"]: stay for stay in body["stays"]}
+    assert outing["to_stay"] == u(31)
+    assert stays[u(31)]["start_ms"] == clock(8, 10)  # the day line's stay, as iOS dated it
+    assert outing["points"][-1][0] == clock(8, 10, 30)
+    assert outing["distance_m"] == pytest.approx(6400, abs=0.5)
+    assert outing["moving_ms"] == 10 * MINUTE + 30 * SECOND
+
+
+def test_the_distance_runs_from_stay_to_stay_where_the_phone_woke_gps_late(tmp_path: Path) -> None:
+    """GPS woke 500 m out of home and the fixes end 300 m short: both straight lines count."""
+    brain, clock = Brain(tmp_path), Clock(DAY)
+    fixes = run(clock(8, 1), range(0, 251, 25), lambda t: (500.0 + 10.0 * t, 0.0))  # to 3 km
+    brain.send("iphone", [
+        visit(HOME_AM, clock(6), clock(8), HOME),
+        move(u(3), "automotive", clock(8), clock(8, 6)),
+        visit(u(31), clock(8, 6), clock(11), spot(3300)),
+        *brain.samples(fixes),
+    ])
+
+    outing = only(brain.footprint(DAY)["outings"])
+
+    assert [outing["points"][0][0], outing["points"][-1][0]] == [fixes[0].at, fixes[-1].at]
+    assert outing["distance_m"] == pytest.approx(500 + 2500 + 300, abs=0.5)
+    assert outing["gaps"] == []
 
 
 def test_bad_and_simulated_fixes_are_left_out_of_the_route_and_the_distance(tmp_path: Path) -> None:
@@ -770,7 +860,9 @@ def test_bad_and_simulated_fixes_are_left_out_of_the_route_and_the_distance(tmp_
     fixes[40] = fixes[40]._replace(flags=2)  # produced by an accessory
     fixes[50] = fixes[50]._replace(accuracy=200.0)
     sampled = [Fix(left + 300 * SECOND, 3000.0, accuracy=80.0), Fix(left + 330 * SECOND, 3300.0)]
-    brain.send("iphone", [*trip(clock, 10), *brain.ride(fixes), *brain.samples(sampled)])
+    brain.send("iphone", [
+        *trip(clock, 10, to=sampled[1].where), *brain.ride(fixes), *brain.samples(sampled),
+    ])
 
     outing = only(brain.footprint(DAY)["outings"])
 
@@ -851,18 +943,21 @@ def _steady(heading: str) -> Callable[[int], tuple[float, float]]:
 def test_a_straight_run_at_a_steady_pace_is_its_two_ends(tmp_path: Path, heading: str) -> None:
     """Fixes a couple of metres off the line are all within 5 m of it: only the ends are points.
 
-    The distance is the line's, 3 km: the jitter between the fixes, 88 m of it here, is no road.
+    The distance is the line's, 3 km from 2 m off home: the jitter between the fixes, 88 m of it
+    here, is no road.
     """
     brain, clock = Brain(tmp_path), Clock(DAY)
     fixes = run(clock(8), range(301), _steady(heading), speed=10.0)
-    brain.send("iphone", [*trip(clock, 10), *brain.ride(fixes)])
+    brain.send("iphone", [*trip(clock, 10, to=fixes[-1].where), *brain.ride(fixes)])
 
     outing = only(brain.footprint(DAY)["outings"])
 
     assert [point[0] for point in outing["points"]] == [fixes[0].at, fixes[-1].at]
     assert [point[3] for point in outing["points"]] == [10.0, 10.0]
     assert outing["max_speed_mps"] == 10.0
-    assert outing["distance_m"] == pytest.approx(metres(fixes[0].where, fixes[-1].where), abs=0.1)
+    assert outing["distance_m"] == pytest.approx(
+        metres(HOME, fixes[0].where) + metres(fixes[0].where, fixes[-1].where), abs=0.1,
+    )
     assert reach(fixes) - outing["distance_m"] > 50
 
 
@@ -941,7 +1036,7 @@ def test_a_route_longer_than_twelve_hours_is_read_whole_across_the_edge_of_the_w
              for i, at in enumerate(times)]
     brain.send("iphone", [
         visit(HOME_AM, clock(6), left, HOME),
-        visit(HOME_PM, fixes[-1].at, fixes[-1].at + HOUR, spot(5000)),  # 5 km away: no move needed
+        visit(HOME_PM, fixes[-1].at, fixes[-1].at + HOUR, fixes[-1].where),  # far: no move needed
         *brain.ride(fixes),
     ])
 
@@ -986,6 +1081,26 @@ def test_heart_rate_is_the_samples_inside_the_outing_set_against_the_same_day_at
         "samples": [[clock(8, 10), 90], [clock(8, 15), 85.5], [clock(8, 20), 100]],
     }
     assert second["heart_rate"] is None
+
+
+def test_the_heart_rate_at_home_leaves_out_the_hours_he_slept(tmp_path: Path) -> None:
+    """Asleep his heart beats slower than at any time he could drive: only his awake hours count."""
+    brain, clock = Brain(tmp_path), Clock(DAY)
+    brain.keep("Home", HOME, role="home")
+    brain.send("iphone", [
+        visit(HOME_AM, clock(0) - 2 * HOUR, clock(8), HOME),
+        move(u(3), "automotive", clock(8), clock(8, 30)),
+        visit(HOME_PM, clock(8, 30), clock(12), HOME),
+        slept(71, clock(0, 30), clock(6)),
+        beat(52, clock(2), 50), beat(53, clock(4), 52),  # asleep at home
+        beat(54, clock(6, 30), 70), beat(55, clock(7, 30), 74),  # up, still home
+        beat(56, clock(8, 15), 90),  # driving
+        beat(57, clock(10), 66),  # home again
+    ])
+
+    outing = only(brain.footprint(DAY)["outings"])
+
+    assert (outing["heart_rate"]["avg_bpm"], outing["heart_rate"]["home_avg_bpm"]) == (90, 70.0)
 
 
 # --- the route and who may ask ---------------------------------------------------------------

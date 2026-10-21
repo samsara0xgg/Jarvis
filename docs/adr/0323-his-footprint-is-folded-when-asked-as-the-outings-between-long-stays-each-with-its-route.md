@@ -15,10 +15,14 @@
   at most 12 hours: at one fix a second, an hour of driving is 3,600 rows of 11 values, about
   300 KB of JSON.
 - His two driving lessons: 10-18, 11:58 to 12:36, about 9 km with one 16-minute stop; 10-20,
-  13:08 to 14:17, about 21.7 km with stops at 13:21, 13:33 and 13:54, no fix at all from 13:42
-  to 13:47 after a stop, and about 81 km/h at most. Both began and ended at home, and he lived
-  each as one lesson. Both days predate the dense track: they hold only the sampled fixes, one
-  per 30 s and 50 m at best.
+  13:08 to 14:18, about 21.4 km, a 4-minute halt at 13:21 and stops of 9 and 10 minutes at 13:33
+  and 13:54, no fix from 13:42 to 13:47 after the first of them, and about 81 km/h at most. He
+  lived each as one lesson. Both days predate the dense track: they hold only the sampled fixes,
+  one per 30 s and 50 m at best.
+- In those days' rows the phone turned GPS on only 300 to 800 m out of a stay, so a route
+  began that far from the stay it left. iOS dated arrivals before the fixes reached the place:
+  on 10-20, 35 s early, with the last 600 m of the drive still to come. Through a stop GPS was
+  off, so the stretch with no fix after it began at the stop, not when he drove off.
 - A fix right after the phone wakes can be far off (the first after one 10-20 stop was 52 m
   off), and iOS marks the fixes software simulated (ADR 0312). In a vehicle the phone keeps GPS
   on through a stop of up to 10 minutes, a fix a second, each a few metres from the last
@@ -26,7 +30,8 @@
 - iOS gives a speed with each GPS fix. Between sampled fixes 30 s apart, only distance over
   time is known.
 - He wants his heart rate while driving set against the same day at home (10-20: 88 in the
-  lesson, 68 at home). The Watch's samples arrive as `phone.measure_observed` heart_rate.
+  lesson; at home 67 awake, 60 with the night asleep in it). The Watch's samples arrive as
+  `phone.measure_observed` heart_rate.
 - Every fixed word Jarvis shows lives in a zh/en table and follows the language its settings
   name, the system's by default (yilun 10-19). The phone already has the day line's calendar
   items.
@@ -46,14 +51,17 @@ rate, and serve it read-only at `GET /inherent/footprint`; store nothing and sen
   still going.
 - The route is the dense track (ADR 0312) of the device with the most fixes in the outing, with
   that device's sampled fixes added where its track has none within 30 s. A fix worse than
-  50 m, or simulated, is left out. Two points more than 2 minutes and 300 m apart are a gap:
-  no line is drawn across it.
+  50 m, or simulated, is left out. Past the start of the stay after it, the route runs on
+  through the fixes still closing in on that stay from beyond 150 m, to the first within it, and
+  the outing ends there. Two points more than 2 minutes and 300 m apart are a gap: no line is
+  drawn across it, and its time leaves out the stops in it.
 - The speed at a point is the mean over the 10 s around it of iOS's speeds, else of distance
   over time; the outing's top speed is the highest of those means.
 - The route is simplified so that no fix left out lies more than 5 m from where the kept points
-  put him at its time, and the distance runs along the kept points, straight across a gap.
+  put him at its time. The distance runs from the stay before to the stay after: straight to the
+  route's first point and from its last, along the kept points, straight across a gap.
 - Heart rate is the Watch's samples inside the outing, set against the mean of that day's
-  samples at his kept home.
+  samples at his kept home while he was awake, outside the day line's sleep.
 - The phone words the page from its own table: a calendar item of the day line over an outing
   names it, else its destination does.
 
@@ -74,6 +82,13 @@ rate, and serve it read-only at `GET /inherent/footprint`; store nothing and sen
 - **Measure the distance fix by fix** — ten minutes parked with GPS on are 600 steps of a few
   metres each, a kilometre or more that no road holds; in the tests a straight 3 km run with
   fixes 2 m off the line measured 3,088 m.
+- **Measure from the route's first fix to its last** — GPS comes on hundreds of metres out of a
+  stay: the 10-18 lesson measured 8.35 km that way and 8.97 km from stay to stay, and its line
+  began in a street away from the stay it left.
+- **End the route where the next stay starts** — iOS dated the 10-20 arrival 35 s early, and
+  the last 600 m of the drive fell out of the route and the distance.
+- **Set his heart against the whole day at home** — the night asleep pulled 10-20's home mean
+  from 67 to 60: the lesson read 28 above home where it was 21.
 - **Word titles and places on the brain** — each call would need the phone's language, and
   fixed words would live outside the phone's table.
 
@@ -81,10 +96,13 @@ rate, and serve it read-only at `GET /inherent/footprint`; store nothing and sen
 
 - Each open of the page folds the day again: the day line's read of the phone's rows plus the
   track over each outing, up to 43,200 fixes for 12 hours of moving, on a worker thread.
-- Days before the dense track show one point per 30 s at best and a gap after most stops.
+- Days before the dense track show one point per 30 s at best and a gap after most stops, from
+  when he left the stop to the first fix after it.
+- An outing can end up to a minute after the stay it ends at begins, where iOS dated that
+  arrival early: the stays stay as the day line has them.
 - The thresholds apply to past days at once, since nothing is stored, and a change to how ADR
   0301 cuts stays moves the outings with it.
-- A halt shorter than the day line's shortest stay (5 minutes), such as a red light, is no stop;
-  it shows only as low speed on the route.
+- A halt shorter than the day line's shortest stay (5 minutes), such as a red light or the
+  4-minute halt of 10-20, is no stop; it shows only as low speed on the route.
 - While he is at a stop, the outing ends there; when he drives on, the stop is a stop again
   and the two halves are one outing.

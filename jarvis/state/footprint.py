@@ -23,10 +23,12 @@ from jarvis.state import places
 from jarvis.state.phone_day import (
     LOOKBACK_MS,
     MEASURE_EVENT,
+    STAY_RADIUS_M,
     Span,
     moves,
     payloads,
     read_rows,
+    sleeps,
     stays,
 )
 from jarvis.state.phone_location import LOCATION_EVENT
@@ -51,6 +53,9 @@ GAP_MS: Final = 2 * _MINUTE_MS
 GAP_M: Final = 300.0
 """Two fixes in a row more than :data:`GAP_MS` and more than :data:`GAP_M` apart are a gap: no
 line is drawn across it, but its straight line counts in the distance."""
+ARRIVAL_REACH_MS: Final = 5 * _MINUTE_MS
+"""How far past the start of the stay after it an outing's route is read: iOS can date an
+arrival before his fixes reach the place (:func:`_arrive`)."""
 SPEED_NEAR_MS: Final = 5_000
 """The speed at a point is the mean over the fixes this close to it, before or after."""
 SIMPLIFY_M: Final = 5.0
@@ -114,33 +119,40 @@ def fold(
     ]
     beats = _heart_samples(conn, here, start_ms, end_ms, now_ms)
     home = _home_mean(
-        beats, [stay for stay in long_stays if _is_home(items[stay.origin[1]])], start_ms, end_ms,
+        beats, [stay for stay in long_stays if _is_home(items[stay.origin[1]])],
+        sleeps(rows.health), start_ms, end_ms,
     )
     outings: list[dict[str, Any]] = []
     for stretch in here:
         until = now_ms if stretch.end is None else stretch.end
+        route = _arrive(
+            _route(conn, stretch.start, until if stretch.end is None else until + ARRIVAL_REACH_MS),
+            until, stretch.after,
+        )
+        end = stretch.end if stretch.end is None or not route else max(stretch.end, route[-1].at)
+        until = now_ms if end is None else end
         stops = [
             items[stay.origin[1]] for stay in held
             if stay.start >= stretch.start and _reach(stay.end) <= _reach(stretch.end)
         ]
-        trace = _trace(_route(conn, stretch.start, until))
-        stopped = sum(
-            (now_ms if stop["end_ms"] is None else stop["end_ms"]) - stop["start_ms"]
+        stopped = [
+            (stop["start_ms"], now_ms if stop["end_ms"] is None else stop["end_ms"])
             for stop in stops
-        )
+        ]
+        trace = _trace(route, stopped, stretch.before, stretch.after)
         outings.append({
             "id": f"outing-{stretch.start}",
             "start_ms": stretch.start,
-            "end_ms": stretch.end,
+            "end_ms": end,
             "from_stay": None if stretch.before is None else stretch.before.origin[1],
             "to_stay": None if stretch.after is None else stretch.after.origin[1],
             "activity": _activity(going, stretch.start, until, now_ms),
             "distance_m": trace.distance_m,
-            "moving_ms": max(0, until - stretch.start - stopped),
+            "moving_ms": max(0, until - stretch.start - sum(b - a for a, b in stopped)),
             "max_speed_mps": trace.max_speed_mps,
             "stops": stops,
             "gaps": trace.gaps,
-            "heart_rate": _heart_rate(beats, home, stretch.start, stretch.end),
+            "heart_rate": _heart_rate(beats, home, stretch.start, end),
             "points": trace.points,
         })
     return {
@@ -314,6 +326,32 @@ def _route(conn: sqlite3.Connection, start: int, end: int) -> list[_Fix]:
     return route
 
 
+def _arrive(route: list[_Fix], until: int, after: Span | None) -> list[_Fix]:
+    """The route's fixes to ``until``, and on into the stay ``after`` while they still close in.
+
+    iOS can date an arrival before he is there: a minute early, the fixes are still hundreds of
+    metres out. A fix past the stay's start is still on the way while the one before it was more
+    than :data:`STAY_RADIUS_M` from the stay's centre, it is nearer than that one, within
+    :data:`GAP_MS` of it and before the stay ends; the first within the radius is where he
+    arrived, and the last taken.
+    """
+    taken = [fix for fix in route if fix.at <= until]
+    if after is None or not taken:
+        return taken
+    centre = (after.fields["lat"], after.fields["lng"])
+    away = metres((taken[-1].lat, taken[-1].lng), centre)
+    for fix in route[len(taken) :]:
+        near = metres((fix.lat, fix.lng), centre)
+        if (
+            away <= STAY_RADIUS_M or near >= away or fix.at - taken[-1].at > GAP_MS
+            or fix.at >= _reach(after.end)
+        ):
+            break
+        taken.append(fix)
+        away = near
+    return taken
+
+
 def _speed_at(fixes: list[_Fix], index: int, cut: list[bool]) -> float | None:
     """The speed iOS gave at a fix, else distance over time between its neighbours (no gap)."""
     speed = fixes[index].speed_mps
@@ -386,15 +424,21 @@ def _keep(fixes: list[_Fix], first: int, last: int) -> list[int]:
     return [first + index for index in sorted(kept)]
 
 
-def _trace(fixes: list[_Fix]) -> _Trace:
+def _trace(
+    fixes: list[_Fix], stops: list[tuple[int, int]], before: Span | None, after: Span | None,
+) -> _Trace:
     """The distance, top speed, gaps and simplified points of a route (fixes in time order).
 
     The speed at each fix is taken before the route is simplified. Each piece between gaps is
-    simplified on its own, keeping its first and last fix, and the distance runs along the points
-    kept, a gap's straight line included: a fix a second while he is parked would add its jitter.
+    simplified on its own, keeping its first and last fix. The distance runs from the stay
+    ``before`` along the points kept to the stay ``after``, straight across a gap and from each
+    stay to the route's end beside it, as the phone wakes GPS only a few hundred metres out of a
+    stay; not fix by fix, where a fix a second while he is parked would add its jitter. The time
+    of a gap leaves out the ``stops`` in it (``(start, end)``): he was there, not on the road.
     """
     if not fixes:
-        return _Trace(0.0, None, [], [])
+        line = [*_at(before), *_at(after)]
+        return _Trace(round(sum(metres(a, b) for a, b in pairwise(line)), 1), None, [], [])
     pairs = list(pairwise(fixes))
     cut = [
         b.at - a.at > GAP_MS and metres((a.lat, a.lng), (b.lat, b.lng)) > GAP_M for a, b in pairs
@@ -408,22 +452,36 @@ def _trace(fixes: list[_Fix]) -> _Trace:
             first = index + 1
     speeds = [None if mean is None else round(mean, 2) for mean in means]
     known = [speed for speed in speeds if speed is not None]
-    distance = sum(
-        metres((fixes[a].lat, fixes[a].lng), (fixes[b].lat, fixes[b].lng))
-        for a, b in pairwise(shown)
-    )
+    line = [*_at(before), *((fixes[i].lat, fixes[i].lng) for i in shown), *_at(after)]
     return _Trace(
-        round(distance, 1),
+        round(sum(metres(a, b) for a, b in pairwise(line)), 1),
         max(known) if known else None,
         [
-            {"start_ms": a.at, "end_ms": b.at}
+            {"start_ms": start, "end_ms": end}
             for (a, b), gap in zip(pairs, cut, strict=True) if gap
+            for start, end in _uncut(a.at, b.at, stops)
         ],
         [
             [fixes[i].at, round(fixes[i].lat, 6), round(fixes[i].lng, 6), speeds[i]]
             for i in shown
         ],
     )
+
+
+def _at(stay: Span | None) -> list[tuple[float, float]]:
+    """The centre of ``stay`` as the one position of a list; none without a stay."""
+    return [] if stay is None else [(stay.fields["lat"], stay.fields["lng"])]
+
+
+def _uncut(start: int, end: int, stops: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """``[start, end]`` less the ``stops``: the pieces of it in which he was at none of them."""
+    pieces = [(start, end)]
+    for low, high in stops:
+        pieces = [
+            piece for a, b in pieces for piece in ((a, min(b, low)), (max(a, high), b))
+            if piece[0] < piece[1]
+        ]
+    return pieces
 
 
 # --- the heart ------------------------------------------------------------------------------
@@ -453,12 +511,18 @@ def _heart_samples(
 
 
 def _home_mean(
-    beats: list[tuple[int, float]], homes: list[Span], start_ms: int, end_ms: int,
+    beats: list[tuple[int, float]], homes: list[Span], asleep: list[Span], start_ms: int,
+    end_ms: int,
 ) -> float | None:
-    """The mean of the day's samples that start in a long stay in his kept home, if any."""
+    """The mean of the day's samples that start in a long stay in his kept home, awake, if any.
+
+    A sample in one of the day line's sleep blocks (``asleep``) is left out: asleep his heart is
+    slower than at any time he could be out.
+    """
     at_home = [
         bpm for at, bpm in beats
         if start_ms <= at < end_ms and any(home.start <= at < _reach(home.end) for home in homes)
+        and not any(sleep.start <= at < _reach(sleep.end) for sleep in asleep)
     ]
     return round(sum(at_home) / len(at_home), 1) if at_home else None
 
