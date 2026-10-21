@@ -1,6 +1,6 @@
 # ADR 0368 — A Pacific time in a mail is read as both US and BC Pacific when they differ, and reminders take the earlier
 
-**Status:** Accepted
+**Status:** Superseded-by-0377
 **Date:** 2026-10-21
 **Supersedes:** none
 
