@@ -58,6 +58,38 @@ final class WatchRingTests: XCTestCase {
         XCTAssertNil(WatchRing.hit(WatchRing.point(minute: 100, centre: c, radius: 100), centre: c, radius: 80, band: 12, blocks: blocks))  // outside it
     }
 
+    func testTheNowDotIsNoWiderThanTheRing() {
+        for t in [3.0, 4, 10.8, 20] {
+            let d = WatchRing.dot(thickness: t)
+            XCTAssertEqual(d.radius * 2, t, accuracy: 1e-9)
+            XCTAssertGreaterThan(d.radius, d.edge, "something white is left inside the edge")
+        }
+    }
+
+    func testATickIsJustInsideTheRingsInnerEdgeAtItsMinute() {
+        let radius = 80.0, thickness = 10.0
+        for m in [0.0, 360, 1320, 1330] {
+            let t = WatchRing.tick(minute: m, centre: c, radius: radius, thickness: thickness)
+            let inner = radius - thickness / 2
+            let a = hypot(Double(t.from.x - c.x), Double(t.from.y - c.y)), b = hypot(Double(t.to.x - c.x), Double(t.to.y - c.y))
+            XCTAssertLessThan(a + t.width / 2, inner, "its cap stays clear of the ring")
+            XCTAssertGreaterThan(a, inner - 4, "and close to it")
+            XCTAssertLessThan(b, a, "it points inward")
+            XCTAssertEqual(WatchRing.minute(at: t.from, centre: c), m, accuracy: 1e-6)
+            XCTAssertEqual(WatchRing.minute(at: t.to, centre: c), m, accuracy: 1e-6)
+        }
+    }
+
+    func testATickTenMinutesAfterNowDoesNotTouchTheDot() {
+        let radius = 80.0, thickness = 10.0
+        let dot = WatchRing.dot(thickness: thickness)
+        let now = WatchRing.point(minute: 1310, centre: c, radius: radius)
+        let t = WatchRing.tick(minute: 1320, centre: c, radius: radius, thickness: thickness)
+        for p in [t.from, t.to] {
+            XCTAssertGreaterThan(hypot(Double(p.x - now.x), Double(p.y - now.y)), dot.radius + t.width / 2, "the tick stays beside the dot, never under it")
+        }
+    }
+
     func testNowMinuteAdvancesWithTheClockAndStopsAtMidnight() {
         let made = Date(timeIntervalSince1970: 1_000_000)
         let day = WatchDay(date: "d", language: "zh", now: 1310, made: made)

@@ -12,7 +12,7 @@ struct CircularComplication<Her: View>: View {
 
     var body: some View {
         ZStack {
-            if let day { WatchRingView(day: day, now: now, thickness: 3) }
+            if let day { WatchRingView(day: day, now: now, thickness: 4) }
             her.padding(7)
             if let day, !day.waiting.isEmpty {
                 Circle().fill(WatchTheme.amber).frame(width: 7, height: 7).widgetAccentable().offset(x: 17, y: -17)          // on the ring's edge, upper right

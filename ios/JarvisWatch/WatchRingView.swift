@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Today's ring: the past solid in its colours, the future a faint track with a tick for each thing planned, a white dot at now.
+/// Today's ring: the past solid in its colours, the future a faint track with a tick inside its edge for each thing planned, a small white dot at now.
 /// Shared by the home screen (thick) and the complications (thin).
 struct WatchRingView: View {
     var day: WatchDay
@@ -23,18 +23,18 @@ struct WatchRingView: View {
                 p.addArc(center: centre, radius: r, startAngle: .radians(a.start - .pi / 2), endAngle: .radians(a.end - .pi / 2), clockwise: false)
                 ctx.stroke(p, with: .color(WatchTheme.color(day.blocks[a.index].rgb).opacity(k)), style: StrokeStyle(lineWidth: thickness, lineCap: .butt))
             }
-            let half = Double(thickness) * 0.9
             for t in day.ahead where t.t > now {
+                let tick = WatchRing.tick(minute: t.t, centre: centre, radius: r, thickness: Double(thickness))
                 var p = Path()
-                p.move(to: WatchRing.point(minute: t.t, centre: centre, radius: r - half))
-                p.addLine(to: WatchRing.point(minute: t.t, centre: centre, radius: r + half))
-                ctx.stroke(p, with: .color((t.waits ? WatchTheme.amber : WatchTheme.ink.opacity(0.7)).opacity(k)), style: StrokeStyle(lineWidth: max(1.5, thickness * 0.3), lineCap: .round))
+                p.move(to: tick.from)
+                p.addLine(to: tick.to)
+                ctx.stroke(p, with: .color((t.waits ? WatchTheme.amber : WatchTheme.muted).opacity(k)), style: StrokeStyle(lineWidth: tick.width, lineCap: .round))
             }
+            let dot = WatchRing.dot(thickness: Double(thickness))
             let d = WatchRing.point(minute: now, centre: centre, radius: r)
-            let dr = Double(thickness) * 0.8
-            let dot = Path(ellipseIn: CGRect(x: d.x - dr, y: d.y - dr, width: 2 * dr, height: 2 * dr))
-            ctx.stroke(dot, with: .color(.black), lineWidth: max(1, thickness * 0.25))
-            ctx.fill(dot, with: .color(WatchTheme.warm))
+            ctx.fill(Path(ellipseIn: CGRect(x: d.x - dot.radius, y: d.y - dot.radius, width: 2 * dot.radius, height: 2 * dot.radius)), with: .color(.black))
+            let core = dot.radius - dot.edge
+            ctx.fill(Path(ellipseIn: CGRect(x: d.x - core, y: d.y - core, width: 2 * core, height: 2 * core)), with: .color(.white))
         }
         .accessibilityHidden(true)
     }

@@ -25,6 +25,17 @@ enum WatchRing {
         return min(a / (2 * .pi) * dayMinutes, dayMinutes - 0.001)
     }
 
+    /// Now, a dot on the ring that is no wider than the ring (its dark edge inside that): the disc's radius, and the width of the edge ring it is cut by.
+    static func dot(thickness: Double) -> (radius: Double, edge: Double) { (thickness / 2, max(0.75, thickness * 0.15)) }
+
+    /// A thing ahead, a short tick just inside the ring's inner edge, pointing at the centre: the two ends of its line and its width. It never reaches the ring itself, so
+    /// the dot at now cannot cover it.
+    static func tick(minute: Double, centre: CGPoint, radius: Double, thickness: Double) -> (from: CGPoint, to: CGPoint, width: Double) {
+        let width = max(1.5, thickness * 0.22)
+        let inner = radius - thickness / 2 - width / 2 - 0.5          // the tick's round cap starts a hair clear of the ring
+        return (point(minute: minute, centre: centre, radius: inner), point(minute: minute, centre: centre, radius: inner - max(3, thickness * 0.8)), width)
+    }
+
     /// one block's stretch of the ring: `index` into the day's blocks, the angles in radians clockwise from the top
     struct Arc: Equatable {
         var index: Int
