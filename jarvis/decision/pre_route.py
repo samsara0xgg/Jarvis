@@ -44,7 +44,7 @@ TYPED_CHANNEL = "cli_stdin"
 """The channel of words the owner typed into the talk field: answered on screen, never aloud."""
 
 _USER_TRIGGERS = frozenset({"surface.user_intent", "utterance.received"})
-# Mirrors the demonstrative task reference the F1 short-circuit refuses.
+# A demonstrative task reference (that task, last time's project) points outside this turn.
 _DEMONSTRATIVE_TASK_RE = re.compile(
     r"(那个|那些|这个|这些|刚才|上次|昨天|今天|明天).{0,30}(task|任务|项目)",
 )

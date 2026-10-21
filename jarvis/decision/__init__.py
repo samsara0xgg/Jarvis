@@ -227,8 +227,7 @@ def _emit_cost_recorded(
         ctx: Live :class:`DecideContext` (for the open SQLite conn).
         chat_result: The ChatResult just returned by ``llm_client.chat``.
         kind: ``"decision"`` for the L3 decide() / finalize loop;
-            ``"reviewer"`` later (Step 9) for the reviewer LLM; ``"codex"``
-            when consuming RawResult.metadata["cost"] from L4.
+            ``"codex"`` when consuming RawResult.metadata["cost"] from L4.
         turn_id: The active turn correlation (when within a turn).
         run_id: Worker run id (only set when the turn is part of a
             worker run; ``cost.recorded`` carries it as an optional
