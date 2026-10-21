@@ -15,6 +15,7 @@ import pytest
 from jarvis.state.turn_facts import (
     answer_started,
     answer_stopped_by_him,
+    answer_superseded,
     card_requested_by_turn,
     clarification_asked_at,
     clarifications_asked_in_turn,
@@ -23,6 +24,7 @@ from jarvis.state.turn_facts import (
     input_channels,
     recent_turn_timings,
     spoken_since,
+    turn_cancelled_or_failed,
     turn_dispatched_action,
     turn_ended_or_failed,
     turn_has_run,
@@ -288,3 +290,32 @@ def test_the_newest_turn_timings_oldest_first(tmp_path: Path) -> None:
         log.conn, since_ms=2_000, limit=10)] == ["T3", "T4"]
     newest = recent_turn_timings(log.conn, since_ms=0, limit=1)[0]
     assert (newest.ts_epoch_ms, newest.payload["done_ms"]) == (3_000, 3_000)
+
+
+def test_a_turn_whose_answer_his_next_sentence_took_over(tmp_path: Path) -> None:
+    """Only a run cancelled as ``superseded`` counts, and only for the turn it belongs to."""
+    log = TurnLog(tmp_path)
+    log.run(T, "R1")
+    log.run_ends("response.cancelled", T, "R1", "barge_in")
+    log.run_ends("response.cancelled", "T2", "R9", "superseded")
+    assert not answer_superseded(log.conn, T)
+    log.run_ends("response.cancelled", T, "R2", "superseded")
+    assert answer_superseded(log.conn, T)
+
+
+def test_a_turn_that_had_a_run_cancelled_or_failed(tmp_path: Path) -> None:
+    """A cancelled or failed run, or a failed turn, whatever the reason; a finished one is not."""
+    log = TurnLog(tmp_path)
+    log.run(T, "R1")
+    log.run_ends("response.completed", T, "R1")
+    log.turn_ended(T)
+    assert not turn_cancelled_or_failed(log.conn, T)
+    assert not turn_cancelled_or_failed(log.conn, "T-cut")
+    log.run_ends("response.cancelled", "T-cut", "R2", "user_stop")
+    assert turn_cancelled_or_failed(log.conn, "T-cut")
+    assert not turn_cancelled_or_failed(log.conn, "T-run")
+    log.run_ends("response.failed", "T-run", "R3", "oops")
+    assert turn_cancelled_or_failed(log.conn, "T-run")
+    assert not turn_cancelled_or_failed(log.conn, "T-raised")
+    log.turn_failed("T-raised")
+    assert turn_cancelled_or_failed(log.conn, "T-raised")
