@@ -2,8 +2,15 @@ r"""Tool exam, multi-step mode: each case runs the real decision loop, tools and
 
     .venv/bin/python -m scripts.tool_exam_steps run-steps --cases CASES.json --presets sonnet \
         --out RESULTS.jsonl [--root ~/tool-exam/root-pristine] [--runs 1] [--only id1,id2] \
-        [--system-append FILE] [--keep-work] [--fake SCRIPT.json]
+        [--system-append FILE] [--keep-work] [--fake SCRIPT.json] [--cap-usd 0.20]
     .venv/bin/python -m scripts.tool_exam_steps score-steps RESULTS.jsonl --cases CASES.json
+    .venv/bin/python -m scripts.tool_exam_steps quote RESULTS.jsonl --cases CASES.json \
+        --preset sonnet [--runs 9] [--margin 0.3] [--only id1,id2]
+
+``--cap-usd`` prices every response's usage (``jarvis.shared.pricing``, ``data/pricing.json``) and
+stops before a call that would cross the cap, printing the spend. ``quote`` prices the cases for a
+preset from the tokens a previous run measured (a Haiku run's, for Sonnet), plus a margin, so the
+owner can be asked before any paid run on the brain model.
 
 ``CASES.json`` is the ``tool_exam`` file (``{id, said, request, tags, expect?}``); a case may carry
 ``expect.steps`` = ``{must_call?, must_not_call?, max_calls?, no_identical_repeat?,
@@ -26,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
 import json
 import os
 import re
@@ -41,6 +49,8 @@ from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+import yaml
 
 import jarvis
 import jarvis.runtime as runtime_module
@@ -244,6 +254,65 @@ def _restore(runtime: JarvisRuntime, baseline: Path, work: Path) -> None:
     _copy_db(baseline / "memory.db", work / "memory.db")
 
 
+class SpendCap(Exception):  # noqa: N818 - reads as the fact it states
+    """The next call would cross ``--cap-usd`` (or cannot be priced), so the run stops."""
+
+
+class Meter:
+    """The run's spend: each response priced, and a stop before the call that would cross."""
+
+    def __init__(self, cap_usd: float | None, table: Mapping[str, Any]) -> None:
+        """Meter against ``cap_usd`` (None: count only) at the ``table``'s rates."""
+        self.cap = cap_usd
+        self.table = dict(table)
+        self.spent = 0.0
+        self.calls = 0
+        self.last = 0.0
+        self.capped = False
+
+    def before(self, model: str, request_chars: int) -> None:
+        """Raise :class:`SpendCap` when this call, estimated, would take the spend over the cap.
+
+        The estimate is the larger of the last response's cost and the request priced at
+        three characters a token with a short answer; cache hits make a real call cheaper.
+        """
+        if self.cap is None:
+            return
+        guess = compute_cost_usd(model, request_chars // 3, _GUESS_OUT, 0, 0, self.table)
+        if guess is None:
+            self.capped = True
+            msg = f"no price for model {model!r} in data/pricing.json: cannot keep to the cap"
+            raise SpendCap(msg)
+        if self.spent + max(guess, self.last) > self.cap:
+            self.capped = True
+            msg = (
+                f"the next call (about ${max(guess, self.last):.4f}) would take"
+                f" ${self.spent:.4f} past ${self.cap:.2f}"
+            )
+            raise SpendCap(msg)
+
+    def after(self, result: ChatResult) -> None:
+        """Add one response's cost to the spend."""
+        cost = compute_cost_usd(
+            result.model_used or None, result.input_tokens or 0, result.output_tokens or 0,
+            result.cache_read_in, result.cache_write_in, self.table, result.service_tier,
+        )
+        self.calls += 1
+        self.last = cost or 0.0
+        self.spent += self.last
+
+    def report(self) -> str:
+        """The spend line printed at the end."""
+        cap = "" if self.cap is None else f" of ${self.cap:.2f}"
+        return f"spend: ${self.spent:.4f}{cap} over {self.calls} model calls" + (
+            " (stopped at the cap)" if self.capped else ""
+        )
+
+
+_GUESS_OUT = 400
+"""Tokens of answer assumed when pricing a call before it is made."""
+
+
 # --- the model seam ------------------------------------------------------------------------
 
 
@@ -255,10 +324,14 @@ class _Substituting:
     results and its notes. Every other attribute is the inner client's.
     """
 
-    def __init__(self, inner: Any, system: str, head: list[dict[str, Any]]) -> None:  # noqa: ANN401
+    def __init__(
+        self, inner: Any, system: str, head: list[dict[str, Any]],  # noqa: ANN401
+        meter: Meter | None = None,
+    ) -> None:
         self._inner = inner
         self._system = system
         self._head = head
+        self._meter = meter
         self.base: int | None = None
         self.live: list[dict[str, Any]] = []
         self.calls: list[dict[str, Any]] = []
@@ -288,10 +361,18 @@ class _Substituting:
             sent, sent_system = [*self._head, *messages[self.base:]], self._system
         else:
             sent, sent_system = messages, system
+        if self._meter is not None:
+            self._meter.before(
+                str(getattr(self._inner, "model", "")),
+                len(sent_system) + len(json.dumps(sent, default=str))
+                + len(json.dumps(tools or ())),
+            )
         started = time.monotonic()
         result: ChatResult = self._inner.chat(
             messages=sent, system=sent_system, tools=tools, tool_choice=tool_choice, **extra,
         )
+        if self._meter is not None:
+            self._meter.after(result)
         self.calls.append({
             "result": result, "s": round(time.monotonic() - started, 3), "menu": len(tools or ()),
             "side": not loop,
@@ -483,11 +564,12 @@ def _run_case(  # noqa: PLR0913 - the runtime, its baseline, and the case's mode
     runtime: JarvisRuntime, baseline: Path, work: Path, warm: DecisionFoldState | None,
     classes: Mapping[str, str], table: Mapping[str, Any], pushes: list[dict[str, str | None]],
     case: Mapping[str, Any], inner: ScriptedModel | LLMClient, label: str, run: int, extra: str,
+    meter: Meter | None = None,
 ) -> dict[str, Any]:
     _restore(runtime, baseline, work)
     pushes.clear()
     system, head = history_of(_with_system(case["request"], extra))
-    sub = _Substituting(inner, system, head)
+    sub = _Substituting(inner, system, head, meter)
     turn_id = f"T{uuid.uuid4().hex[:12]}"
     after = int(runtime.conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0])
     trigger = emit_event(
@@ -575,6 +657,7 @@ def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run
     table = load_pricing_table(REPO / "data" / "pricing.json")
     work = Path(tempfile.mkdtemp(prefix="root-work-", dir=pristine.parent))
     pushes: list[dict[str, str | None]] = []
+    meter = Meter(args.cap_usd, table)
     runtime, done = None, 0
     try:
         shutil.copytree(pristine, work, dirs_exist_ok=True)
@@ -598,22 +681,22 @@ def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run
         with args.out.open("a", encoding="utf-8") as out:
             out.write(json.dumps({"kind": "menu", "tools": [t["name"] for t in menu],
                                   "classes": classes, "system_append": bool(extra)}) + "\n")
-            for case in cases:
-                for preset in presets:
-                    for run in range(args.runs):
-                        inner = (ScriptedModel(script[case["id"]]) if script is not None
-                                 else clients[preset])
-                        line = _run_case(runtime, baseline, work, warm, classes, table, pushes,
-                                         _for_preset(case, structured, preset), inner, preset,
-                                         run, extra)
-                        out.write(json.dumps(line, ensure_ascii=False) + "\n")
-                        out.flush()
-                        done += 1
-                        seq = ">".join(c["name"] for s in line["steps"] for c in s["calls"])
-                        sys.stderr.write(
-                            f"[{done}/{total}] {case['id']} {preset}#{run} -> "
-                            f"{line['error'] or seq or 'text'} ({line['wall_s']}s)\n",
-                        )
+            for case, preset, run in itertools.product(cases, presets, range(args.runs)):
+                inner = (ScriptedModel(script[case["id"]]) if script is not None
+                         else clients[preset])
+                line = _run_case(runtime, baseline, work, warm, classes, table, pushes,
+                                 _for_preset(case, structured, preset), inner, preset,
+                                 run, extra, meter)
+                out.write(json.dumps(line, ensure_ascii=False) + "\n")
+                out.flush()
+                done += 1
+                seq = ">".join(c["name"] for s in line["steps"] for c in s["calls"])
+                sys.stderr.write(
+                    f"[{done}/{total}] {case['id']} {preset}#{run} -> "
+                    f"{line['error'] or seq or 'text'} ({line['wall_s']}s)\n",
+                )
+                if meter.capped:
+                    break
     finally:
         if runtime is not None:
             runtime.conn.close()
@@ -621,10 +704,12 @@ def cmd_run_steps(args: argparse.Namespace) -> int:  # noqa: PLR0915 - boot, run
                 runtime.plugin_connections.stop()  # ends the MCP child, so its peak is counted
         if not args.keep_work:
             shutil.rmtree(work, ignore_errors=True)
-    summary = _peaks(done)
+    summary = {**_peaks(done), "spend_usd": round(meter.spent, 6), "cap_usd": args.cap_usd,
+               "capped": meter.capped}
     with args.out.open("a", encoding="utf-8") as out:
         out.write(json.dumps(summary) + "\n")
     sys.stderr.write(json.dumps(summary) + "\n")
+    sys.stdout.write(meter.report() + "\n")
     return 0
 
 
@@ -739,6 +824,91 @@ def cmd_score_steps(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- quote ---------------------------------------------------------------------------------
+
+
+def _usage_cost(
+    model: str, usage: Mapping[str, int], table: Mapping[str, Any],
+) -> float | None:
+    return compute_cost_usd(
+        model, usage["input"], usage["output"], usage["cache_read"], usage["cache_write"],
+        dict(table),
+    )
+
+
+def run_cost(line: Mapping[str, Any], model: str, table: Mapping[str, Any]) -> float | None:
+    """What one measured run would cost on ``model``: each step's tokens as a call, plus the rest.
+
+    The rest is the usage the steps do not hold (decide()'s own side requests), priced as one call.
+    None when ``model`` has no price.
+    """
+    costs = [_usage_cost(model, step["usage"], table) for step in line["steps"]]
+    held = {k: sum(step["usage"][k] for step in line["steps"]) for k in line["usage"]}
+    rest = {k: max(0, line["usage"][k] - held[k]) for k in line["usage"]}
+    if any(rest.values()):
+        costs.append(_usage_cost(model, rest, table))
+    return None if None in costs else sum(cast("list[float]", costs))
+
+
+def quote(  # noqa: PLR0913 - the measured runs, the cases, the model and how much to add
+    measured: Sequence[Mapping[str, Any]], cases: Sequence[Mapping[str, Any]], model: str,
+    table: Mapping[str, Any], *, runs: int, margin: float,
+) -> dict[str, Any]:
+    """The price of ``runs`` runs of every case on ``model``, from tokens a previous run measured.
+
+    A case with measured runs is priced at their mean; one without is priced at the median of the
+    measured cases (``guessed``). ``margin`` is added to every figure (0.3 = 30%) for the other
+    model's longer or shorter answers and extra calls.
+    """
+    by_case: dict[str, list[float]] = {}
+    unpriced = 0
+    for line in measured:
+        if line.get("kind") != "run" or line.get("error"):
+            continue
+        cost = run_cost(line, model, table)
+        if cost is None:
+            unpriced += 1
+        else:
+            by_case.setdefault(line["case"], []).append(cost)
+    if unpriced:
+        msg = f"{model!r} has no price in data/pricing.json"
+        raise SystemExit(msg)
+    means = {case: statistics.fmean(costs) for case, costs in by_case.items()}
+    if not means:
+        msg = "the results hold no finished run to price from"
+        raise SystemExit(msg)
+    fallback = statistics.median(means.values())
+    rows = [
+        {"case": c["id"], "usd_per_run": round(means.get(c["id"], fallback) * (1 + margin), 6),
+         "guessed": c["id"] not in means}
+        for c in cases
+    ]
+    each = sum(r["usd_per_run"] for r in rows)
+    return {"model": model, "runs": runs, "margin": margin, "cases": rows,
+            "guessed": sum(r["guessed"] for r in rows), "usd_per_pass": round(each, 4),
+            "usd_total": round(each * runs, 4)}
+
+
+def cmd_quote(args: argparse.Namespace) -> int:
+    """``quote``: print what the cases would cost on a preset, priced from a previous run."""
+    cases = json.loads(args.cases.read_text(encoding="utf-8"))
+    if args.only:
+        cases = [c for c in cases if c["id"] in args.only]
+    lines = args.results.read_text(encoding="utf-8").splitlines()
+    measured = [json.loads(ln) for ln in lines if ln]
+    llm = yaml.safe_load(args.config.read_text(encoding="utf-8"))["llm"]
+    model = str(llm["presets"][args.preset]["model"])
+    got = quote(measured, cases, model, load_pricing_table(REPO / "data" / "pricing.json"),
+                runs=args.runs, margin=args.margin)
+    sys.stdout.write(
+        f"{len(cases)} cases on {args.preset} ({model}), {args.runs} run(s) each, "
+        f"+{args.margin:.0%} margin; {got['guessed']} case(s) have no measured run and are "
+        f"priced at the median\n"
+        f"one pass ${got['usd_per_pass']:.2f}   total ${got['usd_total']:.2f}\n",
+    )
+    return 0
+
+
 def main() -> int:
     """Parse arguments and run the subcommand."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -753,12 +923,22 @@ def main() -> int:
     run.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
     run.add_argument("--system-append", type=Path)
     run.add_argument("--keep-work", action="store_true")
+    run.add_argument("--cap-usd", type=float, help="stop before a call that would cross this")
     run.add_argument("--fake", type=Path, help="scripted model: {case id: [step, ...]}")
     run.set_defaults(func=cmd_run_steps)
     score = sub.add_parser("score-steps")
     score.add_argument("results", type=Path)
     score.add_argument("--cases", type=Path, required=True)
     score.set_defaults(func=cmd_score_steps)
+    price = sub.add_parser("quote")
+    price.add_argument("results", type=Path, help="a previous run-steps file, any preset")
+    price.add_argument("--cases", type=Path, required=True)
+    price.add_argument("--preset", required=True)
+    price.add_argument("--runs", type=int, default=1)
+    price.add_argument("--margin", type=float, default=0.3)
+    price.add_argument("--only", type=lambda s: s.split(","))
+    price.add_argument("--config", type=Path, default=REPO / "config" / "jarvis.yaml")
+    price.set_defaults(func=cmd_quote)
     args = parser.parse_args()
     if args.command == "run-steps" and not (args.presets or args.fake):
         parser.error("run-steps needs --presets (or --fake)")
