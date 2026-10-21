@@ -108,6 +108,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.settings_owner import SettingsDrift
     from jarvis.runtime.things_mirror import ThingsMirror
     from jarvis.runtime.work_state import WorkStateService
+    from jarvis.shared.clock import Clock
     from jarvis.shared.realtime import PresentationIntent, Wave4ResponseFlags
     from jarvis.state.attachments import AttachmentRef
     from jarvis.state.committed_event_bus import CommittedEventBus
@@ -2194,9 +2195,9 @@ def _commentary_turn_is_over(runtime: JarvisRuntime, trigger_event: Event) -> bo
             conn.close()
 
 
-def _hold_until(said_at_ms: int, after_s: float, stop: threading.Event) -> bool:
-    """Wait until ``after_s`` past his words; ``False`` if shutdown came first."""
-    return not stop.wait(max(said_at_ms / 1000 + after_s - time.time(), 0.0))
+def _hold_until(clock: Clock, said_at_ms: int, after_s: float, stop: threading.Event) -> bool:
+    """Wait on ``clock`` until ``after_s`` past his words; ``False`` if shutdown came first."""
+    return not clock.wait(stop, max(said_at_ms / 1000 + after_s - clock.time(), 0.0))
 
 
 def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return per suppression rule
@@ -2236,7 +2237,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
         clock_s = _COMMENTARY_AFTER_S if after_s is None else after_s
-        if clock and not _hold_until(trigger_event.ts_epoch_ms, clock_s, stop):
+        if clock and not _hold_until(runtime.clock, trigger_event.ts_epoch_ms, clock_s, stop):
             return None  # before the lookup below: the claim row lands just after his words
         turn = _commentary_turn(conn, trigger_event)
         if turn is None:
@@ -2270,7 +2271,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
         # A quick answer needs no lead-in: give it until the floor to begin. Jev's predicted
         # group (ADR 0140) is a read or a draft, never quick, and speaks at once.
         if trigger_event.type == "action.dispatched" and not _hold_until(
-            said_at_ms, _COMMENTARY_EARLIEST_S, stop,
+            runtime.clock, said_at_ms, _COMMENTARY_EARLIEST_S, stop,
         ):
             return None
         with _COMMENTARY_LOCK:
@@ -2288,7 +2289,7 @@ def _open_commentary_in_worker_thread(  # noqa: C901, PLR0911 - one early return
                 else rebuild_projections(conn)
             )
             slot = projections.pending_confirmations.slot
-            if slot is not None and slot.is_live(int(time.time() * 1000)):
+            if slot is not None and slot.is_live(int(runtime.clock.time() * 1000)):
                 # ADR-0014: new commentary never overwrites an unresolved
                 # confirmation. The slot is globally unique and its
                 # `action_snapshot` carries no `action_id`, so this is enforced
