@@ -307,9 +307,7 @@ def open_stream(*, pull: bool) -> Callable[..., _Stream]:
 SPEECH_CONFIG: dict[str, Any] = {
     "realtime": {
         "enabled": True,
-        "concurrency_safety": {"transactional_event_append": True, "lifecycle_terminal_cas": True},
         "streaming_output": {
-            "enabled": True,
             "canonical_sample_rate_hz": RATE,
             "presentation_poll_s": 0.002,
             "ring_retry_s": 0.001,

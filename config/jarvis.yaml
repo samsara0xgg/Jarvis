@@ -1235,13 +1235,10 @@ realtime:
       required_hits: 3
       required_misses: 24
   concurrency_safety:
-    transactional_event_append: true
-    lifecycle_terminal_cas: true
     confirmation_dispatch_outbox: true
     exactly_once_cost_accounting: true
   # ADR-0008 Step 2 (Wave 4A).  Enabling response_run_lifecycle additionally
-  # requires realtime.enabled plus concurrency_safety.transactional_event_append
-  # and .lifecycle_terminal_cas; independent_response_cancel additionally
+  # requires realtime.enabled; independent_response_cancel additionally
   # requires response_run_lifecycle.  An invalid combination downgrades once,
   # with one warning, to the complete legacy batch path.  cancel_timeout_ms is
   # the cancel connection's SQLite busy_timeout: it bounds the terminal CAS,

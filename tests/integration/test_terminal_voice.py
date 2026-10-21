@@ -28,7 +28,7 @@ from jarvis.cli import main
 from jarvis.runtime import inherent_loop
 from jarvis.runtime.terminal import JOURNAL
 from jarvis.shared import Event
-from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
+from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.device_tokens import (
     pair_device,
@@ -860,10 +860,6 @@ class _Paths:
 def _host(config: dict[str, Any], journal: Journal) -> Any:  # noqa: ANN401
     return SimpleNamespace(
         config=config,
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         response_flags=Wave4ResponseFlags(),
         runtime_paths=_Paths(journal.path),
         conn=journal.conn,

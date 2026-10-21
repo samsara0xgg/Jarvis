@@ -105,8 +105,6 @@ def _context(tmp_path: Path, servers: McpServers, llm: ScriptedModel) -> DecideC
         system_prompt="stub system prompt",
         confirm_grammar_table=load_confirm_grammar(REPO / "config" / "confirm_grammar.yaml"),
         wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
             confirmation_dispatch_outbox=True,
         ),
     )

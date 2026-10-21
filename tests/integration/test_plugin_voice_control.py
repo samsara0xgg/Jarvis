@@ -179,8 +179,6 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Rig]:
         system_prompt="stub system prompt",
         confirm_grammar_table=load_confirm_grammar(repo / "config" / "confirm_grammar.yaml"),
         wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
             confirmation_dispatch_outbox=True,
         ),
     )

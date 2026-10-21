@@ -21,7 +21,7 @@ import pytest
 import yaml
 
 from jarvis.runtime import inherent_loop
-from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
+from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
@@ -2899,10 +2899,6 @@ def test_production_builder_gate_and_text_only_degradation(
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
         config={"realtime": {"enabled": True}},
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -3013,10 +3009,6 @@ def test_production_builder_is_text_only_after_any_typed_startup_failure(
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
         config={"realtime": {"enabled": True}},
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -3268,10 +3260,6 @@ def test_realtime_output_device_reaches_the_builder_player(
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
         config={},
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,
@@ -3328,10 +3316,6 @@ def test_production_builder_puts_the_configured_request_volume_on_the_wire(
     runtime = SimpleNamespace(
         response_flags=Wave4ResponseFlags(),
         config={"realtime": {"enabled": True}},
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         runtime_paths=SimpleNamespace(event_log=db_path),
         response_runs=None,
         voice_settings=None,

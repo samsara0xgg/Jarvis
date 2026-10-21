@@ -39,8 +39,6 @@ from tests.canary._helpers import repo_root
 # (dotted path under ``realtime:``, expected shipped value)
 _TIER_A_ENABLED = (
     "enabled",
-    "concurrency_safety.transactional_event_append",
-    "concurrency_safety.lifecycle_terminal_cas",
     "concurrency_safety.confirmation_dispatch_outbox",
     "concurrency_safety.exactly_once_cost_accounting",
     "response.response_run_lifecycle",

@@ -20,7 +20,7 @@ from jarvis.decision.response_run import (
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
-from jarvis.shared.realtime import Wave1FeatureFlags, stable_response_group_id
+from jarvis.shared.realtime import stable_response_group_id
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.response_runs import append_response_started
@@ -81,11 +81,10 @@ LLM_CONFIG: dict[str, Any] = {
 }
 
 
-def realtime_config(  # noqa: PLR0913 — every knob of the flag graph, keyword-only.
+def realtime_config(
     *,
     lifecycle: bool,
     cancel: bool,
-    wave1: bool = True,
     enabled: bool = True,
     cancel_timeout_ms: int = 500,
     answer_hold_s: float | None = None,
@@ -106,8 +105,6 @@ def realtime_config(  # noqa: PLR0913 — every knob of the flag graph, keyword-
         "realtime": {
             "enabled": enabled,
             "concurrency_safety": {
-                "transactional_event_append": wave1,
-                "lifecycle_terminal_cas": wave1,
                 "confirmation_dispatch_outbox": False,
                 "exactly_once_cost_accounting": False,
             },
@@ -151,10 +148,6 @@ def make_runtime(
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         response_flags=flags,
         llm_session_factory=(
             ScriptedSessions(model, LLM_CONFIG) if flags.response_run_lifecycle else None

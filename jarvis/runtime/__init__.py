@@ -1149,10 +1149,7 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
     and one ``response_activation_downgraded`` trace point:
 
     1. ``realtime`` absent / not a mapping / ``realtime.enabled`` not True.
-    2. ``response_run_lifecycle`` requested without the Wave-1
-       transactional-append and lifecycle-terminal-CAS primitives it writes
-       through.
-    3. ``independent_response_cancel``, ``routine_streaming``,
+    2. ``independent_response_cancel``, ``routine_streaming``,
        ``spoken_streaming`` or ``lifecycle_commentary`` requested without a
        surviving ``response_run_lifecycle``. Cancellation,
        routine streaming and D6 commentary all require stable response
@@ -1181,11 +1178,6 @@ def _wave4_response_activation(config: Mapping[str, Any]) -> _Wave4ResponseActiv
             reason="not_requested",
         )
 
-    wave1 = _wave1_feature_flags(config)
-    if requested.response_run_lifecycle and not (
-        wave1.transactional_event_append and wave1.lifecycle_terminal_cas
-    ):
-        return _downgraded_response_activation(requested, "wave1_primitives_disabled")
     if (
         requested.independent_response_cancel
         or requested.routine_streaming

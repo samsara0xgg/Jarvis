@@ -28,7 +28,6 @@ from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_flags, drive_turn
 from jarvis.shared import Event
-from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -120,9 +119,6 @@ def test_on_word_thinks_its_own_turn_only(
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True, lifecycle_terminal_cas=True
-        ),
         response_flags=_wave4_response_flags(config),
         llm_session_factory=ScriptedSessions(model, _LLM),
         committed_event_bus=CommittedEventBus(),

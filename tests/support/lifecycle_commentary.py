@@ -9,7 +9,6 @@ from jarvis.decision.response_run import ResponseRunRegistry
 from jarvis.deployment import bootstrap_runtime
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
 from jarvis.runtime import JarvisRuntime, _wave4_response_activation
-from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import open_event_log
 from jarvis.surface.cli import parse_response_channels
@@ -25,10 +24,6 @@ def _observer_config(*, commentary: bool, cancel: bool = False) -> dict[str, Any
     return {
         "realtime": {
             "enabled": True,
-            "concurrency_safety": {
-                "transactional_event_append": True,
-                "lifecycle_terminal_cas": True,
-            },
             "response": {
                 "response_run_lifecycle": True,
                 "independent_response_cancel": cancel,
@@ -77,10 +72,6 @@ def commentary_runtime(
         lifecycle=ActionLifecycle(),
         llm_client=model.as_llm_client(),
         system_prompt="",
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
-        ),
         response_flags=flags,
         llm_session_factory=ScriptedSessions(model, _LLM_CONFIG),
         response_runs=ResponseRunRegistry() if flags.independent_response_cancel else None,

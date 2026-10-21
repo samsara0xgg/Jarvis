@@ -38,7 +38,7 @@ from websockets.sync.client import connect as _ws_connect
 
 from jarvis.runtime import inherent_loop
 from jarvis.runtime.phone_voice import PhoneSpeech
-from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
+from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
 from jarvis.state.event_log import (
     PHONE_VOICE_CHANNEL,
@@ -462,9 +462,6 @@ def test_the_speech_builder_needs_a_key_and_realtime_on(
     config: dict[str, Any] = {"realtime": {"enabled": True}}
     host = SimpleNamespace(
         config=config,
-        wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True, lifecycle_terminal_cas=True,
-        ),
         response_flags=Wave4ResponseFlags(),
         runtime_paths=SimpleNamespace(event_log=tmp_path / "events.db"),
         voice_settings=None,

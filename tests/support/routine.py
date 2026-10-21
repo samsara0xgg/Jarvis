@@ -46,8 +46,6 @@ def routine_runtime(
         "realtime": {
             "enabled": True,
             "concurrency_safety": {
-                "transactional_event_append": True,
-                "lifecycle_terminal_cas": True,
                 "confirmation_dispatch_outbox": False,
                 "exactly_once_cost_accounting": True,
             },
@@ -79,8 +77,6 @@ def routine_runtime(
         llm_client=LLMClient(llm_config),
         system_prompt="",
         wave1_features=Wave1FeatureFlags(
-            transactional_event_append=True,
-            lifecycle_terminal_cas=True,
             exactly_once_cost_accounting=True,
         ),
         response_flags=_wave4_response_flags(config),

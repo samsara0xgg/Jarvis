@@ -353,10 +353,6 @@ def _config(*, enabled: bool, lifecycle: bool, commentary: bool) -> dict[str, ob
     return {
         "realtime": {
             "enabled": enabled,
-            "concurrency_safety": {
-                "transactional_event_append": True,
-                "lifecycle_terminal_cas": True,
-            },
             "response": {"response_run_lifecycle": lifecycle},
             "commentary": {"enabled": commentary},
         },

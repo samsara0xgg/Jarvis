@@ -228,8 +228,6 @@ def _build_overlay(root: Path) -> Path:
     realtime = shipped["realtime"]
     realtime["enabled"] = True
     for switch in (
-        "transactional_event_append",
-        "lifecycle_terminal_cas",
         "confirmation_dispatch_outbox",
         "exactly_once_cost_accounting",
     ):

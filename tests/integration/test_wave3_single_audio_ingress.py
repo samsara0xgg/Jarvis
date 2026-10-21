@@ -16,7 +16,6 @@ import numpy as np
 import pytest
 
 from jarvis.runtime import inherent_loop
-from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import (
@@ -1861,10 +1860,9 @@ def test_stuck_backend_and_full_commit_queue_are_bounded_and_auditable() -> None
 
 
 def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
-    """Feature-off does not listen; flag-on needs Wave-1 capability and a speech actor."""
+    """Feature-off does not listen; flag-on needs a speech actor."""
     runtime = MagicMock()
     runtime.config = {"realtime": {"enabled": False}}
-    runtime.wave1_features = Wave1FeatureFlags()
     off = inherent_loop._single_ingress_activation(runtime, tts=None)
     assert not off.requested
     assert off.reason == "feature_disabled"
@@ -1875,15 +1873,6 @@ def test_feature_off_on_and_dependency_downgrade_are_explicit() -> None:
             "single_audio_ingress": {"enabled": True},
         },
     }
-    missing = inherent_loop._single_ingress_activation(runtime, tts=None)
-    assert missing.requested
-    assert not missing.capable
-    assert missing.reason == "wave1_capability_missing"
-
-    runtime.wave1_features = Wave1FeatureFlags(
-        transactional_event_append=True,
-        lifecycle_terminal_cas=True,
-    )
     no_speech = inherent_loop._single_ingress_activation(runtime, tts=None)
     assert no_speech.requested
     assert not no_speech.capable
@@ -3882,10 +3871,6 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
 def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None:
     """SenseVoice prewarm never changes feature-off or claims a mic on failure."""
     runtime = MagicMock()
-    runtime.wave1_features = Wave1FeatureFlags(
-        transactional_event_append=True,
-        lifecycle_terminal_cas=True,
-    )
     runtime.config = {"realtime": {"enabled": True}}
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     broadcaster = MagicMock()
@@ -3932,10 +3917,6 @@ def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None
 def test_session_silero_prepare_failure_is_pre_device_and_leaves_no_input_owner() -> None:
     """Session preparation has a typed no-owner boundary before ingress.start."""
     runtime = MagicMock()
-    runtime.wave1_features = Wave1FeatureFlags(
-        transactional_event_append=True,
-        lifecycle_terminal_cas=True,
-    )
     runtime.config = {
         "realtime": {
             "enabled": True,
@@ -3973,10 +3954,6 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
 ) -> None:
     """Partial Wave-3 construction cannot leak its observer lane or mic owner."""
     runtime = MagicMock()
-    runtime.wave1_features = Wave1FeatureFlags(
-        transactional_event_append=True,
-        lifecycle_terminal_cas=True,
-    )
     runtime.config = {
         "realtime": {
             "enabled": True,
@@ -4039,10 +4016,6 @@ def test_post_ingress_construction_failure_closes_capability_dispatcher(
 def test_composition_root_voice_input_matrix_retains_ptt_and_exact_shutdown_branch() -> None:
     """Serve's extracted branch starts at most one mic owner while PTT stays callable."""
     runtime = MagicMock()
-    runtime.wave1_features = Wave1FeatureFlags(
-        transactional_event_append=True,
-        lifecycle_terminal_cas=True,
-    )
     runtime.config = {"realtime": {"enabled": True}}
     pipeline = MagicMock(spec=voice_pipeline.VoicePipeline)
     pipeline.run_turn.return_value = MagicMock()

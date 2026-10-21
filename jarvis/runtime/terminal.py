@@ -81,7 +81,6 @@ from jarvis.runtime import (
     _screen_tools_config,
     _timesink_db_path,
     _timesink_poll_interval_s,
-    _wave1_feature_flags,
     _wave4_response_flags,
     _work_state_timezone,
     audio_output,
@@ -162,7 +161,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from jarvis.deployment.sleep_wake import PowerObserver
-    from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
+    from jarvis.shared.realtime import Wave4ResponseFlags
     from jarvis.surface import voice_aec, voice_session
     from jarvis.surface.voice_media import StreamingTTSPipeline
 
@@ -483,7 +482,6 @@ class _Seat:
     """What the voice builders read from their host; a terminal's is its journal and config."""
 
     config: Mapping[str, Any]
-    wave1_features: Wave1FeatureFlags
     response_flags: Wave4ResponseFlags
     runtime_paths: _SeatPaths
     conn: sqlite3.Connection
@@ -603,7 +601,6 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     broadcaster.attach_loop(asyncio.get_running_loop())
     seat = _Seat(
         speaking.config,
-        _wave1_feature_flags(speaking.config),
         _wave4_response_flags(speaking.config),
         _SeatPaths(journal.path, speaking.runtime_root),
         journal.conn,

@@ -67,7 +67,6 @@ from jarvis.shared.realtime import (
     stable_legacy_presentation_binding,
     stable_response_group_id,
 )
-from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state import event_log as event_log_module
 from jarvis.state.committed_event_bus import CommittedEventBus
 from jarvis.state.event_log import emit_event, open_event_log
@@ -1098,28 +1097,6 @@ def test_foreground_output_scope_authorizes_without_any_write(tmp_path: Path) ->
 
 
 # --- A11: flag graph --------------------------------------------------------
-
-
-def test_response_activation_downgrades_without_wave1_primitives(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A11: the lifecycle flag needs the Wave-1 primitives it writes through."""
-    reset_realtime_trace()
-    config = realtime_config(lifecycle=True, cancel=True, wave1=False)
-    with caplog.at_level("WARNING", logger="jarvis.runtime"):
-        activation = _wave4_response_activation(config)
-
-    assert activation.flags.all_disabled
-    assert activation.reason == "wave1_primitives_disabled"
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert len(warnings) == 1
-    downgrades = [
-        point
-        for point in realtime_trace_snapshot()
-        if point.name == "response_activation_downgraded"
-    ]
-    assert len(downgrades) == 1
-    assert downgrades[0].attributes["reason"] == "wave1_primitives_disabled"
 
 
 def test_cancel_flag_downgrades_without_lifecycle_flag(tmp_path: Path) -> None:

@@ -108,7 +108,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.settings_owner import SettingsDrift
     from jarvis.runtime.things_mirror import ThingsMirror
     from jarvis.runtime.work_state import WorkStateService
-    from jarvis.shared.realtime import PresentationIntent, Wave1FeatureFlags, Wave4ResponseFlags
+    from jarvis.shared.realtime import PresentationIntent, Wave4ResponseFlags
     from jarvis.state.attachments import AttachmentRef
     from jarvis.state.committed_event_bus import CommittedEventBus
     from jarvis.state.voice_settings import VoiceSettings
@@ -2858,9 +2858,6 @@ class SpeakerHost(Protocol):
     def config(self) -> Mapping[str, Any]: ...
 
     @property
-    def wave1_features(self) -> Wave1FeatureFlags: ...
-
-    @property
     def response_flags(self) -> Wave4ResponseFlags: ...
 
     @property
@@ -2953,15 +2950,10 @@ def _build_tts_pipeline(  # noqa: PLR0913 - degradation boundary
             recorder=recorder, voice_settings=runtime.voice_settings,
         )
     )
-    if not (
-        realtime.get("enabled") is True
-        and runtime.wave1_features.transactional_event_append
-        and runtime.wave1_features.lifecycle_terminal_cas
-        and provider.streaming_candidate_count > 0
-    ):
+    if not (realtime.get("enabled") is True and provider.streaming_candidate_count > 0):
         LOGGER.warning(
-            "streaming speech cannot run (realtime.enabled or the event log features are "
-            "off, or no TTS endpoint is configured); this boot will not speak.",
+            "streaming speech cannot run (realtime.enabled is off, or no TTS endpoint is "
+            "configured); this boot will not speak.",
         )
         return None
     player = (
@@ -3335,11 +3327,7 @@ def _build_phone_speech(
     except ValueError as exc:
         LOGGER.warning("realtime.streaming_output config invalid (%s); a phone gets no voice.", exc)
         return None
-    if not (
-        realtime.get("enabled") is True
-        and runtime.wave1_features.transactional_event_append
-        and runtime.wave1_features.lifecycle_terminal_cas
-    ):
+    if realtime.get("enabled") is not True:
         LOGGER.warning("streaming speech is off; a phone gets no voice.")
         return None
     config = dataclasses.replace(
@@ -4115,19 +4103,12 @@ class _VoicePowerCoordinator:
         return pending is None or not pending.is_alive()
 
 
-class _IngressHost(_ConfigHost, Protocol):
-    """What the capture session's activation reads from its host."""
-
-    @property
-    def wave1_features(self) -> Wave1FeatureFlags: ...
-
-
 class _RuntimeRoot(Protocol):
     @property
     def root(self) -> Path: ...
 
 
-class ListeningHost(_IngressHost, Protocol):
+class ListeningHost(_ConfigHost, Protocol):
     """What the capture session is built from: a daemon's runtime, or a voice terminal's seat."""
 
     @property
@@ -4272,8 +4253,8 @@ def _local_listen_ports(
     )
 
 
-def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite has a named result
-    runtime: _IngressHost,
+def _single_ingress_activation(
+    runtime: _ConfigHost,
     *,
     tts: voice_media.StreamingTTSPipeline | None,
 ) -> _SingleIngressActivation:
@@ -4311,15 +4292,6 @@ def _single_ingress_activation(  # noqa: PLR0911 - each fail-closed prerequisite
             requested=True,
             capable=False,
             reason=f"invalid_input_config:{exc}",
-        )
-    if not (
-        runtime.wave1_features.transactional_event_append
-        and runtime.wave1_features.lifecycle_terminal_cas
-    ):
-        return _SingleIngressActivation(
-            requested=True,
-            capable=False,
-            reason="wave1_capability_missing",
         )
     if tts is None:
         return _SingleIngressActivation(

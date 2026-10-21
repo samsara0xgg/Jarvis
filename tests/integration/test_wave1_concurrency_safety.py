@@ -933,12 +933,10 @@ def test_vision_cost_guard_records_success_and_error_and_no_recorder_records_not
 
 
 def test_wave1_feature_flags_ship_enabled() -> None:
-    """Shipped config opts into all four Wave-1 safety primitives (tier A)."""
+    """Shipped config opts into the two Wave-1 safety switches that remain (tier A)."""
     raw = yaml.safe_load(Path("config/jarvis.yaml").read_text(encoding="utf-8"))
     realtime = raw["realtime"]
     flags = Wave1FeatureFlags.from_mapping(realtime["concurrency_safety"])
     assert realtime["enabled"] is True
-    assert flags.transactional_event_append
-    assert flags.lifecycle_terminal_cas
     assert flags.confirmation_dispatch_outbox
     assert flags.exactly_once_cost_accounting
