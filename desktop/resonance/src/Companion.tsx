@@ -98,13 +98,13 @@ function layout({ topInset, notchWidth, surfaceWidth: width }: Placement) {
 }
 
 export function Companion() {
-  const [placement, setPlacement] = useState<Placement>({ topInset: detached ? 0 : 32, notchWidth: detached ? 0 : 185, surfaceWidth: detached ? 360 : 640 });
+  const [placement, setPlacement] = useState<Placement>({ topInset: detached ? 0 : 32, notchWidth: detached ? 0 : 185, surfaceWidth: detached ? 360 : 720 });
   // Moving to another screen: she sinks into this island, then the window moves and she comes up in the new one.
   const [moving, setMoving] = useState(false);
   const shownDisplay = useRef<number | undefined>(undefined), arriving = useRef(false);
   // The window shrinks to what is shown (src/fitWindow.ts); a new placement puts the whole stage back, so it fits again.
   // The stage's height is electron/companion.ts's: the notch's top inset plus 690, never more than the screen.
-  const fit = useRef<ReturnType<typeof fitWindow> | null>(null), stage = useRef({ w: 640, h: 700 });
+  const fit = useRef<ReturnType<typeof fitWindow> | null>(null), stage = useRef({ w: 720, h: 700 });
   useEffect(() => {
     if (!window.jarvis) return;
     const receive = (value: Placement | null) => {

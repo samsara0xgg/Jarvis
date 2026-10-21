@@ -66,7 +66,7 @@ const TURN_ORDER: AgentState[] = ['wait', 'err', 'done'];
 const PAD = 4, DONE_FADE_MS = 10 * 60_000, GCELL = 26, GCX = 6, WING_W = 112, DOT_WING_W = 64, DOT_R = 2.6, DOT_COUNT_X = 7.5, DOT_GAP = 5, DIGIT_W = 6.1, POP_W = 360, ALL_W = 440, PAGE_W = 560, CARD_W = 440, DRAG_OUT = 30, DWELL_MS = 1500, PIN_H = 16, PIN_PAD = 6, PIN_GAP = 5, PIN_TIP_MS = 250;
 const PIN_FONT = '600 10px "JetBrains Mono", Menlo, monospace';
 // The timeline's line: the place or the way in the sans face, how long in the mono face, dimmer. At most SEG_MAX wide; the place gives way.
-const TL_W = 520, SEG_MAX = 112, TL_GAP = 7, SEP = ' · ', TL_KEEP_MS = 60_000;
+const TL_W = 680, SEG_MAX = 112, TL_GAP = 7, SEP = ' · ', TL_KEEP_MS = 60_000;
 const SEG_FONT = '600 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif', SEG_MONO = '600 10.5px "JetBrains Mono", Menlo, monospace';
 const KINDS: readonly Kind[] = ['turn', 'work', 'done', 'moon'];
 const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
