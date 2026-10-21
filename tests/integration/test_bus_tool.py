@@ -631,3 +631,60 @@ def test_a_trip_that_ends_at_the_stop_is_not_a_bus_to_board_and_takes_no_slot(
     assert [(b["headsign"], b["departs"]) for b in stop["buses"]] == [
         ("Pine", "5:20 pm"), ("Harbour", "5:25 pm"),
     ]
+
+
+# The one stop of the boards below, and the stop its trips go on to.
+_HERE_STOP = gtfs.StopSpec("S1", "Ring Rd at Oak St", 48.4609, -123.31, "10001")
+_NEXT_STOP = gtfs.StopSpec("S3", "Ring Rd at Pine St", 48.48, -123.31)
+
+
+def _line(*trips: tuple[str, str, str], **more: Any) -> gtfs.Export:  # noqa: ANN401
+    """One line of the 7 from the stop here: each ``(trip, leaves, reaches the next stop)``."""
+    return gtfs.Export((_HERE_STOP, _NEXT_STOP), tuple(
+        gtfs.TripSpec(trip, "7", (("S1", f"{leaves}:00"), ("S3", f"{next_at}:00")),
+                      headsign="Downtown")
+        for trip, leaves, next_at in trips
+    ), **more)
+
+
+def test_a_late_bus_scheduled_before_now_is_still_on_the_board_at_its_live_time(
+    board_of: Callable[..., World],
+) -> None:
+    """The 7 of 4:55 pm is predicted at 5:03 pm and it is 5:00 pm: it has not come, so it is next.
+
+    The board used to cut by the schedule before it looked at the feed, so the late bus was
+    missing and the 5:25 pm was said to be the next one. A bus that left on time is still gone.
+    """
+    export = _line(
+        ("Tgone", "16:50", "17:00"), ("Tlate", "16:55", "17:05"), ("Tnext", "17:25", "17:35"),
+    )
+    feed = realtime(("Tlate", "S1", local_ms(17, 3)), ("Tgone", "S1", local_ms(16, 50)))
+    out = board_of(export, feed).call({"stop": "10001"})
+    (stop,) = out["stops"]
+    assert [(b["departs"], b["source"], b["in_min"]) for b in stop["buses"]] == [
+        ("5:03 pm", "live", 3), ("5:25 pm", "scheduled", 25),
+    ]
+
+
+def test_with_no_bus_in_three_hours_the_board_looks_on_to_the_day_it_runs(
+    board_of: Callable[..., World],
+) -> None:
+    """The only 7 leaves at 6:00 am: at 5:00 pm it is tomorrow's, said with its day.
+
+    A board with no route used to stop at three hours and call that "the next day".
+    """
+    world = board_of(_line(("T1", "06:00", "06:10")))
+    out = world.call({"stop": "10001"})
+    (stop,) = out["stops"]
+    assert [(b["departs"], b["source"]) for b in stop["buses"]] == [
+        ("tomorrow (Wed), 6:00 am", "scheduled"),
+    ]
+    assert world.receipt()["covered"]["window"] == "the next 24 h from 5:00 pm"
+
+
+def test_a_board_with_no_bus_says_the_window_it_searched(board_of: Callable[..., World]) -> None:
+    """A weekend-only line on a Tuesday: nothing in the next 24 hours, and the sentence says so."""
+    world = board_of(_line(("T1", "10:00", "10:10"), services=(gtfs.ServiceSpec("WK", "0000011"),)))
+    out = world.call({"stop": "10001"})
+    assert out["summary"] == "No buses at Ring Rd at Oak St in the next 24 h from 5:00 pm."
+    assert world.receipt()["covered"]["window"] == "the next 24 h from 5:00 pm"

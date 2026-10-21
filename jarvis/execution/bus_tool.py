@@ -24,7 +24,7 @@ from jarvis.shared import CallerPrincipal
 from jarvis.shared.geo import metres
 from jarvis.shared.receipts import Covered, Receipt
 from jarvis.shared.rounding import departure_ms
-from jarvis.state import departures, stop_finder
+from jarvis.state import departures, stop_finder, timetable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -488,20 +488,21 @@ class _Bus:
             feed = self._bus.snapshot()
         except Exception:  # noqa: BLE001 - the schedule alone still names the next buses.
             feed = None
+        start_ms = int(start.timestamp() * 1000)
         shown: list[dict[str, Any]] = []
         total = 0
-        window = _BOARD_WINDOW
+        searched = _BOARD_WINDOW
         for hit in hits:
-            buses: list[dict[str, Any]] = []
-            while True:
+            for window in (_BOARD_WINDOW, _BOARD_WIDE):
+                # A bus scheduled a little before the start may be late and still to come.
                 calls = table.calls_at(
-                    hit.stop.stop_id, int(start.timestamp() * 1000),
-                    int((start + window).timestamp() * 1000), route,
+                    hit.stop.stop_id, start_ms - timetable.LIVE_SLACK_MS,
+                    start_ms + int(window.total_seconds() * 1000), route,
                 )
                 buses = self._per_direction(calls, feed, start)
-                if len(buses) >= 2 * _PER_DIRECTION or window >= _BOARD_WIDE or route is None:
+                if len(buses) >= 2 * _PER_DIRECTION:
                     break
-                window = _BOARD_WIDE
+            searched = max(searched, window)
             total += len(buses)
             shown.append({
                 "stop": hit.stop.name,
@@ -509,12 +510,12 @@ class _Bus:
                 **({"metres": hit.metres} if hit.metres is not None else {}),
                 "buses": [self._bus_view(b, now) for b in buses],
             })
+        hours = int(searched.total_seconds() // 3600)
+        label = f"the next {hours} h from {transit_tool.said(start, now)}"
         lines = [self._stop_line(s) for s in shown]
         summary = " ".join(lines) if lines else "No buses were found."
         if total == 0:
-            summary = f"No buses at {shown[0]['stop'] if shown else 'that stop'} in the next day."
-        hours = int(window.total_seconds() // 3600)
-        label = f"the next {hours} h from {transit_tool.said(start, now)}"
+            summary = f"No buses at {shown[0]['stop'] if shown else 'that stop'} in {label}."
         return _read(
             {"summary": summary, "stops": shown}, f"read the next buses at {len(shown)} stop(s)",
             Covered(("BC Transit timetable", "BC Transit live"), label, total, 0),
