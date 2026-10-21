@@ -21,7 +21,7 @@ from jarvis.runtime.settings import Settings, apply_settings
 from jarvis.runtime.settings_owner import owner_of
 from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from tests.canary._helpers import repo_root
-from tests.integration.test_anthropic_adaptation import _reply, _run
+from tests.support.typed_stream import anthropic_reply, run_anthropic_stream
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
@@ -182,9 +182,9 @@ def test_fast_mode_is_a_body_field_and_a_beta_header(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("OPUS_FIXTURE_KEY", "synthetic")
     factory = LLMSessionFactory(LLM)
     client = factory.create(factory.snapshot("opus-fast"), response_id="r1")
-    frames = _reply({"type": "text", "text": "好。"}, stop="end_turn")
+    frames = anthropic_reply({"type": "text", "text": "好。"}, stop="end_turn")
     frames[0]["message"]["usage"]["speed"] = "fast"
-    peer, events = asyncio.run(_run(
+    peer, events = asyncio.run(run_anthropic_stream(
         client, frames, messages=[{"role": "user", "content": "hi"}], system="S", tools=None,
     ))
     assert peer.body["speed"] == "fast"
@@ -199,8 +199,8 @@ def test_a_standard_request_sends_neither(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic")
     factory = LLMSessionFactory(LLM)
     client = factory.create(factory.snapshot("opus"), response_id="r2")
-    frames = _reply({"type": "text", "text": "好。"}, stop="end_turn")
-    peer, events = asyncio.run(_run(
+    frames = anthropic_reply({"type": "text", "text": "好。"}, stop="end_turn")
+    peer, events = asyncio.run(run_anthropic_stream(
         client, frames, messages=[{"role": "user", "content": "hi"}], system="S", tools=None,
     ))
     assert "speed" not in peer.body

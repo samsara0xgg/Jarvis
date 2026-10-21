@@ -18,7 +18,7 @@ from jarvis.decision.surrogate_route import JevLog, Reply, SurrogateRoute
 from jarvis.decision.voice_words import VoiceWords, words_state
 from jarvis.runtime import RuntimeBootstrapError, _voice_words
 from jarvis.surface import voice_session
-from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
+from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.voice_words import LISTENING, LONG_LINE
 
 if TYPE_CHECKING:
@@ -61,8 +61,8 @@ class _Words:
     def say(self, choice: str, confidence: float = 0.97) -> None:
         self.route.choice, self.route.confidence = choice, confidence
 
-    def rig(self, tmp_path: Path, heard: str, **kwargs: Any) -> _Rig:  # noqa: ANN401 - the rig's own
-        return _Rig(
+    def rig(self, tmp_path: Path, heard: str, **kwargs: Any) -> BargeInRig:  # noqa: ANN401 - the rig's own
+        return BargeInRig(
             tmp_path, heard, ask_words=self.words.ask, note_words=self.words.note, **kwargs,
         )
 
@@ -72,7 +72,7 @@ class _Words:
         return [json.loads(line) for line in self.log_path.read_text("utf-8").splitlines()]
 
 
-def _run(rig: _Rig, frames: int = SHORT) -> None:
+def _run(rig: BargeInRig, frames: int = SHORT) -> None:
     try:
         rig.say(frames)
     finally:
@@ -177,11 +177,11 @@ def test_without_jev_the_verdicts_are_todays(tmp_path: Path) -> None:
     """No callable: a dismissal inside a sentence still dismisses; an unknown line is a turn."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    rig = _Rig(tmp_path / "a", SHORT_ORDER, speaking=False)
+    rig = BargeInRig(tmp_path / "a", SHORT_ORDER, speaking=False)
     _run(rig)
     assert rig.conversation_changes == [(False, "dismissed")]
     assert rig.turns() == []
-    rig = _Rig(tmp_path / "b", LISTENING)
+    rig = BargeInRig(tmp_path / "b", LISTENING)
     _run(rig)
     assert "stop" in rig.output
     assert rig.turns() == [LISTENING]

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from jarvis.runtime import _live_lines
 from jarvis.surface.voice_cues import VoiceCues
-from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
+from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.prompt_assembly import HISTORY, REPLY_LINE, STATUS, drive_one_turn
 from tests.support.voice_input import wait_until_true
 
@@ -32,7 +32,7 @@ def _request(tmp_path: Path, cues: VoiceCues) -> str:
 def test_a_laugh_over_her_and_a_happy_sentence_reach_the_next_request(tmp_path: Path) -> None:
     """The laugh is no turn (she goes on); the cues ride the next turn once, then clear."""
     cues = VoiceCues()
-    rig = _Rig(tmp_path, "哈哈。", cues=cues)
+    rig = BargeInRig(tmp_path, "哈哈。", cues=cues)
     rig.asr.tags = {"哈哈。": ("HAPPY", "Laughter"), "你说得太好笑了。": ("HAPPY", "Speech")}
     try:
         rig.say(SHORT)

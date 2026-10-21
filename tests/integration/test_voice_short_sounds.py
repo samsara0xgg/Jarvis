@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 
 from jarvis.surface import voice_audio, voice_session
+from tests.support.voice_input import EnergySilero
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -34,15 +35,6 @@ ROOM = _RNG.normal(0, 30, FRAME).astype(np.int16).tobytes()  # about -60 dBFS
 VOICE = np.full(FRAME, 8_000, dtype=np.int16).tobytes()
 
 
-class _EnergySilero:
-    """ONNX-shaped Silero stand-in: speech when the frame is louder than the room."""
-
-    def run(self, _names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
-        rms = float(np.sqrt(np.mean(inputs["x"] ** 2)))
-        probability = 0.9 if rms > 0.05 else 0.05  # between the room and a voice
-        return [np.asarray([[probability]], dtype=np.float32), inputs["h"], inputs["c"]]
-
-
 def _frames(script: list[tuple[str, int]]) -> Iterator[bytes]:
     for kind, milliseconds in script:
         for _ in range(milliseconds // FRAME_MS):
@@ -52,7 +44,7 @@ def _frames(script: list[tuple[str, int]]) -> Iterator[bytes]:
 def _conversation_commits(script: list[tuple[str, int]]) -> list[tuple[str, int, int]]:
     """Feed one conversation-mode arm; return ``(reason, commit_ms, audio_ms)`` per commit."""
     commits: list[tuple[str, int, int]] = []
-    with patch.object(voice_audio, "_load_silero_session", return_value=_EnergySilero()):
+    with patch.object(voice_audio, "_load_silero_session", return_value=EnergySilero()):
         assembler = voice_session.UtteranceAssembler(
             vad=voice_audio.SileroVad(mode="record"),
             config=replace(voice_session.RealtimeInputSessionConfig(), min_voiced_s=0.3),
@@ -165,7 +157,7 @@ def test_legacy_capture_does_not_cut_the_words_after_a_short_sound() -> None:
         [("room", 160), ("voice", 160), ("room", 992), ("voice", 1_280), ("room", 1_280)],
     )
     with (
-        patch.object(voice_audio, "_load_silero_session", return_value=_EnergySilero()),
+        patch.object(voice_audio, "_load_silero_session", return_value=EnergySilero()),
         patch.object(voice_audio, "_open_input_stream", return_value=stream),
     ):
         audio = voice_audio.capture_utterance(

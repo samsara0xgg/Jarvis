@@ -32,17 +32,17 @@ from jarvis.state.voiceprint import DIMENSIONS, VoiceprintBook
 from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.terminal_events import phone_turn_id
 from jarvis.surface.voice_print import VoiceprintExtractor, load_extractor
-from tests.integration.test_soft_barge_in import LONG
-from tests.integration.test_soft_barge_in import _Rig as _MacRig
-from tests.integration.test_terminal_listen import (
-    _ask,
-    _connect,
-    _listening_client,
-    _utterance,
-    _utterances,
-)
+from tests.support.barge_in import LONG
+from tests.support.barge_in import BargeInRig as _MacRig
 from tests.support.phone import TURN_WORDS, open_ws, say_words
 from tests.support.phone import JudgeRig as _PhoneRig
+from tests.support.terminal_listen import (
+    ask_op,
+    connect_listening,
+    listening_client,
+    logged_utterances,
+    utterance_frame,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -95,18 +95,18 @@ def _terminal_judge(
     said: str = "把灯打开。", turn: str = "T1", **hooks: Any,  # noqa: ANN401 - whichever hooks
 ) -> tuple[dict[str, Any], Path]:
     """One judged utterance of ``macbook`` over the real link: the reply and the brain's log."""
-    client, _hub, log = _listening_client(tmp_path, voiceprints=book, **hooks)
+    client, _hub, log = listening_client(tmp_path, voiceprints=book, **hooks)
     extra: dict[str, object] = {"judge": {"conversation": False, "over_her": False}}
     if voiceprint is not None:
         extra["voiceprint"] = voiceprint
     with ExitStack() as stack:
-        ws = _connect(client, tmp_path, "macbook", stack)
-        _ask(ws, "utterance", _utterance(turn, said, **extra), "a" * 32)
+        ws = connect_listening(client, tmp_path, "macbook", stack)
+        ask_op(ws, "utterance", utterance_frame(turn, said, **extra), "a" * 32)
         return ws.receive_json(), log
 
 
 def _payload(log: Path) -> dict[str, Any]:
-    [(_uid, _node, raw)] = _utterances(log)
+    [(_uid, _node, raw)] = logged_utterances(log)
     return dict(json.loads(raw))
 
 
@@ -131,7 +131,7 @@ def test_a_long_utterance_far_from_his_profile_is_not_owner_and_writes_nothing(
     )
     assert reply["ok"] is True
     assert reply["value"] == {"verdict": "not_owner"}
-    assert _utterances(log) == []
+    assert logged_utterances(log) == []
     assert seen == []
 
 
@@ -227,10 +227,10 @@ def test_a_resent_utterance_is_learned_once(tmp_path: Path) -> None:
 def test_words_that_are_no_turn_teach_no_profile(tmp_path: Path) -> None:
     """A dismissal is his voice, but not a turn: it is logged, and nothing is learned from it."""
     book = _book(tmp_path)
-    client, _hub, _log = _listening_client(tmp_path, voiceprints=book)
+    client, _hub, _log = listening_client(tmp_path, voiceprints=book)
     with ExitStack() as stack:
-        ws = _connect(client, tmp_path, "macbook", stack)
-        _ask(ws, "utterance", _utterance("T9", "退下。", voiceprint=_wire(0.8),
+        ws = connect_listening(client, tmp_path, "macbook", stack)
+        ask_op(ws, "utterance", utterance_frame("T9", "退下。", voiceprint=_wire(0.8),
                                          judge={"conversation": True, "over_her": False}))
         assert ws.receive_json()["value"] == {"verdict": "dismissed"}
     assert _rows(book) == {("macbook", MIC): 1}  # the seed alone

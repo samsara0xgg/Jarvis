@@ -298,3 +298,12 @@ def write_wav(path: Path, pcm: np.ndarray, *, rate: int = 16_000, channels: int 
         writer.setframerate(rate)
         writer.writeframes(pcm.astype("<i2").tobytes())
     return path
+
+
+class EnergySilero:
+    """ONNX-shaped Silero stand-in: speech when the frame is louder than the room."""
+
+    def run(self, _names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
+        rms = float(np.sqrt(np.mean(inputs["x"] ** 2)))
+        probability = 0.9 if rms > 0.05 else 0.05  # between the room and a voice
+        return [np.asarray([[probability]], dtype=np.float32), inputs["h"], inputs["c"]]

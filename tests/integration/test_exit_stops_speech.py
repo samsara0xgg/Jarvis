@@ -30,7 +30,7 @@ from jarvis.surface import voice_media
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app
 from jarvis.surface.voice_controls import VoiceControls
-from tests.integration.test_soft_barge_in import _Rig
+from tests.support.barge_in import BargeInRig
 from tests.support.media import (
     CallbackPump,
     FakeProvider,
@@ -116,7 +116,7 @@ def test_exit_stops_the_audible_answer_drops_the_queued_one_and_says_nothing(
         start_player=False,
     )
 
-    rig = _Rig(
+    rig = BargeInRig(
         tmp_path,
         "",
         output_active=pipeline.is_output_active,
@@ -253,7 +253,7 @@ def test_a_run_still_generating_at_exit_never_reaches_the_speaker(tmp_path: Path
     provider.final_gates[("RG", 0)] = hold
     pipeline, player = make_pipeline(db_path, provider, speak_from_segments=True)
     conn = open_event_log(db_path)
-    rig = _Rig(
+    rig = BargeInRig(
         tmp_path,
         "",
         output_active=pipeline.is_output_active,

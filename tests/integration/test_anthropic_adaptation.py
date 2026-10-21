@@ -35,7 +35,12 @@ from jarvis.shared.pricing import compute_cost_usd, load_pricing_table
 from jarvis.shared.system_prompt import SplitSystem
 from jarvis.state.event_log import open_event_log
 from tests.canary._helpers import repo_root
-from tests.support.typed_stream import SSEPeer
+from tests.support.typed_stream import (
+    SSEPeer,
+    anthropic_preset,
+    anthropic_reply,
+    run_anthropic_stream,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -44,76 +49,17 @@ if TYPE_CHECKING:
 TOOLS = [{"name": "lookup", "description": "d", "input_schema": {"type": "object"}, "deferred": True}]
 
 
-def _preset(base_url: str, **extra: Any) -> LLMClient:  # noqa: ANN401 — preset keys
-    return LLMClient({
-        "provider": "openai",
-        "presets": {"haiku": {
-            "provider": "anthropic", "model": "claude-haiku-5-5", "api_key_env": "HAIKU_FIXTURE_KEY",
-            "max_tokens": 4096, "reasoning_effort": "low", "base_url": base_url, **extra,
-        }},
-        "default_preset": "haiku", "timeout_s": 5, "max_retries": 0,
-    })
-
-
-def _reply(*blocks: dict[str, Any], stop: str, usage: dict[str, int] | None = None) -> list[dict[str, Any]]:
-    """An Anthropic event stream over ``blocks``: ``{"type": "thinking", ...}``, text, tool_use."""
-    frames: list[dict[str, Any]] = [{
-        "type": "message_start",
-        "message": {"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
-                    "content": [], "stop_reason": None, "stop_sequence": None,
-                    "usage": {"input_tokens": 12, "output_tokens": 1,
-                              "cache_read_input_tokens": 4, "cache_creation_input_tokens": 2}},
-    }]
-    for index, block in enumerate(blocks):
-        start = {"thinking": {"type": "thinking", "thinking": "", "signature": ""},
-                 "text": {"type": "text", "text": ""},
-                 "tool_use": {"type": "tool_use", "id": block.get("id"), "name": block.get("name"),
-                              "input": {}},
-                 "server_tool_use": {"type": "server_tool_use", "id": block.get("id"),
-                                     "name": block.get("name"), "input": {}},
-                 "tool_search_tool_result": block}[block["type"]]
-        frames.append({"type": "content_block_start", "index": index, "content_block": start})
-        if block["type"] == "tool_search_tool_result":
-            pass  # the server sends its result whole, with no deltas
-        elif block["type"] == "thinking":
-            frames.append({"type": "content_block_delta", "index": index,
-                           "delta": {"type": "thinking_delta", "thinking": block["thinking"]}})
-            frames.append({"type": "content_block_delta", "index": index,
-                           "delta": {"type": "signature_delta", "signature": block["signature"]}})
-        elif block["type"] == "text":
-            frames.append({"type": "content_block_delta", "index": index,
-                           "delta": {"type": "text_delta", "text": block["text"]}})
-        else:
-            frames.append({"type": "content_block_delta", "index": index,
-                           "delta": {"type": "input_json_delta", "partial_json": block["json"]}})
-        frames.append({"type": "content_block_stop", "index": index})
-    frames += [
-        {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
-         "usage": usage or {"output_tokens": 6}},
-        {"type": "message_stop"},
-    ]
-    return frames
-
-
-async def _run(client: LLMClient, frames: list[dict[str, Any]], **call: Any) -> tuple[SSEPeer, list[Any]]:  # noqa: ANN401
-    peer = SSEPeer(frames)
-    async with peer.running() as url:
-        client._base_url = url.removesuffix("/v1")  # noqa: SLF001 — the peer's address
-        handle = client.stream_events(on_settled=lambda _d: None, **call)
-        return peer, [event async for event in handle.events()]
-
-
 def test_a_spoken_request_carries_structure_thinking_caching_and_no_openai_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """text_format -> output_config.format; effort low -> adaptive; the tier is not sent."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    frames = _reply(
+    frames = anthropic_reply(
         {"type": "thinking", "thinking": "hm", "signature": "sig-1"},
         {"type": "text", "text": '{"spoken": "好的。", "written": ""}'}, stop="end_turn",
     )
-    peer, events = asyncio.run(_run(
-        _preset(""), frames,
+    peer, events = asyncio.run(run_anthropic_stream(
+        anthropic_preset(""), frames,
         messages=[{"role": "user", "content": "你好"}], system="SYS", tools=TOOLS,
         responses=True, text_format=SPOKEN_REPLY_FORMAT, service_tier="priority",
     ))
@@ -148,15 +94,15 @@ def test_a_preset_note_follows_the_system_prompt_only_on_that_preset(
 ) -> None:
     """system_note rides after every system prompt of its preset, and of no other client."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    client = _preset("", system_note="# Working on this model\n- Call the tool.")
-    frames = _reply({"type": "text", "text": '{"spoken": "好", "written": ""}'}, stop="end_turn")
-    peer, _ = asyncio.run(_run(client, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
+    client = anthropic_preset("", system_note="# Working on this model\n- Call the tool.")
+    frames = anthropic_reply({"type": "text", "text": '{"spoken": "好", "written": ""}'}, stop="end_turn")
+    peer, _ = asyncio.run(run_anthropic_stream(client, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
     assert peer.body["system"] == "SYS\n\n# Working on this model\n- Call the tool."
     factory = LLMSessionFactory({"presets": {"haiku": {"provider": "anthropic", "model": "claude-haiku-5-5", "system_note": "N"}}})
     run_client = factory.create(factory.snapshot("haiku"), response_id="r")
     assert run_client._system_note == "\n\nN"  # noqa: SLF001 — a run client keeps the note
-    plain = _preset("")  # the same model with no note: another model is another client
-    peer, _ = asyncio.run(_run(plain, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
+    plain = anthropic_preset("")  # the same model with no note: another model is another client
+    peer, _ = asyncio.run(run_anthropic_stream(plain, frames, messages=[{"role": "user", "content": "x"}], system="SYS"))
     assert peer.body["system"] == "SYS"
 
 
@@ -165,13 +111,13 @@ def test_a_tool_turn_sends_its_thinking_blocks_back_unchanged_with_the_result(
 ) -> None:
     """The stream's thinking (and signature) leads the assistant turn of the next request."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    first = _reply(
+    first = anthropic_reply(
         {"type": "thinking", "thinking": "need lookup", "signature": "sig-9"},
         {"type": "tool_use", "id": "toolu_A", "name": "lookup", "json": '{"q": "ice"}'},
         stop="tool_use",
     )
-    client = _preset("")
-    _, events = asyncio.run(_run(client, first, messages=[{"role": "user", "content": "q"}],
+    client = anthropic_preset("")
+    _, events = asyncio.run(run_anthropic_stream(client, first, messages=[{"role": "user", "content": "q"}],
                                  system="S", tools=TOOLS))
     call = next(event for event in events if isinstance(event, LLMToolCallCompleted))
     assert (call.call_id, call.arguments_json) == ("toolu_A", '{"q": "ice"}')
@@ -183,8 +129,8 @@ def test_a_tool_turn_sends_its_thinking_blocks_back_unchanged_with_the_result(
         {"role": "tool", "tool_call_id": "toolu_A", "content": "cold"},
         {"role": "user", "content": "state note"},
     ]
-    peer, _ = asyncio.run(_run(
-        client, _reply({"type": "text", "text": "{}"}, stop="end_turn"),
+    peer, _ = asyncio.run(run_anthropic_stream(
+        client, anthropic_reply({"type": "text", "text": "{}"}, stop="end_turn"),
         messages=history, system="S", tools=TOOLS,
     ))
     assert peer.body["messages"] == [
@@ -240,8 +186,8 @@ def test_on_anthropics_host_the_deferred_tools_wait_for_its_own_search(
         {"name": "mcp__gmail__gmail_send", "description": "mcp__gmail__gmail_send d",
          "input_schema": {"type": "object"}, "defer_loading": True},
     ]
-    peer, _ = asyncio.run(_run(
-        _preset(""), _reply({"type": "text", "text": "ok"}, stop="end_turn"),
+    peer, _ = asyncio.run(run_anthropic_stream(
+        anthropic_preset(""), anthropic_reply({"type": "text", "text": "ok"}, stop="end_turn"),
         messages=[{"role": "user", "content": "x"}], system=SplitSystem("STABLE", "VAR"), tools=menu,
     ))
     body = peer.body
@@ -259,9 +205,9 @@ def test_on_anthropics_host_the_deferred_tools_wait_for_its_own_search(
 
 def test_only_anthropics_own_host_runs_its_tool_search() -> None:
     """Another server speaking the Messages API, and every OpenAI preset, keep tool_search."""
-    assert _preset("").native_tool_search
-    assert _preset("https://api.anthropic.com").native_tool_search
-    assert not _preset("https://api.example.cn/anthropic").native_tool_search
+    assert anthropic_preset("").native_tool_search
+    assert anthropic_preset("https://api.anthropic.com").native_tool_search
+    assert not anthropic_preset("https://api.example.cn/anthropic").native_tool_search
     assert not LLMClient({"provider": "openai", "model": "m"}).native_tool_search
 
 
@@ -273,7 +219,7 @@ def test_a_found_tools_search_rides_back_in_order_with_its_call(
     found = {"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_S", "content": {
         "type": "tool_search_tool_search_result",
         "tool_references": [{"type": "tool_reference", "tool_name": "lookup"}]}}
-    first = _reply(
+    first = anthropic_reply(
         {"type": "thinking", "thinking": "find it", "signature": "sig-3"},
         {"type": "server_tool_use", "id": "srvtoolu_S", "name": "tool_search_tool_bm25",
          "json": '{"query": "look up"}'},
@@ -281,9 +227,9 @@ def test_a_found_tools_search_rides_back_in_order_with_its_call(
         {"type": "tool_use", "id": "toolu_B", "name": "lookup", "json": '{"q": "ice"}'},
         stop="tool_use",
     )
-    client = _preset("")
+    client = anthropic_preset("")
     menu = [{**NATIVE_TOOL_SEARCH, "catalog": "C"}, {**TOOLS[0], "defer_loading": True}]
-    _, events = asyncio.run(_run(client, first, messages=[{"role": "user", "content": "q"}],
+    _, events = asyncio.run(run_anthropic_stream(client, first, messages=[{"role": "user", "content": "q"}],
                                  system="S", tools=menu))
     calls = [event for event in events if isinstance(event, LLMToolCallCompleted)]
     assert [(c.call_id, c.name) for c in calls] == [("toolu_B", "lookup")]
@@ -294,8 +240,8 @@ def test_a_found_tools_search_rides_back_in_order_with_its_call(
             "function": {"name": "lookup", "arguments": '{"q": "ice"}'}}]},
         {"role": "tool", "tool_call_id": "toolu_B", "content": "cold"},
     ]
-    peer, _ = asyncio.run(_run(
-        client, _reply({"type": "text", "text": "{}"}, stop="end_turn"),
+    peer, _ = asyncio.run(run_anthropic_stream(
+        client, anthropic_reply({"type": "text", "text": "{}"}, stop="end_turn"),
         messages=history, system="S", tools=menu,
     ))
     assert peer.body["system"] == "S\n\nC"
@@ -310,8 +256,8 @@ def test_a_found_tools_search_rides_back_in_order_with_its_call(
 def test_a_refusal_fails_the_stream_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """stop_reason refusal is a protocol failure, as OpenAI's refusal is."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    _, events = asyncio.run(_run(
-        _preset(""), _reply({"type": "text", "text": "no"}, stop="refusal"),
+    _, events = asyncio.run(run_anthropic_stream(
+        anthropic_preset(""), anthropic_reply({"type": "text", "text": "no"}, stop="refusal"),
         messages=[{"role": "user", "content": "x"}], system="S",
     ))
     failed = next(event for event in events if isinstance(event, LLMResponseFailed))
@@ -324,11 +270,11 @@ def test_the_prefix_warm_asks_for_no_output_and_ends_on_the_users_last_message(
     """max_tokens 0, the next turn's thinking, tools and format, and no assistant prefill."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
     frames = [
-        _reply(stop="max_tokens", usage={"output_tokens": 0})[0],
+        anthropic_reply(stop="max_tokens", usage={"output_tokens": 0})[0],
         {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 0}},
         {"type": "message_stop"},
     ]
-    client = _preset("")
+    client = anthropic_preset("")
     registry = SimpleNamespace(for_caller=lambda _principal: [])
 
     async def go() -> SSEPeer:
@@ -378,7 +324,7 @@ def test_chat_maps_tool_choice_images_and_the_whole_prompt(monkeypatch: pytest.M
                 model_dump=dict,
             )
 
-    client = _preset("")
+    client = anthropic_preset("")
     client._anthropic_client = SimpleNamespace(messages=_Messages())  # noqa: SLF001
     result = client.chat(
         messages=[{"role": "user", "content": [
@@ -548,9 +494,9 @@ def test_the_replay_script_rebuilds_the_history_and_streams_it_through_the_clien
     ]
 
     async def go() -> tuple[SSEPeer, dict[str, Any]]:
-        peer = SSEPeer(_reply({"type": "text", "text": '{"spoken": "x", "written": ""}'}, stop="end_turn"))
+        peer = SSEPeer(anthropic_reply({"type": "text", "text": '{"spoken": "x", "written": ""}'}, stop="end_turn"))
         async with peer.running() as url:
-            client = _preset(url.removesuffix("/v1"))
+            client = anthropic_preset(url.removesuffix("/v1"))
             return peer, await replay_once(client, request, {"lookup": TOOLS[0]})
 
     peer, out = asyncio.run(go())
@@ -578,7 +524,7 @@ def _sent_by(entry: str, system: str, note: str) -> dict[str, Any]:
     message = {"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
                "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
                "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}}
-    frames = _reply({"type": "text", "text": "ok"}, stop="end_turn")
+    frames = anthropic_reply({"type": "text", "text": "ok"}, stop="end_turn")
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
@@ -587,10 +533,10 @@ def _sent_by(entry: str, system: str, note: str) -> dict[str, Any]:
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse.encode())
         return httpx.Response(200, json=message)
 
-    client = _preset("", **({"system_note": note} if note else {}))
+    client = anthropic_preset("", **({"system_note": note} if note else {}))
     messages = [{"role": "user", "content": "x"}]
     if entry == "stream_events":
-        peer, _ = asyncio.run(_run(client, frames, messages=messages, system=system))
+        peer, _ = asyncio.run(run_anthropic_stream(client, frames, messages=messages, system=system))
         return peer.body
     client._anthropic_client = anthropic.Anthropic(  # noqa: SLF001 — the transport under the real SDK
         api_key="synthetic", http_client=httpx.Client(transport=httpx.MockTransport(respond)),

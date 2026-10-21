@@ -61,7 +61,6 @@ from jarvis.surface.terminal_ui import (
 )
 from jarvis.surface.terminal_voice import BrainVoice
 from jarvis.surface.voice_controls import VoiceControls
-from tests.integration.test_terminal_listen import LISTEN_CONFIG, _heard
 from tests.support.net import free_port
 from tests.support.terminal import (
     SPEECH_CONFIG,
@@ -71,6 +70,7 @@ from tests.support.terminal import (
     open_stream,
     wait_for,
 )
+from tests.support.terminal_listen import LISTEN_CONFIG, heard_session
 from tests.support.terminal_ui import DEVICE_TOKEN, LOCAL, UvicornServer, terminal_rig
 from tests.support.voice_input import write_wav
 
@@ -761,7 +761,7 @@ def test_dictation_records_on_the_terminal_and_the_brain_polishes_the_words(
         tmp_path / "say.wav",
         np.concatenate([np.zeros(8_000, dtype="<i2"), np.full(16_000 * 14, 10_000, dtype="<i2")]),
     )
-    _heard(monkeypatch, lambda: voice_backend.FileReplayBackend(wav))
+    heard_session(monkeypatch, lambda: voice_backend.FileReplayBackend(wav))
     token = pair_device(tmp_path, "macbook")
     root = tmp_path / "terminal-root"
     root.mkdir()

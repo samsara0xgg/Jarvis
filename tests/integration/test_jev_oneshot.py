@@ -29,7 +29,7 @@ from jarvis.state.event_log import (
     open_event_log,
 )
 from tests.canary._helpers import repo_root
-from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
+from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.routine import drive_streaming_turn
 from tests.support.spoken import (
     SpokenPeer,
@@ -117,7 +117,7 @@ class _Lines:
         return [row for row in rows if row["kind"] == kind]
 
 
-def _run(rig: _Rig, frames: int = SHORT) -> None:
+def _run(rig: BargeInRig, frames: int = SHORT) -> None:
     try:
         rig.say(frames)
     finally:
@@ -128,7 +128,7 @@ def test_one_request_serves_the_begin_and_the_control_word_check(tmp_path: Path)
     """The surface begins the line, then asks: both read one request, tagged oneshot."""
     lines = _Lines(tmp_path)
     lines.say(intent=("keep_going", 0.97), tool_group=("none", 0.99))
-    rig = _Rig(
+    rig = BargeInRig(
         tmp_path, LISTENING, recent_speech=lambda: "你今天有三项日程",
         ask_words=lines.oneshot.ask, begin_line=lines.oneshot.begin,
     )
@@ -153,7 +153,7 @@ def test_a_long_line_is_sent_but_never_judged_as_a_control_word(tmp_path: Path) 
     """Over max_chars the request still goes (the decision stage reads it); no word is acted on."""
     lines = _Lines(tmp_path)
     lines.say(intent=("keep_going", 0.99))
-    rig = _Rig(
+    rig = BargeInRig(
         tmp_path, LONG_LINE, ask_words=lines.oneshot.ask, begin_line=lines.oneshot.begin,
     )
     _run(rig, LONG)
@@ -164,7 +164,7 @@ def test_a_long_line_is_sent_but_never_judged_as_a_control_word(tmp_path: Path) 
 def test_a_line_the_regexes_absorbed_sends_nothing(tmp_path: Path) -> None:
     """Only a line the regexes call a turn is begun."""
     lines = _Lines(tmp_path)
-    rig = _Rig(
+    rig = BargeInRig(
         tmp_path, "嗯嗯。", ask_words=lines.oneshot.ask, begin_line=lines.oneshot.begin,
     )
     _run(rig)
@@ -175,7 +175,7 @@ def test_no_answer_in_time_is_a_turn(tmp_path: Path) -> None:
     """The check waits for what is left of words_timeout_ms; none leaves the line a turn."""
     lines = _Lines(tmp_path, words_timeout_ms=50)
     lines.route.hang = True
-    rig = _Rig(
+    rig = BargeInRig(
         tmp_path, LISTENING, ask_words=lines.oneshot.ask, begin_line=lines.oneshot.begin,
     )
     _run(rig)

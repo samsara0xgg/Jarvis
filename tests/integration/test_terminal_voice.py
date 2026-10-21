@@ -13,44 +13,34 @@ played by a terminal's real media actor and the brain's log ends with what was h
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import functools
 import json
 import logging
 import sqlite3
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-import uvicorn
 
 from jarvis.cli import main
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.terminal import JOURNAL, _run, _Speaking
+from jarvis.runtime.terminal import JOURNAL
 from jarvis.shared import Event
 from jarvis.shared.realtime import Wave1FeatureFlags, Wave4ResponseFlags
 from jarvis.state.conversation import fold_conversation_history
 from jarvis.state.device_tokens import (
-    device_name_for_token,
-    device_token_matches,
     pair_device,
 )
 from jarvis.state.event_log import emit_event, iter_events, open_event_log
-from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface import terminal_voice, voice_media, voice_tts
-from jarvis.surface.inherent_output import InherentBroadcaster
-from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
 from jarvis.surface.terminal_events import (
     OBSERVER_EVENT_TYPES,
     PLAYBACK_EVENT_TYPES,
-    BrainEvents,
     EventOutbox,
 )
-from jarvis.surface.terminal_link import MAX_FRAME_CHARS, TerminalHub
+from jarvis.surface.terminal_link import MAX_FRAME_CHARS
 from jarvis.surface.terminal_speaker import (
     Journal,
     RemoteTTSError,
@@ -65,29 +55,30 @@ from jarvis.surface.voice_tts import (
     TTSSegmentFinished,
     TTSSessionClosedError,
 )
-from tests.support.net import free_port
 from tests.support.terminal import (
     SPEECH_CONFIG,
     TERMINAL_WS,
-    AsRemote,
     NoRows,
+    VoiceBrain,
     VoiceSpeechProvider,
     VoiceSpeechSession,
+    VoiceTerminal,
     ack_frame,
+    append_answer,
     bearer,
     brain_client,
-    brain_log,
     hello_frame,
+    logged_types,
     open_stream,
     playback_frame,
     segment_speech,
     wait_for,
+    ws_rows,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
-    from jarvis.runtime.settings import Settings
 
 PARAMS: dict[str, Any] = {
     "endpoint_index": 0, "language": "en", "idle_close_s": 1.0,
@@ -540,68 +531,11 @@ def test_the_journal_takes_only_well_formed_answer_rows(
 # --- the brain's end of /terminal/ws -----------------------------------------------------------
 
 
-def _answer(log: Path, turn: str, text: str = "Hello.", *, channel: str | None = None) -> list[str]:
-    """Append one answer's three rows to the brain's log; their uids."""
-    conn = open_event_log(log)
-    try:
-        group = f"G-{turn}"
-        extra = {} if channel is None else {"attention_channel": channel}
-        events = [
-            emit_event(
-                conn,
-                type="surface.response_open",
-                payload={
-                    "turn_id": turn,
-                    "query": "q",
-                    "kind": "text",
-                    "response_id": f"R-{turn}",
-                    "response_group_id": group,
-                    "phase": "final",
-                    "channel": "speech",
-                    **extra,
-                },
-            ),
-            emit_event(
-                conn,
-                type="surface.response_chunk",
-                payload={
-                    "turn_id": turn,
-                    "text": text,
-                    "response_id": f"R-{turn}",
-                    "response_group_id": group,
-                    "sequence": 0,
-                    "phase": "final",
-                    "channel": "speech",
-                    "segment_hash": "h",
-                },
-            ),
-            emit_event(
-                conn,
-                type="surface.response_emitted",
-                payload={
-                    "turn_id": turn,
-                    "text": text,
-                    "response_id": f"R-{turn}",
-                    "response_group_id": group,
-                    "phase": "final",
-                    "channel": "speech",
-                },
-            ),
-        ]
-    finally:
-        conn.close()
-    return [event.event_uid for event in events]
-
-
-def _rows(ws: Any, count: int) -> list[dict[str, Any]]:  # noqa: ANN401
-    return [dict(ws.receive_json()) for _ in range(count)]
-
-
 def test_a_first_connection_hears_only_what_is_said_after_it(tmp_path: Path) -> None:
     """Old answers are not replayed; the new answer arrives whole, in order, as it was logged."""
     token = pair_device(tmp_path, "macbook")
     client, _hub, log = brain_client(tmp_path)
-    old = _answer(log, "OLD")
+    old = append_answer(log, "OLD")
     with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
         ws.send_text(hello_frame(voice=True, rows_after=None))
         assert ws.receive_json() == {
@@ -611,8 +545,8 @@ def test_a_first_connection_hears_only_what_is_said_after_it(tmp_path: Path) -> 
             "listen": False,
             "baseline": [],
         }
-        new = _answer(log, "NEW", "Fresh answer.")
-        rows = _rows(ws, 3)
+        new = append_answer(log, "NEW", "Fresh answer.")
+        rows = ws_rows(ws, 3)
     assert [row["event_uid"] for row in rows] == new
     assert old
     assert not set(old) & {row["event_uid"] for row in rows}
@@ -633,15 +567,15 @@ def test_a_reconnect_resumes_after_what_the_terminal_journaled(tmp_path: Path) -
     with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
         ws.send_text(hello_frame(voice=True))
         ws.receive_json()
-        _answer(log, "ONE")
-        first = _rows(ws, 3)
-    missed = _answer(log, "TWO") + _answer(log, "THREE")
+        append_answer(log, "ONE")
+        first = ws_rows(ws, 3)
+    missed = append_answer(log, "TWO") + append_answer(log, "THREE")
     with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
         ws.send_text(hello_frame(voice=True, rows_after=first[-1]["id"]))
         ws.receive_json()
-        rows = _rows(ws, 6)
-        later = _answer(log, "FOUR")
-        rows += _rows(ws, 3)
+        rows = ws_rows(ws, 6)
+        later = append_answer(log, "FOUR")
+        rows += ws_rows(ws, 3)
     assert [row["event_uid"] for row in rows] == [*missed, *later]
 
 
@@ -649,12 +583,12 @@ def test_a_resume_point_past_the_log_starts_at_its_end(tmp_path: Path) -> None:
     """A terminal that remembers a row this log never had (a replaced brain) gets no replay."""
     token = pair_device(tmp_path, "macbook")
     client, _hub, log = brain_client(tmp_path)
-    _answer(log, "OLD")
+    append_answer(log, "OLD")
     with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
         ws.send_text(hello_frame(voice=True, rows_after=10_000))
         ws.receive_json()
-        new = _answer(log, "NEW")
-        assert [row["event_uid"] for row in _rows(ws, 3)] == new
+        new = append_answer(log, "NEW")
+        assert [row["event_uid"] for row in ws_rows(ws, 3)] == new
 
 
 def test_turns_on_a_silent_channel_are_not_streamed(tmp_path: Path) -> None:
@@ -664,9 +598,9 @@ def test_turns_on_a_silent_channel_are_not_streamed(tmp_path: Path) -> None:
     with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
         ws.send_text(hello_frame(voice=True))
         ws.receive_json()
-        _answer(log, "QUIET", channel="silent_log")
-        spoken = _answer(log, "LOUD")
-        assert [row["event_uid"] for row in _rows(ws, 3)] == spoken
+        append_answer(log, "QUIET", channel="silent_log")
+        spoken = append_answer(log, "LOUD")
+        assert [row["event_uid"] for row in ws_rows(ws, 3)] == spoken
 
 
 def test_only_the_voice_terminal_connected_last_is_spoken_to(tmp_path: Path) -> None:
@@ -683,8 +617,8 @@ def test_only_the_voice_terminal_connected_last_is_spoken_to(tmp_path: Path) -> 
         for ws, voice in ((old, True), (new, True), (mute, False)):
             ws.send_text(hello_frame(voice=True) if voice else hello_frame())
             ws.receive_json()
-        uids = _answer(log, "T1")
-        assert [row["event_uid"] for row in _rows(new, 3)] == uids
+        uids = append_answer(log, "T1")
+        assert [row["event_uid"] for row in ws_rows(new, 3)] == uids
         # Whatever a terminal was sent comes before the answer to its next frame: the answer
         # to this frame must be the first thing each of the others receives.
         probe = playback_frame("1" * 32)
@@ -821,7 +755,7 @@ def test_playback_rows_are_taken_from_a_voice_terminal_only_and_once(tmp_path: P
     """Allowed with `voice`, refused without; deduped by uid; ids and links are kept."""
     token = pair_device(tmp_path, "macbook")
     client, _hub, log = brain_client(tmp_path)
-    anchor = _answer(log, "T")[0]
+    anchor = append_answer(log, "T")[0]
     with client.websocket_connect(TERMINAL_WS, headers=bearer(token)) as ws:
         ws.send_text(hello_frame())
         ws.receive_json()
@@ -1020,113 +954,6 @@ def test_the_command_takes_voice_as_opt_in_and_declares_it_in_the_hello(
 # --- end to end over a real websocket -------------------------------------------------------
 
 
-class _Brain:
-    """A real uvicorn server: the terminal route, a brain log, and a fake speech provider."""
-
-    def __init__(self, root: Path) -> None:
-        self.port = free_port()
-        self.log = root / "events.db"
-        conn = brain_log(self.log)
-        self.provider = VoiceSpeechProvider()
-        self.hub = TerminalHub(events=BrainEvents(conn))
-        self.hub.voice = BrainVoice(
-            cast("Any", self.provider),
-            inherent_loop._SpokenRows(conn),  # noqa: SLF001
-            poll_interval_s=0.01,
-        )
-        app = create_app(
-            InherentDeps(
-                submit_callable=lambda _text: "T1",
-                broadcaster=InherentBroadcaster(),
-                terminals=self.hub,
-                device_name=functools.partial(device_name_for_token, root),
-            ),
-        )
-        require_local_key(
-            app,
-            functools.partial(local_key_matches, local_key(root)),
-            device_token_matches=functools.partial(device_token_matches, root),
-        )
-        self.server = uvicorn.Server(
-            uvicorn.Config(
-                AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off"
-            ),
-        )
-        self.thread = threading.Thread(
-            target=lambda: asyncio.run(self.server.serve()),
-            daemon=True,
-        )
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        wait_for(lambda: self.server.started, "server never started")
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
-
-
-class _Terminal:
-    """`python -m jarvis terminal --voice` on its own thread and loop: the real wiring."""
-
-    def __init__(
-        self,
-        url: str,
-        token: str,
-        root: Path,
-        config: dict[str, Any] | None = None,
-        page: Settings | None = None,
-    ) -> None:
-        self.page = page
-        self.loop = asyncio.new_event_loop()
-        self.task: asyncio.Task[None] | None = None
-        self.error: BaseException | None = None
-        self._args = (url, token, root)
-        self._config = SPEECH_CONFIG if config is None else config
-        self.thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self) -> None:
-        async def main() -> None:
-            url, token, root = self._args
-            self.task = asyncio.create_task(
-                _run(
-                    url,
-                    token,
-                    tools=frozenset({"read_clipboard"}),
-                    execute=lambda *_: {"ok": True, "output": {}},
-                    watched=None,
-                    speaking=_Speaking(self._config, root),
-                    page=self.page,
-                )
-            )
-            with contextlib.suppress(asyncio.CancelledError):
-                try:
-                    await self.task
-                except BaseException as exc:  # noqa: BLE001 — handed to the test
-                    self.error = exc
-
-        self.loop.run_until_complete(main())
-
-    def __enter__(self) -> Self:
-        self.thread.start()
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        self.loop.call_soon_threadsafe(lambda: self.task and self.task.cancel())
-        self.thread.join(timeout=15)
-        assert not self.thread.is_alive()
-
-
-def _types(log: Path) -> list[str]:
-    with sqlite3.connect(log) as conn:
-        return [row[0] for row in conn.execute("SELECT type FROM events ORDER BY id")]
-
-
 def test_an_answer_in_the_brains_log_is_spoken_by_the_terminal_and_the_log_ends_with_what_it_heard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1143,7 +970,7 @@ def test_an_answer_in_the_brains_log_is_spoken_by_the_terminal_and_the_log_ends_
     token = pair_device(tmp_path, "macbook")
     root = tmp_path / "terminal-root"
     answer = ["The first sentence.", "And the second."]
-    with _Brain(tmp_path) as brain, _Terminal(brain.url, token, root) as terminal:
+    with VoiceBrain(tmp_path) as brain, VoiceTerminal(brain.url, token, root) as terminal:
         wait_for(lambda: bool(brain.hub.connected()), "the terminal never connected")
         wait_for(
             lambda: bool(brain.hub.voice and brain.hub.voice._peers),  # noqa: SLF001
@@ -1192,10 +1019,10 @@ def test_an_answer_in_the_brains_log_is_spoken_by_the_terminal_and_the_log_ends_
             },
         )
         wait_for(
-            lambda: "surface.playback_completed" in _types(brain.log),
+            lambda: "surface.playback_completed" in logged_types(brain.log),
             "the brain never heard the terminal finish playing",
         )
-        kinds = _types(brain.log)
+        kinds = logged_types(brain.log)
         completed = [e for e in iter_events(conn) if e.type == "surface.playback_completed"]
         history = fold_conversation_history(iter_events(conn))
         with sqlite3.connect(brain.log) as raw:

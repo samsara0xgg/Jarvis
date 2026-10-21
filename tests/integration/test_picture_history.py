@@ -56,10 +56,10 @@ from jarvis.state.memory_db import (
     link_attachments,
     render_context,
 )
-from tests.integration.test_anthropic_adaptation import _reply, _run
 from tests.support.net import start_http_server, stop_http_server
 from tests.support.phone import NOTES, PNG, attachment_turn, attachments_daemon
 from tests.support.picture_notes import ANSWER, FILLER_EN, WORDS, World
+from tests.support.typed_stream import anthropic_reply, run_anthropic_stream
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -371,10 +371,10 @@ def test_the_anthropic_request_names_the_file_and_sends_the_files_beta_header(
     )
     assert files_headers(plain) == {}
 
-    from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
+    from tests.support.typed_stream import anthropic_preset  # noqa: PLC0415
 
-    peer, _ = asyncio.run(_run(
-        _preset(""), _reply({"type": "text", "text": "ok"}, stop="end_turn"),
+    peer, _ = asyncio.run(run_anthropic_stream(
+        anthropic_preset(""), anthropic_reply({"type": "text", "text": "ok"}, stop="end_turn"),
         messages=messages, system="S",
     ))
     assert peer.body["messages"][0]["content"][1]["source"] == {
@@ -562,9 +562,9 @@ def test_upload_and_delete_use_the_sdks_files_api_with_the_beta_header(
     server = start_http_server(_FilesPeer)
     _FilesPeer.seen.clear()
     try:
-        from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
+        from tests.support.typed_stream import anthropic_preset  # noqa: PLC0415
 
-        client = _preset("")
+        client = anthropic_preset("")
         client._base_url = f"http://127.0.0.1:{server.server_port}"  # noqa: SLF001
         assert client.upload_file("IMG_1.png", PNG, "image/png") == "file_011abc"
         client.delete_file("file_011abc")
@@ -711,7 +711,7 @@ class _Answers(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(raw.encode())
             return
-        frames = _reply({"type": "text", "text": "ok"}, stop="end_turn")
+        frames = anthropic_reply({"type": "text", "text": "ok"}, stop="end_turn")
         if body.get("stream"):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -739,12 +739,12 @@ class _Answers(http.server.BaseHTTPRequestHandler):
 def api(monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: ANN401
     """The local peer and a client on it; the stale-file handler is cleared afterwards."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    from tests.integration.test_anthropic_adaptation import _preset  # noqa: PLC0415
+    from tests.support.typed_stream import anthropic_preset  # noqa: PLC0415
 
     server = start_http_server(_Answers)
     _Answers.bodies = []
     _Answers.rule = []
-    client = _preset("")
+    client = anthropic_preset("")
     client._base_url = f"http://127.0.0.1:{server.server_port}"  # noqa: SLF001
     yield client
     stop_http_server(server)

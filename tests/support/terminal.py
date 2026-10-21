@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import socket
@@ -27,10 +28,10 @@ from jarvis.execution.tools import (
     make_screen_capture,
 )
 from jarvis.runtime import inherent_loop
-from jarvis.runtime.terminal import _declared, _observe, _Watched, make_executor
+from jarvis.runtime.terminal import _declared, _observe, _run, _Speaking, _Watched, make_executor
 from jarvis.shared import ActionRequest, CallerPrincipal, RawResult
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches
-from jarvis.state.event_log import open_event_log
+from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
+    from jarvis.runtime.settings import Settings
     from jarvis.state.projects import Project
     from jarvis.surface import terminal_voice
     from jarvis.surface.claude_sessions import ClaudeSessions
@@ -611,3 +613,169 @@ def observer_brain_client(tmp_path: Path) -> tuple[TestClient, TerminalHub, Path
 
 def unstamped(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if k != "observed_at_ms"}
+
+
+def append_answer(
+    log: Path, turn: str, text: str = "Hello.", *, channel: str | None = None
+) -> list[str]:
+    """Append one answer's three rows to the brain's log; their uids."""
+    conn = open_event_log(log)
+    try:
+        group = f"G-{turn}"
+        extra = {} if channel is None else {"attention_channel": channel}
+        events = [
+            emit_event(
+                conn,
+                type="surface.response_open",
+                payload={
+                    "turn_id": turn,
+                    "query": "q",
+                    "kind": "text",
+                    "response_id": f"R-{turn}",
+                    "response_group_id": group,
+                    "phase": "final",
+                    "channel": "speech",
+                    **extra,
+                },
+            ),
+            emit_event(
+                conn,
+                type="surface.response_chunk",
+                payload={
+                    "turn_id": turn,
+                    "text": text,
+                    "response_id": f"R-{turn}",
+                    "response_group_id": group,
+                    "sequence": 0,
+                    "phase": "final",
+                    "channel": "speech",
+                    "segment_hash": "h",
+                },
+            ),
+            emit_event(
+                conn,
+                type="surface.response_emitted",
+                payload={
+                    "turn_id": turn,
+                    "text": text,
+                    "response_id": f"R-{turn}",
+                    "response_group_id": group,
+                    "phase": "final",
+                    "channel": "speech",
+                },
+            ),
+        ]
+    finally:
+        conn.close()
+    return [event.event_uid for event in events]
+
+
+def ws_rows(ws: Any, count: int) -> list[dict[str, Any]]:  # noqa: ANN401
+    return [dict(ws.receive_json()) for _ in range(count)]
+
+
+class VoiceBrain:
+    """A real uvicorn server: the terminal route, a brain log, and a fake speech provider."""
+
+    def __init__(self, root: Path) -> None:
+        self.port = free_port()
+        self.log = root / "events.db"
+        conn = brain_log(self.log)
+        self.provider = VoiceSpeechProvider()
+        self.hub = TerminalHub(events=BrainEvents(conn))
+        self.hub.voice = BrainVoice(
+            cast("Any", self.provider),
+            inherent_loop._SpokenRows(conn),  # noqa: SLF001
+            poll_interval_s=0.01,
+        )
+        app = create_app(
+            InherentDeps(
+                submit_callable=lambda _text: "T1",
+                broadcaster=InherentBroadcaster(),
+                terminals=self.hub,
+                device_name=functools.partial(device_name_for_token, root),
+            ),
+        )
+        require_local_key(
+            app,
+            functools.partial(local_key_matches, local_key(root)),
+            device_token_matches=functools.partial(device_token_matches, root),
+        )
+        self.server = uvicorn.Server(
+            uvicorn.Config(
+                AsRemote(app), host="127.0.0.1", port=self.port, log_level="warning", lifespan="off"
+            ),
+        )
+        self.thread = threading.Thread(
+            target=lambda: asyncio.run(self.server.serve()),
+            daemon=True,
+        )
+
+    def __enter__(self) -> Self:
+        self.thread.start()
+        wait_for(lambda: self.server.started, "server never started")
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.server.should_exit = True
+        self.thread.join(timeout=10)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+
+class VoiceTerminal:
+    """`python -m jarvis terminal --voice` on its own thread and loop: the real wiring."""
+
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        root: Path,
+        config: dict[str, Any] | None = None,
+        page: Settings | None = None,
+    ) -> None:
+        self.page = page
+        self.loop = asyncio.new_event_loop()
+        self.task: asyncio.Task[None] | None = None
+        self.error: BaseException | None = None
+        self._args = (url, token, root)
+        self._config = SPEECH_CONFIG if config is None else config
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        async def main() -> None:
+            url, token, root = self._args
+            self.task = asyncio.create_task(
+                _run(
+                    url,
+                    token,
+                    tools=frozenset({"read_clipboard"}),
+                    execute=lambda *_: {"ok": True, "output": {}},
+                    watched=None,
+                    speaking=_Speaking(self._config, root),
+                    page=self.page,
+                )
+            )
+            with contextlib.suppress(asyncio.CancelledError):
+                try:
+                    await self.task
+                except BaseException as exc:  # noqa: BLE001 — handed to the test
+                    self.error = exc
+
+        self.loop.run_until_complete(main())
+
+    def __enter__(self) -> Self:
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.loop.call_soon_threadsafe(lambda: self.task and self.task.cancel())
+        self.thread.join(timeout=15)
+        assert not self.thread.is_alive()
+
+
+def logged_types(log: Path) -> list[str]:
+    with sqlite3.connect(log) as conn:
+        return [row[0] for row in conn.execute("SELECT type FROM events ORDER BY id")]

@@ -28,7 +28,7 @@ from jarvis.surface import word_judge
 from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_link import TerminalHub
 from jarvis.surface.voice_controls import VoiceControls
-from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
+from tests.support.barge_in import LONG, SHORT, BargeInRig
 from tests.support.response_run import make_runtime
 
 if TYPE_CHECKING:
@@ -403,7 +403,7 @@ def test_the_mac_absorbs_words_the_phone_heard_first_and_she_goes_on(
         asked.append((turn_id, text))
         return True
 
-    rig = _Rig(tmp_path, "把客厅的灯打开。", heard_elsewhere=heard_elsewhere)
+    rig = BargeInRig(tmp_path, "把客厅的灯打开。", heard_elsewhere=heard_elsewhere)
     try:
         rig.say(voiced)
     finally:
@@ -423,7 +423,9 @@ def test_the_mac_absorbs_words_the_phone_heard_first_and_she_goes_on(
 
 def test_words_not_heard_elsewhere_are_a_turn_and_supersede_as_before(tmp_path: Path) -> None:
     """The check answering no changes nothing."""
-    rig = _Rig(tmp_path, "把客厅的灯打开。", speaking=False, heard_elsewhere=lambda _t, _x: False)
+    rig = BargeInRig(
+        tmp_path, "把客厅的灯打开。", speaking=False, heard_elsewhere=lambda _t, _x: False
+    )
     try:
         rig.say(SHORT)
     finally:

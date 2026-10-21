@@ -25,35 +25,18 @@ from tests.canary._helpers import parse, relative_to_repo, repo_root
 
 # The migration backlog: (importing file, imported test file) pairs, by file name, that still
 # import across test files because the helper lives in a file another pass is rewriting
-# (job_mail, soft_barge_in, timesink_activity, worker_confirmation, anthropic_adaptation,
-# terminal_listen). That pass moves each helper to ``tests/support/`` and deletes its pairs
-# here.
+# (job_mail, timesink_activity). That pass moves each helper to ``tests/support/`` and deletes
+# its pairs here.
 KNOWN: frozenset[tuple[str, str]] = frozenset(
     {
         # The files being rewritten, which still take their helpers from the files they import.
         ("test_job_mail", "test_audio_output"),
         ("test_job_mail", "test_lifecycle_commentary"),
-        ("test_soft_barge_in", "test_voice_short_sounds"),
-        ("test_terminal_listen", "test_terminal_voice"),
         # Files that take a helper from one of those: the helper stays where it is until its
         # file is rewritten, so they cannot import it from tests/support yet.
-        ("test_conversation_model", "test_anthropic_adaptation"),
-        ("test_picture_history", "test_anthropic_adaptation"),
-        ("test_turn_timing", "test_anthropic_adaptation"),
-        ("test_device_voice", "test_soft_barge_in"),
-        ("test_exit_stops_speech", "test_soft_barge_in"),
-        ("test_jev_oneshot", "test_soft_barge_in"),
-        ("test_utterance_judged_on_receipt", "test_soft_barge_in"),
-        ("test_voice_cues", "test_soft_barge_in"),
-        ("test_voice_words_jev", "test_soft_barge_in"),
-        ("test_voiceprint_gate", "test_soft_barge_in"),
         ("test_job_ledger_tool", "test_job_mail"),
         ("test_terminal_device_views", "test_job_mail"),
         ("test_timesink_moment", "test_job_mail"),
-        ("test_terminal_elsewhere", "test_terminal_listen"),
-        ("test_terminal_ui", "test_terminal_listen"),
-        ("test_utterance_judged_on_receipt", "test_terminal_listen"),
-        ("test_voiceprint_gate", "test_terminal_listen"),
         ("test_daily_report", "test_timesink_activity"),
         ("test_projects", "test_timesink_activity"),
         ("test_terminal_reads", "test_timesink_activity"),

@@ -26,7 +26,6 @@ from jarvis.state.memory_db import MemorySettings
 from jarvis.state.plugin_settings import local_key, local_key_matches
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server import InherentDeps, create_app, require_local_key
-from tests.integration.test_anthropic_adaptation import _preset, _reply
 from tests.support.routine import drive_streaming_turn, logged_payloads
 from tests.support.spoken import (
     SpokenPeer,
@@ -34,7 +33,7 @@ from tests.support.spoken import (
     spoken_intent,
     spoken_runtime,
 )
-from tests.support.typed_stream import SSEPeer
+from tests.support.typed_stream import SSEPeer, anthropic_preset, anthropic_reply
 from tools import turn_timings
 
 if TYPE_CHECKING:
@@ -79,7 +78,7 @@ def test_a_stream_says_when_its_thinking_and_its_text_first_came(
 ) -> None:
     """Sent, then the first event, then thinking (counted in bytes), then the first text."""
     monkeypatch.setenv("HAIKU_FIXTURE_KEY", "synthetic")
-    frames = _reply(
+    frames = anthropic_reply(
         {"type": "thinking", "thinking": "hm", "signature": "sig-1"},
         {"type": "text", "text": "好的。"}, stop="end_turn",
     )
@@ -87,7 +86,7 @@ def test_a_stream_says_when_its_thinking_and_its_text_first_came(
     async def run() -> Any:  # noqa: ANN401 - the stream handle
         peer = SSEPeer(frames)
         async with peer.running() as url:
-            client = _preset("")
+            client = anthropic_preset("")
             client._base_url = url.removesuffix("/v1")  # noqa: SLF001 - the peer's address
             handle = client.stream_events(
                 messages=[{"role": "user", "content": "你好"}], system="SYS",
@@ -107,7 +106,7 @@ def test_an_answered_turn_writes_one_timing_fact_with_ordered_moments_and_usage(
     tmp_path: Path,
 ) -> None:
     """A Sonnet turn: thinking before text, cache tokens counted, the first chunk after the text."""
-    frames = _reply(
+    frames = anthropic_reply(
         {"type": "thinking", "thinking": "the bus times are in the state", "signature": "s"},
         {"type": "text", "text": _ANSWER}, stop="end_turn", usage={"output_tokens": 6},
     )

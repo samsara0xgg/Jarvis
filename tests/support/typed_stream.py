@@ -228,3 +228,125 @@ def stream_client(provider: str, base_url: str) -> LLMClient:
             "max_retries": 0,
         }
     )
+
+
+def anthropic_preset(base_url: str, **extra: Any) -> LLMClient:  # noqa: ANN401 — preset keys
+    return LLMClient(
+        {
+            "provider": "openai",
+            "presets": {
+                "haiku": {
+                    "provider": "anthropic",
+                    "model": "claude-haiku-5-5",
+                    "api_key_env": "HAIKU_FIXTURE_KEY",
+                    "max_tokens": 4096,
+                    "reasoning_effort": "low",
+                    "base_url": base_url,
+                    **extra,
+                }
+            },
+            "default_preset": "haiku",
+            "timeout_s": 5,
+            "max_retries": 0,
+        }
+    )
+
+
+def anthropic_reply(
+    *blocks: dict[str, Any], stop: str, usage: dict[str, int] | None = None
+) -> list[dict[str, Any]]:
+    """An Anthropic event stream over ``blocks``: ``{"type": "thinking", ...}``, text, tool_use."""
+    frames: list[dict[str, Any]] = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "m",
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 4,
+                    "cache_creation_input_tokens": 2,
+                },
+            },
+        }
+    ]
+    for index, block in enumerate(blocks):
+        start = {
+            "thinking": {"type": "thinking", "thinking": "", "signature": ""},
+            "text": {"type": "text", "text": ""},
+            "tool_use": {
+                "type": "tool_use",
+                "id": block.get("id"),
+                "name": block.get("name"),
+                "input": {},
+            },
+            "server_tool_use": {
+                "type": "server_tool_use",
+                "id": block.get("id"),
+                "name": block.get("name"),
+                "input": {},
+            },
+            "tool_search_tool_result": block,
+        }[block["type"]]
+        frames.append({"type": "content_block_start", "index": index, "content_block": start})
+        if block["type"] == "tool_search_tool_result":
+            pass  # the server sends its result whole, with no deltas
+        elif block["type"] == "thinking":
+            frames.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "thinking_delta", "thinking": block["thinking"]},
+                }
+            )
+            frames.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "signature_delta", "signature": block["signature"]},
+                }
+            )
+        elif block["type"] == "text":
+            frames.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "text_delta", "text": block["text"]},
+                }
+            )
+        else:
+            frames.append(
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": block["json"]},
+                }
+            )
+        frames.append({"type": "content_block_stop", "index": index})
+    frames += [
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop, "stop_sequence": None},
+            "usage": usage or {"output_tokens": 6},
+        },
+        {"type": "message_stop"},
+    ]
+    return frames
+
+
+async def run_anthropic_stream(
+    client: LLMClient,
+    frames: list[dict[str, Any]],
+    **call: Any,  # noqa: ANN401
+) -> tuple[SSEPeer, list[Any]]:
+    peer = SSEPeer(frames)
+    async with peer.running() as url:
+        client._base_url = url.removesuffix("/v1")  # noqa: SLF001 — the peer's address
+        handle = client.stream_events(on_settled=lambda _d: None, **call)
+        return peer, [event async for event in handle.events()]

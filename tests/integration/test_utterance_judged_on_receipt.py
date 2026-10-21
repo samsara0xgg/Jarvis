@@ -23,15 +23,15 @@ from jarvis.runtime import terminal as terminal_module
 from jarvis.surface import voice_artifact_store, voice_asr, voice_pipeline
 from jarvis.surface.terminal_listen import BrainListening, LinkedTurn, ListenHooks
 from jarvis.surface.voice_pipeline import UtteranceJudgedError
-from tests.integration.test_soft_barge_in import LONG, SHORT, _Rig
-from tests.integration.test_terminal_listen import (
-    _ask,
-    _Bench,
-    _connect,
-    _listening_client,
-    _ok,
-    _utterance,
-    _utterances,
+from tests.support.barge_in import LONG, SHORT, BargeInRig
+from tests.support.terminal_listen import (
+    ListenBench,
+    ask_op,
+    connect_listening,
+    listening_client,
+    logged_utterances,
+    ok_reply,
+    utterance_frame,
 )
 
 if TYPE_CHECKING:
@@ -47,16 +47,16 @@ LATENCY_S = 0.1
 
 
 def _judged(turn: str, said: str, *, conversation: bool = True, over_her: bool = False) -> Any:  # noqa: ANN401
-    return _utterance(turn, said, judge={"conversation": conversation, "over_her": over_her})
+    return utterance_frame(turn, said, judge={"conversation": conversation, "over_her": over_her})
 
 
 def _send(
     tmp_path: Path, args: dict[str, Any], **hooks: Any,  # noqa: ANN401 - whichever hooks a test binds
 ) -> tuple[dict[str, Any], Path]:
-    client, _hub, log = _listening_client(tmp_path, **hooks)
+    client, _hub, log = listening_client(tmp_path, **hooks)
     with ExitStack() as stack:
-        ws = _connect(client, tmp_path, "macbook", stack)
-        _ask(ws, "utterance", args, "a" * 32)
+        ws = connect_listening(client, tmp_path, "macbook", stack)
+        ask_op(ws, "utterance", args, "a" * 32)
         return ws.receive_json(), log
 
 
@@ -68,24 +68,24 @@ def test_a_turn_replaces_the_unspoken_answer_before_its_row_and_starts_jev_once(
     log_path: list[Path] = []
 
     def rows() -> int:
-        return len(_utterances(log_path[0]))
+        return len(logged_utterances(log_path[0]))
 
     def supersede(device: str, turn_id: str) -> None:
         seen.append(("supersede", device, turn_id, rows()))
 
-    client, _hub, log = _listening_client(
+    client, _hub, log = listening_client(
         tmp_path, supersede=supersede, recent_speech=lambda: "她刚说过的话",
         begin_line=lambda *line: seen.append(("begin", *line)),
         ask_words=lambda *line: seen.append(("ask", *line)),
     )
     log_path.append(log)
     with ExitStack() as stack:
-        ws = _connect(client, tmp_path, "macbook", stack)
-        _ask(ws, "utterance", _judged("T1", "把灯打开。"), "a" * 32)
+        ws = connect_listening(client, tmp_path, "macbook", stack)
+        ask_op(ws, "utterance", _judged("T1", "把灯打开。"), "a" * 32)
         reply = ws.receive_json()
     assert reply["ok"] is True
     assert reply["value"]["verdict"] == "turn"
-    [(uid, node, _payload)] = _utterances(log)
+    [(uid, node, _payload)] = logged_utterances(log)
     assert (uid, node) == (reply["value"]["event_uid"], "macbook")
     assert seen == [
         ("begin", "T1", "把灯打开。", "她刚说过的话", False, True),
@@ -114,7 +114,7 @@ def test_words_that_are_no_turn_write_nothing_and_supersede_nothing(
         begin_line=lambda *_: seen.append("begin"),
     )
     assert reply["value"] == {"verdict": verdict}
-    assert _utterances(log) == []
+    assert logged_utterances(log) == []
     assert seen == []
 
 
@@ -127,7 +127,7 @@ def test_a_dismissal_ends_every_answer_before_it_replies(tmp_path: Path) -> None
         supersede=lambda device, turn: seen.append(("supersede", device, turn)),
     )
     assert reply["value"] == {"verdict": "dismissed"}
-    assert _utterances(log) == []
+    assert logged_utterances(log) == []
     assert seen == [("cancel", "macbook"), ("supersede", "macbook", "T1")]
 
 
@@ -168,7 +168,7 @@ def test_words_another_device_recorded_first_are_dropped_before_anything_else(
         ask_words=lambda *_: seen.append(("ask",)),
     )
     assert reply["value"] == {"verdict": "elsewhere"}
-    assert _utterances(log) == []
+    assert logged_utterances(log) == []
     assert seen == [("elsewhere", "macbook", "T1", "把灯打开。")]
 
 
@@ -197,7 +197,7 @@ def test_a_judge_that_fails_leaves_the_words_a_turn_and_the_supersede_does_not_l
         recent_speech=boom, begin_line=boom, supersede=boom,
     )
     assert reply["value"]["verdict"] == "turn"
-    assert len(_utterances(log)) == 1
+    assert len(logged_utterances(log)) == 1
 
 
 def test_a_flag_that_is_not_true_or_false_is_refused_and_nothing_is_written(
@@ -205,10 +205,10 @@ def test_a_flag_that_is_not_true_or_false_is_refused_and_nothing_is_written(
 ) -> None:
     """The judge context is checked like every other argument."""
     reply, log = _send(
-        tmp_path, _utterance("T1", judge={"conversation": "yes", "over_her": False}),
+        tmp_path, utterance_frame("T1", judge={"conversation": "yes", "over_her": False}),
     )
     assert (reply["ok"], reply["code"]) == (False, "bad_args")
-    assert _utterances(log) == []
+    assert logged_utterances(log) == []
 
 
 # --- the terminal's end, against a brain played by hand -------------------------------------
@@ -227,7 +227,7 @@ def test_the_terminal_reads_a_verdict_or_the_event_from_the_reply(
     tmp_path: Path, value: dict[str, Any], verdict: str | None,
 ) -> None:
     """A verdict other than turn is the pipeline's to act on; an event, or none named, is a turn."""
-    bench = _Bench(tmp_path, lambda _frame: _ok(value))
+    bench = ListenBench(tmp_path, lambda _frame: ok_reply(value))
     try:
         turn = LinkedTurn(bench.link)
         args = {"transcript": "hi", "turn_id": "T1", "judge": {"conversation": True,
@@ -297,7 +297,7 @@ class _Brain:
         self.listening._ops[op](args)  # noqa: SLF001
 
 
-def _stamp_final_asr(rig: _Rig) -> dict[str, float]:
+def _stamp_final_asr(rig: BargeInRig) -> dict[str, float]:
     """The monotonic time the final transcript is ready, for the delay to the send."""
     stamps: dict[str, float] = {}
     recognize = rig.asr.recognize
@@ -311,15 +311,15 @@ def _stamp_final_asr(rig: _Rig) -> dict[str, float]:
     return stamps
 
 
-def _on_send_rig(tmp_path: Path, brain: _Brain, heard: str, **kwargs: Any) -> _Rig:  # noqa: ANN401
+def _on_send_rig(tmp_path: Path, brain: _Brain, heard: str, **kwargs: Any) -> BargeInRig:  # noqa: ANN401
     """The wiring of a terminal: nothing is asked before the send, the brain judges (ADR 0277)."""
     turn = LinkedTurn(cast("VoiceLink", brain))
-    return _Rig(
+    return BargeInRig(
         tmp_path, heard, emit=turn.emit_utterance, judged_on_send=True, **kwargs,
     )
 
 
-def _serial_rig(tmp_path: Path, brain: _Brain, heard: str, **kwargs: Any) -> _Rig:  # noqa: ANN401
+def _serial_rig(tmp_path: Path, brain: _Brain, heard: str, **kwargs: Any) -> BargeInRig:  # noqa: ANN401
     """The wiring before ADR 0277: each judgement a call to the brain, one after another."""
 
     def words(turn: str, text: str, recent: str, over_her: bool, confirm: bool) -> str | None:  # noqa: FBT001
@@ -335,7 +335,7 @@ def _serial_rig(tmp_path: Path, brain: _Brain, heard: str, **kwargs: Any) -> _Ri
         brain.tell("begin", {"turn_id": turn, "text": text, "recent": recent,
                              "over_her": over_her, "conversation": conversation})
 
-    return _Rig(
+    return BargeInRig(
         tmp_path, heard, emit=LinkedTurn(cast("VoiceLink", brain)).emit_utterance,
         recent_speech=lambda: brain.ask("recent", {}, timeout_s=1.0)["text"],
         ask_words=words, note_words=note, begin_line=begin,
