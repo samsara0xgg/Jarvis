@@ -1,8 +1,8 @@
 """Acceptance for the authenticated v2 input routes (ADR-0014 D21).
 
 The routes are exercised through ``TestClient`` against the real app factory
-with the real runtime bindings — ``jarvis.runtime.inherent_loop._submit_text_v2``
-and ``_submit_asr_v2`` over a real Event Log — so what these cases prove about
+with the real runtime bindings — ``jarvis.runtime.daemon.submissions.submit_text_v2``
+and ``submit_asr_v2`` over a real Event Log — so what these cases prove about
 idempotency and status codes is what the daemon does.  Only the recognizer is a
 fake; ASR quality is not what is under test here.
 """
@@ -20,8 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.deployment import inherent_v2_token_matches
+from jarvis.runtime.daemon.submissions import submit_asr_v2, submit_text_v2
 from jarvis.runtime.daemon.voice_wiring import build_voice_pipeline_callable
-from jarvis.runtime.inherent_loop import _submit_asr_v2, _submit_text_v2
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_asr, voice_pipeline
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -67,11 +67,11 @@ def _app(
         broadcaster=InherentBroadcaster(),
         v2=InherentV2Deps(
             token_matches=functools.partial(inherent_v2_token_matches, _TOKEN),
-            submit_text=functools.partial(_submit_text_v2, log_path),
+            submit_text=functools.partial(submit_text_v2, log_path),
             submit_asr=(
                 None
                 if voice_pipeline_callable is None
-                else functools.partial(_submit_asr_v2, log_path, voice_pipeline_callable)
+                else functools.partial(submit_asr_v2, log_path, voice_pipeline_callable)
             ),
         ),
     )

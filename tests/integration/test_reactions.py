@@ -30,8 +30,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import intent_pump, output_watchers
+from jarvis.runtime.daemon import intent_pump, output_watchers, submissions
 from jarvis.shared.emoji import is_single_emoji
 from jarvis.state import reactions
 from jarvis.state.device_tokens import device_token_matches, pair_device
@@ -412,7 +411,7 @@ class Daemon:
         deps = InherentDeps(
             submit_callable=self._submit,
             broadcaster=InherentBroadcaster(),
-            reaction_set=functools.partial(inherent_loop._set_reaction, self.log, self.memory),  # noqa: SLF001
+            reaction_set=functools.partial(submissions.set_reaction, self.log, self.memory),
         )
         app = create_app(deps)
         self.key = local_key(self.root)

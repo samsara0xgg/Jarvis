@@ -28,8 +28,7 @@ from fastapi.testclient import TestClient
 from jarvis.decision import DecideContext, decide
 from jarvis.decision.tier0 import load_tier0_table
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import output_watchers
+from jarvis.runtime.daemon import output_watchers, submissions
 from jarvis.runtime.phone_voice import PhoneSpeech
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME, AttachmentRef, Attachments
 from jarvis.state.device_tokens import device_name_for_token, device_token_matches, pair_device
@@ -183,9 +182,9 @@ def here_daemon(tmp_path: Path) -> tuple[Path, str, str, TestClient, TestClient]
         broadcaster=InherentBroadcaster(),
         attachments=Attachments(root / "artifacts" / ATTACHMENTS_DIRNAME),
         images_ok=True,
-        submit_attachments=functools.partial(inherent_loop._submit_with_attachments, log),  # noqa: SLF001
-        submit_as_device=functools.partial(inherent_loop._submit_as_device, log),  # noqa: SLF001
-        share_callable=functools.partial(inherent_loop._keep_share, log),  # noqa: SLF001
+        submit_attachments=functools.partial(submissions.submit_with_attachments, log),
+        submit_as_device=functools.partial(submissions.submit_as_device, log),
+        share_callable=functools.partial(submissions.keep_share, log),
         ask_outcome=lambda _turn: AskOutcome(spoken="ok"),
         device_name=functools.partial(device_name_for_token, root),
     )
@@ -278,10 +277,10 @@ def attachments_daemon(
         attachments=store if wired else None,
         attachment_saved=saved,
         images_ok=images_ok,
-        submit_attachments=functools.partial(inherent_loop._submit_with_attachments, log)  # noqa: SLF001
+        submit_attachments=functools.partial(submissions.submit_with_attachments, log)
         if wired
         else None,
-        share_callable=functools.partial(inherent_loop._keep_share, log)  # noqa: SLF001
+        share_callable=functools.partial(submissions.keep_share, log)
         if wired
         else None,
     )
@@ -924,8 +923,8 @@ class StepsHost:
             rows=output_watchers.PhoneRows(conn),
             check_attachments=self.store.check_for_turn if self.files else None,
         )
-        submit_files = functools.partial(inherent_loop._submit_with_attachments, self.log)  # noqa: SLF001
-        submit_as_device = functools.partial(inherent_loop._submit_as_device, self.log)  # noqa: SLF001
+        submit_files = functools.partial(submissions.submit_with_attachments, self.log)
+        submit_as_device = functools.partial(submissions.submit_as_device, self.log)
         app = create_app(
             InherentDeps(
                 submit_callable=lambda _text: "T1",

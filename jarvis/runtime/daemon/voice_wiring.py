@@ -685,7 +685,7 @@ def build_voice_pipeline_callable(
 ) -> Callable[[bytes, str, str, str], Event]:
     """Adapt :meth:`VoicePipeline.run_turn` to the PTT callable shape.
 
-    ``_submit_asr_v2`` calls it with positional
+    ``submit_asr_v2`` calls it with positional
     ``(audio_bytes, turn_id, channel, language)`` and gets back the
     emitted ``utterance.received`` :class:`Event`; the pipeline
     itself is keyword-only, so this thin closure does the rewrite.

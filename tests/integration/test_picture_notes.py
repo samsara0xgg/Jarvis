@@ -32,8 +32,7 @@ import pytest
 from jarvis.decision import DecideContext, LifecycleLike, RuntimePathsLike, ToolRegistryLike, decide
 from jarvis.execution.picture_tool import build_picture_tool
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
-from jarvis.runtime import inherent_loop
-from jarvis.runtime.daemon import retention
+from jarvis.runtime.daemon import retention, submissions
 from jarvis.runtime.picture_notes import (
     MAX_ATTEMPTS,
     MAX_PENDING,
@@ -454,11 +453,11 @@ def test_a_saved_picture_gets_a_note_with_no_turn_and_the_day_line_shows_it(
 ) -> None:
     """Queued at once when saved, found again after a restart; the note carries his words."""
     live, lost = world.picture(), world.picture("IMG_2.png")
-    inherent_loop._keep_share(  # noqa: SLF001
+    submissions.keep_share(
         world.event_log, {"kind": "image", "attachments": [live], "note": "for later"},
         picture_notes=world.notes,
     )
-    inherent_loop._keep_share(  # noqa: SLF001
+    submissions.keep_share(
         world.event_log, {"kind": "image", "attachments": [lost]},
     )
 
