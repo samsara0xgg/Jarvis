@@ -9,6 +9,7 @@ from the final transcript to the send, and the calls made in between, are the nu
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from contextlib import ExitStack
@@ -24,6 +25,7 @@ from jarvis.surface import voice_artifact_store, voice_asr, voice_pipeline
 from jarvis.surface.terminal_listen import BrainListening, LinkedTurn, ListenHooks
 from jarvis.surface.voice_pipeline import UtteranceJudgedError
 from tests.support.barge_in import LONG, SHORT, BargeInRig
+from tests.support.hold import never_waits_for
 from tests.support.terminal_listen import (
     ListenBench,
     ask_op,
@@ -478,13 +480,14 @@ def test_the_audio_is_written_after_the_utterance_is_sent_under_the_name_it_carr
     """The event names the file; a slow encoder costs the send nothing (ADR 0277)."""
     order: list[str] = []
     sent: list[Mapping[str, object]] = []
+    encoder_may_finish = threading.Event()  # the encoder is as slow as the test says
 
     def slow_persist(
         pcm_audio: bytes, *, turn_id: str, sample_rate_hz: int, artifacts_dir: Path | None,
     ) -> str | None:
         del pcm_audio, sample_rate_hz
         assert artifacts_dir is not None
-        time.sleep(0.3)
+        encoder_may_finish.wait()
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         path = Path(str(voice_artifact_store.planned_ref(turn_id, artifacts_dir)))
         path.write_bytes(b"audio")
@@ -501,13 +504,15 @@ def test_the_audio_is_written_after_the_utterance_is_sent_under_the_name_it_carr
         emit=emit, recognizer=_Recognizer(),
         broadcaster=None, artifacts_dir=tmp_path / "audio",
     )
-    started = time.monotonic()
-    pipeline.run_turn(
-        audio_bytes=np.full(16_000, 10_000, dtype="<i2").tobytes(), turn_id="T1",
-        channel="inherent_wake", language="zh-CN", wake_lead=False,
-    )
-    assert time.monotonic() - started < 0.25
-    assert order == ["sent"]
+    try:
+        with never_waits_for(encoder_may_finish):
+            pipeline.run_turn(
+                audio_bytes=np.full(16_000, 10_000, dtype="<i2").tobytes(), turn_id="T1",
+                channel="inherent_wake", language="zh-CN", wake_lead=False,
+            )
+        assert order == ["sent"]  # the turn is out while the encoder has not finished
+    finally:
+        encoder_may_finish.set()
     voice_artifact_store.flush()
     assert order == ["sent", "persisted"]
     ref = Path(str(sent[0]["audio_artifact_ref"]))
