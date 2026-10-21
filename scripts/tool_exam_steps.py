@@ -288,7 +288,7 @@ class Meter:
             self.capped = True
             msg = (
                 f"the next call (about ${max(guess, self.last):.4f}) would take"
-                f" ${self.spent:.4f} past ${self.cap:.2f}"
+                f" ${self.spent:.4f} past ${self.cap:g}"
             )
             raise SpendCap(msg)
 
@@ -304,7 +304,7 @@ class Meter:
 
     def report(self) -> str:
         """The spend line printed at the end."""
-        cap = "" if self.cap is None else f" of ${self.cap:.2f}"
+        cap = "" if self.cap is None else f" of ${self.cap:g}"
         return f"spend: ${self.spent:.4f}{cap} over {self.calls} model calls" + (
             " (stopped at the cap)" if self.capped else ""
         )
@@ -398,6 +398,11 @@ class ScriptedModel:
     last_input_tokens: int | None = 0
     last_output_tokens: int | None = 0
     last_finish_reason: str | None = "stop"
+    last_llm_request_id: str | None = None
+    last_usage_status = "unavailable"
+    last_cache_read_tokens: int | None = 0
+    last_cache_write_tokens: int | None = 0
+    last_metadata: Mapping[str, Any] = {}
 
     def __init__(self, steps: Sequence[Mapping[str, Any]]) -> None:
         """Hold the script for one case."""
@@ -594,6 +599,8 @@ def _run_case(  # noqa: PLR0913 - the runtime, its baseline, and the case's mode
         text = plan.text if plan is not None else ""
     except Exception as exc:  # noqa: BLE001 - one failed case must not stop the exam
         error = f"{type(exc).__name__}: {_SECRET.sub('***', str(exc))[:300]}"
+    if meter is not None and meter.capped:  # decide() may have re-raised it as another error
+        error = f"SpendCap: {meter.report()}"
     wall = round(time.monotonic() - started, 3)
     release_turn_actions(turn_id)
     steps, usage, cost = _record(sub, classes, table)

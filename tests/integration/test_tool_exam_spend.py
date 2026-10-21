@@ -123,7 +123,7 @@ def test_the_meter_adds_each_response_and_stops_before_the_call_that_would_cross
         meter.before("small", 400_000)
     assert meter.capped
     assert "stopped at the cap" in meter.report()
-    assert meter.report().startswith("spend: $0.3000 of $0.40 over 2 model calls")
+    assert meter.report().startswith("spend: $0.3000 of $0.4 over 2 model calls")
 
 
 def test_the_meter_cannot_keep_a_cap_on_a_model_it_cannot_price() -> None:
