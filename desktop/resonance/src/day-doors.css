@@ -27,6 +27,9 @@
 .notch .dt-ic.is-on { border-color:rgb(var(--ink) / .55); }
 .notch .dt-tag { flex:none; padding:0 6px; border-radius:var(--radius-tag); background:rgb(255 255 255 / .08); font-style:normal; font-size:10.5px; font-weight:600; line-height:16px; color:var(--p-muted); }
 .notch .dt-uh { margin:0; padding:12px 6px 2px; font-size:var(--text-label); font-weight:600; line-height:16px; color:var(--p-faint); }
+/* a page whose rows have no time at all (更多) has no time column: the circles start at the row's edge */
+.notch .dt-list.is-timeless .dt-row { grid-template-columns:28px minmax(0,1fr) auto; }
+.notch .dt-list.is-timeless .dt-at { display:none; }
 /* a Dashboard component in a row's page (it is styled under .ad): the panel's own padding is not wanted here, the page has its own */
 .notch .dt-pin.is-door .dt-body { padding:6px 4px 12px; }
 .notch .dt-ad { align-self:stretch; padding:0; }

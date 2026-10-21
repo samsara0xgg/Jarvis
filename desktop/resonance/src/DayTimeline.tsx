@@ -851,6 +851,8 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool }: { port:
   const barPage: PageBar | null = page && { marks: page.marks, mute: keep, numbers: <DoorNumbers page={page} pinned={ui.chipPinned} preview={ui.setChipPreview} pin={ui.setChipPinned} t={t}/> };
   const barJump = (key: string) => { if (page) setPick(key); reveal(key); };
   const hasList = page ? pageRows.length > 0 : rows.length > 0;
+  // A page whose rows have no time at all (更多) has no time column to keep.
+  const timeless = !!page && pageRows.length > 0 && pageRows.every(r => r.at === null && !r.time);
   const pageSay = page && (!page.rows.length ? page.loading ? t(['Reading…', '读着…']) : page.failed ? t(["Couldn't read this page. Trying again.", '没读到这一页，会再试一次']) : page.empty ?? t(['Nothing here yet', '这里还没有东西']) : t(['Nothing in this stretch', '这一段里没有']));
   const doorBlocks = (m: DayModel, p: DoorPage): ReactNode => {
     const timed = pageRows.filter(r => r.at !== null), rest = pageRows.filter(r => r.at === null), lo = cut ? Math.min(cut.a, cut.b) : -Infinity, hi = cut ? Math.max(cut.a, cut.b) : Infinity;
@@ -881,7 +883,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool }: { port:
         <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? pick} open={opened} door={barPage} onHot={setHot} onJump={barJump} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
         {barPage && !model.items.length && !model.segs.size && barPage.numbers}
         {hasList ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}${tooled ? ' is-tool' : ''}`}>
-          <div ref={list} className="dt-list" onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/>}</div>
+          <div ref={list} className={`dt-list${timeless ? ' is-timeless' : ''}`} onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/>}</div>
           {(opened ?? parting) && <div className="dt-page" data-page={opened ?? undefined} onFocus={e => { if (page && (e.target as Element).matches('input, textarea')) setTyping(true); }} onBlur={e => { if ((e.target as Element).matches('input, textarea')) setTyping(false); }}>
             {page ? shownDoor?.node : detail((opened ?? parting)!)}</div>}
         </div>
