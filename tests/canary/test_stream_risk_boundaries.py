@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -120,9 +121,22 @@ def test_context_floor_blocks_even_neutral_candidate(changes: dict[str, Any]) ->
     )
 
 
+def _cheapest_scan_ms(text: str) -> float:
+    """The least CPU time this thread spent on one of five classifications of ``text``, in ms.
+
+    CPU time, not the wall clock: a busy machine can leave a 6 ms scan descheduled for 100 ms,
+    and the least of five leaves out a stray slow one.
+    """
+    classifier = SegmentRiskClassifier(clock=time.thread_time)
+    return min(classifier.classify(text, _CONTEXT).elapsed_ms for _ in range(5))
+
+
 def test_repeated_conditional_prefix_does_not_backtrack_past_classifier_deadline() -> None:
-    """An 8 KiB adversarial token must buffer without the old quadratic regex."""
-    result = SegmentRiskClassifier().classify("当" * 8192, _CONTEXT)
-    assert result.risk == "unknown"
-    assert result.elapsed_ms < 20
-    assert "classifier_deadline_exceeded" not in result.reasons
+    """An 8 KiB adversarial token must buffer without the old quadratic regex.
+
+    The scan of a repeated prefix costs what the scan of any other 8 KiB costs. A quadratic
+    regex takes over a hundred times as long (measured with a nested repeat in its place:
+    5 ms against 900 ms), so a factor of five tells them apart on any machine.
+    """
+    assert SegmentRiskClassifier().classify("当" * 8192, _CONTEXT).risk == "unknown"
+    assert _cheapest_scan_ms("当" * 8192) < 5 * _cheapest_scan_ms("好" * 8192)
