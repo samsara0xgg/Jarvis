@@ -302,6 +302,22 @@ class Mailbox:
             size=size,
         )
 
+    def reads(self, ids: Sequence[str]) -> list[Read | None]:
+        """:meth:`read` of each id, in parallel; ``None`` for one Gmail no longer has."""
+        if not ids:
+            return []
+
+        def one(message: str) -> Read | None:
+            try:
+                return self.read(message)
+            except ToolError as exc:
+                if exc.code == "not_found":
+                    return None
+                raise
+
+        with ThreadPoolExecutor(min(len(ids), _WORKERS), thread_name_prefix="mail-read") as pool:
+            return list(pool.map(one, ids))
+
     def labels(self, ids: Sequence[str]) -> dict[str, frozenset[str]]:
         """The labels each message holds now (``UNREAD``, ``INBOX``…), read in parallel."""
         if not ids:
