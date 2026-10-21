@@ -14,9 +14,10 @@ One ``preset`` call per record is given the record, the messages before it, her 
 of its pictures, the open things, today's plan, what her tools wrote in the turn and his local
 time (:func:`jarvis.decision.turn_things.build_prompt`). What passes the checks of
 :func:`jarvis.decision.turn_things.parse_answer` is written: ledger actions through
-``things.add``, ``move`` and ``close`` or ``confirm`` as the pass, with his quote as evidence and
-the record id as ref. The row keeps what the model was given and said. Nothing is written by the
-model: a ledger write that is refused is dropped.
+``things.add``, ``move`` and ``close`` or ``confirm`` as the pass, with his cited lines as evidence
+and the record id as ref; a new thing rings only when he asked to be told. The row keeps what the
+model was given and said. Nothing is written by the model: a ledger write that is refused is
+dropped.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import json
 import logging
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
@@ -35,7 +36,7 @@ from zoneinfo import ZoneInfo
 from jarvis.decision import turn_things as decision
 from jarvis.runtime.picture_notes import RETRY_AFTER_S as PICTURE_RETRY_S
 from jarvis.runtime.picture_notes import WINDOW_S as PICTURE_WINDOW_S
-from jarvis.state import plan, things
+from jarvis.state import plan, reminders, things
 from jarvis.state import turn_things as marks
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
 
@@ -98,20 +99,25 @@ def _zone_name(zone: tzinfo) -> str:
 class TurnThings:
     """The post-turn pass; built once at boot."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the settings, the pass's collaborators and the ring default
         self,
         settings: TurnThingsSettings,
         db_path: Path,
         event_log: Path,
         ask: Callable[[str, str], str] | None,
         zone: tzinfo,
+        *,
+        ring_before_min: int,
     ) -> None:
         """``db_path`` is memory.db, ``event_log`` the log; ``ask(system, user)`` is the model.
 
-        With no ``ask`` (the preset is missing or malformed) nothing is read.
+        With no ``ask`` (the preset is missing or malformed) nothing is read. A new thing he asked
+        to be told about without saying how early rings as one her tool keeps would, a thing he
+        goes to ``ring_before_min`` ahead.
         """
         self._settings, self._db, self._event_log = settings, db_path, event_log
         self._ask, self.zone = ask, zone
+        self._before_min = ring_before_min
         self.now: Callable[[], datetime] = lambda: datetime.now(UTC)
         self._next_row: int | None = None  # None until the first poll has queued the window
         self._rescan_at = datetime.min.replace(tzinfo=UTC)
@@ -263,9 +269,7 @@ class TurnThings:
         now: datetime,
     ) -> list[decision.Written]:
         """What her tool wrote between his record and her answer, and the pass wrote for it."""
-        until = int(turn.answered_at.timestamp() * 1000) + 999 if turn.answered_at else (
-            int(now.timestamp() * 1000)
-        )
+        until = _answered_ms(turn, now)
         found: list[decision.Written] = []
         for event in iter_events_of_types(
             conn, things.TYPES, since_epoch_ms=int(turn.at.timestamp() * 1000),
@@ -310,18 +314,16 @@ class TurnThings:
         if action.action == "new":
             if decision.made_already(action, written):
                 return None
-            one, created = things.add(
-                conn,
-                things.Thing(
-                    things.new_id(), action.title, action.kind, start_at=action.start_at,
-                    end_at=action.end_at, on_day=action.on_day, due=action.due,
-                    weekly_until=action.weekly_until, place=action.place,
-                    confirmed=action.sure,
-                    source="picture" if action.source == "picture" else "said",
-                    source_ref=turn.record_id,
-                ),
-                **write,
+            made = things.Thing(
+                things.new_id(), action.title, action.kind, start_at=action.start_at,
+                end_at=action.end_at, on_day=action.on_day, due=action.due,
+                weekly_until=action.weekly_until, place=action.place,
+                rings=self._rings(action), private=action.private, confirmed=action.sure,
+                source="picture" if action.source == "picture" else "said",
+                source_ref=turn.record_id,
             )
+            made = replace(made, rings=self._not_set(conn, made, turn, now))
+            one, created = things.add(conn, made, **write)
             return f"added {things.short_id(one)} {one.title}" if created else None
         if action.action == "move":
             one = things.move(
@@ -340,8 +342,61 @@ class TurnThings:
         )
         return f"{action.action} {things.short_id(one)} {one.title}"
 
+    def _rings(self, action: decision.Action) -> tuple[str, ...]:
+        """The rings of a new thing: only what he asked to be told, and only when he was sure.
+
+        A thing he only mentioned rings nothing and one with no time cannot ring; a whole day rings
+        the evening before, since minutes before a day name no time he meant.
+        """
+        if action.remind is None or not action.sure:
+            return ()
+        if not (action.start_at or _timed(action.due)):
+            return ("-1d@20:00",) if action.on_day or action.due else ()
+        if not action.remind:
+            return things.default_rings(
+                action.kind, start_at=action.start_at, on_day="", before_min=self._before_min,
+            ) or ("-0m",)
+        return tuple(f"-{minutes}m" for minutes in action.remind)
+
+    def _not_set(
+        self, conn: sqlite3.Connection, made: things.Thing, turn: Turn, now: datetime,
+    ) -> tuple[str, ...]:
+        """``made``'s rings less those due in a minute a reminder she set in the turn rings."""
+        if not made.rings:
+            return ()
+        until = _answered_ms(turn, now)
+        known = reminders.fold(conn)
+        taken = {
+            known[rid].due_at_ms // 60_000
+            for event in iter_events_of_types(
+                conn, ("reminder.scheduled",), since_epoch_ms=int(turn.at.timestamp() * 1000),
+            )
+            if event.ts_epoch_ms <= until
+            and not (rid := str(event.payload["reminder_id"])).startswith(things.RING_PREFIX)
+            and not known[rid].cancelled
+        }
+        return tuple(
+            ring for ring in made.rings
+            if not any(
+                due // 60_000 in taken
+                for due in things.ring_dues(replace(made, rings=(ring,)), self.zone)
+            )
+        )
+
     def _log(self) -> sqlite3.Connection:
         return open_runtime_event_log(self._event_log, deadline=time.monotonic() + _LOG_WAIT_S)
+
+
+def _answered_ms(turn: Turn, now: datetime) -> int:
+    """The end of the turn in ms: the second of her answer, or now when she has not answered."""
+    if turn.answered_at is None:
+        return int(now.timestamp() * 1000)
+    return int(turn.answered_at.timestamp() * 1000) + 999
+
+
+def _timed(due: str) -> bool:
+    """Whether a due is a moment rather than a whole day."""
+    return bool(due) and "T" in due
 
 
 def _what(event: Event) -> str:

@@ -1992,7 +1992,7 @@ def _turn_things(  # noqa: PLR0913 - the config and the pass's collaborators
     settings = TurnThingsSettings(days, preset.strip())
     return TurnThings(
         settings, db_path, event_log, mail_summarizer(analyst_for(settings.preset), event_log),
-        zone,
+        zone, ring_before_min=_remind_before_min(config),
     )
 
 

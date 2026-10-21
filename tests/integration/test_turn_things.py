@@ -4,8 +4,10 @@ Data-driven checks over the real code, a real event log and a real memory.db, wi
 that answers canned JSON (no key, no network, no provider). The examples are invented.
 
 - the model's answer: each shape of action that is kept or dropped, and why;
-- the pass: a go thing with a time, a thing marked paid, a quote that is not his, a close that names
+- the pass: a go thing with a time, a thing marked paid, a line that is not his, a close that names
   no open thing, a new thing already past, her tool having written it already, unsure and stated;
+- cited lines, rings and private (ADR 0329): his lines are numbered and copied as the evidence, a
+  new thing rings only when he asked to be told, and a private one is written private;
 - no doings: what he says he did is read only as the actions it makes (ADR 0328);
 - when a record is read: after her answer, a picture waits for its note or its window, an
   unanswered record waits, live-voice rows are covered, a first start reads seven days back, the
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime, timedelta
@@ -37,7 +40,7 @@ from jarvis.shared import lang
 from jarvis.state import picture_notes, plan, things
 from jarvis.state import turn_things as marks
 from jarvis.state.attachments import AttachmentRef
-from jarvis.state.event_log import iter_events_of_types, open_event_log
+from jarvis.state.event_log import emit_event, iter_events_of_types, open_event_log
 from jarvis.state.memory_db import open_memory_db
 from scripts import turn_things_replay
 from tests.support.runtime_log import RuntimeLog
@@ -66,16 +69,19 @@ _CLASS = things.Thing(
     weekly_until="2026-11-24",
 )
 _KNOWN = {things.short_id(_HELD): _HELD, things.short_id(_CLASS): _CLASS}
-_PAID = {"action": "paid", "thing": "ab12cd", "quote": "I paid the rent", "sure": True}
+_PAID = {"action": "paid", "thing": "ab12cd", "lines": ["m1"], "sure": True}
 _NEW = {
     "action": "new", "kind": "go", "title": "Dentist", "start_at": "2026-10-15T15:00:00",
-    "quote": "dentist tomorrow at 3pm", "sure": True,
+    "lines": ["m2"], "sure": True,
 }
 _WORDS = (
     "I paid the rent. Dentist tomorrow at 3pm, the pottery class moved. I had lunch with Mia at "
     "noon. I'm at the library since 13:00. Maybe pay the deposit, get the form by the 20th."
 )
 _NOTE = "Screenshot of an email: your road test is booked for 2026-10-22 at 09:30."
+_RENT = "I paid the rent."
+_DENTIST_LINE = "Dentist tomorrow at 3pm, the pottery class moved."
+_LUNCH = "I had lunch with Mia at noon."
 
 
 def _turn(words: str = _WORDS, notes: tuple[str, ...] = (_NOTE,), answer: str = "") -> marks.Turn:
@@ -83,8 +89,11 @@ def _turn(words: str = _WORDS, notes: tuple[str, ...] = (_NOTE,), answer: str = 
 
 
 def _said(fields: dict[str, Any]) -> dict[str, Any]:
-    """The fields that say something: an empty text is a field not given."""
-    return {k: v for k, v in fields.items() if v != ""}
+    """The fields that say something: an empty text, no remind and not private are not given."""
+    return {
+        k: v for k, v in fields.items()
+        if v != "" and not (k == "remind" and v is None) and not (k == "private" and v is False)
+    }
 
 
 def _read(
@@ -106,7 +115,7 @@ def _with(base: dict[str, Any], **changes: Any) -> dict[str, Any]:  # noqa: ANN4
 
 
 _NEW_KEPT = {
-    "action": "new", "quote": "dentist tomorrow at 3pm", "sure": True, "source": "said",
+    "action": "new", "quote": _DENTIST_LINE, "sure": True, "source": "said",
     "kind": "go", "title": "Dentist", "start_at": DENTIST,
 }
 
@@ -121,8 +130,8 @@ _NEW_KEPT = {
         (_actions(_with(_NEW, end_at="2026-10-15T16:00:00")), [
             _NEW_KEPT | {"end_at": "2026-10-15T16:00:00-07:00"},
         ], None),
-        (_actions(_with(_NEW, start_at=None, on_day="2026-10-14", quote="Dentist tomorrow")), [
-            _NEW_KEPT | {"start_at": "", "on_day": "2026-10-14", "quote": "Dentist tomorrow"},
+        (_actions(_with(_NEW, start_at=None, on_day="2026-10-14")), [
+            _NEW_KEPT | {"start_at": "", "on_day": "2026-10-14"},
         ], None),
         (_actions(_with(_NEW, start_at=None, due="2026-10-20", sure=False, kind="do")), [
             _NEW_KEPT | {"start_at": "", "due": "2026-10-20", "sure": False, "kind": "do"},
@@ -134,22 +143,39 @@ _NEW_KEPT = {
             _NEW_KEPT | {"weekly_until": "2026-11-24"},
         ], None),
         (_actions(_with(_NEW, start_at=None)), [_NEW_KEPT | {"start_at": ""}], None),
-        (_actions(_with(_NEW, place="the clinic", quote="Dentist tomorrow")), [
-            _NEW_KEPT | {"place": "the clinic", "quote": "Dentist tomorrow"},
+        (_actions(_with(_NEW, place="the clinic")), [_NEW_KEPT | {"place": "the clinic"}], None),
+        (_actions(_with(_NEW, lines=["p1"])), [
+            _NEW_KEPT | {"quote": _NOTE, "source": "picture"},
         ], None),
-        (_actions(_with(_NEW, quote="your road test is booked for 2026-10-22 at 09:30")), [
-            _NEW_KEPT | {
-                "quote": "your road test is booked for 2026-10-22 at 09:30", "source": "picture",
-            },
+        (_actions(_with(_NEW, lines=[" [M2] "])), [_NEW_KEPT], None),
+        # what it cites: his lines copied in their order, "…" where one is skipped
+        (_actions(_with(_NEW, lines=["m2", "m1"])), [
+            _NEW_KEPT | {"quote": f"{_RENT} {_DENTIST_LINE}"},
         ], None),
-        (_actions(_with(_NEW, quote="  DENTIST   tomorrow at  3PM ")), [_NEW_KEPT | {
-            "quote": "DENTIST tomorrow at 3PM",
-        }], None),
+        (_actions(_with(_NEW, lines=["m3", "m1", "m1"])), [
+            _NEW_KEPT | {"quote": f"{_RENT} … {_LUNCH}"},
+        ], None),
+        (_actions(_with(_NEW, lines=["m2", "p1"])), [
+            _NEW_KEPT | {"quote": f"{_NOTE} \u2026 {_DENTIST_LINE}", "source": "picture"},
+        ], None),
+        # what he asked to be told, and a private thing
+        (_actions(_with(_NEW, remind=[60, 10, 60])), [_NEW_KEPT | {"remind": (60, 10)}], None),
+        (_actions(_with(_NEW, remind=[])), [_NEW_KEPT | {"remind": ()}], None),
+        (_actions(_with(_NEW, private=True)), [_NEW_KEPT | {"private": True}], None),
         ("```json\n" + json.dumps(_actions(_NEW)) + "\n```", [_NEW_KEPT], None),
         # a new thing that does not pass
-        (_actions(_with(_NEW, quote="dentist on friday")), [], "not in his words"),
-        (_actions(_with(_NEW, quote="")), [], "no quote"),
-        (_actions(_with(_NEW, quote=None)), [], "no quote"),
+        (_actions(_with(_NEW, lines=["m9"])), [], "'m9' is not one of his lines"),
+        (_actions(_with(_NEW, lines=["a1"])), [], "not one of his lines"),
+        (_actions(_with(_NEW, lines=[2])), [], "not one of his lines"),
+        (_actions(_with(_NEW, lines=[])), [], "cites none"),
+        (_actions(_with(_NEW, lines="m2")), [], "cites none"),
+        (_actions(_with(_NEW, lines=None, quote="dentist tomorrow at 3pm")), [], "cites none"),
+        (_actions(_with(_NEW, lines=["m1", "m2", "m3", "m4", "m5", "p1", "m1"])), [],
+         "more than 6"),
+        (_actions(_with(_NEW, remind=["soon"])), [], "remind"),
+        (_actions(_with(_NEW, remind=[-5])), [], "remind"),
+        (_actions(_with(_NEW, remind=60)), [], "remind"),
+        (_actions(_with(_NEW, private="yes")), [], "private"),
         (_actions(_with(_NEW, start_at="2026-10-13T15:00:00")), [], "already past"),
         (_actions(_with(_NEW, start_at="2026-10-14T13:59:00")), [], "already past"),
         (_actions(_with(_NEW, start_at=None, on_day="2026-10-13")), [], "already past"),
@@ -173,33 +199,33 @@ _NEW_KEPT = {
         (_actions(7), [], "not an action"),
         # a thing he closes, moves or confirms
         (_actions(_PAID), [{
-            "action": "paid", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "paid", "quote": _RENT, "sure": True, "source": "said",
             "thing": _HELD.thing_id,
         }], None),
         (_actions(_with(_PAID, thing="AB12CD ", action="done")), [{
-            "action": "done", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "done", "quote": _RENT, "sure": True, "source": "said",
             "thing": _HELD.thing_id,
         }], None),
         (_actions(_with(_PAID, action="cancelled")), [{
-            "action": "cancelled", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "cancelled", "quote": _RENT, "sure": True, "source": "said",
             "thing": _HELD.thing_id,
         }], None),
         (_actions(_with(_PAID, thing="ffffff")), [], "no open thing"),
         (_actions(_with(_PAID, thing=None)), [], "no open thing"),
         (_actions(_with(_PAID, thing=7)), [], "no open thing"),
         (_actions(_with(_PAID, sure=False)), [], "plainly"),
-        (_actions(_with(_PAID, quote="paid the landlord")), [], "not in his words"),
+        (_actions(_with(_PAID, lines=["m7"])), [], "not one of his lines"),
         (_actions(_with(_PAID, action="confirmed")), [{
-            "action": "confirmed", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "confirmed", "quote": _RENT, "sure": True, "source": "said",
             "thing": _HELD.thing_id,
         }], None),
         (_actions(_with(_PAID, action="confirmed", thing="cd34ef")), [], "confirmed already"),
         (_actions(_with(_PAID, action="move", thing="cd34ef", start_at="2026-10-22T19:00:00")), [{
-            "action": "move", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "move", "quote": _RENT, "sure": True, "source": "said",
             "thing": _CLASS.thing_id, "start_at": "2026-10-22T19:00:00-07:00",
         }], None),
         (_actions(_with(_PAID, action="move", start_at=None, due="2026-11-05")), [{
-            "action": "move", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "move", "quote": _RENT, "sure": True, "source": "said",
             "thing": _HELD.thing_id, "due": "2026-11-05",
         }], None),
         (_actions(_with(_PAID, action="move", start_at=None, due="2026-10-31")), [], "that time"),
@@ -211,7 +237,7 @@ _NEW_KEPT = {
             _PAID, action="move", thing="cd34ef", occurrence="2026-10-27",
             start_at="2026-10-28T19:00:00",
         )), [{
-            "action": "move", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "move", "quote": _RENT, "sure": True, "source": "said",
             "thing": _CLASS.thing_id, "start_at": "2026-10-28T19:00:00-07:00",
             "occurrence": "2026-10-27",
         }], None),
@@ -219,15 +245,15 @@ _NEW_KEPT = {
             _PAID, action="move", thing="cd34ef", occurrence="2026-10-27", due="2026-11-05",
         )), [], "moves to a start_at"),
         (_actions(_with(_PAID, thing="cd34ef", occurrence="2026-10-27")), [{
-            "action": "paid", "quote": "I paid the rent", "sure": True, "source": "said",
+            "action": "paid", "quote": _RENT, "sure": True, "source": "said",
             "thing": _CLASS.thing_id, "occurrence": "2026-10-27",
         }], None),
         (_actions(_with(_PAID, thing="cd34ef", occurrence="next week")), [], "not a date"),
         # the shape of the answer, and what is read of it
-        (_actions(_NEW, _with(_NEW, quote="never said"), _PAID), [_NEW_KEPT, {
-            "action": "paid", "quote": "I paid the rent", "sure": True, "source": "said",
+        (_actions(_NEW, _with(_NEW, lines=["m8"]), _PAID), [_NEW_KEPT, {
+            "action": "paid", "quote": _RENT, "sure": True, "source": "said",
             "thing": _HELD.thing_id,
-        }], "not in his words"),
+        }], "not one of his lines"),
         (_actions(*[_NEW] * 12), [_NEW_KEPT] * 10, None),
     ],
 )
@@ -244,14 +270,28 @@ def test_the_answer_is_checked_and_what_does_not_pass_is_dropped_with_its_reason
         assert dropped in found.dropped[0]
 
 
-def test_a_quote_that_only_her_answer_holds_is_not_his() -> None:
-    """The assistant's answer and the messages before his are not what a quote may come from."""
-    found = _read(
-        _actions(_with(_NEW, quote="your appointment is booked")),
-        answer_text="Done: your appointment is booked.",
+def test_only_his_message_and_the_notes_of_his_pictures_are_numbered() -> None:
+    """The model cites lines; her answer and the messages before his have none to cite."""
+    turn = marks.Turn(
+        "r1", SAID, _WORDS + "\n\u597d\u7684\uff01\u660e\u5929\u89c1", ("a1",),
+        (_NOTE, "A receipt. Total $40"), (), "Done: your appointment is booked.", None,
     )
-    assert found.actions == ()
-    assert "not in his words" in found.dropped[0]
+    assert decision.numbered(turn) == (
+        ("p1", "Screenshot of an email: your road test is booked for 2026-10-22 at 09:30."),
+        ("p2", "A receipt."), ("p3", "Total $40"),
+        ("m1", _RENT), ("m2", _DENTIST_LINE), ("m3", _LUNCH),
+        ("m4", "I'm at the library since 13:00."),
+        ("m5", "Maybe pay the deposit, get the form by the 20th."),
+        ("m6", "\u597d\u7684\uff01"), ("m7", "\u660e\u5929\u89c1"),
+    )
+    _, user = decision.build_prompt(
+        turn, now=SAID, zone=ZONE, zone_name="America/Vancouver", plan=None, open_things=[],
+        written=[],
+    )
+    assert f"[m1] {_RENT}\n[m2] {_DENTIST_LINE}" in user
+    assert f"[p1] {_NOTE}\n[p2] A receipt." in user
+    assert "Done: your appointment is booked." in user
+    assert "] Done: your appointment" not in user
 
 
 @pytest.mark.parametrize(
@@ -398,6 +438,37 @@ def log(tmp_path: Path) -> Iterator[_Log]:
     lang.set_language(before)
 
 
+_LINE = re.compile(r"^\[([mp]\d+)\] (.*)$", re.MULTILINE)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _cite(answer: object, lines: dict[str, str]) -> object:
+    """An answer written with quotes, as the model gives it, cited by line.
+
+    Each quote becomes the labels of the numbered lines that hold it, or of a line that is not there
+    when none does.
+    """
+    if not isinstance(answer, dict) or not isinstance(answer.get("actions"), list):
+        return answer
+    cited = []
+    for one in answer["actions"]:
+        if isinstance(one, dict) and isinstance(one.get("quote"), str):
+            quote = _flat(one["quote"])
+            labels = [
+                label for label, text in lines.items()
+                if quote and (quote in _flat(text) or _flat(text) in quote)
+            ]
+            cited.append(
+                {k: v for k, v in one.items() if k != "quote"} | {"lines": labels or ["m99"]},
+            )
+        else:
+            cited.append(one)
+    return answer | {"actions": cited}
+
+
 class _Model:
     """Answers by what he said; remembers what it was asked and what it was told."""
 
@@ -409,13 +480,14 @@ class _Model:
         self.said: list[str] = []
 
     def __call__(self, _system: str, user: str) -> str:
-        words = user.split("His message:\n", 1)[1].split("\n\nThe assistant's answer to it:", 1)[0]
+        lines = dict(_LINE.findall(user))
+        words = " ".join(text for label, text in lines.items() if label.startswith("m"))
         self.asked.append(words)
         self.prompts.append(user)
-        answer = self.answers.get(words, NOTHING)
+        answer = {_flat(k): v for k, v in self.answers.items()}.get(_flat(words), NOTHING)
         if isinstance(answer, BaseException):
             raise answer
-        text = answer if isinstance(answer, str) else json.dumps(answer)
+        text = answer if isinstance(answer, str) else json.dumps(_cite(answer, lines))
         for number, one in enumerate(self.held):
             text = text.replace(f"{{h{number}}}", things.short_id(one))
         self.said.append(text)
@@ -425,6 +497,7 @@ class _Model:
 def _pass(log: _Log, model: _Model, clock: list[datetime], days: int = 7) -> TurnThings:
     one = TurnThings(
         TurnThingsSettings(days, "haiku-bg"), log.memory, log.paths.event_log, model, ZONE,
+        ring_before_min=60,
     )
     one.now = lambda: clock[0]
     return one
@@ -508,10 +581,10 @@ _CASES: dict[str, dict[str, Any]] = {
         ],
         "wrote": ["paid", "added"], "dropped": [], "verdict": "written",
     },
-    "a quote that is not in his words is dropped": {
+    "an action that cites none of his lines is dropped": {
         "words": "Dentist tomorrow at 3pm", "held": [],
         "answer": _actions(_with(_NEW, quote="the dentist, Friday")),
-        "ledger": [], "wrote": [], "dropped": ["not in his words"], "verdict": "none",
+        "ledger": [], "wrote": [], "dropped": ["not one of his lines"], "verdict": "none",
     },
     "a close naming no open thing is dropped": {
         "words": "I paid the rent",
@@ -624,6 +697,86 @@ def test_what_the_pass_wrote_is_in_the_event_log_with_his_quote_and_the_record(l
     (step,) = made.history
     assert (step.what, step.by, step.evidence, step.ref) == ("added", "pass", words, record)
     assert log.verdicts() == {record: ("written", 0)}
+
+
+@pytest.mark.parametrize(
+    ("asked", "rings"),
+    [
+        ({}, ()),
+        ({"remind": []}, ("-60m",)),
+        ({"remind": [15, 1440]}, ("-15m", "-1440m")),
+        ({"remind": [], "sure": False}, ()),
+        ({"remind": [], "kind": "do"}, ("-0m",)),
+        ({"remind": [], "kind": "do", "start_at": None, "due": "2026-10-15T15:00:00"}, ("-0m",)),
+        ({"remind": [30], "start_at": None, "on_day": "2026-10-15"}, ("-1d@20:00",)),
+        ({"remind": [], "kind": "do", "start_at": None, "due": "2026-10-15"}, ("-1d@20:00",)),
+        ({"remind": [], "start_at": None}, ()),
+    ],
+)
+def test_a_new_thing_rings_only_when_he_asked_to_be_told(
+    log: _Log, asked: dict[str, Any], rings: tuple[str, ...],
+) -> None:
+    """Asked without how early, it rings as her tool would; a whole day, the evening before."""
+    words = "Dentist tomorrow at 3pm"
+    model = _Model({words: _actions(_with(_NEW, quote=words, **asked))})
+    log.turn(words)
+
+    assert _pass(log, model, [SAID + 60 * SECOND]).poll_once() == 1
+
+    (made,) = things.fold(log.conn).values()
+    assert made.rings == rings
+
+
+@pytest.mark.parametrize(
+    ("hers", "rings"),
+    [
+        # she set it in the turn at the minute the pass's ring would ring: it rings once
+        ([(datetime(2026, 10, 15, 14, 0, 30, tzinfo=ZONE), 10 * SECOND, False)], ()),
+        # at another minute, after her answer, or cancelled: the pass's ring stays
+        ([(datetime(2026, 10, 15, 14, 30, tzinfo=ZONE), 10 * SECOND, False)], ("-60m",)),
+        ([(datetime(2026, 10, 15, 14, 0, tzinfo=ZONE), 30 * SECOND, False)], ("-60m",)),
+        ([(datetime(2026, 10, 15, 14, 0, tzinfo=ZONE), 10 * SECOND, True)], ("-60m",)),
+    ],
+)
+def test_a_ring_she_set_in_the_turn_is_not_set_again(
+    log: _Log, hers: list[tuple[datetime, timedelta, bool]], rings: tuple[str, ...],
+) -> None:
+    """He says yes to her offer and she sets it: the pass's thing does not ring that minute too."""
+    words = "Dentist tomorrow at 3pm"
+    model = _Model({words: _actions(_with(_NEW, quote=words, remind=[]))})
+    log.turn(words)
+    for due, after, cancelled in hers:
+        rid = f"reminder-{len(hers)}{int(after.total_seconds())}"
+        emit_event(
+            log.conn, type="reminder.scheduled", ts_epoch_ms=int((SAID + after).timestamp() * 1000),
+            payload={
+                "reminder_id": rid, "due_at_epoch_ms": int(due.timestamp() * 1000),
+                "due_at_local": due.isoformat(), "text": "Dentist", "action_id": "act1",
+            },
+        )
+        if cancelled:
+            emit_event(
+                log.conn, type="reminder.cancelled",
+                payload={"reminder_id": rid, "action_id": "act2"},
+                ts_epoch_ms=int((SAID + after).timestamp() * 1000) + 1,
+            )
+
+    assert _pass(log, model, [SAID + 60 * SECOND]).poll_once() == 1
+
+    (made,) = things.fold(log.conn).values()
+    assert made.rings == rings
+
+
+def test_a_private_thing_is_kept_private(log: _Log) -> None:
+    """A thing the model calls private is written private, so a ring for it says only its time."""
+    words = "Dentist tomorrow at 3pm"
+    model = _Model({words: _actions(_with(_NEW, quote=words, private=True))})
+    log.turn(words)
+
+    assert _pass(log, model, [SAID + 60 * SECOND]).poll_once() == 1
+
+    (made,) = things.fold(log.conn).values()
+    assert made.private
 
 
 def test_a_cancel_keeps_his_words_as_the_reason(log: _Log) -> None:
@@ -762,12 +915,16 @@ def test_what_the_model_is_given_is_the_record_the_few_before_it_her_answer_and_
     assert "A mail that is not a message" not in first
     assert "in this turn: []" in first
     assert first.endswith(
-        "His message:\nI paid the rent\n\nThe assistant's answer to it:\nGood, marked.\n"
+        "His message, one numbered line per sentence:\n[m1] I paid the rent\n\n"
+        "The assistant's answer to it:\nGood, marked.\n"
         "Anything else?",
     )
     second = model.prompts[2]
     assert "him (2026-10-14T14:00:00-07:00): I paid the rent" in second
-    assert second.endswith("His message:\nNo\n\nThe assistant's answer to it:\nFine.")
+    assert second.endswith(
+        "His message, one numbered line per sentence:\n[m1] No\n\n"
+        "The assistant's answer to it:\nFine.",
+    )
 
 
 def test_the_model_is_shown_what_he_could_mean_not_the_outings_that_are_past() -> None:
@@ -834,12 +991,14 @@ def test_a_record_is_read_as_soon_as_she_has_answered_and_after_ten_minutes_with
     clock[0] = later + timedelta(seconds=runtime.ANSWER_WAIT_S)
     assert tt.poll_once() == 1
     assert model.asked == ["I paid the rent", "Dentist tomorrow at 3pm"]
-    assert model.prompts[1].endswith("His message:\nDentist tomorrow at 3pm\n\n"
-                                     "The assistant's answer to it:\n")
+    assert model.prompts[1].endswith(
+        "His message, one numbered line per sentence:\n[m1] Dentist tomorrow at 3pm\n\n"
+        "The assistant's answer to it:\n",
+    )
 
 
 def test_a_record_with_a_picture_waits_for_its_note_or_for_the_window_to_pass(log: _Log) -> None:
-    """With the note in it is read at once, and a quote may come from the note; else it waits."""
+    """With the note in it is read at once, and a line of the note may back it; else it waits."""
     quote = "your road test is booked for 2026-10-22 at 09:30"
     road_test = {
         "action": "new", "kind": "go", "title": "Road test", "start_at": "2026-10-22T09:30:00",
@@ -859,12 +1018,12 @@ def test_a_record_with_a_picture_waits_for_its_note_or_for_the_window_to_pass(lo
 
     log.note("att1", f"A screenshot. Text: {quote}.")
     assert tt.poll_once() == 1
-    assert "1. A screenshot. Text: your road test is booked" in model.prompts[0]
+    assert f"[p1] A screenshot.\n[p2] Text: {quote}.\n" in model.prompts[0]
     (made,) = things.fold(log.conn).values()
     assert (made.title, made.source, made.source_ref, made.start_at) == (
         "Road test", "picture", "r1", "2026-10-22T09:30:00-07:00",
     )
-    assert made.history[0].evidence == quote
+    assert made.history[0].evidence == f"Text: {quote}."
 
     # the second picture has no note: it waits out the window after the turn ended
     answered = SAID + timedelta(hours=1, seconds=20)
@@ -887,7 +1046,10 @@ def test_a_picture_with_words_and_no_note_is_read_by_its_words_once_the_window_h
 
     assert _pass(log, model, clock).poll_once() == 1
     assert model.asked == ["I paid the rent"]
-    assert "Notes on the pictures he sent with his message:\n\nHis message:" in model.prompts[0]
+    assert (
+        "Notes on the pictures he sent with his message, one numbered line per sentence:\n\n"
+        "His message, one numbered line per sentence:\n[m1] I paid the rent"
+    ) in model.prompts[0]
 
 
 def test_live_voice_answers_and_two_records_before_one_answer_are_read_all_the_same(
@@ -1053,7 +1215,10 @@ def test_a_write_the_ledger_cannot_take_is_dropped_not_a_failure(log: _Log) -> N
 def test_a_pass_with_no_model_reads_nothing(log: _Log) -> None:
     """The preset is missing or malformed: nothing is marked and nothing is read."""
     log.turn("I paid the rent")
-    tt = TurnThings(TurnThingsSettings(7, "gone"), log.memory, log.paths.event_log, None, ZONE)
+    tt = TurnThings(
+        TurnThingsSettings(7, "gone"), log.memory, log.paths.event_log, None, ZONE,
+        ring_before_min=60,
+    )
     tt.now = lambda: SAID + 60 * SECOND
 
     assert tt.poll_once() == 0
