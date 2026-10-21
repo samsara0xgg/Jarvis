@@ -48,8 +48,9 @@ flags, and the brain judges it as it arrives and answers with the verdict in the
 - **Local mode is unchanged.** A session with `judged_on_send` off (a Mac running alone,
   `runtime.role: all`) judges before emitting with its direct calls, which cost nothing.
 - **The audio is named, then written.** The utterance carries `audio_artifact_ref` as
-  `<dir>/<turn_id>.m4a`, known before the audio exists; the file is written on a thread of its
-  own after the utterance is sent, and only for a turn.
+  `<dir>/<turn_id>.m4a`, known before the audio exists (`.wav` on a host without `afconvert`,
+  where the WAV is the file); the file is written on a thread of its own after the utterance is
+  sent, and only for a turn.
 - **A judge that fails leaves a turn,** and so does a supersede that fails: Jev, the other
   device's log and the unspoken answer never cost him his words.
 
@@ -87,6 +88,6 @@ flags, and the brain judges it as it arrives and answers with the verdict in the
 - A new brain with an old terminal judges nothing on receipt (no `judge`), and a new terminal
   with an old brain has every utterance written as a turn: dismissals and listening sounds
   would become turns until the brain is updated.
-- If afconvert is missing the WAV stays and the event names a `.m4a` that is not there; the
-  audio is only a record (`records.audio_path`), and macOS always has the encoder.
+- If `afconvert` is installed and fails, the WAV stays and the event names a `.m4a` that is not
+  there (a warning says so); the audio is only a record (`records.audio_path`).
 - The utterance timeout (8 s) now also covers the judge; Jev's own limit is under 1 s.

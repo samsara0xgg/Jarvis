@@ -12,6 +12,7 @@ import json
 import time
 import uuid
 from contextlib import ExitStack
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
@@ -35,7 +36,6 @@ from tests.integration.test_terminal_listen import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
     from jarvis.surface.terminal_speaker import VoiceLink
 
@@ -488,7 +488,7 @@ def test_the_audio_is_written_after_the_utterance_is_sent_under_the_name_it_carr
         assert artifacts_dir is not None
         time.sleep(0.3)
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        path = artifacts_dir / f"{turn_id}.m4a"
+        path = Path(str(voice_artifact_store.planned_ref(turn_id, artifacts_dir)))
         path.write_bytes(b"audio")
         order.append("persisted")
         return str(path)
@@ -513,7 +513,33 @@ def test_the_audio_is_written_after_the_utterance_is_sent_under_the_name_it_carr
     assert order == ["sent"]
     voice_artifact_store.flush()
     assert order == ["sent", "persisted"]
-    ref = sent[0]["audio_artifact_ref"]
-    assert ref == str(tmp_path / "audio" / "T1.m4a")
+    ref = Path(str(sent[0]["audio_artifact_ref"]))
+    assert (ref.parent, ref.stem) == (tmp_path / "audio", "T1")
     assert json.dumps(sent[0])  # the payload still crosses the wire as JSON
-    assert (tmp_path / "audio" / "T1.m4a").read_bytes() == b"audio"
+    assert ref.read_bytes() == b"audio"  # the file is there under the name the event carried
+
+
+_FAKE_AFCONVERT = '#!/bin/sh\n# afconvert -f m4af -d aac -b 32000 <in> <out>\n/bin/cp "$7" "$8"\n'
+
+
+@pytest.mark.parametrize("encoder", [False, True], ids=["no-afconvert", "afconvert"])
+def test_the_name_the_utterance_carries_is_the_file_that_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, encoder: bool,
+) -> None:
+    """With the AAC encoder the audio is an .m4a, without it (Pi) a .wav; the ref is the file."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    if encoder:
+        script = tools / "afconvert"
+        script.write_text(_FAKE_AFCONVERT)
+        script.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))  # whichever encoder this host has is not on it
+    folder = tmp_path / "audio"
+    ref = voice_artifact_store.planned_ref("T1", folder)
+    voice_artifact_store.persist_later(
+        np.full(1_600, 10_000, dtype="<i2").tobytes(),
+        turn_id="T1", sample_rate_hz=16_000, artifacts_dir=folder,
+    )
+    voice_artifact_store.flush()
+    assert ref == str(folder / ("T1.m4a" if encoder else "T1.wav"))
+    assert sorted(p.name for p in folder.iterdir()) == [Path(str(ref)).name]

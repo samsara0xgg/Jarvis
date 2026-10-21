@@ -2,18 +2,22 @@
 
 Every recognised utterance is written under ``artifacts_dir`` (the
 ``memory.audio_dir`` config value) and transcoded to AAC with macOS's
-built-in ``afconvert``; when that fails the PCM16 WAV stays. The returned
-path lands on ``utterance.received.audio_artifact_ref`` and from there on
-``records.audio_path``. ``artifacts_dir=None`` disables retention.
+built-in ``afconvert``; on a host without it (the Pi) the PCM16 WAV is the
+file. The returned path lands on ``utterance.received.audio_artifact_ref``
+and from there on ``records.audio_path``. ``artifacts_dir=None`` disables
+retention.
 
 The file is not needed to send the utterance, only its name: :func:`planned_ref` gives the name
-before the audio is written and :func:`persist_later` writes it after (ADR 0277).
+before the audio is written and :func:`persist_later` writes it after (ADR 0277). Both take the
+format from :func:`_suffix`, which asks whether the encoder that will run is there, so the name the
+event carries is the file that is written.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +26,7 @@ from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
+_ENCODER: str = "afconvert"
 _AAC_BITRATE: str = "32000"
 _TRANSCODE_TIMEOUT_S: float = 30.0
 _KEEP = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-voice-keep")
@@ -36,8 +41,9 @@ def persist(
 ) -> str | None:
     """Write ``pcm_audio`` (mono PCM16 LE) under ``artifacts_dir``; return its path.
 
-    Returns ``None`` when retention is disabled. The file is
-    ``{turn_id}.m4a`` after a successful AAC transcode, else ``{turn_id}.wav``.
+    Returns ``None`` when retention is disabled. The file is what
+    :func:`planned_ref` named: ``{turn_id}.m4a`` where the AAC encoder runs, else
+    ``{turn_id}.wav``. If the encoder is there and fails, the WAV stays and that is returned.
     """
     if artifacts_dir is None:
         return None
@@ -48,9 +54,12 @@ def persist(
         w.setsampwidth(2)
         w.setframerate(sample_rate_hz)
         w.writeframes(pcm_audio)
+    if _suffix() == ".wav":
+        # ponytail: no encoder → keep WAV (~21 GB/yr at 30 min/day); AAC is ~2.6 GB/yr.
+        return str(wav_path)
     m4a_path = wav_path.with_suffix(".m4a")
     argv = [
-        "afconvert",
+        _ENCODER,
         "-f",
         "m4af",
         "-d",
@@ -64,15 +73,19 @@ def persist(
         # S603: fixed argv, no shell.
         subprocess.run(argv, check=True, capture_output=True, timeout=_TRANSCODE_TIMEOUT_S)  # noqa: S603
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        # ponytail: no encoder → keep WAV (~21 GB/yr at 30 min/day); AAC is ~2.6 GB/yr.
-        return str(wav_path)
+        return str(wav_path)  # the encoder is there and failed: the WAV is what is left
     wav_path.unlink(missing_ok=True)
     return str(m4a_path)
 
 
+def _suffix() -> str:
+    """``.m4a`` where the AAC encoder is installed, else ``.wav``: the one choice of format."""
+    return ".m4a" if shutil.which(_ENCODER) else ".wav"
+
+
 def planned_ref(turn_id: str, artifacts_dir: Path | None) -> str | None:
     """Where :func:`persist` will leave ``turn_id``'s audio; ``None`` when retention is off."""
-    return None if artifacts_dir is None else str(artifacts_dir / f"{turn_id}.m4a")
+    return None if artifacts_dir is None else str(artifacts_dir / f"{turn_id}{_suffix()}")
 
 
 def persist_later(
@@ -100,10 +113,10 @@ def _keep(pcm_audio: bytes, turn_id: str, sample_rate_hz: int, artifacts_dir: Pa
     except Exception:  # noqa: BLE001 - keeping the audio must never cost a turn
         LOGGER.warning("voice audio not kept turn_id=%s", turn_id, exc_info=True)
         return
-    # ponytail: without afconvert the WAV stays and the event's ref names a file that is
-    # not there; macOS always has the encoder. Rename the WAV to the planned name if it bites.
+    # Only an encoder that is installed and then fails leaves the event naming a file that is
+    # not there; the name and the format otherwise come from the same _suffix().
     if path != planned_ref(turn_id, artifacts_dir):
-        LOGGER.warning("voice audio kept as %s, not the planned .m4a turn_id=%s", path, turn_id)
+        LOGGER.warning("voice audio kept as %s, not the planned name turn_id=%s", path, turn_id)
 
 
 class TtsRecorder:
