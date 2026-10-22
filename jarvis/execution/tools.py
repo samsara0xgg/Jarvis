@@ -103,6 +103,7 @@ if TYPE_CHECKING:
     from jarvis.execution.night_tools import NightControl
     from jarvis.execution.transit_tool import BusTimes, TransitOffers
     from jarvis.execution.weather_tool import WeatherRequest
+    from jarvis.execution.web_search_tool import DeepSearch
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
     from jarvis.shared.here import Here, HereSource
@@ -1718,18 +1719,13 @@ def validate_egress_url(
     return True, ""
 
 
-# --- web_search ----------------------------------------------------------------
+# --- web_search / web_fetch defaults ---------------------------------------------
 
 DEFAULT_WEB_SEARCH_MAX_RESULTS: Final[int] = 5
 """Default `max_results` absent both a request argument and a
 `tools.web.search_max_results` config override (ADR-0011 D7). Public so
 `jarvis.runtime` can fall back to it — same single-source-of-truth
 reasoning as `DEFAULT_OBSIDIAN_VAULT_ROOT` (NIT-FIX 8, ADR-0011 §12)."""
-
-_WEB_SEARCH_MAX_RESULTS_CAP: Final[int] = 8
-"""Hard ceiling (ADR-0011 D5) — NOT configurable, unlike the default
-above. Applies regardless of what the request argument or config asks
-for."""
 
 DEFAULT_WEB_SEARCH_PROVIDER: Final[str] = "ddgs"
 """Default `tools.web.search_provider`.
@@ -1743,16 +1739,6 @@ Te3815a16 burned three of its five tool-loop iterations on it and got
 (with `search_api_key_env` set) and search returns page text directly,
 which is both better grounded and cheaper in loop iterations."""
 
-_WEB_SEARCH_RESULT_TEXT_CAP: Final[int] = 1500
-"""Per-result text budget, in characters, requested from a text-bearing
-provider and enforced locally regardless of what it returns. Bounds any
-ONE result; `_WEB_SEARCH_TOTAL_MAX_BYTES` bounds the sum."""
-
-_WEB_SEARCH_TOTAL_MAX_BYTES: Final[int] = 8192
-"""Aggregate cap across all rendered rows — same 8 KiB order as every
-other tool's output cap. Without it, 8 results x full page text would
-dwarf the rest of the decision packet."""
-
 DEFAULT_WEB_TIMEOUT_S: Final[float] = 20.0
 """Shared `web_search`/`web_fetch` timeout absent a `tools.web.timeout_s`
 config override. ADR-0011 D5's prose gives the two tools DIFFERENT
@@ -1761,381 +1747,6 @@ timeouts (15s / 20s) but D7's shipped config schema has only ONE
 `search_max_results`/`fetch_max_bytes` siblings, which reads as intent
 to share one knob. Step 6 resolves the conflict by applying the single
 configured value to both tools (ADR-0011 §12 errata candidate)."""
-
-_WEB_SEARCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "Search query text.",
-        },
-        "max_results": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Maximum number of results to return. Default 5, capped at 8. "
-            "Only for depth quick.",
-        },
-        "depth": {
-            "type": "string",
-            "enum": ["quick", "deep"],
-            "description": (
-                "quick: one fact or a quick check, a few seconds. "
-                "deep: about half a minute; searches many sources and cross-checks them."
-            ),
-        },
-    },
-    "required": ["query", "depth"],
-}
-
-_WEB_DEEP_SUMMARY_MAX_BYTES: Final[int] = 8192
-"""Cap on a deep search's researched summary — the same 8 KiB order as
-`_WEB_SEARCH_TOTAL_MAX_BYTES`, so a long brief cannot dwarf the decision packet."""
-
-
-@dataclass(frozen=True)
-class DeepFindings:
-    """What one deep web search found: a researched summary and where it came from."""
-
-    summary: str
-    sources: tuple[tuple[str, str], ...]  # (title, url)
-    searches: int
-    complete: bool  # False: the provider stopped before it finished its brief
-
-
-def _ddgs_search_backend(
-    query: str,
-    max_results: int,
-    *,
-    timeout_s: float,
-) -> list[tuple[str, str, str]]:
-    """Real DuckDuckGo backend via the `ddgs` package (ADR-0011 D5).
-
-    One function, as D5 explicitly asks for, so a keyed API is a
-    config-sized swap later — nothing above this function knows or
-    cares that DuckDuckGo is behind it. Returns `(title, url, snippet)`
-    tuples. The acceptance script monkeypatches this name directly
-    rather than mocking `ddgs` internals, so it never makes a real
-    network call.
-    """
-    # Imported here, not at module top, so a `ddgs` import error surfaces as
-    # this tool's own error observation rather than failing
-    # `import jarvis.execution.tools` for every caller.
-    from ddgs import DDGS  # noqa: PLC0415
-
-    # NIT-FIX 8, ADR-0011 §12: `int(timeout_s)` floors any sub-1s config
-    # value to 0 — `max(1, ...)` keeps a deliberately-short timeout at a
-    # sane floor instead of silently becoming "no timeout" / "instant
-    # timeout" depending on how `ddgs` treats `0`.
-    with DDGS(timeout=max(1, int(timeout_s))) as client:
-        rows = client.text(query, max_results=max_results)
-    return [
-        (str(row.get("title", "")), str(row.get("href", "")), str(row.get("body", "")))
-        for row in rows
-    ]
-
-
-def _collapse_ws(text: str) -> str:
-    """Squeeze runs of whitespace to single spaces.
-
-    Extracted page text arrives with the source document's newlines and
-    indentation intact. Those bytes count against
-    `_WEB_SEARCH_RESULT_TEXT_CAP` while carrying no meaning, and one
-    result rendered across many lines would also break the one-row-per-
-    result shape the results list promises.
-    """
-    return " ".join(text.split())
-
-
-class _KeyedSearchBackend(Protocol):
-    """A `web_search` backend that needs a credential (Exa, Tavily)."""
-
-    def __call__(
-        self, query: str, max_results: int, *, timeout_s: float, api_key: str,
-    ) -> list[tuple[str, str, str]]: ...
-
-
-def _exa_search_backend(
-    query: str,
-    max_results: int,
-    *,
-    timeout_s: float,
-    api_key: str,
-) -> list[tuple[str, str, str]]:
-    """Exa `/search` with page text inlined (`contents.text`).
-
-    The point of a text-bearing provider is that ONE tool call answers
-    "what does the web say about X" — the LLM does not have to spend a
-    second tool-loop iteration on `web_fetch` to see any actual content.
-    That matters directly: the loop bound is 5, and the search-then-
-    fetch dance is what exhausted it in turn Te3815a16.
-
-    `highlights` (Exa's query-relevant passages) is preferred over
-    `text` (the page from its top) for the same reason Tavily's
-    `content` beats its `raw_content`: against a per-result budget, a
-    page's opening bytes are nav chrome, not the answer. That reasoning
-    is EVIDENCED for Tavily and only INFERRED here — this backend has
-    never run against a real Exa key, so treat the field preference as
-    unverified.
-    """
-    response = httpx.post(
-        "https://api.exa.ai/search",
-        headers={"x-api-key": api_key},
-        json={
-            "query": query,
-            "numResults": max_results,
-            "contents": {
-                "text": {"maxCharacters": _WEB_SEARCH_RESULT_TEXT_CAP},
-                "highlights": True,
-            },
-        },
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    rows = payload.get("results") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        return []
-    return [
-        (
-            str(row.get("title") or ""),
-            str(row.get("url") or ""),
-            _exa_row_text(row),
-        )
-        for row in rows
-        if isinstance(row, dict)
-    ]
-
-
-def _exa_row_text(row: Mapping[str, Any]) -> str:
-    """Prefer an Exa row's `highlights` over its `text` (see caller)."""
-    highlights = row.get("highlights")
-    if isinstance(highlights, list) and highlights:
-        return " … ".join(str(h) for h in highlights if h)
-    return str(row.get("text") or "")
-
-
-def _tavily_search_backend(
-    query: str,
-    max_results: int,
-    *,
-    timeout_s: float,
-    api_key: str,
-) -> list[tuple[str, str, str]]:
-    """Tavily `/search`, taking its relevance-selected `content`.
-
-    `content` is Tavily's query-relevant extract; `raw_content` is the
-    whole parsed page. `raw_content` was tried first and was WRONG:
-    against a per-result budget of `_WEB_SEARCH_RESULT_TEXT_CAP`, a
-    page's opening bytes are nav chrome, so the budget bought
-    "[Skip to content](#main) ![logo]…" while `content` for the same
-    result read "operated by Air Canada and China Eastern Airlines and
-    the flight time is 13 hours and 50 minutes" — the actual answer, at
-    ~1.3 KB. So `content` is requested and preferred, `raw_content` is
-    not asked for at all (it is billed payload we would discard), and
-    the fallback stays only for a row that somehow carries one and not
-    the other. A result whose full page IS needed can be handed to
-    `web_fetch` — which, since the extract-then-cap fix, can read it.
-    """
-    response = httpx.post(
-        "https://api.tavily.com/search",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"query": query, "max_results": max_results},
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    rows = payload.get("results") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        return []
-    return [
-        (
-            str(row.get("title") or ""),
-            str(row.get("url") or ""),
-            str(row.get("content") or row.get("raw_content") or ""),
-        )
-        for row in rows
-        if isinstance(row, dict)
-    ]
-
-
-class _SearchBackend(Protocol):
-    """Uniform call shape every `web_search` backend is adapted to."""
-
-    def __call__(
-        self, query: str, max_results: int, *, timeout_s: float,
-    ) -> list[tuple[str, str, str]]: ...
-
-
-def _resolve_search_backend(
-    provider: str, api_key: str | None,
-) -> tuple[_SearchBackend, str]:
-    """Pick the `web_search` backend, returning `(backend, name_actually_used)`.
-
-    A keyed provider named without its key does NOT fail boot — it warns
-    and degrades to `ddgs`, because losing web search entirely is worse
-    than losing result quality. The degrade is never silent: it is
-    logged here AND the provider actually used is reported in every
-    `web_search` result payload, so the event log shows which backend
-    answered rather than leaving it to be inferred.
-    """
-    normalized = provider.strip().lower()
-    keyed: Mapping[str, _KeyedSearchBackend] = {
-        "exa": _exa_search_backend,
-        "tavily": _tavily_search_backend,
-    }
-    if normalized in keyed:
-        if not api_key:
-            LOGGER.warning(
-                "tools.web.search_provider=%r but its search_api_key_env names an "
-                "unset/empty variable — degrading to the ddgs backend",
-                normalized,
-            )
-            return _call_ddgs, "ddgs"
-        return _with_api_key(keyed[normalized], api_key), normalized
-    if normalized != "ddgs":
-        LOGGER.warning(
-            "unknown tools.web.search_provider=%r — using the ddgs backend",
-            provider,
-        )
-    return _call_ddgs, "ddgs"
-
-
-def _call_ddgs(
-    query: str, max_results: int, *, timeout_s: float,
-) -> list[tuple[str, str, str]]:
-    """Adapt `_ddgs_search_backend` to `_SearchBackend`.
-
-    Deliberately a late-bound module-global lookup rather than a
-    captured function object: `_ddgs_search_backend`'s own docstring
-    promises the acceptance script can monkeypatch that NAME, and
-    capturing it at registry-build time would quietly break that seam.
-    """
-    return _ddgs_search_backend(query, max_results, timeout_s=timeout_s)
-
-
-def _with_api_key(backend: _KeyedSearchBackend, api_key: str) -> _SearchBackend:
-    """Close a keyed backend over its credential, yielding a `_SearchBackend`."""
-
-    def _call(
-        query: str, max_results: int, *, timeout_s: float,
-    ) -> list[tuple[str, str, str]]:
-        return backend(query, max_results, timeout_s=timeout_s, api_key=api_key)
-
-    return _call
-
-
-class DeepSearch(Protocol):
-    """Injected deep-research seam for `web_search` depth deep.
-
-    L4 cannot import `jarvis.decision.llm.LLMClient` — sibling layers under
-    `.importlinter` — the same seam `VisionClient` is. `jarvis.runtime` builds
-    the real implementation around Anthropic's own web search server tool and
-    binds it into `build_default_registry`. One question in, findings out; any
-    failure is raised, and the handler turns it into an error observation.
-    """
-
-    def research(self, query: str) -> DeepFindings:
-        """Search widely, cross-check, and return the brief with its sources."""
-        ...
-
-
-def _deep_web_search(deep_search: DeepSearch, query: str) -> dict[str, Any]:
-    """One deep search as the tool's result payload."""
-    try:
-        findings = deep_search.research(query)
-    except Exception as exc:
-        # The type only in the message: a provider error can carry request headers or a key.
-        msg = (
-            f"web_search: the deep search failed ({type(exc).__name__}); try a quick "
-            "search, or tell him the search failed"
-        )
-        raise ToolError(msg, code="web_search_backend_error") from exc
-    summary = "".join(_cap_rows_total_bytes([findings.summary], _WEB_DEEP_SUMMARY_MAX_BYTES))
-    payload: dict[str, Any] = {
-        "summary": summary,
-        "sources": [
-            f"{i}. {title} — {url}" for i, (title, url) in enumerate(findings.sources, start=1)
-        ],
-        "provider": "anthropic",
-        "depth": "deep",
-        "searches": findings.searches,
-    }
-    if not findings.complete:
-        payload["incomplete"] = True
-    return payload
-
-
-def _make_web_search(
-    *,
-    default_max_results: int,
-    timeout_s: float,
-    provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
-    api_key: str | None = None,
-    deep_search: DeepSearch | None = None,
-) -> Tool:
-    """Bind `tools.web.{search_max_results,timeout_s,search_provider}` into `web_search`."""
-    backend, provider_used = _resolve_search_backend(provider, api_key)
-
-    def web_search(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-        query = args.get("query")
-        if not isinstance(query, str) or not query.strip():
-            msg = f"web_search: query must be the words to search for (got {query!r})"
-            raise ToolError(msg, code="invalid_arguments")
-        deep = args.get("depth") == "deep"
-        if deep and deep_search is not None:
-            return _deep_web_search(deep_search, query)
-        max_results = default_max_results
-        max_results_arg = args.get("max_results")
-        if (
-            isinstance(max_results_arg, (int, float))
-            and not isinstance(max_results_arg, bool)
-            and math.isfinite(max_results_arg)
-        ):
-            # `json.loads` accepts Infinity/NaN on the tool-arg path and `int(inf)`
-            # raises; a malformed value means "use the default" (ADR-0011 §12).
-            max_results = int(max_results_arg)
-        if deep:  # no deep backend on this build: the widest quick search is the nearest thing
-            max_results = _WEB_SEARCH_MAX_RESULTS_CAP
-        max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
-        try:
-            rows = backend(query, max_results, timeout_s=timeout_s)
-        except Exception as exc:
-            # ddgs anti-bot churn and keyed 401/429 are routine (ADR-0011 §5):
-            # name the backend, no in-handler retry.
-            msg = (
-                f"web_search: the {provider_used} search did not answer ({exc}); tell him the "
-                "search failed, or try web_fetch on a page he names"
-            )
-            raise ToolError(msg, code="web_search_backend_error") from exc
-        # Naming the backend keeps the `_resolve_search_backend` degrade visible
-        # in the event log instead of inferable; `depth` does the same for a deep
-        # request that ran quick.
-        return {
-            "results": [
-                f"{i}. {title} — {url} — {_collapse_ws(text)[:_WEB_SEARCH_RESULT_TEXT_CAP]}"
-                for i, (title, url, text) in enumerate(rows, start=1)
-            ],
-            "provider": provider_used,
-            "depth": "quick",
-        }
-
-    return Tool(
-        name="web_search",
-        description=(
-            "Search the web. depth quick returns numbered title — url — text rows. "
-            "depth deep takes about half a minute: it searches many sources, cross-checks them "
-            "and returns a researched summary with its sources. Use deep when he wants a "
-            "recommendation or a choice among options, a comparison, anything that costs "
-            "money or is booked, when sources may disagree or the stakes are high, or when he "
-            "asks you to look carefully; also after a quick search came back thin or "
-            "contradictory. Otherwise quick."
-        ),
-        input_schema=_WEB_SEARCH_INPUT_SCHEMA,
-        handler=web_search,
-        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-        risk_level="L1",
-        read_only=True,
-    )
 
 
 # --- web_fetch -----------------------------------------------------------------
@@ -3839,8 +3450,10 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     registry.register(ask_user)
     registry.register(dismiss_card)
     if web_search_provider is not None:
+        from jarvis.execution.web_search_tool import make_web_search  # noqa: PLC0415 — same cycle.
+
         registry.register(
-            _make_web_search(
+            make_web_search(
                 default_max_results=web_search_max_results,
                 timeout_s=web_timeout_s,
                 provider=web_search_provider,
@@ -4018,8 +3631,6 @@ __all__ = [
     "TERMINAL_TOOL_NAMES",
     "ActionLifecycle",
     "CallerNotAllowedError",
-    "DeepFindings",
-    "DeepSearch",
     "DuplicateToolError",
     "IllegalLifecycleTransition",
     "LifecycleState",
