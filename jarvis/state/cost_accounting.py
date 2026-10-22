@@ -228,13 +228,36 @@ def record_cost_disposition_once(
     return CostRecorded(disposition=disposition, event=event)
 
 
+def spent_since(conn: sqlite3.Connection, *, since_ms: int) -> float:
+    """The dollars recorded at or after ``since_ms``, summed off ``cost.recorded``.
+
+    A row with no price (``cost_usd`` null) adds nothing; no rows is ``0.0``.
+    """
+    return float(conn.execute(
+        "SELECT COALESCE(SUM(json_extract(payload_json, '$.cost_usd')), 0) FROM events "
+        "WHERE type = 'cost.recorded' AND ts_epoch_ms >= ?",
+        (since_ms,),
+    ).fetchone()[0])
+
+
+def call_recorded_since(conn: sqlite3.Connection, *, kind: str, since_ms: int) -> bool:
+    """Whether a model call of ``kind`` was recorded at or after ``since_ms``."""
+    return conn.execute(
+        "SELECT 1 FROM events WHERE type = 'cost.recorded' AND ts_epoch_ms >= ? "
+        "AND json_extract(payload_json, '$.kind') = ? LIMIT 1",
+        (since_ms, kind),
+    ).fetchone() is not None
+
+
 __all__ = [
     "CostAccountingError",
     "CostAccountingTransactionStateError",
     "FailureInjector",
     "FailureStage",
+    "call_recorded_since",
     "ensure_cost_accounting_schema",
     "record_cost_disposition_once",
+    "spent_since",
 ]
 
 
