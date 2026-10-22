@@ -22,7 +22,6 @@ until the next restart. Nothing is raised into the caller.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -33,6 +32,7 @@ from typing import TYPE_CHECKING, Final
 from jarvis.shared import lang
 from jarvis.state import picture_notes as records
 from jarvis.state.event_log import open_runtime_event_log
+from jarvis.state.sent_files import rows_naming_files_between
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -49,8 +49,6 @@ MAX_PENDING: Final = 16
 RETRY_AFTER_S: Final = 60.0
 RECOVER_HOURS: Final = 24
 RESCAN_S: Final = 600.0
-SOURCES: Final = ("surface.user_intent", "utterance.received", "user.shared")
-"""The rows that name files he sent: the opening row of a turn, or a saved share."""
 MAX_ATTEMPTS: Final = 2
 """One try and one retry."""
 _POLL_S: Final = 2.0
@@ -171,29 +169,25 @@ class PictureNotes:
             return 0
         now_ms = int(self._wall() * 1000)
         since = now_ms - RECOVER_HOURS * 3_600_000
-        marks = ",".join("?" * len(SOURCES))
         conn = open_runtime_event_log(self._event_log)
         try:
-            rows = conn.execute(
-                "SELECT type, ts_epoch_ms, event_uid, payload_json FROM events "  # noqa: S608 — marks is "?, ?, ?"
-                f"WHERE type IN ({marks}) AND ts_epoch_ms >= ? AND ts_epoch_ms <= ? "
-                "AND json_extract(payload_json, '$.attachments') IS NOT NULL ORDER BY id",
-                (*SOURCES, since, now_ms - int(min_age_s * 1000)),
-            ).fetchall()
+            rows = rows_naming_files_between(
+                conn, since_ms=since, until_ms=now_ms - int(min_age_s * 1000),
+            )
         finally:
             conn.close()
         queued = 0
-        for kind, at, uid, raw in rows:
-            payload = json.loads(raw)
+        for row in rows:
+            payload = row.payload
             owed = self._owed(payload.get("attachments"))
             if not owed:
                 continue
-            if kind == "user.shared":
+            if row.type == "user.shared":
                 queued += self.submit_saved(owed, str(payload.get("note") or "")) * len(owed)
                 continue
-            record_id = str(payload.get("record_id") or uid)
+            record_id = str(payload.get("record_id") or row.event_uid)
             words = str(payload.get("transcript") or "")
-            age = max(0.0, now_ms / 1000 - int(at) / 1000)
+            age = max(0.0, now_ms / 1000 - row.ts_epoch_ms / 1000)
             queued += len(owed) * self._queue(
                 _Job(record_id, tuple(owed), len(payload["attachments"]),
                      "" if lang.is_filler(words) else words,
