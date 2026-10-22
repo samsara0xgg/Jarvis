@@ -268,9 +268,7 @@ class JobMail:
             return
         try:
             self.interviews.reconcile(
-                ledger.list_applications(
-                    self._db, self.now(), triage.is_ats_company, triage.mail_details
-                )
+                ledger.list_applications(self._db, self.now(), triage.mail_details)
             )
         except Exception:
             LOGGER.exception("job mail: the interview reminders pass failed; the poller goes on")
@@ -701,9 +699,7 @@ class JobMail:
         except device_reads.DeviceUnavailable as exc:
             found, note = None, str(exc)  # the time column is not empty: the device is not there
         armed = {} if self.interviews is None else self.interviews.views()
-        applications = ledger.list_applications(
-            self._db, now, triage.is_ats_company, triage.mail_details
-        )
+        applications = ledger.list_applications(self._db, now, triage.mail_details)
         for app in applications:  # what is armed for the interview ahead (ADR 0186)
             app["reminders"] = armed.get(app["id"])
         return {
@@ -728,7 +724,7 @@ class JobMail:
 
     def edit_application(self, app_id: str, fields: Mapping[str, Any]) -> None:
         """``POST /inherent/jobs/applications/{id}``: his edit; an unknown id is a LookupError."""
-        ledger.edit_application(self._db, self.now(), app_id, fields, triage.is_ats_company)
+        ledger.edit_application(self._db, self.now(), app_id, fields)
 
     def flag(self, message_id: str, reaction: str) -> None:
         """``POST /inherent/jobs/{id}/flag``: Allen says a held-back mail was job mail after all.

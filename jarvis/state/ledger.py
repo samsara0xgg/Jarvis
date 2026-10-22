@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
 from jarvis.shared import zone_label
+from jarvis.shared.job_names import company_key, employer_of, is_platform
 from jarvis.state import device_reads, imports, phone_day, places, reminders, things, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
@@ -67,25 +68,6 @@ _CALL_FLOOR_S: Final[float] = 120.0
 # A commit may be seen long after it was made.
 _COMMIT_LOOKBACK: Final[timedelta] = timedelta(days=7)
 _SESSION_APPS: Final[frozenset[str]] = frozenset({"Claude", "Ghostty"})
-# Mail from these senders names the hiring platform, not the employer.
-_ATS: Final[frozenset[str]] = frozenset(
-    {
-        "workable", "myworkday", "workday", "greenhouse", "lever", "icims", "smartrecruiters",
-        "taleo", "ashby", "ashbyhq", "jobvite", "bamboohr", "clearco", "clearcompany", "njoyn",
-        "linkedin", "indeed", "slfworkdaynotifications",
-    },
-)
-_SUBJECT_COMPANY: Final[tuple[re.Pattern[str], ...]] = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"thanks for applying to (.+?)(?:[.!]|$)",
-        r"thank you for applying to (.+?)(?:[.!]|$)",
-        r"thank you for your interest in (.+?)(?:[.!]|$)",
-        r"applying at (.+?)(?:[.!]|$)",
-        r"your application to (.+?)(?:[.!]|$)",
-    )
-)
-_FILLER: Final[re.Pattern[str]] = re.compile(r"\b(the|inc|ltd|group|technologies|technology)\b")
 _CLOCK: Final[re.Pattern[str]] = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?", re.IGNORECASE,
 )
@@ -368,23 +350,6 @@ def _top(
 
 def _fmt_top(items: Sequence[tuple[str, float]]) -> str:
     return ", ".join(f"{key} {hm(value)}" for key, value in items) or "none"
-
-
-def _company_key(name: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9 ]", " ", _FILLER.sub(" ", name.lower()))
-    return " ".join(cleaned.split())
-
-
-def _real_company(company: str, subject: str, known: Mapping[str, str]) -> str:
-    """The employer a mail is about: an ATS sender names the platform, so read the subject."""
-    if company.lower() not in _ATS:
-        return company
-    for pattern in _SUBJECT_COMPANY:
-        found = pattern.search(subject)
-        if found:
-            name = found.group(1).strip(" .!")
-            return known.get(_company_key(name), name)
-    return ""
 
 
 def _range_minutes(event_text: str | None) -> int | None:
@@ -672,22 +637,22 @@ class _Data:
         ]
         known: dict[str, str] = {}
         for at, row in parsed:
-            if at <= as_of and row[4] and str(row[4]).lower() not in _ATS:
-                known.setdefault(_company_key(str(row[4])), str(row[4]))
+            if at <= as_of and row[4] and not is_platform(str(row[4])):
+                known.setdefault(company_key(str(row[4])), str(row[4]))
         out: list[_Mail] = []
         for at, row in parsed:
             if at > as_of or row[9]:
                 continue
             sender, subject, company = str(row[1] or ""), str(row[2] or ""), str(row[4] or "")
-            employer = _real_company(company, subject, known)
-            if sender.lower() in _ATS or _company_key(sender) == _company_key(employer):
+            employer = employer_of(company, subject, known)
+            if is_platform(sender) or company_key(sender) == company_key(employer):
                 sender = ""
             out.append(
                 _Mail(
                     at, sender, subject, str(row[3] or ""), employer, str(row[5] or ""),
                     None if row[6] is None else str(row[6]),
                     None if row[7] is None else str(row[7]), str(row[8]),
-                    company.lower() in _ATS, None if row[10] is None else str(row[10]),
+                    is_platform(company), None if row[10] is None else str(row[10]),
                 ),
             )
         return out
@@ -1344,7 +1309,7 @@ def _receipts(mail: Sequence[_Mail]) -> list[_Sub]:
     for m in sorted((m for m in mail if m.kind == "receipt"), key=lambda m: m.at):
         if any(
             m.at - k.at <= _SAME_SUBMISSION and k.via_ats != m.via_ats
-            and _same_company(k.company, m.company)
+            and same_company(k.company, m.company)
             for k in kept
         ):
             continue
@@ -1357,8 +1322,11 @@ def _alnum(name: str) -> str:
     return "".join(ch for ch in name.casefold() if ch.isalnum())
 
 
-def _same_company(a: str, b: str) -> bool:
-    """Equal once only letters and digits are kept, or one holds the other's first four."""
+def same_company(a: str, b: str) -> bool:
+    """Whether two names are one company (ADR 0213, 0367): the one comparison the lists share.
+
+    Equal once only letters and digits are kept, or one holds the other's first four letters.
+    """
     ka, kb = _alnum(a), _alnum(b)
     if not ka or not kb:
         return False
@@ -1386,7 +1354,7 @@ def _submitted(data: _Data) -> _Submitted:
         near = [
             (abs(r.at - page.at), i) for i, r in enumerate(receipts)
             if i not in taken and abs(r.at - page.at) <= _SAME_SUBMISSION
-            and (_same_company(page.company, r.company)
+            and (same_company(page.company, r.company)
                  or (page.role and page.role.casefold() == r.role.casefold()))
         ]
         if near:
@@ -1397,7 +1365,7 @@ def _submitted(data: _Data) -> _Submitted:
     told = [
         own for own in _own_submissions(data.src, data.as_of)
         if not any(
-            _same_company(own.company, s.company)
+            same_company(own.company, s.company)
             and abs(own.at.date() - s.at.date()) <= timedelta(days=1)
             for s in seen
         )

@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from jarvis.decision.attention import ContextPack
 from jarvis.decision.surrogate_route import await_replies
 from jarvis.shared import lang, zone_label
+from jarvis.shared.job_names import is_tracking_system
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -480,22 +481,6 @@ _EVENT_CHARS: Final[int] = 200
 _PLAUSIBLE_ROLE_CHARS: Final[int] = 80
 
 
-# Applicant-tracking systems send for the employer: their domain is not the company.
-_ATS: Final = frozenset(
-    {
-        "myworkday",
-        "myworkdayjobs",
-        "greenhouse",
-        "greenhouse-mail",  # us.greenhouse-mail.io
-        "clearcompany",
-        "lever",
-        "icims",
-        "smartrecruiters",
-        "ashby",
-        "ashbyhq",
-        "bamboohr",
-    },
-)
 _SECOND_LEVEL: Final = frozenset({"co", "com", "org", "net", "gov", "ac", "edu"})
 # ponytail: a lowercase domain label has no word boundaries to read; it is split only when it ends
 # in one of these corporate words ("reliablecontrols" -> "Reliable Controls"). A dictionary
@@ -620,7 +605,7 @@ def company_of(name: str, domain: str, subject: str = "", body: str = "") -> str
     if (sent := _SENT_TO.search(subject)) and _is_linkedin(domain):  # "sent to <Company>"
         return sent[1]
     label = _owner_label(domain)
-    if label in _ATS:
+    if is_tracking_system(label):
         found = _named_in(subject) or _named_in(body)
         if found:
             return found
@@ -638,11 +623,6 @@ def clean_role(role: str, company: str) -> str:
     """A role without a leading "our "/"the " or a trailing " - Applications"; '' if the company."""
     role = _ROLE_TAIL.sub("", _ROLE_LEAD.sub("", role)).strip(" -|:.,")
     return "" if role.casefold() == company.casefold() else role
-
-
-def is_ats_company(company: str) -> bool:
-    """Whether a company is only an applicant-tracking system's name ("Bamboohr")."""
-    return re.sub(r"[\s-]", "", company).casefold() in {a.replace("-", "") for a in _ATS}
 
 
 def role_of(subject: str, body: str, company: str = "") -> str:
@@ -928,7 +908,6 @@ _JOB_TITLE: Final = re.compile(
     re.IGNORECASE,
 )
 _MAX_INTERVIEWERS: Final[int] = 4
-_PORTAL_LABELS: Final = frozenset({a.replace("-", "") for a in _ATS} | {"njoyn"})
 _PORTAL_PATH: Final = re.compile(
     r"sign-?in|log-?in|status|candidate|applicant|user-?home|account|portal|my-?applications?",
     re.IGNORECASE,
@@ -1010,7 +989,7 @@ def mail_details(body: str) -> dict[str, Any]:
         (
             u
             for u, h, p in urls
-            if _owner_label(h) in _PORTAL_LABELS and _PORTAL_PATH.search(f"{h}{p}")
+            if is_tracking_system(_owner_label(h)) and _PORTAL_PATH.search(f"{h}{p}")
         ),
         None,
     )
