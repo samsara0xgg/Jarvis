@@ -280,7 +280,7 @@ class InterviewReminders:
         Its title is the interview and who it is with; its place is how it is held (the platform
         online, the address on site); its end is the invitation's range when it names one. It
         starts at ``at``, the earlier reading, and its note names both when the mail's zone label
-        reads two ways (ADR 0368).
+        reads two ways (ADR 0379).
         """
         interview = app.get("interview") or {}
         mail = next((m for m in app["mails"] if _at(m["event_at"]) == at), None)

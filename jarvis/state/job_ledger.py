@@ -206,7 +206,7 @@ def _add_snapshot_columns(conn: sqlite3.Connection) -> None:
 
 
 def _add_event_columns(conn: sqlite3.Connection) -> None:
-    """Add the ``event_later_at`` column of ADR 0368 to a ``job_mail`` made before it."""
+    """Add the ``event_later_at`` column of ADR 0379 to a ``job_mail`` made before it."""
     have = {row[1] for row in conn.execute("PRAGMA table_info(job_mail)")}
     if "event_later_at" not in have:
         conn.execute("ALTER TABLE job_mail ADD COLUMN event_later_at TEXT")
@@ -490,7 +490,7 @@ def set_event(
     """Write the event time, its sentence and its later reading, read from a mail again (ADR 0184).
 
     ``event_later_at`` is the second reading of ``event_at`` when the mail's zone label reads two
-    ways (ADR 0368), else None.
+    ways (ADR 0379), else None.
     """
     with _db(path) as conn:
         conn.execute(
@@ -545,7 +545,7 @@ def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
 
 
 def _later_reading(mails: Sequence[sqlite3.Row], at: str | None) -> str | None:
-    """The later reading (ADR 0368) of the event at ``at``, from the newest mail with that time.
+    """The later reading (ADR 0379) of the event at ``at``, from the newest mail with that time.
 
     ``mails`` are a company's, oldest first, as :func:`_interview_step` takes them.
     """
@@ -868,7 +868,7 @@ def list_applications(
     """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
 
     Newest activity first within a status. Hidden applications are left out. Where the mail's
-    zone label reads two ways (ADR 0368), ``next_event_at`` and ``interview["at"]`` are the
+    zone label reads two ways (ADR 0379), ``next_event_at`` and ``interview["at"]`` are the
     earlier reading and ``next_event_later_at`` and ``interview["later_at"]`` the later; else
     those are None.
     """

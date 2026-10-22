@@ -1153,7 +1153,7 @@ def _by_company(mail: Sequence[_Mail]) -> dict[str, dict[str, list[_Mail]]]:
 
 
 def _invitation_line(mail: _Mail, as_of: datetime, zone: tzinfo, company: str | None = None) -> str:
-    """One interview mail's invitation: its time in ``zone`` from the stored readings (ADR 0368).
+    """One interview mail's invitation: its time in ``zone`` from the stored readings (ADR 0379).
 
     A time its label reads two ways (``10 am PST``, US or BC Pacific) shows both, with what the
     mail said; a range keeps its end. It is upcoming while any reading is still ahead.

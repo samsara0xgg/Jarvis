@@ -181,7 +181,7 @@ def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
         2027, 3, 4, 14, 0, tzinfo=ZoneInfo("America/Vancouver")
     )
     assert row[2] == "local"
-    # "PST" in March is UTC-8 in Los Angeles and UTC-7 in BC: the other reading is kept (ADR 0368).
+    # "PST" in March is UTC-8 in Los Angeles and UTC-7 in BC: the other reading is kept (ADR 0379).
     (later,) = h.sql("SELECT event_later_at FROM job_mail WHERE message_id = 'm-interview'")[0]
     assert datetime.fromisoformat(later) == datetime(
         2027, 3, 4, 15, 0, tzinfo=ZoneInfo("America/Vancouver")
@@ -2643,7 +2643,7 @@ def test_an_application_carries_its_timeline_interview_and_links(
 
 
 # A Thursday in November: US Pacific is UTC-8 and BC UTC-7, so "10 am PST" is 10:00 on his clock
-# or 11:00 on it (ADR 0368). Two days before it is the Tuesday the thing tests start from.
+# or 11:00 on it (ADR 0379). Two days before it is the Tuesday the thing tests start from.
 _WINTER_NOON = datetime(2026, 11, 10, 12, 0, tzinfo=ZoneInfo("America/Vancouver"))
 _WINTER_TEXT = "Thursday, November 12, 2026 10:00 AM - 10:30 AM PST"
 _WINTER_AT = "2026-11-12T10:00-07:00"
@@ -2826,7 +2826,7 @@ def test_a_range_with_one_am_pm_starts_at_its_start() -> None:
 
 
 def test_event_of_reads_a_pacific_label_both_ways_where_us_and_bc_differ() -> None:
-    """ADR 0368: the earlier reading is the time and the later rides with it; else one reading."""
+    """ADR 0379: the earlier reading is the time and the later rides with it; else one reading."""
     received = NOW - timedelta(days=4)
     both = (_WINTER_AT, _WINTER_LATER)
     for sentence, at, later in (
@@ -2857,7 +2857,7 @@ def test_event_of_reads_a_pacific_label_both_ways_where_us_and_bc_differ() -> No
 
 
 def test_a_stored_time_gets_its_later_reading_only_from_the_sentence_it_was_read_from() -> None:
-    """A time set by hand, by older rules or from another sentence is never paired (ADR 0368)."""
+    """A time set by hand, by older rules or from another sentence is never paired (ADR 0379)."""
     received = NOW - timedelta(days=4)
     said = "Thursday, November 12, 2026 10:00 AM PST"
 
@@ -2921,7 +2921,7 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
 def test_the_repair_pass_adds_the_later_reading_to_an_interview_still_ahead(
     tmp_path: Path, jev: JobJev
 ) -> None:
-    """ADR 0368: never Gmail; from the stored sentence where it is ahead, or the kept body."""
+    """ADR 0379: never Gmail; from the stored sentence where it is ahead, or the kept body."""
     h = job_harness(tmp_path, jev, [])
     h.clock.set(_WINTER_NOON)
     cases = (  # the sentence stored with the time, and the time stored: the earlier reading
@@ -2990,7 +2990,7 @@ def _bodyless(h: JobHarness, key: str, kind: str, **fields: Any) -> None:  # noq
 def test_a_body_read_again_fills_both_readings_of_its_pacific_time(
     tmp_path: Path, jev: JobJev
 ) -> None:
-    """ADR 0368: the re-read of an old mail with no time stores the later reading too."""
+    """ADR 0379: the re-read of an old mail with no time stores the later reading too."""
     winter = _TEAMS_INVITE.replace("Thursday, October 8, 2026 2:00 PM (PDT)", _WINTER_TEXT)
     h = job_harness(
         tmp_path, jev, [mail_row("rc", "Jill <jill@rc.example>", "Interview rc", winter)]
@@ -3268,7 +3268,7 @@ def _two_times(said: str = "10:00 AM - 10:30 AM PST") -> str:
 def test_a_time_read_two_ways_starts_the_thing_at_the_earlier_and_names_both(
     tmp_path: Path, jev: JobJev
 ) -> None:
-    """ADR 0368: it starts at the earlier reading, its note names both, its rings count from it."""
+    """ADR 0379: it starts at the earlier reading, its note names both, its rings count from it."""
     h = _winter(tmp_path, jev)
 
     h.job.remind()
