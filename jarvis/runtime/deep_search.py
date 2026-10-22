@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Final
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.llm import LLMClient
 from jarvis.decision.llm_session import LLMSessionFactory
-from jarvis.execution.tools import DeepFindings, DeepSearch
+from jarvis.execution.web_search_tool import DeepFindings, DeepSearch
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.shared.realtime import new_response_id
 from jarvis.state.event_log import open_runtime_event_log

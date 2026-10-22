@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from jarvis.execution import tools
+from jarvis.execution import tools, web_search_tool
 from jarvis.execution.highlight_tool import build_highlight_tool
 from jarvis.execution.location_tool import build_where_tool
 from jarvis.execution.mail_draft_tool import build_mail_draft_tool
@@ -39,6 +39,7 @@ from jarvis.shared import CallerPrincipal
 from jarvis.shared.here import HereUnavailable
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere
+from tests.support.tool_context import tool_context
 from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
@@ -152,7 +153,7 @@ def test_a_failing_call_says_what_happened_and_what_to_do_next(
 ) -> None:
     """The message holds the phrases, its code is the one the dispatcher records, no JSON in it."""
     name, args, code, phrases = row
-    monkeypatch.setattr(tools, "_ddgs_search_backend", _boom)
+    monkeypatch.setattr(web_search_tool, "_ddgs_search_backend", _boom)
     ctx = SimpleNamespace(
         conn=sqlite3.connect(":memory:"), action_id="A1", clock=FakeClock(),
         here=_NO_SIGNAL.bind(None),
@@ -168,8 +169,8 @@ def test_a_search_that_fails_names_the_provider_and_the_next_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The backend's own words ride along; the model is told to say it failed or fetch a page."""
-    monkeypatch.setattr(tools, "_ddgs_search_backend", _boom)
-    error = _error(_flat(tmp_path)["web_search"], {"query": "oat milk"})
+    monkeypatch.setattr(web_search_tool, "_ddgs_search_backend", _boom)
+    error = _error(_flat(tmp_path)["web_search"], {"query": "oat milk"}, tool_context())
     assert error.code == "web_search_backend_error"
     assert str(error) == (
         "web_search: the ddgs search did not answer (no signal); tell him the search "

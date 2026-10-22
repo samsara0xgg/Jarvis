@@ -6,26 +6,21 @@ backend's parsing runs over a hand-built Anthropic response. Nothing reaches the
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from jarvis.decision.llm import ChatResult
-from jarvis.execution import tools
-from jarvis.execution.tools import (
-    DeepFindings,
-    Tool,
-    ToolContext,
-    ToolError,
-    build_default_registry,
-)
+from jarvis.execution import web_search_tool
+from jarvis.execution.tools import Tool, ToolError, build_default_registry
+from jarvis.execution.web_search_tool import DeepFindings, Hit
 from jarvis.runtime.deep_search import (
     DeepSearchError,
     build_deep_search,
     findings_from,
 )
 from tests.support.model import Reply, ScriptedModel, ScriptedSessions
+from tests.support.tool_context import tool_context
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -43,8 +38,7 @@ def _web_search(tmp_path: Path, deep: object | None = None) -> Tool:
 
 
 def _call(tool: Tool, args: Mapping[str, Any]) -> dict[str, Any]:
-    ctx = cast("ToolContext", SimpleNamespace(conn=None, action_id="A1"))
-    return dict(tool.handler(args, ctx))
+    return dict(tool.handler(args, tool_context()))
 
 
 class _Deep:
@@ -65,13 +59,11 @@ def quick_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """The `max_results` each quick backend call was made with."""
     seen: list[int] = []
 
-    def backend(
-        query: str, max_results: int, *, timeout_s: float,  # noqa: ARG001
-    ) -> list[tuple[str, str, str]]:
-        seen.append(max_results)
-        return [("T", "https://a.example", f"about {query}")]
+    def backend(ask: Any, *, timeout_s: float) -> list[Hit]:  # noqa: ANN401, ARG001
+        seen.append(ask.count)
+        return [Hit("T", "https://a.example", f"about {ask.query}")]
 
-    monkeypatch.setattr(tools, "_ddgs_search_backend", backend)
+    monkeypatch.setattr(web_search_tool, "_ddgs_search_backend", backend)
     return seen
 
 
@@ -81,8 +73,8 @@ def test_the_menu_makes_depth_required_and_says_when_to_use_which(tmp_path: Path
     schema = tool.input_schema
     assert schema["required"] == ["query", "depth"]
     assert schema["properties"]["depth"]["enum"] == ["quick", "deep"]
-    assert "about half a minute" in tool.description
-    assert "recommendation" in tool.description
+    assert "about half a minute" in schema["properties"]["depth"]["description"]
+    assert "recommendation" in schema["properties"]["depth"]["description"]
 
 
 def test_deep_returns_the_summary_with_numbered_sources(tmp_path: Path) -> None:
@@ -134,7 +126,10 @@ def test_deep_without_a_backend_runs_the_widest_quick_search(
     assert quick_calls == [8]
     assert result["depth"] == "quick"
     assert result["provider"] == "ddgs"
-    assert result["results"] == ["1. T — https://a.example — about q"]
+    assert result["results"] == [{
+        "title": "T", "site": "a.example", "date": "date unknown", "excerpt": "about q",
+        "url": "https://a.example",
+    }]
 
 
 @pytest.mark.parametrize("args", [{"query": "q"}, {"query": "q", "depth": "thorough"}])

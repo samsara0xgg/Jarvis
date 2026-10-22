@@ -1,0 +1,60 @@
+{
+  "id": "search-quick-news-today",
+  "tool": "web_search",
+  "said": "今天BC有什么新闻",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "query": "BC news today",
+    "depth": "quick",
+    "within": "day",
+    "news": true
+  },
+  "recording": "search-quick-news-today.recording.json",
+  "expect": {
+    "summary_must": [
+      "^4 news excerpts for 'BC news today', none opened; newest today \\(Wed\\); past day\\.$"
+    ],
+    "result": [
+      {
+        "path": "results",
+        "op": "len",
+        "value": 4
+      },
+      {
+        "path": "results[0].date",
+        "op": "eq",
+        "value": "today (Wed)"
+      },
+      {
+        "path": "provider",
+        "op": "eq",
+        "value": "tavily"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.tavily.com/search",
+        "count": 1,
+        "body": [
+          {
+            "path": "topic",
+            "op": "eq",
+            "value": "news"
+          },
+          {
+            "path": "time_range",
+            "op": "eq",
+            "value": "day"
+          }
+        ]
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    },
+    "checker": "search_rows_dated"
+  }
+}

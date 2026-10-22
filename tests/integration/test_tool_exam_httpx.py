@@ -2,7 +2,8 @@
 
 ``web_search`` and ``web_fetch`` reach their providers and pages through httpx. A replayed item
 must answer them from the recording, fail the item on a call the recording lacks, and let the item
-say what the providers were sent.
+say what the providers were sent. The checker for dated search rows reads the recording, not the
+tool.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import httpx
 import pytest
 
 from scripts import tool_exam_tools as exam
+from scripts.tool_exam_checkers import CHECKERS
 from tests.support.net import start_http_server, stop_http_server
 
 if TYPE_CHECKING:
@@ -159,3 +161,48 @@ def test_an_item_says_what_the_providers_must_have_been_sent(
 ) -> None:
     """``expect.requests`` is judged over what the transport saw, by the result checks' own ops."""
     assert exam._request_failures([check], SENT) == expected  # noqa: SLF001
+
+
+ITEM = {"at": "2026-10-21T09:30:00-07:00", "zone": "America/Vancouver"}
+ROWS = [
+    {"url": "https://a.example/1", "published_date": "Wed, 21 Oct 2026 14:00:00 GMT"},
+    {"url": "https://b.example/2", "published_date": "Mon, 19 Oct 2026 19:00:00 GMT"},
+    {"url": "https://c.example/3"},
+]
+OUT: dict[str, Any] = {
+    "summary": "3 search excerpts for 'q', none opened; newest today (Wed).",
+    "results": [
+        {"url": "https://a.example/1", "date": "today (Wed)"},
+        {"url": "https://b.example/2", "date": "Mon Oct 19"},
+        {"url": "https://c.example/3", "date": "date unknown"},
+    ],
+}
+
+
+def _tavily(rows: list[dict[str, Any]]) -> exam.Recording:
+    answer = json.dumps({"results": rows})
+    return _recording({"url": "https://api.tavily.com/search", "body": answer})
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        pytest.param({}, [], id="the result says what the recording says"),
+        pytest.param(
+            {"results": [{"url": "https://a.example/1", "date": "yesterday (Tue)"}]},
+            ["a.example/1: date 'yesterday (Tue)'", "b.example/2 is in the providers' answer"],
+            id="a wrong day and a row missing",
+        ),
+        pytest.param(
+            {"summary": "3 search excerpts for 'q', none opened; newest Mon Oct 19."},
+            ["does not name today (Wed) as the newest"], id="the wrong newest day",
+        ),
+    ],
+)
+def test_the_dated_rows_checker_derives_the_days_from_the_recording(
+    change: dict[str, Any], expected: list[str],
+) -> None:
+    """The days a result may say come from the recorded dates and the item's moment alone."""
+    got = CHECKERS["search_rows_dated"](ITEM, _tavily(ROWS), {**OUT, **change})
+    assert all(any(e in m for m in got) for e in expected), got
+    assert (got == []) == (expected == [])

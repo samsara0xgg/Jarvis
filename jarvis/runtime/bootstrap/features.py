@@ -41,7 +41,8 @@ if TYPE_CHECKING:
 
     from jarvis.decision.surrogate_route import JevLog
     from jarvis.deployment import RuntimePaths
-    from jarvis.execution.tools import DeepSearch, VisionClient
+    from jarvis.execution.tools import VisionClient
+    from jarvis.execution.web_search_tool import DeepSearch
     from jarvis.runtime.bootstrap.core import Core
     from jarvis.runtime.config import DashboardSettings, RuntimeConfig
     from jarvis.runtime.doing_run import DoingSchedule

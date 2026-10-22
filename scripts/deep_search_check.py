@@ -27,7 +27,7 @@ from jarvis.deployment import load_env_file
 
 if TYPE_CHECKING:
     from jarvis.decision.llm import ChatResult
-    from jarvis.execution.tools import DeepFindings
+    from jarvis.execution.web_search_tool import DeepFindings
 
 _SEARCH_FEE_USD = 0.01
 _PRICE_PER_MTOK = {"input": 2.0, "output": 10.0}  # claude-sonnet-5-5, the default deep preset

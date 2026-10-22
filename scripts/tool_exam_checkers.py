@@ -17,6 +17,7 @@ import math
 import re
 import zipfile
 from datetime import UTC, date, datetime, time, timedelta
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 from zoneinfo import ZoneInfo
 
@@ -1012,6 +1013,55 @@ def around_candidates_within_reach(
     return problems
 
 
+def _said_day(day: date, today: date) -> str:
+    """A day as he would say it, worked out from the recording and the item's moment alone."""
+    behind = (today - day).days
+    if behind in (0, 1):
+        return f"{'today' if behind == 0 else 'yesterday'} ({day:%a})"
+    year = f" {day.year}" if day.year != today.year else ""
+    return f"{day:%a %b} {day.day}{year}"
+
+
+def search_rows_dated(
+    item: Mapping[str, Any],
+    recording: Recording | None,
+    out: Mapping[str, Any],
+) -> list[str]:
+    """Every recorded row is in the result with the local day its provider gave it.
+
+    A row the provider gave no date says so, and the first line's newest day is the newest of the
+    recorded ones (or says the dates are unknown). The days are worded here from the recorded
+    dates and the item's moment, not by the tool.
+    """
+    zone, today = ZoneInfo(item.get("zone") or "UTC"), _now(item).date()
+    recorded: dict[str, str | None] = {}
+    for answer in _bodies(recording, "api.tavily.com/search"):
+        for row in answer.get("results", ()):
+            recorded[row["url"]] = row.get("published_date")
+    if not recorded:
+        return ["the recording holds no search answer"]
+    got = {row.get("url"): row for row in out.get("results") or ()}
+    problems: list[str] = []
+    newest: date | None = None
+    for url, published in recorded.items():
+        row = got.get(url)
+        if row is None:
+            problems.append(f"{url} is in the providers' answer and not in the result")
+            continue
+        day = parsedate_to_datetime(published).astimezone(zone).date() if published else None
+        want = _said_day(day, today) if day else "date unknown"
+        if row.get("date") != want:
+            problems.append(f"{url}: date {row.get('date')!r}, recorded {published!r} = {want!r}")
+        if day and (newest is None or day > newest):
+            newest = day
+    first = str(out.get("summary", ""))
+    if newest and f"newest {_said_day(newest, today)}" not in first:
+        problems.append(f"the first line does not name {_said_day(newest, today)} as the newest")
+    if not newest and "dates unknown" not in first:
+        problems.append("no row is dated and the first line does not say so")
+    return problems
+
+
 CHECKERS: dict[
     str, Callable[[Mapping[str, Any], Recording | None, Mapping[str, Any]], list[str]]
 ] = {
@@ -1031,4 +1081,5 @@ CHECKERS: dict[
     "map_search_nearest_outside": map_search_nearest_outside,
     "map_search_in_area": map_search_in_area,
     "around_candidates_within_reach": around_candidates_within_reach,
+    "search_rows_dated": search_rows_dated,
 }
