@@ -44,6 +44,12 @@ DEFAULT_SECTION: Final[str] = "经历"
 DUE_SECTION: Final[str] = "承诺和待办"
 ID_FREE_SECTION: Final[str] = "证件和硬期限"
 GOALS_SECTION: Final[str] = "生活里的几件事"
+# ADR 0389: what is going on. A thread item carries ``state`` (open or closed) and ``evidence``,
+# the day of its latest evidence; every other section is standing, retired only on evidence.
+THREAD_SECTIONS: Final[frozenset[str]] = frozenset({GOALS_SECTION, ID_FREE_SECTION})
+OPEN: Final[str] = "open"
+CLOSED: Final[str] = "closed"  # a thread that ended
+STALE: Final[str] = "stale"  # a standing item that stopped being true
 # The six sections of ADR 0146 and where an older version's items go.
 _LEGACY: Final[dict[str, str]] = {
     "关于你": "经历",
@@ -58,7 +64,9 @@ _NAME_ROW: Final[str] = "profile-name"  # the legacy profile row first-run setup
 _FACT_PREFIX: Final[str] = "fact:"
 
 # One item: {"text", "topic", "sources", "since"}, plus "id" once any write has stamped it and
-# "pinned" once the user edited or moved it (ADR 0154). A document maps each section to its items.
+# "pinned" once the user edited or moved it (ADR 0154). A thread item also carries "state" and
+# "evidence"; an item that ended carries "state" closed or stale, "ended_on" and "why", stays in the
+# document and leaves the prompt (ADR 0389). A document maps each section to its items.
 Item = dict[str, Any]
 Doc = dict[str, list[Item]]
 
@@ -76,9 +84,24 @@ def empty_doc() -> Doc:
     return {section: [] for section in SECTIONS}
 
 
+def ended(item: Item) -> bool:
+    """Whether the item ended (a closed thread, a stale standing item): out of the prompt."""
+    return item.get("state") in (CLOSED, STALE)
+
+
+def live(doc: Doc) -> Doc:
+    """The document without its ended items: what the prompt and every reader of him use."""
+    return {section: [item for item in items if not ended(item)] for section, items in doc.items()}
+
+
+def evidence_day(item: Item) -> str | None:
+    """The day of a thread item's latest evidence; an item from before ADR 0389 uses ``since``."""
+    return item.get("evidence") or item.get("since")
+
+
 def section_chars(doc: Doc, section: str) -> int:
     """The size of a section as the prompt renders its lines (without the heading)."""
-    return len("\n".join(f"- {item['text']}" for item in doc[section]))
+    return len("\n".join(f"- {item['text']}" for item in doc[section] if not ended(item)))
 
 
 def check_item(section: str, text: str) -> None:
@@ -89,10 +112,14 @@ def check_item(section: str, text: str) -> None:
 
 
 def _rank(doc: Doc) -> None:
-    """Each section in rank order, in place: pinned first, then the most recent ``since``."""
+    """Each section in rank order, in place: pinned first, then the most recent ``since``.
+
+    Ended items go after every live one.
+    """
     for items in doc.values():
         items.sort(key=lambda item: str(item.get("since") or ""), reverse=True)
         items.sort(key=lambda item: not item.get("pinned"))
+        items.sort(key=ended)
 
 
 def _revise(item: Item, text: str, since: str) -> None:
@@ -110,38 +137,51 @@ def render(doc: Doc, labels: Mapping[str, str] | None = None) -> str:
     ``labels`` (item id to a short note) puts ``(note)`` ahead of that item's text.
     """
     lines: list[str] = []
+    shown = live(doc)
     for section in SECTIONS:
-        if doc[section]:
+        if shown[section]:
             lines.append(f"### {section}")
-            for item in doc[section]:
+            for item in shown[section]:
                 note = (labels or {}).get(item.get("id", ""))
                 lines.append(f"- ({note}) {item['text']}" if note else f"- {item['text']}")
     return "\n".join(lines)
 
 
-def numbered(doc: Doc, caps: Mapping[str, int] | None = None) -> str:
-    """The consolidation input: items numbered ``[N]`` 1..N in section order.
+def numbered(
+    doc: Doc,
+    caps: Mapping[str, int] | None = None,
+    cites: Mapping[str, str] | None = None,
+    notes: Mapping[str, str] | None = None,
+) -> str:
+    """The consolidation input: live items numbered ``[N]`` 1..N in section order.
 
     Each heading carries the section's size and cap: ``### 身边的人 (1234/10000)``.
 
-    A pinned item (ADR 0154) reads ``[N] (pinned) text``: the model is told it is fixed.
+    A pinned item (ADR 0154) reads ``[N] (pinned) text``: the model is told it is fixed. A thread
+    item ends with ``(evidence <day>)``; with ``cites`` (record id to label) an item that cites
+    records ends with ``[cites e1 e2]``, so a change may carry them over (ADR 0389). ``notes`` (item
+    id to a short note, as :func:`render` takes) goes ahead of the text.
     """
     cap = caps or SECTION_CAPS
     lines: list[str] = []
-    number = 0
-    for section in SECTIONS:
-        if doc[section]:
+    current = ""
+    for number, (section, item, item_id) in enumerate(numbered_items(doc), start=1):
+        if section != current:
+            current = section
             lines.append(f"### {section} ({section_chars(doc, section)}/{cap[section]})")
-            for item in doc[section]:
-                number += 1
-                mark = "(pinned) " if item.get("pinned") else ""
-                lines.append(f"[{number}] {mark}{item['text']}")
+        mark = "(pinned) " if item.get("pinned") else ""
+        note = f"({notes[item_id]}) " if notes and item_id in notes else ""
+        line = f"[{number}] {mark}{note}{item['text']}"
+        if section in THREAD_SECTIONS:
+            line += f" (evidence {evidence_day(item)})"
+        cited = [cites[s] for s in item.get("sources") or [] if cites and s in cites]
+        lines.append(f"{line} [cites {' '.join(cited)}]" if cited else line)
     return "\n".join(lines) or "(empty)"
 
 
 def item_count(doc: Doc) -> int:
-    """How many items the document has (the highest valid ``[N]``)."""
-    return sum(len(doc[section]) for section in SECTIONS)
+    """How many live items the document has (the highest valid ``[N]``)."""
+    return sum(len(items) for items in live(doc).values())
 
 
 def _new_item(text: str, topic: str | None, sources: Sequence[str], since: str) -> Item:
@@ -174,6 +214,11 @@ def listing(doc: Doc) -> list[tuple[str, Item, str]]:
     return out
 
 
+def numbered_items(doc: Doc) -> list[tuple[str, Item, str]]:
+    """``(section, item, id)`` of every live item: ``[N]`` in :func:`numbered` is entry N."""
+    return [entry for entry in listing(doc) if not ended(entry[1])]
+
+
 def stamp_ids(doc: Doc) -> None:
     """Store every item's id in place (every write does this to its copy of the document)."""
     for _section, item, item_id in listing(doc):
@@ -193,30 +238,55 @@ def _drop(doc: Doc, item: Item) -> None:
         doc[section][:] = [other for other in doc[section] if other is not item]
 
 
+def _thread(item: Item, section: str, evidence: str | None) -> None:
+    """Mark ``item`` an open thread with ``evidence`` (kept when None) if ``section`` is one."""
+    if section in THREAD_SECTIONS:
+        item["state"] = OPEN
+        if evidence is not None:
+            item["evidence"] = evidence
+
+
 def apply_changes(doc: Doc, changes: Sequence[Mapping[str, Any]], day: str) -> Doc:
     """A copy of ``doc`` with the gated nightly ``changes`` applied in order.
 
-    Item numbers refer to ``numbered(doc)`` before any change: an add appends to its
-    section, a rewrite replaces text, sources and ``since`` (the topic stays; the old wording
-    goes to ``history``) and may move the item, a stale removes it. Every section ends ranked.
+    Item numbers refer to ``numbered(doc)`` (live items) before any change: an add appends to
+    its section, a rewrite replaces text, sources and ``since`` (the topic stays; the old wording
+    goes to ``history``; the same text keeps ``since``) and may move the item, ``ongoing`` only
+    renews a thread's evidence, and a
+    stale ends the item where it is: a thread closes, a standing item goes stale, both with
+    ``ended_on`` and the change's ``reason`` as ``why`` (ADR 0389). A thread's evidence is the
+    change's ``evidence`` when given (None keeps it), else ``day``. Every section ends ranked.
     """
     new = copy.deepcopy(doc)
     stamp_ids(new)
-    flat = [item for section in SECTIONS for item in new[section]]
+    flat = [item for _section, item, _id in numbered_items(new)]
     for change in changes:
+        evidence = change.get("evidence", day)
         if change["op"] == "add":
-            new[change["section"]].append(_new_item(change["text"], None, change["sources"], day))
+            item = _new_item(change["text"], None, change["sources"], day)
+            _thread(item, change["section"], evidence)
+            new[change["section"]].append(item)
             continue
         item = flat[change["item"] - 1]
-        if change["op"] == "stale":
-            _drop(new, item)
+        section = next(name for name in SECTIONS if any(other is item for other in new[name]))
+        if change["op"] == "ongoing":
+            _thread(item, section, evidence)
             continue
-        _revise(item, change["text"], day)
+        if change["op"] == "stale":
+            item.update(
+                state=CLOSED if section in THREAD_SECTIONS else STALE,
+                ended_on=day,
+                why=change.get("reason"),
+            )
+            continue
+        if change["text"] != item["text"]:  # the same words keep the day they were worded
+            _revise(item, change["text"], day)
         item["sources"] = list(change["sources"])
-        target = change.get("section")
-        if target is not None and not any(other is item for other in new[target]):
+        target = change.get("section") or section
+        if target != section:
             _drop(new, item)
             new[target].append(item)
+        _thread(item, target, evidence)
     _rank(new)
     return new
 
@@ -240,18 +310,21 @@ def remember(
     stamp_ids(new)
     for current in SECTIONS:
         for item in new[current]:
-            if str(item["topic"] or "").casefold() == topic.casefold():
+            if not ended(item) and str(item["topic"] or "").casefold() == topic.casefold():
                 check_item(section or current, text)
                 _revise(item, text, day)
                 if section is not None and section != current:
                     _drop(new, item)
                     new[section].append(item)
+                _thread(item, section or current, day)
                 _rank(new)
                 change = {"op": "rewrite", "topic": topic, "text": text, "sources": item["sources"]}
                 return new, change
     target = section or DEFAULT_SECTION
     check_item(target, text)
-    new[target].append(_new_item(text, topic, [], day))
+    added = _new_item(text, topic, [], day)
+    _thread(added, target, day)
+    new[target].append(added)
     _rank(new)
     return new, {"op": "add", "section": target, "topic": topic, "text": text, "sources": []}
 
@@ -309,27 +382,39 @@ def confirm(doc: Doc, item_id: str) -> tuple[Doc, dict[str, Any]]:
     return new, {"op": "confirm", "id": item_id}
 
 
-def restore(doc: Doc, item: Item, section: str) -> tuple[Doc, dict[str, Any]]:
-    """``doc`` with ``item`` put back at the end of ``section``, pinned: the user kept it.
+def restore(
+    doc: Doc, item: Item, section: str, day: str | None = None,
+) -> tuple[Doc, dict[str, Any]]:
+    """``doc`` with ``item`` live again in ``section``, pinned: the user kept it.
 
-    Used for an item a nightly pass marked stale and the user wants to keep.
+    Used for an item that ended (a nightly stale, a date that passed, a rebuild) and the user wants
+    to keep: an ended item still in the document comes back where it is, a thread open again; an
+    item a version before ADR 0389 removed is put back at the end of ``section``. His keeping it
+    is a thread's evidence on ``day``.
     """
     new = copy.deepcopy(doc)
     stamp_ids(new)
-    kept = copy.deepcopy(item)
-    kept["pinned"] = True
-    if find(new, str(kept["id"])) is not None:
+    found = find(new, str(item["id"]))
+    if found is not None and not ended(found[2]):
         msg = "the item is already in core memory"
         raise ValueError(msg)
-    new[section].append(kept)
+    if found is None:
+        kept = copy.deepcopy(item)
+        new[section].append(kept)
+    else:
+        section, _index, kept = found
+    for key in ("state", "ended_on", "why"):
+        kept.pop(key, None)
+    kept["pinned"] = True
+    _thread(kept, section, day)
     _rank(new)
     return new, {"op": "restore", "id": kept["id"], "section": section, "text": kept["text"]}
 
 
-def states(doc: Doc | None) -> dict[str, tuple[str, str, bool]]:
-    """``{id: (section, text, pinned)}``: what a version says about each item."""
+def states(doc: Doc | None) -> dict[str, tuple[str, str, bool, bool]]:
+    """``{id: (section, text, pinned, ended)}``: what a version says about each item."""
     return {
-        item_id: (section, str(item["text"]), bool(item.get("pinned")))
+        item_id: (section, str(item["text"]), bool(item.get("pinned")), ended(item))
         for section, item, item_id in listing(doc if doc is not None else empty_doc())
     }
 
@@ -348,7 +433,7 @@ class Delta(NamedTuple):
 
 
 def delta(base: Doc | None, doc: Doc) -> Delta:
-    """The items ``doc`` adds, removes or changes (text, section or pin) against ``base``."""
+    """The items ``doc`` adds, removes or changes (text, section, pin or ended) against ``base``."""
     before, after = states(base), states(doc)
     return Delta(
         set(after) - set(before),
@@ -498,13 +583,17 @@ def current(conn: sqlite3.Connection, now: str) -> Version:
 
 
 __all__ = [
+    "CLOSED",
     "DEFAULT_SECTION",
     "DUE_SECTION",
     "GOALS_SECTION",
     "ID_FREE_SECTION",
     "NAME_TOPIC",
+    "OPEN",
     "SECTIONS",
     "SECTION_CAPS",
+    "STALE",
+    "THREAD_SECTIONS",
     "Delta",
     "Doc",
     "Item",
@@ -518,12 +607,16 @@ __all__ = [
     "delta",
     "edit",
     "empty_doc",
+    "ended",
+    "evidence_day",
     "find",
     "item_count",
     "latest",
     "listing",
+    "live",
     "load",
     "numbered",
+    "numbered_items",
     "remember",
     "render",
     "restore",

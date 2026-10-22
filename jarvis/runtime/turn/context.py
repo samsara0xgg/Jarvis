@@ -18,6 +18,7 @@ from jarvis.decision import (
 )
 from jarvis.decision.pre_route import spoken_turn
 from jarvis.execution.path_resolver import resolve as resolve_file_entity
+from jarvis.runtime.core_memory import CHECKIN_LINE_CHARS, CHECKIN_LINE_PREFIX
 from jarvis.runtime.dashboard import (
     DRAFT_LINE_CHARS,
     DRAFT_LINE_PREFIX,
@@ -178,6 +179,7 @@ def live_lines(producers: tuple[Callable[[], str | None], ...]) -> tuple[str, ..
                 else VIEW_LINE_CHARS if line.startswith(VIEW_LINE_PREFIX)
                 else SHARES_LINE_CHARS if line.startswith(SHARES_LINE_PREFIX)
                 else RIDE_LINE_CHARS if line.startswith(RIDE_LINE_PREFIX)
+                else CHECKIN_LINE_CHARS if line.startswith(CHECKIN_LINE_PREFIX)
                 else _LIVE_LINE_CHARS
             )
             lines.append(line[:limit])

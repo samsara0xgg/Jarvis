@@ -26,7 +26,7 @@ def test_the_route_table_is_the_one_this_test_walks(tmp_path: Any) -> None:  # n
     the ``/inherent/ws`` socket.
     """
     _, _, routes = guard_client(tmp_path)
-    assert len(routes) == 85, routes
+    assert len(routes) == 86, routes
 
 
 @pytest.mark.parametrize(

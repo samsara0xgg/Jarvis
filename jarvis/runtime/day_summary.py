@@ -25,6 +25,8 @@ from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.day_summary import build_day_summary_messages, check_day_summary
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
+from jarvis.runtime.core_memory_rebuild import CALL_TIMEOUT_S as REBUILD_TIMEOUT_S
+from jarvis.runtime.core_memory_rebuild import run_rebuild
 from jarvis.runtime.ledger import DayDrafts, LedgerContext, ProseSettings, run_day_prose
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.state.cost_accounting import call_recorded_since
@@ -204,12 +206,14 @@ class DaySummarySchedule:
         client: LLMClient | None = None,
         core_client: LLMClient | None = None,
         prose_client: LLMClient | None = None,
+        rebuild_client: LLMClient | None = None,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`.
 
         ``client`` stands in for the one built from ``settings.preset`` on first use,
-        ``core_client`` for the one built from the ``core_memory`` preset, and ``prose_client``
-        for the one built from the ledger's prose preset.
+        ``core_client`` for the one built from the ``core_memory`` preset, ``prose_client``
+        for the one built from the ledger's prose preset, and ``rebuild_client`` for the one built
+        from ``core_memory.rebuild``'s preset.
         """
         self._memory = memory
         self._settings = settings
@@ -226,6 +230,7 @@ class DaySummarySchedule:
         self._poll_s = poll_s
         self._client = client
         self._core_client = core_client
+        self._rebuild_client = rebuild_client
         self._last: date | None = None
 
     def due(self, now: datetime) -> date | None:
@@ -337,6 +342,29 @@ class DaySummarySchedule:
             LOGGER.exception("core_memory: consolidation for %s failed", today)
             return
         LOGGER.info("core_memory: consolidated %s -> %s", today, core_outcomes)
+        if settings.rebuild is not None:
+            self._rebuild(settings, today)
+
+    def _rebuild(self, settings: CoreMemorySettings, today: date) -> None:
+        """ADR 0389: the monthly rebuild, when due, after the nightly pass; never fails it."""
+        assert settings.rebuild is not None  # noqa: S101 — the caller checked
+        try:
+            if self._rebuild_client is None:
+                self._rebuild_client = build_compact_client(
+                    self._llm_config, settings.rebuild.preset, timeout_s=REBUILD_TIMEOUT_S,
+                )
+            outcome = run_rebuild(
+                self._memory,
+                settings,
+                self._rebuild_client,
+                event_log_path=self._event_log_path,
+                pricing_table=self._pricing_table,
+                today=today,
+            )
+        except Exception:
+            LOGGER.exception("core_memory_rebuild: run for %s failed", today)
+            return
+        LOGGER.info("core_memory_rebuild: %s -> %s", today, outcome)
 
     async def run(self) -> None:
         """A Mac asleep at ``at`` writes on its first check after waking or after a start."""

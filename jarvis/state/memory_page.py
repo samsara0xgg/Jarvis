@@ -132,12 +132,18 @@ def _resolve(conn: sqlite3.Connection, record_ids: Iterable[str]) -> list[dict[s
 
 
 def _lines(rows: Sequence[Row], index: int) -> list[dict[str, str]]:
-    """The version's items as 新/改/过时 lines: ``add`` | ``chg`` | ``old`` with the text."""
+    """The version's items as 新/改/过时 lines: ``add`` | ``chg`` | ``old`` with the text.
+
+    An item the version ended (ADR 0389) is an ``old`` line carrying its ``why`` when it has one.
+    """
     base = _base(rows, index)
     delta = core_memory.delta(base, rows[index].doc)
     new = {item_id: item for _s, item, item_id in core_memory.listing(rows[index].doc)}
     old = {
         item_id: item for _s, item, item_id in core_memory.listing(base or core_memory.empty_doc())
+    }
+    ended = {
+        i for i in delta.changed if core_memory.ended(new[i]) and not core_memory.ended(old[i])
     }
     return [
         *(
@@ -146,11 +152,19 @@ def _lines(rows: Sequence[Row], index: int) -> list[dict[str, str]]:
         ),
         *(
             {"tag": "chg", "text": _cut(str(new[i]["text"]), _LINE_CHARS)}
-            for i in sorted(delta.changed)
+            for i in sorted(delta.changed - ended)
         ),
         *(
             {"tag": "old", "text": _cut(str(old[i]["text"]), _LINE_CHARS)}
             for i in sorted(delta.removed)
+        ),
+        *(
+            {
+                "tag": "old",
+                "text": _cut(str(new[i]["text"]), _LINE_CHARS),
+                **({"why": str(new[i]["why"])} if new[i].get("why") else {}),
+            }
+            for i in sorted(ended)
         ),
     ]
 
@@ -169,27 +183,30 @@ def _confirmed_after(rows: Sequence[Row], index: int) -> set[str]:
 
 
 _NIGHTLY_OPS: Final[frozenset[str]] = frozenset({"add", "rewrite", "stale", "suggest_stale"})
+# The versions a model wrote: the night's pass and the monthly rebuild (ADR 0389).
+_MODEL_ORIGINS: Final[frozenset[str]] = frozenset({"nightly", memory_db.REBUILD_ORIGIN})
 
 
-def _new_entries(conn: sqlite3.Connection, rows: Sequence[Row]) -> dict[str, Any]:
-    """What the latest nightly version that changed anything added, rewrote or marked stale.
+def _new_entries(conn: sqlite3.Connection, rows: Sequence[Row]) -> dict[str, Any]:  # noqa: C901 — one branch per op.
+    """What the latest model version that changed anything added, rewrote or marked stale.
 
+    That is the nightly pass, or the monthly rebuild when it is the newer: its diff shows first.
     An entry the user has since confirmed, edited, deleted or kept is not listed.
     """
     index = next(
         (
             i
             for i in range(len(rows) - 1, -1, -1)
-            if rows[i].origin == "nightly"
+            if rows[i].origin in _MODEL_ORIGINS
             and any(c.get("op") in _NIGHTLY_OPS for c in rows[i].changes)
         ),
         None,
     )
     if index is None:
-        return {"day": None, "ts": None, "version": None, "entries": []}
+        return {"day": None, "ts": None, "version": None, "origin": None, "entries": []}
     row, base = rows[index], rows[index - 1].doc if index else core_memory.empty_doc()
     done = _confirmed_after(rows, index)
-    before = core_memory.listing(base)
+    before = core_memory.numbered_items(base)
     after = {item_id: (section, item) for section, item, item_id in core_memory.listing(row.doc)}
     entries: list[dict[str, Any]] = []
     for change in row.changes:
@@ -213,7 +230,9 @@ def _new_entries(conn: sqlite3.Connection, rows: Sequence[Row]) -> dict[str, Any
             )
         elif op == "rewrite":
             section, old, item_id = before[change["item"] - 1]
-            if item_id in after:
+            if item_id in after and (change["text"], change.get("section", section)) != (
+                old["text"], section,
+            ):  # a rebuild that only adds records to an item changed nothing to show
                 entry = {
                     "kind": "rewrite",
                     "id": item_id,
@@ -224,6 +243,8 @@ def _new_entries(conn: sqlite3.Connection, rows: Sequence[Row]) -> dict[str, Any
         elif op == "stale":
             section, old, item_id = before[change["item"] - 1]
             entry = {"kind": "stale", "id": item_id, "section": section, "text": old["text"]}
+            if change.get("reason"):
+                entry["why"] = change["reason"]
         else:
             entry = {
                 "kind": "suggest_stale",
@@ -247,7 +268,10 @@ def _new_entries(conn: sqlite3.Connection, rows: Sequence[Row]) -> dict[str, Any
             else {"who": first["who"], "text": _cut(first["text"], _QUOTE_CHARS)}
         )
         del entry["sources"]
-    return {"day": row.upto_day, "ts": row.ts, "version": row.id, "entries": entries}
+    return {
+        "day": row.upto_day, "ts": row.ts, "version": row.id, "origin": row.origin,
+        "entries": entries,
+    }
 
 
 def overview(
@@ -260,19 +284,30 @@ def overview(
         days = int(conn.execute("SELECT COUNT(DISTINCT day) FROM day_summaries").fetchone()[0])
         new = _new_entries(conn, rows)
     current = rows[-1]
-    pins = {
-        item_id: bool(item.get("pinned")) for _s, item, item_id in core_memory.listing(current.doc)
-    }
+    listed = core_memory.listing(current.doc)
     sections = [
         {
             "name": section,
             "chars": core_memory.section_chars(current.doc, section),
             "cap": section_caps[section],
             "items": [
-                {"id": item_id, "text": item["text"], "pinned": pins[item_id]}
-                for sec, item, item_id in core_memory.listing(current.doc)
-                if sec == section
+                {"id": item_id, "text": item["text"], "pinned": bool(item.get("pinned"))}
+                for sec, item, item_id in listed
+                if sec == section and not core_memory.ended(item)
             ],
+            # ADR 0389: out of the prompt, kept in the store; the newest ended first.
+            "ended": sorted(
+                (
+                    {
+                        "id": item_id, "text": item["text"], "state": item["state"],
+                        "ended_on": item.get("ended_on"), "why": item.get("why"),
+                    }
+                    for sec, item, item_id in listed
+                    if sec == section and core_memory.ended(item)
+                ),
+                key=lambda one: str(one["ended_on"] or ""),
+                reverse=True,
+            ),
         }
         for section in core_memory.SECTIONS
     ]
@@ -312,15 +347,20 @@ def item(path: Path, item_id: str) -> dict[str, Any]:
             born, edits = when, []
         elif item_id in delta.changed:
             edits.append(when)
-    flat = [i for _s, _i, i in core_memory.listing(current.doc)].index(item_id) + 1
+    numbers = [i for _s, _i, i in core_memory.numbered_items(current.doc)]
     return {
         "id": item_id,
         "section": section,
         "text": entry["text"],
         "pinned": bool(entry.get("pinned")),
+        "state": entry.get("state"),
+        "evidence": core_memory.evidence_day(entry)
+        if section in core_memory.THREAD_SECTIONS else None,
+        "ended_on": entry.get("ended_on"),
+        "why": entry.get("why"),
         "since": entry.get("since"),
         "history": entry.get("history", []),
-        "number": flat,
+        "number": numbers.index(item_id) + 1 if item_id in numbers else None,
         "chars": len(str(entry["text"])),
         "sources": sources,
         "born": born,
@@ -455,7 +495,32 @@ def keep_stale(
         if old is None:
             msg = f"version {version_id} did not hold item {item_id}"
             raise LookupError(msg)
-        new, change = core_memory.restore(doc, {**old[1], "id": item_id}, old[0])
+        new, change = core_memory.restore(
+            doc, {**old[1], "id": item_id}, old[0], local_now().date().isoformat(),
+        )
+        return new, [change]
+
+    return _write(path, act, max_chars=max_chars, section_caps=section_caps)
+
+
+def restore_item(
+    path: Path, item_id: str, *, max_chars: int, section_caps: Mapping[str, int],
+) -> dict[str, Any]:
+    """Bring an ended item back into the prompt, pinned (ADR 0389); a closed thread opens again."""
+
+    def act(
+        _conn: sqlite3.Connection, _row: Row, doc: core_memory.Doc
+    ) -> tuple[core_memory.Doc, list[dict[str, Any]]]:
+        found = core_memory.find(doc, item_id)
+        if found is None:
+            msg = f"no item {item_id}"
+            raise LookupError(msg)
+        if not core_memory.ended(found[2]):
+            msg = "the item is in core memory already"
+            raise ValueError(msg)
+        new, change = core_memory.restore(
+            doc, {**found[2], "id": item_id}, found[0], local_now().date().isoformat(),
+        )
         return new, [change]
 
     return _write(path, act, max_chars=max_chars, section_caps=section_caps)
@@ -781,6 +846,7 @@ __all__ = [
     "keep_stale",
     "overview",
     "parse_summary",
+    "restore_item",
     "search",
     "undo",
     "versions",

@@ -189,6 +189,13 @@ CREATE TABLE IF NOT EXISTS place_prompts (
     lng      REAL NOT NULL,
     shown_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS thread_checkins (
+    id       TEXT PRIMARY KEY,
+    item_id  TEXT NOT NULL,
+    evidence TEXT,
+    day      TEXT NOT NULL,
+    shown_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meaning_vectors (
     kind   TEXT NOT NULL,
     ref    TEXT NOT NULL,
@@ -484,7 +491,9 @@ def _keep_item(  # noqa: PLR0913 — the version's inputs, all keyword-only.
     now = now or local_now()
     with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
         base = core_memory.current(conn, iso_seconds(now))
-        if only_new and any(item["text"] == text for _, item, _ in core_memory.listing(base.doc)):
+        if only_new and any(
+            item["text"] == text for _, item, _ in core_memory.numbered_items(base.doc)
+        ):
             return False
         doc, change = core_memory.remember(
             base.doc,
@@ -640,6 +649,100 @@ def append_nightly_core_memory(  # noqa: PLR0913 — the row's inputs, all keywo
         )
 
 
+REBUILD_ORIGIN: Final[str] = "rebuild"
+
+
+def append_rebuild_core_memory(
+    path: Path, *, base_id: str, day: str, month: str, changes: Sequence[Mapping[str, object]],
+) -> str | None:
+    """Append the monthly rebuild of ``month`` as one version (ADR 0389); None when the world moved.
+
+    ``changes`` are nightly-shaped (add, rewrite, stale with item numbers of ``base_id``), applied
+    on ``day``; the row's changes end with ``{"op": "rebuild", "month": month}``. ``upto_day``
+    stays the base's: a rebuild consolidates no day.
+    """
+    now = iso_seconds(local_now())
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        base = core_memory.current(conn, now)
+        if base.id != base_id:
+            return None
+        return core_memory.append_version(
+            conn,
+            base=base,
+            doc=core_memory.apply_changes(base.doc, changes, day),
+            origin=REBUILD_ORIGIN,
+            upto_day=base.upto_day,
+            changes=[*changes, {"op": "rebuild", "month": month}],
+            now=now,
+        )
+
+
+def last_rebuild_month(path: Path) -> str | None:
+    """The latest month (``YYYY-MM``) any rebuild version covers, or None before the first.
+
+    The latest month, not the last row: a hand run for an older month does not move it back.
+    """
+    with closing(open_memory_db(path)) as conn:
+        rows = conn.execute(
+            "SELECT changes FROM core_memory WHERE origin = ?", (REBUILD_ORIGIN,),
+        ).fetchall()
+    months = [
+        str(c["month"]) for (raw,) in rows for c in json.loads(raw) if c.get("op") == "rebuild"
+    ]
+    return max(months, default=None)
+
+
+def checkin_once(path: Path, today: date, quiet_days: int) -> core_memory.Item | None:
+    """The open thread to ask about today, once (ADR 0389); None when there is none or one was.
+
+    A thread qualifies when its latest evidence is ``quiet_days`` or more before ``today`` and
+    it was not shown for that same evidence before; the quietest goes first. Returning it records
+    it, so at most one a day is returned, and a thread again only after new evidence.
+    """
+    cutoff = (today - timedelta(days=quiet_days)).isoformat()
+
+    def pick(conn: sqlite3.Connection) -> core_memory.Item | None:
+        shown = [
+            (str(item_id), evidence, str(day))
+            for item_id, evidence, day in conn.execute(
+                "SELECT item_id, evidence, day FROM thread_checkins",
+            )
+        ]
+        if any(day == today.isoformat() for _id, _evidence, day in shown):
+            return None
+        asked = {(item_id, evidence) for item_id, evidence, _day in shown}
+        doc = core_memory.current(conn, iso_seconds(local_now())).doc
+        quiet = sorted(
+            (
+                item for section, item, _id in core_memory.numbered_items(doc)
+                if section in core_memory.THREAD_SECTIONS
+                and str(core_memory.evidence_day(item) or "") <= cutoff
+                and (item.get("id"), core_memory.evidence_day(item)) not in asked
+            ),
+            key=lambda item: str(core_memory.evidence_day(item) or ""),
+        )
+        return quiet[0] if quiet else None
+
+    with closing(open_memory_db(path)) as conn:  # every turn asks: read before taking the lock
+        if pick(conn) is None:
+            return None
+    with closing(open_memory_db(path)) as conn, core_memory.write_transaction(conn):
+        item = pick(conn)
+        if item is not None:
+            conn.execute(
+                "INSERT INTO thread_checkins (id, item_id, evidence, day, shown_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    f"checkin:{uuid.uuid4().hex}",
+                    item.get("id"),
+                    core_memory.evidence_day(item),
+                    today.isoformat(),  # his day, in the zone the caller read it in
+                    iso_seconds(local_now()),
+                ),
+            )
+    return item
+
+
 def append_record(  # noqa: PLR0913 — the row's columns, all keyword-only.
     path: Path,
     *,
@@ -775,21 +878,33 @@ def _core_memory_lines(conn: sqlite3.Connection) -> list[str]:
     return core_memory.render(version.doc, _item_notes(conn, version.doc)).splitlines()
 
 
+_ASSISTANT: Final[frozenset[str]] = frozenset({"jarvis", "jarvis_live"})
+INFERRED: Final[str] = "inferred"
+
+
+def record_sources(
+    conn: sqlite3.Connection, record_ids: Collection[str],
+) -> dict[str, tuple[str, str]]:
+    """``{record id: (source, local day)}`` of the records that exist among ``record_ids``."""
+    return {
+        str(rid): (str(source), datetime.fromisoformat(str(ts)).astimezone().date().isoformat())
+        for rid, source, ts in conn.execute(
+            "SELECT id, source, ts FROM records WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted(record_ids)),),
+        )
+    }
+
+
 def _item_notes(conn: sqlite3.Connection, doc: core_memory.Doc) -> dict[str, str]:
     """Per item, ``first seen, kind[, pinned]``.
 
     First seen is the date of the earliest record it cites, else its ``since``. Kind is ``said``
     when all its records are the user's words, ``mail``, ``observed`` when none is,
-    ``said+observed`` for a mix, ``set`` when no record backs it.
+    ``said+observed`` for a mix, ``set`` when no record backs it. ``inferred`` is an item whose
+    records are all the assistant's lines: no words of his behind it (ADR 0389).
     """
     cited = {s for items in doc.values() for item in items for s in item.get("sources") or []}
-    records = {
-        str(rid): (str(source), datetime.fromisoformat(str(ts)).astimezone().date().isoformat())
-        for rid, source, ts in conn.execute(
-            "SELECT id, source, ts FROM records WHERE id IN (SELECT value FROM json_each(?))",
-            (json.dumps(sorted(cited)),),
-        )
-    }
+    records = record_sources(conn, cited)
     notes: dict[str, str] = {}
     for items in doc.values():
         for item in items:
@@ -799,6 +914,7 @@ def _item_notes(conn: sqlite3.Connection, doc: core_memory.Doc) -> dict[str, str
                 "set" if not found
                 else "said" if kinds == {"allen"}
                 else "mail" if "mail" in kinds
+                else INFERRED if kinds <= _ASSISTANT
                 else "observed" if "allen" not in kinds
                 else "said+observed"
             )
@@ -806,6 +922,12 @@ def _item_notes(conn: sqlite3.Connection, doc: core_memory.Doc) -> dict[str, str
             pinned = ", pinned" if item.get("pinned") else ""
             notes[item.get("id", "")] = f"{first}, {kind}{pinned}"
     return notes
+
+
+def core_memory_notes(path: Path, doc: core_memory.Doc) -> dict[str, str]:
+    """:func:`_item_notes` of ``doc``: per item id, ``first seen, kind[, pinned]``."""
+    with closing(open_memory_db(path)) as conn:
+        return _item_notes(conn, doc)
 
 
 def _effective_anchor(conn: sqlite3.Connection, anchor_rowid: int | None, since: str) -> int:
@@ -1985,6 +2107,8 @@ def spoken_between(
 __all__ = [
     "DAY_SUMMARIES_CONTEXT",
     "DEFAULT_SEARCH_LIMIT",
+    "INFERRED",
+    "REBUILD_ORIGIN",
     "THREAD_ORIGINS",
     "CompactionRange",
     "DayLineRow",
@@ -2006,11 +2130,14 @@ __all__ = [
     "append_doing_run",
     "append_highlight_mark",
     "append_nightly_core_memory",
+    "append_rebuild_core_memory",
     "append_record",
     "append_summary",
     "attention_threads",
     "brief_note",
+    "checkin_once",
     "compaction_range",
+    "core_memory_notes",
     "core_memory_pending_days",
     "current_core_memory",
     "day_records",
@@ -2022,6 +2149,7 @@ __all__ = [
     "iso_seconds",
     "keep_fact",
     "last_draft_at",
+    "last_rebuild_month",
     "latest_day_experience",
     "latest_day_lines",
     "latest_day_summaries",
@@ -2033,6 +2161,7 @@ __all__ = [
     "pending_days",
     "prose_days",
     "put_day_experience",
+    "record_sources",
     "remember_fact",
     "render_context",
     "search_records",

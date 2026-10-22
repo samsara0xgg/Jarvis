@@ -120,7 +120,9 @@ def preset_context_length(client: LLMClient) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def build_compact_client(llm_config: Mapping[str, Any], preset_name: str) -> LLMClient:
+def build_compact_client(
+    llm_config: Mapping[str, Any], preset_name: str, *, timeout_s: float = _COMPACT_CALL_TIMEOUT_S,
+) -> LLMClient:
     """A dedicated client pinned to the compact preset.
 
     The decision loop's own client switches presets in place, so sharing it
@@ -140,7 +142,7 @@ def build_compact_client(llm_config: Mapping[str, Any], preset_name: str) -> LLM
             "provider": llm_config.get("provider", "openai"),
             "presets": {preset_name: dict(preset)},
             "default_preset": preset_name,
-            "timeout_s": _COMPACT_CALL_TIMEOUT_S,
+            "timeout_s": timeout_s,
             "max_retries": _COMPACT_CALL_MAX_RETRIES,
         },
     )

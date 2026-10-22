@@ -340,7 +340,7 @@ def gather(
     )
     weather = _read(sources.weather and partial(sources.weather, day), "weather", notes)
     try:
-        doc = current_core_memory(sources.memory_db).doc
+        doc = core_memory.live(current_core_memory(sources.memory_db).doc)
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("day_plan: core memory unreadable: %s: %s", type(exc).__name__, exc)
         doc = {}

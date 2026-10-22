@@ -51,6 +51,9 @@ class MemoryRoutes(Protocol):
     def keep(self, version: str, item_id: str) -> dict[str, Any]:
         """Put back an item a nightly version marked stale."""
 
+    def restore(self, item_id: str) -> dict[str, Any]:
+        """Bring an item that ended back into the prompt (ADR 0389)."""
+
     def versions(self) -> dict[str, Any]:
         """One entry per core memory version."""
 
@@ -101,7 +104,7 @@ class MemoryEditRequest(BaseModel):
 
 
 class MemoryItemRequest(BaseModel):
-    """Body of ``POST /inherent/memory/item/{delete,confirm}``: one item by id."""
+    """Body of ``POST /inherent/memory/item/{delete,confirm,restore}``: one item by id."""
 
     id: str = Field(min_length=1, max_length=64)
 
@@ -205,6 +208,11 @@ def register_memory_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C
     async def memory_keep(req: MemoryKeepRequest) -> dict[str, Any]:
         """Put back an item a nightly version marked stale, pinned."""
         return await _memory_call(functools.partial(page.keep, req.version, req.id))
+
+    @app.post("/inherent/memory/item/restore", status_code=200)
+    async def memory_restore(req: MemoryItemRequest) -> dict[str, Any]:
+        """ADR 0389: bring an item that ended back into the prompt, pinned."""
+        return await _memory_call(functools.partial(page.restore, req.id))
 
     @app.get("/inherent/memory/versions")
     async def memory_versions() -> dict[str, Any]:

@@ -69,11 +69,12 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0302: doing_runs are a model's whole account of a day's doing lane, and doing_answers
     # his answers about it; both append-only, neither a projection of events.
     # ADR 0315: attention_threads say what each key of his attention served, appended per telling.
+    # ADR 0389: thread_checkins are the quiet threads already shown to her, one row per showing.
     "jarvis/state/memory_db.py": frozenset(
         {
             "records", "summaries", "sent", "day_summaries", "day_prose", "day_highlight_marks",
             "record_attachments", "day_experience", "doing_runs", "doing_answers",
-            "attention_threads",
+            "attention_threads", "thread_checkins",
         },
     ),
     # ADR 0146: the versions of the user's core memory, derived from records and
