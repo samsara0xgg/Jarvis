@@ -33,7 +33,7 @@ from jarvis.runtime.bootstrap.intakes import _job_mail, _mail_reply
 from jarvis.runtime.config import Role, RuntimeBootstrapError, WebToolsSettings, WorkersSettings
 from jarvis.runtime.daily_report import DailyReportService, past_day_answer
 from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewState
-from jarvis.runtime.home import Home, mail_summarizer, mail_text, weather_lookup
+from jarvis.runtime.home import Home, mail_summarizer, weather_lookup
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.work_state import build_analyst
 from jarvis.shared import CallerPrincipal
@@ -202,8 +202,8 @@ def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> No
 
 
 def _register_mail(registry: ToolRegistry, home: Home) -> None:
-    """``mail`` (ADR 0242): the overview ``GET /inherent/mail`` serves, a search, one message."""
-    for tool in build_mail_tool(home.mail, home.gmail, mail_text):
+    """``mail`` (ADR 0362): his Gmail through the home's one :class:`Mailbox`."""
+    for tool in build_mail_tool(home.mailbox):
         registry.register(tool)
 
 
@@ -356,6 +356,7 @@ def serve_tools(
                 paths.event_log,
             ),
             features.weatherkit,
+            mail_tools=tools.mail,
         )
         return job_mail, home
 

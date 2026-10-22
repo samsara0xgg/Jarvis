@@ -29,6 +29,7 @@ from zoneinfo import TZPATH, ZoneInfo
 from tzfpy import get_tz
 
 from jarvis.decision.daily_report import brief_of
+from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
 from jarvis.runtime.daily_report import PLAN_SERVER
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     from jarvis.decision.mail_reply import MailReply
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.execution.weather_tool import WeatherRequest
+    from jarvis.runtime.config import MailToolsSettings
     from jarvis.runtime.dashboard import ViewState
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.runtime.weatherkit import WeatherKit
@@ -395,6 +397,8 @@ class Home:
         view: ViewState | None = None,
         summarizer: Callable[[str, str], str] | None = None,
         weatherkit: WeatherKit | None = None,
+        *,
+        mail_tools: MailToolsSettings | None = None,
     ) -> None:
         """Bind the live connections, the local zone (name, zone) and the forecast's place.
 
@@ -403,7 +407,8 @@ class Home:
         ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
         ``view`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
         archived and trashed, not only the junk offered. ``summarizer`` writes a letter's one-line
-        summary (ADR 0148); None leaves :meth:`summary` a 404.
+        summary (ADR 0148); None leaves :meth:`summary` a 404. ``mail_tools`` bounds how far a
+        list pages and how big a message is read raw (ADR 0363, 0364); None keeps the defaults.
         """
         self._connections = connections
         self._zone_name, self._zone = zone
@@ -413,6 +418,10 @@ class Home:
         self._view = view
         self._summarizer = summarizer
         self._summaries: dict[str, str] = {}
+        self.mailbox = Mailbox(self.gmail) if mail_tools is None else Mailbox(
+            self.gmail, cap=mail_tools.list_cap, raw_max_bytes=mail_tools.raw_max_bytes,
+        )
+        """His Gmail as the ``mail`` tool and the home's list read it (ADR 0362, 0364)."""
         # Gmail ids: what the last mail() listed, what it offered as junk, what Allen archived,
         # what he took back.
         self._listed: frozenset[str] = frozenset()

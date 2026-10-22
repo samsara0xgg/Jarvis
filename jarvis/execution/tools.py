@@ -374,8 +374,8 @@ class Tool:
     writes by argument; ``None`` keeps ``read_only`` for every call."""
     supersedes: Mapping[str, str] = field(default_factory=dict)
     """Deferred tools whose job this one now does, each with how to call this one instead
-    (``{"mcp__gmail__gmail_search": "mail(query=...)"}``). While this tool is on the menu,
-    ``tool_search`` loads none of them and says to call this one (ADR 0242)."""
+    (``{"mcp__gmail__gmail_search": 'mail(action="search", query=...)'}``). While this tool is
+    on the menu, ``tool_search`` loads none of them and says to call this one (ADR 0242)."""
     effect: Callable[[Mapping[str, Any]], RiskLevel] | None = None
     """The level of a call with these arguments (ADR 0361), for a tool whose calls differ: L0, L1
     or L3. ``risk_level`` is then the highest of them. ``None``: one level for every call."""

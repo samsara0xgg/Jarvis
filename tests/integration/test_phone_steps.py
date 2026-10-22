@@ -19,6 +19,7 @@ that ran none; an answer that copies the line has it cut from the history and th
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
@@ -496,6 +497,23 @@ def test_every_kind_has_both_wordings() -> None:
         for language in ("en", "zh"):
             assert lang.t(f"step.{kind}", lang=language)
             assert lang.t(f"step.{kind}.done", lang=language)
+
+
+def test_an_archive_is_its_own_step_and_every_other_call_of_the_mail_tool_checks_the_mail() -> None:
+    """(d) ADR 0362: one tool, two steps; only the call that changes his inbox says so."""
+    for arguments in (
+        None, {}, {"action": "list"}, {"action": "read", "message": "2"}, '{"action": "search"}',
+    ):
+        assert steps.kind("mail", arguments) == "mail"
+    archive = {"action": "archive", "message": "1-3"}
+    assert steps.kind("mail", archive) == steps.kind("mail", json.dumps(archive)) == "mail_archive"
+    assert steps.label("mail") == "Checking your mail"
+    assert steps.label("mail", archive) == "Archiving mail"  # the rows he named stay unsaid
+    assert steps.phrase("mail", archive) == "archived mail"
+    assert steps.phrase("mail", {"action": "read"}) == "checked your mail"
+    lang.set_language("zh")
+    assert steps.label("mail", archive) == "归档邮件"
+    assert steps.phrase("mail", archive) == "归档了邮件"
 
 
 def test_the_history_follows_an_answer_whose_turn_ran_tools_with_its_receipts(

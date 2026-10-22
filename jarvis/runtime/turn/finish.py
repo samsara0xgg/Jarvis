@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jarvis.execution import places_api
 from jarvis.execution.transit_tool import first_leave_ms
-from jarvis.runtime.home import mail_body
 from jarvis.shared.lang import is_filler
 from jarvis.state import reactions
 from jarvis.state.action_facts import action_result
@@ -94,63 +93,79 @@ def queue_picture_notes(
         LOGGER.exception("picture notes: could not queue the notes of turn %s", record_id)
 
 
-_MAIL_GET: Final[str] = "mcp__gmail__gmail_get"
 _MAIL: Final[str] = "mail"
+_MAIL_HEADERS: Final = (
+    ("From", "from"), ("To", "to"), ("Date", "at"), ("Subject", "subject"),
+    ("Thread-Id", "thread"), ("Gmail-Id", "message"),
+)
+"""The record's headers and the keys of ``mail``'s read that fill them (ADR 0362, 0363)."""
 
 
-def _read_mail_id(action: Mapping[str, Any]) -> str | None:
-    """The id of the message a proposed call reads whole (``mail(read=...)``, ``gmail_get``)."""
-    arguments = action.get("arguments")
-    arguments = arguments if isinstance(arguments, dict) else {}
-    if action.get("tool_name") == _MAIL and arguments.get("read"):
-        return str(arguments["read"])
-    if action.get("tool_name") == _MAIL_GET and arguments.get("format", "full") == "full":
-        return str(arguments.get("messageId"))
-    return None
+def _mail_answers(conn: sqlite3.Connection, turn_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """This turn's answers of the ``mail`` tool, in call order: ``(result event uid, answer)``.
+
+    A call with no answer yet, or that failed, is left out.
+    """
+    found: list[tuple[str, dict[str, Any]]] = []
+    for event in iter_events_for_turn(conn, turn_id, ("action.proposed",)):
+        action_id = event.payload.get("action_id")
+        if event.payload.get("tool_name") != _MAIL or not isinstance(action_id, str):
+            continue
+        row = action_result(conn, action_id)
+        if row is None:
+            continue
+        try:
+            answer = json.loads(row[1].payload["tool_output"])
+        except (ValueError, KeyError, TypeError):
+            continue  # a windowed answer
+        if isinstance(answer, dict) and "error" not in answer:
+            found.append((row[1].event_uid, answer))
+    return found
+
+
+def _read_in(answer: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """The mails whose text an answer holds, and the ids of every message it read.
+
+    A read, or a search with one match, answers as one mail; several reads as ``mails``; a
+    conversation as ``messages`` (messages read, but not text a card shows). A file is no mail.
+    """
+    held = answer["mails"] if isinstance(answer.get("mails"), list) else [answer]
+    mails = [
+        one for one in held
+        if isinstance(one, dict) and isinstance(one.get("message"), str)
+        and isinstance(one.get("text"), str) and "file" not in one
+    ]
+    rows = answer["messages"] if isinstance(answer.get("messages"), list) else []
+    ids = [
+        one["message"] for one in (*mails, *rows)
+        if isinstance(one, dict) and isinstance(one.get("message"), str)
+    ]
+    return mails, ids
 
 
 def fetched_mail(conn: sqlite3.Connection, turn_id: str) -> tuple[str, str] | None:
-    """ADR 0063: the message this turn read whole, as a mail record.
+    """ADR 0063: the message this turn read, as a mail record.
 
-    By ``mail(read=...)`` (ADR 0242) or ``gmail_get``. Only when the turn read exactly one
-    message in full: a turn that read several is a list, answered in words. The record is
-    headers, a blank line, then the body, and its id is the result's event uid.
+    The record is headers, a blank line, then the text the ``mail`` tool returned: the parts of
+    one long message read this turn, in the order they were read. Only when the turn read exactly
+    one message: a turn that read several (a conversation, up to three at once, one after the
+    other) is a list, answered in words. Its id is the last answer's event uid.
     """
-    gets = [
-        event.payload
-        for event in iter_events_for_turn(conn, turn_id, ("action.proposed",))
-        if _read_mail_id(event.payload) is not None
-    ]
-    if len({_read_mail_id(get) for get in gets}) != 1:
+    ids: set[str] = set()
+    reads: list[tuple[str, dict[str, Any]]] = []
+    for uid, answer in _mail_answers(conn, turn_id):
+        mails, read = _read_in(answer)
+        ids.update(read)
+        reads += [(uid, one) for one in mails]
+    if len(ids) != 1 or not reads:
         return None
-    action_id = gets[-1].get("action_id")
-    found = action_result(conn, action_id) if isinstance(action_id, str) else None
-    if found is None:
-        return None  # no answer yet: the call has no message to show
-    _row_id, result = found
-    message: Any
-    try:
-        output = json.loads(result.payload["tool_output"])
-        if gets[-1].get("tool_name") == _MAIL:
-            # `mail` has cleaned the body; the card reads gmail_get's field names.
-            message = {**output, "date": output.get("at"), "threadId": output.get("thread_id")}
-            body = str(output.get("body") or "")
-        else:
-            message = json.loads(output.get("text", "")) if isinstance(output, dict) else None
-            body = mail_body(str(message.get("body") or "")) if isinstance(message, dict) else ""
-    except (ValueError, KeyError, TypeError):
-        return None  # a windowed (over-long) or failed answer shows no card
-    if not isinstance(message, dict) or "error" in message or not message.get("id"):
-        return None
+    texts = list(dict.fromkeys(str(one["text"]) for _, one in reads))
+    first = reads[0][1]
     headers = [
-        f"{name}: {message[key]}"
-        for name, key in (
-            ("From", "from"), ("To", "to"), ("Date", "date"), ("Subject", "subject"),
-            ("Thread-Id", "threadId"), ("Gmail-Id", "id"),
-        )
-        if isinstance(message.get(key), str) and message[key]
+        f"{name}: {first[key]}" for name, key in _MAIL_HEADERS
+        if isinstance(first.get(key), str) and first[key]
     ]
-    return result.event_uid, "\n".join(headers) + "\n\n" + body
+    return reads[-1][0], "\n".join(headers) + "\n\n" + "\n\n".join(texts)
 
 
 _CALENDAR_WRITES: Final[frozenset[str]] = frozenset(

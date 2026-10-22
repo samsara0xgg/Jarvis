@@ -1571,6 +1571,17 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
+    # Mail taken out of his inbox, or put back (ADR 0362): the mail tool's archive writes one row
+    # with the messages it changed and `in_inbox` false; its undo writes the opposite row naming
+    # the first in `undoes`. Nothing folds over them: the row is what an undo reads.
+    EventTypeSchema(
+        event_type="mail.inbox_changed",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("message_ids", "in_inbox", "action_id"),
+        optional_payload=("undoes",),
+        schema_version=1,
+    ),
     # A followed bus ride (ADR 0224): the ride is a fold over these types (`jarvis.state.rides`).
     # `started` is his tap or his words (the actor is him); the watch is the model's reading of
     # "I'm heading out"; the question, the warning and the end are the daemon's own bookkeeping.

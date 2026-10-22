@@ -207,6 +207,18 @@ def test_a_page_is_eight_rows_numbered_across_the_whole_list() -> None:
     assert second[0].head.id == "m08"
 
 
+def test_rows_take_the_last_writers_a_list_already_knows_and_look_none_up() -> None:
+    """``waiting`` knows who wrote last for its conversations; the rows must not ask again."""
+    gmail, box, ask = _inbox(2)
+    found = box.search(ask.query)
+    known = {"m00": Last(mine=False, at=None, bulk=False, automated=False, to_him=True)}
+    before = len(gmail.calls)
+    rows, _ = page_rows(box, found.hits, 0, ask, NOW, lasts=known)
+    asked = [name for name, _ in gmail.calls[before:]]
+    assert "gmail_search" not in asked  # no sent-mail search: nothing was left to look up
+    assert [row.last for row in rows] == [known["m00"], None]
+
+
 def test_a_row_carries_its_own_opening_line_not_gmails_snippet() -> None:
     """The opening is the cleaned text's first words; padding never reaches it."""
     gmail = _mailbox()
