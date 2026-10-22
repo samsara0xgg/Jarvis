@@ -127,7 +127,7 @@ def _invitations(src: LedgerSources, as_of: datetime) -> dict[str, str]:
 def test_an_invitation_time_read_two_ways_shows_both_with_what_the_mail_said(
     tmp_path: Path,
 ) -> None:
-    """ADR 0368: both readings in his zone, the range's end on each, the mail's words quoted."""
+    """ADR 0377: both readings in his zone, the range's end on each, the mail's words quoted."""
     src = ledger_world(tmp_path)
     said = "Thursday, November 12, 2026 10:00 AM - 10:30 AM PST"
     write_mail(

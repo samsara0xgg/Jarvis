@@ -104,7 +104,7 @@ class Facts:
     role: str
     event_text: str | None
     event_at: str | None
-    # The later reading of ``event_at`` when the mail's zone label reads two ways (ADR 0368).
+    # The later reading of ``event_at`` when the mail's zone label reads two ways (ADR 0377).
     event_later_at: str | None = None
 
 
@@ -698,10 +698,11 @@ def _clock_of(sentence: str) -> tuple[int, int] | None:
 
 
 class Readings(NamedTuple):
-    """An event time as ISO text in the owner's zone, and its later reading (ADR 0368).
+    """An event time as ISO text in the owner's zone, and its later reading (ADR 0377).
 
-    ``later`` is set only when the mail's zone label reads two ways on that date, as a Pacific
-    one does while US Pacific is on standard time and BC is not; ``at`` is then the earlier.
+    ``later`` is set only when the mail's zone label reads two ways on that date, as a Pacific,
+    Mountain or Central one does while its US zone is on standard time and its Canadian one is
+    not; ``at`` is then the earlier.
     """
 
     at: str
@@ -746,7 +747,7 @@ def _moment(sentence: str, received: datetime, zone: tzinfo) -> Readings | None:
 
 
 def later_reading(event_text: str, event_at: str, received: datetime, zone: tzinfo) -> str | None:
-    """The later reading of an event stored with only its earlier one (ADR 0368), else None.
+    """The later reading of an event stored with only its earlier one (ADR 0377), else None.
 
     ``event_text`` is the sentence its time was read from and ``event_at`` the stored reading. The
     sentence is read again and its later reading is given only when its earlier one is that same
@@ -803,7 +804,7 @@ def event_of(body: str, received: datetime, zone: tzinfo, *, dated: bool = False
 
     The time is None unless that sentence holds a clear date and time; it is written in the owner's
     ``zone``, which also reads a time the sentence gives no zone for, and carries a later reading
-    when the sentence's zone label reads two ways (ADR 0368). With ``dated`` (the mail is
+    when the sentence's zone label reads two ways (ADR 0377). With ``dated`` (the mail is
     already known to be an interview), a line that is only a clear date and time also counts, as
     in a Teams invitation whose "Thursday, October 8, 2026 2:00 PM (PDT)" has no event word.
     ``Date:``/``When:`` and ``Time:`` lines ("Date: Thursday October 8th", "Time: 1:00pm - 2:00pm")

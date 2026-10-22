@@ -787,8 +787,8 @@ def repair(
     a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
     touched by the routing rules. An interview or offer row's event time is read again from its
     kept body and replaced when the body names one; a bare time there is the owner's clock in
-    ``clock``'s zone. An event still ahead whose stored sentence names a Pacific label that US and
-    BC Pacific read differently gets its later reading from that sentence, once (ADR 0368).
+    ``clock``'s zone. An event still ahead whose stored sentence names a zone label that reads two
+    ways on its date gets its later reading from that sentence, once (ADR 0377).
     """
     changed = 0
     now = clock.now().astimezone(UTC)
@@ -862,7 +862,7 @@ def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> boo
 
 
 def _read_later(db: Path, row: Mapping[str, Any], clock: Clock) -> bool:
-    """Give an event still ahead the later reading its stored sentence names (ADR 0368).
+    """Give an event still ahead the later reading its stored sentence names (ADR 0377).
 
     Offline, from the stored sentence alone: only a visible row with no later reading yet, whose
     ``event_at`` is ahead and whose sentence reads to that very time and a second one, gets it.
