@@ -22,6 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
+from jarvis.shared.job_names import is_tracking_system
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
@@ -771,17 +772,15 @@ def _mail_application(
 def _applications(
     path: Path,
     now: datetime,
-    is_ats: Callable[[str], bool] = lambda _: False,
     details: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every application, hidden ones too: the visible ledger mails grouped, plus Allen's rows.
 
-    One application per company, case-folded. A mail whose company ``is_ats`` (only an
-    applicant-tracking system's name) joins the other company's application with the same role,
-    else it stays its own. A mail-derived application has Allen's ``edit`` row of its company (the
-    newest, when there are several) override its fields; a ``manual`` or ``said`` row is an
-    application of its own. ``details`` reads the interview and links out of a body start
-    (ADR 0182).
+    One application per company, case-folded. A mail whose company is only an applicant-tracking
+    system's name joins the other company's application with the same role, else it stays its
+    own. A mail-derived application has Allen's ``edit`` row of its company (the newest, when
+    there are several) override its fields; a ``manual`` or ``said`` row is an application of its
+    own. ``details`` reads the interview and links out of a body start (ADR 0182).
     """
     with _db(path) as conn:
         rows = conn.execute(
@@ -812,9 +811,9 @@ def _applications(
     roles = {
         k: {r for g in group if (r := (g["role"] or "").casefold())}
         for k, group in by_company.items()
-        if k and not is_ats(k)
+        if k and not is_tracking_system(k)
     }
-    for key in [k for k in by_company if k and is_ats(k)]:
+    for key in [k for k in by_company if k and is_tracking_system(k)]:
         for m in by_company[key][:]:
             role = (m["role"] or "").casefold()
             home = next((k for k, held in roles.items() if role and role in held), None)
@@ -862,7 +861,6 @@ def _applications(
 def list_applications(
     path: Path,
     now: datetime,
-    is_ats: Callable[[str], bool] = lambda _: False,
     details: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
@@ -872,7 +870,7 @@ def list_applications(
     earlier reading and ``next_event_later_at`` and ``interview["later_at"]`` the later; else
     those are None.
     """
-    shown = [app for app in _applications(path, now, is_ats, details) if not app.pop("hidden")]
+    shown = [app for app in _applications(path, now, details) if not app.pop("hidden")]
     return sorted(
         shown,
         key=lambda a: (
@@ -946,7 +944,6 @@ def edit_application(
     now: datetime,
     app_id: str,
     fields: Mapping[str, Any],
-    is_ats: Callable[[str], bool] = lambda _: False,
 ) -> None:
     """Change ``status``, ``applied_at``, ``note`` or ``hidden`` of an application.
 
@@ -960,7 +957,7 @@ def edit_application(
         row = conn.execute("SELECT source FROM job_application WHERE id = ?", (app_id,)).fetchone()
     base = None
     if row is None:
-        base = next((a for a in _applications(path, now, is_ats) if a["id"] == app_id), None)
+        base = next((a for a in _applications(path, now) if a["id"] == app_id), None)
         if base is None:
             msg = f"no such application: {app_id}"
             raise LookupError(msg)
