@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shutil
 import sqlite3
@@ -27,8 +26,10 @@ from jarvis.runtime.plugin_catalog import (
 )
 from jarvis.runtime.plugins import Plugins, load_plugins
 from jarvis.shared.lang import t
+from jarvis.state.action_facts import input_behind_action
 from jarvis.state.event_log import MAC_NODE, append_event_in_transaction, open_runtime_event_log
 from jarvis.state.plugin_settings import PluginSettings
+from jarvis.state.turn_facts import latest_input_row
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -45,15 +46,6 @@ class _Active:
 
 
 _MAX_CREDENTIAL_LENGTH = 8192
-_LATEST_INPUT_SQL = (
-    "SELECT MAX(id) FROM events WHERE type IN ('surface.user_intent', 'utterance.received') "
-    "AND COALESCE(json_extract(payload_json, '$.channel'), '') != 'plugin_resume'"
-)
-_ORIGIN_SQL = (
-    "SELECT id, event_uid, payload_json, ingestion_node FROM events "
-    "WHERE type IN ('surface.user_intent', 'utterance.received') "
-    "AND correlation_id = ? ORDER BY id DESC LIMIT 1"
-)
 
 
 class PluginConnections:
@@ -298,20 +290,12 @@ class PluginConnections:
 
     def request_from_tool(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Bind a panel request to the real originating input, not generated task prose."""
-        action = ctx.conn.execute(
-            "SELECT correlation_id FROM events WHERE json_extract(payload_json, '$.action_id') = ? "
-            "AND type = 'action.running' ORDER BY id DESC LIMIT 1",
-            (ctx.action_id,),
-        ).fetchone()
-        origin = ctx.conn.execute(
-            _ORIGIN_SQL,
-            (action[0] if action else "",),
-        ).fetchone()
-        latest = ctx.conn.execute(_LATEST_INPUT_SQL).fetchone()[0]
-        if origin is None or (latest is not None and latest > origin[0]):
+        origin = input_behind_action(ctx.conn, ctx.action_id)
+        latest = latest_input_row(ctx.conn)
+        if origin is None or (latest is not None and latest > origin.row_id):
             msg = "This request is no longer the current conversation"
             raise ToolError(msg, code="stale_request")
-        data = json.loads(origin[2])
+        data = origin.payload
         plugin_id = str(args.get("plugin_id") or "")
         with self._lock:
             self._present(plugin_id, str(args.get("purpose") or "")[:300])
@@ -323,14 +307,16 @@ class PluginConnections:
                 self._request.update(
                     {
                         "continue_task": args.get("continue_task") is True,
-                        "_origin": origin[1],
+                        "_origin": origin.event_uid,
                         "_latest_input": latest,
                         "_transcript": str(data.get("transcript", "")),
-                        "_record_id": str(data.get("record_id") or origin[1]),
+                        "_record_id": str(data.get("record_id") or origin.event_uid),
                         "_origin_channel": data.get("plugin_origin_channel", data.get("channel")),
                         # ADR 0232: the login link is pushed to the phone that asked; ``mac``
                         # is this host's own default row, not a device (ADR 0212).
-                        "_device": None if origin[3] in (None, MAC_NODE) else str(origin[3]),
+                        "_device": (
+                            None if origin.ingestion_node == MAC_NODE else origin.ingestion_node
+                        ),
                     }
                 )
             if self._request["state"] == "offered" and self._needs_no_typed_credential(plugin_id):
@@ -709,7 +695,7 @@ class PluginConnections:
         conn = open_runtime_event_log(self.event_log)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            latest = conn.execute(_LATEST_INPUT_SQL).fetchone()[0]
+            latest = latest_input_row(conn)
             if latest != request.get("_latest_input"):
                 conn.rollback()
                 return "superseded"
