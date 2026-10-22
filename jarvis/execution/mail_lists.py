@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 PAGE_ROWS: Final = 8
 """Rows a page of a list shows: with every field bounded, eight stay within the result's size."""
+INBOX_UNREAD: Final = "in:inbox is:unread"
+"""The query of a list asked for with nothing to narrow it."""
 WAITING_DAYS: Final = 14
 """How far back ``waiting`` looks when he gives no ``when``."""
 WAITING_CHECKED: Final = 40
@@ -112,7 +114,7 @@ def ask_of(
         terms += [f"after:{since}", f"before:{_midnight(last + timedelta(days=1), zone)}"]
     bare = not (words or sender or to or when or waiting)
     if bare and not searching:
-        return Ask("in:inbox is:unread", "unread in his inbox", unread_only=True, waiting=False)
+        return Ask(INBOX_UNREAD, "unread in his inbox", unread_only=True, waiting=False)
     if not searching:
         terms += ["-in:sent", "-in:drafts"]
     if unread:
@@ -279,20 +281,24 @@ def newest_by_thread(hits: Sequence[Hit]) -> dict[str, str]:
     return newest
 
 
-def page_rows(
+def page_rows(  # noqa: PLR0913 — the list, the page, what was asked, the time and who wrote last.
     box: Mailbox, hits: Sequence[Hit], start: int, ask: Ask, now: datetime,
+    *, lasts: Mapping[str, Last] | None = None,
 ) -> tuple[list[Row], int]:
     """The rows of ``hits[start:start + PAGE_ROWS]`` and how many of those Gmail no longer has.
 
     Each is read in the server's text form for its opening; ``n`` is its place in the whole list,
-    so a number means the same on every page.
+    so a number means the same on every page. ``lasts`` (by thread id) are the last writers when
+    the list already knows them, as ``waiting`` does; else they are looked up here.
     """
     chosen = list(hits[start : start + PAGE_ROWS])
     heads = box.heads([one.id for one in chosen], full=True)
     kept = [(start + i + 1, one) for i, one in enumerate(heads) if one is not None]
     labels = {} if ask.unread_only else box.labels([one.id for _, one in kept])
     newest = newest_by_thread(hits)
-    last = last_writers(box, [one for _, one in kept], newest, now)
+    last = lasts if lasts is not None else last_writers(
+        box, [one for _, one in kept], newest, now,
+    )
     return [
         Row(
             n, one, opening(one),
@@ -418,6 +424,7 @@ def waiting_line(found: Waiting, now: datetime) -> str:
 
 
 __all__ = [
+    "INBOX_UNREAD",
     "PAGE_ROWS",
     "WAITING_CHECKED",
     "WAITING_DAYS",

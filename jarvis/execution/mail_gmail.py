@@ -61,16 +61,20 @@ _OWN_ERRORS: Final = frozenset({"invalid_arguments", "not_found"})
 """The codes of errors a call may already carry, worded for the model; any other is Gmail's."""
 
 
-def failed(exc: Exception) -> ToolError:
-    """Gmail's failure as the model should relay it; nothing to retry."""
+def failed(exc: Exception, *, changing: bool = False) -> ToolError:
+    """Gmail's failure as the model should relay it; nothing to retry.
+
+    ``changing``: the call was to change mail, so it says "changed" where a read says "read".
+    """
     detail = cut(str(exc), _DETAIL_CHARS)
+    done = "changed" if changing else "read"
     if isinstance(exc, LookupError):
         msg = "Gmail is not connected; tell him it needs connecting."
         return ToolError(msg, code="unavailable")
     if _SIGN_IN.search(detail):
-        msg = f"Gmail needs reconnecting ({detail}); tell him, mail cannot be read until he does."
+        msg = f"Gmail needs reconnecting ({detail}); tell him, mail cannot be {done} until he does."
         return ToolError(msg, code="unavailable")
-    msg = f"Gmail did not answer ({detail}); tell him mail could not be read just now."
+    msg = f"Gmail did not answer ({detail}); tell him mail could not be {done} just now."
     return ToolError(msg, code="network_error")
 
 
@@ -217,8 +221,13 @@ class Mailbox:
 
     # --- the server ----------------------------------------------------------------------------
 
-    def ask(self, tool: str, args: Mapping[str, Any], *, message: str = "") -> dict[str, Any]:
-        """One call; a failure is worded for the model, and ``message`` names an id Gmail lacks."""
+    def ask(
+        self, tool: str, args: Mapping[str, Any], *, message: str = "", changing: bool = False,
+    ) -> dict[str, Any]:
+        """One call; a failure is worded for the model, and ``message`` names an id Gmail lacks.
+
+        ``changing`` marks a call that changes mail, so a failure says it could not be changed.
+        """
         try:
             return self._call(tool, args)
         except (LookupError, ToolError) as exc:
@@ -227,7 +236,7 @@ class Mailbox:
             if message and isinstance(exc, ToolError) and _NOT_FOUND.search(str(exc)):
                 msg = f"No mail with id {message}; list or search first to get one"
                 raise ToolError(msg, code="not_found") from exc
-            raise failed(exc) from exc
+            raise failed(exc, changing=changing) from exc
 
     def search(self, query: str, *, cap: int | None = None) -> Found:
         """Every match of ``query``, newest first, paging ids only to ``cap`` (the default cap).

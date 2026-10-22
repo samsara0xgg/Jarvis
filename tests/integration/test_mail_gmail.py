@@ -81,6 +81,24 @@ def test_a_failure_is_worded_by_what_it_was() -> None:
     assert "did not answer" in str(caught.value)
 
 
+def test_a_failure_of_a_change_says_the_mail_could_not_be_changed() -> None:
+    """A read that fails is `read`; a change that fails must not read as if it only looked."""
+    down = Gmail(error="upstream connect error")
+    with pytest.raises(ToolError) as read:
+        Mailbox(down.tool).ask("gmail_batchModify", {"ids": ["a"]})
+    with pytest.raises(ToolError) as change:
+        Mailbox(down.tool).ask("gmail_batchModify", {"ids": ["a"]}, changing=True)
+    assert "changed" not in str(read.value)
+    assert "could not be changed just now" in str(change.value)
+    assert change.value.code == read.value.code == "network_error"
+
+    signed_out = Gmail(error="invalid_grant: token has expired")
+    with pytest.raises(ToolError) as renew:
+        Mailbox(signed_out.tool).ask("gmail_batchModify", {}, changing=True)
+    assert "mail cannot be changed until he does" in str(renew.value)
+    assert renew.value.code == "unavailable"
+
+
 def test_a_head_reads_the_servers_own_shape() -> None:
     """Sender, people, subject, time, an unescaped snippet, and with ``full`` text and files."""
     gmail = Gmail()

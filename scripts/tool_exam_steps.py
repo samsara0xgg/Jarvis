@@ -26,6 +26,8 @@ this checkout's menu. Both databases are restored to their booted state before e
 Every registered tool is classed ``live_read`` (real handler, reads only), ``sandbox_write`` (real
 handler, writes only inside the sandbox root) or ``stub`` (schema kept, handler replaced by a fixed
 "sandbox: not run" result and recorded); the run refuses to start with an unclassified tool.
+A ``live_read`` tool whose calls also change something outside the sandbox (``mail``: its archive
+changes the mailbox the copied Gmail server reads) answers those calls with the stub result.
 A call that needs Allen's confirmation never runs: the turn ends there and the record names the
 call ("would have done"). A paid run takes the keys from ``--root``'s ``env`` (the brain's), then
 from this machine's saved keys, and stops before any case when a preset's key is missing; none is
@@ -48,9 +50,10 @@ import sys
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from unittest.mock import patch
 
 import yaml
@@ -88,7 +91,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision.llm import LLMClient
     from jarvis.execution.mcp_tools import McpServers
-    from jarvis.execution.tools import ToolRegistry
+    from jarvis.execution.tools import ToolContext, ToolRegistry
     from jarvis.runtime import JarvisRuntime
     from jarvis.state.decision_snapshot import DecisionFoldState
 
@@ -106,7 +109,7 @@ LIVE_READ = frozenset({
     "web_search", "web_fetch", "weather", "where_am_i", "places",
     "map_search",  # reads Google Places; its spend rows go to the sandbox's log
     "look_at_picture",  # calls the vision preset's model
-    "mail",  # mail() rates unrated unread letters with Jev (OpenRouter)
+    "mail",  # reads run; its archive is stubbed (_STUB_ACTIONS), the copy holds his real mailbox
     "conversation", "archive", "my_day",
     "list_plugins", "tool_search", "read_skill",
     "search_notes",  # a device tool: device_not_connected on this host
@@ -125,6 +128,8 @@ STUB = frozenset({
     "tidy_day",  # asks the doing lane's model (Opus) and writes a run
     "spawn_worker", "wait_worker", "send_input", "close_worker",  # Codex threads (tools.workers)
 })
+_STUB_ACTIONS: Final = {"mail": frozenset({"archive"})}
+"""The calls of a live tool that must not run: its ``action`` values that change his real mail."""
 _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}
 
@@ -210,11 +215,24 @@ def _stub(tool: Tool) -> Tool:
     return _device_proxy(tool, lambda *_: dict(note))
 
 
+def _guard_actions(tool: Tool) -> Tool:
+    """``tool``, but a call whose ``action`` is in :data:`_STUB_ACTIONS` answers with the stub."""
+    stubbed = _STUB_ACTIONS.get(tool.name)
+    if stubbed is None:
+        return tool
+    run = tool.handler
+
+    def guarded(args: Mapping[str, Any], ctx: ToolContext) -> Mapping[str, Any]:
+        return dict(_STUB_NOTE) if args.get("action") in stubbed else run(args, ctx)
+
+    return replace(tool, handler=guarded)
+
+
 def _apply_stubs(registry: ToolRegistry, classes: Mapping[str, str]) -> None:
     """Replace the stub-class tools in place (menu order kept), the device catalogue included."""
     with registry._lock:  # noqa: SLF001
         registry._tools = {  # noqa: SLF001
-            n: _stub(t) if classes.get(n) == "stub" else t
+            n: _guard_actions(_stub(t) if classes.get(n) == "stub" else t)
             for n, t in registry._tools.items()  # noqa: SLF001
         }
         registry._device_catalogue = {  # noqa: SLF001

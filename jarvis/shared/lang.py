@@ -1071,6 +1071,8 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "step.mail.done": {"zh": "查了邮件", "en": "checked your mail"},
     "step.mail_write": {"zh": "写邮件", "en": "Writing mail"},
     "step.mail_write.done": {"zh": "写了邮件", "en": "wrote mail"},
+    "step.mail_archive": {"zh": "归档邮件", "en": "Archiving mail"},
+    "step.mail_archive.done": {"zh": "归档了邮件", "en": "archived mail"},
     "step.notion": {"zh": "搜 Notion", "en": "Searching Notion"},
     "step.notion.done": {"zh": "搜了 Notion", "en": "searched Notion"},
     "step.day": {"zh": "查你的一天", "en": "Checking your day"},

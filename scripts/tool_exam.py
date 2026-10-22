@@ -85,6 +85,7 @@ from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.decision.reaction_markup import split_claims
 from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call
 from jarvis.deployment import RuntimePaths, load_env_file
+from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
 from jarvis.runtime.bootstrap.catalog import register_catalog
 from jarvis.runtime.config import WorkersSettings
@@ -202,7 +203,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
             ),
             make_late=lambda _plugins: (
                 MagicMock(jobs_view=dict, add_application=lambda _fields: ""),
-                MagicMock(mail=dict, gmail=lambda *_: {}),
+                MagicMock(mailbox=Mailbox(lambda *_: {})),
             ),
             memory_db=base / "memory.db", doing=MagicMock(tidy=lambda: ""),
             ledger=LedgerSources(base / "memory.db", paths.event_log, None, UTC),
