@@ -9,7 +9,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from jarvis.state import reminders
-from jarvis.state.action_facts import ProposedCall, action_result, proposed_call
+from jarvis.state.action_facts import (
+    ActionInput,
+    ProposedCall,
+    action_result,
+    input_behind_action,
+    proposed_call,
+)
 from jarvis.state.event_log import latest_id
 from tests.support.turn_rows import TurnLog
 
@@ -72,3 +78,43 @@ def test_the_reminders_actions_scheduled(tmp_path: Path) -> None:
         (second, "call mum", int(ten.timestamp() * 1000)),
     ]
     assert found[0][0] < found[1][0]
+
+
+def test_the_words_behind_an_action(tmp_path: Path) -> None:
+    """The newest typed or heard row of the turn the action ran under, with its device."""
+    log = TurnLog(tmp_path)
+    log.heard("T0", "an earlier turn", node="iphone-2")
+    assert input_behind_action(log.conn, "A1") is None  # never ran
+    log.put("action.running", {"action_id": "A1"}, turn_id="T1")
+    assert input_behind_action(log.conn, "A1") is None  # its turn holds no words of his
+    log.put("action.running", {"action_id": "A9"}, turn_id="T9")
+    log.heard("T9", "another turn")
+    log.heard("T1", "connect my calendar", node="iphone-2", channel="phone_voice")
+    assert input_behind_action(log.conn, "A1") == ActionInput(
+        row_id=latest_id(log.conn),
+        event_uid=log.conn.execute(
+            "SELECT event_uid FROM events WHERE id = ?", (latest_id(log.conn),),
+        ).fetchone()[0],
+        payload={"transcript": "connect my calendar", "turn_id": "T1", "channel": "phone_voice"},
+        ingestion_node="iphone-2",
+    )
+    typed = log.typed("T1", "gpt_live")
+    log.put("action.running", {"action_id": "A2"}, turn_id="T1")
+    log.heard("T2", "afterwards")
+    found = input_behind_action(log.conn, "A2")
+    assert found is not None
+    assert (found.event_uid, found.ingestion_node) == (typed.event_uid, "mac")
+    assert found.payload["channel"] == "gpt_live"
+    assert found.row_id < latest_id(log.conn)
+
+
+def test_an_action_that_ran_twice_is_read_under_its_newest_run(tmp_path: Path) -> None:
+    """When a retry ran under another turn, that turn's words are the ones behind the action."""
+    log = TurnLog(tmp_path)
+    log.heard("T1", "first ask")
+    second = log.heard("T2", "second ask")
+    log.put("action.running", {"action_id": "A1"}, turn_id="T1")
+    log.put("action.running", {"action_id": "A1"}, turn_id="T2")
+    found = input_behind_action(log.conn, "A1")
+    assert found is not None
+    assert found.event_uid == second.event_uid

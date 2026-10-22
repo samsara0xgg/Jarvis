@@ -48,3 +48,35 @@ def action_result(conn: sqlite3.Connection, action_id: str) -> tuple[int, Event]
         (action_id,),
     ).fetchone()
     return None if row is None else (int(row[0]), row_to_event(row))
+
+
+@dataclass(frozen=True)
+class ActionInput:
+    """The row of his words behind an action: log id, uid, payload and the device that wrote it."""
+
+    row_id: int
+    event_uid: str
+    payload: dict[str, Any]
+    ingestion_node: str
+
+
+def input_behind_action(conn: sqlite3.Connection, action_id: str) -> ActionInput | None:
+    """The newest row of his words (typed or heard) in the turn the action ran under.
+
+    The turn is the one the action's newest ``action.running`` is correlated to; an action that
+    never ran is looked up under no turn at all. ``None`` when that turn holds no such row.
+    """
+    running = conn.execute(
+        "SELECT correlation_id FROM events WHERE json_extract(payload_json, '$.action_id') = ? "
+        "AND type = 'action.running' ORDER BY id DESC LIMIT 1",
+        (action_id,),
+    ).fetchone()
+    row = conn.execute(
+        "SELECT id, event_uid, payload_json, ingestion_node FROM events "
+        "WHERE type IN ('surface.user_intent', 'utterance.received') "
+        "AND correlation_id = ? ORDER BY id DESC LIMIT 1",
+        (running[0] if running else "",),
+    ).fetchone()
+    if row is None:
+        return None
+    return ActionInput(int(row[0]), str(row[1]), json.loads(row[2]), str(row[3]))

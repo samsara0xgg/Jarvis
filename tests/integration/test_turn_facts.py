@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.state.event_log import latest_id
 from jarvis.state.turn_facts import (
     answer_started,
     answer_stopped_by_him,
@@ -22,6 +23,7 @@ from jarvis.state.turn_facts import (
     commentary_runs_opened,
     heard_as_barge_pause,
     input_channels,
+    latest_input_row,
     playback_ended,
     recent_turn_timings,
     spoken_since,
@@ -354,3 +356,21 @@ def test_an_answers_playback_ends_with_a_terminal_or_a_drop(tmp_path: Path, kind
     assert not playback_ended(log.conn, "R1")
     _playback_row(log, kind, "R1")
     assert playback_ended(log.conn, "R1")
+
+
+def test_the_newest_row_of_his_words(tmp_path: Path) -> None:
+    """Typed and heard rows count; a plugin's resume echo, other rows and an empty log do not."""
+    log = TurnLog(tmp_path)
+    assert latest_input_row(log.conn) is None
+    log.run(T, "R1")
+    assert latest_input_row(log.conn) is None
+    log.heard(T)
+    assert latest_input_row(log.conn) == latest_id(log.conn)
+    log.typed("T2", "gpt_live")
+    typed_at = latest_id(log.conn)
+    assert latest_input_row(log.conn) == typed_at
+    log.typed("T3", "plugin_resume")
+    log.run("T3", "R3")
+    assert latest_input_row(log.conn) == typed_at
+    log.put("surface.user_intent", {"transcript": "hi", "turn_id": "T4"}, turn_id="T4")
+    assert latest_input_row(log.conn) == latest_id(log.conn)
