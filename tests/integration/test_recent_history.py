@@ -116,14 +116,17 @@ def test_the_setting_reads_from_the_session_block() -> None:
 
 def test_the_prefix_warm_and_the_next_turn_see_the_same_window(tmp_path: Path) -> None:
     """Six records and a turn make eight: at N=2 both requests start past six of them."""
-    outputs = [[("final_answer", "晴天。")], [("final_answer", "好")], [("final_answer", "也是。")]]
-    with SpokenPeer(outputs) as peer:
-        runtime, _memory = warm_runtime(tmp_path, peer.url, warm=True)
-        runtime = reconfigure(runtime, session={"recent_records": 2})
+    outputs = [[("final_answer", "晴天。")], [("final_answer", "好")], [("final_answer", "也是。")],
+               [("final_answer", "好")]]  # the last: turn 2's own warm
+    with (
+        SpokenPeer(outputs) as peer,
+        warm_runtime(tmp_path, peer.url, warm=True) as (warmed, _memory),
+    ):
+        runtime = reconfigure(warmed, session={"recent_records": 2})
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
         wait_for_requests(peer, 2)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "明天呢"))
-    _first, warm, second = (body for _path, body in peer.requests)
+    _first, warm, second, _warm_for_turn_3 = (body for _path, body in peer.requests)
     assert_prefix_of(warm, second)
     # The note, then the two records of turn 1: Allen's question and the answer.
     note, answer = warm["input"]
