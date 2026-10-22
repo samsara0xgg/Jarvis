@@ -184,8 +184,26 @@ llm:
       api_key_env: ANTHROPIC_API_KEY
       max_tokens: 32768
       reasoning_effort: medium
-    # 要写得好的后台活：日摘要、账本散文、
-    # 核心记忆、对话压缩。同 sonnet，effort medium。
+    # 记忆的活（ADR 0389；2026-10-22 他定「就都用 Opus 吧」）：日摘要、核心记忆每晚整理、对话压缩。
+    # 同 opus-long，effort medium；输出上限 32768 只是上限，按实际用的 token 计费。
+    opus-medium:
+      provider: anthropic
+      model: claude-opus-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 32768
+      context_length: 1000000
+      reasoning_effort: medium
+    # 核心记忆每月重写（ADR 0389）：整份笔记一次写出，effort high。输出上限 64000：整份 4 万字的
+    # 笔记加上思考会超过 32768，被截断就整份作废（2026-10-22）。
+    opus-high:
+      provider: anthropic
+      model: claude-opus-5-5
+      api_key_env: ANTHROPIC_API_KEY
+      max_tokens: 64000
+      context_length: 1000000
+      reasoning_effort: high
+    # 要写得好的后台活：账本散文（日摘要、核心记忆、对话压缩 2026-10-22 起改用 opus-medium）。
+    # 同 sonnet，effort medium。
     sonnet-medium:
       provider: anthropic
       model: claude-sonnet-5-5
@@ -437,7 +455,7 @@ day_plan:
 # 超过 max_chars 或引用不存在的 record_id 就丢掉，下次再试。
 day_summary:
   at: "05:00"
-  preset: sonnet-medium
+  preset: opus-medium
   max_chars: 3000
   prompt: |
     You are writing the summary of one day of conversation between the user and
@@ -601,7 +619,7 @@ ledger:
 # （op: dropped），Jev 调用失败按检查不过处理，整天不写、照常重试。不写 review_min_confidence = 不审。
 # review_model、review_timeout_ms 可选，缺省 typesafe/jev-1.13、10000。
 core_memory:
-  preset: sonnet-medium
+  preset: opus-medium
   max_chars: 40000
   # ADR 0258: a cap per section; they sum to max_chars. A nightly answer over any cap is rejected.
   section_caps:
@@ -1711,7 +1729,7 @@ session:
   compact_at_context_ratio: 0.4   # verbatim history estimated over this share of the
                                   # decision preset's context_length is eligible
   verbatim_window_days: 7         # records younger than this survive a compaction verbatim
-  compact_preset: sonnet-medium  # the summariser; rare and off the latency path
+  compact_preset: opus-medium  # the summariser; rare and off the latency path (ADR 0389: Opus)
   summary_max_chars: 20000        # a longer summary is rejected and nothing is stored; the prompt
                                   # asks for 9000, the rest is the margin the model overshoots by
                                   # (live 2026-09-14: deep wrote 4.5k-6.2k chars for 38k of history;
