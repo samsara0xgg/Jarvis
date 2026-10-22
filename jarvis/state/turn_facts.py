@@ -7,7 +7,7 @@ the payload's ``turn_id`` unless a function says it reads the correlation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from jarvis.state.event_log import EVENT_COLUMNS, get_event, row_to_event
 
@@ -114,6 +114,27 @@ def answer_started(conn: sqlite3.Connection, turn_id: str) -> bool:
         "AND json_extract(payload_json, '$.turn_id') = ? "
         "AND json_extract(payload_json, '$.phase') IS NOT 'commentary' LIMIT 1",
         (turn_id,),
+    ).fetchone() is not None
+
+
+_PLAYBACK_ENDS: Final = (
+    "surface.playback_completed", "surface.playback_interrupted", "surface.playback_failed",
+    "surface.speech_dropped",
+)
+"""What ends an answer's playback: a lease's terminal, or its never having one (ADR 0106)."""
+
+
+def playback_ended(conn: sqlite3.Connection, response_id: str) -> bool:
+    """Whether the answer ``response_id`` has an end of its playback on the log.
+
+    That is a lease's ``surface.playback_*`` terminal or a ``surface.speech_dropped``, the row for
+    an answer let go before any of it played. Without one the next turn reads the answer as heard
+    whole.
+    """
+    return conn.execute(
+        "SELECT 1 FROM events WHERE type IN (?, ?, ?, ?) "
+        "AND json_extract(payload_json, '$.response_id') = ? LIMIT 1",
+        (*_PLAYBACK_ENDS, response_id),
     ).fetchone() is not None
 
 
