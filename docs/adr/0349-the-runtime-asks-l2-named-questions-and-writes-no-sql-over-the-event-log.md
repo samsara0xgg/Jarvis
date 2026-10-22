@@ -45,8 +45,8 @@ function that says what it answers.
   failure. Where the two older parsers disagreed, the stricter, the ask path's, is the rule;
   each caller maps the answer to its own shape and keeps its own wording of a failure's reason.
 - A canary, `tests/canary/test_canary_runtime_writes_no_sql.py`, fails on SQL text in any
-  `jarvis/runtime/**/*.py` and counts the files that still hold it. The count only goes down,
-  and the canary names no file.
+  `jarvis/runtime/**/*.py` and names no file. It began as a ratchet that counted the files still
+  holding SQL, and that count reached zero.
 
 ## Alternatives rejected
 
@@ -70,9 +70,10 @@ function that says what it answers.
 
 ## Consequences
 
-- The canary counts nine files, the ones listed above. Each lowers the count in the commit that
-  moves its queries; the count includes SQL over `memory.db` (`day_plan` reads `day_prose`),
-  which the canary cannot tell from the event log's.
+- The ratchet reached zero: the nine files listed above moved their queries into `jarvis/state`,
+  and the canary is now a plain rule with no count, so a runtime file that holds SQL fails it. It
+  cannot tell SQL over the event log from SQL over `memory.db` (`day_plan` read `day_prose`, now
+  `memory_db.day_story`), and does not need to: `jarvis/state` owns both stores.
 - `row_to_event` and `EVENT_COLUMNS` are public, so any L2 module can select its own rows. That
   every question is named stays a review matter.
 - L5 keeps its observers' queries, and the media owner its drain of the log by row id (it decodes
