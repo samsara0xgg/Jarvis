@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -12,12 +14,26 @@ from tests.support.routine import logged_payloads
 from tests.support.spoken import SpokenPeer, spoken_runtime
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from jarvis.runtime import JarvisRuntime
 
+_WARM_THREAD = "jarvis-prefix-warm"  # the name ``warm_next_prefix`` gives the request's thread
 
-def warm_runtime(tmp_path: Path, url: str, *, warm: bool) -> tuple[JarvisRuntime, MemorySettings]:
+
+@contextlib.contextmanager
+def warm_runtime(
+    tmp_path: Path, url: str, *, warm: bool,
+) -> Iterator[tuple[JarvisRuntime, MemorySettings]]:
+    """A runtime that warms (or not) against the peer at ``url``; leave it before the peer closes.
+
+    A warm is a request in a thread of its own, started as a turn ends, that nothing joins. A
+    test that ends with one still on its way would see it reach the provider in whichever test
+    runs next on the process, and a stream stub that test installs would catch it. So leaving
+    the block waits every warm out, and the peer must hold an answer for each warm the last turn
+    starts.
+    """
     runtime = spoken_runtime(tmp_path, url)
     memory = MemorySettings.from_config({}, runtime_root=tmp_path)
     for index in range(3):
@@ -29,7 +45,13 @@ def warm_runtime(tmp_path: Path, url: str, *, warm: bool) -> tuple[JarvisRuntime
         system_prompt="You are Jarvis. " * 40,
         response_flags=replace(runtime.response_flags, prefix_warm=warm),
     )
-    return runtime, memory
+    try:
+        yield runtime, memory
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == _WARM_THREAD:
+                thread.join(10)
+                assert not thread.is_alive(), "a prefix warm is still running"
 
 
 def warm_costs(runtime: JarvisRuntime) -> int:

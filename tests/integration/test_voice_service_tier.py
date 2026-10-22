@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 _OPENAI = "https://api.openai.com/v1"
 _TABLE = load_pricing_table(repo_root() / "data" / "pricing.json")
+_PROBE = "tier probe"
 
 
 @pytest.fixture(autouse=True)
@@ -61,19 +62,24 @@ def _client(base_url: str, *, provider: str = "openai", api: str | None = None) 
 def _captured_body(
     monkeypatch: pytest.MonkeyPatch, client: LLMClient, *, responses: bool, **knobs: Any,  # noqa: ANN401
 ) -> dict[str, Any]:
-    """The body ``stream_events`` captured at prepare time, without any network."""
+    """The body ``stream_events`` captured at prepare time, without any network.
+
+    The stub stands in for the process's one ``stream_openai``, so it also answers a request some
+    other test's thread sends meanwhile; only the body carrying this probe's words is this one's.
+    """
     seen: list[dict[str, Any]] = []
 
     async def fake(
         _options: Mapping[str, Any], body: Mapping[str, Any], *, responses: bool,  # noqa: ARG001
     ) -> AsyncIterator[Mapping[str, Any]]:
-        seen.append(dict(body))
+        if _PROBE in json.dumps(body):
+            seen.append(dict(body))
         for frame in _completed_stream(None):
             yield frame
 
     monkeypatch.setattr(llm_module, "stream_openai", fake)
     handle = client.stream_events(
-        messages=[{"role": "user", "content": "hi"}], system="s",
+        messages=[{"role": "user", "content": _PROBE}], system="s",
         on_settled=lambda _disposition: None, responses=responses, **knobs,
     )
 
