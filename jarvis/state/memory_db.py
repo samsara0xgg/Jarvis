@@ -1574,6 +1574,24 @@ def last_draft_at(path: Path, day: str) -> datetime | None:
     return None if row is None else datetime.fromisoformat(row[0])
 
 
+def day_story(path: Path, day: str) -> str | None:
+    """Her account of the local ``day`` (ADR 0235's prose, written the night after), or None.
+
+    The newest "The day" text of the day; a draft is not one. Read through a read-only
+    connection, so asking never creates or migrates ``path``: a store that cannot be read, or a
+    day with no text, has no story.
+    """
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+            row = conn.execute(
+                "SELECT text FROM day_prose WHERE day = ? AND draft = 0 ORDER BY ts DESC LIMIT 1",
+                (day,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return str(row[0]) if row and row[0] else None
+
+
 class DayLineRow(NamedTuple):
     """The current line of a day (ADR 0235); its picks are ``{"id", "label", "start_ms"}``."""
 

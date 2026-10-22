@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -32,7 +31,7 @@ from jarvis.runtime.work_state import build_analyst
 from jarvis.state import core_memory, places, plan, routines, things, work_state
 from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
-from jarvis.state.memory_db import current_core_memory, local_now
+from jarvis.state.memory_db import current_core_memory, day_story, local_now
 from jarvis.state.plan_budget import DAY_ENDS
 
 if TYPE_CHECKING:
@@ -261,19 +260,6 @@ def _doing(conn: Any, first: int, last: int, zone: tzinfo) -> list[str]:  # noqa
     return list(said.values())
 
 
-def _story(memory_db: Path, day: date) -> str | None:
-    """Her account of that day, written the night after (ADR 0235's prose), or None."""
-    try:
-        with closing(sqlite3.connect(f"file:{memory_db}?mode=ro", uri=True)) as conn:
-            row = conn.execute(
-                "SELECT text FROM day_prose WHERE day = ? AND draft = 0 ORDER BY ts DESC LIMIT 1",
-                (day.isoformat(),),
-            ).fetchone()
-    except sqlite3.Error:
-        return None
-    return str(row[0]) if row and row[0] else None
-
-
 def _recent(
     conn: Any, sources: DayPlanSources, day: date, now: datetime,  # noqa: ANN401 - a sqlite conn
 ) -> tuple[dict[str, Any], ...]:
@@ -294,7 +280,7 @@ def _recent(
             "date": past.isoformat(),
             "weekday": f"{past:%A}",
             "all_day": [str(label["title"]) for label in line.labels],
-            "story": _story(sources.memory_db, past),
+            "story": day_story(sources.memory_db, past.isoformat()),
             "timeline": timeline[:MAX_LINES_PER_DAY],
             "doing": _doing(conn, first, last, sources.zone)[:MAX_LINES_PER_DAY],
             "unreadable": line.missing,
