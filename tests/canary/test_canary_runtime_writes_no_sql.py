@@ -37,7 +37,7 @@ _SQL: Final = re.compile(
 
 # Files under jarvis/runtime that still hold SQL. Lower it in the commit that moves a file's
 # last query into jarvis/state; it never goes up.
-_SQL_FILES: Final = 3
+_SQL_FILES: Final = 1
 
 
 def _text(node: ast.expr) -> str | None:
