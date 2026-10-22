@@ -197,6 +197,19 @@ def input_channels(conn: sqlite3.Connection, turn_id: str) -> list[str | None]:
     ]
 
 
+def latest_input_row(conn: sqlite3.Connection) -> int | None:
+    """The log row id of the newest row of his own words, typed or heard; ``None`` if none.
+
+    The echo a plugin connection writes to resume his task (channel ``plugin_resume``) is not
+    his words and is left out.
+    """
+    (latest,) = conn.execute(
+        "SELECT MAX(id) FROM events WHERE type IN ('surface.user_intent', 'utterance.received') "
+        "AND COALESCE(json_extract(payload_json, '$.channel'), '') != 'plugin_resume'"
+    ).fetchone()
+    return None if latest is None else int(latest)
+
+
 def heard_as_barge_pause(conn: sqlite3.Connection, turn_id: str) -> bool:
     """Whether the turn began from a fragment of speech cut at a barge-in pause (ADR 0144)."""
     return conn.execute(
