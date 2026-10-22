@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
 from jarvis.state import push_tokens
-from jarvis.state.event_log import iter_events_after, open_runtime_event_log, turn_origin
+from jarvis.state.event_log import iter_events_after, latest_id, open_runtime_event_log, turn_origin
 from jarvis.surface.apns import (
     ApnsClient,
     Outcome,
@@ -342,7 +342,7 @@ class Push:
         The first poll after boot only marks the log's end: what was waiting before it is not news.
         """
         with contextlib.closing(open_runtime_event_log(self._event_log)) as conn:
-            top = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0])
+            top = latest_id(conn)
             start, self._watch_from = self._watch_from, top
             if start is None:
                 return []
