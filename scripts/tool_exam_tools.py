@@ -43,8 +43,18 @@ An item (JSON, one per file) holds his words and the moment, place and data they
     ``{"status": "needs_choice"}``.
   - ``error_kind``: the kind the call must fail with (``needs_him``, ``impossible``,
     ``retry_other_args`` or ``dont_retry``); without it an error fails the item.
+  - ``requests[]``: what the providers were sent. ``{url, nth?, count?, body[]}``: among the
+    requests whose URL holds ``url``, there are ``count`` of them, and the ``nth`` (0 the first,
+    -1 the last) has a JSON body that passes each ``{path, op, value?}`` of ``body`` (the same
+    checks as ``result``).
   - ``checker``: name of a reference checker in ``scripts/tool_exam_checkers.py`` that derives the
     facts from the recording.
+
+A recording's HTTP entry is found by its method, URL and request body: exactly, or as the same
+JSON; ``"any_body": true`` answers any body (a model chooses its own query), ``"body_has"`` and
+``"body_lacks"`` list texts the body must hold or must not (a second request of a pair is told
+from the first by what it carries). ``"headers": {"location": ...}`` gives the headers a page
+needs besides its content type. httpx requests are answered from it like ``urlopen`` ones.
 
 Every result also passes :func:`assert_tool_result`, the spec's rules for a result and an error.
 The ``baseline.json`` beside the items lists the ids that fail; a run fails when an item outside it
@@ -86,6 +96,7 @@ from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import httpx
 import time_machine
 import yaml
 from mcp import types as mcp_types
@@ -198,7 +209,8 @@ _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH", r
 _SECRET_PARAM = re.compile(
     r"^(key|api[-_]?key|apikey|token|access[-_]?token|sig|signature|auth)$", re.IGNORECASE
 )
-_KEPT_HEADERS = frozenset({"content-type"})
+_KEPT_HEADERS = frozenset({"location"})
+"""Response headers a recording keeps besides the content type: what a redirect needs."""
 _SCRUBBED = "<scrubbed>"
 _MIN_SECRET = 6
 
@@ -228,6 +240,18 @@ def secret_values() -> dict[str, str]:
 
 def _hash(data: bytes | None) -> str:
     return hashlib.sha256(data or b"").hexdigest()[:16]
+
+
+def _json_hash(data: bytes | None) -> str | None:
+    """A hash of the JSON ``data`` holds with its keys sorted and no spacing, or None if not JSON.
+
+    Two requests that say the same thing in another key order or spacing hash alike.
+    """
+    try:
+        decoded = json.loads(data or b"")
+    except ValueError:
+        return None
+    return _hash(json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode())
 
 
 def _request_of(url: object, data: object) -> tuple[str, str, bytes]:
@@ -278,7 +302,10 @@ class Recording:
         self.data: dict[str, Any] = {"version": 1, "settings": {}, "env": [], "http": [], "mcp": []}
         self.data.update(data or {})
         for entry in self.data["http"]:  # a hand-written entry gives its request body, not a hash
-            entry.setdefault("body_sha", _hash(entry.get("request", "").encode()))
+            request = entry.get("request", "").encode()
+            entry.setdefault("body_sha", _hash(request))
+            if (same_json := _json_hash(request)) is not None:
+                entry.setdefault("json_sha", same_json)
         self._asked: dict[tuple[str, str, str], int] = {}
 
     @classmethod
@@ -302,14 +329,26 @@ class Recording:
         A request recorded more than once gets each exchange in turn as it is asked again, and the
         last one from then on.
         """
-        want = (method.upper(), scrub_url(url), _hash(body))
+        want = (method.upper(), scrub_url(url))
+        raw, same_json = _hash(body), _json_hash(body)
+        text = body.decode("utf-8", "replace")
         found: list[dict[str, Any]] = [
-            e for e in self.data["http"] if (e["method"], e["url"], e["body_sha"]) == want
+            e
+            for e in self.data["http"]
+            if (e["method"], e["url"]) == want
+            and (
+                e.get("any_body")
+                or raw == e["body_sha"]
+                or (same_json is not None and same_json == e.get("json_sha"))
+            )
+            and all(t in text for t in e.get("body_has", ()))
+            and not any(t in text for t in e.get("body_lacks", ()))
         ]
         if not found:
             return None
-        asked = self._asked.get(want, 0)
-        self._asked[want] = asked + 1
+        key = (*want, raw)
+        asked = self._asked.get(key, 0)
+        self._asked[key] = asked + 1
         return found[min(asked, len(found) - 1)]
 
     def mcp(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -372,7 +411,7 @@ class _Listed:
 
 
 class _Transport:
-    """Patches the provider boundaries: ``urlopen`` and the MCP client's listing and tool call.
+    """Patches the provider boundaries: ``urlopen``, httpx and the MCP client's listing and call.
 
     ``replay`` answers from the recording and fails any call it lacks; ``record`` makes the call
     and stores the answer. Everything else that opens a socket is refused while replaying, except
@@ -392,6 +431,8 @@ class _Transport:
         self.live = live
         self.listed = dict(listed or {})
         self.misses: list[str] = []
+        self.requests: list[dict[str, Any]] = []
+        """Every HTTP request made, in order: ``{method, url, body}`` (the body decoded if JSON)."""
         self.secrets: dict[str, str] = secret_values()
         self._real_urlopen = urllib.request.urlopen
         self._stack = contextlib.ExitStack()
@@ -422,6 +463,9 @@ class _Transport:
             return server in self.listed
 
         self._stack.enter_context(patch.object(urllib.request, "urlopen", self._urlopen))
+        self._stack.enter_context(
+            patch.object(httpx.HTTPTransport, "handle_request", self._httpx_handler())
+        )
         self._stack.enter_context(patch.object(McpServers, "_call", call))
         if not self.live:  # a call outside a model turn skips the "connected" check when replayed
             self._stack.enter_context(patch.object(McpServers, "call", direct))
@@ -436,6 +480,17 @@ class _Transport:
 
     def __exit__(self, *_exc: object) -> None:
         self._stack.close()
+
+    def _httpx_handler(self) -> Callable[[httpx.HTTPTransport, httpx.Request], httpx.Response]:
+        """What httpx's transport does while this one is open: recorded, but open to the model."""
+        real_handle = httpx.HTTPTransport.handle_request
+
+        def handle(transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+            if getattr(self._open, "model", False):  # the exam's own model request goes out
+                return real_handle(transport, request)
+            return self._httpx(request, lambda: real_handle(transport, request))
+
+        return handle
 
     def _gate(self, real: Callable[..., Any]) -> Callable[..., Any]:
         """``real`` inside :meth:`model_call` on this thread; refused everywhere else."""
@@ -462,6 +517,7 @@ class _Transport:
 
     def _urlopen(self, url: object, data: object = None, *args: object, **kw: object) -> _Reply:
         method, full, body = _request_of(url, data)
+        self._note(method, full, body)
         if self.live:
             return self._record(url, data, args, kw, method, full, body)
         entry = self.recording.http(method, full, body)
@@ -482,6 +538,44 @@ class _Transport:
                 io.BytesIO(payload),
             )
         return _Reply(payload, entry["status"], entry.get("content_type", ""), full)
+
+    def _note(self, method: str, full: str, body: bytes) -> None:
+        """Keep the request as made, for what ``expect.requests`` says it must hold."""
+        try:
+            shown: Any = json.loads(body) if body else {}
+        except ValueError:
+            shown = body.decode("utf-8", "replace")
+        self.requests.append({"method": method, "url": scrub_url(full), "body": shown})
+
+    def _httpx(self, request: httpx.Request, real: Callable[[], httpx.Response]) -> httpx.Response:
+        """One httpx request: answered from the recording, or made and stored when recording."""
+        request.read()
+        method, full, body = request.method, str(request.url), request.content
+        self._note(method, full, body)
+        if self.live:
+            reply = real()
+            payload = reply.read()
+            ctype = reply.headers.get("content-type", "")
+            headers = {k: v for k in _KEPT_HEADERS if (v := reply.headers.get(k))}
+            self._store(method, full, body, dict(request.headers), reply.status_code, payload,
+                        ctype, headers)
+            return httpx.Response(
+                reply.status_code, content=payload, request=request,
+                headers={**headers, "content-type": ctype} if ctype else headers,
+            )
+        entry = self.recording.http(method, full, body)
+        if entry is None:
+            shown = body.decode("utf-8", "replace")[:400]
+            self.misses.append(f"{method} {scrub_url(full)} body#{_hash(body)} {shown}")
+            msg = f"the recording has no answer for {method} {scrub_url(full)}"
+            raise RecordingMiss(msg)
+        payload = (
+            base64.b64decode(entry["body_b64"]) if "body_b64" in entry else entry["body"].encode()
+        )
+        headers = {**entry.get("headers", {})}
+        if entry.get("content_type"):
+            headers["content-type"] = entry["content_type"]
+        return httpx.Response(entry["status"], content=payload, headers=headers, request=request)
 
     def _record(  # noqa: PLR0913 - the call as made and what it was reduced to
         self,
@@ -524,6 +618,7 @@ class _Transport:
         status: int,
         payload: bytes,
         ctype: str,
+        kept: Mapping[str, str] | None = None,
     ) -> None:
         raw_request = full + body.decode("utf-8", "replace") + "".join(headers.values())
         for name, value in self.secrets.items():
@@ -540,6 +635,10 @@ class _Transport:
         }
         if body:
             entry["request"] = _scrub(body.decode("utf-8", "replace"), self.secrets)
+        if (same_json := _json_hash(body)) is not None:
+            entry["json_sha"] = same_json
+        if kept:
+            entry["headers"] = dict(kept)
         try:
             entry["body"] = _scrub(payload.decode("utf-8"), self.secrets)
         except UnicodeDecodeError:
@@ -1077,6 +1176,30 @@ def _receipt_failures(
     ]
 
 
+def _request_failures(
+    want: Sequence[Mapping[str, Any]] | None, seen: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Where the requests the providers were sent differ from ``expect.requests``."""
+    failures: list[str] = []
+    for check in want or ():
+        url = check["url"]
+        sent = [r for r in seen if url in r["url"]]
+        if "count" in check and len(sent) != check["count"]:
+            failures.append(f"requests to {url}: expected {check['count']}, got {len(sent)}")
+        if "body" not in check:
+            continue
+        nth = check.get("nth", 0)
+        if not -len(sent) <= nth < len(sent):
+            failures.append(f"request {nth} to {url}: only {len(sent)} were made")
+            continue
+        failures += [
+            f"request {nth} to {url}: {why}"
+            for one in check["body"]
+            if (why := check_result(sent[nth]["body"], one))
+        ]
+    return failures
+
+
 def _check_events(spec: Mapping[str, Any], events: Sequence[tuple[str, str]]) -> list[str]:
     def seen(entry: str | Mapping[str, Any]) -> bool:
         kind, pattern = (
@@ -1118,7 +1241,7 @@ def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
             raw = dispatch(
                 box, item.raw["tool"], item.raw.get("args") or {}, item.raw.get("said", "")
             )
-            failures += _judge(box, item, expect, raw, after, recording)
+            failures += _judge(box, item, expect, raw, after, recording, transport.requests)
     except (LookupError, TimeoutError, RecordingMiss) as exc:
         failures.append(str(exc))
     finally:
@@ -1143,6 +1266,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
     raw: str,
     after: int,
     recording: Recording | None,
+    seen: Sequence[Mapping[str, Any]] = (),
 ) -> list[str]:
     failures = [f"rule: {p}" for p in result_problems(raw)]
     try:
@@ -1178,6 +1302,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
         if text.lower() in shown
     ]
     failures += _receipt_failures(expect.get("receipt"), _events_since(box, after))
+    failures += _request_failures(expect.get("requests"), seen)
     failures += state_failures(box, expect.get("state_after", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
     if name := expect.get("checker"):
