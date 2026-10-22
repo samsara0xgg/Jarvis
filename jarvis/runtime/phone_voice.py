@@ -24,16 +24,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 from typing import TYPE_CHECKING, Final
 
 from jarvis.state.event_log import (
     PHONE_VOICE_CHANNEL,
     emit_event,
+    fetch_events_after,
     open_runtime_event_log,
     turn_origin,
 )
+from jarvis.state.turn_facts import playback_ended
 from jarvis.surface.phone_player import PhoneAudioStreamPlayer
 
 if TYPE_CHECKING:
@@ -50,19 +51,6 @@ LOGGER = logging.getLogger(__name__)
 _FEED_POLL_S: Final = 0.05
 _OVERLOADED_RETRY_S: Final = 0.05
 
-_ENDS: Final = (
-    "surface.playback_completed", "surface.playback_interrupted", "surface.playback_failed",
-    "surface.speech_dropped",
-)
-"""What ends an answer's playback: a lease's terminal, or its never having one (ADR 0106)."""
-_ENDED_SQL: Final = (
-    "SELECT 1 FROM events WHERE type IN (?, ?, ?, ?) "
-    "AND json_extract(payload_json, '$.response_id') = ? LIMIT 1"
-)
-_OPENS_AFTER_SQL: Final = (
-    "SELECT event_uid, payload_json FROM events "
-    "WHERE id > ? AND type = 'surface.response_open' ORDER BY id"
-)
 _OPENS_REMEMBERED: Final = 256
 UNPLAYED_NO_ACTOR: Final = "no_phone_voice"
 UNPLAYED_LEFT: Final = "phone_disconnected"
@@ -95,7 +83,7 @@ def drop_unplayed(
     and a generation an unplayed answer never had. Without a row the next turn reads the answer as
     heard whole. Returns whether a row was written.
     """
-    if conn.execute(_ENDED_SQL, (*_ENDS, response_id)).fetchone() is not None:
+    if playback_ended(conn, response_id):
         return False
     emit_event(
         conn,
@@ -116,16 +104,18 @@ def end_open_answers(conn: sqlite3.Connection, device: str, *, after_id: int, re
     """
     written = 0
     mine: dict[str, bool] = {}
-    for event_uid, raw in conn.execute(_OPENS_AFTER_SQL, (after_id,)).fetchall():
-        payload = json.loads(raw)
-        response_id, turn_id = payload.get("response_id"), str(payload.get("turn_id", ""))
+    for _row_id, opened in fetch_events_after(
+        conn, after_id=after_id, event_types=("surface.response_open",),
+    ):
+        response_id = opened.payload.get("response_id")
+        turn_id = str(opened.payload.get("turn_id", ""))
         if not isinstance(response_id, str):
             continue
         if turn_id not in mine:
             mine[turn_id] = turn_origin(conn, turn_id) == (PHONE_VOICE_CHANNEL, device)
         if mine[turn_id] and drop_unplayed(
             conn, response_id=response_id, turn_id=turn_id, reason=reason,
-            source_event_id=event_uid,
+            source_event_id=opened.event_uid,
         ):
             written += 1
     return written

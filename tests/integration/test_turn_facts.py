@@ -8,7 +8,7 @@ milliseconds, never the wall clock.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -22,6 +22,7 @@ from jarvis.state.turn_facts import (
     commentary_runs_opened,
     heard_as_barge_pause,
     input_channels,
+    playback_ended,
     recent_turn_timings,
     spoken_since,
     turn_cancelled_or_failed,
@@ -319,3 +320,37 @@ def test_a_turn_that_had_a_run_cancelled_or_failed(tmp_path: Path) -> None:
     assert not turn_cancelled_or_failed(log.conn, "T-raised")
     log.turn_failed("T-raised")
     assert turn_cancelled_or_failed(log.conn, "T-raised")
+
+
+def _playback_row(log: TurnLog, kind: str, response_id: str) -> None:
+    """The row L5 writes for ``response_id``'s playback: ``kind`` is its name after ``surface.``."""
+    lease = {"session_id": "S1", "response_id": response_id, "turn_id": T}
+    heard = {
+        **lease, "playback_generation_id": "P1", "heard_through_sequence": 0,
+        "submitted_samples": 0,
+    }
+    payloads: dict[str, dict[str, Any]] = {
+        "playback_started": {
+            **lease, "playback_generation_id": "P1", "phase": "final", "channel": "both",
+            "speech_text_hash": "h",
+        },
+        "playback_completed": {**heard, "speech_text_hash": "h"},
+        "playback_interrupted": {**heard, "heard_text_hash": "h", "reason": "barge_in"},
+        "playback_failed": {**heard, "heard_text_hash": "h", "reason": "device_lost"},
+        "speech_dropped": {"response_id": response_id, "turn_id": T, "reason": "no_phone_voice"},
+    }
+    log.put(f"surface.{kind}", payloads[kind], turn_id=T)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["playback_completed", "playback_interrupted", "playback_failed", "speech_dropped"],
+)
+def test_an_answers_playback_ends_with_a_terminal_or_a_drop(tmp_path: Path, kind: str) -> None:
+    """A lease's terminal or a dropped answer ends it; a start and others' answers do not."""
+    log = TurnLog(tmp_path)
+    _playback_row(log, "playback_completed", "R-other")
+    _playback_row(log, "playback_started", "R1")
+    assert not playback_ended(log.conn, "R1")
+    _playback_row(log, kind, "R1")
+    assert playback_ended(log.conn, "R1")
