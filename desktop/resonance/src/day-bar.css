@@ -66,7 +66,7 @@
 .notch .dt-sun::before { content:''; position:absolute; left:5px; top:-3px; width:1px; height:5px; background:rgb(var(--ink) / .3); }
 
 /* the pointer's minute, said only while it is on the bar: under it in the hours row, never above the bar; it covers the hour it passes, and comes in over 140 ms */
-.notch .dt-pin { position:absolute; top:0; z-index:1; transform:translateX(-50%); padding:0 4px; border-radius:3px; background:#000; box-shadow:0 0 0 3px #000; font:600 10px/12px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; white-space:nowrap; color:rgb(var(--ink) / .95); pointer-events:none; animation:dt-frame-in var(--motion-fast) linear; }
+.notch .dt-minute { position:absolute; top:0; z-index:1; transform:translateX(-50%); padding:0 4px; border-radius:3px; background:#000; box-shadow:0 0 0 3px #000; font:600 10px/12px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; white-space:nowrap; color:rgb(var(--ink) / .95); pointer-events:none; animation:dt-frame-in var(--motion-fast) linear; }
 
 /* a range's card (the drag on the bar): 280 pt, under the bar and its hours (it never cuts through their words), over the list (it never pushes anything); it has a button */
 .notch .dt-card { position:absolute; left:0; top:calc(var(--bar) + 22px); z-index:6; width:280px; opacity:0; visibility:hidden; pointer-events:none; transition:opacity 80ms linear, visibility 0s linear 80ms; }

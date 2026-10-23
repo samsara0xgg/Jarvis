@@ -278,7 +278,7 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
       </div>
       <div className="dt-hours" aria-hidden="true">
         {hours.map(({ k, px }) => <span key={k.label} className={`${k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''}${pins.some(x => Math.abs(x.x - px) < PIN_HALF + 10) ? ' is-under' : ''}`} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
-        {pins.map((x, i) => <i key={i} className="dt-pin" style={edge(x.x)}>{x.text}</i>)}
+        {pins.map((x, i) => <i key={i} className="dt-minute" style={edge(x.x)}>{x.text}</i>)}
         {suns.map(x => <span key={x.kind} className={`dt-sun${x.bare ? ' is-tick' : ''}`} data-sun={x.kind} style={{ left: x.px }}>{!x.bare && <SunHorizon size={11}/>}</span>)}
       </div>
       {summary && <div className="dt-card is-range is-on" style={{ transform: `translateX(${left((fOf(bar, summary.a) + fOf(bar, summary.b)) / 2 * width)}px)` }}>
