@@ -41,6 +41,7 @@ GRACE: Final = timedelta(days=7)
 """How long after a bill a receipt may come when the bill names no due date."""
 _MARKUP_CHARS: Final = 400_000
 _TEXT_CHARS: Final = 60_000
+_GATE_CHARS: Final = 4000
 _PDFS: Final = 4
 _PDF_CHARS: Final = 30_000
 _REACH: Final = 60
@@ -694,6 +695,18 @@ def mail_facts(mail: Mail) -> Facts | None:
     return facts(mail.subject, mail.text, markup=markup, pdfs=pdfs, sent=sent)
 
 
+def worth_reading(subject: str, text: str) -> bool:
+    """Whether a subject and the start of a body mention a bill or a payment.
+
+    A cheap gate for a caller that must fetch the whole message to read its facts: a bill or a
+    receipt says so in its subject, or in its body beside an amount.
+    """
+    return _cue(subject, _SUBJECT_CUES) is not None or (
+        _cue(text[:_GATE_CHARS], _BODY_CUES) is not None
+        and _MONEY.search(text[:_GATE_CHARS]) is not None
+    )
+
+
 def text_facts(subject: str, body: str, sent: datetime | None) -> Facts | None:
     """The facts of a message known only by its subject and the body the server gave.
 
@@ -777,4 +790,5 @@ __all__ = [
     "same_currency",
     "text_facts",
     "window",
+    "worth_reading",
 ]

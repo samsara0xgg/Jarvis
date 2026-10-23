@@ -778,6 +778,35 @@ def test_confirm_makes_a_mails_thing_his_and_the_whole_sender_sets_the_rule(make
     assert world.thing(spam).state == "cancelled"
 
 
+def test_a_thing_from_a_mail_shows_that_mails_id_so_one_mail_read_opens_it(make: Maker) -> None:
+    """ADR 0365: ``mail:<id>`` in the row, confirmed or not; an interview's reference is no id."""
+    world = make()
+    world.seed(
+        "Pay Example Cloud", "go", by="mail", source="mail", confirmed=False,
+        source_ref="18c2f9a01b7d4e55", sender="example.com",
+        start_at="2026-10-13T11:00:00-07:00",
+    )
+    world.seed(
+        "Dentist", "go", by="mail", source="mail", confirmed=True, source_ref="18c2f9a01b7d4e56",
+        sender="clinic.example", start_at="2026-10-13T15:00:00-07:00",
+    )
+    world.seed(
+        "Interview at Acme", "go", by="mail", source="mail", confirmed=True, source_ref="job:12",
+        sender="acme.example", start_at="2026-10-13T17:00:00-07:00",
+    )
+    rows = {row["what"].split(" (")[0]: row["what"] for row in _rows(world.call(at="2026-10-13"))}
+    assert rows == {
+        "Pay Example Cloud": "Pay Example Cloud (from mail:18c2f9a01b7d4e55, not confirmed yet)",
+        "Dentist": "Dentist (from mail:18c2f9a01b7d4e56)",
+        "Interview at Acme": "Interview at Acme",
+    }
+    one = world.call(action="cancel", id=world.seed(
+        "Pay Other", "go", by="mail", source="mail", confirmed=False, source_ref="18c2f9a01b7d4e57",
+        start_at="2026-10-14T11:00:00-07:00",
+    ))
+    assert one["summary"] == 'Cancelled "Pay Other" (from mail:18c2f9a01b7d4e57, not confirmed).'
+
+
 def test_a_sender_rule_needs_a_mail_and_a_said_thing_is_already_confirmed(make: Maker) -> None:
     """``whole_sender`` on something he said is refused; confirming it changes nothing."""
     world = make()
