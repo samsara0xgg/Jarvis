@@ -82,12 +82,6 @@
 .notch .dt-titles li { color:var(--p-ink); }
 .notch .dt-titles li::before { content:'·'; margin-right:6px; color:var(--p-faint); }
 
-/* an opened stretch of what he was doing: what is inside it, one compact line each (the lines are the bar card's), and how she knows, two lines at most */
-.notch .dt-ins { display:flex; flex-direction:column; gap:6px; width:100%; margin:0; padding:0; list-style:none; }
-.notch .dt-ins .dt-ctx em { margin-left:8px; font-style:normal; font-size:12px; color:var(--p-faint); }
-.notch .dt-tbtn { display:block; padding:0; border-radius:8px; cursor:zoom-in; }
-.notch .dt-body p.dt-knows { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; font-size:12px; line-height:16px; color:var(--p-faint); }
-
 /* the name of a kept place, being changed in the stay's own header */
 .notch .dt-rename { flex:1; min-width:0; height:26px; margin:-1px 0 -1px -7px; padding:0 6px; border:0; border-radius:7px; background:rgb(255 255 255 / .1); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .32);
   font-size:15px; font-weight:600; line-height:26px; color:var(--p-ink); caret-color:rgb(var(--ink)); outline:none; }
@@ -161,3 +155,53 @@
 @media (prefers-reduced-motion:reduce) {
   .notch .dt-wait,.notch .dt-waits,.notch .dt-role { transition:none; }
 }
+
+/* ---------- a row's detail in the V2 right column (RowOpen.tsx DetailPage) ----------
+   A small way back, the head (glyph, title over when it was, 问她 at the right), the row's lines dense (a time, a glyph, words, a length), the buttons, and last how she knows.
+   The column is its own scroller with the list's edge fades (the .more-above / .more-below classes follow the scroll). What the page's old chrome had (back ‹, ↑ ↓) is the keys' now. */
+.notch .dt-side > .dt-pin.is-day { flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+.notch .dt-pin.is-day.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 16px),transparent); mask-image:linear-gradient(#000 calc(100% - 16px),transparent); }
+.notch .dt-pin.is-day.more-above { -webkit-mask-image:linear-gradient(transparent,#000 16px); mask-image:linear-gradient(transparent,#000 16px); }
+.notch .dt-pin.is-day.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 16px),transparent); mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 16px),transparent); }
+.notch .dt-dp { display:flex; flex-direction:column; min-width:0; }
+.notch .dt-dp > * { flex:none; }
+.notch .dt-up { align-self:flex-start; display:inline-flex; align-items:center; gap:3px; height:22px; margin:0 0 0 -2px; padding:0 2px; font-size:11.5px; color:var(--p-faint); transition:color var(--motion-fast); }
+.notch .dt-up:hover { color:var(--p-ink); }
+.notch .dt-dh { display:grid; grid-template-columns:28px minmax(0,1fr) auto; gap:0 10px; align-items:center; padding:6px 2px 4px; }
+.notch .dt-dic { box-sizing:border-box; }
+.notch .dt-dic.has-c { color:rgb(var(--c)); border-color:rgb(var(--c) / .4); }
+.notch .dt-dic.is-unknown { color:var(--p-faint); border:1px dashed rgb(var(--c) / .4); }
+.notch .dt-dt { display:flex; flex-direction:column; min-width:0; }
+.notch .dt-dt b { overflow:hidden; font-size:15px; font-weight:600; line-height:20px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dt-dt em { overflow:hidden; font-style:normal; font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dt-dt .dt-rename { margin:0 0 3px -6px; width:calc(100% + 6px); box-sizing:border-box; }
+.notch .dt-dh .dt-btn { height:24px; padding:0 10px; border-radius:12px; font-size:11.5px; line-height:24px; }
+.notch .dt-pin.is-day .dt-body { align-items:stretch; gap:6px; padding:2px 2px 8px; }
+.notch .dt-pin.is-day .dt-body > * { max-width:none; }
+.notch .dt-pin.is-day .dt-lines { gap:3px; }
+.notch .dt-pin.is-day .dt-lines p { font-size:13px; line-height:19px; color:var(--p-muted); }
+.notch .dt-pin.is-day .dt-lines p.is-ink { color:var(--p-muted); }
+.notch .dt-pin.is-day .dt-body p.is-note { color:var(--p-ink); }
+.notch .dt-pin.is-day .dt-acts { margin-top:4px; }
+.notch .dt-pin.is-day .dt-btn { height:24px; padding:0 10px; border-radius:12px; font-size:11.5px; line-height:24px; }
+.notch .dt-pin.is-day .dt-btn.is-amber { background:rgb(255 201 143); color:#1a1307; }
+.notch .dt-pin.is-day .dt-btn.is-amber:hover:not(:disabled) { background:rgb(255 213 168); }
+.notch .dt-pin.is-day .dt-acts .dt-starbtn { width:24px; height:24px; }
+.notch .dt-pin.is-day .dt-sent { height:24px; font-size:11.5px; }
+/* the lines: a time, a glyph, the words (the title in ink, what the row says under it after it, muted), a length */
+.notch .dt-ins { display:flex; flex-direction:column; gap:0; width:100%; margin:0; padding:0; list-style:none; }
+.notch .dt-il { display:grid; grid-template-columns:40px 22px minmax(0,1fr) auto; align-items:center; gap:0 8px; min-height:30px; padding:0 4px; font-size:12.5px; line-height:16px; }
+.notch .dt-il.has-pic { grid-template-columns:40px 36px minmax(0,1fr) auto; min-height:44px; }
+.notch .dt-il > time { font:10.5px/16px "JetBrains Mono",Menlo,monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-faint); }
+.notch .dt-il-i { display:grid; place-items:center; width:22px; height:22px; color:rgb(214 220 246 / .82); }
+.notch .dt-il-b { display:block; padding:0; border-radius:6px; cursor:zoom-in; }
+.notch .dt-il-th { display:block; width:36px; height:36px; border-radius:6px; object-fit:cover; background:rgb(255 255 255 / .06); }
+.notch .dt-il-t { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--p-ink); }
+.notch .dt-il-t em { margin-left:6px; font-style:normal; color:var(--p-faint); }
+.notch .dt-il-t em::before { content:'· '; }
+.notch .dt-il-s { font-size:11.5px; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-muted); }
+.notch .dt-pin.is-day .dt-bars { grid-template-columns:minmax(0,92px) minmax(0,1fr) max-content; gap:5px 10px; }
+.notch .dt-pin.is-day .dt-bar-row em { min-width:0; }
+/* how she knows: a hairline over it, the label in faint ink */
+.notch .dt-body p.dt-how { margin:6px 0 0; padding-top:8px; border-top:1px solid rgb(255 255 255 / .06); font-size:12px; line-height:18px; color:var(--p-muted); }
+.notch .dt-how b { margin-right:6px; font-weight:600; color:var(--p-faint); }
