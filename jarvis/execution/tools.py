@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import codecs
 import ipaddress
 import json
 import logging
@@ -43,16 +42,12 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
-from urllib.parse import urljoin, urlsplit, urlunsplit
-
-import httpx
+from urllib.parse import urlsplit, urlunsplit
 
 from jarvis.execution.path_resolver import TargetKind, load_file_targets_config
 from jarvis.execution.path_resolver import resolve as resolve_path_target
@@ -1484,7 +1479,7 @@ def _strict_ip_literal(
     return False, None
 
 
-def _resolve_hostname_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+def resolve_hostname_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Resolve `host` to its address(es), literal IPs parsed directly.
 
     Everything else goes via `socket.getaddrinfo` (real DNS). This is
@@ -1611,7 +1606,7 @@ def _parse_egress_url(url: str) -> tuple[_EgressUrlParts | None, str]:
     `parts.canonical` is rebuilt from ONLY the parsed scheme/host/port/
     path/query — userinfo and fragment are dropped unconditionally,
     never forwarded to `open` or `httpx`. `validate_egress_url` and
-    `_normalize_egress_url` both call this SAME function, so the string
+    `normalize_egress_url` both call this SAME function, so the string
     a caller ends up acting on is always byte-identical to the one the
     guard's scheme/address checks ran against.
 
@@ -1655,7 +1650,7 @@ def _parse_egress_url(url: str) -> tuple[_EgressUrlParts | None, str]:
     return _EgressUrlParts(scheme=scheme, host=host, port=port, canonical=canonical), ""
 
 
-def _normalize_egress_url(url: str) -> str | None:
+def normalize_egress_url(url: str) -> str | None:
     """Canonical re-serialized form of an already-guard-allowed `url`.
 
     The ONLY string a call site may act on (ADR-0011 §12 MUST-FIX 1/2
@@ -1673,7 +1668,7 @@ def validate_egress_url(
     *,
     resolver: Callable[
         [str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]
-    ] = _resolve_hostname_ips,
+    ] = resolve_hostname_ips,
 ) -> tuple[bool, str]:
     """SSRF egress guard shared by `web_fetch` and `open_url` (ADR-0011 D5).
 
@@ -1698,7 +1693,7 @@ def validate_egress_url(
     Callers that walk redirects (`web_fetch`) MUST call this again on
     every hop's `Location` — this function only ever sees one URL. A
     caller that gets `allowed=True` back MUST fetch/open
-    `_normalize_egress_url(url)`, never `url` itself (see
+    `normalize_egress_url(url)`, never `url` itself (see
     `_parse_egress_url`'s docstring for why).
     """
     parts, reason = _parse_egress_url(url)
@@ -1780,568 +1775,6 @@ reaching for. Capping extracted text (rather than raw bytes) is what
 makes the number mean what it says: 8 KiB of readable prose, not 8 KiB
 of markup that may contain none."""
 
-_WEB_FETCH_HEADERS: Final[Mapping[str, str]] = {
-    # httpx's default UA (`python-httpx/x.y.z`) is refused outright by a
-    # meaningful slice of the web. Wikipedia answers it with a bare 403
-    # whose body reads "Please set a user-agent and respect our robot
-    # policy" — which reached the LLM as an unexplained failure on an
-    # ordinary encyclopedia lookup.
-    #
-    # Self-identifying (a real name plus a contact URL) is what the
-    # sites asking for a UA actually want, and it keeps this honest:
-    # `web_fetch` does not pretend to be a browser, and pairing a
-    # browser UA with a client that runs no JS earns bot-detection
-    # blocks rather than avoiding them.
-    "User-Agent": "Jarvis/1.0 (+https://github.com/alllllenshi/jarvis)",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-}
-"""Request headers for every `web_fetch` hop (see the UA note above)."""
-
-_WEB_FETCH_MAX_REDIRECTS: Final[int] = 3
-"""Hard ceiling on redirects FOLLOWED (ADR-0011 D5: "at most 3
-redirects") — not configurable. A 4th redirect response is refused
-rather than followed; up to `_WEB_FETCH_MAX_REDIRECTS` + 1 HTTP
-requests are made in total (the initial request plus each followed
-redirect)."""
-
-_WEB_FETCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "url": {
-            "type": "string",
-            "description": "The http(s) URL to fetch.",
-        },
-    },
-    "required": ["url"],
-}
-
-_REDIRECT_STATUS_CODES: Final[frozenset[int]] = frozenset({301, 302, 303, 307, 308})
-
-
-def _parse_content_length(raw: str | None) -> int | None:
-    """Parse a `Content-Length` header value, or `None` if absent/junk."""
-    if raw is None:
-        return None
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        return None
-    return value if value >= 0 else None
-
-
-@dataclass(frozen=True)
-class _HopResponse:
-    """One non-redirect-following HTTP response (ADR-0011 D5 `web_fetch`)."""
-
-    status_code: int
-    location: str | None
-    content_type: str | None
-    body: bytes
-    total_bytes: int
-    total_bytes_exact: bool = True
-    """False iff `total_bytes` is a lower bound, not a measured total —
-    the drain stopped at `max_bytes` (or the fetch deadline) on a
-    response with no usable `Content-Length` (MUST-FIX 3, ADR-0011
-    §12). `body` itself is always the true prefix actually read,
-    capped at `max_bytes` regardless of this flag."""
-
-
-class _FetchDeadlineExceededError(Exception):
-    """Raised when the overall wall-clock fetch budget elapses mid-drain.
-
-    MUST-FIX 3, ADR-0011 §12. Raised by `_http_get_one_hop`, caught by
-    `_fetch_url_backend` — never escapes this module.
-    """
-
-
-def _http_get_one_hop(
-    url: str, *, timeout_s: float, max_bytes: int, deadline: float,
-) -> _HopResponse:
-    """Issue ONE GET with redirects disabled, streamed, body capped at `max_bytes`.
-
-    The caller (`_fetch_url_backend`) owns redirect-following — this
-    function never does, so every hop's `Location` can be re-validated
-    by the SSRF guard before it is followed (ADR-0011 D5 point 5).
-
-    The drain STOPS as soon as `max_bytes` is collected (MUST-FIX 3,
-    ADR-0011 §12) — `httpx`'s `timeout` is a per-read timeout, not a
-    wall-clock budget, so draining the FULL body (as this used to do,
-    to report an exact `total_bytes`) let a slow/adversarial server
-    hold the connection open indefinitely while trickling data, and let
-    a huge body cost full transfer time to deliver a capped prefix.
-    `deadline` (an absolute `time.monotonic()` value, shared across
-    every hop by `_fetch_url_backend`) is also checked every chunk, so
-    a slow-loris server that never triggers `httpx`'s own read timeout
-    still gets cut off.
-
-    `total_bytes`/`total_bytes_exact`: when the server sends a
-    `Content-Length`, that is trusted as the exact total (matches what
-    every HTTP client does). Otherwise, if the drain reached the cap or
-    deadline before the stream ended, `total_bytes` is only the number
-    of bytes actually read off the wire — a true LOWER BOUND, reported
-    as such via `total_bytes_exact=False` — never a claimed exact count
-    for data that was never measured.
-
-    This is the one seam the acceptance script monkeypatches
-    (`tools._http_get_one_hop`) to exercise `_fetch_url_backend`'s
-    redirect-walking + guard-revalidation + truncation logic without a
-    real socket — same "substitute a seam" shape Step 5 used for
-    `vault_root`.
-    """
-    with (
-        httpx.Client(timeout=timeout_s, follow_redirects=False, trust_env=False) as client,
-        client.stream("GET", url, headers=_WEB_FETCH_HEADERS) as response,
-    ):
-        content_type = response.headers.get("content-type")
-        location = response.headers.get("location")
-        declared_length = _parse_content_length(response.headers.get("content-length"))
-        chunks: list[bytes] = []
-        collected = 0
-        stopped_early = False
-        for chunk in response.iter_bytes():
-            if collected < max_bytes:
-                chunks.append(chunk[: max_bytes - collected])
-            collected += len(chunk)
-            if collected >= max_bytes:
-                stopped_early = True
-                break
-            if time.monotonic() >= deadline:
-                # Distinct from the `max_bytes` cap above: reaching the
-                # cap is a normal, expected truncation of a large body;
-                # running out of wall-clock time mid-drain means the
-                # server is too slow (slow-loris) — surfaced as an
-                # error by `_fetch_url_backend`, not a truncated
-                # success.
-                msg = f"exceeded the fetch deadline after {collected} bytes"
-                raise _FetchDeadlineExceededError(msg)
-        body = b"".join(chunks)
-        if declared_length is not None:
-            total_bytes, total_bytes_exact = declared_length, True
-        elif stopped_early:
-            total_bytes, total_bytes_exact = collected, False
-        else:
-            total_bytes, total_bytes_exact = collected, True
-        return _HopResponse(
-            status_code=response.status_code,
-            location=location,
-            content_type=content_type,
-            body=body,
-            total_bytes=total_bytes,
-            total_bytes_exact=total_bytes_exact,
-        )
-
-
-@dataclass(frozen=True)
-class _FetchOutcome:
-    """Result of `_fetch_url_backend` — success fields XOR error fields."""
-
-    ok: bool
-    status_code: int = 0
-    content_type: str | None = None
-    body: bytes = b""
-    total_bytes: int = 0
-    total_bytes_exact: bool = True
-    final_url: str = ""
-    error_code: str | None = None
-    error_message: str | None = None
-
-
-def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch/redirect loop; each return is a distinct named terminal outcome (`_FetchOutcome.error_code`), same rationale as the other D5 handlers' error exits — splitting them apart would scatter the outcomes from the loop that produces them.
-    url: str,
-    *,
-    timeout_s: float,
-    max_bytes: int,
-    max_redirects: int = _WEB_FETCH_MAX_REDIRECTS,
-    resolver: Callable[
-        [str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]
-    ]
-    | None = None,
-) -> _FetchOutcome:
-    """Guarded GET with manual redirect walking (ADR-0011 D5).
-
-    Validates EVERY hop — the initial `url` and each `Location` header —
-    through `validate_egress_url` before issuing that hop's request,
-    and always fetches `_normalize_egress_url`'s canonical form of that
-    hop, never the raw `Location`/input string (ADR-0011 §12 MUST-FIX
-    1/2 root cause — the validated string must be the used string).
-    This is what stops the classic bypass: a public URL that 302s to
-    `http://127.0.0.1:8006/`. A guard refusal at any hop, and exceeding
-    `max_redirects`, both return `ok=False` with a named `error_code`;
-    neither ever raises past this function.
-
-    A single wall-clock `deadline` (MUST-FIX 3, ADR-0011 §12) is set
-    ONCE from `timeout_s` and shared across every hop, including the
-    guard/canonicalization work between hops — no redirect chain can
-    make one `web_fetch` call run longer than `timeout_s` total,
-    contrary to the previous per-hop-only `httpx` timeout.
-
-    `resolver` defaults to `None`, resolved to the module-level
-    `_resolve_hostname_ips` INSIDE the function body rather than as a
-    literal default value — a default value is bound once at `def`
-    time, so monkeypatching `tools._resolve_hostname_ips` afterward
-    (the acceptance script's hermetic seam for every caller that does
-    not pass `resolver` explicitly, e.g. `web_fetch`'s registered
-    handler) would silently have no effect against a frozen default.
-    """
-    resolve = resolver if resolver is not None else _resolve_hostname_ips
-    deadline = time.monotonic() + timeout_s
-    current = url
-    hops_followed = 0
-    while True:
-        allowed, reason = validate_egress_url(current, resolver=resolve)
-        if not allowed:
-            return _FetchOutcome(
-                ok=False,
-                error_code="ssrf_guard_refused",
-                error_message=(
-                    f"web_fetch: {current!r} was refused ({reason}); only public http(s) "
-                    "pages can be fetched"
-                ),
-            )
-
-        normalized = _normalize_egress_url(current)
-        if normalized is None:
-            # Should be unreachable — `validate_egress_url` just
-            # allowed `current` via the identical parser — but refuse
-            # rather than ever fall back to the raw string.
-            return _FetchOutcome(
-                ok=False,
-                error_code="ssrf_guard_refused",
-                error_message=f"web_fetch: {current!r} is not a usable address; check the URL",
-            )
-
-        remaining_s = deadline - time.monotonic()
-        if remaining_s <= 0:
-            return _FetchOutcome(
-                ok=False,
-                error_code="deadline_exceeded",
-                error_message=(
-                    f"web_fetch: the page took longer than {timeout_s:g}s through its redirects; "
-                    "tell him it did not load, or try web_search"
-                ),
-            )
-
-        try:
-            hop = _http_get_one_hop(
-                normalized, timeout_s=remaining_s, max_bytes=max_bytes, deadline=deadline,
-            )
-        except _FetchDeadlineExceededError:
-            return _FetchOutcome(
-                ok=False,
-                error_code="deadline_exceeded",
-                error_message=(
-                    f"web_fetch: the page took longer than {timeout_s:g}s to load; tell him it "
-                    "did not load, or try web_search"
-                ),
-            )
-        except httpx.HTTPError as exc:
-            return _FetchOutcome(
-                ok=False,
-                error_code="network_error",
-                error_message=(
-                    f"web_fetch: the page could not be fetched ({exc}); tell him, or try "
-                    "web_search for the same information"
-                ),
-            )
-
-        if hop.status_code in _REDIRECT_STATUS_CODES:
-            if hop.location is None:
-                return _FetchOutcome(
-                    ok=False,
-                    error_code="network_error",
-                    error_message=(
-                        f"web_fetch: {normalized!r} redirected to nowhere; tell him the page is "
-                        "broken, or try web_search"
-                    ),
-                )
-            if hops_followed >= max_redirects:
-                return _FetchOutcome(
-                    ok=False,
-                    error_code="too_many_redirects",
-                    error_message=(
-                        f"web_fetch: {url!r} redirected more than {max_redirects} times; "
-                        "try the address it ends at, or web_search"
-                    ),
-                )
-            hops_followed += 1
-            current = urljoin(normalized, hop.location)
-            continue
-
-        return _FetchOutcome(
-            ok=True,
-            status_code=hop.status_code,
-            content_type=hop.content_type,
-            body=hop.body,
-            total_bytes=hop.total_bytes,
-            total_bytes_exact=hop.total_bytes_exact,
-            final_url=normalized,
-        )
-
-
-class _ReadableHTMLParser(HTMLParser):
-    """Strip an HTML document to its page title + tag-stripped visible text.
-
-    stdlib-only (ADR-0011 D5: no bs4/lxml — `html.parser` is fine).
-    `<script>`/`<style>` contents are dropped entirely; every other
-    tag's text is kept, collapsed to single-space-joined chunks. Feeding
-    a byte-capped, possibly mid-tag-truncated document is safe —
-    `HTMLParser` is deliberately lenient about malformed/incomplete
-    markup, and an unclosed tag at EOF simply stops emitting text there.
-    """
-
-    def __init__(self) -> None:
-        """Start with empty title/text buffers and zero script/style depth."""
-        super().__init__(convert_charrefs=True)
-        self._title_parts: list[str] = []
-        self._text_parts: list[str] = []
-        self._in_title = False
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 — HTMLParser calls this positionally; attrs is unused but must stay in the override's signature.
-        """Track entry into `<title>` and `<script>`/`<style>` regions."""
-        if tag in ("script", "style"):
-            self._skip_depth += 1
-        elif tag == "title":
-            self._in_title = True
-
-    def handle_endtag(self, tag: str) -> None:
-        """Track exit from `<title>` and `<script>`/`<style>` regions."""
-        if tag in ("script", "style"):
-            self._skip_depth = max(0, self._skip_depth - 1)
-        elif tag == "title":
-            self._in_title = False
-
-    def handle_data(self, data: str) -> None:
-        """Collect text data outside of skipped regions."""
-        if self._skip_depth:
-            return
-        if self._in_title:
-            self._title_parts.append(data)
-            return
-        stripped = data.strip()
-        if stripped:
-            self._text_parts.append(stripped)
-
-    @property
-    def title(self) -> str:
-        """Return the concatenated `<title>` text, stripped."""
-        return "".join(self._title_parts).strip()
-
-    @property
-    def text(self) -> str:
-        """Return the space-joined visible text chunks."""
-        return " ".join(self._text_parts)
-
-
-def _extract_readable_html(html_text: str) -> tuple[str, str]:
-    """Return `(title, stripped_text)` from an HTML document (stdlib-only)."""
-    parser = _ReadableHTMLParser()
-    parser.feed(html_text)
-    return parser.title, parser.text
-
-
-def _parse_content_type_charset(content_type: str | None) -> str | None:
-    """Extract a `charset=` parameter from a `Content-Type` header value."""
-    if not content_type:
-        return None
-    for part in content_type.split(";")[1:]:
-        key, _, value = part.strip().partition("=")
-        if key.strip().lower() == "charset":
-            return value.strip().strip('"').strip("'") or None
-    return None
-
-
-def _decode_hop_body(
-    body: bytes, total_bytes: int, content_type: str | None,
-) -> tuple[str, int, bool]:
-    """`(text, undelivered_bytes, lossy)` honoring a declared `charset=`.
-
-    SHOULD-FIX 7, ADR-0011 §12 — a `charset=gb2312` page used to decode
-    to 100% U+FFFD because everything went through the UTF-8-only
-    `truncate_utf8` path regardless of what `Content-Type` declared.
-
-    UTF-8 (declared, or no usable charset named) still goes through
-    `truncate_utf8` UNCHANGED — its codepoint-safe boundary handling is
-    never duplicated here; this only adds ONE more decode attempt in
-    front of it for a charset Python actually knows (stdlib `codecs`,
-    no new dependency). A body cut mid-character by the caller's own
-    `max_bytes` cap decodes with `errors="replace"` and is reported
-    `lossy=True`, same signal `truncate_utf8` gives its own lossy case.
-    """
-    charset = _parse_content_type_charset(content_type)
-    if charset is None or charset.lower().replace("_", "-") in ("utf-8", "utf8"):
-        return truncate_utf8(body, total_bytes)
-    try:
-        codec_name = codecs.lookup(charset).name
-    except LookupError:
-        return truncate_utf8(body, total_bytes)
-    undelivered = max(0, total_bytes - len(body))
-    try:
-        return body.decode(codec_name), undelivered, False
-    except UnicodeDecodeError:
-        return body.decode(codec_name, errors="replace"), undelivered, True
-    except LookupError:
-        # A declared charset can name a REGISTERED but non-text codec
-        # (e.g. `charset=base64`) — `codecs.lookup` accepts it but
-        # `bytes.decode` refuses it with `LookupError`, not
-        # `UnicodeDecodeError`. Caught here (not left to MUST-FIX 2's
-        # handler-boundary catch-all) so an unusual header degrades to
-        # the same lossy-UTF-8 fallback as an unknown charset, rather
-        # than a generic "unexpected error" observation.
-        return truncate_utf8(body, total_bytes)
-
-
-def _looks_like_html(body: bytes) -> bool:
-    """Sniff a leading `<`/`<!doctype` to detect an HTML document.
-
-    SHOULD-FIX 7, ADR-0011 §12 — used only when `Content-Type` is
-    absent, so a header-less HTML response still gets routed through
-    the tag-stripping path instead of being dumped as raw markup under
-    the "plain text" branch.
-    """
-    stripped = body.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
-    return stripped.startswith(b"<")
-
-
-_WEB_EXTRACT_URL: Final[str] = "https://api.tavily.com/extract"
-
-
-def _tavily_extract(url: str, *, api_key: str, timeout_s: float) -> dict[str, Any]:
-    """Tavily `/extract` (basic depth) for one URL: markdown text, PDFs included.
-
-    Raises `ToolError` when Tavily answered but could not extract the page
-    (its `failed_results` reason) and `httpx.HTTPError` when Tavily itself
-    failed; `web_fetch` falls back to fetching here on either.
-    """
-    response = httpx.post(
-        _WEB_EXTRACT_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"urls": [url], "extract_depth": "basic"},
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
-    data = response.json()
-    results = data.get("results") or []
-    if not results:
-        failed = (data.get("failed_results") or [{}])[0]
-        msg = f"web_fetch: Tavily could not read {url} ({failed.get('error', 'unknown')})"
-        raise ToolError(msg, code="web_fetch_failed")
-    return {
-        "url": results[0].get("url") or url,
-        "content": results[0].get("raw_content") or "",
-        "source": "tavily",
-    }
-
-
-def _html_content(html_text: str, *, body_truncated: bool) -> str:
-    """The extracted text, or the one-line reason there is none."""
-    if html_text.strip():
-        return html_text
-    if body_truncated:
-        return (
-            "(the page was cut off by the download cap before any body text "
-            "was parsed — cannot tell whether it has visible content past the cut)"
-        )
-    # ADR-0011 D5: no JS rendering — an SPA that hydrates via script returns
-    # only its shell here. Declared limitation, not an empty-page bug.
-    return (
-        "(no visible text in the initial HTML — this may be a "
-        "JavaScript-rendered page; this tool does not execute JS)"
-    )
-
-
-def _self_fetch(url: str, *, timeout_s: float, max_bytes: int) -> dict[str, Any]:
-    """Fetch and tag-strip one page here: the keyless path and Tavily's fallback (ADR-0011 D5)."""
-    outcome = _fetch_url_backend(url, timeout_s=timeout_s, max_bytes=max_bytes)
-    if not outcome.ok:
-        raise ToolError(
-            outcome.error_message or "web_fetch: the page could not be fetched; tell him",
-            code=outcome.error_code or "web_fetch_failed",
-        )
-    mime = (outcome.content_type or "").split(";", 1)[0].strip().lower()
-    if not mime and _looks_like_html(outcome.body):
-        # No Content-Type at all: sniff, or raw markup would pass as plain text.
-        mime = "text/html"
-    payload: dict[str, Any] = {
-        "url": outcome.final_url,
-        "status_code": outcome.status_code,
-        "content_type": outcome.content_type,
-        "source": "fetch",
-    }
-    if mime and not mime.startswith("text/"):
-        payload["note"] = (
-            f"non-text content-type {outcome.content_type!r}; body not decoded as text"
-        )
-        return payload
-    text, undelivered_bytes, lossy = _decode_hop_body(
-        outcome.body, outcome.total_bytes, outcome.content_type,
-    )
-    body_truncated = undelivered_bytes > 0
-    if mime == "text/html":
-        title, html_text = _extract_readable_html(text)
-        if title:
-            payload["title"] = title
-        payload["content"] = _html_content(html_text, body_truncated=body_truncated)
-    else:
-        payload["content"] = text
-    payload["total_bytes"] = outcome.total_bytes
-    if body_truncated:
-        # The 2 MiB drain cap fired; the text cap is the dispatcher's.
-        payload["download_truncated"] = True
-    if not outcome.total_bytes_exact:
-        payload["total_bytes_exact"] = False
-    if lossy:
-        payload["encoding"] = "lossy"
-    return payload
-
-
-def _make_web_fetch(
-    *, max_bytes: int, max_text_chars: int, timeout_s: float, extract_api_key: str | None,
-) -> Tool:
-    """Bind the `tools.web.*` fetch knobs and the Tavily key into `web_fetch`.
-
-    With a key the page comes from Tavily extract (markdown, PDFs, no JS
-    limitation); any Tavily failure falls back to fetching here. The egress
-    guard runs first either way, so no private address leaves the machine.
-    """
-
-    def web_fetch(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-        url = args.get("url")
-        if not isinstance(url, str) or not url.strip():
-            msg = f"web_fetch: url must be the page address, http or https (got {url!r})"
-            raise ToolError(msg, code="invalid_arguments")
-        allowed, reason = validate_egress_url(url)
-        if not allowed:
-            msg = (
-                f"web_fetch: {url!r} was refused ({reason}); only public http(s) pages "
-                "can be fetched"
-            )
-            raise ToolError(msg, code="ssrf_guard_refused")
-        if extract_api_key:
-            try:
-                return _tavily_extract(url, api_key=extract_api_key, timeout_s=timeout_s)
-            except (httpx.HTTPError, ToolError, ValueError) as exc:
-                LOGGER.warning(
-                    "web_fetch: tavily extract failed for %s (%s); fetching directly", url, exc,
-                )
-        return _self_fetch(url, timeout_s=timeout_s, max_bytes=max_bytes)
-
-    return Tool(
-        name="web_fetch",
-        description=(
-            "Fetch a URL's readable content: markdown (PDFs included) via Tavily "
-            "extract when configured, else the page title plus tag-stripped text. "
-            "The direct path does not execute JavaScript."
-        ),
-        input_schema=_WEB_FETCH_INPUT_SCHEMA,
-        handler=web_fetch,
-        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-        risk_level="L1",
-        read_only=True,
-        max_result_chars=max_text_chars,
-    )
-
 
 # --- open_url --------------------------------------------------------------
 
@@ -2375,7 +1808,7 @@ def open_url(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     Same scheme + address checks as `web_fetch` via `validate_egress_url`
     — `open http://127.0.0.1:8006/shutdown` would otherwise open Allen's
     browser against his own daemon. `open` is handed
-    `_normalize_egress_url`'s canonical re-serialization of `url`, never
+    `normalize_egress_url`'s canonical re-serialization of `url`, never
     `url` itself (ADR-0011 §12 MUST-FIX 1/2 root cause) — the browser's
     WHATWG URL parser reads some strings (a backslash before the last
     `@` in the authority, in particular) differently from the
@@ -2397,7 +1830,7 @@ def open_url(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         )
         raise ToolError(msg, code="ssrf_guard_refused")
 
-    normalized = _normalize_egress_url(url)
+    normalized = normalize_egress_url(url)
     if normalized is None:
         # Should be unreachable — the guard just allowed `url` via
         # the identical parser — but refuse rather than ever fall
@@ -3461,8 +2894,10 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
                 deep_search=web_deep_search,
             )
         )
+    from jarvis.execution.web_fetch_tool import make_web_fetch  # noqa: PLC0415 — same cycle.
+
     registry.register(
-        _make_web_fetch(
+        make_web_fetch(
             max_bytes=web_fetch_max_bytes,
             max_text_chars=web_fetch_max_text_bytes,
             timeout_s=web_timeout_s,

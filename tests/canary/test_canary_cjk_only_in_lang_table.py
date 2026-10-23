@@ -74,6 +74,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # The browser guard (ADR 0059) reads a page's own labels, Chinese sites included.
     "jarvis/execution/browser_guard.py": frozenset({"_MONEY", "_CARD", "_SECRET"}),
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
+    # `web_fetch` (ADR 0360) tells a bot check, a consent page and a subscribe teaser from an
+    # article by the page's own words, Chinese sites included.
+    "jarvis/execution/web_fetch_tool.py": frozenset({"_CHALLENGE", "_CONSENT", "_SUBSCRIBE"}),
     # The ask card (ADR 0066) refuses fields whose model-written labels ask for a secret.
     "jarvis/execution/tools.py": frozenset({"_ASK_SECRET_RE"}),
     # `save_place`'s description (ADR 0234) names a Chinese sentence as an example of what Allen
