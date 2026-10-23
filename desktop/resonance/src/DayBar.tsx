@@ -3,10 +3,8 @@ import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, Person
 import { tr, useCompanionSettings, type L } from './companionSettings';
 import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, pieceAt, rowAt, snap, summarize, type BarBy, type BarSeg, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
-import { cardOf } from './numberCard';
-import { CardBody, Swap } from './CardView';
 import { EASE, SayWhat } from './RowOpen';
-import { sayRange, type Said } from './dayOpen';
+import { sayOf, sayRange, type Said } from './dayOpen';
 import { Ic } from './dayIcons';
 import { DoorMarks, extentOf, nearestMark, type Extent } from './DayDoors';
 import type { BarMark } from './doors';
@@ -14,8 +12,8 @@ import './day-bar.css';
 
 // The day in one bar (ADR 0308), above the rows: 26 px, what each stretch is, written in it when the name fits (its icon always); now; what is still to
 // come. The pointer reads it: the minute under the bar, the stretch under it lit together with its row; a click jumps the list there, a drag chooses a
-// range. The row that is selected has a frame round its span that glides when the selection changes. Under it the day's numbers, each a lens. The rows
-// are DayTimeline's: they meet this at a row's key.
+// range. The row that is selected has a frame round its span that glides when the selection changes. Under it the day's numbers on one line, each a filter. A stretch
+// nothing recorded is a dashed "?" and a click on it asks what it was. The rows are DayTimeline's: they meet this at a row's key.
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const LABEL = '600 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif', MONO = '600 11px "JetBrains Mono", Menlo, monospace';
 const CARD_W = 280, EDGE = 4, TAP_PX = 3, FLASH_MS = 600, PIN_HALF = 19;
@@ -24,7 +22,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 let measuring: CanvasRenderingContext2D | null = null;
 const textWidth = (text: string, mono: boolean) => { const ctx = measuring ??= document.createElement('canvas').getContext('2d')!; ctx.font = mono ? MONO : LABEL; return Math.ceil(ctx.measureText(text).width); };
 
-// Kind colours belong to a lens and to the numbers' icons only.
+// Kind colours belong to a filter (the lens) and to the numbers' icons only.
 const KIND: Record<LensKind, Rgb> = { sleep: [112, 120, 205], trip: [196, 208, 255], workout: [156, 224, 120], work: [108, 156, 255], call: [111, 224, 180], talk: [172, 124, 255], payment: [240, 132, 218], picture: [255, 240, 220] };
 const KIND_ICON: Record<LensKind, PhosphorIcon> = { sleep: Moon, trip: Path, workout: PersonSimpleRun, work: Laptop, call: Phone, talk: ChatCircleDots, payment: Coins, picture: PictureIcon };
 
@@ -106,10 +104,19 @@ export type PageBar = { marks: BarMark[]; mute: ReadonlySet<string> | null; numb
 export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; sweep: boolean; hot: string | null; open: string | null; door: PageBar | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang, barBy }, setSettings] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t, barBy), [model, lang, barBy]), nums = useMemo(() => numbers(model, t), [model, lang]);
-  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
+  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
   const frame = useRef<{ date: string; at: CSSProperties } | null>(null), epoch = useRef(0), [hover, setHover] = useState<{ x: number } | null>(null), [band, setBand] = useState<Range | null>(null), [flash, setFlash] = useState<string | null>(null), flashEnd = useRef(0);
-  // The pinned number's card hangs under the numbers; a range being chosen or chosen has the room (its card wins), and the number's comes back when the range goes.
-  const numCard = useMemo(() => ui.pinned && !door ? cardOf(model, ui.pinned, t, nums) : null, [model, lang, nums, ui.pinned, !!door]), numKind = numCard && !ui.sel && !band ? numCard.kind : null;
+  // The chips are one line: those that do not fit at the right are hidden (they keep their room, so what fits is measured the same each time); `cutAt` is the first that is.
+  const strip = useRef<HTMLDivElement>(null), [cutAt, setCutAt] = useState(Infinity);
+  useLayoutEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    const fits = () => { const room = el.clientWidth, over = [...el.children].findIndex(c => (c as HTMLElement).offsetLeft + (c as HTMLElement).offsetWidth > room + .5); setCutAt(over < 0 ? Infinity : over); };
+    fits();
+    const ro = new ResizeObserver(fits);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [nums, model.vitals, lang, !!door, !!bar]);
   useLayoutEffect(() => {
     const el = track.current;
     if (!el) return;
@@ -150,12 +157,6 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
     root.addEventListener('animationstart', seen);
     return () => { root.removeEventListener('animationstart', seen); clearTimeout(flashEnd.current); };
   }, [!!bar]);
-  // A number's card comes in over 180 ms on the pane's ease, rising 4 px; under reduced motion it fades in over 120.
-  useLayoutEffect(() => {
-    if (!numKind) return;
-    const quiet = reduced.matches;
-    nIn.current?.animate(quiet ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: quiet ? 120 : 180, easing: quiet ? 'linear' : EASE });
-  }, [!numKind]);
   // A click away from the range card lets it go.
   useEffect(() => {
     if (!ui.sel) return;
@@ -199,6 +200,9 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
     const x = at(e), a = snap(ms(p.x0)), b = snap(ms(x));
     setBand(null);
     if (p.drag && a !== b) { ui.setSel({ a: Math.min(a, b), b: Math.max(a, b) }); return; }
+    // A stretch nothing recorded asks what it was: the same input a range has (the row is selected as for any click).
+    const hole = door ? null : pieceAt(bar, ms(x)), said = hole && model.segs.get(hole)?.unknown ? sayOf(model, hole) : null;
+    if (said) onSay(said);
     if (open) { onPage(door ? near(e) : pieceAt(bar, ms(x))); return; }
     const key = door ? near(e) : rowAt(model, bar, ms(x));
     if (key) onJump(key);
@@ -286,14 +290,13 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
       </div>}
     </div>
     {door ? door.numbers : (nums.length + model.vitals.length > 0 || by) && <div className="dt-numbers" role="group" aria-label={t(['The day in numbers', '这一天的数字'])}>
-      {nums.map(n => { const Glyph = KIND_ICON[n.kind]; return <button key={n.kind} type="button" className={`dt-num${ui.pinned === n.kind ? ' is-pinned' : ''}`} aria-pressed={ui.pinned === n.kind} style={{ '--k': rgb(KIND[n.kind]) } as CSSProperties}
-        onPointerEnter={() => ui.setPreview(n.kind)} onPointerLeave={() => ui.setPreview(null)} onClick={() => ui.setPinned(ui.pinned === n.kind ? null : n.kind)}>
-        <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
-      {model.vitals.length > 0 && <div className="dt-vitals">{model.vitals.map(v => <span key={v.key} className="dt-vit" data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}</div>}
+      <div ref={strip} className="dt-nums">
+        {nums.map((n, i) => { const Glyph = KIND_ICON[n.kind], cut = i >= cutAt; return <button key={n.kind} type="button" className={`dt-num${ui.pinned === n.kind ? ' is-pinned' : ''}${cut ? ' is-cut' : ''}`} aria-pressed={ui.pinned === n.kind} aria-hidden={cut || undefined} tabIndex={cut ? -1 : undefined} data-chip={n.kind} style={{ '--k': rgb(KIND[n.kind]) } as CSSProperties}
+          onPointerEnter={() => ui.setPreview(n.kind)} onPointerLeave={() => ui.setPreview(null)} onClick={() => ui.setPinned(ui.pinned === n.kind ? null : n.kind)}>
+          <Glyph size={12} aria-hidden="true"/><span>{n.label}</span><em>{n.value}</em></button>; })}
+        {model.vitals.map((v, i) => <span key={v.key} className={`dt-vit${nums.length + i >= cutAt ? ' is-cut' : ''}`} data-vital={v.key}>{v.before && <small>{v.before}</small>}<em>{v.value}</em>{v.after && <small>{v.after}</small>}</span>)}
+      </div>
       {by}
-      {numCard && numKind && <div className="dt-card is-num is-on" role="region" aria-label={numCard.label}>
-        <div ref={nIn} className="dt-card-in"><Swap id={numCard.kind}><CardBody card={numCard} Glyph={KIND_ICON[numCard.kind]} color={`rgb(${rgb(KIND[numCard.kind])})`} port={port} onPicture={onPicture} t={t}/></Swap></div>
-      </div>}
     </div>}
     {cut && <div className="dt-filter"><span>{t(['Only ', '只看 '])}<b>{clock(Math.min(cut.a, cut.b), model.tz)}–{endClock(Math.max(cut.a, cut.b), model.reply, model.tz)}</b></span>
       <button type="button" aria-label={t(['Show the whole day', '看回整天'])} onClick={() => ui.setFilter(null)}><X size={11} weight="bold"/></button></div>}
