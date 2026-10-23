@@ -1,0 +1,43 @@
+{
+  "id": "plumbing-deep-sources-under-the-answer",
+  "layer": "plumbing",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "said": "look carefully: which oat milk is best for lattes",
+  "recording": "plumbing-deep-sources-under-the-answer.recording.json",
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "arguments": {
+            "query": "which oat milk is best for lattes, compare several sources",
+            "depth": "deep"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Barista blends steam best."
+    }
+  ],
+  "expect": {
+    "model_requests": 2,
+    "text_must": [
+      "^<voice>\\nBarista blends steam best\\.\\n</voice>\\n<document>\\n## Sources\\n- \\[",
+      "\\n- \\[[^\\]]+\\]\\(https://[^)\\s]+\\) · [a-z.]+example\\.com · 2026-10-14\\n"
+    ],
+    "text_must_not": [
+      "<voice>(?:(?!</voice>)[\\s\\S])*(?:Sources|https?://)"
+    ],
+    "request_has": [
+      {
+        "request": 1,
+        "role": "tool",
+        "tool": "web_search",
+        "matches": "The sources are listed under your answer\\."
+      }
+    ]
+  }
+}

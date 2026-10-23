@@ -88,6 +88,7 @@ from jarvis.decision.response_run import ResponseCancelledError, wait_out_hold
 from jarvis.decision.stream_envelope import (
     EnvelopeTail,
     StreamEnvelopeSplitter,
+    append_to_document,
     compose_envelope,
     envelope_only,
     split_envelope,
@@ -136,6 +137,8 @@ from jarvis.shared.receipts import (
     receipt_id,
     said,
 )
+from jarvis.shared.sources import Source, cited
+from jarvis.shared.sources import section as sources_section
 from jarvis.shared.text import is_english, truncate_utf8
 from jarvis.shared.tool_discovery import native_catalog
 from jarvis.state import reactions
@@ -807,6 +810,9 @@ class _Scratch:
     receipts: dict[str, Receipt] = field(default_factory=dict)
     # ADR 0257: the first valid <react> emoji of the turn's replies.
     reaction: str | None = None
+    # ADR 0359: the pages this turn's tools named for her answer, by address, in the order found;
+    # code writes them under the written part of her answer.
+    sources: dict[str, Source] = field(default_factory=dict)
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -2590,6 +2596,7 @@ def _dispatch_one_tool_call(  # noqa: C901, PLR0915 — single-pass orchestratio
     scratch.calls.append(TurnCall(name, receipt.reads_only, ok=receipt.ok, key=key))
     rid = receipt_id(action_id)
     scratch.receipts[rid] = receipt
+    _note_sources(scratch, result.payload)
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
@@ -2625,6 +2632,12 @@ def _completion_failed(  # noqa: PLR0913 — the call, what the completion said,
         )
     )
     return "continue"
+
+
+def _note_sources(scratch: _Scratch, payload: Mapping[str, Any]) -> None:
+    """Keep the pages a finished tool call names for her answer (ADR 0359), once each."""
+    for page in cited(payload):
+        scratch.sources.setdefault(page.url, page)
 
 
 def _render_result_for_llm(result: RawResult, rid: str) -> str:
@@ -3542,12 +3555,15 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
     """
     tail = speaker.finish()
     suffix = speaker.voice[len(speaker.prefix) :]
+    ask = draft is not None
     if speaker.emitted == 0:
         if draft is None:
             draft = compose_envelope(suffix, tail.document) if tail.enveloped else suffix
-        result = _finalize_response(draft, packet, ctx, scratch)
+        result = _finalize_response(draft, packet, ctx, scratch, with_sources=not ask)
         plan = result.response_plan
-        written_apart = speaker.written_apart and plan is not None and split_envelope(plan.text)[2]
+        written_apart = result.written_apart or (
+            speaker.written_apart and plan is not None and split_envelope(plan.text)[2]
+        )
         return replace(result, written_apart=written_apart)
     if draft is not None:
         suffix = f"{suffix}\n\n{draft}" if suffix.strip() else f"\n\n{draft}"
@@ -3581,8 +3597,14 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
             stream_failure=outcome,
         )
     plan = outcome
-    if tail.enveloped:
-        text = compose_envelope(plan.text, tail.document)
+    written_apart = speaker.written_apart
+    text = compose_envelope(plan.text, tail.document) if tail.enveloped else plan.text
+    if not ask and scratch.sources:  # ADR 0359: under the written part, never in what was spoken
+        text, apart = append_to_document(
+            text, sources_section(scratch.sources.values(), scratch.lang),
+        )
+        written_apart = written_apart or apart
+    if text != plan.text:
         plan = replace(
             plan,
             text=text,
@@ -3596,7 +3618,7 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
         route="spoken",
         emitted_segments=speaker.emitted,
         last_gate_event_uid=speaker.last_gate,
-        written_apart=speaker.written_apart,
+        written_apart=written_apart,
     )
 
 
@@ -3813,12 +3835,17 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     gate_text: str | None = None,
     document_form: bool = False,
     model_answer: bool = False,
+    with_sources: bool = False,
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
     ``model_answer`` marks a draft the model wrote as its answer. Only that
     draft may get a spoken form (ADR 0040): fixed L3 text is already written
     to be spoken, and a confirmation ask must be heard word for word.
+
+    The pages this turn's tools named go under the written part of the draft (ADR 0359) when it
+    is the model's answer, or when ``with_sources`` says it is the stream's unspoken rest; never
+    under fixed text or an ask. They are never in its voice.
 
     ``gate_text`` (ADR-0011 §12, MUST-FIX 2a): the Tier 0 path
     (`_run_tier0_path`) renders `draft_text` by interpolating TOOL
@@ -3905,6 +3932,11 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     if attention == "voice_notify" and model_answer and not typed_turn(packet.trigger_event):
         plan = _with_spoken_form(plan, packet, ctx, scratch)
 
+    # ADR 0359: the pages a deep search rests on, under the written part of her answer.
+    written_apart = False
+    if (model_answer or with_sources) and scratch.sources:
+        plan, written_apart = _with_sources(plan, scratch)
+
     # turn.ended. ``source_event_id`` references the gate verdict.
     if scratch.turn_id is not None:
         scratch.events.append(
@@ -3922,6 +3954,22 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
         events_emitted=tuple(scratch.events),
         turn_id=scratch.turn_id,
         attention_channel=attention,
+        written_apart=written_apart,
+    )
+
+
+def _with_sources(plan: ResponsePlan, scratch: _Scratch) -> tuple[ResponsePlan, bool]:
+    """``plan`` with the turn's pages listed at the end of its written part (ADR 0359).
+
+    The flag says the written part is now only what the voice leaves out (ADR 0114): the answer
+    had no written part of its own.
+    """
+    text, apart = append_to_document(
+        plan.text, sources_section(scratch.sources.values(), scratch.lang),
+    )
+    return (
+        replace(plan, text=text, response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest()),
+        apart,
     )
 
 

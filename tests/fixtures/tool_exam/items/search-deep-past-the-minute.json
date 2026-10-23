@@ -13,7 +13,7 @@
   "recording": "search-deep-past-the-minute.recording.json",
   "expect": {
     "summary_must": [
-      "^Deep search for 'which oat milk is best for lattes, compare several sources' stopped at a minute before writing its brief; 3 pages found, listed below with site and date\\."
+      "^Deep search for 'which oat milk is best for lattes, compare several sources' stopped at a minute before writing its brief; 3 pages found, listed below with site and date and under your answer\\."
     ],
     "result": [
       {

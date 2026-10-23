@@ -50,6 +50,19 @@ def compose_envelope(voice: str, document: str) -> str:
     )
 
 
+def append_to_document(text: str, addition: str) -> tuple[str, bool]:
+    """``text`` with ``addition`` at the end of its written part, never inside its voice.
+
+    An answer with no ``<document>`` (a lone ``<voice>``, or a text with no tags, which is voice
+    and document at once) gets one holding only ``addition``; its voice stays as it was. The flag
+    says the written part is then only what the voice leaves out (ADR 0114), not the whole answer.
+    """
+    voice, document, enveloped = split_envelope(text)
+    if enveloped and document:
+        return compose_envelope(voice, f"{document}\n\n{addition}"), False
+    return compose_envelope(voice, addition), True
+
+
 def envelope_only(text: str) -> str:
     """Return the envelope alone; a tag-less text, or one with nothing outside, as is.
 
