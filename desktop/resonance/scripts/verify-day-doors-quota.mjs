@@ -231,7 +231,7 @@ try {
     check('a past window\'s row: when it began, 5 小时额度, from and to, and how high it got (用到 15%, 用到 64%)',
       JSON.stringify(rows[ks.w1]) === want('10:30', '5 小时额度', '10:30 – 15:30', '用到 15%') && JSON.stringify(rows[ks.w2]) === want('16:10', '5 小时额度', '16:10 – 21:10', '用到 64%'), JSON.stringify([rows[ks.w1], rows[ks.w2]]));
     check('the running window\'s row says 已用 38% in the value look, its glyph ring is lit', JSON.stringify(rows[ks.w3]) === want('21:10', '5 小时额度', '21:10 – 02:10', '已用 38%', { value: true, ring: true }), JSON.stringify(rows[ks.w3]));
-    check('the reset to come: its clock, 重置, "a new window starts", how long is left (4 时 20 分, as the day writes durations), in the future look', JSON.stringify(rows.reset) === want('02:10', '重置', '这 5 小时重新算', '还有 4 时 20 分', { future: true }), JSON.stringify(rows.reset));
+    check('the reset to come: its clock, 重置, "a new window starts", how long is left (4 小时 20 分, as the day writes durations), in the future look', JSON.stringify(rows.reset) === want('02:10', '重置', '这 5 小时重新算', '还有 4 小时 20 分', { future: true }), JSON.stringify(rows.reset));
     check('every row is a way into a page (the Dashboard\'s usage page): none is still', await a.page.locator('.notch .dt-row[data-key].is-still').count() === 0 && await a.page.locator('.notch .dt-row[data-key]:not(.is-still)').count() === 4);
 
     // ---- the levels on the bar ----

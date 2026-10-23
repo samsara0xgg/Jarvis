@@ -45,7 +45,7 @@ export type DoingSpan = { id: string; lane: 'doing'; kind: string; start_ms: num
   clues: Clue[]; place_id: string | null; item_ids: string[] };
 export type Say = (l: L) => string;
 export type Rgb = readonly [number, number, number];
-export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'hike' | 'swim' | 'strength' | 'yoga' | 'sport' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'code' | 'call' | 'home' | 'school' | 'pin' | 'payment' | 'chat'
+export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'hike' | 'swim' | 'strength' | 'yoga' | 'sport' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'code' | 'call' | 'home' | 'school' | 'book' | 'pin' | 'payment' | 'chat'
   | 'meal' | 'rest' | 'bag' | 'people' | 'unknown' | 'music' | 'message' | 'device' | 'note';
 // What the day's numbers count (the chips under the bar) and what a lens lights: a row or a span of the bar is one of these or none.
 export type LensKind = 'sleep' | 'trip' | 'workout' | 'work' | 'call' | 'talk' | 'payment' | 'picture';
@@ -141,8 +141,13 @@ export function clock(ms: number, tz: string) {
   }
   return f.format(ms);
 }
-// `40 分`, `1 时 40 分`, `3 时`.
+// A length as the phone writes it (`tlDur`): `41 分钟`, `1 小时 26 分`, `3 小时`. English is unchanged.
 export function dur(min: number, t: Say) {
+  const m = Math.max(0, Math.round(min)), h = Math.floor(m / 60), r = m % 60;
+  return h === 0 ? t([`${m} min`, `${m} 分钟`]) : r === 0 ? t([`${h} h`, `${h} 小时`]) : t([`${h} h ${r} min`, `${h} 小时 ${r} 分`]);
+}
+// The compact length where room is short (the chips, the wing's line): `40 分`, `1 时 40 分`, `3 时`.
+export function durShort(min: number, t: Say) {
   const m = Math.max(0, Math.round(min)), h = Math.floor(m / 60), r = m % 60;
   return h === 0 ? t([`${m} min`, `${m} 分`]) : r === 0 ? t([`${h} h`, `${h} 时`]) : t([`${h} h ${r} min`, `${h} 时 ${r} 分`]);
 }
@@ -165,7 +170,7 @@ export function shiftDate(date: string, days: number) {
 // ---------- places ----------
 // Home is warm, school is blue, any other place he keeps has a hue of its own that never changes (picked from its id, FNV-1a: the
 // phone does the same), a stay with no name of his is a neutral haze. None is amber: amber is the turn mark's.
-const HOME: Rgb = [255, 168, 150], SCHOOL: Rgb = [100, 200, 255], NEUTRAL: Rgb = [196, 204, 238];
+const HOME: Rgb = [231, 154, 138], SCHOOL: Rgb = [93, 183, 235], NEUTRAL: Rgb = [196, 204, 238];
 const OTHERS: Rgb[] = [[240, 132, 218], [132, 152, 255], [172, 124, 255], [111, 224, 180]];
 export function fnv(text: string) {
   let h = 2166136261;
@@ -200,14 +205,14 @@ export function wingText(day: DayReply | null, now: number, t: Say): { head: str
 }
 function wingLine(day: DayReply | null, now: number, t: Say) {
   const doing = doingAt(each(day?.spans, doingOf), now, t);
-  if (doing) return { head: doing.words, tail: doing.span.category === 'commute' ? dur(Math.floor((now - doing.span.start_ms) / 60_000), t) : since(now - doing.span.start_ms) };
+  if (doing) return { head: doing.words, tail: doing.span.category === 'commute' ? durShort(Math.floor((now - doing.span.start_ms) / 60_000), t) : since(now - doing.span.start_ms) };
   let moving: DayItem | undefined, stay: DayItem | undefined;
   for (const it of Array.isArray(day?.items) ? day!.items : []) {
     if (!sound(it) || it.start_ms > now || it.end_ms != null && it.end_ms <= now) continue;
     if ((it.kind === 'ride' || it.kind === 'move') && (!moving || it.start_ms >= moving.start_ms)) moving = it;
     else if (it.kind === 'stay' && (!stay || it.start_ms >= stay.start_ms)) stay = it;
   }
-  if (moving) return { head: moving.kind === 'ride' ? rideWords(moving, t) : moveWords(moving.activity, t), tail: dur(Math.floor((now - moving.start_ms) / 60_000), t) };
+  if (moving) return { head: moving.kind === 'ride' ? rideWords(moving, t) : moveWords(moving.activity, t), tail: durShort(Math.floor((now - moving.start_ms) / 60_000), t) };
   if (stay) { const look = stayLook(stay, t); return { head: look.unnamed ? t(['Staying', '停留']) : look.name, tail: since(now - stay.start_ms) }; }
   return { head: t(['Today', '今天']), tail: '' };
 }
@@ -502,7 +507,7 @@ function stayHead(it: DayItem, c: Ctx): StayHead {
 // ---------- the stretches of what he was doing (ADR 0302, 0307) ----------
 // A category's colour and glyph (the same on the phone): a way he went keeps the haze of a move, sleep the night's blue; a stretch nothing says the words of is the hole's.
 const CATEGORIES: Record<string, { rgb: Rgb | null; icon: Icon }> = {
-  work: { rgb: [91, 140, 255], icon: 'work' }, study: { rgb: [155, 123, 255], icon: 'school' }, meal: { rgb: [240, 176, 79], icon: 'meal' }, rest: { rgb: [111, 168, 200], icon: 'rest' },
+  work: { rgb: [91, 140, 255], icon: 'work' }, study: { rgb: [155, 123, 255], icon: 'book' }, meal: { rgb: [240, 176, 79], icon: 'meal' }, rest: { rgb: [111, 168, 200], icon: 'rest' },
   sleep: { rgb: SLEEP, icon: 'moon' }, exercise: { rgb: [76, 195, 138], icon: 'run' }, commute: { rgb: TRANSIT, icon: 'walk' }, errand: { rgb: [232, 135, 90], icon: 'bag' },
   social: { rgb: [233, 121, 166], icon: 'people' }, home: { rgb: [168, 159, 145], icon: 'home' }, unknown: { rgb: null, icon: 'unknown' },
 };
