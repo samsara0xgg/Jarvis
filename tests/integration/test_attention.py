@@ -217,6 +217,34 @@ def test_a_file_document_is_keyed_by_its_whole_path_and_only_its_name_is_cut(
                for name in keys.values())
 
 
+def test_only_a_real_home_is_shown_as_tilde() -> None:
+    """``/Users/Shared`` is a shared folder, not a home; ``/home/<name>`` is one."""
+    shown = {
+        document: attention.held({"appName": "Cursor", "document": document})[0][1]
+        for document in (
+            "file:///Users/Shared/x/", "file:///Users/Shared", "file:///Users/someone/x",
+            "file:///home/allen/x", "file:///Users/Sharedx/y",
+        )
+    }
+    assert list(shown.values()) == [
+        "/Users/Shared/x", "/Users/Shared", "~/x", "~/x", "~/y",
+    ]
+
+
+def test_a_key_is_named_the_same_by_held_and_by_key_name() -> None:
+    """Including a title that starts with "/" or "~", and a title longer than the cut."""
+    for fields in (
+        {"appName": "Safari", "title": "/etc/hosts - " + "x" * 40},
+        {"appName": "Safari", "title": "~ notes " + "x" * 40},
+        {"appName": "Safari", "title": "Release notes " + "x" * 40},
+        {"appName": "Cursor", "document": "file:///Users/someone/Documents/coop/a/b/c/final.md"},
+        {"appName": "Cursor", "document": "A | B conversation"},
+    ):
+        (app, what), name = attention.held(fields)
+        assert attention.key_name(f"mac|{app}|{what}") == name
+    assert attention.key_name("app|com.tencent.xin") == "com.tencent.xin"
+
+
 def test_a_long_title_is_one_key_and_its_name_is_cut() -> None:
     """A title is folded for whitespace only: the key is whole, the name ends in an ellipsis."""
     title = "Release   notes " + "x" * 40

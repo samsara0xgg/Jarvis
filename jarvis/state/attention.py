@@ -58,7 +58,8 @@ holds more than this that the row around it would leave out."""
 TITLE_MAX_CHARS: Final = 30
 """The most of a window's title or document a Mac key's name shows (the key itself holds all of
 it); a longer title is cut at its end with an ellipsis, a longer path at its start."""
-_HOME: Final = re.compile(r"^/(?:Users|home)/[^/]+")
+_HOME: Final = re.compile(r"^/(?:Users/(?!Shared(?:/|$))|home/)[^/]+")
+"""A real home: ``/Users/<name>`` (not the shared folder) or ``/home/<name>``."""
 AROUND_MS: Final = 15 * _MINUTE_MS
 """How far around a key that serves what is around it the thread it served is looked for."""
 MAC: Final = "mac"
@@ -141,14 +142,19 @@ def held(fields: Mapping[str, Any]) -> tuple[tuple[str, str], str]:
     document = fields.get("document")
     path = _path_of(str(document)) if document else None
     if path is not None:
-        return (app, path), _named(app, path, is_path=True)
+        return (app, path), _named(app, path)
     what = " ".join(str(document or fields.get("title") or "").split())
-    return (app, what), _named(app, what, is_path=False)
+    return (app, what), _named(app, what)
 
 
-def _named(app: str, what: str, *, is_path: bool) -> str:
-    """How a Mac key is named: the app and ``what`` cut to :data:`TITLE_MAX_CHARS`."""
-    if is_path:
+def _named(app: str, what: str) -> str:
+    """How a Mac key is named: the app and ``what`` cut to :data:`TITLE_MAX_CHARS`.
+
+    A ``what`` rooted or starting with ``~`` is shown as a path (cut at its start), anything else
+    as a title (cut at its end); the key alone says which, so a title that starts so is a path
+    here too.
+    """
+    if what.startswith(("/", "~")):
         what = what if len(what) <= TITLE_MAX_CHARS else "…" + what[1 - TITLE_MAX_CHARS :]
     else:
         what = _cut(what)
@@ -158,13 +164,14 @@ def _named(app: str, what: str, *, is_path: bool) -> str:
 def key_name(key: str) -> str:
     """How a key is named when no piece shows it: a Mac key as :func:`held` names it.
 
-    A ``what`` that is rooted or starts with ``~`` was a path; a device key is its bundle.
+    The same name for the same key, always: :func:`_named` reads only the key. A device key is its
+    bundle.
     """
     kind, _, rest = key.partition("|")
     if kind != MAC:
         return rest.strip()
     app, _, what = rest.partition("|")
-    return _named(app, what, is_path=what.startswith(("/", "~")))
+    return _named(app, what)
 
 
 def mac_spans(
