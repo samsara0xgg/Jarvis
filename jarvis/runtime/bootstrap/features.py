@@ -21,7 +21,7 @@ from jarvis.runtime.bootstrap.places import _here_location, _locator
 from jarvis.runtime.bootstrap.vision import _build_vision_client
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import DailyReportService
-from jarvis.runtime.dashboard import MailDrafts, ViewState
+from jarvis.runtime.dashboard import ViewState
 from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.moment import Moment
@@ -66,7 +66,6 @@ class Features:
     voice_settings: VoiceSettings
     view: ViewState | None
     mail_view: ViewState | None
-    mail_drafts: MailDrafts | None
     voice_cues: VoiceCues
     ambient: AmbientSounds | None
     bus_live: BusLive
@@ -84,15 +83,15 @@ class Features:
 
 def _dashboard_state(
     settings: DashboardSettings,
-) -> tuple[ViewState | None, ViewState | None, MailDrafts | None]:
-    """The Dashboard's view, the view the mail page reads, and the mail drafts (None = off).
+) -> tuple[ViewState | None, ViewState | None]:
+    """The Dashboard's view and the view the mail page reads (None = off).
 
     The mail page needs the view (ADR 0176: its open letter is the view's open item); with
     ``dashboard.mail.enabled`` alone it stays off.
     """
     view = ViewState() if settings.view else None
     mail_view = view if settings.mail else None
-    return view, mail_view, None if mail_view is None else MailDrafts(mail_view)
+    return view, mail_view
 
 
 def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Features:
@@ -167,7 +166,7 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         )
     )
     voice_settings = VoiceSettings(paths.root / "voice-settings.json")
-    view, mail_view, mail_drafts = _dashboard_state(config.dashboard)
+    view, mail_view = _dashboard_state(config.dashboard)
     voice_cues = VoiceCues()
     ambient = (
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
@@ -211,7 +210,6 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         voice_settings=voice_settings,
         view=view,
         mail_view=mail_view,
-        mail_drafts=mail_drafts,
         voice_cues=voice_cues,
         ambient=ambient,
         bus_live=bus_live,

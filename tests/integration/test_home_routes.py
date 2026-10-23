@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from jarvis.decision.surrogate_route import JevLog
 from jarvis.runtime.config import MailToolsSettings
 from jarvis.runtime.daemon.routes import mail_letter, serve_today, set_todo
-from jarvis.runtime.dashboard import MailDrafts, ViewState
+from jarvis.runtime.dashboard import ViewState
 from jarvis.runtime.home import Home
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.state import things
@@ -875,59 +875,3 @@ def test_the_page_text_keeps_links_as_urls_and_the_models_record_does_not() -> N
     assert mail_body(html_body, links=True) == "Join the call (https://x.example/a) or https://y.example"
     assert mail_body(html_body) == "Join the call or https://y.example"
     assert len(mail_body("x" * 5000, links=True)) == 4001
-
-
-def _drafts_client(gmail: Gmail | None = None) -> tuple[TestClient, ViewState, MailDrafts]:
-    """The mail page's draft routes over the real stores, wired as the daemon's build_deps does."""
-    from jarvis.runtime.daemon.routes import draft_view, save_draft  # noqa: PLC0415
-
-    view = ViewState()
-    drafts = MailDrafts(view)
-    home = Home(
-        Connections(Microsoft(), gmail or Gmail()),  # type: ignore[arg-type]
-        (ZONE, ZoneInfo(ZONE)), None, None, view,
-    )
-
-    async def read(letter_id: str) -> dict[str, Any]:
-        return await asyncio.to_thread(draft_view, home, drafts, letter_id)
-
-    async def save(letter_id: str, subject: str, body: str) -> dict[str, Any]:
-        return await asyncio.to_thread(save_draft, home, drafts, letter_id, subject, body)
-
-    async def discard(letter_id: str) -> None:
-        drafts.discard(letter_id)
-
-    app = create_app(InherentDeps(
-        submit_callable=lambda _text: None, broadcaster=InherentBroadcaster(),
-        view_set=view.set, mail_draft_read=read, mail_draft_save=save, mail_draft_discard=discard,
-    ))
-    return TestClient(app), view, drafts
-
-
-def test_the_draft_is_jarvis_then_allens_edit_with_a_revision_each_and_can_be_discarded() -> None:
-    """ADR 0148: GET {draft: null} first; Jarvis's body, then his hand edit, bump the revision."""
-    client, view, drafts = _drafts_client()
-    letter = "199a1c0d4101"
-    assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": None}
-    view.set("mail", item=("mail", letter, "Prof. Lee — Office hours move to Thursday"))
-    first = drafts.write(letter, "Thanks, Thursday works.")
-    assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": {
-        "revision": first, "to": "lee@uvic.ca", "subject": "Re: Office hours move to Thursday",
-        "body": "Thanks, Thursday works.", "by": "jarvis",
-    }}
-    saved = client.post(
-        f"/inherent/mail/{letter}/draft", json={"subject": "Thursday it is", "body": "Yes, 3pm."},
-    ).json()["draft"]
-    assert saved == {
-        "revision": first + 1, "to": "lee@uvic.ca", "subject": "Thursday it is",
-        "body": "Yes, 3pm.", "by": "owner",
-    }
-    assert drafts.line() == (
-        f"Draft reply under it (revision {first + 1}, last edited by Allen): Yes, 3pm."
-    )
-    drafts.write(letter, "Yes, 3pm works for me.")  # Jarvis revises; the subject Allen set stays
-    got = client.get(f"/inherent/mail/{letter}/draft").json()["draft"]
-    assert (got["by"], got["subject"], got["revision"]) == ("jarvis", "Thursday it is", first + 2)
-    drafts.discard(letter)
-    assert client.get(f"/inherent/mail/{letter}/draft").json() == {"draft": None}
-    assert drafts.line() is None

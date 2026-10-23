@@ -45,11 +45,11 @@ if TYPE_CHECKING:
     from jarvis.decision.turn_end_asks import TurnEndAsks
     from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.card_feedback import CardFeedback
-    from jarvis.runtime.dashboard import MailDrafts
     from jarvis.runtime.doing_answers import DoingAnswers
     from jarvis.runtime.highlight_marks import HighlightMarks
     from jarvis.runtime.home import Home
     from jarvis.runtime.job_mail import JobMail
+    from jarvis.runtime.mail_page import MailPage
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.reminders import Reminders
     from jarvis.runtime.rides import Rides
@@ -180,23 +180,23 @@ async def archive_mail(home: Home, ids: list[str], archive: bool) -> None:  # no
     await asyncio.to_thread(functools.partial(home.archive, ids, undo=not archive))
 
 
-def draft_deps(runtime: JarvisRuntime, home: Home | None) -> dict[str, Any]:
-    """The four draft routes' callables (ADR 0148), or none while the mail page is off."""
-    drafts = runtime.mail_drafts
-    if home is None or drafts is None:
+def draft_deps(runtime: JarvisRuntime) -> dict[str, Any]:
+    """The four draft routes' callables (ADR 0148, 0366), or none while the mail page is off."""
+    page = runtime.mail_page
+    if page is None:
         return {}
 
     async def read(letter_id: str) -> dict[str, Any]:
-        return await asyncio.to_thread(draft_view, home, drafts, letter_id)
+        return await asyncio.to_thread(page.view, letter_id)
 
     async def save(letter_id: str, subject: str, body: str) -> dict[str, Any]:
-        return await asyncio.to_thread(save_draft, home, drafts, letter_id, subject, body)
+        return await asyncio.to_thread(page.save, letter_id, subject, body)
 
     async def send(letter_id: str, subject: str, body: str) -> None:
-        await asyncio.to_thread(_send_draft, runtime, home, drafts, letter_id, subject, body)
+        await asyncio.to_thread(_send_draft, runtime, page, letter_id, subject, body)
 
     async def discard(letter_id: str) -> None:
-        await asyncio.to_thread(drafts.discard, letter_id)
+        await asyncio.to_thread(page.discard, letter_id)
 
     return {
         "mail_draft_read": read,
@@ -529,49 +529,16 @@ async def mail_summary(home: Home, message_id: str) -> dict[str, Any]:
     return {"summary": await asyncio.to_thread(home.summary, message_id)}
 
 
-def draft_view(home: Home, drafts: MailDrafts, letter_id: str) -> dict[str, Any]:
-    """``{draft: {revision, to, subject, body, by} | null}``: the letter gives ``to`` and "Re:"."""
-    draft = drafts.get(letter_id)
-    if draft is None:
-        return {"draft": None}
-    letter = home.letter(letter_id)
-    subject = letter["subject"]
-    return {"draft": {
-        "revision": draft.revision,
-        "to": letter["address"],
-        "subject": draft.subject or (
-            subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        ),
-        "body": draft.body,
-        "by": draft.by,
-    }}
-
-
-def save_draft(
-    home: Home, drafts: MailDrafts, letter_id: str, subject: str, body: str,
-) -> dict[str, Any]:
-    """``POST /inherent/mail/{id}/draft``: Allen's edit becomes the draft."""
-    drafts.edit(letter_id, subject, body)
-    return draft_view(home, drafts, letter_id)
-
-
-def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
-    runtime: JarvisRuntime, home: Home, drafts: MailDrafts, letter_id: str, subject: str, body: str,
+def _send_draft(
+    runtime: JarvisRuntime, page: MailPage, letter_id: str, subject: str, body: str,
 ) -> None:
     """``POST /inherent/mail/{id}/draft/send``: save the edit, raise the send card (no model turn).
 
-    The card is the ``mail`` tool's send (ADR 0361), answering the open letter; his button on it
-    is what sends. A ValueError (empty body) is the route's 400, a missing ``mail`` tool its 404,
-    and a send the tool cannot complete yet (ADR 0366 builds it) the route's 502 with its reason.
+    The card is the ``mail`` tool's send of that Gmail draft (ADR 0361, 0366); his button on it is
+    what sends. A ValueError (empty body) is the route's 400, a missing ``mail`` tool its 404, and
+    a send the tool cannot complete the route's 502 with its reason.
     """
-    if not body.strip():
-        msg = "the draft is empty"
-        raise ValueError(msg)
-    view = save_draft(home, drafts, letter_id, subject, body)["draft"]
-    args = {
-        "action": "send", "to": view["to"], "subject": view["subject"], "body": view["body"],
-        "reply_to": letter_id,
-    }
+    args = {"action": "send", "draft": page.sendable(letter_id, subject, body)}
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
         asked = request_confirmation(

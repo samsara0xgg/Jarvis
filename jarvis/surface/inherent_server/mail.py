@@ -2,7 +2,7 @@
 
 - ADR 0051, 0124: unread mail from people, and archiving the junk letters
 - ADR 0147: the mail page, a letter whole with its read and trash taps
-- ADR 0148: the reply draft under the open letter
+- ADR 0148, 0366: the reply draft under the open letter, a Gmail draft
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ def register_mail_draft_routes(app: FastAPI, deps: InherentDeps) -> None:
 
         @app.get("/inherent/mail/{message_id}/draft")
         async def mail_draft_route(message_id: str) -> dict[str, Any]:
-            """``{draft: {revision, to, subject, body, by} | null}`` under the letter."""
+            """``{draft: {revision, draft, to, subject, body, by} | null}`` under the letter."""
             return await home_call(draft_read(message_id))
 
     if deps.mail_draft_save is not None:
@@ -140,6 +140,6 @@ def register_mail_draft_routes(app: FastAPI, deps: InherentDeps) -> None:
 
         @app.post("/inherent/mail/{message_id}/draft/discard", status_code=200)
         async def mail_draft_discard_route(message_id: str) -> dict[str, bool]:
-            """Drop the draft."""
+            """Discard the draft: move it to Trash."""
             await home_call(draft_discard(message_id))
             return {"ok": True}

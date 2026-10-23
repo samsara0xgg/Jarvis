@@ -1,13 +1,10 @@
-"""ADR 0147 — the open letter, the live-context lines and the page's drafts."""
+"""ADR 0147 — the open letter, the live-context lines and the page's letter and summary."""
 
 from __future__ import annotations
 
 import functools
 import json
 import logging
-from contextlib import closing
-from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -15,20 +12,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis.decision.llm import ChatResult
-from jarvis.execution.mail_gmail import Mailbox
-from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.tools import build_default_registry
-from jarvis.runtime.daemon.routes import _send_draft, mail_letter, mail_summary
-from jarvis.runtime.dashboard import DRAFT_CHARS, DRAFT_LINE_CHARS, MailDrafts, ViewState
+from jarvis.runtime.daemon.routes import mail_letter, mail_summary
+from jarvis.runtime.dashboard import DRAFT_LINE_CHARS, ViewState
 from jarvis.runtime.home import Home, mail_layout, mail_summarizer
 from jarvis.runtime.turn.context import live_lines
 from jarvis.shared import lang
-from jarvis.state.event_log import iter_events_of_types, open_event_log
+from jarvis.state.event_log import open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
-from tests.support.gmail_fake import SENT, Gmail
-from tests.support.mail_rig import ME, SAM
 from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
@@ -73,11 +66,11 @@ def test_live_lines_skip_none_and_a_raising_producer_and_cap_at_200(
     def boom() -> str | None:
         raise RuntimeError
 
-    draft = "Draft reply under it (revision 3, last edited by Allen): " + "y" * 3000
+    draft = "Draft reply under it (draft a1b2c3d4, last edited by Allen): " + "y" * 3000
     with caplog.at_level(logging.ERROR, logger="jarvis.runtime"):
         lines = live_lines((lambda: "a" * 500, lambda: None, boom, lambda: "", lambda: draft))
     assert [len(one) for one in lines] == [200, DRAFT_LINE_CHARS]
-    assert lines[1].startswith("Draft reply under it (revision 3")
+    assert lines[1].startswith("Draft reply under it (draft a1b2c3d4")
     assert "a producer failed" in caplog.text
     assert live_lines(()) == ()
 
@@ -93,30 +86,6 @@ def test_no_tool_writes_a_draft_under_the_open_letter_any_more() -> None:
     """``write_mail_draft`` is gone; the ``mail`` tool is the one way to write a letter."""
     names = {one.name for one in build_default_registry().get_definitions()}
     assert "write_mail_draft" not in names
-
-
-def test_the_pages_drafts_rewrite_whole_and_refuse_closed_letters_and_oversize() -> None:
-    """Revisions climb, the last text wins, the draft line follows; refusals are ValueErrors."""
-    view = ViewState()
-    drafts = MailDrafts(view)
-    with pytest.raises(ValueError, match="not open"):
-        drafts.write(LETTER, "Hi")
-    view.set("mail", item=("mail", LETTER, "Sam — Lunch"))
-    assert drafts.line() is None
-    first = drafts.write(LETTER, "Sure, Friday.")
-    assert drafts.write(LETTER, "Sure, Friday works, thank you.") == first + 1
-    assert drafts.get(LETTER) is not None
-    assert drafts.get(LETTER).body == "Sure, Friday works, thank you."  # type: ignore[union-attr]
-    assert drafts.line() == (
-        f"Draft reply under it (revision {first + 1}, last edited by Jarvis): "
-        "Sure, Friday works, thank you."
-    )
-    for bad in ("", "  ", "x" * (DRAFT_CHARS + 1)):
-        with pytest.raises(ValueError, match="1 to"):
-            drafts.write(LETTER, bad)
-    with pytest.raises(ValueError, match="not open"):
-        drafts.write("another-letter", "Hi")
-    assert drafts.get(LETTER).revision == first + 1  # type: ignore[union-attr]
 
 
 SENTENCE = " 速卖通促销，几件商品打五折左右\n"  # noqa: RUF001 — the page's own language.
@@ -224,41 +193,6 @@ def _page(
         **routes,
     ))
     return TestClient(app), model
-
-
-def test_the_pages_send_asks_the_mail_tool_for_a_card_that_holds_the_letter_made(
-    tmp_path: Path,
-) -> None:
-    """The page's send is a ``mail`` send: completed (reply, recipients, thread), then a card."""
-    log = tmp_path / "events.db"
-    open_event_log(log).close()
-    view = ViewState()
-    drafts = MailDrafts(view)
-    home = Home(
-        _Connections(),  # type: ignore[arg-type]
-        ("America/Vancouver", ZoneInfo("America/Vancouver")), None, None, view, None,
-    )
-    registry = build_default_registry()
-    gmail = Gmail(now=datetime.now(UTC))
-    gmail.add("sent0", "Hello", sender=ME, to=SAM, labels=SENT, at=datetime.now(UTC))
-    gmail.add("plain", "Lunch", sender=SAM, to=ME, thread="tl", at=datetime.now(UTC))
-    registry.register(*build_mail_tool(Mailbox(gmail.tool)))
-    runtime = SimpleNamespace(
-        runtime_paths=SimpleNamespace(event_log=log, artifacts_root=tmp_path),
-        tool_registry=registry,
-        config=SimpleNamespace(confirmation=SimpleNamespace(ttl_ms=600_000)),
-    )
-    _send_draft(runtime, home, drafts, "plain", "Re: Lunch", "Thursday works.")  # type: ignore[arg-type]
-    assert drafts.get("plain") is not None  # his edit is kept
-    with closing(open_event_log(log)) as conn:
-        (card,) = [one.payload for one in iter_events_of_types(conn, ["confirmation.requested"])]
-    (frozen,) = card["calls"]
-    assert frozen["args_meta"] == {
-        "action": "send", "to": ["deals@shop.example"], "cc": [], "bcc": [],
-        "subject": "Re: Lunch", "body": "Thursday works.", "thread": "tl", "draft": "",
-        "you": [],
-    }
-    assert [name for name in gmail.names() if name.startswith(("gmail_create", "gmail_send"))] == []
 
 
 @pytest.mark.parametrize(("name", "layout"), [("plain", "text"), ("table", "html")])
