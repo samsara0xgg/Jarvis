@@ -13,7 +13,8 @@ many lines of each kind and how many in all.
 
 Without ``--live`` no model is called: the morning and the evening line are a fixed ``<stub>``
 message. With ``--live PRESET`` they go to that preset's real model (the key comes from the
-environment). Weather and fresh legs are not fetched in a replay, and nothing is pushed.
+environment, filled from the saved keys of the log's runtime root as the daemon fills it).
+Weather and fresh legs are not fetched in a replay, and nothing is pushed.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from jarvis.deployment import load_env_file
 from jarvis.deployment.launchd import default_runtime_root
 from jarvis.runtime import day_plan as runtime
 from jarvis.runtime.interview_reminders import local_zone
@@ -116,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     ask: Callable[[str, str], str] = stub_ask
     if args.live:
+        load_env_file(args.log.resolve().parent)  # the log's runtime root; fill-only, never read
         config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
         ask = _asker(config, args.live)
     lines = replay(args.log, args.memory, args.day, ZoneInfo(args.zone), ask)
