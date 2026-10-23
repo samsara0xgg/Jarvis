@@ -4,9 +4,10 @@ import claudeLogo from '../assets/brands/claude.svg';
 import openaiLogo from '../assets/brands/openai.svg';
 import { AGENT_NAME, answerRequest, readConversation, requestWords, sendReply, type Agent, type Said } from '../agents';
 import type { L } from '../companionSettings';
-import { accountOf, dur } from '../dayView';
+import { accountOf, clock, dur } from '../dayView';
 import { Markdown } from '../Markdown';
 import { openTip } from '../Notices';
+import { useAsk, DoorHead } from './parts';
 import { answerStartrail, readStartrail } from '../startrail';
 import type { BarMark, DoorChip, DoorCtx, DoorPage, DoorRow, Tone } from '../doors';
 import '../day-doors-agents.css';
@@ -15,6 +16,8 @@ import '../day-doors-agents.css';
 // the ones that finished on it, oldest start first, each a span on the bar over the time it ran; a session that waits on him says so, and he can answer a plain permission or park it from its
 // row (the notch's own acts, so his marks stay one truth: ADR 0069). Another day: no live data, only that day's Claude Code sessions from the day itself, as finished ones. A row opens as its
 // conversation, with the way to the place it runs.
+// Lanes: the bar's three lanes are filled greedily by start (`lanesOf`); the board's lane per project (named, in the project's colour) needs the session's working directory mapped to a project (ADR 0315, Gaps.png),
+// which the notch's list does not have: `BarMark` has a lane number and a tone only. Until then a lane is just where there was room.
 const NOTICE_MS = 4000;
 type T = (l: L) => string;
 // What a session is to him now: waiting on him, put aside by him (the moon), running (or just allowed, until the board says so), finished, stopped on an error.
@@ -53,7 +56,7 @@ function lanesOf(spans: { key: string; from: number; to: number }[]) {
 }
 
 export function useAgentsDoor(ctx: DoorCtx): DoorPage | null {
-  const { port, t, lang, day, items, sessions } = ctx;
+  const { port, t, lang, day, items, sessions } = ctx, askAbout = useAsk(ctx);
   // The notch's acts, as they are at this render (they are made anew every render by the companion).
   const act = useRef(sessions?.act);
   act.current = sessions?.act;
@@ -139,12 +142,18 @@ export function useAgentsDoor(ctx: DoorCtx): DoorPage | null {
 
     return {
       ...base, line: notice ?? line, chips, marks, rows: runs.map(rowOf), nowAt: day.now, empty: t(['No sessions today', '今天没有会话']),
+      // The page opens on the session that waits on him (the oldest of them), else the one that runs (the newest), else the last that finished.
+      rest: (asking[0] ?? running[running.length - 1] ?? runs[runs.length - 1])?.a.id ?? null,
       detail: key => {
         const r = runs.find(x => x.a.id === key);
-        return r ? { title: r.a.title, body: <Talk key={r.a.id} a={r.a} kind={r.kind} port={port} t={t} acts={acts}/> } : null;
+        // "19:40–21:50" for one that ended, "19:40 起" for one that runs; a session that does not say when it began says only the hour of its last change.
+        const range = !r ? '' : r.from === null ? clock(r.a.at!, day.tz) : live(r.kind) ? t([`since ${clock(r.from, day.tz)}`, `${clock(r.from, day.tz)} 起`]) : `${clock(r.from, day.tz)}–${clock(r.to, day.tz)}`;
+        return r ? { title: r.a.title, body: <>
+          <DoorHead icon={logo(r.a.agent)} logo title={r.a.title} sub={[r.a.project, AGENT_NAME[r.a.agent], range].filter(Boolean).join(' · ')} ask={askAbout(r.a.title)} t={t}/>
+          <Talk key={r.a.id} a={r.a} kind={r.kind} port={port} t={t} acts={acts}/></> } : null;
       },
     };
-  }, [sessions?.agents, parkedKey, archivedKey, items, sent, notice, port, day.start, day.end, day.today, day.now, day.tz, lang]);
+  }, [sessions?.agents, askAbout, parkedKey, archivedKey, items, sent, notice, port, day.start, day.end, day.today, day.now, day.tz, lang]);
 }
 
 // A session's page: where it runs and the way there, the conversation (his words on the right, its answers as it wrote them: the notch's page reads the same), what it asks if it waits on him,
@@ -174,7 +183,7 @@ function Talk({ a, kind, port, t, acts }: { a: Agent; kind: Kind; port: string |
   };
   const where = a.where === 'Background' ? t(['Background', '后台']) : a.where, can = !!openTip(a, t);
   return <div className="dt-ag">
-    <div className="dt-ag-top"><p>{[AGENT_NAME[a.agent], where, a.branch].filter(Boolean).join(' · ')}</p>
+    <div className="dt-ag-top"><p>{a.project && <b>{a.project}</b>}{[AGENT_NAME[a.agent], where, a.branch].filter(Boolean).join(' · ')}</p>
       {can && <button type="button" className="dt-ask" onClick={() => acts.jump(a)}>{t(['Open where it runs', '在它那里打开'])}</button>}</div>
     <div className="m-list">
       {!base.length && !pending.length && <p className="r-none">{t(['No messages yet', '还没有对话'])}</p>}
@@ -186,7 +195,7 @@ function Talk({ a, kind, port, t, acts }: { a: Agent; kind: Kind; port: string |
       <div className="dt-ag-acts"><button type="button" className="dt-ask" onClick={() => acts.park(a.id)}>{t(['Park', '先放着'])}</button>{plain(a) && <button type="button" className="dt-ask is-yes" onClick={() => acts.allow(a)}>{t(['Allow', '同意'])}</button>}</div></div>}
     {why && <p className="r-why">{why}</p>}
     {a.replyable && port && <form className="pg-input c-reply" onSubmit={send}>
-      <input value={draft} onChange={e => setDraft(e.target.value)} disabled={busy} aria-label={t(['Reply', '回复'])} placeholder={sending ? t(['Sending…', '发送中…']) : t(['Reply…', '回复…'])}/>
+      <input value={draft} onChange={e => setDraft(e.target.value)} disabled={busy} aria-label={t(['Reply', '回复'])} placeholder={sending ? t(['Sending…', '发送中…']) : t(['Reply to it…', '回它一句…'])}/>
       <button className="send" aria-label={t(['Send', '发送'])} disabled={!draft.trim() || busy}><ArrowUp size={13} weight="bold"/></button></form>}
   </div>;
 }

@@ -1,20 +1,26 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, type CSSProperties } from 'react';
 import { ArrowCounterClockwise, CalendarBlank, Coins, Gauge, TerminalWindow, Wallet } from '@phosphor-icons/react';
 import type { L } from '../companionSettings';
 import { clock, dur } from '../dayView';
 import { useRoute } from '../homeData';
 import { balanceTotal, type Usage, type UsageWindow } from '../QuotaModule';
 import type { BarMark, DoorChip, DoorCtx, DoorPage, DoorRow } from '../doors';
+import { AskBtn, DoorActs, DoorMeter, DoorSec, useAsk } from './parts';
 
 // 额度: how full Claude's 5-hour limit got, as a page of the day under the bar: a level on the bar for each window (past ones dim, the one that is running lit and carried on dashed), a row each,
 // and after the now line the next reset. What each window did comes from the daemon's history of the poll; the numbers of now (the week, Codex, API spend, balances) from its usage route.
 // The poll writes a reading only when a number changes, so between two readings the level stood where the first left it (a stair, not a slope), and a failed poll is no reading, not 0%.
-// A daemon without the history draws the running window flat at its percent now. A row opens the Dashboard's own usage page in the pane (`ctx.tool`), the one place its details live.
+// A daemon without the history draws the running window flat at its percent now. A row opens its page in the right column: the window's percent, how much of its time has gone and, at this pace, when it runs out; the week's the same.
+// Not here yet (Gaps.png): the token column of each quarter hour by project on the bar, and which project took most of a window: the daemon keeps no tokens by time (the local logs, ccusage, are by day).
 const FIVE_H = 5 * 3_600_000, MIN = 60_000;
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const usd = (n: number) => `${n <= -.005 ? '-' : ''}$${Math.abs(n).toFixed(2)}`;
 // The daemon drops sub-seconds, so a reset the API puts at 04:59:59 is the 05:00 one: windows are told apart, and clocked, by the minute.
 const minute = (ms: number) => Math.round(ms / MIN) * MIN;
+const WEEK = 7 * 24 * 3_600_000;
+const hourOf = (ms: number, tz: string) => Number(clock(ms, tz).slice(0, 2));
+// The weekday of a moment in the day's zone, as the language writes it (周二, Tue).
+const weekday = (ms: number, tz: string, lang: 'en' | 'zh') => { try { return new Intl.DateTimeFormat(lang === 'zh' ? 'zh-CN' : 'en-US', { timeZone: tz || undefined, weekday: 'short' }).format(ms); } catch { return ''; } };
 
 // One reading: the 5-hour window's percent and its reset, each null when the reading has none (an idle window is a percent and no reset).
 type Reading = { at: number; pct: number | null; reset: number | null };
@@ -59,10 +65,8 @@ function levelOf(w: Win, tip: number) {
 const percent = (v: number) => Math.round(v * 100);
 
 export function useQuotaDoor(ctx: DoorCtx): DoorPage | null {
-  const { port, open, t, lang, day, tool } = ctx;
+  const { port, open, t, lang, day } = ctx, askAbout = useAsk(ctx);
   const usage = useRoute<Usage>(port, '/inherent/usage', open, 60_000);
-  // The renderer is read when the page opens, so a new one each time the companion draws never makes this page a new one.
-  const render = useRef(tool); render.current = tool;
   const path = `/inherent/usage/history?from_ms=${day.start}&to_ms=${day.end}`, hist = useRoute<unknown>(port, path, open && day.end > day.start, 60_000);
   // useRoute keeps its last answer while the path changes (another day): an answer is this day's only if it came for this path.
   const got = useRef({ data: hist.data, path });
@@ -80,14 +84,56 @@ export function useQuotaDoor(ctx: DoorCtx): DoorPage | null {
     const marks: BarMark[] = wins.map(w => ({ kind: 'level', points: levelOf(w, w === live ? day.now : w.end), tone: w === live ? 'on' : 'dim', ...w === live && { until: Math.min(w.end, day.end) }, key: `w${w.reset}` }));
     const rows: DoorRow[] = wins.map(w => {
       const top = percent(Math.max(...w.steps.map(s => s.v))), now = percent(w.steps[w.steps.length - 1].v);
-      return { key: `w${w.reset}`, at: w.start, icon: <Gauge size={13} aria-hidden="true"/>, title: t(['5-hour window', '5 小时额度']), sub: `${clock(w.start, day.tz)} – ${clock(w.end, day.tz)}`,
+      return { key: `w${w.reset}`, at: w.start, icon: <Gauge size={13} aria-hidden="true"/>, title: w === live ? t(['This window', '现在这段']) : hourOf(w.start, day.tz) < 12 ? t(['Morning window', '早上这段']) : hourOf(w.start, day.tz) < 18 ? t(['Afternoon window', '下午这段']) : t(['Evening window', '晚上这段']), sub: `${clock(w.start, day.tz)}–${clock(w.end, day.tz)}`,
         // the frame's side has no `is-value`, so the running window's number carries the day's own
-        side: w === live ? <span className="dt-tm is-value">{t([`Used ${now}%`, `已用 ${now}%`])}</span> : t([`Up to ${top}%`, `用到 ${top}%`]), tone: w === live ? 'live' : undefined, opens: !!tool };
+        side: w === live ? <span className="dt-tm is-value">{t([`Used ${now}%`, `已用 ${now}%`])}</span> : t([`Up to ${top}%`, `用到 ${top}%`]), tone: w === live ? 'live' : undefined, opens: true };
     });
     if (live) {
       const left = dur(Math.ceil((live.end - day.now) / MIN), t);
-      rows.push({ key: 'reset', at: live.end, icon: <ArrowCounterClockwise size={13} aria-hidden="true"/>, title: t(['Resets', '重置']), sub: t(['A new window starts', '这 5 小时重新算']), side: t([`in ${left}`, `还有 ${left}`]), tone: 'future', opens: !!tool });
+      rows.push({ key: 'reset', at: live.end, icon: <ArrowCounterClockwise size={13} aria-hidden="true"/>, title: t(['Resets', '重置']), sub: t(['A new window starts', '这 5 小时重新算']), side: t([`in ${left}`, `还有 ${left}`]), tone: 'future' });
     }
+    // After the now line, what is counted by the week: Claude's week and Codex's, from the usage route (today only; the route knows no other day).
+    const cxw = codex?.status === 'ok' ? codex.data.windows?.find(w => w.key === 'primary_window') : undefined, cxp = pct(cxw), wkReset = week?.resets_at ? Date.parse(week.resets_at) : NaN;
+    if (day.today && wk !== null) rows.push({ key: 'week', at: null, icon: <CalendarBlank size={13} aria-hidden="true"/>, title: t(['This week', '本周额度']), sub: Number.isFinite(wkReset) ? t([`Resets ${weekday(wkReset, day.tz, 'en')} ${clock(wkReset, day.tz)}`, `${weekday(wkReset, day.tz, 'zh')} ${clock(wkReset, day.tz)} 重置`]) : undefined, side: `${wk}%`, opens: true });
+    if (day.today && cxp !== null) rows.push({ key: 'codex', at: null, icon: <TerminalWindow size={13} aria-hidden="true"/>, title: 'Codex', sub: cxw?.resets_at ? t([`Resets ${weekday(Date.parse(cxw.resets_at), day.tz, 'en')} ${clock(Date.parse(cxw.resets_at), day.tz)}`, `${weekday(Date.parse(cxw.resets_at), day.tz, 'zh')} ${clock(Date.parse(cxw.resets_at), day.tz)} 重置`]) : undefined, side: `${cxp}%`, opens: true });
+
+    // A row's page. A window: how much of the 5 hours has been used against how much of the time has gone, and at this pace when it runs out (a window that is over says only how high it got). The week: the same against 7 days.
+    const meterOf = (used: number, from: number, to: number, ongoing: boolean) => { const gone = ongoing ? (day.now - from) / (to - from) : null; return { used, gone }; };
+    const pace = (w: Win) => {
+      const v = w.steps[w.steps.length - 1].v, gone = day.now - w.start, out = v > 0 && gone >= 5 * MIN ? w.start + gone / v : Infinity;
+      return out < w.end ? t([`At this pace it runs out around ${clock(out, day.tz)}; it resets at ${clock(w.end, day.tz)}.`, `照现在的速度，${clock(out, day.tz)} 左右用完，${clock(w.end, day.tz)} 才重置。`])
+        : t([`At this pace it won't run out; it resets at ${clock(w.end, day.tz)}.`, `照现在的速度，这一段用不完，${clock(w.end, day.tz)} 重置。`]);
+    };
+    const weekPage = (title: string, used: number, reset: number, label: string) => {
+      const gone = Number.isFinite(reset) ? 1 - (reset - day.now) / WEEK : null;
+      return <>
+        <DoorSec em={Number.isFinite(reset) ? t([`resets ${weekday(reset, day.tz, 'en')} ${clock(reset, day.tz)}`, `${weekday(reset, day.tz, 'zh')} ${clock(reset, day.tz)} 重置`]) : undefined}>{title}</DoorSec>
+        <div className="dd-big"><b>{used}%</b><em>{t(['used', '用掉了'])}</em></div>
+        <DoorMeter fill={used / 100} mark={gone}/>
+        {gone !== null && <p className="dd-note">{t([`${Math.round(gone * 100)}% of ${label} has gone; ${used}% is used.`, `这${label}过了 ${Math.round(gone * 100)}% 的时间，用了 ${used}%。`])}</p>}
+      </>;
+    };
+    const detail: DoorPage['detail'] = key => {
+      const w = wins.find(x => `w${x.reset}` === key);
+      if (w) {
+        const used = percent(w.steps[w.steps.length - 1].v), top = percent(Math.max(...w.steps.map(s => s.v))), on = w === live, { gone } = meterOf(used, w.start, w.end, on), range = `${clock(w.start, day.tz)}–${clock(w.end, day.tz)}`;
+        return { title: t(['Usage', '额度']), body: <>
+          <DoorSec em={range}>{on ? t(['This window', '现在这段']) : t(['5-hour window', '5 小时额度'])}</DoorSec>
+          <div className="dd-big"><b>{on ? used : top}%</b><em>{on ? t(['used', '用掉了']) : t(['at most', '最高用到'])}</em></div>
+          <DoorMeter fill={(on ? used : top) / 100} mark={gone}/>
+          {on && gone !== null && <>
+            <div className="dd-legend"><span style={{ '--k': '157 180 255' } as CSSProperties}>{t(['Used ', '用掉的 '])}<em>{used}%</em></span><span style={{ '--k': '255 240 220' } as CSSProperties}>{t(['Time gone ', '过去的时间 '])}<em>{Math.round(gone * 100)}%</em></span></div>
+            <p className="dd-note">{pace(w)}</p>
+            {askAbout(t(['the 5-hour usage window', '这 5 小时的额度'])) && <DoorActs><AskBtn ask={askAbout(t(['the 5-hour usage window', '这 5 小时的额度']))!} text={t(['How can I use less?', '怎么省着用？'])} label={t(['Ask how to save', '问她怎么省'])} t={t}/></DoorActs>}</>}
+          {on && Number.isFinite(wkReset) && wk !== null && weekPage(t(['This week', '本周']), wk, wkReset, t(['of the week', '周']))}</> };
+      }
+      if (key === 'week' && wk !== null) return { title: t(['Usage', '额度']), body: weekPage(t(['This week', '本周']), wk, wkReset, t(['of the week', '周'])) };
+      if (key === 'codex' && cxp !== null) {
+        const reset = cxw?.resets_at ? Date.parse(cxw.resets_at) : NaN;
+        return { title: 'Codex', body: weekPage('Codex', cxp, reset, t(['of the period', '一段'])) };
+      }
+      return null;
+    };
 
     // What the page says in numbers. On today: the 5-hour window and the week, Codex, what the API cost today, and what is left in each account that says. On another day: only what that day's windows reached.
     const chips: DoorChip[] = [], icon = (Glyph: typeof Gauge) => <Glyph size={12} aria-hidden="true"/>;
@@ -119,7 +165,7 @@ export function useQuotaDoor(ctx: DoorCtx): DoorPage | null {
       count: f !== null ? `${f}%` : null, line, chips, marks: loading ? [] : marks, rows: loading ? [] : rows, nowAt: day.today ? day.now : null,
       empty: !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : !day.today ? hist.missing ? t(["This Jarvis can't give usage history yet", '这台 Jarvis 还不会给额度的历史']) : t(['No usage recorded that day', '这天没有额度记录']) : why,
       loading, failed: day.today ? !usage.data && usage.failed : !answer && hist.failed,
-      detail: (_key, back) => render.current ? { title: t(['Usage', '额度']), body: render.current('usage', back), bare: true } : null,
+      detail, untimed: rows.some(r => r.at === null) ? t(['This week', '本周']) : null, rest: live ? `w${live.reset}` : null,
     };
-  }, [usage.data, usage.missing, usage.failed, answer, hist.missing, hist.failed, port, day.start, day.end, day.today, day.now, day.tz, lang, !!tool]);
+  }, [usage.data, usage.missing, usage.failed, answer, hist.missing, hist.failed, port, day.start, day.end, day.today, day.now, day.tz, lang, askAbout]);
 }

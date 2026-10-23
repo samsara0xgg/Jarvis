@@ -3,11 +3,14 @@ import { CalendarBlank, CheckCircle, Circle, WarningCircle } from '@phosphor-ico
 import { clock, dur } from '../dayView';
 import { postRoute, useRoute, type Today, type TodayEvent, type Todo } from '../homeData';
 import type { BarMark, DoorChip, DoorCtx, DoorPage, DoorRow } from '../doors';
+import { useAsk, DoorActs, DoorBtn, DoorHead } from './parts';
 
 // 待办: today's calendar and his open to-dos (the Dashboard's Today block reads the same route), as a page under the bar. Events and to-dos that have a time are rows in time order, each a point
 // on the bar (a to-do amber once it is past due and still open, an event dim); the ones with no time (all-day events, to-dos with a date only or none) come after a heading. The route has no other
 // day, so another day only says so. The quick button ticks a to-do (as the Dashboard does: at once, and put back if To Do cannot be reached); a ticked one stays faded, with the way back, until the next
-// read leaves it out.
+// read leaves it out. A row opens in the right column: the to-do or the event, with the button that ticks it.
+// Not here yet (Gaps.png): the week strip of the board (a cell a day, a dot a to-do) needs the to-dos of the other days and the route (`/inherent/today`) gives today's only; when a route has them, the days go
+// in `marks`' place on the bar (DoorPage has no strip yet), and a day's to-dos become rows here.
 const NOTICE_MS = 4000, TWO_HOURS = 2 * 3_600_000, END_OF_DAY = '23:59';
 type Ev = { e: TodayEvent; from: number; to: number | null };
 type Td = { x: Todo; due: number | null; timed: boolean; late: boolean; done: boolean };
@@ -18,7 +21,7 @@ const dateOf = (ms: number, tz: string) => { try { return new Intl.DateTimeForma
 
 export function useTodoDoor(ctx: DoorCtx): DoorPage | null {
   const { port, open, t, lang, day } = ctx;
-  const route = useRoute<Today>(port, '/inherent/today', open, 5 * 60_000);
+  const route = useRoute<Today>(port, '/inherent/today', open, 5 * 60_000), askAbout = useAsk(ctx);
   const [ticked, setTicked] = useState<ReadonlySet<string>>(() => new Set()), [notice, setNotice] = useState<string | null>(null), timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
   // A read that no longer lists a to-do has dropped it: its tick is done with.
@@ -58,12 +61,12 @@ export function useTodoDoor(ctx: DoorCtx): DoorPage | null {
       const left = future && v.from - day.now <= TWO_HOURS ? dur(Math.ceil((v.from - day.now) / 60_000), t) : '';
       return { key: key.ev(v), at: all ? null : v.from, icon: <CalendarBlank size={13} aria-hidden="true"/>, title: v.e.title,
         sub: all ? t(['All day', '全天']) : v.to === null ? clock(v.from, day.tz) : `${clock(v.from, day.tz)}–${clock(v.to, day.tz)}`,
-        side: left ? t([`in ${left}`, `还有 ${left}`]) : undefined, tone: future ? 'future' : over ? 'read' : undefined };
+        side: left ? t([`in ${left}`, `还有 ${left}`]) : undefined, tone: future ? 'future' : over ? 'read' : undefined, opens: true };
     };
     const tdRow = (d: Td): DoorRow => ({
       key: key.td(d), at: d.timed ? d.due : null, time: d.timed || d.due === null ? undefined : inDay(d.due) ? t(['Today', '今天']) : dateOf(d.due, day.tz),
       icon: d.done ? <CheckCircle size={14} weight="fill" aria-hidden="true"/> : <Circle size={14} aria-hidden="true"/>, title: d.x.title, tag: d.late ? { text: t(['Overdue', '过期']), amber: true } : null,
-      sub: t(['To-do', '待办']), quick: d.done ? btn(t(['Undo', '撤销']), () => void tick(d.x.id, false)) : btn(t(['Done', '完成']), () => void tick(d.x.id, true)), tone: d.done ? 'read' : undefined,
+      sub: t(['To-do', '待办']), quick: d.done ? btn(t(['Undo', '撤销']), () => void tick(d.x.id, false)) : btn(t(['Done', '完成']), () => void tick(d.x.id, true)), tone: d.done ? 'read' : undefined, opens: true,
     });
     const byTime = (a: DoorRow, b: DoorRow) => a.at! - b.at! || (a.key < b.key ? -1 : 1), byDue = (a: Td, b: Td) => (a.due ?? Infinity) - (b.due ?? Infinity) || (a.x.id < b.x.id ? -1 : 1);
     const timed = [...timedEvs.map(evRow), ...tds.filter(d => d.timed).map(tdRow)].sort(byTime);
@@ -89,10 +92,35 @@ export function useTodoDoor(ctx: DoorCtx): DoorPage | null {
       : n ? t([`${n} left today: ${n === 1 ? a : `${a}, ${b}${n > 2 ? ` and ${n - 2} more` : ''}`}.`, `今天还有 ${n} 件：${n === 1 ? a : `${a}、${b}${n > 2 ? ' 等' : ''}`}。`])
       : t(['Everything for today is done.', '今天的都做完了。']);
 
+    // The page of a row: an event says when it is and how long until it; a to-do when it is due, and whether that is past, with the button that ticks it (and puts it back). 问她 is in the head.
+    // Not here yet (Gaps.png): why the to-do is on the list ("依据"), and a way to put it off to tomorrow: To Do's route takes only done / not done.
+    // a date-only due is the end of that day to To Do (23:59): said as the date
+    const when = (ms: number) => clock(ms, day.tz) === END_OF_DAY ? inDay(ms) ? t(['today', '今天']) : dateOf(ms, day.tz) : inDay(ms) ? clock(ms, day.tz) : `${dateOf(ms, day.tz)} ${clock(ms, day.tz)}`;
+    const left = (ms: number) => { const m = Math.abs(ms - day.now) / 60_000; return m < 24 * 60 ? dur(Math.max(1, Math.ceil(m)), t) : ''; };
+    const detail: DoorPage['detail'] = k => {
+      const ev = evs.find(v => key.ev(v) === k), td = tds.find(d => key.td(d) === k);
+      if (ev) {
+        const all = allDay(ev), span = all ? t(['All day', '全天']) : ev.to === null ? clock(ev.from, day.tz) : `${clock(ev.from, day.tz)}–${clock(ev.to, day.tz)}`, ahead = !all && ev.from > day.now ? left(ev.from) : '';
+        return { title: ev.e.title, body: <>
+          <DoorHead icon={<CalendarBlank size={13} aria-hidden="true"/>} title={ev.e.title} sub={`${t(['Calendar', '日历'])} · ${span}`} ask={askAbout(ev.e.title)} t={t}/>
+          {ahead && <p className="dd-gist">{t([`Starts in ${ahead}.`, `还有 ${ahead} 开始。`])}</p>}</> };
+      }
+      if (!td) return null;
+      const due = td.due, past = due !== null && due < day.now, ago = due !== null && past && clock(due, day.tz) !== END_OF_DAY ? left(due) : '', ahead = due !== null && !past && td.timed ? left(due) : '';
+      const sub = due === null ? t(['To-do', '待办']) : `${when(due)} · ${td.late ? t(['Overdue', '过期']) : t(['To-do', '待办'])}`;
+      return { title: td.x.title, body: <>
+        <DoorHead icon={td.done ? <CheckCircle size={14} weight="fill" aria-hidden="true"/> : <Circle size={14} aria-hidden="true"/>} title={td.x.title} sub={sub} ask={askAbout(td.x.title)} t={t}/>
+        {due !== null && <p className="dd-gist">{td.late ? ago ? t([`Due ${when(due)}, ${ago} ago.`, `${when(due)} 就该做了，已经过了 ${ago}。`]) : t([`Due ${when(due)}.`, `${when(due)} 就该做了。`]) : ahead ? t([`Due ${when(due)}, in ${ahead}.`, `${when(due)} 到期，还有 ${ahead}。`]) : t([`Due ${when(due)}.`, `${when(due)} 到期。`])}</p>}
+        <DoorActs>{td.done ? <DoorBtn tone="done" onClick={() => void tick(td.x.id, false)}>{t(['Done · undo', '做完了 · 撤销'])}</DoorBtn> : <DoorBtn onClick={() => void tick(td.x.id, true)}>{t(['Done', '做完了'])}</DoorBtn>}</DoorActs></> };
+    };
+    // The page opens on the first to-do that is past its time, else on what comes next (the first with a time still ahead, then the first with none).
+    const nextUp = [...timed, ...rest].find(r => r.at === null || r.at >= day.now) ?? timed[timed.length - 1] ?? null;
+    const rest0 = late[0] ? key.td(late[0]) : nextUp?.key ?? null;
+
     return {
-      count: count(openTds.length), line: notice ?? (route.data ? line : null), chips, marks, nowAt: day.now, rows: [...timed, ...rest], untimed: rest.length ? t(['No set time', '没定时间']) : null,
+      detail, rest: rest0, count: count(openTds.length), countAmber: late.length > 0, line: notice ?? (route.data ? line : null), chips, marks, nowAt: day.now, rows: [...timed, ...rest], untimed: rest.length ? t(['No set time', '没定时间']) : null,
       empty: !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give to-dos yet", '这台 Jarvis 还不会给待办']) : t(['Nothing on the list today', '今天没有事']),
       loading, failed: !route.data && route.failed,
     };
-  }, [route.data, route.failed, route.missing, ticked, notice, port, day.start, day.end, day.today, day.now, day.tz, lang]);
+  }, [route.data, route.failed, route.missing, ticked, notice, askAbout, port, day.start, day.end, day.today, day.now, day.tz, lang]);
 }

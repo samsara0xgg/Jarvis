@@ -3,7 +3,9 @@ import { ArrowBendUpLeft, EnvelopeSimple, Megaphone } from '@phosphor-icons/reac
 import { useRoute, type Mail } from '../homeData';
 import { MailLetter } from '../MailPage';
 import { useMailActs } from '../useMailActs';
+import { clock } from '../dayView';
 import type { BarMark, DoorChip, DoorCtx, DoorPage, DoorRow } from '../doors';
+import { DoorHead } from './parts';
 
 // 信: the unread letters (the Dashboard's Mail page reads the same route), as a page of the day under the bar: the letters that came on the shown day, oldest first, each a point on the bar;
 // on today also the unread ones from before it, after a heading, with their dates. A letter opens in the pane (the Dashboard's letter, with its acts and its reply draft); a letter he has
@@ -76,14 +78,21 @@ export function useMailDoor(ctx: DoorCtx): DoorPage | null {
 
     const loading = !!port && !route.data && !route.failed && !route.missing;
     return {
-      count: live.some(m => !m.junk) ? String(live.filter(m => !m.junk).length) : null,
+      count: live.some(m => !m.junk) ? String(live.filter(m => !m.junk).length) : null, countAmber: wants.length > 0,
+      // The letter the right column opens on: the newest one that wants a reply (here, on the shown day or from before it), else the newest unread one that is no ad.
+      rest: [...wants].sort((a, b) => rank(Date.parse(b.received)) - rank(Date.parse(a.received)))[0]?.id ?? [...seen].sort((a, b) => rank(Date.parse(b.received)) - rank(Date.parse(a.received)))[0]?.id ?? null,
       line: notice ?? (route.data ? line : null), chips, marks, nowAt: day.today ? day.now : null,
       rows: [...timed.map(e => rowOf(e, false)), ...before.map(e => rowOf(e, true))], untimed: before.length ? t(['Earlier, unread', '更早没看的']) : null,
       empty: !port ? t(['Not connected to Jarvis yet', '还没连上 Jarvis']) : route.missing ? t(["This Jarvis can't give mail yet", '这台 Jarvis 还不会给信']) : day.today ? t(['No unread mail', '没有没看的信']) : t(['No unread mail from that day', '这天没有没看的信']),
       loading, failed: !route.data && route.failed,
       detail: key => {
         const m = live.find(x => x.id === key);
-        return m ? { title: m.from?.trim() || m.address || '', body: <div className="ad dt-ad"><MailLetter key={m.id} port={port} letter={m} onAct={kind => void acts.act(kind, m)}/></div> } : null;
+        if (!m) return null;
+        const name = m.from?.trim() || m.address || '', ms = Date.parse(m.received);
+        // The head is the board's (the circle, who, the address, when); the letter under it keeps its subject, its words and its acts (MailPage.tsx), its own who-line is hidden (day-doors.css).
+        return { title: name, body: <>
+          <DoorHead icon={initial(name)} who title={name} sub={m.address || undefined} time={Number.isFinite(ms) ? ms >= day.start && ms < day.end ? clock(ms, day.tz) : dateOf(ms, day.tz) : undefined} t={t}/>
+          <div className="ad dt-ad"><MailLetter key={m.id} port={port} letter={m} onAct={kind => void acts.act(kind, m)}/></div></> };
       },
     };
   }, [all, acts.gone, tombs, notice, route.data, route.failed, route.missing, port, day.start, day.end, day.today, day.now, day.tz, lang]);

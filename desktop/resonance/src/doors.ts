@@ -47,7 +47,10 @@ export type DoorPage = {
   empty?: string;               // what an empty page says
   loading?: boolean;
   failed?: boolean;
-  // A row's page; `back` closes it, as the frame's ‹ and Esc do. `bare`: the body is a whole page with a ‹ and a title of its own (a Dashboard page from `ctx.tool`), so the frame draws no head for it and gives it the whole
+  // V2: the row the right column shows when nothing is chosen on this door, the one most worth reading first (the letter that wants a reply, the to-do that is overdue, the session that waits on him,
+  // the running 5-hour window, 记忆); null/absent: nothing, the column stays empty. The frame (DayTimeline.tsx) selects it on entering the door, as the board's doors open on a row.
+  rest?: string | null;
+  // A row's page, drawn in the right column (V2: it has no head of the frame's, no ‹ and no row before and after, so the body brings its own head: parts.tsx `DoorHead`); `back` closes it, as Esc does. `bare`: the body is a whole page with a ‹ and a title of its own (a Dashboard page from `ctx.tool`), so the frame draws no head for it and gives it the whole
   // stage; Esc presses that ‹ (the page goes back by its own steps before it closes), and the frame's arrow keys leave it alone.
   detail?: (key: string, back: () => void) => { title: string; body: ReactNode; bare?: true } | null;
 };

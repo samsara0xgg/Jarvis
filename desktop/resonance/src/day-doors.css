@@ -1,15 +1,17 @@
 /* The doors at the foot of the day's pane (DayDoors.tsx) and what a door's page is drawn with. The pane is one size (day-timeline.css), the doors row sits on its bottom edge, and a door
    swaps only what is under the bar: the line, the numbers row, the rows. A page lights its own moments on the dimmed day bar; amber is "waiting on you" here too and nothing else. */
-.notch .dt-doors { display:flex; flex:none; align-items:center; gap:6px; margin-top:auto; }
-/* a door is a pill in the day's chips' look: 24 px, white .06; the one he is on is lit (white .12, a ring, its glyph in full ink); a count follows the name (amber when it waits on him) */
-.notch .dt-door { display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 9px; border-radius:12px; background:rgb(255 255 255 / .06); font-size:11.5px; white-space:nowrap; color:rgb(var(--ink) / .86); transition:background 120ms,box-shadow 120ms; }
-.notch .dt-door svg { flex:none; color:rgb(var(--ink) / .58); transition:color 120ms; }
-.notch .dt-door em { font-size:11.5px; line-height:16px; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
+.notch .dt-doors { display:flex; flex:none; align-items:center; justify-content:center; gap:2px; margin-top:auto; padding-top:2px; }
+/* a door has no fill until the pointer or the choice (V2 board): 26 px, its glyph quieter than its name; the one he is on is lit (white .10, glyph and name in full ink); a count follows the name, a small number
+   in the mono face (amber when it waits on him) */
+.notch .dt-door { position:relative; display:inline-flex; align-items:center; gap:5px; height:26px; padding:0 10px; border-radius:13px; background:transparent; font-size:11.5px; white-space:nowrap; color:rgb(var(--ink) / .72);
+  transition:background var(--motion-fast) var(--ease-out),color var(--motion-fast); }
+.notch .dt-door svg { flex:none; width:13px; height:13px; color:rgb(var(--ink) / .5); transition:color var(--motion-fast); }
+.notch .dt-door em { margin-left:1px; font:500 10.5px/14px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-faint); }
 .notch .dt-door em.is-amber { color:rgb(255 201 143); }
-.notch .dt-door:hover { background:rgb(255 255 255 / .1); }
-.notch .dt-door.is-on { background:rgb(255 255 255 / .12); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .6); }
+.notch .dt-door:hover { background:rgb(255 255 255 / .06); color:var(--p-ink); }
+.notch .dt-door.is-on { background:rgb(255 255 255 / .1); color:var(--p-ink); }
 .notch .dt-door.is-on svg { color:var(--p-ink); }
-.notch .dt-door.is-bare { padding:0 8px; }
+.notch .dt-door.is-bare { padding:0 9px; }
 
 /* a door page's line keeps its one line of room when it has nothing to say, so the bar does not move */
 .notch .dt-line.is-door { min-height:21.75px; }
@@ -31,7 +33,6 @@
 .notch .dt-list.is-timeless .dt-row { grid-template-columns:28px minmax(0,1fr) auto; }
 .notch .dt-list.is-timeless .dt-at { display:none; }
 /* a Dashboard component in a row's page (it is styled under .ad): the panel's own padding is not wanted here, the page has its own */
-.notch .dt-pin.is-door .dt-body { padding:6px 4px 12px; }
 .notch .dt-ad { align-self:stretch; padding:0; }
 /* a Dashboard page shown alone in the right column (a `bare` detail: AroundDashboard `only`, the 更多 door): it has its own ‹ and title, so the column gives it the whole room and the page scrolls inside it;
    the panel's box (its padding, the home's height) is not wanted here */
@@ -58,3 +59,61 @@
 .notch .dt-mk-lv.is-on .dt-lv-top,.notch .dt-mk-lv.is-on .dt-lv-run { stroke:rgb(214 222 250); }
 .notch .dt-mk-lv.is-amber .dt-lv-fill { fill:rgb(255 201 143 / .3); }
 .notch .dt-mk-lv.is-amber .dt-lv-top,.notch .dt-mk-lv.is-amber .dt-lv-run { stroke:rgb(255 201 143); }
+
+/* ---- V2: a page in the right column (~340 px). Its parts (src/doors/parts.tsx) are the board's: a head, a heading, a line of words, a meter, buttons. ---- */
+.notch .dt-pin.is-door .dt-body { align-items:stretch; gap:0; padding:0 2px 8px; }
+/* the head: the circle (28 px), the title over one line, a time or 问她 at the right; the box 问她 opens runs under it */
+.notch .dd-head { display:grid; grid-template-columns:28px minmax(0,1fr) auto; gap:0 10px; align-items:center; padding:4px 0; }
+.notch .dd-head .dt-ic.is-logo { color:rgb(var(--ink) / .86); }
+.notch .dd-ht { display:flex; flex-direction:column; min-width:0; }
+.notch .dd-ht b { overflow:hidden; font-size:15px; font-weight:600; line-height:20px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .dd-ht em { overflow:hidden; font-style:normal; font-size:12px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dd-head > time { font:11px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .dd-ask { grid-column:1 / -1; display:flex; align-items:center; gap:6px; height:30px; margin-top:6px; padding:0 4px 0 12px; border-radius:15px; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .16); }
+.notch .dd-ask:focus-within { box-shadow:inset 0 0 0 .5px rgb(var(--ink) / .5); }
+.notch .dd-ask input { flex:1; min-width:0; border:0; background:none; color:var(--p-ink); font-size:12.5px; outline:none; }
+.notch .dd-ask input::placeholder { color:var(--p-faint); }
+.notch .dd-ask button { display:grid; place-items:center; width:22px; height:22px; border-radius:50%; background:rgb(255 255 255 / .12); color:var(--p-ink); transition:opacity var(--motion-fast); }
+.notch .dd-ask button:disabled { opacity:.35; }
+.notch .dd-sec { display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:8px 0 6px; }
+.notch .dd-sec b { font-size:11px; font-weight:600; line-height:14px; letter-spacing:.04em; color:var(--p-faint); }
+.notch .dd-sec em { font:500 10.5px/14px "JetBrains Mono", Menlo, monospace; font-style:normal; color:var(--p-faint); }
+.notch .dd-gist { margin:2px 0 6px; font-size:13px; line-height:19px; color:var(--p-muted); }
+.notch .dd-note { margin:8px 0 0; font-size:12px; line-height:18px; color:var(--p-muted); }
+.notch .dd-big { display:flex; align-items:baseline; gap:8px; margin:2px 0 0; }
+.notch .dd-big b { font:600 30px/36px "JetBrains Mono", Menlo, monospace; letter-spacing:-.02em; color:var(--p-ink); }
+.notch .dd-big em { font-style:normal; font-size:12px; color:var(--p-faint); }
+.notch .dd-meter { position:relative; display:flex; height:10px; margin:8px 0 4px; border-radius:5px; background:rgb(255 255 255 / .07); overflow:hidden; }
+.notch .dd-meter i { height:100%; border-radius:5px; background:rgb(var(--k, 157 180 255)); }
+.notch .dd-meter u { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:rgb(var(--now, 255 240 220)); }
+.notch .dd-legend { display:flex; flex-wrap:wrap; gap:4px 12px; margin:4px 0 0; font-size:11.5px; color:var(--p-muted); }
+.notch .dd-legend > span { display:inline-flex; align-items:center; gap:5px; }
+.notch .dd-legend > span::before { content:''; width:7px; height:7px; border-radius:2px; background:rgb(var(--k)); }
+.notch .dd-legend em { font-style:normal; font-variant-numeric:tabular-nums; color:var(--p-ink); }
+.notch .dd-acts { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:8px; }
+.notch .dd-btn { display:inline-flex; align-items:center; gap:4px; height:24px; padding:0 10px; border-radius:12px; background:rgb(255 255 255 / .1); font-size:11.5px; font-weight:600; white-space:nowrap; color:var(--p-ink); transition:background var(--motion-fast); }
+.notch .dd-btn:hover { background:rgb(255 255 255 / .18); }
+.notch .dd-btn.is-yes { background:rgb(255 201 143); color:#1a1307; }
+.notch .dd-btn.is-yes:hover { background:rgb(255 213 168); }
+.notch .dd-btn.is-quiet { background:transparent; color:var(--p-muted); box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .16); }
+.notch .dd-btn.is-done { background:rgb(111 224 180 / .16); color:var(--mint-c, rgb(111 224 180)); }
+
+/* 信: the letter under the head. Its own who-line is the head's now; the subject is the board's 15 px; the acts come after the words (they stay in view at the foot of a long letter) */
+.notch .dt-side .dt-ad { align-self:stretch; }
+.notch .dt-side .mp-det { gap:8px; }
+.notch .dt-side .mp-who { display:none; }
+.notch .dt-side .mp-head { gap:0; padding:0; }
+.notch .dt-side .mp-subject { margin:4px 0 0; font-size:15px; line-height:21px; letter-spacing:0; }
+.notch .dt-side .mp-body { order:2; padding:0; font-size:13px; line-height:20px; color:rgb(var(--ink) / .86); }
+.notch .dt-side .mp-bar { order:3; position:sticky; bottom:-8px; z-index:1; padding:6px 0 8px; border-bottom:0; background:linear-gradient(transparent, #000 6px); }
+.notch .dt-side .mp-bar .btn { height:24px; padding:0 10px; border-radius:12px; background:rgb(255 255 255 / .1); font-size:11.5px; font-weight:600; color:var(--p-ink); }
+.notch .dt-side .mp-bar .btn:hover { background:rgb(255 255 255 / .18); }
+.notch .dt-side .mp-bar .icon-btn { width:24px; height:24px; }
+.notch .dt-side .mp-draft,.notch .dt-side .mp-sent { order:4; }
+
+/* 更多: a narrow menu at the left (the board's 184 px), one 40 px line a page, no words under the titles; the page it opens takes the rest */
+.notch .dt[data-door="more"] .dt-stage { --l:184px; }
+.notch .dt[data-door="more"] .dt-row { --head:40px; padding-right:24px; }
+.notch .dt[data-door="more"] .dt-tx > em { display:none; }
+/* ...and it has nothing to say on the day's bar (no times, no marks): the menu and its page take the room (the board draws no bar on this door) */
+.notch .dt[data-door="more"] .dt-bar,.notch .dt[data-door="more"] .dt-numbers { display:none; }
