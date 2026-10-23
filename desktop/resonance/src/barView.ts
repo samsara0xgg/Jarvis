@@ -69,12 +69,12 @@ export function toneOn(rgb: Rgb, a: number): 'dark' | 'light' {
   const L = lum(rgb.map((c, i) => c * a + GROUND[i] * (1 - a)));
   return (L + .05) / (lum(DARK) + .05) >= (lum(INK) + .05) / (L + .05) ? 'dark' : 'light';
 }
-// The richest label a piece of `w` px has room for, with 6 px each side: icon and name, name, icon, nothing.
-export const ICON_PX = 12, GAP_PX = 4, PAD_PX = 6;
-export type Fit = 'both' | 'name' | 'icon' | 'none';
+// The richest label a piece of `w` px has room for: icon and name when the name fits with 6 px each side, else the icon alone (centred, from 16 px up), else nothing. An icon is never
+// dropped for a name: a piece too narrow to show its icon is too narrow to show anything.
+export const ICON_PX = 12, GAP_PX = 4, PAD_PX = 6, ICON_MIN_PX = 16;
+export type Fit = 'both' | 'icon' | 'none';
 export function fit(w: number, textW: number, text: string): Fit {
-  const room = w - 2 * PAD_PX;
-  return text && ICON_PX + GAP_PX + textW <= room ? 'both' : text && textW <= room ? 'name' : ICON_PX <= room ? 'icon' : 'none';
+  return text && ICON_PX + GAP_PX + textW <= w - 2 * PAD_PX ? 'both' : w >= ICON_MIN_PX ? 'icon' : 'none';
 }
 
 const BAR = new Set(['stay', 'sleep', 'move', 'ride']), NEUTRAL: Rgb = [196, 204, 238];
