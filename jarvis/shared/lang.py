@@ -28,7 +28,7 @@ import re
 from string import Formatter
 from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 
-from jarvis.shared.text import is_english
+from jarvis.shared.text import is_english, split_person
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -150,6 +150,10 @@ _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
         "zh": ("改这组邮件的标签", "标签已改"),
         "en": ("change this thread's labels", "Labels changed"),
     },
+    "mail": {
+        "zh": ("发这封邮件", "邮件已发出"),
+        "en": ("send this email", "Email sent"),
+    },
     "spawn_worker": {
         "zh": ("派这个后台任务", "已派出去"),
         "en": ("start this background task", "Started"),
@@ -205,7 +209,7 @@ def ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None
     only names what it does.
     """
     lang = lang or _current
-    to = letter_to(dict(arguments))
+    to = letter_to(dict(arguments), lang)
     if to is not None:
         return t("confirm.ask_letter", lang=lang, to=to, subject=arguments["subject"])
     shown = {key: _in_words(value, lang) for key, value in arguments.items()}
@@ -223,10 +227,83 @@ def ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None
     return t("confirm.ask_args", lang=lang, action=named, args=("，" if lang == "zh" else ", ").join(cut))
 
 
-def letter_to(arguments: object) -> str | None:
-    """The recipients when a tool call's arguments are a letter (to, subject, body), else None."""
+def _letter_group(arguments: Mapping[str, Any], key: str) -> list[str]:
+    group = arguments.get(key)
+    return [one for one in group if isinstance(one, str)] if isinstance(group, list) else []
+
+
+def _completed_letter(arguments: object) -> dict[str, Any] | None:
+    """The arguments of a letter the mail tool completed (ADR 0361, 0366), else None.
+
+    Its recipients are ``Name <address>`` in a list and ``you`` holds his own addresses among
+    them; a letter given any other way is not read as this one.
+    """
     if not isinstance(arguments, dict):
         return None
+    to, you = arguments.get("to"), arguments.get("you")
+    if not (isinstance(to, list) and to and isinstance(you, list)):
+        return None
+    if not all(isinstance(one, str) for one in to):
+        return None
+    if not isinstance(arguments.get("subject"), str) or not isinstance(arguments.get("body"), str):
+        return None
+    return arguments
+
+
+def _own_mark(shown: str, arguments: Mapping[str, Any], lang: Language) -> str:
+    """The mark for himself when the address in ``shown`` is one of his, else nothing."""
+    mine = {str(one).lower() for one in arguments.get("you", []) if isinstance(one, str)}
+    return t("letter.you", lang=lang) if split_person(shown)[1].lower() in mine else ""
+
+
+def letter_card(arguments: Mapping[str, Any], lang: Language | None = None) -> dict[str, Any]:
+    """The arguments a confirmation card shows (ADR 0366); any call but a completed letter as is.
+
+    A completed letter lists every recipient by name and address, his own marked, then each
+    Cc and Bcc recipient labelled, and gives the subject, the whole body and the thread it
+    answers. The clients read ``to`` (a list), ``subject``, ``body`` and ``threadId``.
+    """
+    letter = _completed_letter(arguments)
+    if letter is None:
+        return dict(arguments)
+    lang = lang or _current
+    people = [one + _own_mark(one, letter, lang) for one in letter["to"]]
+    for key in ("cc", "bcc"):
+        people += [
+            t(f"letter.{key}", lang=lang, who=one + _own_mark(one, letter, lang))
+            for one in _letter_group(letter, key)
+        ]
+    card: dict[str, Any] = {"to": people, "subject": letter["subject"], "body": letter["body"]}
+    thread = letter.get("thread")
+    if isinstance(thread, str) and thread:
+        card["threadId"] = thread
+    return card
+
+
+def letter_to(arguments: object, lang: Language | None = None) -> str | None:
+    """The recipients when a tool call's arguments are a letter (to, subject, body), else None.
+
+    A letter the mail tool completed names each person as he would (the name, else the address),
+    his own marked, with the Cc and Bcc people after them.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    lang = lang or _current
+    letter = _completed_letter(arguments)
+    if letter is not None:
+        joiner = "、" if lang == "zh" else ", "
+
+        def named(group: list[str]) -> str:
+            return joiner.join(
+                (split_person(one)[0] or split_person(one)[1]) + _own_mark(one, letter, lang)
+                for one in group
+            )
+
+        text = named(letter["to"])
+        for key in ("cc", "bcc"):
+            if group := _letter_group(letter, key):
+                text += t(f"letter.{key}_in", lang=lang, who=named(group))
+        return text
     to, subject, body = arguments.get("to"), arguments.get("subject"), arguments.get("body")
     if not isinstance(subject, str) or not isinstance(body, str):
         return None
@@ -321,6 +398,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "信写好了，发给 {to}，主题「{subject}」。要发吗？",
         "en": 'The email to {to} is ready, subject "{subject}". Send it?',
     },
+    # ADR 0366: the people of a letter on its card and in its question.
+    "letter.you": {"zh": "（你）", "en": " (you)"},
+    "letter.cc": {"zh": "抄送 {who}", "en": "Cc {who}"},
+    "letter.bcc": {"zh": "密送 {who}", "en": "Bcc {who}"},
+    "letter.cc_in": {"zh": "（抄送 {who}）", "en": " (Cc {who})"},
+    "letter.bcc_in": {"zh": "（密送 {who}）", "en": " (Bcc {who})"},
     "confirm.rejected": {"zh": "好，不{action}了。", "en": "OK, I won't {action}."},
     "confirm.rejected_all": {"zh": "好，这几件都不做了。", "en": "OK, I won't do any of these."},
     "confirm.tool_gone": {
@@ -1067,6 +1150,8 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "step.mail.done": {"zh": "查了邮件", "en": "checked your mail"},
     "step.mail_write": {"zh": "写邮件", "en": "Writing mail"},
     "step.mail_write.done": {"zh": "写了邮件", "en": "wrote mail"},
+    "step.mail_send": {"zh": "发邮件", "en": "Sending mail"},
+    "step.mail_send.done": {"zh": "发了邮件", "en": "sent mail"},
     "step.mail_archive": {"zh": "归档邮件", "en": "Archiving mail"},
     "step.mail_archive.done": {"zh": "归档了邮件", "en": "archived mail"},
     "step.notion": {"zh": "搜 Notion", "en": "Searching Notion"},
