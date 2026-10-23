@@ -1,20 +1,21 @@
-"""ADR 0291: the plan watcher at run time, over a real event log and memory.db with stubs.
+"""ADR 0383: the plan watcher at run time, over a real event log and memory.db with stubs.
 
-A fake clock (each ``tick`` is told the minute), a stub model for the opening and the decision,
-and stub say and push hooks (no key, no network, no model). The examples are invented.
+A fake clock (each ``tick`` is told the minute), a stub model for the two lines the model writes,
+and stub push hooks (no key, no network, no model). The examples are invented.
 
-- ``woke`` opens the day once (her record and ``plan.opened``); a failed draft opens it too;
-- ``left_late`` is recorded, spoken and pushed time-sensitively; ``outing_soon`` is asked with
-  the leg read again and the weather of the outing's own hours at its place (kept place, else
-  where the leg ends, else home's and said so; ADR 0355), as the opening gives each outing its own;
-- a non-outing tell at dnd is only recorded, at quiet it is a silent push, past the hour's cap it
-  is only recorded; a private item is named by its time on speakers and in a push;
-- ``adjust`` revises the plan by her; an adjust that does not apply is silence; a ``progress``
-  notice goes in two steps: a done-check that marks tasks done, then the decider only when the
-  tasks left do not fit the time left;
-- the first item's start settles the plan;
-- the ``plan`` tool reads (in order, with the budget), changes (move, done) and settles;
-  ``route_legs`` fills the legs a draft lacks.
+- the morning line goes once at the first sign he is up: her record, ``plan.said``, a silent push
+  when he is away from the Mac, the conversation alone at ``no-pop`` and ``dnd``; a call holds it
+  to the next minute; a model that fails is tried three times; he never gets a second line or a
+  follow-up when he does not answer;
+- a thing that mail or the mirror added or moved after the morning is one fixed ``new`` line; a
+  thing from his own words is not; a third after two is not;
+- the evening line on the way home, when the Mac stopped and at the fallback hour writes
+  ``plan.closed``, and the next day's draft carries the ``tomorrow`` tasks;
+- he mutes a kind through the ``plan`` tool, which has no settle; the day reply shows her latest
+  line; ``route_legs`` fills the legs a draft lacks;
+- the morning gets today at home and each outing the weather of its own hours at its place (kept
+  place, else home's and said so; ADR 0355), a private one left out;
+- the facts: the Mac's stretches, and a thing moved today by mail.
 """
 
 from __future__ import annotations
@@ -32,12 +33,16 @@ import pytest
 from jarvis.execution.plan_tool import build_plan_tool
 from jarvis.execution.tools import ToolContext, ToolError
 from jarvis.runtime import day_plan as runtime
+from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.plan_run import Hooks, PlanWatch, make_route_legs
-from jarvis.state import memory_db, places, plan, things
+from jarvis.shared import lang
+from jarvis.state import places, plan, things
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
-from jarvis.state.memory_db import append_record, open_memory_db
+from jarvis.state.memory_db import open_memory_db
+from jarvis.state.plan_facts import facts_at
 from tests.support.clock import FakeClock
+from tests.support.places import stay
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -48,11 +53,16 @@ DAY = date(2026, 10, 16)
 SETTINGS = runtime.DayPlanSettings(at=time(4, 0), watch=True)
 LEG = {"from": "Home", "leave_at": "13:20", "line": "26", "board": "Main St",
        "arrive_at": "13:55", "backup": None}
-TELL = '{"act": "tell", "say": "Heads up.", "why": "late"}'
+MORNING = "Good morning. The dentist is at two; leave at 1:20."
+EVENING = "Good night. The report is done."
 
 
-def _at(clock: str) -> datetime:
-    return datetime.fromisoformat(f"{DAY.isoformat()}T{clock}:00").replace(tzinfo=ZONE)
+def _at(clock: str, day: date = DAY) -> datetime:
+    return datetime.fromisoformat(f"{day.isoformat()}T{clock}:00").replace(tzinfo=ZONE)
+
+
+def _ms(clock: str, day: date = DAY) -> int:
+    return int(_at(clock, day).timestamp() * 1000)
 
 
 def _item(item_id: str = "p1", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
@@ -63,36 +73,36 @@ def _item(item_id: str = "p1", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
     return plan.PlanItem(**(base | fields))
 
 
+def _task(item_id: str = "p1", title: str = "Write the report", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
+    return _item(item_id, title=title, start=None, **fields)
+
+
 DENTIST = _item(
     "p9", title="Dentist", firmness="fixed", source="item:thing-c1", start="14:00", place="Clinic",
     route=LEG,
 )
 
 
-OPENING = "Good morning."
-
-
 class Rig:
     """The watcher over fresh stores, its stubs and what they were asked."""
 
-    def __init__(self, root: Path, *, answers: list[str] | None = None,
-                 settings: runtime.DayPlanSettings = SETTINGS) -> None:
-        """Stores under ``root``; ``answers`` are the decider's replies in order (then TELL)."""
+    def __init__(self, root: Path, *, open_leg: Any = None) -> None:  # noqa: ANN401
+        """Stores under ``root``; the model answers the morning and the evening from the rig."""
         root.mkdir(parents=True, exist_ok=True)
         self.log = root / "events.db"
         self.memory = root / "memory.db"
         open_event_log(self.log).close()
         open_memory_db(self.memory).close()
-        self.answers = list(answers or [])
-        self.asked: list[str] = []
-        self.opened: list[str] = []
-        self.said: list[str] = []
+        self.asked: list[dict[str, Any]] = []
+        self.failures = 0
+        self.unfinished: list[dict[str, str]] = []
         self.pushed: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         self.quiet = "off"
         self.at_mac = True
+        self.on_call = False
         self.hooks = Hooks(
-            quiet=lambda: self.quiet, may_speak=lambda: True, at_mac=lambda: self.at_mac,
-            say=self.said.append, push=lambda *a, **k: self.pushed.append((a, k)),
+            quiet=lambda: self.quiet, at_mac=lambda: self.at_mac, on_call=lambda: self.on_call,
+            push=lambda *a, **k: self.pushed.append((a, k)),
         )
         self.outing_asked: list[tuple[tuple[float, float] | None, datetime, datetime]] = []
         self.outing_down = False
@@ -101,7 +111,7 @@ class Rig:
             weather=lambda _day: {"summary": "rain"}, outing_weather=self._outing_weather,
         )
         self.watch = PlanWatch(
-            settings=settings, sources=self.sources, ask_decide=self._decide, ask_open=self._open,
+            settings=SETTINGS, sources=self.sources, ask=self._ask, open_leg=open_leg,
             hooks=self.hooks,
         )
 
@@ -119,18 +129,20 @@ class Rig:
         """He keeps the place ``name`` at a point."""
         places.save(self.memory, name=name, lat=lat, lng=lng, origin="user")
 
-    def _decide(self, _system: str, user: str) -> str:
-        self.asked.append(user)
-        return self.answers.pop(0) if self.answers else TELL
+    def _ask(self, _system: str, user: str) -> str:
+        body = json.loads(user)
+        self.asked.append(body)
+        if self.failures:
+            self.failures -= 1
+            msg = "down"
+            raise TimeoutError(msg)
+        if body["task"] == "morning":
+            return json.dumps({"message": MORNING})
+        return json.dumps({"message": EVENING, "unfinished": self.unfinished})
 
-    def _open(self, _system: str, user: str) -> str:
-        self.opened.append(user)
-        return json.dumps({"message": OPENING})
-
-    @property
-    def told(self) -> list[str]:
-        """What was said aloud besides her opening."""
-        return [line for line in self.said if line != OPENING]
+    def tasks_asked(self) -> list[str]:
+        """The task of each model call, in order."""
+        return [body["task"] for body in self.asked]
 
     def conn(self) -> Any:  # noqa: ANN401
         """A connection to the event log."""
@@ -147,12 +159,38 @@ class Rig:
         """The phone says focus went off at ``at``."""
         with closing(self.conn()) as conn:
             emit_event(
-                conn, type="phone.state_observed", ts_epoch_ms=int(_at(at).timestamp() * 1000),
+                conn, type="phone.state_observed", ts_epoch_ms=_ms(at),
                 ingestion_node="phone", payload={"signal": "focus", "value": "off"},
             )
 
+    def mac(self, at: str, kind: str) -> None:
+        """TimeSink says the Mac's latest state at ``at`` is ``kind``."""
+        head = {"status": "ok", "identity": "i", "span_high": 1, "span_latest_end": None,
+                "capture_high": 0, "capture_latest_seen": None, "state_high": 1,
+                "state_latest": {"at": _at(at).isoformat(), "kind": kind},
+                "observed_at_ms": _ms(at), "actor": "observer"}
+        with closing(self.conn()) as conn:
+            emit_event(conn, type="timesink.state_observed", ts_epoch_ms=_ms(at), payload=head)
+
+    def thing(
+        self, title: str, *, by: str = "mail", start: str = "15:00", at: str = "10:00",
+        days: int = 0, **fields: Any,  # noqa: ANN401
+    ) -> str:
+        """Note a thing with an hour at ``at`` as ``by``; its id."""
+        when = (_at(start) + timedelta(days=days)).isoformat()
+        one = things.Thing(things.new_id(), title, "go", start_at=when, **fields)
+        with closing(self.conn()) as conn:
+            return things.add(
+                conn, one, by=by, evidence="a mail", zone=ZONE, now=_at(at),
+            )[0].thing_id
+
+    def said(self) -> dict[str, plan.Said]:
+        """Today's lines by key, as the log holds them."""
+        with closing(self.conn()) as conn:
+            return plan.said(conn, DAY)
+
     def record(self, record_id: str) -> str | None:
-        """The text of conversation record ``record_id``, or None."""
+        """The text of conversation record ``record_id`` by her, or None."""
         with closing(open_memory_db(self.memory)) as conn:
             row = conn.execute(
                 "SELECT text FROM records WHERE id = ? AND source = 'jarvis'", (record_id,),
@@ -173,85 +211,61 @@ def rig(tmp_path: Path) -> Rig:
     return Rig(tmp_path)
 
 
-def test_waking_opens_the_day_once_and_the_decider_is_not_asked(rig: Rig) -> None:
-    """Her opening is her record plus plan.opened, written once; woke is noticed, not judged."""
-    rig.drafted(_item())
-    assert rig.watch.tick(_at("07:05")) == ["woke", "open"]
-    assert rig.record(f"plan-open-{DAY}") == "Good morning."
-    held = rig.today()
-    assert (held.opened, held.opened_signal, held.opened_record_id) == (
-        True, "focus_off", f"plan-open-{DAY}",
+def _new_line(title: str, when: str, day: str, place: str = "") -> str:
+    held = lang.t("plan.new_place", place=place) if place else ""
+    return lang.t(
+        "plan.new_thing", when=f"{lang.t('plan.new_' + day)} {when}", title=title, place=held,
     )
-    assert rig.watch.tick(_at("07:06")) == []
-    assert (len(rig.opened), rig.asked) == (1, [])
-    with closing(rig.conn()) as conn:
-        assert list(plan.notices(conn, DAY)) == ["woke"]
 
 
-def test_a_day_is_not_opened_after_it_ends(rig: Rig) -> None:
-    """A watcher started late at night does not open the day he already lived."""
+# --- the morning ----------------------------------------------------------------------------
+
+
+def test_waking_says_the_morning_line_once_and_never_follows_it_up(rig: Rig) -> None:
+    """Her record, plan.said, one model call, nothing pushed at the Mac; then silence all day."""
     rig.drafted(_item())
-    assert "open" not in rig.watch.tick(_at("23:40"))
-    assert rig.record(f"plan-open-{DAY}") is None
+    assert rig.watch.tick(_at("07:05")) == ["morning"]
+    assert rig.record(f"plan-{DAY}-morning") == MORNING
+    (said,) = rig.said().values()
+    assert (said.key, said.kind, said.text, said.record_id) == (
+        "morning", "morning", MORNING, f"plan-{DAY}-morning",
+    )
+    assert rig.pushed == []
+    minutes = [_at("07:06") + timedelta(minutes=5 * n) for n in range(190)]
+    assert [k for m in minutes if m.time() < time(22, 0) for k in rig.watch.tick(m)] == []
+    assert rig.tasks_asked() == ["morning"]
+    with closing(open_memory_db(rig.memory)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM records WHERE source = 'jarvis'").fetchone()
+    assert count[0] == 1
 
 
-def test_a_day_whose_draft_failed_is_opened_with_that_fact_and_asked_once(rig: Rig) -> None:
-    """No plan, a failed draft: the opening goes through the model with draft_failed, only once."""
-    with closing(rig.conn()) as conn:
-        plan.draft_failed(conn, DAY, "TimeoutError: slow")
-    rig.woke("07:00")
+def test_the_morning_prompt_is_the_plan_the_weather_and_the_goals(rig: Rig) -> None:
+    """The model is asked task morning with the day's plan, spoken, and the forecast."""
+    rig.drafted(_item("p1", title="Dentist", start="14:00", place="Clinic", route=LEG),
+                _task("p2", "Email Sam"))
     rig.watch.tick(_at("07:05"))
-    rig.watch.tick(_at("07:06"))
-    assert rig.record(f"plan-open-{DAY}") == "Good morning."
-    assert [json.loads(u)["draft_failed"] for u in rig.opened] == [True]
+    (body,) = rig.asked
+    assert (body["task"], body["day"], body["draft_failed"], body["weather"]) == (
+        "morning", "2026-10-16", False, {"summary": "rain"},
+    )
+    assert body["plan"][0]["route"] == {"leave_at": "1:20 PM", "line": "26", "board": "Main St"}
+    assert [p["title"] for p in body["plan"]] == ["Dentist", "Email Sam"]
 
 
-def test_the_opening_lists_the_things_he_has_not_confirmed(rig: Rig) -> None:
-    """ADR 0299: unconfirmed things of the next days, due ones and untimed ones; no others."""
-    def add(title: str, kind: str = "go", *, confirmed: bool = False, **fields: Any) -> str:  # noqa: ANN401
-        one = things.Thing(things.new_id(), title, kind, confirmed=confirmed, **fields)
-        with closing(rig.conn()) as conn:
-            return things.add(
-                conn, one, by="mail", evidence="a mail", zone=ZONE, now=_at("06:00"),
-            )[0].thing_id
-
-    def on(days: int, clock: str) -> str:
-        return (_at(clock) + timedelta(days=days)).isoformat()
-
-    add("Visa interview", start_at=on(2, "10:00"), place="Consulate", private=True)
-    add("Parent meeting", start_at=on(1, "17:00"))
-    add("Send form", "do", due=(DAY + timedelta(days=1)).isoformat())
-    add("Fix the bike", "do")
-    add("Class", start_at=on(1, "09:00"), confirmed=True)  # he has said yes
-    add("Reunion", start_at=on(9, "12:00"))  # past the horizon
-    add("Tax return", "do", due=(DAY + timedelta(days=40)).isoformat())  # so is its date
-    dropped = add("Dropped", start_at=on(1, "11:00"))
-    with closing(rig.conn()) as conn:
-        things.close(conn, dropped, "cancelled", by="her", evidence="said so", zone=ZONE)
-    rig.drafted(_item())
-    rig.watch.tick(_at("07:05"))
-    rows = json.loads(rig.opened[0])["unconfirmed"]
-    assert [(r["date"], r["title"], r["place"], r["private"]) for r in rows] == [
-        ("2026-10-17", "Parent meeting", "", False),
-        ("2026-10-18", "Visa interview", "Consulate", True),
-        ("2026-10-17", "Send form", "", False),
-        (None, "Fix the bike", "", False),
-    ]
-
-
-def test_the_opening_gets_today_at_home_and_each_outing_its_own_weather(rig: Rig) -> None:
+def test_the_morning_gets_today_at_home_and_each_outing_its_own_weather(rig: Rig) -> None:
     """Each timed item away from home, soonest first, with the hours of its own stretch."""
     rig.keep("clinic", 48.46, -123.31)
     rig.drafted(
-        _item("p1", title="Write the report"),  # no place: not an outing
+        _item("p1", title="Write the report", start=None),  # no place: not an outing
         _item("p2", title="Lunch", place="Mayfair Mall", start="12:00", minutes=45),
         _item("p3", title="Standup", place="Home", start="08:00", minutes=15),  # at home
         DENTIST,  # 14:00-15:00 at the kept clinic, leaving 13:20
-        _item("p4", title="Errands", place="Downtown", start=None),  # no time: no stretch to give
+        _item("p4", title="Errands", place="Downtown", start=None),  # no time: no stretch
+        _item("p5", title="Therapy", place="Oak Bay", start="16:00", private=True),  # private
     )
     rig.watch.tick(_at("07:05"))
-    body = json.loads(rig.opened[0])
-    assert body["weather"] == {"summary": "rain"}  # what the source gave for the day, as it is
+    (body,) = rig.asked
+    assert body["weather"] == {"summary": "rain"}
     assert [(o["item_id"], o["place"]) for o in body["outings"]] == [
         ("p2", "Mayfair Mall"), ("p9", "Clinic"),
     ]
@@ -265,431 +279,283 @@ def test_the_opening_gets_today_at_home_and_each_outing_its_own_weather(rig: Rig
     ]
 
 
-def test_an_opening_with_no_outing_weather_still_comes_without_it(tmp_path: Path) -> None:
-    """A reader that fails leaves the outing out; the day is still opened."""
+def test_a_morning_with_no_outing_weather_still_comes_without_it(tmp_path: Path) -> None:
+    """A reader that fails leaves the outing out; the morning line still goes."""
     rig = Rig(tmp_path)
     rig.outing_down = True
     rig.drafted(DENTIST)
-    assert rig.watch.tick(_at("07:05")) == ["woke", "open"]
-    assert json.loads(rig.opened[0])["outings"] == []
+    assert rig.watch.tick(_at("07:05")) == ["morning"]
+    assert rig.asked[0]["outings"] == []
+
+
+def test_a_day_whose_draft_failed_still_has_a_morning_line_with_that_fact(rig: Rig) -> None:
+    """No plan, a failed draft: the model is asked with draft_failed, once."""
+    with closing(rig.conn()) as conn:
+        plan.draft_failed(conn, DAY, "TimeoutError: slow")
+    rig.woke("07:00")
+    assert rig.watch.tick(_at("07:05")) == ["morning"]
+    assert rig.watch.tick(_at("07:06")) == []
+    assert [(b["draft_failed"], b["plan"]) for b in rig.asked] == [(True, [])]
 
 
 def test_a_day_with_no_plan_and_no_failure_is_left_alone(rig: Rig) -> None:
-    """Nothing to compare with: no notice, no call."""
+    """Nothing to speak of: no line, no call."""
+    rig.woke("07:00")
     assert rig.watch.tick(_at("07:05")) == []
-    assert (rig.opened, rig.asked) == ([], [])
+    assert rig.asked == []
 
 
-def test_left_late_is_recorded_spoken_and_pushed_time_sensitively(rig: Rig) -> None:
-    """3 minutes past the leave time: in the conversation, and on the phone while he is away."""
-    rig.at_mac = False
-    rig.drafted(DENTIST)
+def test_a_private_item_reaches_the_model_by_its_time_alone(rig: Rig) -> None:
+    """The program masks: the title and place never leave the log."""
+    rig.drafted(_item(title="Therapy", place="Dr Lin's office", private=True))
     rig.watch.tick(_at("07:05"))
-    assert "left_late:p9" in rig.watch.tick(_at("13:24"))
-    assert rig.record(f"plan-{DAY}-left_late:p9") == "Heads up."
-    assert rig.told == []  # nobody at the Mac to hear it
-    (args, kwargs), = rig.pushed
-    assert args == ("Jarvis", "Heads up.")
-    assert (kwargs["thread"], kwargs["time_sensitive"], kwargs["sound"]) == ("talk", True, True)
-    with closing(rig.conn()) as conn:
-        (told,) = plan.decisions(conn, DAY)
-    assert (told.key, told.act, told.say) == ("left_late:p9", "tell", "Heads up.")
-
-
-def _with_leg(rig: Rig, end_at: dict[str, float] | None) -> list[tuple[Any, ...]]:
-    """Give the watcher a leg planner that answers as the real one does; what it was asked."""
-    asked: list[tuple[Any, ...]] = []
-
-    @contextmanager
-    def open_leg(action_id: str) -> Iterator[Any]:
-        def plan_leg(*args: Any, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
-            asked.append((action_id, args, kwargs))
-            option = {"leave_at": "13:25", "arrive_at": "13:58",
-                      "legs": [{"route": "28", "board_stop": "Main St"}]}
-            return {"chosen": option, "backup": None, **({"end_at": end_at} if end_at else {})}
-
-        yield plan_leg
-
-    rig.watch._open_leg = open_leg  # noqa: SLF001
-    return asked
-
-
-def _outing_soon(rig: Rig) -> dict[str, Any]:
-    """The facts she is asked with at 13:00, when the dentist's leg leaves at 13:20."""
-    rig.drafted(DENTIST)
-    rig.watch.tick(_at("07:05"))  # the opening reads the outing's weather too: not what is asked
-    rig.outing_asked.clear()
-    rig.answers = ['{"act": "silent", "why": "fine"}']
-    assert "outing_soon:p9" in rig.watch.tick(_at("13:00"))
-    facts: dict[str, Any] = json.loads(rig.asked[0])["notice"]["facts"]
-    return facts
-
-
-def test_outing_soon_is_asked_with_the_leg_read_again_and_the_weather_where_the_leg_ends(
-    tmp_path: Path,
-) -> None:
-    """The place is not a kept one: its weather is for the end of the leg read just now."""
-    rig = Rig(tmp_path)
-    asked = _with_leg(rig, {"lat": 48.43, "lng": -123.36})
-    facts = _outing_soon(rig)
-    assert facts["weather"] == {  # the hours from the leave time to the end, said as she says it
-        "at": "Clinic", "from": "1:20 PM", "to": "3 PM", "max_chance_pct": 70,
-    }
-    assert rig.outing_asked == [((48.43, -123.36), _at("13:20"), _at("15:00"))]
-    assert facts["leg_now"]["leave_at"] == "1:25 PM"  # said as she says it
-    assert facts["leg_now"]["line"] == "28"
-    assert "notes" not in facts
-    (action_id, args, kwargs), = asked
-    assert (action_id, args) == (f"plan-{DAY}-outing_soon:p9", ("Home", "Clinic"))
-    assert kwargs == {"arrive_by": f"{DAY.isoformat()} 14:00"}
-    assert rig.told == []  # silent: nothing said, nothing pushed
-    assert rig.pushed == []
-
-
-def test_outing_soon_at_a_kept_place_reads_the_hours_at_its_position(tmp_path: Path) -> None:
-    """A kept place has a position of its own: it is used, whatever the leg's end says."""
-    rig = Rig(tmp_path)
-    rig.keep("clinic", 48.46, -123.31)
-    _with_leg(rig, {"lat": 1.0, "lng": 2.0})
-    facts = _outing_soon(rig)
-    assert [point for point, _, _ in rig.outing_asked] == [(48.46, -123.31)]
-    assert facts["weather"]["at"] == "Clinic"
-
-
-def test_outing_soon_with_no_position_known_is_home_s_hours_and_says_so(tmp_path: Path) -> None:
-    """Not kept, and the leg gave no end: home's hours, with a note that they are home's."""
-    rig = Rig(tmp_path)
-    _with_leg(rig, None)
-    facts = _outing_soon(rig)
-    assert [point for point, _, _ in rig.outing_asked] == [None]
-    assert facts["weather"]["at"] == "home"
-    assert facts["weather"]["why_home"] == "the position of Clinic is not known"
-    assert facts["weather"]["max_chance_pct"] == 70
-
-
-def test_outing_soon_goes_on_without_weather_the_reader_cannot_give(tmp_path: Path) -> None:
-    """A reader that fails: she is asked with the leg, and the facts say it is unreadable."""
-    rig = Rig(tmp_path)
-    rig.outing_down = True
-    _with_leg(rig, {"lat": 48.43, "lng": -123.36})
-    facts = _outing_soon(rig)
-    assert facts["weather"] is None
-    assert facts["notes"] == ["weather unreadable"]
-    assert facts["leg_now"]["line"] == "28"
+    (user,) = [json.dumps(b) for b in rig.asked]
+    assert "Therapy" not in user
+    assert "Lin" not in user
 
 
 @pytest.mark.parametrize(
-    ("level", "spoken", "pushed", "sound"),
-    [("off", 0, 1, True), ("quiet", 0, 1, False), ("no-pop", 0, 0, None), ("dnd", 0, 0, None)],
+    ("level", "at_mac", "pushed"),
+    [("off", False, 1), ("quiet", False, 1), ("off", True, 0), ("no-pop", False, 0),
+     ("dnd", False, 0), ("dnd", True, 0)],
 )
-def test_a_non_outing_tell_obeys_the_quiet_level_and_is_always_recorded(
-    tmp_path: Path, level: str, spoken: int, pushed: int, sound: object,
+def test_the_line_is_always_her_record_and_a_silent_push_only_away_from_the_mac(
+    rig: Rig, level: str, *, at_mac: bool, pushed: int,
 ) -> None:
-    """Away from the Mac. quiet: a push without sound; no-pop and dnd: the record only."""
-    rig = Rig(tmp_path)
-    rig.at_mac = False
-    rig.quiet = level
+    """no-pop and dnd keep it in the conversation; at the Mac nothing is spoken or pushed."""
+    rig.quiet, rig.at_mac = level, at_mac
     rig.drafted(_item())
-    rig.watch.tick(_at("09:05"))
-    assert rig.record(f"plan-{DAY}-item_due:p1") == "Heads up."
-    assert (len(rig.told), len(rig.pushed)) == (spoken, pushed)
+    assert rig.watch.tick(_at("07:05")) == ["morning"]
+    assert rig.record(f"plan-{DAY}-morning") == MORNING
+    assert len(rig.pushed) == pushed
     if pushed:
-        assert rig.pushed[0][1]["sound"] is sound
-        assert rig.pushed[0][1]["time_sensitive"] is False
+        (args, kwargs), = rig.pushed
+        assert args == ("Jarvis", MORNING)
+        assert kwargs == {"thread": "talk", "time_sensitive": False, "sound": False}
 
 
-def test_past_the_hours_cap_a_tell_is_only_recorded(tmp_path: Path) -> None:
-    """Two notices in one minute with 1 allowed an hour: the second stays in the conversation."""
-    rig = Rig(tmp_path, settings=replace(SETTINGS, told_per_hour=1))
-    rig.drafted(_item("p1", title="First"), _item("p2", title="Second"))
-    rig.watch.tick(_at("09:05"))
-    assert rig.told == ["Heads up."]  # at the Mac: said there, not pushed
-    assert rig.pushed == []
-    assert rig.record(f"plan-{DAY}-item_due:p1") == "Heads up."
-    assert rig.record(f"plan-{DAY}-item_due:p2") == "Heads up."
-
-
-def test_a_private_item_is_named_by_its_time_on_speakers_and_in_a_push(
-    rig: Rig, tmp_path: Path,
+def test_a_call_holds_the_line_to_the_next_minute_and_nothing_is_written_meanwhile(
+    rig: Rig,
 ) -> None:
-    """Her record keeps her words; the speakers and the push say the time only."""
-    rig.answers = ['{"act": "tell", "say": "Your therapy starts."}']
-    rig.drafted(_item(title="Therapy", private=True))
-    rig.watch.tick(_at("09:05"))
-    assert rig.record(f"plan-{DAY}-item_due:p1") == "Your therapy starts."
-    assert rig.told == ["The 09:00 thing."]
-    (tmp_path / "away").mkdir()
-    away = Rig(tmp_path / "away", answers=['{"act": "tell", "say": "Your therapy starts."}'])
-    away.at_mac = False
-    away.drafted(_item(title="Therapy", private=True))
-    away.watch.tick(_at("09:05"))
-    assert away.pushed[0][0][1] == "The 09:00 thing."
-
-
-def test_adjust_revises_the_plan_by_her(rig: Rig) -> None:
-    """An applying adjust is plan.revised by her with her reason; the item moved."""
-    move = {"op": "edit", "id": "p1", "start": "10:00"}
-    rig.answers = [json.dumps({"act": "adjust", "say": "Moved to 10.", "changes": [move],
-                               "why": "he is late"})]
+    """During the call: no model call, no record, no plan.said. After it: all, once."""
+    rig.at_mac = False
     rig.drafted(_item())
-    rig.watch.tick(_at("09:05"))
-    assert rig.today().items[0].start == "10:00"
-    with closing(rig.conn()) as conn:
-        (revision,) = plan.revisions(conn, DAY, DAY, by="her")
-    assert revision.why == "he is late"
-    assert revision.change == "Write the report start: 09:00 -> 10:00"
-    assert rig.told == ["Moved to 10."]
+    rig.on_call = True
+    assert rig.watch.tick(_at("07:05")) == []
+    assert (rig.asked, rig.said(), rig.record(f"plan-{DAY}-morning")) == ([], {}, None)
+    rig.on_call = False
+    assert rig.watch.tick(_at("07:06")) == ["morning"]
+    assert rig.tasks_asked() == ["morning"]
+    assert len(rig.pushed) == 1
+    assert rig.watch.tick(_at("07:07")) == []
 
 
-def test_an_adjust_with_a_change_that_does_not_apply_is_silence(rig: Rig) -> None:
-    """One op naming no item turns the whole answer to silence: nothing moves, nothing is said."""
-    rig.answers = ['{"act": "adjust", "say": "Moved.", "changes": [{"op": "drop", "id": "p7"}]}']
+def test_a_model_that_fails_is_tried_three_times_and_then_the_day_goes_without(rig: Rig) -> None:
+    """Three failures, nothing written; a fourth minute is not even tried."""
+    rig.failures = 10
     rig.drafted(_item())
-    rig.watch.tick(_at("09:05"))
-    assert [i.item_id for i in rig.today().items] == ["p1"]
-    with closing(rig.conn()) as conn:
-        (decision,) = plan.decisions(conn, DAY)
-        assert plan.revisions(conn, DAY, DAY) == []
-    assert (decision.act, rig.told) == ("silent", [])
+    assert [rig.watch.tick(_at(f"07:0{n}")) for n in range(5, 9)] == [[], [], [], []]
+    assert rig.tasks_asked() == ["morning"] * 3
+    assert (rig.said(), rig.record(f"plan-{DAY}-morning")) == ({}, None)
 
 
-def _two_tasks(rig: Rig) -> None:
-    rig.drafted(_item("p1", start=None), _item("p2", start=None, title="Email Sam", minutes=30))
+def test_a_model_that_answers_badly_once_is_tried_again(rig: Rig) -> None:
+    """A failure is not a day without: the next minute asks again."""
+    rig.failures = 1
+    rig.drafted(_item())
+    assert rig.watch.tick(_at("07:05")) == []
+    assert rig.watch.tick(_at("07:06")) == ["morning"]
+    assert rig.record(f"plan-{DAY}-morning") == MORNING
 
 
-def _early(root: Path, *answers: str) -> Rig:
-    """A rig whose day ends at 10:00: at 09:00 it has 60 minutes for 90 of tasks."""
-    return Rig(root, answers=list(answers), settings=replace(SETTINGS, day_ends=time(10, 0)))
+# --- a new hard thing -----------------------------------------------------------------------
 
 
-def test_a_progress_check_that_fits_after_marking_is_silent_with_no_second_call(
-    tmp_path: Path,
+def test_a_mail_thing_for_today_after_the_morning_is_one_fixed_line_with_no_model(
+    rig: Rig,
 ) -> None:
-    """The done-check marks p1 done (and p9, which is no task); 30 of 60 minutes fit: silence."""
-    rig = _early(tmp_path, json.dumps({"done": ["p1", "p9"], "why": "he sent the report"}))
-    rig.quiet = "off"
-    _two_tasks(rig)
-    assert rig.watch.tick(_at("09:00")) == ["woke", "progress:1", "open"]
-    [asked] = rig.asked
-    body = json.loads(asked)
-    assert (body["task"], [t["id"] for t in body["tasks"]]) == ("progress", ["p1", "p2"])
-    assert body["evidence"]["since"] == "07:00"
-    assert [i.done for i in rig.today().items] == [True, False]
-    with closing(rig.conn()) as conn:
-        by_key = {d.key: d for d in plan.decisions(conn, DAY)}
-        [revision] = plan.revisions(conn, DAY, DAY)
-    assert (by_key["progress:1:done"].act, by_key["progress:1:done"].say) == ("adjust", "")
-    assert "p9" in by_key["progress:1:done"].why  # what was dropped is on record
-    assert (by_key["progress:1"].act, by_key["progress:1"].why) == ("silent", "fits")
-    assert revision.by == "her"
-    assert (rig.told, rig.pushed, rig.record(f"plan-{DAY}-progress:1")) == ([], [], None)
-    assert rig.watch.tick(_at("09:30")) == []  # each checkpoint once
-
-
-def test_a_progress_check_that_still_does_not_fit_asks_the_decider_with_the_fresh_budget(
-    tmp_path: Path,
-) -> None:
-    """p1 has 45 minutes left: 75 against 60. The second call sees that, not the evidence."""
-    rig = _early(tmp_path, json.dumps({"left": {"p1": 45}}), TELL)
-    _two_tasks(rig)
-    rig.watch.tick(_at("09:00"))
-    assert [json.loads(a)["task"] for a in rig.asked] == ["progress", "notice"]
-    second = json.loads(rig.asked[1])
-    facts = second["notice"]["facts"]
-    assert (facts["remaining_min"], facts["free_min"], facts["fits"]) == (75, 60, False)
-    assert facts["marked"] == {"done": [], "left": {"p1": 45}}
-    assert "evidence" not in facts
-    assert second["told_today"] == []  # the done-check is not something she told him
-    assert [(i.item_id, i.minutes) for i in rig.today().items] == [("p1", 45), ("p2", 30)]
-    assert rig.told == ["Heads up."]
-    with closing(rig.conn()) as conn:
-        assert [(d.key, d.act) for d in plan.decisions(conn, DAY)] == [
-            ("progress:1:done", "adjust"), ("progress:1", "tell"),
-        ]
-    # the day is over for checks at 10:00, whatever is left
-    assert rig.watch.tick(_at("11:00")) == []
-    assert len(rig.asked) == 2
-
-
-def test_a_done_check_that_fails_leaves_the_plan_and_the_budget_decides(tmp_path: Path) -> None:
-    """Not JSON: nothing marked, silent on record; 90 of 60 does not fit, so she is asked (dnd)."""
-    rig = _early(tmp_path, "not json", TELL)
-    rig.quiet = "dnd"
-    _two_tasks(rig)
-    rig.watch.tick(_at("09:00"))
-    assert (rig.told, rig.pushed, rig.record(f"plan-{DAY}-progress:1")) == ([], [], "Heads up.")
-    assert [i.done for i in rig.today().items] == [False, False]
-    with closing(rig.conn()) as conn:
-        by_key = {d.key: d for d in plan.decisions(conn, DAY)}
-    assert (by_key["progress:1:done"].act, "JSON" in by_key["progress:1:done"].why) == (
-        "silent", True,
-    )
-    assert by_key["progress:1"].act == "tell"
-
-
-def _work(rig: Rig, at: str, *texts: str) -> None:
-    with closing(rig.conn()) as conn:
-        emit_event(conn, type="work_state.revised", ts_epoch_ms=int(_at(at).timestamp() * 1000),
-                   payload={"item": {"activities": [{"text": t} for t in texts]},
-                            "trigger": "auto"})
-
-
-def test_each_progress_check_sees_the_evidence_since_the_previous_one(tmp_path: Path) -> None:
-    """The first looks back to waking; the second to when the first looked, not to waking."""
-    rig = Rig(tmp_path, answers=["{}", "{}"])
-    _two_tasks(rig)
-    _work(rig, "06:30", "before he woke")
-    _work(rig, "08:00", "editing the report")
-    _work(rig, "09:30", "writing tests")
-    rig.watch.tick(_at("09:00"))
-    rig.watch.tick(_at("11:00"))
-    with closing(rig.conn()) as conn:
-        seen = plan.notices(conn, DAY)
-    first, second = (seen[k].facts["evidence"] for k in ("progress:1", "progress:2"))
-    assert (first["since"], [a["text"] for a in first["screen"]]) == (
-        "07:00", ["editing the report"],
-    )
-    assert (second["since"], [a["text"] for a in second["screen"]]) == ("09:00", ["writing tests"])
-    assert [json.loads(a)["evidence"]["since"] for a in rig.asked] == ["07:00", "09:00"]
-
-
-def test_the_first_items_start_settles_a_plan_nobody_opened(rig: Rig) -> None:
-    """No sign of him, so no opening: at 09:00 the program settles it. An opened one is his."""
-    rig.drafted(_item(start="09:00"), _item("p2", start="11:00", firmness="droppable"), wake=None)
-    rig.watch.tick(_at("08:59"))
-    assert rig.today().status == "draft"
-    rig.watch.tick(_at("09:00"))
-    held = rig.today()
-    assert (held.status, held.settled_by) == ("settled", "first_item")
-
-
-def test_an_opened_plan_is_not_settled_by_the_program(rig: Rig) -> None:
-    """He was up and she opened the day: the first item's start leaves it to him."""
-    rig.drafted(_item(start="09:00"))
+    """Her record, plan.said and a silent push away; the model is not asked again."""
+    rig.at_mac = False
+    rig.drafted(_item())
     rig.watch.tick(_at("08:00"))
-    rig.watch.tick(_at("09:00"))
-    assert (rig.today().opened, rig.today().status) == (True, "draft")
+    thing_id = rig.thing("Parent meeting", start="15:00", at="10:00", place="School")
+    assert rig.watch.tick(_at("10:01")) == [f"new:{thing_id}"]
+    expected = _new_line("Parent meeting", "15:00", "today", "School")
+    assert rig.record(f"plan-{DAY}-new:{thing_id}") == expected
+    assert rig.said()[f"new:{thing_id}"].kind == "new"
+    assert [a[1] for a, _ in rig.pushed] == [MORNING, expected]
+    assert rig.tasks_asked() == ["morning"]
+    assert rig.watch.tick(_at("10:02")) == []
 
 
-def test_the_opening_is_said_at_the_mac_and_pushed_when_he_is_away(tmp_path: Path) -> None:
-    """Said where he is; away from the Mac the phone gets it with a sound; dnd keeps it only."""
-    home = Rig(tmp_path / "home", settings=replace(SETTINGS, morning_push=True))
-    home.drafted(_item())
-    home.watch.tick(_at("07:05"))
-    assert (home.said, home.pushed) == ([OPENING], [])
-    away = Rig(tmp_path / "away", settings=replace(SETTINGS, morning_push=True))
-    away.at_mac = False
-    away.drafted(_item())
-    away.watch.tick(_at("07:05"))
-    (args, kwargs), = away.pushed
-    assert (away.said, args[1], kwargs["sound"], kwargs["thread"]) == ([], OPENING, True, "talk")
-    held = Rig(tmp_path / "dnd", settings=replace(SETTINGS, morning_push=True))
-    held.quiet, held.at_mac = "dnd", False
-    held.drafted(_item())
-    held.watch.tick(_at("07:05"))
-    assert (held.said, held.pushed, held.record(f"plan-open-{DAY}")) == ([], [], OPENING)
-
-
-def _clocked(monkeypatch: pytest.MonkeyPatch) -> list[datetime]:
-    """Records get the watcher's time, not the wall clock; set ``[0]`` before writing one."""
-    now = [_at("07:00")]
-    monkeypatch.setattr(memory_db, "local_now", lambda: now[0])
-    return now
-
-
-def _his(rig: Rig, record_id: str, text: str) -> None:
-    append_record(rig.memory, record_id=record_id, source="allen", text=text)
-
-
-def test_an_unanswered_opening_is_followed_up_until_he_answers(
-    rig: Rig, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Ten minutes of no answer and she follows up with the talk so far.
-
-    His answer stops it; her next unanswered words start the wait again (15 min for the second).
-    """
-    now = _clocked(monkeypatch)
+def test_a_thing_for_tomorrow_a_mirror_move_and_a_private_one_are_told(rig: Rig) -> None:
+    """The mirror counts; a move of yesterday's thing counts; a private one is its time only."""
     rig.drafted(_item())
-    now[0] = _at("07:05")
-    rig.watch.tick(now[0])  # the opening
-    assert rig.watch.tick(_at("07:14")) == []
-    now[0] = _at("07:15")
-    assert rig.watch.tick(now[0]) == ["unsettled:1"]
-    body = json.loads(rig.opened[-1])
-    assert (body["task"], body["asked"], body["minutes"]) == ("follow-up", 0, 10)
-    assert [m["who"] for m in body["conversation"]] == ["you"]
-    assert rig.record(f"plan-{DAY}-unsettled:1") == OPENING
-    now[0] = _at("07:20")
-    _his(rig, "r-him", "I'll go out at ten")
-    assert rig.watch.tick(_at("08:00")) == []  # his words are the last
-    now[0] = _at("08:01")
-    append_record(rig.memory, record_id="r-her", source="jarvis", text="The 9:40 bus then?")
-    assert rig.watch.tick(_at("08:15")) == []
-    assert rig.watch.tick(_at("08:16")) == ["unsettled:2"]
-    assert [m["who"] for m in json.loads(rig.opened[-1])["conversation"]] == [
-        "you", "you", "him", "you",
-    ]
-
-
-def test_follow_ups_stop_once_settled_and_after_six(
-    rig: Rig, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Six follow-ups at most in a day, and none once the plan is settled."""
-    now = _clocked(monkeypatch)
-    rig.drafted(_item())
-    rig.watch.tick(_at("07:05"))
-    keys = []
-    for minute in range(10, 400, 5):
-        now[0] = _at("07:05") + timedelta(minutes=minute)
-        keys += [k for k in rig.watch.tick(now[0]) if k.startswith("unsettled")]
-    assert keys == [f"unsettled:{n}" for n in range(1, 7)]
-    settled = Rig(rig.log.parent / "settled")
-    now2 = _clocked(monkeypatch)
-    settled.drafted(_item())
-    settled.watch.tick(_at("07:05"))
-    with closing(settled.conn()) as conn:
-        plan.settle(conn, DAY, "him")
-    now2[0] = _at("08:00")
-    assert settled.watch.tick(now2[0]) == []
-
-
-def test_a_model_that_fails_is_silence_on_record(tmp_path: Path) -> None:
-    """A decider that raises writes a silent decision; nothing is told."""
-    rig = Rig(tmp_path)
-
-    def boom(*_: str) -> str:
-        msg = "down"
-        raise TimeoutError(msg)
-
-    rig.watch._ask_decide = boom  # noqa: SLF001
-    rig.drafted(_item())
-    rig.watch.tick(_at("09:05"))
+    rig.watch.tick(_at("08:00"))
+    visa = rig.thing("Visa interview", by="mirror", start="10:00", at="09:00", days=1,
+                     private=True)
+    moved = rig.thing("Class", by="mail", start="13:00", at="07:30", place="Room 2")
     with closing(rig.conn()) as conn:
-        (decision,) = plan.decisions(conn, DAY)
-    assert (decision.act, decision.why) == ("silent", "TimeoutError")
-    assert rig.told == []
+        earlier = things.Thing(things.new_id(), "Budget review", "go",
+                               start_at=_at("11:00", DAY - timedelta(days=1)).isoformat())
+        old_id = things.add(conn, earlier, by="her", evidence="said so", zone=ZONE,
+                            now=_at("09:00", DAY - timedelta(days=1)))[0].thing_id
+        things.move(conn, old_id, start_at=_at("16:00").isoformat(), by="mirror",
+                    evidence="the calendar", zone=ZONE, now=_at("10:30"))
+    keys = rig.watch.tick(_at("10:45"))
+    assert keys == [f"new:{visa}", f"new:{old_id}"]
+    assert f"new:{moved}" not in rig.said()  # noted before the morning line went out
+    assert rig.record(f"plan-{DAY}-new:{visa}") == lang.t("plan.private", time="10:00")
+    assert rig.record(f"plan-{DAY}-new:{old_id}") == _new_line("Budget review", "16:00", "today")
 
 
-def test_the_settings_read_the_watch_keys() -> None:
-    """Watch is on only for true; the caps need whole numbers of 1 or more."""
-    block = {"enabled": True, "watch": True, "decide_preset": "sonnet", "told_per_day": 3,
-             "told_per_hour": 0}
-    parsed = runtime.DayPlanSettings.from_config(block)
-    assert parsed is not None
-    assert (parsed.watch, parsed.decide_preset, parsed.told_per_day, parsed.told_per_hour) == (
-        True, "sonnet", 3, 2,
+def test_things_from_his_own_words_are_not_told_back_to_him(rig: Rig) -> None:
+    """her, pass and him wrote them: no new line, whatever the hour."""
+    rig.drafted(_item())
+    rig.watch.tick(_at("08:00"))
+    for by in ("her", "pass", "him"):
+        rig.thing(f"Mine {by}", by=by, at="10:00")
+    assert rig.watch.tick(_at("10:05")) == []
+    assert list(rig.said()) == ["morning"]
+
+
+def test_a_third_new_thing_after_two_is_not_told(rig: Rig) -> None:
+    """Two new lines fill the day; the third waits for nothing."""
+    rig.drafted(_item())
+    rig.watch.tick(_at("08:00"))
+    ids = [rig.thing(f"Meeting {n}", start=f"1{n}:00", at=f"09:0{n}") for n in range(2, 6)]
+    assert rig.watch.tick(_at("10:00")) == [f"new:{i}" for i in ids[:2]]
+    assert rig.watch.tick(_at("10:01")) == []
+    assert rig.watch.tick(_at("11:00")) == []
+
+
+def test_a_thing_noted_before_the_morning_line_is_left_to_it(rig: Rig) -> None:
+    """The morning line holds what was there when it was written."""
+    rig.drafted(_item(), wake="07:00")
+    rig.thing("Early mail", at="06:30")
+    rig.watch.tick(_at("08:00"))
+    assert rig.watch.tick(_at("08:05")) == []
+    assert list(rig.said()) == ["morning"]
+
+
+# --- the evening ----------------------------------------------------------------------------
+
+
+def _evening_rig(rig: Rig, *unfinished: dict[str, str]) -> None:
+    rig.unfinished = list(unfinished)
+    rig.drafted(
+        _task("p1", "Write the report"), _task("p2", "Email Sam", minutes=30),
+        _task("p3", "Fix the bike", done=True), DENTIST,
     )
-    off = runtime.DayPlanSettings.from_config({"enabled": True})
-    assert off is not None
-    assert (off.watch, off.decide_preset, off.told_per_day) == (False, "haiku", 8)
-    assert off.day_ends == time(23, 30)
-    ends = runtime.DayPlanSettings.from_config({"enabled": True, "day_ends": "22:15"})
-    assert ends is not None
-    assert ends.day_ends == time(22, 15)
-    assert runtime.day_ends_of({"day_ends": "late"}) == time(23, 30)
+    rig.watch.tick(_at("08:00"))
 
 
-# --- the plan tool -------------------------------------------------------------------------
+def test_the_evening_line_goes_when_he_is_home_from_elsewhere_and_closes_the_day(
+    rig: Rig,
+) -> None:
+    """Library until 20:25, home at 20:30: ten minutes later the evening, plan.closed, no more."""
+    rig.at_mac = False
+    _evening_rig(
+        rig, {"id": "p1", "to": "tomorrow"}, {"id": "p2", "to": "drop"},
+    )
+    with closing(rig.conn()) as conn:
+        stay(conn, "v1", 49.2, -123.1, _ms("15:00"), _ms("20:25"), "Library")
+        stay(conn, "v2", 49.3, -123.2, _ms("20:30"), None, "Home")
+    assert rig.watch.tick(_at("20:39")) == []
+    assert rig.watch.tick(_at("20:40")) == ["evening"]
+    assert rig.record(f"plan-{DAY}-evening") == EVENING
+    assert rig.said()["evening"].kind == "evening"
+    assert rig.pushed[-1][0] == ("Jarvis", EVENING)
+    body = rig.asked[-1]
+    assert (body["task"], [p["id"] for p in body["planned"]]) == (
+        "evening", ["p1", "p2", "p3", "p9"],
+    )
+    assert [p["done"] for p in body["planned"]] == [False, False, True, False]
+    with closing(rig.conn()) as conn:
+        closed = plan.closed(conn, DAY)
+    assert closed == (
+        plan.Unfinished("p1", "Write the report", "tomorrow"),
+        plan.Unfinished("p2", "Email Sam", "drop"),
+    )
+    assert rig.watch.tick(_at("20:41")) == []
+    assert rig.watch.tick(_at("23:00")) == []
+
+
+def test_the_evening_line_goes_when_the_mac_is_locked_for_twenty_minutes(rig: Rig) -> None:
+    """Locked at 21:10: at 21:29 not yet; at 21:30 the evening, and tomorrow's things ride along."""
+    _evening_rig(rig)
+    rig.thing("Parent meeting", by="her", start="17:00", at="09:00", days=1, place="School")
+    rig.thing("Gym", by="her", start="07:30", at="09:00", days=1)
+    rig.mac("21:10", "lock")
+    assert rig.watch.tick(_at("21:29")) == []
+    assert rig.watch.tick(_at("21:30")) == ["evening"]
+    body = rig.asked[-1]
+    assert [t["title"] for t in body["tomorrow"]] == ["Gym", "Parent meeting"]
+    with closing(rig.conn()) as conn:
+        closed = plan.closed(conn, DAY)
+    assert closed == (  # she left both tasks out: later is her default
+        plan.Unfinished("p1", "Write the report", "later"),
+        plan.Unfinished("p2", "Email Sam", "later"),
+    )
+
+
+def test_a_dinner_break_at_the_mac_is_not_the_end_of_the_day(rig: Rig) -> None:
+    """Idle at 19:00, locked 18:00 to 19:40, and back: nothing until the fallback hour."""
+    _evening_rig(rig)
+    rig.mac("18:00", "lock")
+    rig.mac("18:45", "unlock")
+    rig.mac("19:00", "idle")
+    rig.mac("19:40", "active")
+    quiet = [rig.watch.tick(_at(clock)) for clock in ("19:50", "21:30", "22:29")]
+    assert quiet == [[], [], []]
+    assert rig.watch.tick(_at("22:30")) == ["evening"]
+
+
+def test_the_evening_line_goes_at_the_fallback_hour_without_any_signal(rig: Rig) -> None:
+    """An hour before day_ends (23:30): the evening, once."""
+    _evening_rig(rig)
+    assert rig.watch.tick(_at("22:29")) == []
+    assert rig.watch.tick(_at("22:30")) == ["evening"]
+    assert rig.watch.tick(_at("22:31")) == []
+    assert rig.tasks_asked() == ["morning", "evening"]
+
+
+def test_a_destination_the_model_invents_is_dropped_and_a_failed_evening_is_not_closed(
+    rig: Rig,
+) -> None:
+    """Bad `to` becomes later; a model that fails writes neither the line nor plan.closed."""
+    _evening_rig(rig, {"id": "p1", "to": "someday"})
+    rig.failures = 3
+    assert [rig.watch.tick(_at(f"22:3{n}")) for n in range(3)] == [[], [], []]
+    with closing(rig.conn()) as conn:
+        assert plan.closed(conn, DAY) is None
+    assert "evening" not in rig.said()
+    assert rig.watch.tick(_at("22:40")) == []  # the day goes without it
+    assert rig.tasks_asked() == ["morning", "evening", "evening", "evening"]
+
+
+def test_the_next_days_draft_carries_the_tomorrow_tasks(rig: Rig) -> None:
+    """Only `tomorrow` rides on, with the source of the task; its source is a known one."""
+    rig.unfinished = [{"id": "p1", "to": "tomorrow"}, {"id": "p2", "to": "later"}]
+    rig.drafted(
+        _task("p1", "Renew the lease", source="item:thing-zz9", minutes=25),
+        _task("p2", "Email Sam"), wake="07:00",
+    )
+    assert rig.watch.tick(_at("22:30")) == ["evening"]
+    inputs = runtime.gather(
+        rig.sources, SETTINGS, DAY + timedelta(days=1), _at("04:00", DAY + timedelta(days=1)),
+    )
+    assert inputs.carried == (
+        {"title": "Renew the lease", "source": "item:thing-zz9", "minutes": 25},
+    )
+    assert "item:thing-zz9" in inputs.sources
+    payload = inputs.payload(zone_name="America/Vancouver", today=DAY + timedelta(days=1))
+    assert payload["carried"] == list(inputs.carried)
+    same_day = runtime.gather(rig.sources, SETTINGS, DAY, _at("04:00"))
+    assert same_day.carried == ()
+
+
+# --- muting through the plan tool -------------------------------------------------------------
 
 
 def _tool(rig: Rig) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -703,12 +569,162 @@ def _tool(rig: Rig) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return call
 
 
-def test_the_plan_tool_reads_changes_and_settles(rig: Rig) -> None:
-    """Read gives compact rows; change is one revision by him; settle is his."""
+def test_a_kind_he_mutes_is_not_said_until_he_asks_for_it_back(rig: Rig) -> None:
+    """Muting morning: no line; on false it speaks at the next minute. Other kinds go on."""
+    call = _tool(rig)
+    rig.drafted(_item())
+    assert call({"action": "mute", "kind": "morning"})["muted"] == ["morning"]
+    assert call({"action": "read"})["muted"] == ["morning"]
+    assert rig.watch.tick(_at("07:05")) == []
+    assert rig.asked == []
+    call({"action": "mute", "kind": "new"})
+    rig.thing("Parent meeting", at="08:30")
+    assert rig.watch.tick(_at("08:31")) == []  # the new line is off too
+    assert call({"action": "mute", "kind": "morning", "on": False})["muted"] == ["new"]
+    assert rig.watch.tick(_at("07:06")) == ["morning"]
+
+
+def test_with_the_morning_muted_a_new_thing_is_still_told_after_he_woke(rig: Rig) -> None:
+    """No morning line will hold it, so the first sign of waking stands in."""
+    call = _tool(rig)
+    rig.drafted(_item())
+    call({"action": "mute", "kind": "morning"})
+    thing_id = rig.thing("Parent meeting", at="08:30")
+    assert rig.watch.tick(_at("08:31")) == [f"new:{thing_id}"]
+
+
+def test_the_plan_tool_mutes_by_kind_and_has_no_settle(rig: Rig) -> None:
+    """The kinds are the four; anything else is an argument error; settle is gone."""
+    (tool,) = build_plan_tool()
+    schema = tool.input_schema["properties"]
+    assert schema["action"]["enum"] == ["read", "change", "mute"]
+    assert schema["kind"]["enum"] == ["morning", "new", "leave", "evening"]
+    assert "settl" not in tool.description
+    call = _tool(rig)
+    for bad in ({"action": "settle"}, {"action": "mute"}, {"action": "mute", "kind": "noon"},
+                {"action": "mute", "kind": "new", "on": "yes"}):
+        with pytest.raises(ToolError):
+            call(bad)
+    with closing(rig.conn()) as conn:
+        assert plan.muted(conn) == frozenset()
+
+
+# --- the day reply ------------------------------------------------------------------------------
+
+
+def test_the_day_reply_shows_her_latest_line_of_the_day(rig: Rig) -> None:
+    """None before she says anything; then the latest plan.said, beside the day prose's line."""
+    now_ms = _ms("23:00")
+    assert read_day(rig.log, ZONE, rig.memory, None, DAY, now_ms)["plan_said"] is None
+    rig.drafted(_item())
+    rig.watch.tick(_at("08:00"))
+    thing_id = rig.thing("Parent meeting", at="10:00")
+    rig.watch.tick(_at("10:01"))
+    said = rig.said()
+    page = read_day(rig.log, ZONE, rig.memory, None, DAY, now_ms)
+    assert page["plan_said"] == {
+        "kind": "new", "text": said[f"new:{thing_id}"].text, "at_ms": said[f"new:{thing_id}"].at_ms,
+    }
+    assert "line" in page
+
+
+# --- the facts ----------------------------------------------------------------------------------
+
+
+def test_the_macs_idle_locked_and_asleep_stretches_are_folded_up_to_now(rig: Rig) -> None:
+    """A resume ends its own stretch; one not ended runs on; marks after now are unseen."""
+    for at, kind in (("12:00", "idle"), ("12:10", "active"), ("13:00", "lock"),
+                     ("13:30", "sleep"), ("13:45", "wake"), ("14:00", "unlock"),
+                     ("15:00", "sleep"), ("16:00", "wake")):
+        rig.mac(at, kind)
+    with closing(rig.conn()) as conn:
+        facts = facts_at(conn, DAY, _ms("15:30"), ZONE, [])
+        later = facts_at(conn, DAY, _ms("17:00"), ZONE, [])
+    assert [(a.kind, a.start_ms, a.end_ms) for a in facts.mac_away] == [
+        ("idle", _ms("12:00"), _ms("12:10")), ("lock", _ms("13:00"), _ms("14:00")),
+        ("sleep", _ms("13:30"), _ms("13:45")), ("sleep", _ms("15:00"), None),
+    ]
+    assert later.mac_away[-1].end_ms == _ms("16:00")
+
+
+def test_a_thing_moved_today_by_mail_counts_at_the_time_of_the_move_and_a_close_removes_it(
+    rig: Rig,
+) -> None:
+    """The writer of the last add or move is kept; closed things stand no more."""
+    with closing(rig.conn()) as conn:
+        one = things.Thing(things.new_id(), "Checkup", "go", start_at=_at("11:00").isoformat())
+        thing_id = things.add(conn, one, by="her", evidence="said so", zone=ZONE,
+                              now=_at("07:00", DAY - timedelta(days=2)))[0].thing_id
+        gone = things.add(conn, things.Thing(
+            things.new_id(), "Cancelled", "go", start_at=_at("12:00").isoformat(),
+        ), by="mail", evidence="a mail", zone=ZONE, now=_at("08:00"))[0].thing_id
+        things.move(conn, thing_id, start_at=_at("15:00").isoformat(), by="mail",
+                    evidence="a mail", zone=ZONE, now=_at("09:00"))
+        things.close(conn, gone, "cancelled", by="mail", evidence="a mail", zone=ZONE,
+                     now=_at("09:30"))
+        facts = facts_at(conn, DAY, _ms("10:00"), ZONE, [])
+    (noted,) = facts.things
+    assert (noted.title, noted.start, noted.day, noted.by, noted.noted_at_ms) == (
+        "Checkup", "15:00", DAY, "mail", _ms("09:00"),
+    )
+
+
+# --- the legs of the plan -----------------------------------------------------------------------
+
+
+def test_the_watcher_computes_the_legs_a_plan_lacks_once(tmp_path: Path) -> None:
+    """A placed item with no leg gets one, written as a revision by the program; not again."""
+    calls: list[tuple[Any, ...]] = []
+
+    @contextmanager
+    def open_leg(action_id: str) -> Iterator[Any]:
+        def plan_leg(origin: str, dest: str, *, arrive_by: str) -> dict[str, Any]:
+            calls.append((action_id, origin, dest, arrive_by))
+            option = {"leave_at": "13:25", "arrive_at": "13:58",
+                      "legs": [{"route": "28", "board_stop": "Main St"}]}
+            return {"chosen": option, "backup": None}
+
+        yield plan_leg
+
+    rig = Rig(tmp_path, open_leg=open_leg)
+    rig.drafted(replace(DENTIST, route=None), wake=None)
+    rig.watch.tick(_at("07:05"))
+    rig.watch.tick(_at("07:06"))
+    assert calls == [(f"plan-{DAY}-routes", "home", "Clinic", f"{DAY.isoformat()} 14:00")]
+    assert rig.today().items[0].route is not None
+    assert rig.today().items[0].route["line"] == "28"  # type: ignore[index]
+    with closing(rig.conn()) as conn:
+        (revision,) = plan.revisions(conn, DAY, DAY, by="program")
+    assert revision.why == "legs"
+
+
+def test_the_settings_read_the_watch_keys_and_ignore_the_old_ones() -> None:
+    """Watch is on only for true; line_preset is a name; the ADR 0291 keys are ignored."""
+    parsed = runtime.DayPlanSettings.from_config({
+        "enabled": True, "watch": True, "line_preset": "sonnet", "decide_preset": "x",
+        "told_per_day": 3, "morning_push": True,
+    })
+    assert parsed is not None
+    assert (parsed.watch, parsed.line_preset) == (True, "sonnet")
+    off = runtime.DayPlanSettings.from_config({"enabled": True})
+    assert off is not None
+    assert (off.watch, off.line_preset, off.day_ends) == (False, "haiku", time(23, 30))
+    ends = runtime.DayPlanSettings.from_config({"enabled": True, "day_ends": "22:15"})
+    assert ends is not None
+    assert ends.day_ends == time(22, 15)
+    assert runtime.day_ends_of({"day_ends": "late"}) == time(23, 30)
+
+
+# --- the plan tool -------------------------------------------------------------------------
+
+
+def test_the_plan_tool_reads_and_changes(rig: Rig) -> None:
+    """Read gives compact rows; change is one revision by him."""
     rig.drafted(_item(place="Library"), DENTIST, wake=None)
     call = _tool(rig)
     read = call({"action": "read"})
-    assert read["settled"] is False
+    assert (read["source"], read["muted"]) == ("drafted", [])
+    assert "settled" not in read
     assert [r["id"] for r in read["items"]] == ["p1", "p9"]
     assert read["items"][0] == {
         "id": "p1", "title": "Write the report", "start": "09:00", "minutes": 60,
@@ -725,8 +741,6 @@ def test_the_plan_tool_reads_changes_and_settles(rig: Rig) -> None:
         (revision,) = plan.revisions(conn, DAY, DAY, by="him")
     assert revision.why == "he asked"
     assert call({"action": "change", "changes": [{"op": "drop", "id": "nope"}]})["changed"] is False
-    call({"action": "settle"})
-    assert (rig.today().status, rig.today().settled_by) == ("settled", "him")
 
 
 def test_the_plan_tool_reads_tasks_in_order_with_the_budget_and_moves_and_marks_done(
@@ -754,11 +768,11 @@ def test_the_plan_tool_reads_tasks_in_order_with_the_budget_and_moves_and_marks_
 
 
 def test_the_plan_tool_refuses_a_day_with_no_plan_and_a_bad_date(rig: Rig) -> None:
-    """Read says there is no plan; change and settle refuse; a bad date is an argument error."""
+    """Read says there is no plan; change refuses; a bad date is an argument error."""
     call = _tool(rig)
     assert call({"action": "read", "day": "2026-10-17"})["plan"] is False
     with pytest.raises(ToolError, match="no plan yet"):
-        call({"action": "settle", "day": "2026-10-17"})
+        call({"action": "change", "day": "2026-10-17", "changes": [{"op": "drop", "id": "p1"}]})
     with pytest.raises(ToolError, match="ISO date"):
         call({"action": "read", "day": "tomorrow"})
 
@@ -807,3 +821,27 @@ def test_route_legs_plans_a_leg_for_each_move_to_another_place(rig: Rig) -> None
     assert [i.route is None for i in out] == [False, True, False, True, True]
     assert out[2].route is not None
     assert out[2].route["from"] == "gym"
+
+
+# --- the replay script --------------------------------------------------------------------------
+
+
+def test_the_replay_runs_the_watcher_over_copies_and_writes_nothing_to_the_given_files(
+    rig: Rig,
+) -> None:
+    """A day replays to its morning, new thing and evening; the originals are untouched."""
+    from scripts import plan_day_replay as script  # noqa: PLC0415 - the script is not a package
+
+    rig.drafted(_item())
+    rig.thing("Parent meeting", at="10:00", place="School")
+    rig.mac("21:10", "lock")
+    before = [path.read_bytes() for path in (rig.log, rig.memory)]
+    lines = script.replay(rig.log, rig.memory, DAY, ZONE, script.stub_ask)
+    assert [(at, kind) for at, kind, _key, _text in lines] == [
+        ("07:00", "morning"), ("10:00", "new"), ("21:30", "evening"),
+    ]
+    assert [text for _at_, kind, _key, text in lines if kind != "new"] == [script.STUB] * 2
+    assert script.summary(lines) == "morning 1, new 1, leave 0, evening 1; total 3"
+    assert [path.read_bytes() for path in (rig.log, rig.memory)] == before
+    with pytest.raises(SystemExit):
+        script.replay(rig.log, rig.memory, DAY + timedelta(days=3), ZONE, script.stub_ask)

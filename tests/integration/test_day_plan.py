@@ -3,13 +3,15 @@
 Data-driven checks over a real event log and memory.db with a fake model and a fake weather reader
 (no key, no network, no provider). The examples are invented.
 
-- the fold: a draft, a revision that wins, settle, open, a failed draft, the revisions he made;
+- the fold: a draft, a revision that wins, a failed draft, the revisions he made; the settled and
+  opened rows of old logs are ignored;
 - the writers refuse an item that could not be read back;
 - the parser: bad JSON, a collision with a fixed item, an unknown source, a fixed item the model
   left out, an item that repeats a fixed item;
 - the inputs: the ledger's things (ADR 0299) as fixed items, upcoming ones, all-day labels and
-  open tasks, goals, missing sources noted, and his earlier changes to plans (and how each plan
-  settled) as preferences, in the prompt too; a past plan with the old sources still loads;
+  open tasks, goals, missing sources noted, and his earlier changes to plans as preferences, in
+  the prompt too; a past plan with the old sources still loads;
+- the morning and the evening prompts and their parsers (ADR 0383), a private item masked;
 - the draft: success, every failure writes ``plan.draft_failed``, a day he changed is kept;
 - the schedule: once at ``at``, and a catch-up on start.
 """
@@ -30,7 +32,7 @@ from jarvis.runtime import day_plan as runtime
 from jarvis.shared.skills import load_skill
 from jarvis.state import core_memory, plan, things
 from jarvis.state.day_line import DaySources
-from jarvis.state.event_log import open_event_log, open_runtime_event_log
+from jarvis.state.event_log import emit_event, open_event_log, open_runtime_event_log
 from jarvis.state.memory_db import open_memory_db, remember_fact
 from jarvis.state.things_late import late
 
@@ -107,26 +109,25 @@ def _model(title: str = "Write the report", **fields: Any) -> dict[str, Any]:  #
 # --- the fold ------------------------------------------------------------------------------
 
 
-def test_a_revision_wins_over_the_draft_and_settle_and_open_fold_in(stores: Env) -> None:
-    """The last items win; settled, opened and failed fold in per date."""
+def test_a_revision_wins_over_the_draft_and_a_failed_draft_folds_in(stores: Env) -> None:
+    """The last items win; a failed draft folds in; old settled and opened rows are not read."""
     with closing(stores.conn()) as conn:
         assert plan.for_day(conn, DAY) is None
         plan.draft(conn, DAY, [_item("p1"), _item("p2", title="Walk", start="12:00")], "d1", "m")
         held = plan.for_day(conn, DAY)
         assert held is not None
-        assert (held.status, held.source, held.opened) == ("draft", "drafted", False)
-        assert held.digest == "d1"
+        assert (held.source, held.digest) == ("drafted", "d1")
         assert [i.item_id for i in held.items] == ["p1", "p2"]
         plan.revise(conn, DAY, [_item("p1", start="10:30")], "him", "later please")
-        plan.settle(conn, DAY, "him")
-        plan.opened(conn, DAY, "plan-open-2026-10-16", "focus_off", 1_760_000_000_000)
+        emit_event(conn, type="plan.settled", payload={"date": DAY.isoformat(), "by": "him"})
+        emit_event(conn, type="plan.opened", payload={
+            "date": DAY.isoformat(), "record_id": "plan-open-2026-10-16", "signal": "focus_off",
+            "at_ms": 1_760_000_000_000,
+        })
         held = plan.for_day(conn, DAY)
         assert held is not None
         assert [(i.item_id, i.start) for i in held.items] == [("p1", "10:30")]
-        assert (held.status, held.settled_by, held.source) == ("settled", "him", "revised:him")
-        assert (held.opened, held.opened_record_id, held.opened_signal) == (
-            True, "plan-open-2026-10-16", "focus_off",
-        )
+        assert held.source == "revised:him"
         other = DAY + timedelta(days=1)
         assert plan.for_day(conn, other) is None
         plan.draft_failed(conn, other, "TimeoutError: slow")
@@ -135,19 +136,14 @@ def test_a_revision_wins_over_the_draft_and_settle_and_open_fold_in(stores: Env)
         assert plan.for_day(conn, other) is None
 
 
-def test_a_later_draft_replaces_the_items_but_a_settle_before_a_plan_marks_nothing(
-    stores: Env,
-) -> None:
-    """A newer draft replaces the items; a settle with no plan to hold it marks nothing."""
+def test_a_later_draft_replaces_the_items(stores: Env) -> None:
+    """A newer draft replaces the items."""
     with closing(stores.conn()) as conn:
-        plan.settle(conn, DAY, "first_item")  # no plan yet: nothing to mark
-        assert plan.for_day(conn, DAY) is None
         plan.draft(conn, DAY, [_item("p1")], "d1", "m")
         plan.draft(conn, DAY, [_item("p9", title="Other")], "d2", "m")
         held = plan.for_day(conn, DAY)
         assert held is not None
         assert [i.item_id for i in held.items] == ["p9"]
-        assert held.status == "draft"
 
 
 def test_revisions_by_him_come_newest_first_with_what_changed(stores: Env) -> None:
@@ -204,8 +200,10 @@ def test_a_valid_item_with_every_field_round_trips_and_other_writers_refuse(stor
         attempts: tuple[Callable[[], None], ...] = (
             lambda: plan.draft(conn, DAY, [_item("a"), _item("a")], "d", "m"),
             lambda: plan.revise(conn, DAY, [_item()], "someone", "x"),
-            lambda: plan.settle(conn, DAY, "nobody"),
-            lambda: plan.opened(conn, DAY, "", "focus_off", 1),
+            lambda: plan.say(conn, DAY, "morning", "noon", "Hi.", "plan-x", 1),
+            lambda: plan.say(conn, DAY, "morning", "morning", " ", "plan-x", 1),
+            lambda: plan.close_day(conn, DAY, [plan.Unfinished("p1", "Write", "never")]),
+            lambda: plan.mute(conn, "noon", True),  # noqa: FBT003
         )
         for bad in attempts:
             with pytest.raises(ValueError):  # noqa: PT011
@@ -321,21 +319,123 @@ def test_the_models_order_is_the_plans_order_and_a_listed_fixed_item_keeps_its_p
     ]
 
 
-def test_the_opening_is_strict_json_and_short() -> None:
-    """The opening must be a JSON message of a sensible length."""
-    assert decide.parse_opening('{"message": " Morning. One thing first. "}') == (
+def test_a_message_is_strict_json_and_short() -> None:
+    """The morning's answer must be a JSON message of a sensible length."""
+    assert decide.parse_message('{"message": " Morning. One thing first. "}') == (
         "Morning. One thing first."
     )
     for bad in ("Good morning", '{"message": ""}', '{"text": "x"}', '{"message": 3}',
-                json.dumps({"message": "x" * (decide.OPENING_CHARS + 1)})):
+                json.dumps({"message": "x" * (decide.MESSAGE_CHARS + 1)})):
         with pytest.raises(ValueError):  # noqa: PT011
-            decide.parse_opening(bad)
+            decide.parse_message(bad)
+
+
+def _tasks_plan() -> plan.Plan:
+    return plan.Plan(DAY, (
+        _item("p1", title="Write the report", start=None),
+        _item("p2", title="Email Sam", start=None, minutes=30),
+        _item("p3", title="Fix the bike", start=None, done=True),
+        _item("p4", title="Dentist", start="14:00", place="Clinic"),
+    ))
+
+
+def test_the_evening_keeps_the_destinations_of_tasks_left_undone_and_defaults_the_rest() -> None:
+    """Each entry stays only for a task not done with a valid `to`; a task left out goes later."""
+    answer = json.dumps({"message": "Good night.", "unfinished": [
+        {"id": "p1", "to": "tomorrow"}, {"id": "p1", "to": "drop"},  # the first wins
+        {"id": "p3", "to": "drop"},  # done already
+        {"id": "p4", "to": "drop"},  # not a task
+        {"id": "p9", "to": "drop"},  # not in the plan
+        {"id": "p2", "to": "someday"},  # not a destination
+        "p2",
+    ]})
+    found = decide.parse_evening(answer, _tasks_plan())
+    assert (found.message, found.unfinished) == (
+        "Good night.", (("p1", "tomorrow"), ("p2", "later")),
+    )
+    assert len(found.notes) == 6
+    for bad in ("not json", '{"unfinished": []}', '{"message": ""}'):
+        with pytest.raises(ValueError):  # noqa: PT011
+            decide.parse_evening(bad, _tasks_plan())
+    not_a_list = decide.parse_evening('{"message": "Done.", "unfinished": 3}', _tasks_plan())
+    assert not_a_list.unfinished == (("p1", "later"), ("p2", "later"))
+
+
+def test_the_morning_prompt_carries_the_plan_spoken_and_masks_a_private_item() -> None:
+    """Task morning: clocks spoken, the route cut down, a private item named by its time."""
+    held = plan.Plan(DAY, (
+        _item("p1", title="Write the report", start=None),
+        _item("p2", title="Dentist", start="14:00", place="Clinic", why="checkup",
+              route={"from": "Home", "leave_at": "13:20", "line": "26", "board": "Main St",
+                     "arrive_at": "13:55", "backup": None}),
+        _item("p3", title="Therapy", start="16:00", place="Dr Lin's office", private=True,
+              why="weekly", prepare=("notes",)),
+        _item("p4", title="Call the bank", start=None, private=True),
+    ))
+    system, user = decide.build_morning_prompt(
+        held, weather={"summary": "rain"}, goals=("learn Rust",), now=NOW, zone=ZONE,
+        draft_failed=False,
+    )
+    body = json.loads(user)
+    assert system == load_skill("day-plan").instructions
+    assert (body["task"], body["day"], body["weekday"], body["language"]) == (
+        "morning", "2026-10-16", "Friday", "en",
+    )
+    assert (body["now"], body["weather"], body["goals"], body["draft_failed"]) == (
+        "4 AM", {"summary": "rain"}, ["learn Rust"], False,
+    )
+    dentist = body["plan"][1]
+    assert (dentist["start"], dentist["place"]) == ("2 PM", "Clinic")
+    assert dentist["route"] == {"leave_at": "1:20 PM", "line": "26", "board": "Main St"}
+    therapy, bank = body["plan"][2], body["plan"][3]
+    assert therapy["title"] == "The 4 PM thing."
+    assert (therapy["place"], therapy["why"], therapy["prepare"]) == ("", "", [])
+    assert bank["title"] == "Something on your plan."
+    assert "Therapy" not in user
+    assert "Lin" not in user
+    assert "private" not in dentist
+    failed = json.loads(decide.build_morning_prompt(
+        plan.Plan(DAY, ()), weather=None, goals=(), now=NOW, zone=ZONE, draft_failed=True,
+    )[1])
+    assert (failed["plan"], failed["draft_failed"]) == ([], True)
+
+
+def test_the_evening_prompt_sets_what_was_planned_against_what_was_lived() -> None:
+    """Task evening: planned with done marks, lived lines, tomorrow's things; private masked."""
+    held = plan.Plan(DAY, (
+        _item("p1", title="写报告", start=None),
+        _item("p2", title="看牙", start="14:00", place="诊所"),
+        _item("p3", title="Therapy", start="16:00", private=True, done=True),
+    ))
+    tomorrow = [
+        {"title": "Parent meeting", "start": "17:00", "place": "School", "private": False},
+        {"title": "Visa interview", "start": "10:00", "place": "Consulate", "private": True},
+    ]
+    _system, user = decide.build_evening_prompt(
+        held, lived=["09:00-10:00 on the Mac"], tomorrow=tomorrow,
+        now=datetime(2026, 10, 16, 21, 5, tzinfo=ZONE), zone=ZONE,
+    )
+    body = json.loads(user)
+    assert (body["task"], body["language"], body["lived"]) == (
+        "evening", "zh", ["09:00-10:00 on the Mac"],
+    )
+    assert [(p["id"], p["start"], p["done"]) for p in body["planned"]] == [
+        ("p1", None, False), ("p2", "下午2点整", False), ("p3", "下午4点整", True),
+    ]
+    assert body["planned"][2]["title"] == "下午4点整 那件事。"
+    assert body["tomorrow"] == [
+        {"title": "Parent meeting", "start": "下午5点整", "place": "School"},
+        {"title": "上午10点整 那件事。", "start": "上午10点整", "place": ""},
+    ]
+    assert "Consulate" not in user
+    assert "Therapy" not in user
 
 
 def test_the_skill_loads_and_carries_the_principles_and_the_preferences() -> None:
     """The skill loads and tells the model to read his changes as preferences."""
     text = load_skill("day-plan").instructions
-    for needle in ("his_changes", "past_plans", "droppable", "recent_days", "private", "opening"):
+    for needle in ("his_changes", "carried", "droppable", "recent_days", "private", "morning",
+                   "evening", "draft"):
         assert needle in text
 
 
@@ -535,33 +635,24 @@ def test_a_reader_that_fails_or_is_absent_is_noted_and_the_inputs_still_come(sto
         assert inputs.things == ()
 
 
-def test_his_changes_to_past_plans_and_how_they_settled_are_in_the_inputs_and_the_prompt(
-    stores: Env,
-) -> None:
-    """His revisions of 14 days and how each plan settled reach the inputs and the prompt."""
+def test_his_changes_to_past_plans_are_in_the_inputs_and_the_prompt(stores: Env) -> None:
+    """His revisions of 14 days reach the inputs and the prompt."""
     days = [DAY - timedelta(days=n) for n in (1, 2, 3, 20)]
     with closing(stores.conn()) as conn:
         for day in days:
             plan.draft(conn, day, [_item("p1"), _item("p2", title="Run", start="07:00")], "d", "m")
         plan.revise(conn, days[0], [_item("p1")], "him", "no early runs")
-        plan.settle(conn, days[0], "him")
         plan.revise(conn, days[1], [_item("p1", start="10:00")], "her", "she moved it")
-        plan.settle(conn, days[1], "first_item")
         plan.revise(conn, days[3], [], "him", "too old to count")
-        plan.settle(conn, days[3], "him")
-        # days[2] was never settled
     inputs = runtime.gather(stores.sources(), SETTINGS, DAY, NOW)
     assert [(c["date"], c["change"], c["why"]) for c in inputs.his_changes] == [
         (days[0].isoformat(), "- Run 07:00", "no early runs"),
     ]
-    assert [(p["date"], p["settled"]) for p in inputs.past_plans] == [
-        (days[0].isoformat(), "him"), (days[1].isoformat(), "first_item"),
-        (days[2].isoformat(), "no"),
-    ]
     system, user = decide.build_prompt(inputs, zone=ZONE, today=DAY)
     body = json.loads(user)
     assert body["his_changes"] == list(inputs.his_changes)
-    assert body["past_plans"] == list(inputs.past_plans)
+    assert "past_plans" not in body
+    assert body["carried"] == []
     assert body["task"] == "draft"
     assert "his_changes" in system
 
@@ -763,8 +854,12 @@ def test_a_start_before_at_with_state_waits_for_at() -> None:
     [
         (None, None), ({}, None), ({"enabled": False}, None), ({"at": "04:00"}, None),
         ({"enabled": True}, runtime.DayPlanSettings()),
-        ({"enabled": True, "at": "04:30", "preset": "p", "horizon_days": 5, "morning_push": True},
-         runtime.DayPlanSettings(time(4, 30), "p", 5, morning_push=True)),
+        ({"enabled": True, "at": "04:30", "preset": "p", "horizon_days": 5, "line_preset": "q"},
+         runtime.DayPlanSettings(time(4, 30), "p", 5, line_preset="q")),
+        # the keys of ADR 0291 an old settings overlay may still hold are ignored
+        ({"enabled": True, "morning_push": True, "decide_preset": "x", "told_per_day": 3,
+          "told_per_hour": 1}, runtime.DayPlanSettings()),
+        ({"enabled": True, "line_preset": " "}, runtime.DayPlanSettings()),
         ({"enabled": True, "at": "soon"}, None),
         ({"enabled": True, "horizon_days": 0, "preset": " "}, runtime.DayPlanSettings()),
     ],

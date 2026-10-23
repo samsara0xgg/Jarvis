@@ -40,19 +40,17 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.runtime.work_state import LLMAnalyst
-    from jarvis.state.day_line import DaySources
+    from jarvis.state.day_line import DayLine, DaySources
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_AT: Final[time] = time(4, 0)
 DEFAULT_PRESET: Final[str] = "sonnet-high"
-DEFAULT_DECIDE_PRESET: Final[str] = "haiku"
-DEFAULT_TOLD_PER_DAY: Final[int] = 8
-DEFAULT_TOLD_PER_HOUR: Final[int] = 2
+DEFAULT_LINE_PRESET: Final[str] = "haiku"
 DEFAULT_HORIZON_DAYS: Final[int] = 3
 MAX_HORIZON_DAYS: Final[int] = 14
 HISTORY_DAYS: Final[int] = 14
-"""How far back his changes to plans, and whether each plan settled, are read as preferences."""
+"""How far back his changes to plans are read as preferences."""
 MAX_CHANGES: Final[int] = 20
 RECENT_DAYS: Final[int] = 7
 """A week of lived days, so weekday rhythm shows."""
@@ -73,13 +71,6 @@ type OutingWeather = Callable[
 ]
 
 
-def _count(value: object, default: int) -> int:
-    """``value`` when it is a whole number of 1 or more, else ``default``."""
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-        return value
-    return default
-
-
 def day_ends_of(raw: object) -> time:
     """``day_plan.day_ends`` of the block ``raw`` (``HH:MM``), else the default."""
     block: Mapping[str, object] = raw if isinstance(raw, Mapping) else {}
@@ -96,11 +87,8 @@ class DayPlanSettings:
     at: time = DEFAULT_AT
     preset: str = DEFAULT_PRESET
     horizon_days: int = DEFAULT_HORIZON_DAYS
-    morning_push: bool = False
     watch: bool = False
-    decide_preset: str = DEFAULT_DECIDE_PRESET
-    told_per_day: int = DEFAULT_TOLD_PER_DAY
-    told_per_hour: int = DEFAULT_TOLD_PER_HOUR
+    line_preset: str = DEFAULT_LINE_PRESET
     day_ends: time = DAY_ENDS
 
     @classmethod
@@ -115,7 +103,7 @@ class DayPlanSettings:
             LOGGER.warning("day_plan.at %r is not HH:MM; no plan is drafted", block["at"])
             return None
         preset = block.get("preset")
-        decide = block.get("decide_preset")
+        line = block.get("line_preset")
         horizon = block.get("horizon_days")
         return cls(
             at=at,
@@ -124,13 +112,8 @@ class DayPlanSettings:
                 horizon if isinstance(horizon, int) and 1 <= horizon <= MAX_HORIZON_DAYS
                 else DEFAULT_HORIZON_DAYS
             ),
-            morning_push=block.get("morning_push") is True,
             watch=block.get("watch") is True,
-            decide_preset=(
-                decide if isinstance(decide, str) and decide.strip() else DEFAULT_DECIDE_PRESET
-            ),
-            told_per_day=_count(block.get("told_per_day"), DEFAULT_TOLD_PER_DAY),
-            told_per_hour=_count(block.get("told_per_hour"), DEFAULT_TOLD_PER_HOUR),
+            line_preset=line if isinstance(line, str) and line.strip() else DEFAULT_LINE_PRESET,
             day_ends=day_ends_of(block),
         )
 
@@ -170,7 +153,8 @@ def _clip(text: str) -> str:
     return " ".join(text.split())[:_ITEM_CHARS]
 
 
-def _memory_texts(doc: core_memory.Doc, section: str) -> tuple[str, ...]:
+def memory_texts(doc: core_memory.Doc, section: str) -> tuple[str, ...]:
+    """The texts of ``section`` of the core memory, clipped, at most :data:`MAX_MEMORY_ITEMS`."""
     items = doc.get(section, [])[:MAX_MEMORY_ITEMS]
     return tuple(_clip(str(item.get("text") or "")) for item in items if item.get("text"))
 
@@ -267,6 +251,26 @@ def _doing(conn: Any, first: int, last: int, zone: tzinfo) -> list[str]:  # noqa
     return list(said.values())
 
 
+def _timeline(line: DayLine, zone: tzinfo) -> list[str]:
+    """A folded day as ``HH:MM-HH:MM what`` lines in time order, the plan left out."""
+    return [
+        f"{_clock(item['start_ms'], zone)}-{_clock(item.get('end_ms'), zone)} {lived_line(item)}"
+        for item in line.items
+        if item.get("source") != "plan"  # the plan is not what he lived
+    ][:MAX_LINES_PER_DAY]
+
+
+def lived_lines(
+    conn: Any, sources: DayPlanSources, day: date, now: datetime,  # noqa: ANN401 - a sqlite conn
+) -> list[str]:
+    """``day`` as the log saw it up to ``now``, one ``HH:MM-HH:MM what`` line per stretch."""
+    first, last = day_window(day, sources.zone)
+    return _timeline(
+        fold_day(conn, first, last, int(now.timestamp() * 1000), sources.day_sources),
+        sources.zone,
+    )
+
+
 def _recent(
     conn: Any, sources: DayPlanSources, day: date, now: datetime,  # noqa: ANN401 - a sqlite conn
 ) -> tuple[dict[str, Any], ...]:
@@ -277,18 +281,12 @@ def _recent(
         past = day - timedelta(days=back)
         first, last = day_window(past, sources.zone)
         line = fold_day(conn, first, last, now_ms, sources.day_sources)
-        timeline = [
-            f"{_clock(item['start_ms'], sources.zone)}-{_clock(item.get('end_ms'), sources.zone)} "
-            f"{lived_line(item)}"
-            for item in line.items
-            if item.get("source") != "plan"  # the plan is not what he lived
-        ]
         rows.append({
             "date": past.isoformat(),
             "weekday": f"{past:%A}",
             "all_day": [str(label["title"]) for label in line.labels],
             "story": day_story(sources.memory_db, past.isoformat()),
-            "timeline": timeline[:MAX_LINES_PER_DAY],
+            "timeline": _timeline(line, sources.zone),
             "doing": _doing(conn, first, last, sources.zone)[:MAX_LINES_PER_DAY],
             "unreadable": line.missing,
         })
@@ -300,22 +298,24 @@ def _routines(conn: Any, sources: DayPlanSources, day: date) -> list[routines.Ro
     return routines.for_day(conn, day, zone=sources.zone, places=kept)
 
 
-def _preferences(
-    conn: Any, day: date,  # noqa: ANN401 - a sqlite conn
-) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """``(his_changes, past_plans)``: his revisions and how each earlier plan settled."""
+def _preferences(conn: Any, day: date) -> tuple[dict[str, Any], ...]:  # noqa: ANN401 - a sqlite conn
+    """His revisions of the last :data:`HISTORY_DAYS` days' plans, newest first."""
     first = day - timedelta(days=HISTORY_DAYS)
-    changes = tuple(
+    return tuple(
         {"date": r.day, "change": r.change, "why": r.why}
         for r in plan.revisions(conn, first, day, by="him")[:MAX_CHANGES]
     )
-    held = plan.fold(conn)
-    past = tuple(
-        {"date": key, "settled": held[key].settled_by or "no"}
-        for key in sorted(held, reverse=True)
-        if first.isoformat() <= key < day.isoformat()
+
+
+def _carried(conn: Any, day: date) -> tuple[dict[str, Any], ...]:  # noqa: ANN401 - a sqlite conn
+    """The tasks of the day before that its evening sent on to ``day`` (ADR 0383)."""
+    before = day - timedelta(days=1)
+    held = plan.for_day(conn, before)
+    sent = {u.item_id: u for u in plan.closed(conn, before) or () if u.to == "tomorrow"}
+    return tuple(
+        {"title": i.title, "source": i.source, "minutes": i.minutes}
+        for i in (held.items if held else ()) if i.item_id in sent
     )
-    return changes, past
 
 
 def gather(
@@ -333,7 +333,8 @@ def gather(
         upcoming = _upcoming(occurrences, day, zone)
         held = _read(partial(_routines, conn, sources, day), "routines", notes) or []
         recent = _read(partial(_recent, conn, sources, day, now), "recent_days", notes) or ()
-        changes, past = _preferences(conn, day)
+        changes = _preferences(conn, day)
+        carried = _carried(conn, day)
     labels = day_labels(occurrences, day, zone)
     ahead = candidate_things(
         open_now, occurrences, day, zone, day + timedelta(days=settings.horizon_days), MAX_THINGS,
@@ -351,8 +352,8 @@ def gather(
         upcoming=upcoming,
         calendar_all_day=tuple(labels),
         things=tuple(ahead),
-        goals=_memory_texts(doc, core_memory.GOALS_SECTION),
-        deadlines=_memory_texts(doc, core_memory.ID_FREE_SECTION),
+        goals=memory_texts(doc, core_memory.GOALS_SECTION),
+        deadlines=memory_texts(doc, core_memory.ID_FREE_SECTION),
         routines=tuple(
             {"start": r.start, "end": r.end, "what": r.what, "place": r.place,
              "source": f"routine:{r.routine_id}"}
@@ -361,9 +362,9 @@ def gather(
         weather=weather,
         recent_days=recent,
         his_changes=changes,
-        past_plans=past,
+        carried=carried,
         notes=tuple(notes),
-        sources=_sources(tuple(fixed), upcoming, ahead, held),
+        sources=_sources(tuple(fixed), upcoming, ahead, held, carried),
     )
 
 
@@ -400,10 +401,11 @@ def _read[T](read: Callable[[], T] | None, name: str, notes: list[str]) -> T | N
 
 def _sources(
     fixed: tuple[plan.PlanItem, ...], upcoming: tuple[Mapping[str, Any], ...],
-    ahead: list[dict[str, Any]], held: list[routines.Routine],
+    ahead: list[dict[str, Any]], held: list[routines.Routine], carried: tuple[dict[str, Any], ...],
 ) -> tuple[str, ...]:
     names = {*plan.SOURCE_NAMES, *(i.source for i in fixed), *(str(u["source"]) for u in upcoming)}
     names |= {str(a["source"]) for a in ahead}
+    names |= {str(c["source"]) for c in carried}
     names |= {f"routine:{r.routine_id}" for r in held}
     return tuple(sorted(names))
 

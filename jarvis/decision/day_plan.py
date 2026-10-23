@@ -1,10 +1,12 @@
-"""The day-plan prompts and the parser of the model's answers (ADR 0288). Pure: no I/O, no clock.
+"""The day-plan prompts and the parser of the model's answers (ADR 0288, 0383). Pure: no I/O.
 
-The nightly draft, the morning opening and the judgement of a notice (ADR 0291) all use the
-``day-plan`` skill. The model's answer is untrusted JSON: :func:`parse_items` keeps only the items
-that read, do not collide with a fixed item and name a known source, and adds back any fixed item
-the model left out; the program, not the model, owns the timed things of the day.
-:func:`parse_decision` turns anything malformed in a notice's answer into silence.
+The nightly draft, the morning line and the evening line all use the ``day-plan`` skill. The
+model's answer is untrusted JSON: :func:`parse_items` keeps only the items that read, do not
+collide with a fixed item and name a known source, and adds back any fixed item the model left
+out; the program, not the model, owns the timed things of the day. :func:`parse_message` and
+:func:`parse_evening` read the words of the two lines and where each undone task goes. A private
+item reaches the model already masked: the program decides what it may know, the prompt has no
+privacy rule.
 """
 
 from __future__ import annotations
@@ -12,41 +14,26 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timedelta
 from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.decision.plan_watch import budget_facts
 from jarvis.shared import lang
 from jarvis.shared.skills import load_skill
 from jarvis.state import things
-from jarvis.state.plan import (
-    ACTS,
-    ITEM_PREFIX,
-    MAX_ITEMS,
-    Plan,
-    PlanItem,
-    apply_changes,
-    check_item,
-)
-from jarvis.state.plan_budget import budget, is_task
+from jarvis.state.plan import DESTINATIONS, ITEM_PREFIX, MAX_ITEMS, Plan, PlanItem, check_item
+from jarvis.state.plan_budget import is_task
 from jarvis.state.things_late import due_is_day, late, when_ms
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
     from datetime import tzinfo
 
-    from jarvis.decision.plan_watch import Notice
-    from jarvis.state.plan import Decided
-    from jarvis.state.plan_facts import DayFacts
     from jarvis.state.things import Occurrence, Thing
 
-OPENING_CHARS: Final[int] = 600
-"""Longest opening the parser accepts; a longer one is not the short message asked for."""
-SAY_CHARS: Final[int] = 300
-"""Longest line the parser accepts for a notice: one or two short sentences."""
-WHY_CHARS: Final[int] = 300
+MESSAGE_CHARS: Final[int] = 600
+"""Longest morning or evening message the parser accepts; a longer one is not a short one."""
 _DAY_MINUTES: Final[int] = 24 * 60
 _FENCE: Final[re.Pattern[str]] = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
 
@@ -66,7 +53,7 @@ class DayPlanInputs:
     weather: Mapping[str, Any] | None = None
     recent_days: tuple[Mapping[str, Any], ...] = ()
     his_changes: tuple[Mapping[str, Any], ...] = ()
-    past_plans: tuple[Mapping[str, Any], ...] = ()
+    carried: tuple[Mapping[str, Any], ...] = ()
     notes: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
 
@@ -88,7 +75,7 @@ class DayPlanInputs:
             "weather": self.weather,
             "recent_days": list(self.recent_days),
             "his_changes": list(self.his_changes),
-            "past_plans": list(self.past_plans),
+            "carried": list(self.carried),
             "notes": list(self.notes),
             "sources": list(self.sources),
         }
@@ -125,60 +112,102 @@ def build_prompt(
     return _instructions(), user
 
 
-def build_opening_prompt(  # noqa: PLR0913 - the plan, what is open, the weather, the clock, a failure.
-    plan: Plan, *, unconfirmed: Sequence[Mapping[str, Any]], weather: Mapping[str, Any] | None,
-    now: datetime, zone: tzinfo, draft_failed: bool = False,
-    outings: Sequence[Mapping[str, Any]] = (),
-) -> tuple[str, str]:
-    """``(system, user)`` of the opening call: the plan, what he has not confirmed, the weather.
+def _spoken(clock: str, day: date, zone: tzinfo, said_in: lang.Language) -> str:
+    """``HH:MM`` as it is said aloud (``晚上9点35分``, ``9:35 PM``)."""
+    hour, minute = (int(part) for part in clock.split(":"))
+    moment = datetime.combine(day, datetime.min.time(), zone).replace(hour=hour, minute=minute)
+    return lang.spoken_time(moment, said_in)
 
-    ``draft_failed`` says the day's draft did not come, so ``plan`` is empty: she says so and asks.
-    ``weather`` is today at home in parts and ``outings`` the weather of each outing's own hours at
-    its place (ADR 0355); their clocks are said as the plan's are.
+
+def _masked(clock: str | None, day: date, zone: tzinfo, said_in: lang.Language) -> str:
+    """What a private item is called to the model: its time alone, else that it is private."""
+    if clock:
+        return lang.t("plan.private", lang=said_in, time=_spoken(clock, day, zone, said_in))
+    return lang.t("plan.private_untimed", lang=said_in)
+
+
+def _material(item: PlanItem, day: date, zone: tzinfo, said_in: lang.Language) -> dict[str, Any]:
+    """An item as the morning prompt shows it: route cut to what is said, a private one masked."""
+    row = _public(item)
+    if item.route:
+        row["route"] = {k: item.route.get(k) for k in ("leave_at", "line", "board")}
+    if item.private:
+        row |= {
+            "title": _masked(item.start or item.window_from, day, zone, said_in),
+            "place": "", "why": "", "goal": "", "prepare": [],
+        }
+    row.pop("private")
+    return row
+
+
+def build_morning_prompt(  # noqa: PLR0913 - the plan, the weather, the goals, the clock, a failure.
+    plan: Plan, *, weather: Mapping[str, Any] | None, goals: Sequence[str], now: datetime,
+    zone: tzinfo, draft_failed: bool, outings: Sequence[Mapping[str, Any]] = (),
+) -> tuple[str, str]:
+    """``(system, user)`` of the morning call (task ``morning``): the plan, the weather, the goals.
+
+    ``draft_failed`` says the day's draft did not come, so ``plan`` is empty. ``weather`` is today
+    at home in parts and ``outings`` the weather of each outing's own hours at its place (ADR 0355).
+    Clocks are spoken, in the language of the plan's titles.
     """
     local = now.astimezone(zone)
     said_in = lang.text_language(" ".join(item.title for item in plan.items))
     body = {
-        "task": "opening",
+        "task": "morning",
         "day": plan.day.isoformat(),
         "weekday": plan.day.strftime("%A"),
         "now": lang.spoken_time(local, said_in),
-        "timezone": _zone_name(zone),
-        "settled": plan.status == "settled",
-        "draft_failed": draft_failed,
-        "plan": _said_clocks([_public(item) for item in plan.items], plan.day, zone, said_in),
-        "unconfirmed": list(unconfirmed),
+        "language": said_in,
+        "plan": _said_clocks(
+            [_material(item, plan.day, zone, said_in) for item in plan.items], plan.day, zone,
+            said_in,
+        ),
         "weather": _said_clocks(weather, plan.day, zone, said_in),
         "outings": _said_clocks(list(outings), plan.day, zone, said_in),
+        "goals": list(goals),
+        "draft_failed": draft_failed,
     }
     return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
 
 
-def build_follow_up_prompt(  # noqa: PLR0913 - the plan, the talk so far, the facts, the clock.
-    plan: Plan, conversation: Sequence[tuple[str, datetime, str]], facts: DayFacts,
-    now: datetime, *, asked: int, zone: tzinfo,
+def build_evening_prompt(
+    plan: Plan, *, lived: Sequence[str], tomorrow: Sequence[Mapping[str, Any]], now: datetime,
+    zone: tzinfo,
 ) -> tuple[str, str]:
-    """``(system, user)`` of a follow-up: she opened the day, he has not answered her last words.
+    """``(system, user)`` of the evening call (task ``evening``).
 
-    ``conversation`` is ``(who, at, text)`` since her opening, oldest first, ``who`` being ``you``
-    or ``him``; ``asked`` is how many follow-ups she already sent today. Clocks are spoken.
+    ``planned`` is the plan's items with whether each is done; ``lived`` is today as the log saw
+    it; ``tomorrow`` is tomorrow's things with an hour (``title``, ``start``, ``place``,
+    ``private``). Clocks are spoken; a private item is masked as in the morning.
     """
     local = now.astimezone(zone)
     said_in = lang.text_language(" ".join(item.title for item in plan.items))
-    last = conversation[-1][1] if conversation else local
+    tomorrow_day = plan.day + timedelta(days=1)
     body = {
-        "task": "follow-up",
+        "task": "evening",
         "day": plan.day.isoformat(),
         "weekday": plan.day.strftime("%A"),
         "now": lang.spoken_time(local, said_in),
-        "minutes": max(0, round((local - last).total_seconds() / 60)),
-        "asked": asked,
-        "plan": _said_clocks([item.payload() for item in plan.items], plan.day, zone, said_in),
-        "conversation": [
-            {"who": who, "at": lang.spoken_time(at.astimezone(zone), said_in), "text": text}
-            for who, at, text in conversation
-        ],
-        "facts": facts.payload(zone),
+        "language": said_in,
+        "planned": _said_clocks([
+            {
+                "id": item.item_id,
+                "title": _masked(item.start or item.window_from, plan.day, zone, said_in)
+                if item.private else item.title,
+                "start": item.start, "minutes": item.minutes, "done": item.done,
+            }
+            for item in plan.items
+        ], plan.day, zone, said_in),
+        "lived": list(lived),
+        "tomorrow": _said_clocks([
+            {
+                "title": _masked(row.get("start"), tomorrow_day, zone, said_in)
+                if row.get("private") else row["title"],
+                "start": row.get("start"),
+                "place": "" if row.get("private") else row.get("place", ""),
+            }
+            for row in tomorrow
+        ], tomorrow_day, zone, said_in),
     }
     return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
 
@@ -196,33 +225,22 @@ def _object(text: str) -> dict[str, Any] | None:
     return None
 
 
-def parse_opening(text: str) -> str:
-    """The opening message, or ValueError when the answer is not ``{"message": "..."}``."""
+def parse_message(text: str) -> str:
+    """The message of a morning or evening answer, or ValueError when it has none.
+
+    The answer is ``{"message": "..."}`` (the evening's holds more, see :func:`parse_evening`); the
+    message is 1 to :data:`MESSAGE_CHARS` characters.
+    """
     found = _object(text)
     message = found.get("message") if found else None
     if not isinstance(message, str) or not message.strip():
-        msg = "the opening answer has no message"
+        msg = "the answer has no message"
         raise ValueError(msg)
     message = message.strip()
-    if len(message) > OPENING_CHARS:
-        msg = f"the opening is {len(message)} characters, over {OPENING_CHARS}"
+    if len(message) > MESSAGE_CHARS:
+        msg = f"the message is {len(message)} characters, over {MESSAGE_CHARS}"
         raise ValueError(msg)
     return message
-
-
-@dataclass(frozen=True)
-class Decision:
-    """What she made of a notice: ``silent``, ``tell`` (``say``) or ``adjust`` (also ``changes``).
-
-    ``changes`` are ops for :func:`jarvis.state.plan.apply_changes`; ``notes`` say why an answer
-    was turned into silence.
-    """
-
-    act: str
-    say: str = ""
-    changes: tuple[dict[str, Any], ...] = ()
-    why: str = ""
-    notes: tuple[str, ...] = ()
 
 
 _CLOCK: Final[re.Pattern[str]] = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
@@ -238,201 +256,50 @@ def _said_clocks(value: Any, day: date, zone: tzinfo, said_in: lang.Language) ->
     if isinstance(value, list):
         return [_said_clocks(v, day, zone, said_in) for v in value]
     if isinstance(value, str) and _CLOCK.fullmatch(value):
-        hour, minute = (int(part) for part in value.split(":"))
-        moment = datetime.combine(day, datetime.min.time(), zone).replace(hour=hour, minute=minute)
-        return lang.spoken_time(moment, said_in)
+        return _spoken(value, day, zone, said_in)
     return value
 
 
-def build_decide_prompt(  # noqa: PLR0913 - the plan, the notice, the facts, the clock, what was said.
-    plan: Plan, notice: Notice, facts: DayFacts, now: datetime,
-    told_today: Sequence[Decided], *, zone: tzinfo,
-) -> tuple[str, str]:
-    """``(system, user)`` of the notice call: the skill, and what she needs to judge it.
-
-    The plan's items carry their computed ``route`` (read-only for her); ``told_today`` is what she
-    already said today, so she does not say it twice. Every clock time is written as she says it,
-    in the language of the plan's titles: given ``21:35`` she says 二十一点三十五, and given a mix
-    of forms she misreads one against the other. Her changes still write ``HH:MM``.
-    """
-    local = now.astimezone(zone)
-    said_in = lang.text_language(" ".join(item.title for item in plan.items))
-    body = {
-        "task": "notice",
-        "day": plan.day.isoformat(),
-        "weekday": plan.day.strftime("%A"),
-        "now": lang.spoken_time(local, said_in),
-        "timezone": _zone_name(zone),
-        "settled": plan.status == "settled",
-        "plan": _said_clocks([item.payload() for item in plan.items], plan.day, zone, said_in),
-        "notice": {
-            "key": notice.key, "kind": notice.kind, "item_id": notice.item_id,
-            "facts": _said_clocks(notice.facts, plan.day, zone, said_in),
-        },
-        "facts": facts.payload(zone),
-        "told_today": [
-            {"at": lang.spoken_time(datetime.fromtimestamp(d.at_ms / 1000, zone), said_in),
-             "say": d.say}
-            for d in told_today if d.act != "silent"
-        ],
-    }
-    return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
-
-
-def _decide(found: Mapping[str, Any], plan: Plan) -> Decision:
-    """The decision ``found`` says; ValueError when it is malformed."""
-    act = found.get("act")
-    if act not in ACTS:
-        msg = f"act {act!r} is not one of {ACTS}"
-        raise ValueError(msg)
-    why = found.get("why")
-    why = why.strip()[:WHY_CHARS] if isinstance(why, str) else ""
-    if act == "silent":
-        return Decision("silent", why=why)
-    say = found.get("say")
-    if not isinstance(say, str) or not say.strip() or len(say.strip()) > SAY_CHARS:
-        msg = f"{act} needs a say of 1 to {SAY_CHARS} characters"
-        raise ValueError(msg)
-    if act == "tell":
-        return Decision("tell", say.strip(), why=why)
-    changes = found.get("changes")
-    if not isinstance(changes, list) or not changes:
-        msg = "adjust needs a non-empty changes list"
-        raise ValueError(msg)
-    if notes := apply_changes(plan.items, changes)[1]:
-        msg = "; ".join(notes)
-        raise ValueError(msg)
-    return Decision("adjust", say.strip(), tuple(changes), why)
-
-
-def parse_decision(text: str, plan: Plan) -> Decision:
-    """The decision in a model's answer to a notice; anything malformed becomes ``silent``.
-
-    ``tell`` and ``adjust`` need a ``say`` of at most :data:`SAY_CHARS`; ``adjust`` needs changes
-    that all apply to ``plan`` (a single op that does not read turns the whole answer to silence:
-    a half-applied adjustment is worse than none). A ``silent`` or ``tell`` carries no changes.
-    """
-    found = _object(text)
-    if found is None:
-        return Decision("silent", notes=("the answer is not a JSON object",))
-    try:
-        return _decide(found, plan)
-    except ValueError as exc:
-        return Decision("silent", notes=(str(exc),))
-
-
-def build_progress_prompt(
-    plan: Plan, notice: Notice, now: datetime, *, zone: tzinfo,
-) -> tuple[str, str]:
-    """``(system, user)`` of the done-check call of a ``progress`` notice (task ``progress``).
-
-    Input: the tasks in order (id, title, minutes, done) and the notice's ``evidence`` (the screen
-    activities, his words and the commits since the last check). Clocks stay ``HH:MM``: nothing
-    in this answer is spoken.
-    """
-    evidence = notice.facts.get("evidence") or {}
-    body = {
-        "task": "progress",
-        "day": plan.day.isoformat(),
-        "now": now.astimezone(zone).strftime("%H:%M"),
-        "tasks": [
-            {"id": i.item_id, "title": i.title, "minutes": i.minutes, "done": i.done}
-            for i in plan.items if is_task(i)
-        ],
-        "evidence": {k: evidence.get(k, []) for k in ("screen", "words", "commits")}
-        | {"since": evidence.get("since")},
-    }
-    return _instructions(), json.dumps(body, ensure_ascii=False, default=str)
-
-
 @dataclass(frozen=True)
-class Progress:
-    """What the evidence shows of the tasks: ``done`` ids, and ``left`` minutes by id (under way).
+class Evening:
+    """The evening's answer: the message, ``(item_id, to)`` for each task left undone, and notes.
 
-    ``notes`` say what was dropped from the answer and why.
+    ``notes`` say what was dropped from the answer or defaulted, and why.
     """
 
-    done: tuple[str, ...] = ()
-    left: dict[str, int] = field(default_factory=dict)
-    why: str = ""
+    message: str
+    unfinished: tuple[tuple[str, str], ...] = ()
     notes: tuple[str, ...] = ()
 
-    def changes(self) -> list[dict[str, Any]]:
-        """The edits for :func:`jarvis.state.plan.apply_changes`: done true, minutes the rest."""
-        return [
-            *({"op": "edit", "id": n, "done": True} for n in self.done),
-            *({"op": "edit", "id": n, "minutes": m} for n, m in self.left.items()),
-        ]
 
+def parse_evening(text: str, plan: Plan) -> Evening:
+    """The evening in a model's answer ``{"message": "...", "unfinished": [{"id", "to"}]}``.
 
-def _listed(found: Mapping[str, Any], name: str, kind: type, notes: list[str]) -> Any:  # noqa: ANN401
-    """``found[name]`` when it is a ``kind``; otherwise nothing, and a note unless it is absent."""
-    value = found.get(name)
-    if isinstance(value, kind):
-        return value
-    if value is not None:
-        notes.append(f"{name} is not a {kind.__name__}")
-    return kind()
-
-
-def parse_progress(text: str, plan: Plan) -> Progress:
-    """The done-check in a model's answer ``{"done": [...], "left": {"p3": 40}, "why": "..."}``.
-
-    Untrusted: each id must be a task of ``plan`` that is not done (a timed item is not marked
-    here); ``left`` minutes must be a whole number from 1 to the task's own estimate (a larger
-    figure is the decide call's to change), and ``done`` wins over ``left`` for one id. Anything
-    else is dropped and noted; an answer that is no JSON object is an empty result.
+    ValueError when there is no message (see :func:`parse_message`). An ``unfinished`` entry is
+    kept only when its id is a task of ``plan`` that is not done and its ``to`` is one of
+    :data:`jarvis.state.plan.DESTINATIONS`; the first entry for an id wins. A task not done that
+    the answer leaves out goes ``later`` (her default), noted. The result is in the plan's order.
     """
-    found = _object(text)
-    if found is None:
-        return Progress(notes=("the answer is not a JSON object",))
-    tasks = {i.item_id: i for i in plan.items if is_task(i)}
-    notes: list[str] = []
-
-    def task(raw: object, what: str) -> PlanItem | None:
-        item = tasks.get(raw) if isinstance(raw, str) else None
-        if item is None or item.done:
-            why = "not a task of the plan" if item is None else "already done"
-            notes.append(f"{what} {raw!r} dropped: {why}")
-            return None
-        return item
-
-    done = list(dict.fromkeys(
-        i.item_id for n in _listed(found, "done", list, notes) if (i := task(n, "done"))
-    ))
-    left: dict[str, int] = {}
-    for name, minutes in _listed(found, "left", dict, notes).items():
-        if (item := task(name, "left")) is None:
-            continue
-        if name in done:
-            notes.append(f"left {name!r} dropped: marked done")
-        elif isinstance(minutes, bool) or not isinstance(minutes, int) or not (
-            1 <= minutes <= item.minutes
-        ):
-            notes.append(f"left {name!r} dropped: {minutes!r} is not 1 to {item.minutes} minutes")
-        elif minutes != item.minutes:
-            left[name] = minutes
-    why = found.get("why")
-    return Progress(
-        tuple(done), left, why.strip()[:WHY_CHARS] if isinstance(why, str) else "", tuple(notes),
+    message = parse_message(text)
+    found = _object(text) or {}
+    tasks = [i for i in plan.items if is_task(i) and not i.done]
+    raw = found.get("unfinished")
+    entries = raw if isinstance(raw, list) else []
+    notes: list[str] = [] if raw is None or isinstance(raw, list) else ["unfinished is not a list"]
+    chosen: dict[str, str] = {}
+    for entry in entries:
+        item_id = str(entry.get("id")) if isinstance(entry, dict) else ""
+        to = entry.get("to") if isinstance(entry, dict) else None
+        if not any(t.item_id == item_id for t in tasks):
+            notes.append(f"unfinished {item_id!r} dropped: not a task of the plan left undone")
+        elif to not in DESTINATIONS:
+            notes.append(f"unfinished {item_id!r} dropped: {to!r} is not one of {DESTINATIONS}")
+        elif item_id not in chosen:
+            chosen[item_id] = to
+    notes += [f"{t.item_id} left out: later" for t in tasks if t.item_id not in chosen]
+    return Evening(
+        message, tuple((t.item_id, chosen.get(t.item_id, "later")) for t in tasks), tuple(notes),
     )
-
-
-def unfit_notice(
-    plan: Plan, notice: Notice, marked: Progress, now: datetime, day_ends: time,
-) -> Notice | None:
-    """The ``progress`` notice to put to the decide call, or None when the tasks fit the day.
-
-    ``plan`` is the plan after ``marked`` was applied. The notice's facts get the budget worked
-    out again and ``marked`` (what the done-check changed); the evidence stays out of the call.
-    """
-    if budget(plan, now, day_ends=day_ends).fits:
-        return None
-    facts = {k: v for k, v in notice.facts.items() if k != "evidence"}
-    facts |= budget_facts(plan, now, day_ends) or {}
-    if marked.done or marked.left:
-        facts["marked"] = {"done": list(marked.done), "left": marked.left}
-    return replace(notice, facts=facts)
 
 
 def _minute(text: str) -> int:

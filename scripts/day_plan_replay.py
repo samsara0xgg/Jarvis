@@ -115,7 +115,7 @@ def replay(  # noqa: PLR0913 - the days, the stores, the knobs and where the fil
         line: dict[str, Any] = {
             "date": day.isoformat(), **sizes(system, user), "est_cost_usd": cost,
             "fixed": len(inputs.fixed), "goals": len(inputs.goals),
-            "his_changes": len(inputs.his_changes), "past_plans": len(inputs.past_plans),
+            "his_changes": len(inputs.his_changes), "carried": len(inputs.carried),
             "missing": list(inputs.notes), "asked": False,
         }
         if ask is not None and out is not None:

@@ -1,17 +1,16 @@
-"""What the log says about a day as of a moment, for the plan watcher (ADR 0291).
+"""What the log says about a day as of a moment, for the plan watcher (ADR 0383).
 
 :func:`facts_at` reads only events timed at or before ``now_ms``, so a past day can be replayed
-minute by minute and a notice means the same thing live and in replay. It reuses the phone folds
-the day line and the ledger count by (:mod:`jarvis.state.phone_day`), so where he stayed is the
-same fact everywhere. Nothing is stored here and nothing calls a model; deciding what a fact means
-for the plan is :mod:`jarvis.decision.plan_watch`.
+minute by minute and a line is due, or not, the same way live and in replay. It reuses the phone
+folds the day line and the ledger count by (:mod:`jarvis.state.phone_day`), so where he stayed is
+the same fact everywhere. Nothing is stored here and nothing calls a model; deciding what a fact
+means for the plan is :mod:`jarvis.decision.plan_gate`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.state import places, rides
@@ -31,13 +30,6 @@ WAKE_FROM: Final[time] = time(4, 0)
 """Signals before this local time belong to the night, not to waking."""
 FIX_LOOKBACK_MS: Final[int] = 6 * 3_600_000
 """How far back the latest location fix is looked for."""
-MAX_ACTIVITIES: Final[int] = 3
-MAX_COMMITS: Final[int] = 20
-TEXT_CHARS: Final[int] = 230
-MAX_SCREEN: Final[int] = 40
-"""Distinct screen activities kept in a progress check's evidence (the latest)."""
-MAX_WORDS: Final[int] = 20
-WORDS_CHARS: Final[int] = 200
 
 _PHONE_WAKE: Final[dict[tuple[str, str], str]] = {
     ("focus", "off"): "focus_off",
@@ -47,14 +39,21 @@ _PHONE_WAKE: Final[dict[tuple[str, str], str]] = {
     ("headphones", "connected"): "headphones_on",
     ("call", "started"): "call",
 }
-_MAC_RESUMED: Final[frozenset[str]] = frozenset({"active", "unlock", "wake"})
-"""TimeSink's states for the Mac in use again: back from idle, unlocked, woken from sleep."""
+_MAC_RESUMED: Final[dict[str, str]] = {"active": "idle", "unlock": "lock", "wake": "sleep"}
+"""TimeSink's states for the Mac in use again, each with the stretch it ends: back from idle,
+unlocked, woken from sleep."""
+_MAC_TRACKING: Final[frozenset[str]] = frozenset(
+    {"start", "stop", "tracking_pause", "tracking_resume"},
+)
+"""TimeSink's own marks: what it said about the Mac before them may no longer hold."""
 _WATCHED: Final[tuple[str, ...]] = (
     "phone.state_observed", "timesink.state_observed", "utterance.received",
     "surface.user_intent", rides.STARTED,
 )
 _SPOKEN: Final[tuple[str, ...]] = ("utterance.received", "surface.user_intent")
 _THING_EVENTS: Final[tuple[str, ...]] = ("thing.added", "thing.moved", "thing.closed")
+_COUNTED: Final[tuple[str, ...]] = ("mail", "mirror")
+"""The writers of a thing that is news to him: his own words are never told back to him."""
 _TIME_KEYS: Final[tuple[str, ...]] = ("start_at", "on_day", "due")
 
 
@@ -109,24 +108,30 @@ class Move:
 
 
 @dataclass(frozen=True)
+class MacAway:
+    """A stretch the Mac was idle, locked or asleep (TimeSink's marks); no end: it still is."""
+
+    start_ms: int
+    end_ms: int | None
+    kind: str  # idle | lock | sleep
+
+
+@dataclass(frozen=True)
 class NotedThing:
-    """A thing added today for today. ``start`` is ``HH:MM`` local, empty when it has no hour."""
+    """A thing added or moved today that falls on today or tomorrow.
+
+    ``start`` is ``HH:MM`` local, empty when it has no hour; ``day`` is the date it falls on;
+    ``by`` is who wrote it last (``thing.added`` or ``thing.moved``) and ``noted_at_ms`` when.
+    """
 
     thing_id: str
     title: str
     start: str
+    day: date
     place: str
     private: bool
+    by: str
     noted_at_ms: int
-
-
-@dataclass(frozen=True)
-class Commit:
-    """A commit made today: when, in which repo (its folder's name) and its subject."""
-
-    at_ms: int
-    repo: str
-    subject: str
 
 
 @dataclass(frozen=True)
@@ -138,42 +143,8 @@ class DayFacts:
     here: Here | None
     stays: tuple[Stay, ...]
     moves: tuple[Move, ...]
-    doing: tuple[str, ...]
     things: tuple[NotedThing, ...]
-    commits: tuple[Commit, ...] = ()
-
-    def moves_since(self, since_ms: int) -> tuple[Move, ...]:
-        """The moves that were going at or after ``since_ms``."""
-        return tuple(m for m in self.moves if m.end_ms is None or m.end_ms >= since_ms)
-
-    def payload(self, zone: tzinfo) -> dict[str, Any]:
-        """The facts as JSON-able values with local ``HH:MM`` times, for a prompt or a log line."""
-
-        def clock(ms: int | None) -> str | None:
-            return None if ms is None else f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
-
-        here = self.here
-        return {
-            "wake": self.wake and {"kind": self.wake.kind, "at": clock(self.wake.at_ms)},
-            "here": here and {
-                "place": here.place, "since": clock(here.since_ms),
-                "fix_age_min": None if here.fix_age_ms is None else here.fix_age_ms // 60_000,
-            },
-            "stays": [
-                {"place": s.kept or s.place, "from": clock(s.start_ms), "to": clock(s.end_ms)}
-                for s in self.stays
-            ],
-            "moves": [
-                {"activity": m.activity, "from": clock(m.start_ms), "to": clock(m.end_ms)}
-                for m in self.moves
-            ],
-            "doing": list(self.doing),
-            "things_noted_today": [
-                {"title": c.title, "start": c.start or None, "place": c.place,
-                 "noted_at": clock(c.noted_at_ms)}
-                for c in self.things
-            ],
-        }
+    mac_away: tuple[MacAway, ...] = ()
 
 
 def _ms(day: date, at: time, zone: tzinfo) -> int:
@@ -236,79 +207,31 @@ def _latest_fix(conn: sqlite3.Connection, now_ms: int) -> Event | None:
     return fix
 
 
-def _doing(conn: sqlite3.Connection, since_ms: int, now_ms: int) -> tuple[str, ...]:
-    """The activities of today's latest work state before ``now_ms``, as the ledger words them.
+def _mac_away(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> tuple[MacAway, ...]:
+    """The stretches the Mac was idle, locked or asleep, from TimeSink's state marks.
 
-    One from before ``since_ms`` (the night before) says what he did then, not now.
+    Each ``timesink.state_observed`` carries the latest mark; a mark is read once, at its own time.
+    A resume ends the stretch it belongs to, and TimeSink's own marks end them all.
     """
-    latest: Any = None
-    for event in iter_events_of_types(conn, ("work_state.revised",), since_epoch_ms=since_ms):
-        if event.ts_epoch_ms <= now_ms and isinstance(event.payload.get("item"), dict):
-            latest = event.payload["item"]
-    if latest is None:
-        return ()
-    texts = (str(a.get("text") or "") for a in latest.get("activities") or [])
-    return tuple(" ".join(t.split())[:TEXT_CHARS] for t in texts if t)[:MAX_ACTIVITIES]
-
-
-def _commits(conn: sqlite3.Connection, first_ms: int, now_ms: int) -> tuple[Commit, ...]:
-    """Today's commits seen by ``now_ms``, the latest :data:`MAX_COMMITS`, oldest first."""
-    found: dict[str, Commit] = {}
-    for event in iter_events_of_types(conn, ("project.commit_seen",), since_epoch_ms=first_ms):
-        payload = event.payload
-        at = int(payload["committed_at_ms"])
-        if event.ts_epoch_ms <= now_ms and first_ms <= at <= now_ms:
-            repo = PurePath(str(payload["repo_path"])).name
-            subject = " ".join(str(payload["subject"]).split())[:TEXT_CHARS]
-            found[str(payload["commit_sha"])] = Commit(at, repo, subject)
-    return tuple(sorted(found.values(), key=lambda c: c.at_ms)[-MAX_COMMITS:])
-
-
-def evidence(conn: sqlite3.Connection, since_ms: int, now_ms: int, zone: tzinfo) -> dict[str, Any]:
-    """What the log shows he did in ``[since_ms, now_ms]``, for a progress check's done-check.
-
-    ``screen``: each distinct work-state activity once, with the local time it first appeared
-    (the latest :data:`MAX_SCREEN`); ``words``: his own words, spoken or typed (the latest
-    :data:`MAX_WORDS`, clipped, a repeat of the line before dropped); ``commits``: the commits
-    made in the span; ``places``: where his phone placed him, each place once with the time it was
-    first seen there; ``rides``: his bus rides that began in the span. Times are local ``HH:MM``;
-    ``since_ms`` and ``until_ms`` are the span.
-    """
-
-    def clock(ms: int) -> str:
-        return f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
-
-    screen: dict[str, int] = {}
-    for event in iter_events_of_types(conn, ("work_state.revised",), since_epoch_ms=since_ms):
-        item = event.payload.get("item")
-        if event.ts_epoch_ms > now_ms or not isinstance(item, dict):
-            continue
-        for act in item.get("activities") or []:
-            text = " ".join(str(act.get("text") or "").split())[:TEXT_CHARS]
-            if text:
-                screen.setdefault(text, event.ts_epoch_ms)
-    words: list[tuple[int, str]] = []
-    for event in iter_events_of_types(conn, _SPOKEN, since_epoch_ms=since_ms):
-        text = " ".join(str(event.payload.get("transcript") or "").split())[:WORDS_CHARS]
-        if text and event.ts_epoch_ms <= now_ms and (not words or words[-1][1] != text):
-            words.append((event.ts_epoch_ms, text))
-    places: dict[str, int] = {}
-    for event in iter_events_of_types(conn, (LOCATION_EVENT,), since_epoch_ms=since_ms):
-        name = str(event.payload.get("place") or "")
-        if name and event.ts_epoch_ms <= now_ms:
-            places.setdefault(name, event.ts_epoch_ms)
-    rode = [m for m in _rides(conn, since_ms, now_ms) if m.start_ms >= since_ms]
-    return {
-        "since": clock(since_ms), "since_ms": since_ms, "until_ms": now_ms,
-        "places": [{"at": clock(at), "place": name} for name, at in places.items()],
-        "rides": [{"at": clock(m.start_ms), "ended": m.end_ms and clock(m.end_ms)} for m in rode],
-        "screen": [{"at": clock(at), "text": t} for t, at in list(screen.items())[-MAX_SCREEN:]],
-        "words": [{"at": clock(at), "text": t} for at, t in words[-MAX_WORDS:]],
-        "commits": [
-            {"at": clock(c.at_ms), "repo": c.repo, "subject": c.subject}
-            for c in _commits(conn, since_ms, now_ms)
-        ],
-    }
+    marks: set[tuple[int, str]] = set()
+    for event in iter_events_of_types(conn, ("timesink.state_observed",), since_epoch_ms=first_ms):
+        latest = event.payload.get("state_latest")
+        if event.ts_epoch_ms <= now_ms and isinstance(latest, dict):
+            at = int(datetime.fromisoformat(str(latest["at"])).timestamp() * 1000)
+            if at <= now_ms:
+                marks.add((at, str(latest["kind"])))
+    began: dict[str, int] = {}
+    found: list[MacAway] = []
+    for at, kind in sorted(marks):
+        if kind in _MAC_TRACKING:
+            found += [MacAway(since, at, away) for away, since in began.items()]
+            began.clear()
+        elif kind in _MAC_RESUMED.values():
+            began.setdefault(kind, at)
+        elif kind in _MAC_RESUMED and _MAC_RESUMED[kind] in began:
+            found.append(MacAway(began.pop(_MAC_RESUMED[kind]), at, _MAC_RESUMED[kind]))
+    found += [MacAway(since, None, away) for away, since in began.items()]
+    return tuple(sorted(found, key=lambda a: a.start_ms))
 
 
 def _hour_on(fields: Mapping[str, Any], day: date, zone: tzinfo) -> str | None:
@@ -331,18 +254,12 @@ def _hour_on(fields: Mapping[str, Any], day: date, zone: tzinfo) -> str | None:
     return None
 
 
-def _noted(  # noqa: PLR0913 - the day, its bounds, the moment and the zone.
-    conn: sqlite3.Connection, day: date, first_ms: int, last_ms: int, now_ms: int, zone: tzinfo,
-) -> tuple[NotedThing, ...]:
-    """Things added during ``day`` (up to ``now_ms``) that fall on ``day`` and still stand.
-
-    One the carry-in wrote is not new. A move today counts where it lands; a thing closed today
-    (cancelled, done or paid, or that date of a weekly one) no longer stands.
-    """
+def _held(
+    day: date, seen: Sequence[Event], earlier: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """The things the events of ``day`` leave standing, with who wrote them last and when."""
     held: dict[str, dict[str, Any]] = {}
-    for event in iter_events_of_types(conn, _THING_EVENTS, since_epoch_ms=first_ms):
-        if event.ts_epoch_ms > min(now_ms, last_ms - 1):
-            continue
+    for event in seen:
         payload = event.payload
         thing_id = str(payload["thing_id"])
         if event.type == "thing.added":
@@ -350,20 +267,55 @@ def _noted(  # noqa: PLR0913 - the day, its bounds, the moment and the zone.
                 held[thing_id] = {
                     **{k: str(payload.get(k) or "") for k in _TIME_KEYS},
                     "title": str(payload["title"]), "place": str(payload.get("place") or ""),
-                    "private": bool(payload.get("private")), "at": event.ts_epoch_ms,
+                    "private": bool(payload.get("private")), "by": str(payload["by"]),
+                    "at": event.ts_epoch_ms,
                 }
-        elif thing_id in held and event.type == "thing.moved" and not payload.get("date"):
-            held[thing_id].update({k: str(payload[k]) for k in _TIME_KEYS})
+        elif event.type == "thing.moved" and not payload.get("date"):
+            if thing_id not in held and thing_id in earlier:
+                base = earlier[thing_id]
+                held[thing_id] = {
+                    "title": str(base["title"]), "place": str(base.get("place") or ""),
+                    "private": bool(base.get("private")),
+                }
+            if thing_id in held:
+                held[thing_id] |= {k: str(payload[k]) for k in _TIME_KEYS}
+                held[thing_id] |= {"by": str(payload["by"]), "at": event.ts_epoch_ms}
         elif thing_id in held and event.type == "thing.closed" and (
             not payload.get("date") or payload["date"] == day.isoformat()
         ):
             del held[thing_id]
+    return held
+
+
+def _noted(  # noqa: PLR0913 - the day, its bounds, the moment and the zone.
+    conn: sqlite3.Connection, day: date, first_ms: int, last_ms: int, now_ms: int, zone: tzinfo,
+) -> tuple[NotedThing, ...]:
+    """Things added or moved during ``day`` (up to ``now_ms``) that fall on ``day`` or the next.
+
+    One the carry-in wrote is not new. A move today counts where it lands, by whoever moved it,
+    at the move's time, whether the thing was added today or before; a thing closed today
+    (cancelled, done or paid, or that date of a weekly one) no longer stands.
+    """
+    seen = [
+        e for e in iter_events_of_types(conn, _THING_EVENTS, since_epoch_ms=first_ms)
+        if e.ts_epoch_ms <= min(now_ms, last_ms - 1)
+    ]
+    added = {str(e.payload["thing_id"]) for e in seen if e.type == "thing.added"}
+    moved = {str(e.payload["thing_id"]) for e in seen if e.type == "thing.moved"} - added
+    earlier = {
+        str(e.payload["thing_id"]): e.payload
+        for e in iter_events_of_types(conn, ("thing.added",))
+        if e.ts_epoch_ms < first_ms and e.payload["thing_id"] in moved
+    }
     found = []
-    for thing_id, one in held.items():
-        if (hour := _hour_on(one, day, zone)) is not None:
-            found.append(NotedThing(
-                thing_id, one["title"], hour, one["place"], one["private"], one["at"],
-            ))
+    for thing_id, one in _held(day, seen, earlier).items():
+        for falls in (day, day + timedelta(days=1)):
+            if (hour := _hour_on(one, falls, zone)) is not None:
+                found.append(NotedThing(
+                    thing_id, one["title"], hour, falls, one["place"], one["private"], one["by"],
+                    one["at"],
+                ))
+                break
     return tuple(found)
 
 
@@ -376,6 +328,7 @@ def facts_at(
     name and role. ``wake`` is the earliest sign after 04:00 local that he is up: a phone signal
     (focus off, alarm stopped or snoozed, charger unplugged, headphones on, a call), the Mac
     turning active, words of his, a ride, or a walk or drive. ``moves`` hold his rides too.
+    ``mac_away`` are the Mac's idle, locked and asleep stretches of ``day``.
     """
     first_ms, last_ms = _ms(day, time.min, zone), _ms(day + timedelta(days=1), time.min, zone)
     rows = read_rows(conn, first_ms - LOOKBACK_MS)
@@ -423,8 +376,7 @@ def facts_at(
         here=here,
         stays=all_stays,
         moves=drive,
-        doing=_doing(conn, morning, now_ms),
         things=_noted(conn, day, first_ms, last_ms, now_ms, zone),
-        commits=_commits(conn, first_ms, now_ms),
+        mac_away=_mac_away(conn, first_ms, now_ms),
     )
 

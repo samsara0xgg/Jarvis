@@ -1,10 +1,11 @@
 """ADR 0355: a plan reads the weather of an outing's own hours at its own place, over the real home.
 
 The real ``Home`` over the fake WeatherKit of ``weatherkit_world`` (a throwaway key, no network),
-the real ``PlanWatch`` over fresh stores, and stub models and legs. The day is Wednesday
+the real ``PlanWatch`` over fresh stores, and a stub model and legs. The day is Wednesday
 2026-10-21, 09:30 in Victoria. It is dry at home all day and it rains at the clinic for the hour
 of an outing there, so the day at home and the hours of the outing differ and the request that was
-made says which of them a plan was given. The places and the times are invented.
+made says which of them the morning line was given (ADR 0383). The places and the times are
+invented.
 """
 
 from __future__ import annotations
@@ -50,14 +51,14 @@ DENTIST = plan.PlanItem(
     item_id="p9", title="Dentist", firmness="fixed", source="item:thing-c1", start="10:00",
     minutes=60, place="Clinic", route=LEG,
 )
-"""10:00 to 11:00 at the clinic, leaving at 09:40: the notice is due from 09:15."""
+"""10:00 to 11:00 at the clinic, leaving at 09:40."""
 CHECKUP = plan.PlanItem(
     item_id="p10", title="Check-up", firmness="fixed", source="item:thing-c2", start="15:00",
     minutes=60, place="Clinic",
     route={"from": "Home", "leave_at": "14:20", "line": "26", "board": "Main St",
            "arrive_at": "14:38", "backup": None},
 )
-"""15:00 to 16:00 at the clinic, leaving at 14:20: the notice is due from 13:55."""
+"""15:00 to 16:00 at the clinic, leaving at 14:20."""
 
 
 def _at(clock: str) -> datetime:
@@ -103,7 +104,7 @@ def _legs(end: dict[str, float] | None) -> OpenLeg:
 
 @dataclass
 class World:
-    """The home, the watcher over its stores, and what its two models were asked."""
+    """The home, the watcher over its stores, and what its model was asked."""
 
     net: Net
     kit: WeatherKit
@@ -113,7 +114,6 @@ class World:
     log: Path
     memory: Path
     opened: list[str]
-    asked: list[str]
 
     def drafted(self, *items: plan.PlanItem) -> None:
         """Draft today with ``items``; he woke at 07:00."""
@@ -130,16 +130,14 @@ class World:
         places.save(self.memory, name=name, lat=point[0], lng=point[1], origin="user")
 
     def tick(self, clock: str = "09:35") -> dict[str, Any]:
-        """The tick at ``clock``: he is up, and the notice of an outing is due.
+        """The morning line's input as the model saw it at ``clock``, when he is up.
 
-        What the decider was asked about the outing, and the opening's input, as the models saw
-        them. The notice is taken before the opening, as the watcher does. WeatherKit's client
-        keeps the same time.
+        WeatherKit's client keeps the same time.
         """
         self.kit.clock = _at(clock).timestamp
         self.watch.tick(_at(clock))
-        notice = json.loads(self.asked[0])["notice"]["facts"] if self.asked else {}
-        return {"outing_soon": notice, "opening": json.loads(self.opened[0])}
+        morning: dict[str, Any] = json.loads(self.opened[0])
+        return morning
 
 
 def _world(
@@ -158,20 +156,13 @@ def _world(
         weather=home.plan_weather, outing_weather=home.outing_weather,
     )
     opened: list[str] = []
-    asked: list[str] = []
 
-    def decide(_system: str, user: str) -> str:
-        asked.append(user)
-        return '{"act": "silent", "why": "fine"}'
-
-    def opening(_system: str, user: str) -> str:
+    def morning(_system: str, user: str) -> str:
         opened.append(user)
         return json.dumps({"message": "Good morning."})
 
-    watch = PlanWatch(
-        settings=SETTINGS, sources=sources, ask_decide=decide, ask_open=opening, open_leg=open_leg,
-    )
-    return World(fake, kit, home, watch, sources, log, memory, opened, asked)
+    watch = PlanWatch(settings=SETTINGS, sources=sources, ask=morning, open_leg=open_leg)
+    return World(fake, kit, home, watch, sources, log, memory, opened)
 
 
 @pytest.fixture
@@ -191,7 +182,7 @@ def test_an_outing_at_a_kept_place_is_given_that_places_hours_not_the_home_day(
     )
     world.keep("Clinic", CLINIC)
     world.drafted(CHECKUP)
-    seen = world.tick("14:00")
+    seen = world.tick()
     expected = {
         "at": "Clinic", "from": "2:20 PM", "to": "4 PM", "max_chance_pct": 90, "rain_mm": 1.0,
         "low_c": 9.0, "high_c": 12.0, "likely_from": "3 PM", "likely_to": "4 PM",
@@ -202,15 +193,11 @@ def test_an_outing_at_a_kept_place_is_given_that_places_hours_not_the_home_day(
              "precip_mm": 1.0},
         ],
     }
-    assert seen["outing_soon"]["weather"] == expected
-    assert "notes" not in seen["outing_soon"]
-    assert seen["opening"]["outings"] == [
-        {"item_id": "p10", "place": "Clinic", "weather": expected},
-    ]
+    assert seen["outings"] == [{"item_id": "p10", "place": "Clinic", "weather": expected}]
     assert {_where(url) for url in world.net.weather()} == {HOME_AT, CLINIC_AT}
 
 
-def test_the_opening_and_the_home_are_given_today_in_parts_from_one_request(
+def test_the_draft_and_the_home_are_given_today_in_parts_from_one_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
@@ -249,11 +236,11 @@ def test_an_outing_whose_place_has_no_known_position_is_given_home_s_hours_and_s
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Not kept, and the leg tells nowhere: the request is the home's, the facts say home."""
+    """Not kept: the request is the home's, and the outing's weather says home."""
     world = _world(tmp_path, monkeypatch, key, open_leg=_legs(None), hours=_dry)
     world.drafted(DENTIST)
-    seen = world.tick()
-    weather = seen["outing_soon"]["weather"]
+    seen = world.tick("08:00")
+    weather = seen["outings"][0]["weather"]
     assert weather["at"] == "home"
     assert weather["why_home"] == "the position of Clinic is not known"
     assert weather["note"] == "no rain expected"  # the rain's own note is not the place's
@@ -261,28 +248,11 @@ def test_an_outing_whose_place_has_no_known_position_is_given_home_s_hours_and_s
     assert {_where(url) for url in world.net.weather()} == {HOME_AT}
 
 
-def test_an_outing_not_kept_is_read_where_the_leg_just_read_ends(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    key: tuple[Path, ec.EllipticCurvePrivateKey],
-) -> None:
-    """The refresh knows the end of the leg it just planned; the opening, after it, does not."""
-    world = _world(
-        tmp_path, monkeypatch, key, open_leg=_legs({"lat": CLINIC[0], "lng": CLINIC[1]}),
-        hours=_dry, hours_at={CLINIC_AT: _rain_at(10)},
-    )
-    world.drafted(DENTIST)
-    seen = world.tick()
-    assert seen["outing_soon"]["weather"]["at"] == "Clinic"
-    assert seen["outing_soon"]["weather"]["max_chance_pct"] == 90
-    assert seen["opening"]["outings"][0]["weather"]["at"] == "home"
-    assert [_where(url) for url in world.net.weather()] == [CLINIC_AT, HOME_AT]  # home read once
-
-
 def test_weatherkit_down_leaves_a_plan_without_weather_and_still_asked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """A failed read is a note in the facts and an opening without weather, never a failure."""
+    """A failed read is a morning line without weather, never a failure."""
     world = _world(
         tmp_path, monkeypatch, key, open_leg=_legs({"lat": CLINIC[0], "lng": CLINIC[1]}),
         refuse=503,
@@ -290,8 +260,5 @@ def test_weatherkit_down_leaves_a_plan_without_weather_and_still_asked(
     world.keep("Clinic", CLINIC)
     world.drafted(DENTIST)
     seen = world.tick()
-    assert seen["opening"]["weather"] is None
-    assert seen["opening"]["outings"] == []
-    assert seen["outing_soon"]["weather"] is None
-    assert seen["outing_soon"]["notes"] == ["weather unreadable"]
-    assert seen["outing_soon"]["leg_now"]["line"] == "28"
+    assert seen["weather"] is None
+    assert seen["outings"] == []

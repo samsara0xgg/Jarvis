@@ -412,23 +412,23 @@ day_experience:
 # 草稿也没有失败记录的话，读他要去的事、日历、To Do、两段核心记忆（生活里的几件事、证件和硬期限）、
 # 例行、天气、最近三天、他最近两周对计划的改动，让 preset 排出今天，写进事件日志
 # （plan.drafted）。排不出就写 plan.draft_failed，不写空的一天。他已经改过的那天不重排。
-# enabled: false = 不排；morning_push 是晨间开场附带的推送，先关着，等他的信号几个早晨都准时再开。
-# ADR 0291：watch 开着时，每分钟把这一天和日志里发生的事比一比（plan.noticed），每件变化问
-# decide_preset 一次她说不说、改不改计划（plan.decided）；开场也由它写进对话。先关着。
-# 出门类提醒（outing_soon、left_late）只看静音、对话和通话；别的看安静档，且一天最多
-# told_per_day 次、任何一小时最多 told_per_hour 次，超了只留在对话里不出声。
+# enabled: false = 不排。
+# ADR 0383：watch 开着时，她只在四种时候主动说一句，每种由日志里的事实决定到没到点，不问模型要不要说：
+# 早上他起来后一句早间计划、他之外的人（邮件、日历同步）加了或挪了一件带钟点的事时一句固定的话、
+# 晚上一句晚间小结（20:00 后他从别处回到家满十分钟、21:00 后 Mac 锁了或睡了满二十分钟、或到 day_ends 前一小时，
+# 先到哪个算哪个；并说每件没做完的任务去明天、以后还是放掉）。
+# 一天最多这几句，新事和出门提醒合起来最多两句；说了没人回就算了，不追问。只有早、晚两句调模型，
+# 用 line_preset（出厂 haiku）。每句话都写进对话；他不在 Mac 前时无声推送，no-pop 和 dnd 只留在对话里，通话中等下一分钟。
+# 他说某一种不要了，她的 plan 工具就把那一种关掉（plan.muted）。先关着。
 # 计划是一串按顺序要做的事，只有真有时间的事（会、车、约、截止）才挂在钟上。day_ends 是一天的工作
-# 到几点为止：程序用它算剩下的事还塞不塞得进今天的空档（进度检查：醒后每两小时、每件有时间的事结束时）。
+# 到几点为止：程序用它算剩下的事还塞不塞得进今天的空档，也用它定晚间小结最晚的时候。
 day_plan:
   enabled: false
   at: "04:00"
   preset: sonnet-high
   horizon_days: 3
-  morning_push: false
   watch: false
-  decide_preset: haiku
-  told_per_day: 8
-  told_per_hour: 2
+  line_preset: haiku
   day_ends: "23:30"
 
 # ADR 0142 — 每日对话摘要：每天 at 之后（Mac 睡着就在醒来后第一次检查时），给每个

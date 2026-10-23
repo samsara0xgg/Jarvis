@@ -1,9 +1,10 @@
-"""ADR 0291: his plan of a day, read and changed in conversation by the one tool ``plan``.
+"""ADR 0291, 0383: his plan of a day, read and changed in conversation by the one tool ``plan``.
 
 ``read`` gives a day's items in order as compact rows (tasks with a done mark, then the time left
-against the tasks left), ``change`` applies add, edit, move and drop ops as one ``plan.revised``
-by him, ``settle`` says the plan is fine as it stands. The fold, the ops and the
-checks are :mod:`jarvis.state.plan`; this module only reads his arguments and words the answers.
+against the tasks left) and the kinds of her unprompted lines he switched off, ``change`` applies
+add, edit, move and drop ops as one ``plan.revised`` by him, ``mute`` switches a kind of her
+unprompted lines off or back on. The fold, the ops and the checks are :mod:`jarvis.state.plan`;
+this module only reads his arguments and words the answers.
 """
 
 from __future__ import annotations
@@ -23,12 +24,11 @@ if TYPE_CHECKING:
     from jarvis.shared.clock import Clock
 
 _DESCRIPTION: Final = (
-    "Use when he asks to add, move, drop or change something in a day's plan, asks what is in"
-    " it, or says it is fine. While today's plan is opened and not settled, you are settling it"
-    " with him: ask one question at a time about what would change the day, then propose it"
-    " with its buses, and settle it once he agrees. A change he states is his answer: make it at"
-    " once; your proposals wait for his yes."
-    " It changes only a day that already has a plan, and a change is"
+    "Use when he asks to add, move, drop or change something in a day's plan, or asks what is in"
+    " it. A change he states is his answer: make it at once; your proposals wait for his yes."
+    " When he says a kind of your unprompted lines is not wanted (the morning plan, a new"
+    " thing, the evening summary), mute that kind; when he asks for it back, mute it with on"
+    " false. A change only touches a day that already has a plan, and is"
     " saved only when this returns: never say it is changed without calling it. For something"
     " he has to go to or do rather than plan, use schedule."
 )
@@ -37,11 +37,12 @@ _SCHEMA: Final[Mapping[str, Any]] = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["read", "change", "settle"],
+            "enum": ["read", "change", "mute"],
             "description": (
                 "read: the day's items in order (id, title, start, minutes, place, firmness,"
-                " route, done) and the time left against the tasks left. change: apply"
-                " changes. settle: he accepts the plan as it is."
+                " route, done), the time left against the tasks left and the muted kinds."
+                " change: apply changes. mute: switch a kind of your unprompted lines off, or"
+                " back on."
             ),
         },
         "day": {"type": "string", "description": "ISO date, 2026-10-16. Default: today."},
@@ -56,6 +57,18 @@ _SCHEMA: Final[Mapping[str, Any]] = {
             ),
         },
         "why": {"type": "string", "description": "change only: his reason, a few words."},
+        "kind": {
+            "type": "string",
+            "enum": list(plan.KINDS),
+            "description": (
+                "mute only: morning (the plan when he gets up), new (a thing added to his day),"
+                " leave (when to leave), evening (the summary that closes the day)."
+            ),
+        },
+        "on": {
+            "type": "boolean",
+            "description": "mute only: true (default) mutes the kind, false lets it speak again.",
+        },
     },
     "required": ["action"],
     "additionalProperties": False,
@@ -84,26 +97,36 @@ class _Planner:
         self._day_ends = day_ends
 
     def handle(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        """Read, change or settle the day the arguments name."""
+        """Read or change the day the arguments name, or mute a kind of her lines."""
         action = args.get("action")
-        if action not in ("read", "change", "settle"):
-            msg = "plan: action must be read, change or settle"
+        if action not in ("read", "change", "mute"):
+            msg = "plan: action must be read, change or mute"
             raise ToolError(msg, code="invalid_arguments")
+        if action == "mute":
+            return self._mute(args, ctx)
         day = self._day(args.get("day"))
         held = plan.for_day(ctx.conn, day)
         if action == "read":
-            return self._state(day, held)
+            return self._state(day, held, ctx)
         if held is None:
             msg = (
                 f"plan: {day} has no plan yet (a day is planned at 04:00); to add something"
                 " for that day use schedule"
             )
             raise ToolError(msg, code="no_plan")
-        if action == "settle":
-            if held.status != "settled":
-                plan.settle(ctx.conn, day, "him")
-            return {"summary": f"The plan for {day} is settled.", "day": day.isoformat()}
         return self._change(args, ctx, day, held)
+
+    @staticmethod
+    def _mute(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        kind, on = args.get("kind"), args.get("on", True)
+        if kind not in plan.KINDS or not isinstance(on, bool):
+            msg = f"plan: mute needs a kind, one of {', '.join(plan.KINDS)}, and on true or false"
+            raise ToolError(msg, code="invalid_arguments")
+        plan.mute(ctx.conn, kind, on)
+        return {
+            "summary": f"Your {kind} lines are {'muted' if on else 'on again'}.",
+            "muted": sorted(plan.muted(ctx.conn)),
+        }
 
     def _day(self, raw: object) -> date:
         if raw is None or raw == "":
@@ -114,13 +137,14 @@ class _Planner:
             msg = f'plan: day "{raw}" is not an ISO date like 2026-10-16'
             raise ToolError(msg, code="invalid_arguments") from None
 
-    def _state(self, day: date, held: plan.Plan | None) -> dict[str, Any]:
+    def _state(self, day: date, held: plan.Plan | None, ctx: ToolContext) -> dict[str, Any]:
+        muted = sorted(plan.muted(ctx.conn))
         if held is None:
-            return {"day": day.isoformat(), "plan": False, "items": [],
+            return {"day": day.isoformat(), "plan": False, "items": [], "muted": muted,
                     "summary": f"No plan for {day}."}
         state: dict[str, Any] = {
-            "day": day.isoformat(), "plan": True, "settled": held.status == "settled",
-            "source": held.source, "items": [_row(i) for i in held.items],
+            "day": day.isoformat(), "plan": True, "source": held.source,
+            "items": [_row(i) for i in held.items], "muted": muted,
         }
         now = self._clock().astimezone(self._zone)
         if day == now.date():  # the time left only means something for today
@@ -144,12 +168,12 @@ class _Planner:
         items, notes = plan.apply_changes(held.items, changes)
         if items == list(held.items):
             return {"summary": "Nothing changed.", "changed": False, "notes": notes,
-                    **self._state(day, held)}
+                    **self._state(day, held, ctx)}
         plan.revise(ctx.conn, day, items, "him", why or "his change")
         return {
             "summary": f"Plan for {day} changed: {plan.diff(held.items, items)}.",
             "changed": True, "notes": notes,
-            **self._state(day, plan.for_day(ctx.conn, day)),
+            **self._state(day, plan.for_day(ctx.conn, day), ctx),
         }
 
 

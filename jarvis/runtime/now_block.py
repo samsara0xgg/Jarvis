@@ -83,7 +83,7 @@ def plan_line(
 ) -> str | None:
     """Today's plan in one line (ADR 0291).
 
-    Settled or not, the next task, the time left, the next thing on the clock.
+    The next task, the time left, the next thing on the clock.
 
     None without a plan for today. A private task or item is named by its time only (a task has
     none, so it is just "a private item").
@@ -98,9 +98,6 @@ def plan_line(
     if held is None:
         return None
     left = budget(held, local, day_ends=day_ends)
-    state = "settled" if held.status == "settled" else (
-        "opened, not settled yet" if held.opened else "not settled yet"
-    )
     parts = []
     if left.next_task is not None:
         task = left.next_task
@@ -112,14 +109,14 @@ def plan_line(
             f"{left.remaining_min} of {left.free_min} free minutes",
         )
     elif left.next_timed is None:
-        return f"{PLAN_PREFIX} ({state}): nothing more."
+        return f"{PLAN_PREFIX}: nothing more."
     else:
         parts.append("no tasks left")
     if (fixed := left.next_timed) is not None:
         at = fixed.start or fixed.window_from
         name = "" if fixed.private else " " + speakable.cut(prompt_title(fixed.title), _TITLE_CHARS)
         parts.append(f"next fixed {at}{name}")
-    return f"{PLAN_PREFIX} ({state}): " + "; ".join(parts) + "."
+    return f"{PLAN_PREFIX}: " + "; ".join(parts) + "."
 
 
 def _name(one: things.Thing) -> str:

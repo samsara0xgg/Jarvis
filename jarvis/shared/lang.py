@@ -453,9 +453,16 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},
-    # ADR 0291: a plan notice about a private item, said on speakers or pushed: its time only.
+    # ADR 0291, 0383: a line about a private item, pushed or handed to a model: its time only.
     "plan.private": {"zh": "{time} 那件事。", "en": "The {time} thing."},
     "plan.private_untimed": {"zh": "计划里有件事。", "en": "Something on your plan."},
+    # ADR 0383: the fixed line for a new hard thing (a mail or the calendar added it).
+    "plan.new_thing": {
+        "zh": "新加了一件事：{when} {title}{place}。", "en": "New: {when} {title}{place}.",
+    },
+    "plan.new_today": {"zh": "今天", "en": "today"},
+    "plan.new_tomorrow": {"zh": "明天", "en": "tomorrow"},
+    "plan.new_place": {"zh": "（{place}）", "en": " ({place})"},
     # ADR 0227: the notice that asks which side's settings to keep when a terminal's files and the
     # brain's differ.
     "settings.drift.title": {"zh": "设置不一致", "en": "Settings differ"},
