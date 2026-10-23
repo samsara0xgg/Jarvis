@@ -1,0 +1,20 @@
+{
+  "id": "weather-when-friday-to-sunday",
+  "tool": "weather",
+  "said": "what's the weather from Friday to Sunday",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {"when": "周五到周日"},
+  "recording": "weather-when-friday-to-sunday.recording.json",
+  "expect": {
+    "checker": "weather_days_labelled",
+    "result": [
+      {"path": "days", "op": "len", "value": 3},
+      {"path": "days.0.date", "op": "eq", "value": "2026-10-23"},
+      {"path": "days.0.day", "op": "eq", "value": "Fri Oct 23"},
+      {"path": "days.2.date", "op": "eq", "value": "2026-10-25"},
+      {"path": "days.2.day", "op": "eq", "value": "Sun Oct 25"}
+    ]
+  }
+}

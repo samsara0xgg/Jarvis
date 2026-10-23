@@ -329,6 +329,93 @@ def test_a_reference_checker_derives_the_facts_from_the_recording(
     assert (got == []) == (expected == [])
 
 
+def _recorded(ident: str) -> tuple[dict[str, Any], exam.Recording]:
+    item = json.loads((ITEMS / f"{ident}.json").read_text(encoding="utf-8"))
+    return item, exam.Recording.load(ITEMS / f"{ident}.recording.json")
+
+
+AFTER_DRIZZLE: dict[str, Any] = {
+    "earlier_today": {"rain_mm": 1.0},
+    "rest_of_today": {"max_chance_pct": 0, "rain_mm": 0.0},
+    "tonight": {"low_c": 6.0, "low_at": "6:00"},
+    "whole_day": {"rain_chance_pct": 70},
+}
+"""What the day of the drizzle item must hold: the recorded rows, added up by hand."""
+TODAY_IN_PARTS = [
+    ({}, []),
+    (  # the day's own chance and amount are not those of the hours left
+        {"rest_of_today": {"max_chance_pct": 70, "rain_mm": 3.5}},
+        ["the highest chance left today is 0", "0.0 mm are forecast for the rest of today"],
+    ),
+    ({"earlier_today": {"rain_mm": 0.0}}, ["1.0 mm fell before now"]),
+    ({"earlier_today": None}, ["1.0 mm fell before now"]),
+    (  # the low of the daytime hours is not the night's
+        {"tonight": {"low_c": 7.5, "low_at": "9:00"}},
+        ["the night's low is 6 at 6:00"],
+    ),
+    ({"tonight": {"low_c": 6.0, "low_at": "06:00"}}, ["the night's low is 6 at 6:00"]),
+    ({"whole_day": {"rain_chance_pct": 0}}, ["the day's row says 70%"]),
+]
+
+
+@pytest.mark.parametrize(("change", "expected"), TODAY_IN_PARTS)
+def test_the_parts_of_today_are_added_up_from_the_recorded_hours(
+    change: dict[str, Any],
+    expected: list[str],
+) -> None:
+    """Rain so far, the rest of the day, the night's low and its hour come from the hourly rows."""
+    item, recording = _recorded("weather-today-after-drizzle")
+    got = CHECKERS["weather_today_in_parts"](item, recording, AFTER_DRIZZLE | change)
+    assert all(any(e in m for m in got) for e in expected), got
+    assert (got == []) == (expected == [])
+
+
+SATURDAY = {"day": "Sat Oct 24", "date": "2026-10-24", "high_c": 15.0, "low_c": 8.0}
+SUNDAY = {"day": "Sun Oct 25", "date": "2026-10-25", "high_c": 16.0, "low_c": 9.0}
+NAMED_DAYS = [
+    ({"days": [SATURDAY, SUNDAY]}, []),
+    (
+        {"days": [{**SATURDAY, "day": "Sat"}, SUNDAY]},
+        ["2026-10-24 is named 'Sat', not 'Sat Oct 24'"],
+    ),
+    (  # Sunday's figures under Saturday's date
+        {"days": [{**SATURDAY, "high_c": 16.0, "low_c": 9.0}, SUNDAY]},
+        ["2026-10-24 high_c is 16.0, recorded 15.0", "2026-10-24 low_c is 9.0, recorded 8.0"],
+    ),
+    (
+        {"days": [{**SATURDAY, "day": "Fri Oct 23", "date": "2026-10-23"}, SUNDAY]},
+        ["the recording holds no daily row for 2026-10-23"],
+    ),
+    ({"days": [SATURDAY, {**SUNDAY, "day": "Sun Oct 25 2026"}]}, ["not 'Sun Oct 25'"]),
+    ({"days": []}, ["the result holds no day row"]),
+]
+
+
+@pytest.mark.parametrize(("out", "expected"), NAMED_DAYS)
+def test_every_day_of_a_result_is_named_by_its_date_and_holds_its_own_figures(
+    out: dict[str, Any],
+    expected: list[str],
+) -> None:
+    """Saturday is ``Sat Oct 24`` with Saturday's recorded high and low, never another day's."""
+    item, recording = _recorded("weather-when-this-weekend")
+    got = CHECKERS["weather_days_labelled"](item, recording, out)
+    assert all(any(e in m for m in got) for e in expected), got
+    assert (got == []) == (expected == [])
+
+
+def test_today_and_tomorrow_are_named_so_and_other_days_by_their_date() -> None:
+    """``today (Wed)`` and ``tomorrow (Thu)`` for the two days; a plain date for them is wrong."""
+    item, recording = _recorded("weather-today-after-drizzle")
+    today = {"day": "today (Wed)", "date": "2026-10-21", "high_c": 15.0, "low_c": 8.0}
+    tomorrow = {"day": "tomorrow (Thu)", "date": "2026-10-22", "high_c": 16.0, "low_c": 9.0}
+    check = CHECKERS["weather_days_labelled"]
+    assert check(item, recording, {"whole_day": today, "tomorrow": tomorrow}) == []
+    got = check(
+        item, recording, {"whole_day": today, "tomorrow": {**tomorrow, "day": "Thu Oct 22"}}
+    )
+    assert got == ["2026-10-22 is named 'Thu Oct 22', not 'tomorrow (Thu)'"]
+
+
 def test_the_baseline_verdict_names_a_regression_a_fixed_item_and_a_stale_id(
     tmp_path: Path,
 ) -> None:
