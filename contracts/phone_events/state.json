@@ -2,9 +2,9 @@
   "route": "POST /inherent/device/events",
   "direction": "client -> brain",
   "event_type": "phone.state_observed",
-  "description": "A signal that changed on the phone (ADR 0197). `value` is a word that fits the `signal`; the battery's is a whole percent in text, its `detail` charging, full or unplugged.",
+  "description": "A signal that changed on the phone (ADR 0197). `value` is a word that fits the `signal`; the battery's is a whole percent in text, its `detail` charging, full or unplugged. `watch_battery` is the watch's charge as the watch read it and told the phone (ADR 0377), in the battery's form.",
   "now_ms": 1791993600000,
-  "signals": ["focus", "alarm", "power", "headphones", "call", "battery"],
+  "signals": ["focus", "alarm", "power", "headphones", "call", "battery", "watch_battery"],
   "valid": [
     {
       "name": "focus on, with its name",
@@ -106,6 +106,22 @@
       "value": {
         "signal": "battery",
         "value": "9",
+        "detail": "unplugged"
+      }
+    },
+    {
+      "name": "the watch at 80 percent, charging",
+      "value": {
+        "signal": "watch_battery",
+        "value": "80",
+        "detail": "charging"
+      }
+    },
+    {
+      "name": "the watch unplugged",
+      "value": {
+        "signal": "watch_battery",
+        "value": "42",
         "detail": "unplugged"
       }
     }
@@ -236,6 +252,23 @@
         "signal": "battery",
         "value": "57",
         "detail": "Work"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "the watch above 100",
+      "value": {
+        "signal": "watch_battery",
+        "value": "101"
+      },
+      "refusal": "bad_event"
+    },
+    {
+      "name": "the watch in a state outside the list",
+      "value": {
+        "signal": "watch_battery",
+        "value": "42",
+        "detail": "worn"
       },
       "refusal": "bad_event"
     },
