@@ -196,6 +196,12 @@ _MINUTES: dict[str, tuple[range, float, _Periods | None]] = {
     "summary-leads": (
         range(24, 44), 0.7, [(0, "clear", None), (22, "rain", 0.7), (44, "clear", None)],
     ),
+    # The summary itself names a period of rain, at a 30% chance: not a shower.
+    "summary-unlikely": (
+        range(25, 45), 0.3, [(0, "clear", None), (25, "rain", 0.3), (45, "clear", None)],
+    ),
+    # Nothing falls and WeatherKit says so, as a dry hour does.
+    "dry": (range(0), 0.0, [(0, "clear", None)]),
     "none": (range(0), 0.0, None),
 }
 
