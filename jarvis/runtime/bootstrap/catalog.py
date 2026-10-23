@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -199,6 +199,9 @@ def _register_jobs(
     source = None if job_mail is None else JobsSource(
         job_mail.jobs_view, job_mail.add_application, job_mail.edit_application,
     )
+    terminal = sources.terminal
+    if isinstance(terminal, TerminalScreen):  # the count is block D's: the kept answers, no wait
+        sources = replace(sources, terminal=terminal.cached())
     for tool in build_jobs_tool(source, sources):
         registry.register(tool)
 

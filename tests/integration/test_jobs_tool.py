@@ -18,7 +18,7 @@ from jarvis.execution.jobs_tool import JobsSource, build_jobs_tool
 from jarvis.execution.tools import Tool, ToolError, ToolRegistry
 from jarvis.runtime.bootstrap.catalog import _register_jobs
 from jarvis.shared import CallerPrincipal, zone_label
-from jarvis.state.ledger import LedgerSources, submitted_count
+from jarvis.state.ledger import LedgerSources, TerminalScreen, submitted_count
 from tests.support import job_mail as job_mail_support
 from tests.support.job_mail import (
     NOW,
@@ -27,7 +27,7 @@ from tests.support.job_mail import (
     fixed_zh_words,  # noqa: F401 - autouse, found by name
     job_harness,
 )
-from tests.support.ledger import write_mail
+from tests.support.ledger import terminal_link, write_mail
 from tests.support.timesink_moment import CHROME, FakeTimeSink
 from tests.support.tool_context import tool_context
 
@@ -243,6 +243,27 @@ def test_the_count_submitted_is_the_blocks_and_says_at_least(rig: _Rig, tmp_path
     count = submitted_count(sources, rig.harness.clock.now())
     assert count >= len(rig.page()) - 1
     assert f"At least {count} submitted in all." in rig.call()["summary"]
+
+
+def test_the_tool_counts_from_the_kept_screen_answers_and_never_asks_the_mac(
+    rig: _Rig, tmp_path: Path,
+) -> None:
+    """Block D reads the terminal's kept answers; so does the tool, so the two numbers agree."""
+    _hunt(rig)
+    asked: list[str] = []
+    live = LedgerSources(
+        rig.db, tmp_path / "events.db", None, OWNER_ZONE,
+        TerminalScreen(terminal_link(None, asked, up=[True])),
+    )
+    registry = ToolRegistry()
+    _register_jobs(registry, rig.harness.job, live)
+    (tool,) = registry.get_definitions()
+
+    tool.handler({}, tool_context(clock=rig.harness.clock))
+
+    assert asked == []
+    submitted_count(live, rig.harness.clock.now())  # a live read of the same count does ask
+    assert asked
 
 
 # --- find -------------------------------------------------------------------------------------
