@@ -33,7 +33,7 @@ from jarvis.surface.voice_ledger import (
     PlaybackLedger,
     StalePlaybackGeneration,
 )
-from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media import journal as media_journal
 from jarvis.surface.voice_media.contract import MediaSubmitOutcome, StreamingMediaStartupError
 from jarvis.surface.voice_media.gain import CUT_FADE_MS, YIELD_RAMP_MS
 from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
@@ -958,7 +958,7 @@ def test_terminal_debt_blocks_every_successor_until_durable(
 
     try:
         with (
-            patch.object(media_pipeline, "terminalize_playback", side_effect=_faulted_terminalize),
+            patch.object(media_journal, "terminalize_playback", side_effect=_faulted_terminalize),
             CallbackPump(player),
         ):
             first = emit_response(
@@ -1058,7 +1058,7 @@ def test_checkpoint_persists_during_later_provider_feed_and_retries(  # noqa: PL
             text=["first checkpoint. ", "blocked second."],
         )
         with (
-            patch.object(media_pipeline, "emit_event", side_effect=_transient_checkpoint),
+            patch.object(media_journal, "emit_event", side_effect=_transient_checkpoint),
             CallbackPump(player),
         ):
             asyncio.run(submit_response(pipeline, rows))
@@ -1707,7 +1707,7 @@ def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
         with (
             CallbackPump(player),
             patch.object(player, "settle_interrupted_generation", return_value=None),
-            patch.object(media_pipeline, "emit_event", side_effect=_faulted_emit),
+            patch.object(media_journal, "emit_event", side_effect=_faulted_emit),
         ):
             rows = emit_response(
                 conn,

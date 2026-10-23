@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import logging
 import math
-import sqlite3
 import tempfile
 import threading
 import time
@@ -18,8 +17,6 @@ from typing import TYPE_CHECKING, Literal
 
 from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.state.event_log import EVENT_COLUMNS, emit_event, row_to_event, turn_intent_channel
-from jarvis.state.lifecycle_terminal import terminalize_playback
 from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import (
     AcceptedSamples,
@@ -36,6 +33,7 @@ from jarvis.surface.voice_media.contract import (
     StreamingTTSProvider,
 )
 from jarvis.surface.voice_media.gain import OutputGain
+from jarvis.surface.voice_media.journal import PlaybackJournal
 from jarvis.surface.voice_media.pcm import SegmentResampler, cut_off_cue, head_dropped
 from jarvis.surface.voice_media.player_stop import PlayerStopper
 from jarvis.surface.voice_media.registry import ActivePlaybackRegistry
@@ -59,7 +57,8 @@ from jarvis.surface.voice_tts import (
 
 if TYPE_CHECKING:
     import concurrent.futures
-    from collections.abc import AsyncIterator, Callable, Mapping
+    import sqlite3
+    from collections.abc import AsyncIterator, Callable
 
     from jarvis.surface.voice_ducking import SystemAudioDucker
 
@@ -86,10 +85,6 @@ _ANSWERED_GROUPS_LIMIT = 256
 """How many recent groups whose answer opened the media owner remembers."""
 
 _TTS_SILENT_CHANNELS = frozenset({"queue_review", "silent_log", "badge_card"})
-_SELECT_EVENT_ROWS_THROUGH = (
-    f"SELECT {EVENT_COLUMNS} FROM events "  # noqa: S608 - the columns are a constant.
-    "WHERE id > ? AND id <= ? ORDER BY id ASC LIMIT ?"
-)
 
 
 def _response_id(event: Event) -> str | None:
@@ -123,7 +118,7 @@ class StreamingTTSPipeline:
         """
         self._provider = provider
         self._player = player
-        self._conn_factory = conn_factory
+        self._journal = PlaybackJournal(conn_factory)
         self._config = config or StreamingMediaConfig()
         self._broadcaster = broadcaster
         self._ducker = ducker
@@ -161,7 +156,6 @@ class StreamingTTSPipeline:
         self._power_abort_attempt_id: int | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: asyncio.Queue[MediaCommand | object] | None = None
-        self._conn: sqlite3.Connection | None = None
         self._startup_error: BaseException | None = None
         self._startup_error_phase: str | None = None
         self._startup_device_disposition: Literal[
@@ -1239,7 +1233,7 @@ class StreamingTTSPipeline:
                         continue
                     if resampler is not None:
                         parts.append(resampler.finish())
-                    self._emit_tts_usage(
+                    self._journal.tts_usage(
                         event.usage, response_id=_NETWORK_LOST_RESPONSE_ID, sequence=0,
                     )
                     break
@@ -1394,7 +1388,7 @@ class StreamingTTSPipeline:
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
-            self._conn = self._conn_factory()
+            self._journal.open()
             if self._startup_abandoned.is_set():
                 return
             self._queue = asyncio.Queue(
@@ -1450,10 +1444,7 @@ class StreamingTTSPipeline:
                     )
             self._stopper.stop_provider_bounded()
             self._stopper.stop_player_bounded()
-            if self._conn is not None:
-                with contextlib.suppress(sqlite3.Error):
-                    self._conn.close()
-                self._conn = None
+            self._journal.close()
             loop.close()
             self._set_startup_phase("closed")
             self._closed.set()
@@ -1529,22 +1520,14 @@ class StreamingTTSPipeline:
                 detail="committed row already crossed by ordered media drain",
             )
         target_outcome: MediaSubmitOutcome | None = None
-        conn = self._require_conn()
         while self._event_cursor < command.row_id:
-            rows = conn.execute(
-                _SELECT_EVENT_ROWS_THROUGH,
-                (
-                    self._event_cursor,
-                    command.row_id,
-                    self._config.event_drain_batch,
-                ),
-            ).fetchall()
-            if not rows:
-                break
-            for raw_row in rows:
-                row = tuple(raw_row)
-                row_id = int(row[0])
-                event = row_to_event(row)
+            drained = False
+            for row_id, event in self._journal.event_rows_through(
+                self._event_cursor,
+                command.row_id,
+                self._config.event_drain_batch,
+            ):
+                drained = True
                 self._event_cursor = row_id
                 if event.type not in _RESPONSE_EVENT_TYPES:
                     continue
@@ -1557,6 +1540,8 @@ class StreamingTTSPipeline:
                             detail="row id/event uid mismatch at media boundary",
                         )
                     target_outcome = outcome
+            if not drained:
+                break
         if target_outcome is not None:
             return target_outcome
         return MediaSubmitOutcome(
@@ -1592,11 +1577,11 @@ class StreamingTTSPipeline:
             # where the turn was submitted from, which the open header never carries.
             if payload.get("attention_channel") in _TTS_SILENT_CHANNELS or (
                 self._silent_intent_channels
-                and turn_intent_channel(self._require_conn(), str(payload.get("turn_id", "")))
+                and self._journal.intent_channel(str(payload.get("turn_id", "")))
                 in self._silent_intent_channels
             ) or (
                 self._speaks_turn is not None
-                and not self._speaks_turn(self._require_conn(), str(payload.get("turn_id", "")))
+                and not self._journal.speaks(str(payload.get("turn_id", "")), self._speaks_turn)
             ):
                 self._registry.terminalize(response_id)
                 return outcome
@@ -1957,9 +1942,7 @@ class StreamingTTSPipeline:
             self._ducker.enter_output()
             active.output_lease = True
         try:
-            activation = emit_event(
-                self._require_conn(),
-                type="surface.playback_started",
+            activation = self._journal.playback_started(
                 payload={
                     "session_id": active.lease.session_id,
                     "response_id": response.response_id,
@@ -2204,7 +2187,7 @@ class StreamingTTSPipeline:
                                 "provider_segment_final_received_not_playback_complete"
                             ),
                         )
-                        self._emit_tts_usage(
+                        self._journal.tts_usage(
                             event.usage,
                             response_id=active.response.response_id,
                             sequence=sequence,
@@ -2317,9 +2300,7 @@ class StreamingTTSPipeline:
         self, active: ActiveResponse, sequence: int, text: str, segment_hash: str,
     ) -> None:
         """Record the segment about to be synthesized; the cursor maps onto these rows."""
-        emit_event(
-            self._require_conn(),
-            type="surface.playback_segment_prepared",
+        self._journal.segment_prepared(
             payload={
                 "session_id": active.lease.session_id,
                 "response_id": active.response.response_id,
@@ -2376,8 +2357,7 @@ class StreamingTTSPipeline:
         )
         if not boundaries:
             return
-        emit_event(
-            self._require_conn(), type="surface.playback_alignment",
+        self._journal.playback_alignment(
             payload={
                 "session_id": active.lease.session_id,
                 "response_id": active.response.response_id,
@@ -2865,27 +2845,16 @@ class StreamingTTSPipeline:
         if not snapshot.heard_text or snapshot.heard_text == active.last_checkpoint_text:
             return
         for attempt in range(1, self._config.checkpoint_retry_attempts + 1):
-            conn = self._require_conn()
-            existing = conn.execute(
-                "SELECT 1 FROM events WHERE type = 'surface.playback_checkpoint' "
-                "AND json_extract(payload_json, '$.response_id') = ? "
-                "AND json_extract(payload_json, '$.playback_generation_id') = ? "
-                "AND json_extract(payload_json, '$.session_id') = ? "
-                "AND json_extract(payload_json, '$.heard_text_hash') = ? LIMIT 1",
-                (
-                    active.response.response_id,
-                    active.lease.playback_generation_id,
-                    active.lease.session_id,
-                    snapshot.heard_text_hash,
-                ),
-            ).fetchone()
-            if existing is not None:
+            if self._journal.checkpoint_recorded(
+                response_id=active.response.response_id,
+                playback_generation_id=active.lease.playback_generation_id,
+                session_id=active.lease.session_id,
+                heard_text_hash=snapshot.heard_text_hash,
+            ):
                 active.last_checkpoint_text = snapshot.heard_text
                 return
             try:
-                emit_event(
-                    conn,
-                    type="surface.playback_checkpoint",
+                self._journal.playback_checkpoint(
                     payload={
                         "session_id": active.lease.session_id,
                         "response_id": active.response.response_id,
@@ -2930,14 +2899,22 @@ class StreamingTTSPipeline:
         last_error: BaseException | None = None
         for attempt in range(1, self._config.terminal_retry_attempts + 1):
             try:
-                self._commit_terminal(
+                self._journal.commit_terminal(
                     active,
                     event_type=event_type,
                     snapshot=snapshot,
                     reason=reason,
                     speech_text_hash=speech_text_hash,
                     retryable=retryable,
+                    starvation_gaps=(
+                        self._player.starvation_gaps - active.starvation_gaps_at_start
+                    ),
+                    host_underflows=(
+                        self._player.underflow_count - active.host_underflows_at_start
+                    ),
+                    tail_ramp_samples=self._player.tail_ramp_samples,
                 )
+                self._registry.terminalize(active.response.response_id)
             except Exception as exc:
                 last_error = exc
                 LOGGER.exception(
@@ -3023,50 +3000,6 @@ class StreamingTTSPipeline:
         if error is not None:
             LOGGER.error("media task recovery escaped: %r", error)
 
-    def _commit_terminal(  # noqa: PLR0913 - exact terminal shape is explicit
-        self,
-        active: ActiveResponse,
-        *,
-        event_type: str,
-        snapshot: OutputTimelineSnapshot,
-        reason: str | None,
-        speech_text_hash: str | None,
-        retryable: bool | None,
-    ) -> None:
-        payload: dict[str, object] = {
-            "session_id": active.lease.session_id,
-            "response_id": active.response.response_id,
-            "turn_id": active.response.turn_id,
-            "playback_generation_id": active.lease.playback_generation_id,
-            "heard_through_sequence": snapshot.heard_through_sequence,
-            "submitted_samples": snapshot.submitted_samples,
-            "estimated_audible_samples": snapshot.estimated_audible_samples,
-            "heard_partial_sequence": snapshot.heard_partial_sequence,
-            "heard_partial_text_end": snapshot.heard_partial_text_end,
-            "total_samples": snapshot.accepted_samples,
-            "provider": active.provider_label,
-            "cursor_quality": snapshot.cursor_quality,
-            "heard_text_hash": snapshot.heard_text_hash,
-            "heard_text": snapshot.heard_text,
-            "starvation_gaps": (self._player.starvation_gaps - active.starvation_gaps_at_start),
-            "host_underflows": (self._player.underflow_count - active.host_underflows_at_start),
-            "tail_ramp_samples": self._player.tail_ramp_samples,
-        }
-        if event_type == "surface.playback_completed":
-            payload["speech_text_hash"] = speech_text_hash or hashlib.sha256(b"").hexdigest()
-        else:
-            payload["reason"] = reason or "unknown"
-            if event_type == "surface.playback_failed" and retryable is not None:
-                payload["retryable"] = retryable
-        terminalize_playback(
-            self._require_conn(),
-            event_type=event_type,
-            payload=payload,
-            source_event_id=active.activation_event_uid or active.response.source_event_id,
-            correlation={"turn_id": active.response.turn_id},
-        )
-        self._registry.terminalize(active.response.response_id)
-
     async def _release_active(
         self,
         active: ActiveResponse,
@@ -3110,9 +3043,7 @@ class StreamingTTSPipeline:
         Best effort: letting the answer go must not fail on its record.
         """
         try:
-            emit_event(
-                self._require_conn(),
-                type="surface.speech_dropped",
+            self._journal.speech_dropped(
                 payload={
                     "response_id": response.response_id,
                     "turn_id": response.turn_id,
@@ -3190,9 +3121,7 @@ class StreamingTTSPipeline:
         Isolation must never be prevented by its own record-keeping failing.
         """
         try:
-            emit_event(
-                self._require_conn(),
-                type="surface.playback_lane_isolated",
+            self._journal.lane_isolated(
                 payload={
                     "session_id": active.lease.session_id,
                     "response_id": active.response.response_id,
@@ -3303,42 +3232,3 @@ class StreamingTTSPipeline:
                     )
             finally:
                 queue_.task_done()
-
-    def _require_conn(self) -> sqlite3.Connection:
-        conn = self._conn
-        if conn is None:
-            msg = "media owner Event Log connection is unavailable"
-            raise RuntimeError(msg)
-        return conn
-
-    def _emit_tts_usage(
-        self,
-        usage: Mapping[str, object] | None,
-        *,
-        response_id: str,
-        sequence: int,
-    ) -> None:
-        """ADR-0018: persist the provider's per-segment character count.
-
-        MiniMax has no balance API, so the dashboard's MiniMax figure is an
-        estimate folded from these rows. A segment without ``usage`` (or a
-        log write that fails) is skipped: playback must never depend on
-        bookkeeping.
-        """
-        raw = None if usage is None else usage.get("usage_characters")
-        if not isinstance(raw, int | float) or isinstance(raw, bool) or raw <= 0:
-            return
-        try:
-            emit_event(
-                self._require_conn(),
-                type="tts.usage_observed",
-                payload={
-                    "provider": "minimax",
-                    "characters": int(raw),
-                    "response_id": response_id,
-                    "sequence": sequence,
-                    "actor": "observer",
-                },
-            )
-        except Exception:  # bookkeeping never fails playback.
-            LOGGER.exception("tts usage: emit failed for %s#%d", response_id, sequence)
