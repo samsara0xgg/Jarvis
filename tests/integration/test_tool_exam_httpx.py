@@ -206,3 +206,102 @@ def test_the_dated_rows_checker_derives_the_days_from_the_recording(
     got = CHECKERS["search_rows_dated"](ITEM, _tavily(ROWS), {**OUT, **change})
     assert all(any(e in m for m in got) for e in expected), got
     assert (got == []) == (expected == [])
+
+
+def _stream(events: list[str]) -> str:
+    return "".join(f"event: tick\ndata: {event}\n\n" for event in events)
+
+
+async def _read_events(url: str, *, take: int) -> list[str]:
+    """The first ``take`` data lines of a streamed answer, read as the SDKs read one."""
+    seen: list[str] = []
+    async with httpx.AsyncClient(trust_env=False) as client, client.stream("POST", url) as reply:
+        async for line in reply.aiter_lines():
+            if line.startswith("data: "):
+                seen.append(line.removeprefix("data: "))
+            if len(seen) == take:
+                break
+    return seen
+
+
+def test_an_async_httpx_stream_is_answered_from_the_recording() -> None:
+    """A tool that reads a provider's stream on its own loop gets the recorded events."""
+    import asyncio  # noqa: PLC0415 - only this test runs a loop
+
+    body = _stream(["one", "two"])
+    recording = _recording({"any_body": True, "content_type": "text/event-stream", "body": body})
+    replay = exam._Transport(recording, live=False)  # noqa: SLF001
+    with replay:
+        assert asyncio.run(_read_events(URL, take=2)) == ["one", "two"]
+    assert replay.misses == []
+    assert [r["url"] for r in replay.requests] == [URL]
+
+
+def test_an_async_call_the_recording_lacks_fails_the_item() -> None:
+    """The same rule as for a sync call: a miss is kept and raised."""
+    import asyncio  # noqa: PLC0415
+
+    replay = exam._Transport(_recording(), live=False)  # noqa: SLF001
+    with replay, pytest.raises(exam.RecordingMiss):
+        asyncio.run(_read_events(URL, take=1))
+    assert len(replay.misses) == 1
+
+
+class _Time:
+    """What a frozen clock offers: ``shift``, kept."""
+
+    def __init__(self) -> None:
+        self.shifted: list[float] = []
+
+    def shift(self, seconds: float) -> None:
+        self.shifted.append(seconds)
+
+
+def test_a_stream_that_hangs_lets_time_pass_on_the_frozen_clock_then_says_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After its body a ``hang_s`` entry moves the clock and waits until it is cancelled."""
+    import asyncio  # noqa: PLC0415
+
+    monkeypatch.setattr(exam._Hang, "PAUSE_S", 0.0)  # noqa: SLF001 - no real pause in a test
+    recording = _recording({
+        "any_body": True, "content_type": "text/event-stream", "body": _stream(["only"]),
+        "hang_s": 61,
+    })
+    replay = exam._Transport(recording, live=False)  # noqa: SLF001
+    replay.clock = frozen = _Time()
+
+    async def read_then_give_up() -> list[str]:
+        return await asyncio.wait_for(_read_events(URL, take=2), timeout=0.2)
+
+    with replay, pytest.raises(asyncio.TimeoutError):
+        asyncio.run(read_then_give_up())
+    assert frozen.shifted == [61]
+
+
+def test_a_fake_clock_item_makes_the_runtime_clock_follow_the_frozen_time() -> None:
+    """Its time is the frozen wall time and moves only when the item moves it."""
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    import time_machine  # noqa: PLC0415
+
+    from jarvis.shared.clock import SystemClock  # noqa: PLC0415
+
+    item = exam.Item({"id": "x", "fake_clock": True}, Path("x.json"))
+    plain = exam.Item({"id": "y"}, Path("y.json"))
+    with time_machine.travel(datetime(2026, 10, 21, 16, 30, tzinfo=UTC), tick=False) as frozen:
+        with exam.fake_clock(item):
+            clock = SystemClock()
+            start = clock.monotonic()
+            assert start == time.time()
+            event = threading.Event()
+            assert clock.wait(event, 0) is False  # no time left: it does not wait
+            frozen.shift(61)
+            assert clock.monotonic() - start == 61
+            event.set()
+            assert clock.wait(event, 60) is True
+        with exam.fake_clock(plain):
+            assert abs(SystemClock().monotonic() - time.time()) > 1  # the real clock again
