@@ -2954,8 +2954,8 @@ def test_typed_input_start_debt_re_suspends_real_media_owner(tmp_path: Path) -> 
     assert player.start_calls == 1
     assert player.stop_calls == 2
     assert not player.active
-    assert media._power_state == "suspended"
-    assert media._power_suspended
+    assert media._power.state == "suspended"
+    assert media._power.suspended
     assert not media._accepting.is_set()
     assert coordinator.close(timeout_s=0.2)
     assert media.close(wait_timeout_s=0.5)
@@ -3463,14 +3463,14 @@ def test_stale_actor_resume_future_cannot_undo_newer_sleep(
         assert stale_wake.reason == "actor_resume_timeout"
         newer_sleep = media.suspend_for_sleep(timeout_s=0.2)
         assert newer_sleep.status == "suspended"
-        assert media._power_suspended
+        assert media._power.suspended
         assert not media._accepting.is_set()
         old_future_release.set()
-        future = media._power_actor_resume_future
+        future = media._power.actor_resume_future
         assert future is not None
         assert future.result(timeout=HANG_S) is False
-        assert media._power_state == "suspended"
-        assert media._power_suspended
+        assert media._power.state == "suspended"
+        assert media._power.suspended
         assert not media._accepting.is_set()
     assert media.close(wait_timeout_s=HANG_S)
 
@@ -3530,12 +3530,12 @@ def test_new_sleep_revokes_wake_start_blocked_inside_foreign_open(
     waking.join(timeout=HANG_S)
     assert not waking.is_alive()
     assert wake_results[-1].status == "uncertain"
-    wait_until_true(lambda: media._power_state == "suspended")
+    wait_until_true(lambda: media._power.state == "suspended")
     assert player.start_calls == 1
     assert player.stop_calls == 2
     assert player.max_owners == 1
     assert not player.physical_open
-    assert media._power_suspended
+    assert media._power.suspended
     assert not media._accepting.is_set()
     assert media.close(wait_timeout_s=0.5)
 
@@ -3647,16 +3647,16 @@ def test_media_sleep_timeout_late_terminalization_continues_exact_stop_and_wake(
         attempt_id = timed_out.attempt_id
         assert player.stop.call_count == 0
         release_terminalization.set()
-        wait_until_true(lambda: media._power_state == "suspended")
-        assert media._power_attempt_id == attempt_id
+        wait_until_true(lambda: media._power.state == "suspended")
+        assert media._power.attempt_id == attempt_id
         assert player.stop.call_count == 1
-        assert media._power_helper is not None
-        media._power_helper.join(timeout=HANG_S)
-        assert not media._power_helper.is_alive()
+        assert media._power.helper is not None
+        media._power.helper.join(timeout=HANG_S)
+        assert not media._power.helper.is_alive()
         woke = media.resume_after_wake(timeout_s=0.5)
         assert woke.status == "resumed"
         assert player.start.call_count == 1
-        assert media._power_attempt_id == attempt_id + 1
+        assert media._power.attempt_id == attempt_id + 1
     assert media.close(wait_timeout_s=1.0)
 
 
@@ -3723,7 +3723,7 @@ def test_media_shutdown_revokes_blocked_wake_start_and_late_closes_exact_owner(
     assert player.start_calls == 1
     assert player.stop_calls == 2  # initial suspend + late-start compensation
     assert player.max_owners == 1
-    assert media._power_state == "suspended"
+    assert media._power.state == "suspended"
     assert media.close(wait_timeout_s=HANG_S)
 
 
@@ -3814,7 +3814,7 @@ def test_composition_shutdown_revokes_blocked_wake_start_before_input_close(
         )
         shutdown.start()
         assert input_close_entered.wait(timeout=HANG_S)
-        assert not media._shutdown_requested.is_set()
+        assert not media._power.is_shutdown_requested()
         player.start_release.set()
         wait_until_true(lambda: player.stop_calls >= 2 and not player.physical_open)
         assert input_close_entered.is_set()
@@ -3954,12 +3954,12 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
         start_player=False,
     )
     assert media.suspend_for_sleep(timeout_s=0.2).status == "suspended"
-    opened = media._transition_player_for_power(
+    opened = media._power._transition_player_for_power(
         action="start",
         deadline=time.monotonic() + 0.2,
     )
     assert opened.status == "resumed"
-    assert media._power_state == "open_unadmitted"
+    assert media._power.state == "open_unadmitted"
     assert player.physical_open
     media.revoke_wake_starts_for_shutdown()
     assert player.compensation_seen.wait(timeout=HANG_S)
@@ -3971,10 +3971,10 @@ def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
     player.debt_release.set()
     wait_until_true(lambda: not player.physical_open)
     wait_until_true(lambda: media.cleanup_complete)
-    assert media._power_state == "suspended"
-    assert media._power_helper is not None
-    media._power_helper.join(timeout=HANG_S)
-    assert not media._power_helper.is_alive()
+    assert media._power.state == "suspended"
+    assert media._power.helper is not None
+    media._power.helper.join(timeout=HANG_S)
+    assert not media._power.helper.is_alive()
 
 
 def test_wave3_prewarm_is_flag_gated_and_failure_leaves_no_input_owner() -> None:
