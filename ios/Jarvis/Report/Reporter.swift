@@ -163,6 +163,8 @@ final class Reporter {
     /// iOS launched the app in the background for a location event (`launchOptions[.location]`).
     @ObservationIgnored var launchedForLocation = false
     @ObservationIgnored let queue: ReportQueue
+    /// This device reports what it senses (a phone); an iPad starts no collector and takes no automation's change (ADR 0338). Tests give either, on any device.
+    @ObservationIgnored let sensing: Bool
     @ObservationIgnored private var collectors: [ReportSense: [Collector]] = [:]
     @ObservationIgnored private var launched = false
     @ObservationIgnored private var waking = false
@@ -171,8 +173,9 @@ final class Reporter {
     @ObservationIgnored private var path: NWPathMonitor?
     @ObservationIgnored private let log = Logger(subsystem: "com.allen.jarvis", category: "report")
 
-    init(queue: ReportQueue) {
+    init(queue: ReportQueue, sensing: Bool = DeviceRole.senses) {
         self.queue = queue
+        self.sensing = sensing
         status.lastSentAt = ReportMemory.date("lastSentAt")
     }
 
@@ -240,7 +243,7 @@ final class Reporter {
     }
 
     private func startCollectors(_ s: ReportSense) {
-        guard DeviceRole.senses else { return }          // an iPad senses nothing (ADR 0338)
+        guard sensing else { return }          // an iPad senses nothing (ADR 0338)
         let cs: [Collector] = switch s {
         case .location: [LocationCollector()]
         case .motion: [MotionCollector(), HealthCollector(.totals)]
@@ -332,7 +335,7 @@ final class Reporter {
     /// A state change a Shortcuts automation reported through the app intent. Focus and power also keep the
     /// baseline the wake-time sampling compares with, so the same change is not sent twice.
     func tell(_ change: StateChange) async {
-        guard DeviceRole.senses, ReportMemory.isOn(.focusAlarm) else { return }          // an iPad's automations say nothing of him (ADR 0338)
+        guard sensing, ReportMemory.isOn(.focusAlarm) else { return }          // an iPad's automations say nothing of him (ADR 0338)
         switch change {
         case .focus: _ = ReportMemory.stateChanged("state.focus", to: change.value, quiet: "")
         case .power: _ = ReportMemory.stateChanged("state.power", to: change.value, quiet: "")
