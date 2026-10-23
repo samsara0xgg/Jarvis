@@ -73,16 +73,20 @@ struct PadHome: View {
     @State private var leftAt: Date?
     @State private var talkUntil = Date.distantPast    // her last round stays in her band until he does something else, ten minutes at most (as on the phone)
     @State private var listRoom = 600.0             // how tall the list is: a row opened from the bar in one column is carried up within it
+    @State private var winW = 0.0                   // how wide the window is
     @Environment(\.scenePhase) private var phase
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     private var ui: StarUI { engine.ui }
-    private var one: Bool { sizeClass == .compact }          // a narrow window: one column, no stage
+    private var one: Bool { sizeClass == .compact || (winW > 0 && winW < Self.twoColumns) }          // a narrow window: one column, no stage
     private var tl: TimelineState { engine.ui.tl }
 
     /// the left column is the phone's list at the phone's width
     static let listW = 440.0
+    /// the narrowest window with the list and a stage beside it: a regular width narrower than this (a half Split View, a small window in Stage Manager) is one column too.
+    /// The stage keeps its sides and a place's map as wide as the phone's (296 pt).
+    static let twoColumns = listW + 360
 
     var body: some View {
         GeometryReader { geo in
@@ -119,6 +123,7 @@ struct PadHome: View {
                 .onChange(of: built != nil, initial: true) { _, has in reveal(has) }
                 .onChange(of: tl.enter) { _, _ in reveal(built != nil) }
             }
+            .onChange(of: geo.size.width, initial: true) { _, w in winW = w }
             .ignoresSafeArea(.container, edges: .top)
         }
         .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255).ignoresSafeArea())
@@ -225,7 +230,7 @@ struct PadHome: View {
         case "history": engine.openPanel()
         case "footprint": ui.footprintOpen = true
         case "type": ui.text = Words.Pad.field; engine.beginEditing?()
-        case "bar":             // a tap on the bar in the middle of the first stretch of the afternoon: its row goes on the stage
+        case "bar":             // a tap on the bar in the middle of the first stretch of the afternoon: its row goes on the stage, or with nothing more to show its block is framed
             if let m = builtDay()?.model, let e = m.entries.first(where: { $0.kind == .segment && $0.t0 >= 15 * 60 }) { let t = (e.t0 + (e.t1 ?? e.t0)) / 2; if one { tl.tapBar(t, in: m, room: listRoom) } else { tl.padTapBar(t, in: m) } }
         case "row":             // a tap on the row before the last stretch's: its icon flies to the stage's title
             if let e = builtDay()?.model.entries.filter({ $0.kind == .segment }).dropLast().last { withAnimation(padMotion) { tl.openRow = e.id } }
@@ -255,13 +260,24 @@ struct PadHome: View {
 }
 
 extension TimelineState {
-    /// A tap on the iPad's bar at `minute`: past now goes back to now; on a block, its row goes on the stage as a tap on the row puts it there, and the list goes to the row.
+    /// A tap on a row of the iPad's list beside the stage: a row with more to show goes on the stage; one with nothing more frames its time on the bar for a moment, and
+    /// the stage stays as it is (as on the phone, ADR 0376).
+    func padTapRow(_ e: TLEntry) {
+        if e.expands { openRow = e.id } else { flashRow(e) }
+    }
+
+    /// A tap on the iPad's bar at `minute`: past now goes back to now; on a block of the row on the stage, the stage's line at that minute lights; on any other block the list goes
+    /// to its row, and the row goes on the stage as a tap on it puts it there (one with nothing more frames its block for a moment).
     func padTapBar(_ minute: Double, in m: DayTimelineModel) {
         let t = m.onBar(minute)
         if let n = m.now, t >= n { Haptic.impact(.rigid); goToday(); return }
         guard let s = m.seg(at: t), let e = m.entries.first(where: { $0.id == s.id }) else { return }
         Haptic.selection()
-        withAnimation(padMotion) { openRow = e.id }
+        if e.id == openRow {
+            if let l = e.lines.first(where: { $0.span.map { $0.lowerBound <= t && t <= $0.upperBound + 0.5 } ?? false }) { lightLine(l) }
+            return
+        }
+        if e.expands { withAnimation(padMotion) { openRow = e.id } } else { flashRow(e) }
         if let y = m.top(of: e.id) { scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: true) }
     }
 }
@@ -413,11 +429,11 @@ private struct PadBand: View {
             .frame(height: 22 + 18, alignment: .top)
     }
 
-    /// the stretch under his finger, else the span of the row open on the stage
+    /// the stretch under his finger, else what the stage shows: the row open on it, or the stretch now is in (in one column only a row opened where it stands)
     private func bracket(_ m: DayTimelineModel) -> ClosedRange<Double>? {
         if let t = tl.scrub { return m.seg(at: t).map { $0.t0...$0.t1 } }
-        guard let id = tl.openRow, let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
-        return e.t0...max(e.t0, e.t1 ?? e.t0)
+        guard let id = tl.openRow ?? (one ? nil : m.nowRow()?.id), let e = m.entries.first(where: { $0.id == id }), e.kind != .now else { return nil }
+        return e.t0...max(e.t0, e.t1 ?? m.now ?? e.t0)
     }
 
     private func scrubbed(_ t: Double, _ m: DayTimelineModel) {

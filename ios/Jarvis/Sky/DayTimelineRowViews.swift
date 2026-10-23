@@ -80,7 +80,7 @@ struct TLRowView: View, Equatable {
                 .overlay(alignment: .bottomLeading) {          // an outing's speed along it (the footprint page)
                     if !e.ribbon.isEmpty { TLRibbon(cells: e.ribbon).frame(width: TLColumns.words, height: TLRibbon.height).padding(.leading, TLColumns.text).padding(.bottom, 6) }
                 }
-                .background { TLRowHeat(id: e.id, tl: tl) }
+                .background { TLRowHeat(id: e.id, tl: tl, stage: flight != nil) }
                 .contentShape(Rectangle())
                 .modifier(TLRowTap(on: touchable, tap: tap))
                 .accessibilityElement(children: .combine)
@@ -323,15 +323,17 @@ private struct TLPreview: View {
     }
 }
 
-/// What lights a row: the finger on the bar over it (`hot`), and the way to what waits having just arrived at it (`flash`). It reads them itself, so that the minute moving across the bar
-/// draws these small views and not the list and its rows.
+/// What lights a row: the finger on the bar over it (`hot`), the way to what waits having just arrived at it (`flash`), and on the iPad its being the row on the stage. It reads them
+/// itself, so that the minute moving across the bar draws these small views and not the list and its rows.
 private struct TLRowHeat: View {
     let id: String
     let tl: TimelineState
+    var stage = false                   // the list beside the iPad's stage
 
     var body: some View {
-        let hot = tl.hot == id, flashing = tl.flash == id
+        let hot = tl.hot == id, flashing = tl.flash == id, staged = stage && tl.openRow == id
         ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(staged ? 0.05 : 0)).animation(padMotion, value: staged)
             RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(hot ? 0.07 : 0)).animation(.easeOut(duration: 0.1), value: hot)
             RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(flashing ? 0.12 : 0)).animation(flashing ? nil : .easeOut(duration: 0.6), value: flashing)
         }

@@ -685,13 +685,13 @@ struct TLList: View {
     }
 
     /// A tap on a row, with a light tick of the phone and her eyes going to it once: on the phone it opens where it stands or frames its block on the bar (`TimelineState.tapRow`), on the iPad
-    /// it opens on the stage.
+    /// it opens on the stage or frames its block (`TimelineState.padTapRow`).
     private func tap(_ e: TLEntry) {
         guard inPlace ? e.touchable : e.opens else { return }
         Haptic.selection()
         engine.releaseTalk()
         if let top = inPlace ? tl.top(of: e.id, in: model) : model.top(of: e.id) { engine.glance(at: TLGaze.row(top: top + e.gap, height: e.base, scrolled: at.y)) }
-        if inPlace { tl.tapRow(e, in: model, room: room) } else { tl.openRow = e.id }
+        if inPlace { tl.tapRow(e, in: model, room: room) } else { tl.padTapRow(e) }
     }
 }
 
