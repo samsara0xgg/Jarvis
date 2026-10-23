@@ -221,6 +221,8 @@ _KEPT_HEADERS = frozenset({"location"})
 """Response headers a recording keeps besides the content type: what a redirect needs."""
 _SCRUBBED = "<scrubbed>"
 _MIN_SECRET = 6
+_RECORDED_ADDRESS = "93.184.216.34"
+"""A globally routable address, which the egress guard allows; nothing is ever sent to it."""
 
 
 class RecordingMiss(OSError):  # noqa: N818 - reads as the fact it states
@@ -351,6 +353,10 @@ class Recording:
             None,
         )
 
+    def hosts(self) -> set[str]:
+        """The host names of the recorded HTTP exchanges."""
+        return {h for e in self.data["http"] if (h := urllib.parse.urlsplit(e["url"]).hostname)}
+
     def mcp(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
         """The recorded MCP tool call, or None."""
         want = json.dumps(args, sort_keys=True)
@@ -479,10 +485,12 @@ class _Transport:
             self._stack.enter_context(patch.object(McpServers, "_open", opened))
             self._stack.enter_context(patch.object(McpServers, "_list", listing))
             self._stack.enter_context(patch.object(McpServers, "has_login", logged_in))
-            for owner, name in ((socket.socket, "connect"), (socket, "getaddrinfo")):
-                self._stack.enter_context(
-                    patch.object(owner, name, self._gate(getattr(owner, name)))
-                )
+            self._stack.enter_context(
+                patch.object(socket.socket, "connect", self._gate(socket.socket.connect))
+            )
+            self._stack.enter_context(
+                patch.object(socket, "getaddrinfo", self._resolver(socket.getaddrinfo))
+            )
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -522,6 +530,24 @@ class _Transport:
             return _refuse()
 
         return gated
+
+    def _resolver(self, real: Callable[..., Any]) -> Callable[..., Any]:
+        """Name lookup while replaying: a host the recording holds answers with a public address.
+
+        The egress guard resolves a page's host before it asks (ADR 0360); the request itself is
+        answered from the recording and never leaves, so the address only has to be one the guard
+        allows. Any other name is refused, as every other socket call is; the model's request on
+        its own thread resolves for real.
+        """
+
+        def resolve(host: Any, *args: Any, **kw: Any) -> Any:  # noqa: ANN401 - as socket's own
+            if getattr(self._open, "model", False):
+                return real(host, *args, **kw)
+            if host in self.recording.hosts():
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_RECORDED_ADDRESS, 0))]
+            return _refuse()
+
+        return resolve
 
     @contextmanager
     def model_call(self) -> Iterator[None]:

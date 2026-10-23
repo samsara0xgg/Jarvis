@@ -8,7 +8,9 @@ tool.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 
@@ -76,6 +78,19 @@ def test_a_recorded_page_gives_its_status_content_type_and_redirect() -> None:
     assert (gone.status_code, gone.text, gone.headers["content-type"]) == (
         404, "<p>nothing</p>", "text/html",
     )
+
+
+def test_a_replayed_name_lookup_answers_for_a_recorded_host_and_refuses_any_other() -> None:
+    """The egress guard looks a page's host up first; only the recording's hosts get an address."""
+    recording = _recording(
+        {"method": "GET", "url": "https://site.example/page", "body": "<p>hi</p>"},
+    )
+    with exam._Transport(recording, live=False):  # noqa: SLF001
+        found = socket.getaddrinfo("site.example", 443)
+        assert found[0][0] == socket.AF_INET
+        assert ipaddress.ip_address(str(found[0][4][0])).is_global
+        with pytest.raises(OSError, match="network"):
+            socket.getaddrinfo("elsewhere.example", 443)
 
 
 class _Provider(BaseHTTPRequestHandler):
