@@ -37,6 +37,7 @@ from scripts.tool_exam_tools import (
     _events_since,
     _Transport,
     dispatch,
+    gmail_failures,
     sandbox,
     state_failures,
 )
@@ -136,6 +137,7 @@ def _judge(
         if "not_matches" in check and hit(check["not_matches"]):
             failures.append(f"{where.strip()}: something matches /{check['not_matches']}/")
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
+    failures += gmail_failures(box, expect.get("gmail", ()))
     return failures + state_failures(box, expect.get("state_after", ()))
 
 
