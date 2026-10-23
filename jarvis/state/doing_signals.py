@@ -5,10 +5,12 @@ sense him, and the Mac still says whether he was at it. :func:`gather` turns wha
 stored into one line of observed signals for each segment, in this order, a part left out when
 the source has nothing for the segment:
 
-- Mac attention: the stretches TimeSink marked the Mac idle, locked or asleep, as
-  ``Mac idle 12:41-13:13``. A stretch not closed by the mark that ends it is closed where
-  TimeSink itself stopped or restarted, else it runs to the segment's end; where two kinds overlap
-  the one that implies the others (asleep, then locked, then idle) names the time.
+- Mac attention: the stretches TimeSink marked the Mac idle, locked, asleep or hands-off (present
+  at a call or video, with no input), as ``Mac idle 12:41-13:13``. A stretch not closed by the
+  mark that ends it is closed where TimeSink itself stopped or restarted, else it runs to the
+  segment's end; a hands-off stretch also ends where an idle, lock or sleep one begins. Where
+  kinds overlap the one that implies the others (asleep, then locked, then idle, then hands-off)
+  names the time (ADR 0380).
 - messages he sent: the messages his phone or tablet logged him sending in each app, from the
   day line's ``messages`` bursts that overlap the segment (ADR 0305), as ``sent 5 messages
   (WeChat)``. A burst that runs over two segments counts in both. What he received is left out:
@@ -90,9 +92,9 @@ _TYPED_MIN_SECONDS: Final = 5
 _MAC_LOOKBACK_MS: Final = 24 * 60 * _MINUTE_MS
 """How far before the first segment the Mac's state marks are read, to find a stretch that began
 earlier and is still going."""
-_AWAY: Final = {"idle": "idle", "lock": "locked", "sleep": "asleep"}
-_RESUMES: Final = {"idle": "active", "lock": "unlock", "sleep": "wake"}
-_AWAY_ORDER: Final = ("sleep", "lock", "idle")
+_AWAY: Final = {"idle": "idle", "lock": "locked", "sleep": "asleep", "hands_off": "hands-off"}
+_RESUMES: Final = {"idle": "active", "lock": "unlock", "sleep": "wake", "hands_off": "hands_on"}
+_AWAY_ORDER: Final = ("sleep", "lock", "idle", "hands_off")
 """Which kind names a time two kinds cover: a sleeping Mac is also locked, and so on."""
 _TRACKING: Final = frozenset({"start", "stop", "tracking_pause", "tracking_resume"})
 """TimeSink's own marks: what it said about the Mac before them may no longer hold."""
@@ -119,7 +121,7 @@ def _overlap(start: int, end: int, other_start: int, other_end: int | None) -> i
 
 
 def _stretches(marks: Sequence[tuple[int, str]]) -> list[_Stretch]:
-    """The stretches the Mac was away, from its state marks oldest first."""
+    """The stretches the Mac was away or hands-off, from its state marks oldest first."""
     began: dict[str, int] = {}
     found: list[_Stretch] = []
     for at, kind in marks:
@@ -127,6 +129,8 @@ def _stretches(marks: Sequence[tuple[int, str]]) -> list[_Stretch]:
             found += [(since, at, away) for away, since in began.items()]
             began.clear()
         elif kind in _AWAY:
+            if kind != "hands_off" and "hands_off" in began:
+                found.append((began.pop("hands_off"), at, "hands_off"))  # away ends hands-off
             began.setdefault(kind, at)
         else:
             for away, resumes in _RESUMES.items():

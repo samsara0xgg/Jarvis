@@ -123,6 +123,27 @@ def test_idle_locked_and_asleep_come_from_timesinks_own_marks(
         assert rules.hold_reason(facts) == expected
 
 
+@pytest.mark.parametrize(
+    ("marks", "expected"),
+    [
+        ([(300, "hands_off")], None),  # present, no input: not away, and no reason for the gap
+        ([(300, "hands_off"), (100, "hands_on")], None),
+        ([(400, "lock"), (300, "hands_off")], "locked"),  # only the real away mark decides
+        ([(400, "hands_off"), (300, "lock"), (200, "hands_on")], "locked"),
+    ],
+)
+def test_hands_off_and_hands_on_are_not_marks_of_being_away(
+    store: FakeTimeSink, tmp_path: Path, marks: list[tuple[float, str]], expected: str | None
+) -> None:
+    """ADR 0380: TimeSink's hands-off marks never make him idle, locked or asleep."""
+    store.span(900, 500, CHROME, "Google Chrome", domain="a.example")
+    for ago, kind in marks:
+        store.event(ago, kind)
+    facts = _facts(store, tmp_path)
+    assert facts["presence"] == (expected or "unknown")
+    assert rules.hold_reason(facts) == expected
+
+
 def test_a_span_after_the_mark_means_he_is_active_again(
     store: FakeTimeSink, tmp_path: Path
 ) -> None:

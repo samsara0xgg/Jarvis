@@ -1011,6 +1011,48 @@ def test_a_mac_stretch_is_closed_by_its_mark_or_by_timesinks_own_stop_else_runs_
         assert found.signals.get(doing_ms(doing_at(12))) == expected
 
 
+def test_a_hands_off_stretch_is_told_beside_the_away_ones_and_never_counted_twice(
+    world: World,
+    tmp_path: Path,
+) -> None:
+    """ADR 0380: the ways a hands-off stretch ends, and what names the time it shares."""
+    cases = {
+        "closed by hands_on": (
+            [(doing_at(12, 10), "hands_off"), (doing_at(12, 40), "hands_on")],
+            "Mac hands-off 12:10-12:40",
+        ),
+        "open": ([(doing_at(11, 40), "hands_off")], "Mac hands-off 12:00-13:00"),
+        "an idle ends it": (
+            [
+                (doing_at(12, 10), "hands_off"),
+                (doing_at(12, 30), "idle"),
+                (doing_at(12, 45), "active"),
+            ],
+            "Mac hands-off 12:10-12:30, idle 12:30-12:45",
+        ),
+        "stopped": (
+            [(doing_at(12, 10), "hands_off"), (doing_at(12, 20), "tracking_pause")],
+            "Mac hands-off 12:10-12:20",
+        ),
+        "asleep first": (
+            [
+                (doing_at(12, 0), "sleep"),
+                (doing_at(12, 10), "hands_off"),
+                (doing_at(12, 30), "wake"),
+                (doing_at(12, 40), "hands_on"),
+            ],
+            "Mac asleep 12:00-12:30, hands-off 12:30-12:40",
+        ),
+        "a blip": ([(doing_at(12, 10), "hands_off"), (doing_at(12, 10), "hands_on")], None),
+        "a hands_on alone": ([(doing_at(12, 10), "hands_on")], None),
+    }
+    for number, (marks, expected) in enumerate(cases.values()):
+        sources = _marks(tmp_path / f"hands-{number}", marks)
+        found = read_brief(DAY, sources, world.log, NOW)
+        assert found is not None
+        assert found.signals.get(doing_ms(doing_at(12))) == expected
+
+
 def test_the_signals_stay_within_the_cap_by_dropping_the_last_parts(
     world: World,
     tmp_path: Path,
