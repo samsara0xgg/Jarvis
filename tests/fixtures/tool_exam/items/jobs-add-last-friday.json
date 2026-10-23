@@ -1,0 +1,27 @@
+{
+  "id": "jobs-add-last-friday",
+  "tool": "jobs",
+  "said": "我上周五投了 Cedar 的 QA co-op",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "add",
+    "company": "Cedar Ltd",
+    "role": "QA co-op",
+    "when": "上周五"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "^Added Cedar Ltd \\(QA co-op\\), applied Fri Oct 16\\."
+    ],
+    "state_after": [
+      {
+        "db": "memory",
+        "sql": "SELECT applied_at FROM job_application WHERE company = 'Cedar Ltd'",
+        "answer": "2026-10-16"
+      }
+    ]
+  }
+}

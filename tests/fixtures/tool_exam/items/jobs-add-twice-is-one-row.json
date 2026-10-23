@@ -1,0 +1,47 @@
+{
+  "id": "jobs-add-twice-is-one-row",
+  "tool": "jobs",
+  "said": "I applied to Acme, the data analyst co-op",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [
+    {
+      "tool": "jobs",
+      "args": {
+        "action": "add",
+        "company": "Acme",
+        "role": "data analyst co-op"
+      }
+    }
+  ],
+  "args": {
+    "action": "add",
+    "company": "Acme",
+    "role": "data analyst co-op"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "^Acme \\(data analyst co-op\\) is already on his list, row 1: applied, applied today.* Nothing added\\."
+    ],
+    "result": [
+      {
+        "path": "existing.company",
+        "op": "eq",
+        "value": "Acme"
+      },
+      {
+        "path": "added",
+        "op": "absent"
+      }
+    ],
+    "state_after": [
+      {
+        "db": "memory",
+        "sql": "SELECT COUNT(*) FROM job_application WHERE company = 'Acme'",
+        "answer": 1
+      }
+    ]
+  }
+}

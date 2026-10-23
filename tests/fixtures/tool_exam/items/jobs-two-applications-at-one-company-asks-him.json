@@ -1,0 +1,53 @@
+{
+  "id": "jobs-two-applications-at-one-company-asks-him",
+  "tool": "jobs",
+  "said": "Acme turned me down",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [
+    {
+      "tool": "jobs",
+      "args": {
+        "action": "add",
+        "company": "Acme",
+        "role": "data analyst co-op"
+      }
+    },
+    {
+      "tool": "jobs",
+      "args": {
+        "action": "add",
+        "company": "Acme",
+        "role": "QA co-op"
+      }
+    }
+  ],
+  "args": {
+    "action": "update",
+    "application": "Acme",
+    "status": "rejected"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "error_kind": "needs_him",
+    "summary_must": [
+      "data analyst co-op",
+      "QA co-op"
+    ],
+    "state_after": [
+      {
+        "db": "memory",
+        "sql": "SELECT status FROM job_application WHERE company = 'Acme' ORDER BY role",
+        "answer": [
+          [
+            "applied"
+          ],
+          [
+            "applied"
+          ]
+        ]
+      }
+    ]
+  }
+}

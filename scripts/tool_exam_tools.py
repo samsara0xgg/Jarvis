@@ -20,6 +20,15 @@ An item (JSON, one per file) holds his words and the moment, place and data they
   ``mac_events.db`` / ``memory.db`` (copied before the boot) and/or ``mac_events.sql`` /
   ``memory.sql`` (run after it). Rows made at or after ``at`` are deleted from the copied
   databases first (:func:`cut_at`); the run prints the tables that cut could not handle.
+- ``job_mail``: optional, the job hunt he has at ``at`` (the recording's ``settings`` must turn
+  ``job_mail`` on, and the sandbox has no Gmail): ``{mails: [...], applications: [...],
+  read_at?, failing_since?}``. A mail is a ``job_mail`` row (``message_id``, ``received_at``,
+  ``kind``, ``company``, ``role``, ``sender_name``, ``sender_domain``, ``subject``, and for an
+  interview ``event_at``, ``event_later_at``, ``event_text``); an application is one he told her
+  or added (``company``, ``role``, ``applied_at``, ``status``, ``source``, ``hidden``). They are
+  written through the ledger's own functions. ``read_at`` is when job mail was last read and
+  ``failing_since`` when reading began to fail (absent: not read since the sandbox started). A
+  ``job_mail.json`` of this shape in the item's ``state`` directory is read first.
 - ``ride``: optional, a followed bus ride he is on at ``at``:
   ``{route, trip_id, stops: [{seq, stop_id, name, lat, lng}]}``; the follower's timetable for the
   trip is those stops.
@@ -41,6 +50,8 @@ An item (JSON, one per file) holds his words and the moment, place and data they
     ``{"status": "needs_choice"}``.
   - ``error_kind``: the kind the call must fail with (``needs_him``, ``impossible``,
     ``retry_other_args`` or ``dont_retry``); without it an error fails the item.
+  - ``block_d_submitted``: true when the result's "At least N submitted" must be the N block D
+    states in its own submitted line, rendered over the sandbox's data at ``at``.
   - ``checker``: name of a reference checker in ``scripts/tool_exam_checkers.py`` that derives the
     facts from the recording.
 
@@ -93,7 +104,9 @@ from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.shared import ActionRequest, CallerPrincipal
 from jarvis.shared.receipts import call_risk
+from jarvis.state import job_ledger
 from jarvis.state.event_log import emit_event
+from jarvis.state.ledger import LedgerSources, job_hunt_text
 from jarvis.state.ride_progress import StopTime
 from jarvis.state.rides import Ride
 from jarvis.state.rides import write_start as write_ride_start
@@ -811,6 +824,7 @@ def sandbox(
             for script in sql:
                 runtime.conn.executescript(script.read_text(encoding="utf-8"))
             _place_him(runtime, item.raw.get("here"), moment)
+            _seat_job_mail(runtime, _job_mail_spec(item), moment)
             yield Box(runtime, root, item, clock, uncut)
     finally:
         if runtime is not None:
@@ -854,6 +868,52 @@ def _place_him(runtime: JarvisRuntime, here: Mapping[str, Any] | None, moment: d
         payload=payload,
         ts_epoch_ms=int(moment.timestamp() * 1000) - int(here.get("age_s", 0)) * 1000,
     )
+
+
+JOB_FIXTURE = "job_mail.json"
+"""The file of a state directory that holds a job hunt, in the shape of an item's ``job_mail``."""
+
+
+def _job_mail_spec(item: Item) -> dict[str, Any]:
+    """The job hunt an item seats: its state directory's ``job_mail.json``, then its own."""
+    spec: dict[str, Any] = {"mails": [], "applications": []}
+    state = _state_dir(item)
+    parts = [item.raw.get("job_mail") or {}]
+    if state is not None and (state / JOB_FIXTURE).is_file():
+        parts.insert(0, json.loads((state / JOB_FIXTURE).read_text(encoding="utf-8")))
+    for part in parts:
+        spec["mails"] += part.get("mails", [])
+        spec["applications"] += part.get("applications", [])
+        spec.update({k: part[k] for k in ("read_at", "failing_since") if k in part})
+    return spec
+
+
+def _seat_job_mail(runtime: JarvisRuntime, spec: Mapping[str, Any], moment: datetime) -> None:
+    """Write the job hunt through the ledger's own functions, and set when mail was last read."""
+    asked = bool(spec["mails"] or spec["applications"] or "read_at" in spec)
+    job = runtime.job_mail
+    if job is None:
+        if asked:
+            msg = "the item seats job mail, and the recording's settings leave job_mail off"
+            raise LookupError(msg)
+        return
+    path = runtime.memory.db_path  # type: ignore[union-attr]
+    for mail in spec["mails"]:
+        job_ledger.upsert_mail(
+            path,
+            {"sender_name": "Recruiting", "confidence": 0.9, "extracted_by": "exam", **mail},
+            moment,
+        )
+    for application in spec["applications"]:
+        fields = {k: v for k, v in application.items() if k != "hidden"}
+        fields.setdefault("source", "said")
+        app_id = job_ledger.add_application(path, moment, **fields)
+        if application.get("hidden"):
+            job_ledger.edit_application(path, moment, app_id, {"hidden": True})
+    # What a poll leaves behind, set directly: the sandbox has no Gmail to poll.
+    for name in ("read_at", "failing_since"):
+        if spec.get(name):
+            setattr(job, f"_{name}", datetime.fromisoformat(spec[name]))
 
 
 def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
@@ -1048,6 +1108,25 @@ def _events_since(box: Box, after: int) -> list[tuple[str, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
+def _block_d_failures(box: Box, expect: Mapping[str, Any], out: Mapping[str, Any]) -> list[str]:
+    """Whether the result's submitted count is the one block D states over the same data."""
+    if not expect.get("block_d_submitted"):
+        return []
+    zone = ZoneInfo(str(box.item.raw.get("zone") or "UTC"))
+    sources = LedgerSources(
+        box.runtime.memory.db_path,  # type: ignore[union-attr]
+        box.runtime.runtime_paths.event_log, None, zone,
+    )
+    block = job_hunt_text(sources, datetime.fromisoformat(box.item.raw["at"]).astimezone(zone))
+    stated = re.search(r"Applications submitted: at least (\d+)", block)
+    said = re.search(r"At least (\d+) submitted", str(out.get("summary", "")))
+    if stated is None or said is None:
+        return [f"block D states {stated and stated[0]!r}, the summary {said and said[0]!r}"]
+    if stated[1] != said[1]:
+        return [f"block D says at least {stated[1]} submitted, the result says {said[1]}"]
+    return []
+
+
 def _receipt_failures(
     want: Mapping[str, Any] | None, events: Sequence[tuple[str, str]],
 ) -> list[str]:
@@ -1161,6 +1240,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
     failures += _receipt_failures(expect.get("receipt"), _events_since(box, after))
     failures += state_failures(box, expect.get("state_after", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
+    failures += _block_d_failures(box, expect, out)
     if name := expect.get("checker"):
         from scripts.tool_exam_checkers import CHECKERS  # noqa: PLC0415
 

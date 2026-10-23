@@ -1,0 +1,16 @@
+{
+  "id": "jobs-submitted-count-is-block-ds",
+  "tool": "jobs",
+  "said": "how many have I applied to",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": "jobs-hunt",
+  "args": {},
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "At least 7 submitted in all"
+    ],
+    "block_d_submitted": true
+  }
+}

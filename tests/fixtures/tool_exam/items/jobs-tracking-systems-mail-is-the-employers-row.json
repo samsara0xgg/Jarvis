@@ -1,0 +1,26 @@
+{
+  "id": "jobs-tracking-systems-mail-is-the-employers-row",
+  "tool": "jobs",
+  "said": "did Nova Foods get back to me",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": "jobs-hunt",
+  "args": {},
+  "recording": "jobs.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "applications[?company=Nova Foods].status",
+        "op": "eq",
+        "value": "applied"
+      },
+      {
+        "path": "applications[?company=Workable]",
+        "op": "absent"
+      }
+    ],
+    "result_must_not_mention": [
+      "Workable"
+    ]
+  }
+}
