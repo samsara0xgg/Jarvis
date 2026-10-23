@@ -54,7 +54,9 @@ class SourceSilenceWatch:
             return []
         ref_ms = int(now.timestamp() * 1000)
         try:
-            with closing(open_read_only(self._shipped, probe=source_silence.SHIPPED_PROBE)) as conn:
+            with closing(open_read_only(
+                self._shipped, probe=source_silence.SHIPPED_PROBE, rollback_journal=True,
+            )) as conn:
                 judged = source_silence.check(
                     conn, self._lifelog, since_ms=ref_ms - WINDOW_MS, ref_ms=ref_ms,
                 )
@@ -68,21 +70,35 @@ class SourceSilenceWatch:
             silence = ongoing.get(source.name)
             if silence is None:
                 ledger.close_alerts(self._db, key)
-            elif not ledger.has_open_alert(self._db, key):
-                self._raise(key, silence, judged.since_ms, now)
+            elif not ledger.has_alert_since(self._db, key, self._outage_start(silence, judged)):
+                self._raise(key, silence, now)
                 raised.append(source.name)
         return raised
 
-    def _raise(
-        self, key: str, silence: source_silence.Silence, window_start_ms: int, now: datetime,
-    ) -> None:
-        since_ms = silence.last_arrival_ms or window_start_ms
-        since = datetime.fromtimestamp(since_ms / 1000, tz=UTC).astimezone(self._zone)
+    @staticmethod
+    def _outage_start(
+        silence: source_silence.Silence, judged: source_silence.Judgement,
+    ) -> datetime:
+        """Where this outage began: its last arrival, else the start of the window read.
+
+        A card made at or after it is this outage's, answered or not.
+        """
+        started = judged.since_ms if silence.last_arrival_ms is None else silence.last_arrival_ms
+        return datetime.fromtimestamp(started / 1000, tz=UTC)
+
+    def _raise(self, key: str, silence: source_silence.Silence, now: datetime) -> None:
         stamp = now.astimezone(UTC)
+        if silence.last_arrival_ms is None:  # older than the window read: do not name a time
+            line = lang.t("source.silence.line_long")
+        else:
+            since = datetime.fromtimestamp(silence.last_arrival_ms / 1000, tz=UTC)
+            line = lang.t(
+                "source.silence.line", since=since.astimezone(self._zone).strftime("%m-%d %H:%M"),
+            )
         ledger.create_alert(
             self._db, key, "card",
             lang.t("source.silence.title", source=lang.t(f"source.silence.{silence.source}")),
-            lang.t("source.silence.line", since=since.strftime("%m-%d %H:%M")), stamp,
+            line, stamp,
         )
         local = now.astimezone(self._zone)
         pack = attention.ContextPack(

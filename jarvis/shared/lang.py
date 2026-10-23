@@ -1286,6 +1286,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "从 {since} 起没有新数据。",
         "en": "No new data since {since}.",
     },
+    "source.silence.line_long": {
+        "zh": "两天以上没有新数据。",
+        "en": "No new data for more than 2 days.",
+    },
     "source.silence.timesink.spans": {"zh": "TimeSink 的活动记录", "en": "TimeSink activity"},
     "source.silence.timesink.ocr": {"zh": "TimeSink 的屏幕文字", "en": "TimeSink screen text"},
     "source.silence.mac.mic": {"zh": "Mac 的录音", "en": "The Mac's recording"},

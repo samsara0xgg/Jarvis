@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from jarvis.runtime.daemon.routes import alert_deps, notice_deps
-from jarvis.runtime.source_silence import ALERT_PREFIX, SourceSilenceWatch
+from jarvis.runtime.source_silence import SourceSilenceWatch
 from jarvis.shared import lang
 from jarvis.state import job_ledger, source_silence
 from jarvis.surface.inherent_output import InherentBroadcaster
@@ -89,7 +89,6 @@ def test_a_card_is_cleared_when_the_source_arrives_again(tmp_path: Path) -> None
     world.ship()
     assert watch.check(NOW_DT) == []
     assert _cards(tmp_path) == []
-    assert not job_ledger.has_open_alert(tmp_path / "memory.db", f"{ALERT_PREFIX}{OCR}")
 
 
 def test_a_second_break_after_a_recovery_makes_a_second_card(tmp_path: Path) -> None:
@@ -101,8 +100,10 @@ def test_a_second_break_after_a_recovery_makes_a_second_card(tmp_path: Path) -> 
     world.ocr(NOW - 20 * MIN)
     world.ship()
     assert watch.check(NOW_DT) == []
+    world.live(NOW, NOW + 5 * HOUR, failing=[(NOW, NOW + 5 * HOUR)])  # and it fails again
+    world.ship()
     later = datetime.fromtimestamp((NOW + 5 * HOUR) / 1000, tz=UTC)
-    assert OCR in watch.check(later)  # every source is silent five hours on, none arriving
+    assert OCR in watch.check(later)
     shown = job_ledger.alerts_for_client(tmp_path / "memory.db", "off", later)
     titles = [one["title"] for one in shown]
     ocr_title = lang.t("source.silence.title", source=lang.t(f"source.silence.{OCR}"))
@@ -149,3 +150,56 @@ def test_the_card_is_served_and_settled_through_the_notice_routes(tmp_path: Path
     seen = client.post(f"/inherent/notices/{card['id']}", json={"action": "seen"})
     assert seen.status_code == 200
     assert client.get("/inherent/notices").json()["notices"] == []
+
+
+def test_a_card_he_dismissed_is_not_raised_again_in_the_same_outage(tmp_path: Path) -> None:
+    """Settled at once, the same silence 15 minutes on makes no new card; a new outage does."""
+    world = _world(tmp_path, failing=[_ago(5, 0)])
+    watch = _watch(tmp_path)
+    assert watch.check(NOW_DT) == [OCR]
+    job_ledger.mark_alert(tmp_path / "memory.db", _cards(tmp_path)[0]["id"], "done", NOW_DT)
+    later = datetime.fromtimestamp((NOW + 15 * MIN) / 1000, tz=UTC)
+    assert OCR not in watch.check(later)
+    assert job_ledger.alerts_for_client(tmp_path / "memory.db", "off", later) == []
+    world.ocr(NOW + 20 * MIN)  # it arrives again, then fails again
+    world.ocr(NOW + 30 * MIN, ok=0, failed=10)
+    for at in range(NOW + 40 * MIN, NOW + 5 * HOUR, 10 * MIN):
+        world.ocr(at, ok=0, failed=10)
+        world.span(at)
+    world.ship()
+    again = datetime.fromtimestamp((NOW + 5 * HOUR) / 1000, tz=UTC)
+    assert OCR in watch.check(again)
+
+
+def test_when_nothing_arrived_in_the_window_the_card_does_not_name_the_window_start(
+    tmp_path: Path,
+) -> None:
+    """The last arrival is older than the two days read: the card says so, not a false time."""
+    def build() -> None:
+        world = MacWorld(tmp_path)
+        world.live(window_start(), NOW, dark={"ocr": [(window_start(), NOW)]})
+        world.ocr(NOW - 5 * DAY)
+        world.ship()
+
+    build()
+    assert OCR in _watch(tmp_path).check(NOW_DT)
+    titles = {one["title"]: one["line"] for one in _cards(tmp_path)}
+    ocr_title = lang.t("source.silence.title", source=lang.t(f"source.silence.{OCR}"))
+    assert titles[ocr_title] == lang.t("source.silence.line_long")
+
+
+def test_a_sleeping_mac_raises_no_card_and_a_wake_that_ships_its_marks_leaves_none(
+    tmp_path: Path,
+) -> None:
+    """The brain has not heard from the Mac for 3 hours: nothing is owed, nothing is carded."""
+    world = MacWorld(tmp_path)
+    world.live(window_start(), NOW - 3 * HOUR)
+    world.ship()
+    watch = _watch(tmp_path)
+    assert watch.check(NOW_DT) == []
+    world.state(NOW - 3 * HOUR + MIN, "sleep")
+    world.state(NOW - 5 * MIN, "wake")
+    world.live(NOW - 5 * MIN, NOW)
+    world.ship()
+    assert watch.check(NOW_DT) == []
+    assert _cards(tmp_path) == []

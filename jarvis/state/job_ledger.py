@@ -1010,22 +1010,25 @@ def has_alert(path: Path, message_id: str) -> bool:
         ).fetchone() is not None
 
 
-def has_open_alert(path: Path, message_id: str) -> bool:
-    """Whether an alert made for ``message_id`` (a card key) is still pending or was shown."""
+def has_alert_since(path: Path, message_id: str, since: datetime) -> bool:
+    """Whether an alert for ``message_id`` (a card key) was made since ``since`` and not closed.
+
+    A card he settled still counts: one card per outage, not one per poll. A closed one (its
+    cause ended, :func:`close_alerts`) does not, so the next outage makes its own.
+    """
     with _db(path) as conn:
         return conn.execute(
-            "SELECT 1 FROM job_alert WHERE message_id = ? AND state IN ('pending', 'shown')"
-            " LIMIT 1",
-            (message_id,),
+            "SELECT 1 FROM job_alert WHERE message_id = ? AND created_at >= ?"
+            " AND state != 'closed' LIMIT 1",
+            (message_id, _stamp(since)),
         ).fetchone() is not None
 
 
 def close_alerts(path: Path, message_id: str) -> int:
-    """Mark every open alert made for ``message_id`` done (its cause is over); returns how many."""
+    """End every alert made for ``message_id``, answered or not: its cause is over."""
     with _db(path) as conn:
         return conn.execute(
-            "UPDATE job_alert SET state = 'done' WHERE message_id = ?"
-            " AND state IN ('pending', 'shown')",
+            "UPDATE job_alert SET state = 'closed' WHERE message_id = ? AND state != 'closed'",
             (message_id,),
         ).rowcount
 
