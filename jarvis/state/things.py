@@ -14,7 +14,10 @@ Nothing is deleted: a wrong item is cancelled with its reason.
 
 A ring is a string: ``-30m`` (30 minutes before the thing's time), ``-0m`` (at it), ``-1d@20:00``
 (the day before, at 20:00 local) or ``@09:00`` (that day, at 09:00 local). Rings are ADR 0179
-reminders whose ids start with :data:`RING_PREFIX`.
+reminders whose ids start with :data:`RING_PREFIX`. ``rings_from`` says whose they are (ADR 0383):
+``asked`` (he named them, or a writer chose them on purpose; every thing written before the field),
+``default`` (the ledger's rule, :func:`default_rings`) or ``leave`` (the plan's leave-by ring,
+:func:`leave_ring`, which only ever replaces default ones and moves with the thing).
 """
 
 from __future__ import annotations
@@ -54,8 +57,10 @@ RING_PREFIX: Final[str] = "reminder-th"
 KINDS: Final[tuple[str, ...]] = ("go", "do")
 SOURCES: Final[tuple[str, ...]] = ("said", "picture", "mail", "outlook", "todo", "plan")
 BY: Final[tuple[str, ...]] = ("her", "pass", "mail", "mirror", "plan", "review", "him", "carry_in")
+RINGS_FROM: Final[tuple[str, ...]] = ("asked", "default", "leave")
 CHANGEABLE: Final[tuple[str, ...]] = (
-    "title", "kind", "place", "link", "note", "rings", "private", "life_line", "confirmed",
+    "title", "kind", "place", "link", "note", "rings", "rings_from", "private", "life_line",
+    "confirmed",
     "sender", "outlook_id", "skip_dates", "weekly_until",
 )
 TITLE_CHARS: Final[int] = 300
@@ -137,6 +142,7 @@ class Thing:
     link: str = ""
     note: str = ""
     rings: tuple[str, ...] = ()
+    rings_from: str = "asked"
     private: bool = False
     life_line: str = ""
     confirmed: bool = True
@@ -161,7 +167,8 @@ class Thing:
             "start_at": self.start_at, "end_at": self.end_at, "on_day": self.on_day,
             "last_day": self.last_day, "due": self.due, "weekly_until": self.weekly_until,
             "skip_dates": list(self.skip_dates), "place": self.place, "link": self.link,
-            "note": self.note, "rings": list(self.rings), "private": self.private,
+            "note": self.note, "rings": list(self.rings), "rings_from": self.rings_from,
+            "private": self.private,
             "life_line": self.life_line, "confirmed": self.confirmed, "source": self.source,
             "source_ref": self.source_ref, "sender": self.sender, "outlook_id": self.outlook_id,
         }
@@ -244,6 +251,7 @@ def _from_payload(payload: Mapping[str, Any]) -> Thing:
         link=str(payload.get("link") or ""),
         note=str(payload.get("note") or ""),
         rings=tuple(str(r) for r in payload.get("rings") or ()),
+        rings_from=str(payload.get("rings_from") or "asked"),
         private=bool(payload.get("private")),
         life_line=str(payload.get("life_line") or ""),
         confirmed=payload.get("confirmed") is not False,
@@ -561,6 +569,7 @@ def _check(one: Thing, zone: tzinfo) -> None:  # noqa: C901, PLR0912 - one rule 
             raise ValueError(msg)
     for name, allowed, value in (
         ("kind", KINDS, one.kind), ("source", SOURCES, one.source),
+        ("rings_from", RINGS_FROM, one.rings_from),
     ):
         if value not in allowed:
             msg = f"{name} must be one of {allowed}, not {value!r}"
@@ -793,12 +802,15 @@ def change(  # noqa: PLR0913 - the fields, who wrote them and why, and the clock
 ) -> Thing:
     """Change words, place, link, note, rings, flags or the weekly fields of an open thing.
 
-    ``fields`` is a subset of :data:`CHANGEABLE`; a time is moved, not changed. ``ValueError`` for
+    ``fields`` is a subset of :data:`CHANGEABLE`; a time is moved, not changed. Rings changed
+    without ``rings_from`` become ``asked``. ``ValueError`` for
     a field outside the set, a value that could not be read back, or a closed thing;
     ``LookupError`` when there is no such thing.
     """
     _check_by(by)
     clean = _fields(fields)
+    if "rings" in clean:
+        clean.setdefault("rings_from", "asked")  # rings named without saying whose are his
     with _atomic(conn):
         one = get(conn, thing_id)
         _open(one)
@@ -980,6 +992,8 @@ def _ring_line(one: Thing, slot: _Slot, due: int, zone: tzinfo) -> str:
         return lang.t(f"thing.rem.{key}", date=day, title=title, place=place)
     at = f"{datetime.fromtimestamp(slot.start_ms / 1000, zone):{_CLOCK}}"
     when = "" if ahead <= 0 else "_tomorrow" if ahead == 1 else "_on"
+    if one.rings_from == "leave" and ahead <= 0:
+        when = "_leave"
     key = ("private" if one.private else "line") + when
     return lang.t(f"thing.rem.{key}", date=day, time=at, title=title, place=place)
 
@@ -995,6 +1009,33 @@ def default_rings(kind: str, *, start_at: str, on_day: str, before_min: int) -> 
     if start_at:
         return (f"-{before_min}m",)
     return ("-1d@20:00",) if on_day else ()
+
+
+def leave_ring(  # noqa: PLR0913 - the thing, the lead, who and why, and the clock
+    conn: sqlite3.Connection, thing_id: str, before_min: int, *, by: str, evidence: str,
+    zone: tzinfo, now: datetime | None = None,
+) -> str | None:
+    """Ring ``thing_id`` ``before_min`` before its hour, when he leaves, instead of its default.
+
+    The ring is ``-Nm``, so a moved thing keeps its lead. Only an open, one-time ``go`` thing with
+    an hour whose rings are the ledger's default, or an earlier leave ring, gets one; rings he
+    asked for are never touched. ``"set"`` when a default ring was replaced, ``"moved"`` when an
+    earlier leave ring changed, None when nothing changed.
+    """
+    one = get(conn, thing_id)
+    ring = f"-{before_min}m"
+    _ring(ring)
+    if (
+        one.state != "open" or one.kind != "go" or not one.start_at or one.weekly_until
+        or one.rings_from not in ("default", "leave") or one.rings == (ring,)
+    ):
+        return None
+    was = one.rings_from
+    change(
+        conn, thing_id, {"rings": [ring], "rings_from": "leave"}, by=by, evidence=evidence,
+        zone=zone, now=now,
+    )
+    return "set" if was == "default" else "moved"
 
 
 def _ring_slots(

@@ -11,8 +11,9 @@ again reopens its thing.
 Only what the mirror closed is reopened by it: a thing closed by Allen or by her stays closed.
 
 An event whose id is some thing's ``outlook_id`` is Jarvis's own (an interview's, ADR 0186) and is
-not read in. A mirrored thing has no rings. Nothing is written when the connection is absent or a
-read fails: one line is logged for each kind of failure.
+not read in. A mirrored thing has no rings, by default: the plan may give it a leave-by ring
+(ADR 0383). Nothing is written when the connection is absent or a read fails: one line is logged
+for each kind of failure.
 """
 
 from __future__ import annotations
@@ -208,11 +209,12 @@ class ThingsMirror:
             return things.Thing(
                 things.new_id(), title, "go", on_day=first.isoformat(),
                 last_day=last.isoformat() if last > first else "", place=place,
-                source="outlook", source_ref=ref,
+                rings_from="default", source="outlook", source_ref=ref,
             )
         return things.Thing(
             things.new_id(), title, "go", start_at=self._local(event["start"]),
-            end_at=self._local(event["end"]), place=place, source="outlook", source_ref=ref,
+            end_at=self._local(event["end"]), place=place, rings_from="default",
+            source="outlook", source_ref=ref,
         )
 
     def _local(self, stamp: Mapping[str, Any]) -> str:

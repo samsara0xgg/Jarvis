@@ -1269,6 +1269,13 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     # thing says only that something is on.
     "thing.rem.line": {"zh": "{time} {title}{place}", "en": "{time} {title}{place}"},
     "thing.rem.private": {"zh": "{time} 有一件事", "en": "{time} you have something on"},
+    # ADR 0383: a leave-by ring, at the leave time of the leg to the thing.
+    "thing.rem.line_leave": {
+        "zh": "该出门了：{time} {title}{place}", "en": "Time to leave: {time} {title}{place}",
+    },
+    "thing.rem.private_leave": {
+        "zh": "该出门了：{time} 有一件事", "en": "Time to leave: {time} you have something on",
+    },
     "thing.rem.line_on": {
         "zh": "{date} {time} {title}{place}", "en": "{date} {time} {title}{place}",
     },

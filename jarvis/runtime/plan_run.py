@@ -27,7 +27,7 @@ import asyncio
 import logging
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision import plan_gate
@@ -238,6 +238,10 @@ class PlanWatch:
                 self._route(conn, day, held)
             except Exception:
                 LOGGER.exception("plan watch: the legs failed")
+            try:
+                said += self._leave(conn, now, plan.for_day(conn, day))
+            except Exception:
+                LOGGER.exception("plan watch: the leave rings failed")
         return said
 
     # --- a line -----------------------------------------------------------------------
@@ -410,6 +414,50 @@ class PlanWatch:
             for o in things.occurrences(conn, first[0], first[1], zone=self._zone)
             if not o.all_day and first[0] <= o.start_ms < first[1]
         ]
+
+    # --- leave-by rings ---------------------------------------------------------------
+
+    def _leave(self, conn: sqlite3.Connection, now: datetime, held: plan.Plan | None) -> list[str]:
+        """Ring each placed thing of today at the leave time of its leg, instead of its default.
+
+        Only for an item that is a thing of the ledger and still has the thing's own hour (an item
+        that is an old copy of a moved thing is left alone), with a leave time still ahead. A
+        first ring counts against :data:`jarvis.decision.plan_gate.PAIR_CAP` and is logged as
+        ``plan.said`` (``leave:<id>``); a later one only follows the leg.
+        """
+        if held is None:
+            return []
+        day = now.date()
+        told = plan.said(conn, day)
+        room = plan_gate.PAIR_CAP - sum(1 for key in told if key.startswith(("new:", "leave:")))
+        muted = "leave" in plan.muted(conn)
+        ledger = things.fold(conn)
+        rung: list[str] = []
+        for item in held.items:
+            leave_at = (item.route or {}).get("leave_at")
+            one = ledger.get(plan.thing_of(item.source))
+            if one is None or not item.start or not leave_at or not one.start_at:
+                continue
+            start = datetime.fromisoformat(one.start_at).astimezone(self._zone)
+            leave = datetime.combine(day, time.fromisoformat(str(leave_at)), self._zone)
+            if start.date() != day or f"{start:%H:%M}" != item.start or leave <= now:
+                continue
+            key = f"leave:{one.thing_id}"
+            first = one.rings_from == "default"
+            if first and (muted or key in told or room <= 0):
+                continue
+            lead = int((start - leave).total_seconds() // 60)
+            if lead < 1:
+                continue
+            done = things.leave_ring(
+                conn, one.thing_id, lead, by="plan", evidence=f"the leg leaves at {leave_at}",
+                zone=self._zone, now=now,
+            )
+            if done == "set":
+                plan.say(conn, day, key, "leave", f"{leave_at}", "", int(now.timestamp() * 1000))
+                rung.append(key)
+                room -= 1
+        return rung
 
     # --- legs -------------------------------------------------------------------------
 

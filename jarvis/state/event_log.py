@@ -1405,8 +1405,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=("thing_id", "title", "kind", "by", "evidence", "ref"),
         optional_payload=(
             "start_at", "end_at", "on_day", "due", "weekly_until", "skip_dates", "place", "link",
-            "note", "rings", "private", "life_line", "confirmed", "source", "source_ref",
-            "sender", "outlook_id",
+            "note", "rings", "rings_from", "private", "life_line", "confirmed", "source",
+            "source_ref", "sender", "outlook_id",
         ),
         schema_version=1,
     ),

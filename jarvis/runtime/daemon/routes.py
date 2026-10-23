@@ -248,7 +248,10 @@ def read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked a
             LOGGER.exception("day: the day's body numbers could not be read")
             summary = None
         doing = read_day_doing(conn, memory_db, on, line.items, sources, now_ms)
-        spoken = max(plan.said(conn, on).values(), key=lambda one: one.at_ms, default=None)
+        spoken = max(
+            (one for one in plan.said(conn, on).values() if one.kind != "leave"),
+            key=lambda one: one.at_ms, default=None,
+        )  # a leave ring is not said until it rings
     told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
     served = doing.served({item["id"] for item in line.items})
     spans = sorted([*fact_spans(line.items), *served], key=lambda s: (s["start_ms"], s["id"]))

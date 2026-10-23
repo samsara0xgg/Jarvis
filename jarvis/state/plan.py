@@ -225,13 +225,14 @@ def say(  # noqa: PLR0913 - one line is these seven fields.
 ) -> None:
     """Append ``plan.said`` at ``at_ms``: her line ``key`` of ``kind`` went out on ``day``.
 
-    The line is her record ``record_id`` in the conversation.
+    The line is her record ``record_id`` in the conversation; a ``leave`` line is a ring set on
+    the thing, rung by the ledger, and has no record (``record_id`` empty).
     """
     if kind not in KINDS:
         msg = f"plan line kind must be one of {KINDS}, not {kind!r}"
         raise ValueError(msg)
-    if not key.strip() or not text.strip() or not record_id.strip():
-        msg = "plan.said needs a key, a text and a record id"
+    if not key.strip() or not text.strip() or (kind != "leave") != bool(record_id.strip()):
+        msg = "plan.said needs a key, a text, and a record id unless it is a leave ring"
         raise ValueError(msg)
     payload = {"date": _day(day), "key": key, "kind": kind, "text": text, "record_id": record_id}
     emit_event(conn, type="plan.said", payload=payload, ts_epoch_ms=at_ms, actor=ACTOR)

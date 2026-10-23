@@ -574,7 +574,9 @@ class _Schedule:
         one = things.Thing(
             things.new_id(), title, kind, start_at=when.start_at, end_at=when.end_at,
             on_day=when.on_day, due=when.due, weekly_until=when.weekly_until, place=place,
-            link=link, note=note, rings=rings, private=args.get("private") is True,
+            link=link, note=note, rings=rings,
+            rings_from="asked" if args.get("remind") is not None else "default",
+            private=args.get("private") is True,
         )
         try:
             kept, created = things.add(ctx.conn, one, **self._by(ctx, text, now))
@@ -619,7 +621,7 @@ class _Schedule:
         elif later and not occurrence and _shape(later) != _shape(_when_of(one)):
             # a clock time, a day, a due and no time ring differently: the usual ring of the new one
             if (rings := list(self._default_rings(one.kind, later))) != list(one.rings):
-                fields["rings"] = rings
+                fields["rings"], fields["rings_from"] = rings, "default"
         return fields
 
     def _move(

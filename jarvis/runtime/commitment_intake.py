@@ -333,6 +333,7 @@ class CommitmentIntake:
                 "go", start_at=start_at, on_day=on_day,
                 before_min=self._settings.remind_before_min,
             ),
+            rings_from="default",
             private=fields.get("private", False), confirmed=always, source="mail",
             source_ref=message_id, sender=mail.sender_domain,
         )
@@ -360,6 +361,7 @@ class CommitmentIntake:
                 "go", start_at=moved["start_at"], on_day=moved["on_day"],
                 before_min=self._settings.remind_before_min,
             ))
+            changed["rings_from"] = "default"
         # A last date before the first day reads back only once the series has moved.
         change_first = (
             not moved or "weekly_until" not in changed

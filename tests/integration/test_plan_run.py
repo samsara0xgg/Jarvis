@@ -845,3 +845,58 @@ def test_the_replay_runs_the_watcher_over_copies_and_writes_nothing_to_the_given
     assert [path.read_bytes() for path in (rig.log, rig.memory)] == before
     with pytest.raises(SystemExit):
         script.replay(rig.log, rig.memory, DAY + timedelta(days=3), ZONE, script.stub_ask)
+
+
+# --- leave-by rings -------------------------------------------------------------------------
+
+
+def _leg_item(thing_id: str, item_id: str = "p9", **fields: Any) -> plan.PlanItem:  # noqa: ANN401
+    return replace(DENTIST, item_id=item_id, source=f"item:{thing_id}", **fields)
+
+
+def _ring(rig: Rig, thing_id: str) -> tuple[tuple[str, ...], str]:
+    with closing(rig.conn()) as conn:
+        one = things.get(conn, thing_id)
+    return one.rings, one.rings_from
+
+
+def test_a_default_ring_becomes_the_leave_time_of_the_leg_once(rig: Rig) -> None:
+    """The dentist at 14:00 rings at 13:20 (40 min before), logged once as a leave line."""
+    dentist = rig.thing("Dentist", start="14:00", at="06:00", rings=("-30m",), rings_from="default")
+    rig.drafted(_leg_item(dentist))
+    assert "leave:" + dentist in rig.watch.tick(_at("07:05"))
+    assert _ring(rig, dentist) == (("-40m",), "leave")
+    assert rig.said()[f"leave:{dentist}"].record_id == ""
+    assert [k for k in rig.watch.tick(_at("07:06")) if k.startswith("leave:")] == []
+    with closing(rig.conn()) as conn:
+        (due,) = things.ring_times(conn, _ms("00:00"), _ms("23:59"), zone=ZONE)
+    assert due.due_ms == _ms("13:20")
+
+
+def test_rings_he_asked_for_and_a_moved_thing_keep_their_rings(rig: Rig) -> None:
+    """Asked rings stay; an item that is an old copy of a moved thing sets nothing."""
+    asked = rig.thing("Dentist", start="14:00", at="06:00", rings=("-90m",))
+    moved = rig.thing("Haircut", start="16:00", at="06:00", rings=("-30m",), rings_from="default")
+    rig.drafted(_leg_item(asked), _leg_item(moved, "p8", start="15:00"))
+    assert [k for k in rig.watch.tick(_at("07:05")) if k.startswith("leave:")] == []
+    assert _ring(rig, asked) == (("-90m",), "asked")
+    assert _ring(rig, moved) == (("-30m",), "default")
+
+
+def test_leave_rings_share_the_cap_with_new_things_and_obey_the_mute(rig: Rig) -> None:
+    """Two new-thing lines leave no room for a leave ring; a muted kind sets none either."""
+    dentist = rig.thing("Dentist", start="14:00", at="06:00", rings=("-30m",), rings_from="default")
+    with closing(rig.conn()) as conn:
+        for n in (1, 2):
+            plan.say(conn, DAY, f"new:thing-x{n}", "new", "told", f"r{n}", _ms("06:30"))
+    rig.drafted(_leg_item(dentist))
+    assert [k for k in rig.watch.tick(_at("07:05")) if k.startswith("leave:")] == []
+    assert _ring(rig, dentist) == (("-30m",), "default")
+    other = Rig(rig.log.parent / "muted")
+    clinic = other.thing("Dentist", start="14:00", at="06:00", rings=("-30m",),
+                         rings_from="default")
+    with closing(other.conn()) as conn:
+        plan.mute(conn, "leave", muted=True)
+    other.drafted(_leg_item(clinic))
+    other.watch.tick(_at("07:05"))
+    assert _ring(other, clinic) == (("-30m",), "default")
