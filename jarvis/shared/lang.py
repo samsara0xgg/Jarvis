@@ -1277,6 +1277,18 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "今天已花 ${spent}，上限 ${limit}。",
         "en": "${spent} spent today, limit ${limit}.",
     },
+    # ADR 0381: the card when a data source the Mac sends stops arriving while it should.
+    "source.silence.title": {
+        "zh": "{source}断了",
+        "en": "{source} stopped arriving",
+    },
+    "source.silence.line": {
+        "zh": "从 {since} 起没有新数据。",
+        "en": "No new data since {since}.",
+    },
+    "source.silence.timesink.spans": {"zh": "TimeSink 的活动记录", "en": "TimeSink activity"},
+    "source.silence.timesink.ocr": {"zh": "TimeSink 的屏幕文字", "en": "TimeSink screen text"},
+    "source.silence.mac.mic": {"zh": "Mac 的录音", "en": "The Mac's recording"},
 }
 
 # ADR 0304: what iOS calls its own apps, by bundle id. The Mac's shipper names the apps of his

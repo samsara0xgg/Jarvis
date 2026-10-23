@@ -1010,6 +1010,26 @@ def has_alert(path: Path, message_id: str) -> bool:
         ).fetchone() is not None
 
 
+def has_open_alert(path: Path, message_id: str) -> bool:
+    """Whether an alert made for ``message_id`` (a card key) is still pending or was shown."""
+    with _db(path) as conn:
+        return conn.execute(
+            "SELECT 1 FROM job_alert WHERE message_id = ? AND state IN ('pending', 'shown')"
+            " LIMIT 1",
+            (message_id,),
+        ).fetchone() is not None
+
+
+def close_alerts(path: Path, message_id: str) -> int:
+    """Mark every open alert made for ``message_id`` done (its cause is over); returns how many."""
+    with _db(path) as conn:
+        return conn.execute(
+            "UPDATE job_alert SET state = 'done' WHERE message_id = ?"
+            " AND state IN ('pending', 'shown')",
+            (message_id,),
+        ).rowcount
+
+
 def mark_spoken(path: Path, alert_id: str) -> None:
     """Note that the one spoken line for this alert was said."""
     with _db(path) as conn:

@@ -73,7 +73,6 @@ if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.daemon.voice_boot import Voice
     from jarvis.runtime.daemon.voice_wiring import VoiceKnobs
-    from jarvis.runtime.spend_cap import SpendCapSettings
     from jarvis.surface.codex_sessions import CodexSession
     from jarvis.surface.inherent_output import InherentBroadcaster
     from jarvis.surface.phone_link import PhoneHub
@@ -107,7 +106,6 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
     usage_observer: UsageObserver | None,
     codex_board: dict[str, CodexSession],
     phone_hub: PhoneHub | None,
-    spend: SpendCapSettings | None,
     v2_token: str,
     port: int,
 ) -> InherentDeps:
@@ -289,7 +287,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
                         runtime.memory.db_path, lambda: controls.quiet, runtime.moment,
                         runtime.sound_output,
                     )
-                    if spend is not None and runtime.memory is not None else None
+                    if runtime.memory is not None else None
                 ),
             ),
             runtime.settings_drift,
