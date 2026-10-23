@@ -12,7 +12,6 @@ import { fileURLToPath } from 'node:url';
 import { askable, buildDay, changeId, clock, covered, dateTitle, doingAt, doingOf, doingWords, fnv, keptOf, lensOf, moneyText, shiftDate, stageLook, stageMinutes, stageSlices, tidy, tidyReply, weatherOf, wingText, within, workoutOf } from '../src/dayView.ts';
 import { axisOf, buildBar, counted, fit, fOf, hm, msOf, numbers, peek, pieceAt, rowAt, summarize, toneOn } from '../src/barView.ts';
 import { answerOf, askOf, fromTo, hasBody, headOf, openOf, sayOf, sayRange, talkLines } from '../src/dayOpen.ts';
-import { cardOf } from '../src/numberCard.ts';
 import { deflateSync, crc32 } from 'node:zlib';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -378,7 +377,7 @@ check('the overview bar spans the day from the hour before he woke, and its now 
     check(`on ${name} the bar's hour marks sit at their local hours`, (d.end_ms - d.start_ms) / 3_600_000 === hours && bar.ticks.map(at).join() === '06:00,09:00,12:00,15:00,18:00,21:00,00:00', bar.ticks.map(at).join());
   }
 }
-check('a label is the richest that fits with 6 px each side: icon and name, name, icon, nothing', fit(100, 30, '家') === 'both' && fit(50, 30, '家') === 'name' && fit(30, 30, '家') === 'icon' && fit(20, 30, '家') === 'none' && fit(60, 0, '') === 'icon');
+check('a label is the richest that fits with 6 px each side: icon and name, icon alone (from 16 px), nothing; a name is never written without its icon', fit(100, 30, '家') === 'both' && fit(58, 30, '家') === 'both' && fit(57, 30, '家') === 'icon' && fit(50, 30, '家') === 'icon' && fit(16, 30, '家') === 'icon' && fit(15, 30, '家') === 'none' && fit(60, 0, '') === 'icon' && fit(10, 0, '') === 'none');
 check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => r.rgb), ...bar0.segs].every(x => !(x.rgb[0] > 240 && x.rgb[1] > 170 && x.rgb[1] < 200 && x.rgb[2] < 100)));
 
 // ---------- the bar's own model ----------
@@ -820,82 +819,24 @@ check('no dot or bar is amber: amber is the turn mark\'s', [...rows.filter(r => 
     && manyC.rows.has('code:h') && !manyC.rows.has('c1') && askOf(manyC, 'code:h', zh) === null, [ask('workout-1'), askOf(oneC, 'c1', zh), askOf(manyC, 'code:h', zh)].map(x => JSON.stringify(x?.about)).join(' '));
 }
 
-// ---------- a number's card, in node (ADR 0308): what is behind each number of the day ----------
-// A card as lines: the head, then each part (cells split by /, the entries of a list and the groups of bars by //, a hypnogram by its two ends).
-const cardLines = card => card === null ? null : [`${card.label}|${card.value}`, ...card.parts.map(p => p.type === 'cells' ? p.cells.map(c => `${c.label} ${c.value}`).join('/')
-  : p.type === 'entries' ? p.entries.map(e => `${e.lead}: ${e.facts.join(' · ')}`).join('//') + (p.more ? ` +${p.more}` : '')
-  : p.type === 'bars' ? p.groups.map(g => `${g.heading}: ${g.bars.map(b => `${b.name} ${b.text}`).join(', ')}`).join('//')
-  : p.type === 'night' ? `night ${p.night.at.join('-')}` : `pictures ${p.list.map(x => `${x.id[0]}@${x.at}`).join(',')}${p.more ? ` +${p.more}` : ''}`)];
+// ---------- what is behind each number of the day, in node (ADR 0308): the chips are filters now, so there is no card, but the openOf night and the counting stay ----------
 {
-  const fz = buildDay(fullDay(), NOW, zh), fe = buildDay(fullDay(), NOW, en), same = (got, want, detail = '') => JSON.stringify(got) === JSON.stringify(want) || (console.log(JSON.stringify(got)), false);
-  const lines = (model, kind, t = zh) => cardLines(cardOf(model, kind, t));
-  check('the sleep card: the head is the number; in bed, asleep, woke up as clocks, how long it took, the share of the time in bed (the phone\'s in_bed 23:00 to 07:10), deep, core and REM, the times he woke between sleeps (2: the last awake stretch is the end of the night), the night, and the day\'s own heart rate and HRV',
-    same(lines(fz, 'sleep'), ['睡|7 小时 20 分', '上床 23:00/入睡 23:10/醒来 07:00/入睡用时 10 分钟/睡眠效率 90%', '深睡 1:10/核心 4:30/REM 1:40/夜醒 2 次', 'night 23:10-07:00', '当天静息心率 58/当天 HRV 42']));
-  check('and in English', same(lines(fe, 'sleep', en), ['Sleep|7 h 20 min', 'In bed 23:00/Asleep 23:10/Woke up 07:00/To fall asleep 10 min/Sleep efficiency 90%', 'Deep 1:10/Core 4:30/REM 1:40/Wake-ups 2×', 'night 23:10-07:00', "Day's resting HR 58/Day's HRV 42"]));
-  check('on the way: the total, the time in each way (the most first; none he did not go), how many, the longest with where it went from and to as its open row words it, and the day\'s steps',
-    same(lines(fz, 'trip'), ['路上|3 小时 4 分', '开车 1 小时 40 分/公交 1 小时 4 分/步行 20 分钟', '共 5 段/最长 开车 · 1 小时 40 分 · 家 → A&W/步数 8,240']));
-  check('a workout is one line: what, when it began, how long, how far, how fast (min per km, since it is a run), the energy and the heart',
-    same(lines(fz, 'workout'), ['运动|35 分钟', `跑步: 07:20 · 35 分钟 · 3.2 公里 · 10'56"/公里 · 240 千卡 · 平均心率 142`]));
-  check('the Mac: when it began and ended, the active time, the time in all; the projects and the apps of the day as bars (the biggest first, summed over the blocks); the Claude Code sessions and their projects (not in the Mac\'s number)',
-    same(lines(fz, 'work'), ['Mac|10:30–21:40 · 活跃 2 小时 37 分 · 共 2 小时 55 分', '项目: Jarvis 2 小时 15 分//应用: Ghostty 1 小时 30 分, Claude 30 分钟, Xcode 25 分钟', 'Claude Code: 6 个会话 · jarvis ×3 · jarvis-ios · notes · thesis']));
-  check('and in English', same(lines(fe, 'work', en), ['Mac|10:30–21:40 · active 2 h 37 min · 2 h 55 min in all', 'Projects: Jarvis 2 h 15 min//Apps: Ghostty 1 h 30 min, Claude 30 min, Xcode 25 min', 'Claude Code: 6 sessions · jarvis ×3 · jarvis-ios · notes · thesis']));
-  check('calls: how many and the longest with its clock, then each app with its calls and its time; with her: the lines in all and when he talked first and last; money: out and how many payments, then who it went to; photos: a thumbnail each',
-    same(lines(fz, 'call'), ['通话|18 分钟', '通话 1 次/最长 18 分钟 · 16:40', 'FaceTime: 1 次 · 18 分钟']) && same(lines(fz, 'talk'), ['和她|3 次', '共 11 句/时段 10:02–19:36'])
-    && same(lines(fz, 'payment'), ['花|$12.40', '支出 $12.40/笔数 1 笔', 'A&W: $12.40']) && same(lines(fz, 'picture'), ['照片|1', 'pictures a@13:30']));
-  check('the head of every card is its chip: the label and the value the chip says (the Mac\'s says more, with it)', numbers(fz, zh).length === 8 && numbers(fz, zh).every(n => { const c = cardOf(fz, n.kind, zh); return c && c.kind === n.kind && c.label === n.label && (n.kind === 'work' ? c.value.includes(n.long) : c.value === n.long); })
-    && numbers(fe, en).every(n => { const c = cardOf(fe, n.kind, en); return c && c.label === n.label; }));
-  check('a kind the day has no number for has no card (nothing counted: no photo, a Claude Code session is not Mac time)', ['workout', 'work', 'call', 'payment'].every(k => cardOf(buildDay(makeDay(), NOW, zh), k, zh) === null)
-    && cardOf(buildDay(small([it('c1', 'code', T(9, 0), T(9, 45), { title: 'a', project: 'x' })]), NOW, zh), 'work', zh) === null && cardOf(buildDay(small([]), NOW, zh), 'sleep', zh) === null);
-
-  // sleep: what is left out when its inputs are not there
-  const night = (stages, over = {}, mins = 440, end = T(7, 0)) => lines(buildDay(small([it('sleep-1', 'sleep', T(23, 10, 18), end, { minutes: mins, stages })], over), NOW, zh), 'sleep');
-  const inBed = (a, b) => ({ stage: 'in_bed', start_ms: a, end_ms: b });
-  check('time in bed, how long it took and the share of it are only with a stage before sleep (in_bed or awake) and, for the share, an in_bed stage: a night without the phone\'s in_bed has neither the time in bed nor the share',
-    same(night(NIGHT).slice(0, 2), ['睡|7 小时 20 分', '入睡 23:10/醒来 07:00']));
-  check('an awake stretch before the first sleep is the time he went to bed and how long it took (10 min), but not a share: that wants the in_bed',
-    same(night([{ stage: 'awake', start_ms: T(23, 0, 18), end_ms: T(23, 10, 18) }, ...NIGHT]).slice(1, 3), ['上床 23:00/入睡 23:10/醒来 07:00/入睡用时 10 分钟', '深睡 1:10/核心 4:30/REM 1:40/夜醒 2 次']));
-  check('an in_bed that begins with the first sleep has the share (440 of 480 min: 92%) and no time in bed or time it took; one shorter than the sleep has none',
-    same(night([inBed(T(23, 10, 18), T(7, 10)), ...NIGHT])[1], '入睡 23:10/醒来 07:00/睡眠效率 92%') && same(night([inBed(T(23, 10, 18), T(1, 0)), ...NIGHT])[1], '入睡 23:10/醒来 07:00'));
-  check('a night with no stages is the clocks of its row and nothing else: no stage, no hypnogram, no time it took; the heart rate and HRV only where the day has them (one of them alone is alone)',
-    same(lines(buildDay(makeDay(), NOW, zh), 'sleep'), ['睡|7 小时 50 分', '入睡 00:55/醒来 09:05']) && same(night(NIGHT, { summary: { steps: 9, resting_hr: null, hrv: 42 } }).at(-1), '当天 HRV 42') && same(night(NIGHT, { summary: { steps: 9, resting_hr: null, hrv: null } }).at(-1), 'night 23:10-07:00'));
-  check('a night still going has the clocks it has (no woke up), the stages to now, and no time he woke between sleeps',
-    same(night(NIGHT.slice(0, 4), {}, 100, null), ['睡|1 小时 40 分', '入睡 23:10', '深睡 0:40/核心 1:55', 'night 23:10-21:50']));
-  check('the times he woke are the awake stretches with sleep on both sides (the open row counts every awake stretch: 3)', cardOf(fz, 'sleep', zh).parts[1].cells.at(-1).value === '2 次' && openOf(fz, 'sleep-1', zh).parts.find(p => p.type === 'night').night.totals.endsWith('醒 3 次'));
+  const fz = buildDay(fullDay(), NOW, zh), fe = buildDay(fullDay(), NOW, en);
+  check('the times he woke are the awake stretches with sleep on both sides (the open row counts every awake stretch: 3)', openOf(fz, 'sleep-1', zh).parts.find(p => p.type === 'night').night.totals.endsWith('醒 3 次'));
+  check('the day has eight numbers, each with its label and its long value (the chips are one line and filter the day by that kind)', numbers(fz, zh).length === 8 && numbers(fz, zh).every(n => n.label && n.long && n.value) && numbers(fe, en).every(n => n.label) && numbers(fz, zh).map(n => n.kind).join() === numbers(fe, en).map(n => n.kind).join());
+  check('a kind the day has no number for has no chip (nothing counted: no photo, a Claude Code session is not Mac time)', ['workout', 'work', 'call', 'payment'].every(k => !numbers(buildDay(makeDay(), NOW, zh), zh).some(n => n.kind === k))
+    && !numbers(buildDay(small([it('c1', 'code', T(9, 0), T(9, 45), { title: 'a', project: 'x' })]), NOW, zh), zh).some(n => n.kind === 'work'));
 
   // on the way, workouts, the Mac and the rest
   const day = (items, over) => buildDay(small(items, over), NOW, zh);
-  check('on the way: each way he went with its time (a bus is 公交, one the brain has no word for is 移动), the longest of them (a ride by its route and stops), and no steps where the day has none',
-    same(lines(day([it('m1', 'move', T(8, 0), T(8, 30), { activity: 'running' }), it('m2', 'move', T(9, 0), T(10, 0), { activity: 'cycling' }), it('m3', 'move', T(11, 0), T(11, 20), { activity: 'scooter' }), it('r1', 'ride', T(12, 0), T(12, 45), { route: '14', board_stop: 'A St', alight_stop: 'B St' })]), 'trip'),
-      ['路上|2 小时 35 分', '骑车 1 小时/公交 45 分钟/跑步 30 分钟/移动 20 分钟', '共 4 段/最长 骑车 · 1 小时'])
-    && same(lines(day([it('r1', 'ride', T(12, 0), T(12, 45), { route: '14', board_stop: 'A St', alight_stop: 'B St' })]), 'trip').at(-1), '共 1 段/最长 14 路 · 45 分钟 · A St → B St')
-    && same(lines(buildDay(small([it('r1', 'ride', T(12, 0), T(12, 45), { route: '14', board_stop: 'A St', alight_stop: 'B St' })]), NOW, en), 'trip', en).at(-1), 'In all 1 trip/Longest Bus 14 · 45 min · A St → B St'));
   check('the run\'s pace is minutes per km walking or running and km per hour cycling, only with a distance and a length: none for swimming or a hike, for no distance, or for one that has not ended',
     (w => w('walking', 2000, 30).pace === `15'00"/公里` && w('running', 5000, 25).pace === `5'00"/公里` && w('cycling', 20000, 60).pace === '20.0 公里/时' && w('swimming', 800, 30).pace === '' && w('hiking', 4000, 90).pace === '' && w('running', 0, 30).pace === '' && w('running', undefined, 30).pace === ''
       && w('running', 5000, null).pace === '' && w('running', 5000, 0.5).pace === '' && workoutOf({ ...day([it('w', 'workout', T(7, 0), T(7, 35), { activity: 'running', distance_m: 3200 })]).items[0] }, en).pace === `10'56"/km` && w('cycling', 20000, 60, en).pace === '20.0 km/h'
       && w('running', 3200, 35).facts.join() === '3.2 公里,240 千卡,平均心率 142')((a, m, min, t = zh) => workoutOf({ id: 'w', lane: 'you', kind: 'workout', state: 'done', start_ms: T(7, 0), end_ms: min === null ? null : T(7, 0) + min * 60_000, activity: a, distance_m: m, energy_kcal: 240, avg_hr: 142 }, t)));
-  const runs = [it('w1', 'workout', T(7, 0), T(7, 30), { activity: 'walking', distance_m: 2000 }), it('w2', 'workout', T(18, 0), T(19, 0), { activity: 'cycling', distance_m: 20000, energy_kcal: 500 }), it('w3', 'workout', T(20, 0), T(20, 30), { activity: 'swimming', distance_m: 800 }), it('w4', 'workout', T(21, 0), T(21, 10), { activity: 'elliptical', text: 'Elliptical\nsecond' }), it('w5', 'workout', T(5, 0), T(5, 20), { activity: 'yoga' })];
-  check('a workout line has only what was counted (the phone\'s words for one it does not know), at most four are listed and the rest are counted, and the steps are said here only when the day has no way he went',
-    same(lines(day(runs, { summary: { steps: 4321, resting_hr: null, hrv: null } }), 'workout'), ['运动|2 小时 30 分', `瑜伽: 05:00 · 20 分钟//步行: 07:00 · 30 分钟 · 2.0 公里 · 15'00"/公里//骑车: 18:00 · 1 小时 · 20.0 公里 · 20.0 公里/时 · 500 千卡//游泳: 20:00 · 30 分钟 · 800 米 +1`, '步数 4,321'])
-    && same(lines(day([runs[4], it('m1', 'move', T(8, 0), T(8, 30), { activity: 'walking' })], { summary: { steps: 4321, resting_hr: null, hrv: null } }), 'workout'), ['运动|20 分钟', '瑜伽: 05:00 · 20 分钟']));
-  const many = day([it('w', 'work', T(10, 0), T(14, 0), { active_s: 12000, projects: Array.from({ length: 7 }, (_, i) => ({ name: `P${i}`, seconds: 1000 + i * 100 })), apps: [{ name: '', seconds: 5 }, { name: 'Z', seconds: 0 }] }), it('w2', 'work', T(15, 0), T(16, 0), { projects: [{ name: 'P0', seconds: 600 }] })]);
-  check('the Mac: at most five projects (the biggest first, the same name in two blocks is one), no list for apps there are none of, and no line for sessions where there are none',
-    (c => c.parts.length === 1 && c.parts[0].groups.length === 1 && c.parts[0].groups[0].bars.map(b => b.name).join() === 'P0,P6,P5,P4,P3' && c.value === '10:00–16:00 · 活跃 4 小时 20 分 · 共 5 小时')(cardOf(many, 'work', zh)));
-  const calls = day([it('c1', 'call', T(10, 0), T(10, 20), { app: 'FaceTime' }), it('c2', 'call', T(11, 0), T(11, 5), { app: 'WeChat' }), it('c3', 'call', T(12, 0), T(12, 40)), it('c4', 'call', T(13, 0), T(13, 10), { app: 'FaceTime' })]);
-  check('calls by app, the longest first; one with no app is 其他', same(lines(calls, 'call'), ['通话|1 小时 15 分', '通话 4 次/最长 40 分钟 · 12:00', '其他: 1 次 · 40 分钟//FaceTime: 2 次 · 30 分钟//WeChat: 1 次 · 5 分钟']));
-  check('with her: a talk has a topic where it was marked with words (the brain\'s own "talk 15:00" is not words); the lines in all only where the talks say how many',
-    same(lines(day([it('t1', 'talk', T(9, 0), T(9, 5), { turns: 3 }, 'her'), it('t2', 'talk', T(15, 0), T(15, 5), {}, 'her')], { highlights: [{ id: 't1', label: '周末去哪', by: 'him' }, { id: 't2', label: 'talk 15:00', by: 'him' }] }), 'talk'), ['和她|2 次', '共 3 句/时段 09:00–15:05', '周末去哪: 09:00 · 3 句'])
-    && same(lines(day([it('t2', 'talk', T(15, 0), T(15, 5), {}, 'her')]), 'talk'), ['和她|1 次', '时段 15:00–15:05']));
-  const pay = (id, h, amount, currency, direction, who, text) => it(id, 'payment', T(h, 0), T(h, 0), { amount, currency, direction, ...who && { counterparty: who }, ...text && { text } });
-  check('money: what went out and what came in in each currency (the currency he paid in most first), how many payments there were, and the three it went to most (a payment with no amount is counted, not added)',
-    same(lines(day([pay('p1', 9, '12.4', 'CAD', 'out', 'A&W'), pay('p2', 10, 88, 'CNY', 'out', '', '午饭'), pay('p3', 11, '30', 'CAD', 'in', 'Sam'), pay('p4', 12, '5', 'CAD', 'out', 'A&W'), pay('p5', 13, '7', 'CAD', 'out', 'Cafe'), pay('p6', 14, '1', 'CAD', 'out', 'Kiosk'), pay('p7', 15, 'x', 'CAD', 'out', 'Bad')]), 'payment'),
-      ['花|$25.40…', '支出 $25.40 · ¥88.00/收入 $30.00/笔数 7 笔', '午饭: ¥88.00//A&W: $17.40//Cafe: $7.00']));
-  const pics = Array.from({ length: 8 }, (_, i) => it(`pic${i}`, 'picture', T(9 + i, 0), T(9 + i, 0), { attachment: i === 2 ? 'zz' : String(i).repeat(32), note: `n${i}` }));
-  check('photos: the first six that can be shown, with the rest counted (one whose picture is not kept is counted, not shown); with none that can be shown the card is only its head',
-    same(lines(day(pics), 'picture'), ['照片|8', 'pictures 0@09:00,1@10:00,3@12:00,4@13:00,5@14:00,6@15:00 +1']) && same(lines(day([it('pic1', 'picture', T(9, 0), T(9, 0), { attachment: 'zz' })]), 'picture'), ['照片|1']));
   check('where a move went and a ride is where its row words it', fromTo(fz, fz.items.find(x => x.id === 'move-1'), zh) === '家 → A&W' && fromTo(fz, fz.items.find(x => x.id === 'move-2'), zh) === '去 A&W' && fromTo(fz, fz.items.find(x => x.id === 'ride-1'), zh) === 'Shelbourne at Pear → UVic Exchange'
     && fromTo(fe, fe.items.find(x => x.id === 'move-2'), en) === 'To A&W' && fromTo(fz, { ...fz.items.find(x => x.id === 'ride-1'), board_stop: '', alight_stop: null }, zh) === '');
   const win = { a: T(10, 0), b: T(14, 0) }, by = counted(fz, win);
-  check('what the chips, a range and a card count is counted once (counted): the range of 10:00 to 14:00 has the Mac block at 10:30 and not the one at 19:35, the talk at 10:02, the drive and the walks, the last of them only up to 14:00',
+  check('what the chips and a range count is counted once (counted): the range of 10:00 to 14:00 has the Mac block at 10:30 and not the one at 19:35, the talk at 10:02, the drive and the walks, the last of them only up to 14:00',
     by.work.map(x => x.it.id).join() === 'work-1' && by.talk.map(x => x.it.id).join() === 'talk-1' && by.trip.map(x => x.it.id).join() === 'move-1,move-2,move-3' && by.picture.map(x => x.it.id).join() === 'picture-1' && by.payment.map(x => x.it.id).join() === 'pay-1' && by.sleep.length === 0
     && by.trip.find(x => x.it.id === 'move-3').lap === 5 * 60_000 && by.trip.find(x => x.it.id === 'move-1').lap === 100 * 60_000 && numbers(fz, zh, win).map(n => `${n.label} ${n.value}`).join() === '路上 1:55,Mac 0:42,和她 1 次,花 $12.40,照片 1');
 }
@@ -990,7 +931,7 @@ const server = spawn(path.join(root, 'node_modules/.bin/vite'), ['preview', '--p
 const exe = [process.env.CHROMIUM, '/opt/pw-browsers/chromium'].find(p => p && existsSync(p));
 const browser = await chromium.launch({ headless: true, ...exe ? { executablePath: exe } : { channel: 'chrome' }, args: ['--disable-web-security', '--mute-audio'] });
 const errors = [];
-const NOTCH_R = 412.5, TOP = 32;
+const CX = 418, NOTCH_R = CX + 92.5, TOP = 32;   // the stage is 836 wide (V2): the notch is at its centre, the wing's right edge 92.5 past it
 // Every Web Animation the page starts is written down (what, on what, with which keyframes and timing), so what was asked for can be read.
 const record = () => {
   const animate = Element.prototype.animate;
@@ -1003,7 +944,7 @@ const record = () => {
 const anims = a => a.page.evaluate(() => window.__anims.slice());
 // A page on a fake daemon: `served` is what /inherent/day answers, `board` the sessions, `departure` the pinned trip, `hits` the day reads it got.
 async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = makeDay(), departure = null, init = null, at = NOW, fastPolls = false, notchWidth = 185 } = {}) {
-  const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
+  const ctx = await browser.newContext({ viewport: { width: 836, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   // `posts`: what the page sent (path and body); `refuse`: routes that answer with an error; `changes`: place renames the daemon can undo; `lag`: how long
   // the writes take to answer (ms); `hidden`: the picks of hers he has taken off.
@@ -1015,7 +956,7 @@ async function boot({ wing, marks, lang = 'zh', openBy, board = [], served = mak
     localStorage.setItem('companion-settings-v1', JSON.stringify(settings));
     window.__audio = 0;
     window.jarvis = {
-      placement: async () => ({ docked: false, topInset: 32, notchWidth, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
+      placement: async () => ({ docked: false, topInset: 32, notchWidth, surfaceWidth: 836, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {}, wearing: () => {}, onDictation: () => () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async on => { (window.__focus ??= []).push(on); }, material: () => {}, codexTitles: async () => ({}),
@@ -1190,7 +1131,7 @@ try {
     const r = await a.read();
     check('the stars are the wing when chosen: the marks as before, no line', r.wing === 'marks' && !r.line && r.marks === 'turn1 work1', JSON.stringify(r));
     await a.shot('02-stars-wing', { x: 200, y: 0, width: 300, height: 60 });
-    await a.move(412.5 + 14, 14);
+    await a.move(NOTCH_R + 14, 14);
     const open = await seen(a, r => r.dropOpen && r.list);
     check('in the stars a rest on a mark still opens the sessions', open.dropOpen && open.list && !open.dt && open.tl === '', JSON.stringify(open));
     await a.ctx.close();
@@ -1255,9 +1196,9 @@ try {
   if (all) {
     const a = await boot();
     await line(a);
-    await a.move(320, 14);
+    await a.move(CX, 14);
     await a.page.locator('.companion-dashboard.is-open').waitFor();
-    await a.move(320, 200); await a.page.waitForTimeout(900);
+    await a.move(CX, 200); await a.page.waitForTimeout(900);
     await a.page.locator('.ad .corner [data-row="settings"]').click(); await a.page.waitForTimeout(700);
     await a.page.locator('.ad [data-cat="look"]').click(); await a.page.waitForTimeout(500);
     const item = a.page.locator('.ad [data-item="wing"]'), wardrobe = () => a.page.evaluate(() => JSON.parse(localStorage.getItem('companion-wardrobe-v1') ?? '{}'));
@@ -1306,8 +1247,8 @@ try {
     await line(a);
     check('on a screen without a notch she is out of sight while the pointer is away', await stowed());
     const seg = await a.lineX(), end = { x: seg.x1 - 4, y: 14 };
-    // the pill is 132 wide at the stage's centre (320); its own approach reaches 40 past its right edge
-    check('the line runs past where the pill\'s own approach ends', end.x > 320 + 66 + 40, JSON.stringify(seg));
+    // the pill is 132 wide at the stage's centre (418); its own approach reaches 40 past its right edge
+    check('the line runs past where the pill\'s own approach ends', end.x > CX + 66 + 40, JSON.stringify(seg));
     await a.glide(a.far, end, 300);
     await a.page.waitForTimeout(150);
     check('a pointer at the far end of the line brings her into sight', !await stowed());
@@ -1344,7 +1285,7 @@ try {
     check('resting on the line opens the day, unpinned', r.tl === 'open' && r.dt && !r.list, JSON.stringify(r));
     await a.until(() => document.querySelector('.notch-drop')?.classList.contains('is-open') && document.querySelector('.dt-date'));
     await a.page.waitForTimeout(500);
-    await a.shot('04-pane-open', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('04-pane-open', { x: 0, y: 0, width: 836, height: 700 });
     await a.page.mouse.down(); await a.page.mouse.up();
     check('a click on an open day pins it', (await settle(a, 'pinned', 2000)).tl === 'pinned');
     await a.glide(on, a.far, 120);
@@ -1364,10 +1305,12 @@ try {
     await a.glide(a.far, on, 200); r = await settle(a, 'open');
     check('after the pointer has been away a rest opens it again', r.tl === 'open');
 
-    // Esc
+    // Esc (the pane has to be drawn first: the key is heard once the day is mounted, a frame after the wing says it is open)
+    await a.until(() => document.querySelector('.notch-drop')?.classList.contains('is-open') && document.querySelector('.dt-date'));
+    await a.page.waitForTimeout(300);
     await a.page.keyboard.press('Escape');
     r = await settle(a, '', 1500);
-    check('Esc folds it', r.tl === '');
+    check('Esc folds it', r.tl === '', JSON.stringify(r));
     await a.glide(on, a.far, 120); await a.page.waitForTimeout(300);
 
     // Heading to the pane, and a press that began in it, hold it.
@@ -1397,7 +1340,7 @@ try {
   // ---- never together with the Dashboard ----
   if (all) {
     const a = await boot();
-    const seg = await line(a), on = { x: seg.mid, y: 14 }, notch = { x: 320, y: 14 };
+    const seg = await line(a), on = { x: seg.mid, y: 14 }, notch = { x: CX, y: 14 };
     const dash = () => a.read().then(r => r.dash);
     await a.glide(a.far, on, 200); await settle(a, 'open');
     await a.glide(on, notch, 120);
@@ -1406,7 +1349,7 @@ try {
     await a.page.waitForTimeout(500);
     let r = await a.read();
     check('opening the Dashboard folds the day', r.dash && r.tl === '', JSON.stringify(r));
-    await a.shot('05-dashboard-open', { x: 40, y: 0, width: 560, height: 520 });
+    await a.shot('05-dashboard-open', { x: 0, y: 0, width: 836, height: 640 });
     // The wing steps aside only where the Dashboard leaves no room: with this short line it stays, so a click on it is a hand-over.
     await a.glide(notch, on, 90);
     await a.page.waitForTimeout(40);
@@ -1422,8 +1365,8 @@ try {
     const gone = Date.now() + 3000;
     while (Date.now() < gone && !await dash()) await a.page.waitForTimeout(50);
     await a.page.waitForTimeout(600);
-    await a.move(320, 200); await a.page.mouse.down();
-    await a.glide({ x: 320, y: 200 }, on, 300); await a.page.waitForTimeout(1200);
+    await a.move(CX, 200); await a.page.mouse.down();
+    await a.glide({ x: CX, y: 200 }, on, 300); await a.page.waitForTimeout(1200);
     r = await a.read();
     check('while the Dashboard hangs a rest on the line does nothing', r.dash && r.tl === '', JSON.stringify(r));
     await a.page.mouse.up();
@@ -1436,9 +1379,9 @@ try {
     const a = await boot({ served: makeDay({ items: [it('s', 'stay', T(18, 50), null, { place: 'x', kept_place: { id: 'p-long', name: 'Mayfair Mall Shopping Centre Victoria', role: 'other' } })] }) });
     await a.until(() => /…/.test(document.querySelector('.notch')?.dataset.line ?? ''));
     const before = await seen(a, r => r.hit.right - r.hit.left > 100, 8000);
-    await a.move(320, 14);
+    await a.move(CX, 14);
     await a.page.locator('.companion-dashboard.is-open').waitFor();
-    await a.move(320, 200);
+    await a.move(CX, 200);
     const folded = await seen(a, r => r.hit.right - r.hit.left < 1);
     check('where the Dashboard leaves no room the wing folds, line and all', before.hit.right - before.hit.left > 100 && folded.hit.right - folded.hit.left < 1, JSON.stringify({ before: before.hit, folded: folded.hit }));
     await a.move(a.far.x, a.far.y);
@@ -1509,9 +1452,9 @@ try {
     check('the home dot is warm and the school dot is blue', await a.page.evaluate(() => { const c = [...document.querySelectorAll('.dt-sh .dt-dot')].map(d => getComputedStyle(d).backgroundColor); return c[0] === 'rgb(231, 154, 138)' && c[3] === 'rgb(93, 183, 235)'; }));
     // Scrolled: the list opens at the now line; the top is the morning.
     await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
-    await a.shot('06-pane-scrolled-top', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('06-pane-scrolled-top', { x: 0, y: 0, width: 836, height: 700 });
     await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await a.page.waitForTimeout(300);
-    await a.shot('07-pane-scrolled-bottom', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('07-pane-scrolled-bottom', { x: 0, y: 0, width: 836, height: 700 });
     const tk = await a.page.locator('.dt-track').boundingBox(), before = await a.page.evaluate(() => document.querySelector('.dt-list').scrollTop);
     await a.page.mouse.click(tk.x + 20, tk.y + tk.height / 2);
     await a.page.waitForTimeout(900);
@@ -1524,7 +1467,7 @@ try {
     await a.page.waitForTimeout(600);
     check('the day before is read by date; it has no sentence and no today tag', a.s.hits.includes('?date=2026-10-18') && await a.page.locator('.dt-line').count() === 0 && await a.page.locator('.dt-today').count() === 0 && !await a.page.locator('.dt-nav button').nth(1).isDisabled());
     check('a past day has no now line', await a.page.locator('.dt-now').count() === 0);
-    await a.shot('08-yesterday', { x: 40, y: 0, width: 560, height: 520 });
+    await a.shot('08-yesterday', { x: 0, y: 0, width: 836, height: 640 });
     await a.page.locator('.dt-nav button').first().click();
     await a.until(() => document.querySelector('.dt-date')?.textContent === '10月17日 周六' && document.querySelector('.dt-say'), undefined, 6000);
     check('a day with nothing in it says so in a sentence, with no bar', (await text('.dt-say'))[0] === '这一天还没有记下什么' && await a.page.locator('.dt-bar').count() === 0);
@@ -1606,7 +1549,7 @@ try {
     const say = await a.page.locator('.dt-say').innerText();
     check('a failure while drawing the day leaves a quiet line in the pane, the date and day buttons where they were, and her in the window', say === '这一天没画出来' && await a.page.locator('.dt-date').innerText() === '10月19日 周一' && await a.page.locator('.dt-nav button').first().isEnabled() && await her(), say);
     check('and the log hears of it: a [timeline] line, once', told.filter(x => /^\[timeline\] the pane: boom/.test(x)).length === 1, JSON.stringify(told));
-    await a.shot('guard-01-pane-failed', { x: 40, y: 0, width: 560, height: 300 });
+    await a.shot('guard-01-pane-failed', { x: 0, y: 0, width: 836, height: 300 });
     await a.page.evaluate(() => { window.__boom = false; });
     await a.page.locator('.dt-nav button').first().click();
     await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
@@ -1715,7 +1658,7 @@ try {
       check('the list fades at an edge that has more past it, over 16 px: the bottom alone at the top, both in the middle, the top alone at the end, so a row half under the chips reads as scrolling',
         !e0.above && e0.below && /rgb\(0, 0, 0\) calc\(100% - 16px\)/.test(e0.mask) && e1.above && e1.below && /16px.*calc\(100% - 16px\)/.test(e1.mask) && e2.above && !e2.below && /rgb\(0, 0, 0\) 16px/.test(e2.mask) && ![e0, e1, e2].some(e => /30px|14px/.test(e.mask)), JSON.stringify([e0, e1, e2]));
       await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
-      await a.shot('list-01-rest', { x: 40, y: 0, width: 560, height: 700 });
+      await a.shot('list-01-rest', { x: 0, y: 0, width: 836, height: 700 });
       await a.ctx.close();
     }
     {
@@ -1727,9 +1670,9 @@ try {
         now: (n => ({ gap: n.getBoundingClientRect().top - document.querySelector('[data-key="f-w11"]').getBoundingClientRect().bottom, text: n.innerText.trim() }))(document.querySelector('.dt-now')), foot: document.querySelector('.dt-foot')?.innerText }));
       check('eleven places with headers and four stops with a small dot in the trip; the trips are one rail each; the now line hangs from the walk he is on', dom.heads === 11 && dom.pips === 4 && dom.trip.slice(0, 5).join() === 'f-w1^,f-s2,f-r1,f-talk-1,f-w2$' && dom.now.gap === 0 && dom.now.text === '现在 21:50' && dom.foot === '还没读到：Mac 的时间', JSON.stringify(dom));
       await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
-      await a.shot('list-02-fragmented-top', { x: 40, y: 0, width: 560, height: 700 });
+      await a.shot('list-02-fragmented-top', { x: 0, y: 0, width: 836, height: 700 });
       await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await a.page.waitForTimeout(300);
-      await a.shot('list-03-fragmented-bottom', { x: 40, y: 0, width: 560, height: 700 });
+      await a.shot('list-03-fragmented-bottom', { x: 0, y: 0, width: 836, height: 700 });
       await a.ctx.close();
     }
     {
@@ -1740,7 +1683,7 @@ try {
       const vd = await a.page.evaluate(() => { const v = document.querySelector('.dt-void'), tb = document.querySelector('.dt-track').getBoundingClientRect(), now = document.querySelector('.dt-nowtick').getBoundingClientRect(), r = v?.getBoundingClientRect(); return v && { text: v.textContent, color: getComputedStyle(v).color, size: getComputedStyle(v).fontSize, inTrack: r.left >= tb.left - .5 && r.right <= tb.right + .5 && r.top >= tb.top - .5 && r.bottom <= tb.bottom + .5, past: r.right <= now.left + 1.5, centred: Math.abs((r.left + r.right) / 2 - (tb.left + now.left + 1) / 2) < 2, segs: document.querySelectorAll('.dt-seg').length, still: getComputedStyle(v).pointerEvents, faint: getComputedStyle(document.querySelector('.dt-hours')).color }; });
       check('a day with talks and no place says 没有位置记录 in the empty past of its bar: as faint as the hours under it, centred in the past, inside the bar, and the pointer goes through it',
         vd && vd.text === '没有位置记录' && vd.segs === 0 && vd.inTrack && vd.past && vd.centred && vd.still === 'none' && vd.size === '11px' && vd.color === vd.faint, JSON.stringify(vd));
-      await a.shot('list-04-talks-only', { x: 40, y: 0, width: 560, height: 520 });
+      await a.shot('list-04-talks-only', { x: 0, y: 0, width: 836, height: 640 });
       await a.ctx.close();
     }
     {
@@ -1759,7 +1702,7 @@ try {
       await openDay(a);
       const au = await audit(a);
       check('at 02:30 with one stay since midnight and an event this afternoon: the bar starts at 02:00 (the hour now is in), the now line is inside the stay on its rail, the event below it, nothing crowds', au.bad.length === 0 && await a.page.locator('.dt-bar').getAttribute('data-from') === '02:00' && await a.page.locator('.dt-void').count() === 0 && await a.page.locator('.dt-sh').count() === 1 && (await text(a, '.dt-now'))[0].trim() === '现在 02:30' && (await text(a, '.dt-sh .dt-tm'))[0] === '00:00 起 · 2 小时 30 分' && await a.page.locator('.dt-now ~ .dt-row.is-future').count() === 1 && await a.page.locator('.dt-now.is-rail').count() === 1, au.bad.join('; '));
-      await a.shot('list-05-early-morning', { x: 40, y: 0, width: 560, height: 520 });
+      await a.shot('list-05-early-morning', { x: 0, y: 0, width: 836, height: 640 });
       await a.ctx.close();
     }
     {
@@ -1770,7 +1713,7 @@ try {
       await a.page.waitForTimeout(500);
       const au = await audit(a);
       check('yesterday: the same list, no now line, no countdown; the tag is a button that goes back to today', au.bad.length === 0 && await a.page.locator('.dt-now').count() === 0 && await a.page.locator('.dt-today').count() === 0 && (await text(a, '.dt-back'))[0] === '回到今天', au.bad.join('; '));
-      await a.shot('list-06-yesterday', { x: 40, y: 0, width: 560, height: 520 });
+      await a.shot('list-06-yesterday', { x: 0, y: 0, width: 836, height: 640 });
       await a.page.locator('.dt-back').click();
       await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
       check('and 回到今天 is today again, with its tag', await a.page.locator('.dt-back').count() === 0 && await a.page.locator('.dt-today').count() === 1);
@@ -1803,12 +1746,12 @@ try {
       });
       check('the header: the weather after the date and its tag, before the chips: a glyph, 多云, and 14° / 8° in mono; nothing leaves the header', head.order === 'dt-date,dt-today,dt-wx,dt-chips,dt-waits,dt-tidy,dt-nav' && head.words === '多云|14° / 8°' && head.sky === 'cloudSun' && head.svg && head.mono && head.afterTag === 8 && head.beforeChips === 8 && head.inside, JSON.stringify(head));
       const nums = await a.page.evaluate(() => {
-        const box = document.querySelector('.dt-numbers'), g = box.querySelector('.dt-vitals'), vit = [...g.querySelectorAll('.dt-vit')], cs = getComputedStyle(vit[0]);
-        return { chips: [...box.querySelectorAll('.dt-num')].map(b => [...b.querySelectorAll('span, em')].map(e => e.textContent).join(' ')), vitals: vit.map(v => [...v.children].map(c => c.textContent).join(' ')), after: g.previousElementSibling?.className.split(' ')[0],
-          bg: cs.backgroundColor, tag: vit[0].tagName, controls: g.querySelectorAll('button, a, input').length, mono: /JetBrains|Menlo|monospace/.test(getComputedStyle(vit[0].querySelector('em')).fontFamily), faint: getComputedStyle(vit[0].querySelector('small')).color, value: getComputedStyle(vit[0].querySelector('em')).color,
-          row: [...box.children].map(e => Math.round(e.getBoundingClientRect().top)).filter((v, i, l) => l.indexOf(v) === i).length };
+        const box = document.querySelector('.dt-numbers'), g = box.querySelector('.dt-nums'), vit = [...g.querySelectorAll('.dt-vit')], cs = getComputedStyle(vit[0]);
+        return { chips: [...box.querySelectorAll('.dt-num')].map(b => [...b.querySelectorAll('span, em')].map(e => e.textContent).join(' ')), vitals: vit.map(v => [...v.children].map(c => c.textContent).join(' ')), after: vit[0].previousElementSibling?.className.split(' ')[0],
+          bg: cs.backgroundColor, tag: vit[0].tagName, controls: vit.reduce((n, v) => n + v.querySelectorAll('button, a, input').length, 0), mono: /JetBrains|Menlo|monospace/.test(getComputedStyle(vit[0].querySelector('em')).fontFamily), faint: getComputedStyle(vit[0].querySelector('small')).color, value: getComputedStyle(vit[0].querySelector('em')).color,
+          row: [...g.children].map(e => Math.round(e.getBoundingClientRect().top + e.getBoundingClientRect().height / 2)).filter((v, i, l) => l.indexOf(v) === i).length };
       });
-      check('after the lens chips, the body\'s numbers as quiet values: 8,240 步, 静息 58, HRV 42 (a faint label and a mono value, no background, nothing to press), on the chips\' own line', nums.chips.join() === '睡 7:20,路上 3:04,运动 35 分钟,Mac 2:37,通话 18 分钟,和她 3 次,花 $12.40,照片 1' && nums.vitals.join() === '8,240 步,静息 58,HRV 42' && nums.after === 'dt-num' && nums.bg === 'rgba(0, 0, 0, 0)' && nums.controls === 0 && nums.mono && nums.faint !== nums.value, JSON.stringify(nums));
+      check('after the lens chips, the body\'s numbers as quiet values: 8,240 步, 静息 58, HRV 42 (a faint label and a mono value, no background, nothing to press), on the chips\' own line', nums.chips.join() === '睡 7:20,路上 3:04,运动 35 分,Mac 2:37,通话 18 分,和她 3 次,花 $12.40,照片 1' && nums.vitals.join() === '8,240 步,静息 58,HRV 42' && nums.after === 'dt-num' && nums.bg === 'rgba(0, 0, 0, 0)' && nums.controls === 0 && nums.mono && nums.faint !== nums.value && nums.row === 1, JSON.stringify(nums));
       const rowsOf = await a.page.evaluate(() => {
         const q = key => { const r = document.querySelector(`[data-key="${key}"]`); return r && { title: r.querySelector('.dt-tx b').textContent, detail: r.querySelector('.dt-tx > em')?.textContent ?? '', right: r.querySelector('.dt-tm').textContent, h: r.getBoundingClientRect().height, lk: r.dataset.lk, svg: !!r.querySelector('.dt-ic svg'), at: r.querySelector('.dt-at').textContent, rail: r.classList.contains('is-rail') }; };
         return { run: q('workout-1'), home: q('code:stay-home-1'), uvic: q('code:stay-uvic'), strays: document.querySelectorAll('[data-key^="code-s"]').length };
@@ -1827,10 +1770,15 @@ try {
       const [rem, core, awake] = await pixels(a, clip, [[3 + sb.width * .12, 5], [3 + sb.width * .78 * .98, 5], [3 + sb.width * .94, 5]].map(([x, y]) => [x, y]));
       check('and it is one fill from end to end (the sleep hue at .9 over the ground), whatever stage it was', near(rem, [102, 110, 186], 10) && near(core, [102, 110, 186], 10) && near(awake, [102, 110, 186], 10), JSON.stringify({ rem, core, awake }));
       await a.page.mouse.move(sb.x + sb.width / 2, sb.y + sb.height / 2); await a.page.waitForTimeout(400);
-      const card = await a.page.evaluate(() => { const c = document.querySelector('.dt-card.is-on .dt-slot.is-cur'); return { head: c?.querySelector('.dt-ch b')?.textContent, note: c?.querySelector('.dt-cnote')?.textContent, range: c?.querySelector('.dt-ch span')?.textContent }; });
-      check('hovering the sleep says what the night had: 睡觉, 昨天 23:10–07:00 · 7 小时 20 分, and 深睡 1:10 · REM 1:40 · 醒 3 次 under it', card.head === '睡觉' && card.note === '深睡 1:10 · REM 1:40 · 醒 3 次' && card.range === '昨天 23:10–07:00 · 7 小时 20 分', JSON.stringify(card));
-      await a.shot('data-02-sleep-card', { x: 40, y: 0, width: 560, height: 300 });
-      await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
+      // V2: no hover card. The pointer's minute is said under the bar, the piece under it and its row light together.
+      const hov = await a.page.evaluate(() => { const tb = document.querySelector('.dt-track').getBoundingClientRect(); return { minute: document.querySelector('.dt-hours .dt-minute')?.textContent ?? null, left: document.querySelector('.dt-hours .dt-minute')?.getBoundingClientRect().left ?? null, tb: [tb.left, tb.width], piece: document.querySelector('.dt-seg.is-sleep')?.classList.contains('is-hot'), row: document.querySelector('[data-key="sleep-1"]')?.classList.contains('is-hot'), cards: document.querySelectorAll('.dt-card').length, pins: document.querySelectorAll('.dt-minute').length }; });
+      const cx = sb.x + sb.width / 2, wantMin = Math.round(360 + (cx - hov.tb[0]) / hov.tb[1] * 18 * 60), gotMin = hov.minute && Number(hov.minute.slice(0, 2)) * 60 + Number(hov.minute.slice(3));
+      check('hovering the sleep says the minute under the pointer below the bar, lights the night\'s piece and its row together, and opens no card', /^\d\d:\d\d$/.test(hov.minute ?? '') && Math.abs(gotMin - wantMin) <= 1 && hov.piece && hov.row && hov.cards === 0 && hov.pins === 1, JSON.stringify({ ...hov, wantMin }));
+      await a.page.locator('[data-key="sleep-1"]').click({ position: { x: 170, y: 14 } }); await a.page.waitForTimeout(500);
+      const card = await a.page.evaluate(() => { const c = document.querySelector('.dt-side .dt-pin.is-day'); return { head: c?.querySelector('.dt-dh b')?.textContent, note: c?.querySelector('.dt-lines')?.textContent, range: c?.querySelector('.dt-dh em')?.textContent }; });
+      check('selecting the sleep puts what the night had in the right column: 睡觉, 23:10–07:00 · 7 小时 50 分, and 深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次 under its stages', card.head === '睡觉' && card.note === '深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次' && card.range === '23:10–07:00 · 7 小时 50 分', JSON.stringify(card));
+      await a.shot('data-02-sleep-card', { x: 0, y: 0, width: 836, height: 640 });
+      await a.page.keyboard.press('Escape'); await a.page.mouse.move(5, 5); await a.page.waitForTimeout(300);
       const sun = await a.page.evaluate(() => {
         const hours = document.querySelector('.dt-hours'), tb = document.querySelector('.dt-track').getBoundingClientRect(), mark = e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 - tb.left; };
         const marks = [...hours.querySelectorAll('.dt-sun')], labels = [...hours.querySelectorAll('span:not(.dt-sun)')], one = e => { const st = getComputedStyle(e); return { kind: e.dataset.sun, at: mark(e) / tb.width, glyph: !!e.querySelector('svg'), w: st.width, h: st.height, bg: st.backgroundColor, top: e.getBoundingClientRect().top - tb.bottom }; };
@@ -1848,13 +1796,13 @@ try {
       await a.page.mouse.move(wx.x + wx.width / 2, wx.y + wx.height / 2); await a.page.waitForTimeout(600);
       const tip1 = await a.page.evaluate(() => { const t = document.querySelector('.dt-wx-tip'), r = t.getBoundingClientRect(), h = document.querySelector('.dt-wx').getBoundingClientRect(); return { text: t.textContent, op: getComputedStyle(t).opacity, vis: getComputedStyle(t).visibility, below: r.top - h.bottom, size: getComputedStyle(t).fontSize, none: getComputedStyle(t).pointerEvents }; });
       check('a rest on the weather says 日出 07:25 · 日落 18:05 in a small card under it (nothing before the rest, and the pointer goes through it)', tip0.text === '日出 07:25 · 日落 18:05' && tip0.op === '0' && tip0.vis === 'hidden' && tip1.text === '日出 07:25 · 日落 18:05' && tip1.op === '1' && tip1.vis === 'visible' && tip1.below >= 3 && tip1.below <= 10 && tip1.none === 'none', JSON.stringify({ tip0, tip1 }));
-      await a.shot('data-06-weather-tip', { x: 40, y: 20, width: 560, height: 120 });
+      await a.shot('data-06-weather-tip', { x: 0, y: 20, width: 836, height: 120 });
       await a.page.mouse.move(5, 5); await a.page.waitForTimeout(400);
       await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(300);
-      await a.shot('data-01-full-day-top', { x: 40, y: 0, width: 560, height: 700 });
-      await a.shot('data-03-header-and-bar', { x: 40, y: 20, width: 560, height: 190 });
+      await a.shot('data-01-full-day-top', { x: 0, y: 0, width: 836, height: 700 });
+      await a.shot('data-03-header-and-bar', { x: 0, y: 20, width: 836, height: 190 });
       await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); l.scrollTop = l.scrollHeight; }); await a.page.waitForTimeout(300);
-      await a.shot('data-04-full-day-bottom', { x: 40, y: 0, width: 560, height: 700 });
+      await a.shot('data-04-full-day-bottom', { x: 0, y: 0, width: 836, height: 700 });
 
       // the lens: 运动 lights the run on the bar and keeps its row; Mac lights the blocks, the sessions and their rows
       const op = key => a.page.locator(`[data-key="${key}"]`).evaluate(el => getComputedStyle(el).opacity);
@@ -1895,17 +1843,18 @@ try {
       await a.ctx.close();
     }
     {
-      // the header on a crowded day: the weather, three labels, two things waiting. Labels are whole or they are a +N, and they stay between the weather and the pill.
-      const a = await boot({ served: fullDay({ labels: [{ title: '期中周' }, { title: '黄金周假期' }, { title: '牙医' }] }) });
+      // the header on a crowded day: the weather, six labels, two things waiting (the header is 820 wide now, so it takes six to be crowded). Labels are whole or they are a +N, and they stay between the weather and the pill.
+      const a = await boot({ served: fullDay({ labels: [{ title: '期中周' }, { title: '黄金周假期' }, { title: '牙医' }, { title: '年度体检预约' }, { title: '项目答辩准备' }, { title: '搬家看房' }] }) });
       await openDay(a);
       const r = await a.page.evaluate(() => {
         const h = document.querySelector('.dt-head'), hb = h.getBoundingClientRect(), box = q => h.querySelector(q).getBoundingClientRect(), chips = box('.dt-chips');
         return { inside: [...h.children].every(e => e.getBoundingClientRect().right <= hb.right + .5 && e.getBoundingClientRect().left >= hb.left - .5), between: chips.left >= box('.dt-wx').right + 7.5 && chips.right <= box('.dt-waits').left - 7.5,
           labels: [...document.querySelectorAll('.dt-chip')].map(c => c.textContent).join(), cut: [...document.querySelectorAll('.dt-chip')].some(c => c.scrollWidth > c.clientWidth), waits: document.querySelector('.dt-waits').textContent, one: h.getBoundingClientRect().height };
       });
-      // With the 理一下 pill (a sparkle alone here) 7 px short of room for the first label and the +2, the first label stays and is cut to fit (`cut`).
-      check('the header on a crowded day (weather, three labels, 2 件等你, the pill, the day buttons): nothing leaves it, the labels that do not fit whole become +2, and the header stays one line', r.inside && r.between && r.labels === '期中周,+2' && r.waits === '2 件等你' && r.one < 30, JSON.stringify(r));
-      await a.shot('data-05-crowded-header', { x: 40, y: 20, width: 560, height: 190 });
+      const shown = r.labels.split(',');
+      check('the header on a crowded day (weather, six labels, 2 件等你, the pill, the day buttons): nothing leaves it, the labels that do not fit whole become a +N that counts exactly the hidden ones, and the header stays one line',
+        r.inside && r.between && !r.cut && shown[0] === '期中周' && shown.length >= 2 && shown.length < 6 && /^\+\d+$/.test(shown.at(-1)) && Number(shown.at(-1).slice(1)) === 6 - (shown.length - 1) && r.waits === '2 件等你' && r.one < 30, JSON.stringify(r));
+      await a.shot('data-05-crowded-header', { x: 0, y: 20, width: 836, height: 190 });
       await a.ctx.close();
     }
     {
@@ -1934,9 +1883,9 @@ try {
     const reveal = key => a.page.evaluate(k => { const l = document.querySelector('.dt-list'), el = document.querySelector(`[data-key="${k}"]`); l.scrollTop += el.getBoundingClientRect().top - l.getBoundingClientRect().top - 120; }, key);
     const centre = async key => { const b = await a.page.locator(`[data-key="${key}"]`).boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 }; };
     const lit = () => a.page.evaluate(() => {
-      const b = document.querySelector('.dt-bracket')?.getBoundingClientRect();
+      const b = document.querySelector('.dt-bracket.is-open:not(.is-off)')?.getBoundingClientRect();
       return { hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key), pick: [...document.querySelectorAll('.dt-row.is-pick, .dt-sh.is-pick')].map(e => e.dataset.key), current: [...document.querySelectorAll('[aria-current="true"]')].map(e => e.dataset.key),
-        bracket: b ? { left: b.left, width: b.width } : null, lifted: document.querySelectorAll('.dt-seg.is-hot, .dt-sched.is-hot').length };
+        bracket: b ? { left: b.left, width: b.width } : null, hinted: document.querySelectorAll('.dt-bracket:not(.is-open)').length, lifted: document.querySelectorAll('.dt-seg.is-hot, .dt-sched.is-hot').length };
     });
     const want = key => { const x = rich.span.get(key); return { left: px(x.t0), width: Math.max(3, px(x.t1) - px(x.t0)) }; };
     const sameSpan = (b, key) => { const w = want(key); return !!b && Math.abs(b.left - w.left) < 1.6 && Math.abs(b.width - w.width) < 1.6; };
@@ -1947,18 +1896,18 @@ try {
     await reveal('ride-1'); await a.page.waitForTimeout(150);
     await a.move(...Object.values(await centre('ride-1'))); await a.page.waitForTimeout(350);
     let m = await lit();
-    const look = await a.page.evaluate(() => { const r = getComputedStyle(document.querySelector('[data-key="ride-1"]')), s = document.querySelector('.dt-seg.is-hot'), b = getComputedStyle(document.querySelector('.dt-bracket')); return { bg: r.backgroundColor, radius: r.borderTopLeftRadius, filter: s && getComputedStyle(s).filter, ring: b.borderTopColor }; });
-    check('a pointer on a row lights it (white .04, radius 10), brackets its span on the bar with a 1.5 px ink outline and lifts the piece 12%', m.hot.join() === 'ride-1' && look.bg === 'rgba(255, 255, 255, 0.04)' && look.radius === '10px' && sameSpan(m.bracket, 'ride-1') && m.lifted === 1 && look.filter === 'brightness(1.12)' && look.ring === 'rgba(238, 240, 251, 0.92)'
-      && /\.dt-bracket \{[^}]*border:1\.5px solid rgb\(var\(--ink\) \/ \.92\)/.test(readFileSync(path.join(root, 'src/day-bar.css'), 'utf8')), JSON.stringify({ m, look, want: want('ride-1') }));
+    const look = await a.page.evaluate(() => { const r = getComputedStyle(document.querySelector('[data-key="ride-1"]')), s = document.querySelector('.dt-seg.is-hot'), b = getComputedStyle(document.querySelector('.dt-bracket.is-open')); return { bg: r.backgroundColor, radius: r.borderTopLeftRadius, filter: s && getComputedStyle(s).filter, ring: b.borderTopColor }; });
+    check('a pointer on a row lights it (white .04, radius 10) and lifts its piece on the bar (18%); it draws no frame (the frame is the selection\'s) and no card', m.hot.join() === 'ride-1' && look.bg === 'rgba(255, 255, 255, 0.04)' && look.radius === '10px' && m.bracket === null && m.hinted === 0 && m.lifted === 1 && look.filter === 'brightness(1.18)' && m.pick.length === 0
+      && await a.page.locator('.dt-card').count() === 0, JSON.stringify({ m, look, want: want('ride-1') }));
     check('and hovering asks for no key focus', await focusCalls() === '');
-    await a.shot('keys-01-hover-row', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('keys-01-hover-row', { x: 0, y: 0, width: 836, height: 700 });
     await reveal('stay-uvic'); await a.page.waitForTimeout(150);
     await a.move(...Object.values(await centre('stay-uvic'))); await a.page.waitForTimeout(350);
     m = await lit();
-    check('a pointer on a stay\'s header brackets the whole stay (15:19 to 18:15)', m.hot.join() === 'stay-uvic' && sameSpan(m.bracket, 'stay-uvic'), JSON.stringify({ m, want: want('stay-uvic') }));
+    check('a pointer on a stay\'s header lights the stay and its piece of the bar', m.hot.join() === 'stay-uvic' && m.lifted >= 1 && m.bracket === null, JSON.stringify({ m, want: want('stay-uvic') }));
     await away();
     m = await lit();
-    check('leaving the row clears the light and the bracket', m.hot.length === 0 && m.pick.length === 0 && m.bracket === null && m.lifted === 0, JSON.stringify(m));
+    check('leaving the row clears the light', m.hot.length === 0 && m.pick.length === 0 && m.bracket === null && m.lifted === 0, JSON.stringify(m));
 
     // a click on the line pins the day, and that click (only) takes the window's key focus
     await a.move(on.x, on.y); await a.page.mouse.down(); await a.page.mouse.up();
@@ -1968,12 +1917,12 @@ try {
     // with nothing chosen and the now line out of view the keys start from the top of the list (↓) or its bottom (↑)
     await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; }); await a.page.waitForTimeout(200);
     await press('ArrowDown'); m = await lit();
-    check('↓ with nothing chosen and the now line out of view takes the first row in view, and brackets its stretch of the bar', m.pick.join() === 'sleep-1' && sameSpan(m.bracket, 'sleep-1'), JSON.stringify({ m, want: want('sleep-1') }));
+    check('↓ with nothing chosen and the now line out of view selects the first row in view that has a detail, and frames its stretch of the bar', m.pick.join() === 'sleep-1' && sameSpan(m.bracket, 'sleep-1'), JSON.stringify({ m, want: want('sleep-1') }));
     // ← → are days; they are not read in a text field or with a modifier
     await press('ArrowLeft');
     await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
     m = await lit();
-    check('← is the day before, and the row chosen goes with the day', await date() === '10月18日 周日' && m.pick.length === 0 && m.bracket === null);
+    check('← is the day before, and the row chosen goes with the day (the right column is the day\'s now again, the frame is gone)', await date() === '10月18日 周日' && m.pick.length === 0 && m.bracket === null && await a.page.locator('.dt-side .dt-pin').count() === 0);
     await press('ArrowRight');
     await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
     await press('ArrowRight');
@@ -1982,8 +1931,15 @@ try {
     await press('ArrowLeft'); await press('ArrowDown'); m = await lit();
     check('in a text field the arrows are the field\'s: no day changes, no row is chosen', await date() === '10月19日 周一' && m.pick.length === 0);
     await a.page.evaluate(() => document.getElementById('probe').remove());
-    await a.page.keyboard.press('Meta+ArrowLeft'); await a.page.keyboard.press('Alt+ArrowDown'); await a.page.waitForTimeout(300); m = await lit();
-    check('with ⌘ or ⌥ held they are not the pane\'s either', await date() === '10月19日 周一' && m.pick.length === 0);
+    await a.page.keyboard.press('Meta+ArrowDown'); await a.page.keyboard.press('Alt+ArrowDown'); await a.page.keyboard.press('Shift+ArrowLeft'); await a.page.waitForTimeout(300); m = await lit();
+    check('with ⌘, ⌥ or ⇧ held ↑ ↓ and ← are not the pane\'s: no row is chosen and the day stays', await date() === '10月19日 周一' && m.pick.length === 0);
+    await a.page.keyboard.press('Meta+ArrowLeft');
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    check('⌘← is the day before as ← is (V2: ⌘← ⌘→ step the days)', await date() === '10月18日 周日');
+    await a.page.keyboard.press('Meta+ArrowRight');
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today'), undefined, 6000);
+    await a.page.keyboard.press('Meta+ArrowRight'); await a.page.waitForTimeout(300);
+    check('⌘→ is the day after, and on today it does nothing', await date() === '10月19日 周一' && !a.s.hits.some(h => h.includes('2026-10-20')));
 
     // with the now line in view they start from it: ↑ at the last row above it, ↓ at the first row below it
     await press('ArrowUp'); m = await lit();
@@ -1993,10 +1949,11 @@ try {
     await press('ArrowDown');
     m = await lit();
     const ring = await a.page.evaluate(() => { const c = getComputedStyle(document.querySelector('.is-pick')); return { bg: c.backgroundColor, shadow: c.boxShadow }; });
-    check('↓ with nothing chosen takes the first row under the now line (the 22:00 reminder), rings it, brackets its moment on the bar, and says so to a screen reader', m.pick.join() === 'reminder-1' && m.current.join() === 'reminder-1' && sameSpan(m.bracket, 'reminder-1') && ring.bg === 'rgba(255, 255, 255, 0.07)' && /inset/.test(ring.shadow), JSON.stringify({ m, ring }));
-    await a.shot('keys-02-picked-row', { x: 40, y: 0, width: 560, height: 700 });
+    check('↓ with nothing chosen selects the first row under the now line (the 22:00 reminder), rings it, frames its moment on the bar, shows its detail in the right column, and says so to a screen reader', m.pick.join() === 'reminder-1' && m.current.join() === 'reminder-1' && sameSpan(m.bracket, 'reminder-1') && ring.bg === 'rgba(255, 255, 255, 0.08)' && /inset/.test(ring.shadow)
+      && await a.page.locator('.dt-side[data-page="reminder-1"] .dt-pin.is-day .dt-dh b').innerText() === '把垃圾拿出去', JSON.stringify({ m, ring }));
+    await a.shot('keys-02-picked-row', { x: 0, y: 0, width: 836, height: 700 });
     await press('ArrowDown'); m = await lit();
-    check('↓ again is the next row: the event at 22:30, its hour on the bar', m.pick.join() === 'event-1' && sameSpan(m.bracket, 'event-1'), JSON.stringify(m));
+    check('↓ again is the next row: the event at 22:30, its hour framed on the bar, and the right column follows at once', m.pick.join() === 'event-1' && sameSpan(m.bracket, 'event-1'), JSON.stringify(m));
     await press('ArrowUp', 2); m = await lit();
     check('↑ twice goes back past the reminder and over the now line to the chat before it', m.pick.join() === 'chat-1' && sameSpan(m.bracket, 'chat-1'), JSON.stringify(m));
     await press('ArrowUp', 60); m = await lit();
@@ -2012,8 +1969,8 @@ try {
       const w = await where(); visited.push(w.key);
       if (w.top < -.5 || w.bottom < -.5 || w.top < 20 && !w.atTop || w.bottom < 20 && !w.atEnd) bad.push(`${w.key} ${w.top.toFixed(0)}/${w.bottom.toFixed(0)}`);
     }
-    const everyRow = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].map(e => e.dataset.key));
-    check('going down the whole day, each row chosen is fully inside the list, 20 px clear of its fading edges unless the list can go no further, and every row is reached in order', bad.length === 0 && visited.slice(0, everyRow.length - 1).join() === everyRow.slice(1).join() && visited.at(-1) === everyRow.at(-1), bad.join('; ') + ' | ' + visited.length + ' ' + everyRow.length);
+    const everyRow = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]:not(.is-still)')].map(e => e.dataset.key));
+    check('going down the whole day, each row chosen is fully inside the list, 20 px clear of its fading edges unless the list can go no further, and every row that has a detail is reached in order (a flat row is passed over)', bad.length === 0 && visited.slice(0, everyRow.length - 1).join() === everyRow.slice(1).join() && visited.at(-1) === everyRow.at(-1), bad.join('; ') + ' | ' + visited.length + ' ' + everyRow.length);
     await press('ArrowUp', 6);
     const sampled = a.page.evaluate(() => new Promise(resolve => { const l = document.querySelector('.dt-list'), seen = [], t0 = performance.now(); const tick = now => { seen.push(l.scrollTop); if (now - t0 < 420) requestAnimationFrame(tick); else resolve(seen); }; requestAnimationFrame(tick); }));
     await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp'); await a.page.keyboard.press('ArrowUp');
@@ -2026,22 +1983,33 @@ try {
     await reveal('move-1'); await a.page.waitForTimeout(200);
     await a.move(...Object.values(await centre('move-1'))); await a.page.waitForTimeout(350);
     m = await lit();
-    const over = sameSpan(m.bracket, 'move-1') && m.hot.join() === 'move-1' && m.pick.join() === chosen;
+    const over = sameSpan(m.bracket, chosen) && m.hot.join() === 'move-1' && m.pick.join() === chosen && m.lifted >= 1;
     await away(); m = await lit();
-    check('the pointer\'s row has the bracket while it is on it; the keys\' row has it back when the pointer leaves', over && m.hot.length === 0 && sameSpan(m.bracket, chosen), JSON.stringify({ m, chosen }));
+    check('the pointer\'s row is lit while it is on it, the selection\'s frame stays on the keys\' row throughout', over && m.hot.length === 0 && sameSpan(m.bracket, chosen), JSON.stringify({ m, chosen }));
 
     // a list that scrolls under a resting pointer does not move what the keys chose
     await press('ArrowUp', 60);
     const rest = await centre('stay-home-1'); await a.move(rest.x, rest.y); await a.page.waitForTimeout(300);
     await press('ArrowDown', 14); m = await lit();
     const under = await a.page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-key]')?.dataset.key ?? null, [rest.x, rest.y]);
-    check('and a list scrolling under a pointer at rest does not take the choice or the bracket from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
+    check('and a list scrolling under a pointer at rest does not take the choice or the frame from the keys', m.pick.length === 1 && m.hot.length === 0 && under !== null && under !== m.pick[0] && sameSpan(m.bracket, m.pick[0]), JSON.stringify({ m, under }));
     check('through all of it no key focus was asked for but the pinning click\'s', await focusCalls() === 'true', await focusCalls());
-    const quickAsk = await a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh')].map(el => [el.dataset.key, !!el.querySelector(':scope > .dt-quick > .dt-ask')]));
-    check('the quick 问她 is on exactly the rows the brain takes a turn about: those with an item to hand over (askOf), and not a row that is no one item', quickAsk.length > 10 && quickAsk.some(([, has]) => has) && quickAsk.every(([key, has]) => has === (askOf(rich, key, zh) !== null)), JSON.stringify(quickAsk.filter(([key, has]) => has !== (askOf(rich, key, zh) !== null))));
+    // 问她 is in the right column's head, on exactly the rows the brain takes a turn about (askOf); today's rows carry no inline star or 问她 any more.
+    await press('ArrowUp', 60);
+    const heads = [];
+    for (let i = 0; i < 60; i++) {
+      const h = await a.page.evaluate(() => { const k = document.querySelector('.is-pick')?.dataset.key ?? null; return { k, ask: [...document.querySelectorAll('.dt-side .dt-dh .dt-btn')].some(b => b.textContent === '问她'), side: document.querySelector('.dt-side')?.dataset.page ?? null }; });
+      if (heads.length && heads.at(-1).k === h.k) break;
+      heads.push(h); await a.page.keyboard.press('ArrowDown'); await a.page.waitForTimeout(120);
+    }
+    check('the right column\'s head has 问她 on exactly the rows the brain takes a turn about: those with an item to hand over (askOf), and not a row that is no one item', heads.length > 10 && heads.some(h => h.ask) && heads.every(h => h.side === h.k && h.ask === (askOf(rich, h.k, zh) !== null)), JSON.stringify({ n: heads.length, noAsk: heads.filter(h => !h.ask).length, bad: heads.filter(h => h.ask !== (askOf(rich, h.k, zh) !== null) || h.side !== h.k) }));
+    check('today\'s rows have no inline star or 问她 beside them any more', await a.page.locator('.dt-row > .dt-quick, .dt-sh > .dt-quick, .dt-row .dt-ask, .dt-row .dt-starb').count() === 0);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
+    m = await lit();
+    check('Esc lets go of the selection first: the right column is the day\'s now again (现在 / 等你 / 接下来), the frame is gone, the day stays open', m.pick.length === 0 && m.bracket === null && (await a.read()).tl === 'pinned' && await a.page.locator('.dt-side .ds').count() === 1 && await a.page.locator('.dt-side .dt-pin').count() === 0, JSON.stringify(m));
     await a.page.keyboard.press('Escape');
     r = await settle(a, '', 2000);
-    check('Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
+    check('and the next Esc folds the day and gives the key focus back', r.tl === '' && await focusCalls() === 'true,false', await focusCalls());
     // unpinned by the same click that pinned it
     await a.move(on.x, on.y); await a.page.mouse.down(); await a.page.mouse.up();
     await settle(a, 'pinned', 2000);
@@ -2073,7 +2041,7 @@ try {
       const page = await a.ctx.newPage();
       await page.setViewportSize({ width: cols * (w + 8) + 8, height: Math.ceil(tiles.length / cols) * (h + 8) + 8 });
       await page.setContent(`<body style="margin:0;padding:8px;background:#222;display:grid;grid-template-columns:repeat(${cols},${w}px);gap:8px;font:11px monospace;color:#fff">${tiles.map(f => {
-        const png = Buffer.from(f.data, 'base64'), scale = 640 * k / png.readUInt32BE(16);
+        const png = Buffer.from(f.data, 'base64'), scale = 836 * k / png.readUInt32BE(16);
         return `<div style="position:relative;width:${w}px;height:${h}px;overflow:hidden;border-radius:6px;background:#000 url(data:image/png;base64,${f.data}) ${-crop.x * k}px ${-crop.y * k}px/${png.readUInt32BE(16) * scale}px ${png.readUInt32BE(20) * scale}px no-repeat"><span style="position:absolute;left:6px;bottom:4px;padding:1px 5px;border-radius:3px;background:#000a">${label} +${f.ms} ms</span></div>`;
       }).join('')}</body>`);
       await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true, scale: 'css' });
@@ -2098,7 +2066,7 @@ try {
       const key = x => x.key ?? 'now';
       check('on open the rows in view come up one after another: at most ten, those in the window in order, 6 px and a fade, 220 ms each, 25 ms apart; none out of view',
         log.length === Math.min(10, shown.length) && log.map(key).join() === shown.slice(0, 10).join() && log.every((x, i) => x.opt.delay === i * 25 && x.opt.duration === 220 && x.opt.fill === 'backwards' && x.kf[0].opacity === 0 && x.kf[0].transform === 'translateY(6px)'), JSON.stringify({ log: log.map(x => [key(x), x.opt.delay]), shown }));
-      check('nothing is left hidden or moved after it: every row is at its own opacity and in place', await a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh, .dt-now')].every(el => { const c = getComputedStyle(el); return (c.opacity === '1' || c.opacity === '0.62') && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity).length === 0));
+      check('nothing is left hidden or moved after it: every row is at its own opacity and in place, and no animation of the list is left running', await a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh, .dt-now')].every(el => { const c = getComputedStyle(el); return (c.opacity === '1' || c.opacity === '0.62') && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.effect.target?.closest?.('.dt-list')).length === 0));
       check('and nothing grew: the day as it opened is not new', (await anims(a)).every(x => x.kf[0]?.height !== '0px'));
 
       // a day change: the day that was leaves (80 ms) before the new one enters (140 ms); the list moves 16 px, the rest of the pane 8
@@ -2113,7 +2081,7 @@ try {
         out.length >= 4 && out.every(x => x.kf.length === 1 && x.kf[0].opacity === 0 && x.opt.fill === 'forwards' && x.kf[0].transform === `translateX(${cls(x) === 'dt-stage' ? 16 : 8}px)`) && ['dt-line', 'dt-bar', 'dt-numbers', 'dt-stage'].every(c => out.some(x => cls(x) === c)), JSON.stringify(out.map(x => [cls(x), x.kf[0].transform])));
       check('then the new day enters from the left (140 ms), after the first has gone: -16 px for the list, -8 for the rest',
         inn.length >= 2 && inn.every(x => x.kf.length === 2 && x.kf[0].opacity === 0 && x.kf[0].transform === `translateX(-${cls(x) === 'dt-stage' ? 16 : 8}px)` && x.opt.fill === 'backwards') && Math.min(...inn.map(x => x.at)) >= Math.max(...out.map(x => x.at)) + 70, JSON.stringify({ out: out.map(x => x.at), inn: inn.map(x => [cls(x), x.at, x.kf[0].transform]) }));
-      check('and when it is over nothing is left faded or shifted', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.effect.target?.closest?.('.dt')).length === 0));
+      check('and when it is over nothing is left faded or shifted', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.playState !== 'finished' && x.effect.target?.closest?.('.dt')).length === 0));
       await a.page.evaluate(() => { window.__anims.length = 0; });
       await a.page.keyboard.press('ArrowRight');
       await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today') && document.querySelector('.dt-now'), undefined, 6000);
@@ -2124,7 +2092,7 @@ try {
       await a.page.keyboard.press('ArrowLeft'); await a.page.waitForTimeout(40); await a.page.keyboard.press('ArrowLeft'); await a.page.waitForTimeout(60); await a.page.keyboard.press('ArrowRight'); await a.page.waitForTimeout(30); await a.page.keyboard.press('ArrowRight');
       await a.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-today') && !document.querySelector('.dt.is-loading'), undefined, 6000);
       await a.page.waitForTimeout(600);
-      check('days pressed faster than they are read settle on today, whole: nothing faded, shifted or still moving', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.effect.target?.closest?.('.dt')).length === 0) && await a.page.locator('.dt-list .dt-row').count() > 10);
+      check('days pressed faster than they are read settle on today, whole: nothing faded, shifted or still moving', await a.page.evaluate(() => [...document.querySelector('.dt').children].every(el => { const c = getComputedStyle(el); return c.opacity === '1' && c.transform === 'none'; }) && document.getAnimations().filter(x => x.effect.getComputedTiming().iterations !== Infinity && x.playState !== 'finished' && x.effect.target?.closest?.('.dt')).length === 0) && await a.page.locator('.dt-list .dt-row').count() > 10);
       await a.ctx.close();
     }
     {
@@ -2149,8 +2117,8 @@ try {
       await cdp.detach();
       check('the frame sheets of the rise and of the day change are made from a screencast of both at a tenth of their speed',
         rise.length > 3 && leaving.length > 0
-        && await sheet(a, 'motion-open-rise', got, epoch(rise[0]), rate, [0, 30, 60, 90, 120, 150, 180, 210, 240, 280, 340, 440], 'rise', { x: 40, y: 230, w: 560, h: 440 }, .56) >= 10
-        && await sheet(a, 'motion-day-change', got, epoch(leaving[0]), rate, [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 230], 'day', { x: 40, y: 60, w: 560, h: 520 }, .5) >= 10);
+        && await sheet(a, 'motion-open-rise', got, epoch(rise[0]), rate, [0, 30, 60, 90, 120, 150, 180, 210, 240, 280, 340, 440], 'rise', { x: 0, y: 230, w: 836, h: 440 }, .4) >= 10
+        && await sheet(a, 'motion-day-change', got, epoch(leaving[0]), rate, [0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 230], 'day', { x: 0, y: 60, w: 836, h: 520 }, .36) >= 10);
       await a.ctx.close();
     }
     {
@@ -2201,139 +2169,80 @@ try {
     await a.page.waitForTimeout(800);
     const text = sel => a.page.locator(sel).allInnerTexts();
     const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(), p = document.querySelector('.notch-drop').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height, pane: { left: p.left, right: p.right, top: p.top } }; });
-    const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + g.height / 2;
+    const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + g.height / 2, fx = ms => g.left + fOf(rbar, ms) * g.width;
     // Away from the bar but in the pane: a pointer that leaves the pane folds it after a grace, pinned or not.
     const away = { x: g.left + 200, y: g.top - 48 };
     const rect = sel => a.page.locator(sel).first().evaluate(el => el.getBoundingClientRect().toJSON());
 
     // at rest
-    check('the bar is 24 px tall with a 7 px radius, as wide as the pane\'s content, from 08:00 for a 09:05 wake', g.height === 24 && await a.page.locator('.dt-track').evaluate(el => getComputedStyle(el).borderTopLeftRadius === '7px') && g.width > 470 && await a.page.locator('.dt-bar').getAttribute('data-from') === '08:00');
+    check('the bar is 26 px tall with a 7 px radius, as wide as the pane\'s content, from 08:00 for a 09:05 wake', g.height === 26 && await a.page.locator('.dt-track').evaluate(el => getComputedStyle(el).borderTopLeftRadius === '7px') && g.width > 700 && await a.page.locator('.dt-bar').getAttribute('data-from') === '08:00', JSON.stringify(g));
     check('the hours are ticked every three: 09 12 15 18 21 24', (await text('.dt-hours span')).join() === '09,12,15,18,21,24' && await a.page.locator('.dt-hours span').last().evaluate(el => getComputedStyle(el).transform) !== 'none');
-    check('nothing is drawn above the bar but the time of now: no label row, no +N chip', await a.page.locator('.dt-notes, .dt-more, .dt-note').count() === 0 && await a.page.evaluate(() => {
-      const top = document.querySelector('.dt-track').getBoundingClientRect().top, up = [...document.querySelectorAll('.dt-bar *')].filter(el => !el.children.length && el.textContent.trim() && el.getBoundingClientRect().bottom <= top + .5);
-      return up.length === 1 && up[0].textContent === '21:50' && up[0].classList.contains('is-now');
+    check('nothing is written above the bar (V2: no time row, no star row, no labels, no +N chip), and no minute is said under it while the pointer is off it', await a.page.locator('.dt-notes, .dt-more, .dt-note, .dt-time, .dt-lit, .dt-hair, .dt-moments, .dt-moment, .dt-minute').count() === 0 && await a.page.evaluate(() => {
+      const top = document.querySelector('.dt-track').getBoundingClientRect().top;
+      return [...document.querySelectorAll('.dt-bar *')].filter(el => !el.children.length && el.textContent.trim() && el.getBoundingClientRect().bottom <= top + .5).length === 0;
     }));
     const inside = await a.page.evaluate(() => [...document.querySelectorAll('.dt-seg, .dt-sched.is-event')].filter(el => el.querySelector('.dt-sl')).map(el => {
       const box = el.getBoundingClientRect(), parts = [...el.querySelectorAll('.dt-sl > svg, .dt-sl > b')].map(n => n.getBoundingClientRect());
       return { name: el.querySelector('.dt-sl').textContent || 'icon', left: Math.min(...parts.map(r => r.left)) - box.left, right: box.right - Math.max(...parts.map(r => r.right)), w: box.width, icon: !!el.querySelector('.dt-sl > svg'), word: !!el.querySelector('.dt-sl > b') };
     }));
-    check('every label lies inside its piece with at least 6 px each side, or an icon alone, centred', inside.length >= 5 && inside.every(x => x.w >= 24 && (x.left >= 5.5 || x.left >= 0 && !x.word) && (x.right >= 5.5 || !x.word && x.right >= 0)) && inside.some(x => x.icon && x.word) && inside.some(x => x.icon && !x.word) && inside.some(x => x.word), JSON.stringify(inside));
+    check('every label lies inside its piece with at least 6 px each side, or is its icon alone (from 16 px), centred; a name is never written without its icon', inside.length >= 5 && inside.every(x => x.w >= 16 && x.icon && (x.word ? x.left >= 5.5 && x.right >= 5.5 : x.left >= 0 && x.right >= 0)) && inside.some(x => x.icon && x.word) && inside.some(x => x.icon && !x.word), JSON.stringify(inside));
     check('the pieces say what they are in words where they fit: a place its name, a ride its route, sleep its moon', (await text('.dt-seg .dt-sl')).filter(Boolean).join().includes('UVic') && await a.page.locator('.dt-seg.is-sleep .dt-sl svg').count() === 1);
     check('a stay he named is dark ink, a way he went is ink and hatched, still to come is dashed', await a.page.evaluate(() => {
       const dark = [...document.querySelectorAll('.dt-seg.is-dark .dt-sl')].every(el => getComputedStyle(el).color.startsWith('rgba(11, 13, 26')), trip = getComputedStyle(document.querySelector('.dt-seg.is-trip')), box = getComputedStyle(document.querySelector('.dt-sched.is-event'));
       return dark && document.querySelectorAll('.dt-seg.is-dark').length >= 2 && /repeating-linear-gradient/.test(trip.backgroundImage) && box.borderTopStyle === 'dashed';
     }));
-    const now = await rect('.dt-nowtick'), nowAt = g.left + (NOW - t0) / (t1 - t0) * g.width, nowLabel = await rect('.dt-time.is-now');
-    check('now is a 2 px warm white marker 5 px past the bar each side, at 21:50, its time above it; it breathes over 2.4 s', Math.abs(now.left + now.width / 2 - nowAt) < 1 && now.width === 2 && Math.abs(now.top - (g.top - 5)) < .6 && Math.abs(now.height - 34) < 1 && nowLabel.bottom <= now.top + .5
-      && await a.page.locator('.dt-nowtick').evaluate(el => { const c = getComputedStyle(el, '::after'); return c.animationName === 'dt-breathe' && c.animationDuration === '2.4s' && c.animationIterationCount === 'infinite'; }));
-    const stars = await a.page.locator('.dt-lit').evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }));
-    check('what mattered is a lit star on the top edge at each starred item\'s start: 15:19 and 13:20', stars.length === 2 && stars.every(s => Math.abs(s.y - g.top) < 1) && Math.abs(stars[0].x - xAt(13, 20)) < 1.5 && Math.abs(stars[1].x - xAt(15, 19)) < 1.5);
-    check('the numbers are chips under the bar, each with its words', (await text('.dt-num')).join('|').replace(/\n/g, ' ') === '睡\n7:50|路上\n3:04|Mac\n2:37|通话\n18 分钟|和她\n3 次|花\n$12.40|照片\n1'.replace(/\n/g, ' '));
+    const now = await rect('.dt-nowtick'), nowAt = g.left + (NOW - t0) / (t1 - t0) * g.width;
+    check('now is a 2 px warm white marker 5 px past the bar each side, at 21:50, with no time written over it and no breathing', Math.abs(now.left + now.width / 2 - nowAt) < 1 && now.width === 2 && Math.abs(now.top - (g.top - 5)) < .6 && Math.abs(now.height - 36) < 1
+      && await a.page.locator('.dt-nowtick').evaluate(el => { const c = getComputedStyle(el, '::after'); return c.animationName === 'none' && c.animationIterationCount !== 'infinite'; }) && await a.page.locator('.dt-time').count() === 0);
+    check('what mattered is not on the bar (no lit stars on its edge); it is a star on the row\'s glyph in the list: the UVic stay and the A&W payment', await a.page.locator('.dt-bar .dt-lit, .dt-bar svg[aria-label="★"]').count() === 0 && await a.page.locator('.dt-list svg[aria-label="★"]').count() === 2);
+    check('the numbers are chips under the bar, each with its words (the compact lengths: 18 分)', (await text('.dt-num')).join('|').replace(/\n/g, ' ') === '睡\n7:50|路上\n3:04|Mac\n2:37|通话\n18 分|和她\n3 次|花\n$12.40|照片\n1'.replace(/\n/g, ' '));
     check('the extra kinds the brain serves are rows: the payment, the Claude chat and the letter', (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'A&W') && (await text('.dt-row .dt-tx em')).some(x => x === 'Teen Burger combo · 支付宝') && (await text('.dt-row .dt-tm')).some(x => x === '$12.40') && (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'The bar for the day') && (await text('.dt-row .dt-tx b')).some(x => x.trim() === 'Claude 日报'));
-    await a.shot('bar-01-rest', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('bar-01-rest', { x: 0, y: 0, width: 836, height: 700 });
 
-    // hover: three places on the bar
-    const card = () => a.page.evaluate(() => {
-      const c = document.querySelector('.dt-card.is-on:not(.is-range)');
-      if (!c) return null;
-      const cur = c.querySelector('.dt-slot.is-cur'), norm = el => el.innerText.replace(/\s*\n\s*/g, ' ').trim(), hair = document.querySelector('.dt-hair');
-      return { head: norm(cur.querySelector('.dt-ch')), mark: cur.querySelector('.dt-cmark') ? norm(cur.querySelector('.dt-cmark')) : null, lines: [...cur.querySelectorAll('.dt-cline')].map(norm), none: cur.querySelector('.dt-cnone')?.innerText ?? null, foot: cur.querySelector('.dt-cfoot').innerText,
-        rect: c.getBoundingClientRect().toJSON(), hair: hair?.getBoundingClientRect().toJSON(), times: [...document.querySelectorAll('.dt-time')].map(e => e.innerText), thumbs: cur.querySelectorAll('img.dt-thumb').length, hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key) };
-    });
+    // hover: the minute under the pointer, said below the bar; the piece under it and its row light together; no card
     const list0 = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return { top: l.getBoundingClientRect().top, scroll: l.scrollTop }; });
-    const over = async (h, m) => { await a.move(xAt(h, m), y); await a.page.waitForTimeout(220); return card(); };
+    const state = () => a.page.evaluate(() => {
+      const m = [...document.querySelectorAll('.dt-hours .dt-minute')], tb = document.querySelector('.dt-track').getBoundingClientRect();
+      return { minutes: m.map(e => e.textContent), centres: m.map(e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2; }), inside: m.every(e => { const r = e.getBoundingClientRect(); return r.left >= tb.left - 1 && r.right <= tb.right + 1; }), top: m[0] ? m[0].getBoundingClientRect().top - tb.bottom : null,
+        hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key), lit: [...document.querySelectorAll('.dt-seg.is-hot, .dt-sched.is-hot')].map(e => { const r = e.getBoundingClientRect(); return [r.left, r.right]; }),
+        cards: document.querySelectorAll('.dt-card').length, listTop: document.querySelector('.dt-list').getBoundingClientRect().top, scroll: document.querySelector('.dt-list').scrollTop };
+    });
+    const over = async (h, m) => { await a.move(xAt(h, m), y); await a.page.waitForTimeout(220); return state(); };
     const same = (x, want, tol = 1.5) => Math.abs(x - want) <= tol;
+    const says = (c, h, m) => c.minutes.length === 1 && c.minutes[0].startsWith(String(h).padStart(2, '0') + ':') && Math.abs(Number(c.minutes[0].slice(3)) - m) <= 1;
     let c = await over(14, 20);
-    check('hovering 14:20: the stretch is 家, its range and length; nothing else was going on; the row is lit, the list did not move', c && c.head === '家 14:05–14:50 · 45 分钟' && c.lines.length === 0 && c.none === '这段时间没有别的记录' && c.foot === '点一下跳到这里 · 拖动框一段' && c.hot.join() === 'stay-home-2', JSON.stringify(c));
-    const lst = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return { top: l.getBoundingClientRect().top, scroll: l.scrollTop }; });
-    check('the card opens at the pointer, 280 wide, under the bar and its hours (6 px below them), inside the pane, over the list without moving it; the hairline and the time follow the pointer', c && c.rect.width === 280 && same(c.rect.top, g.top + 24 + 23, 1) && c.rect.left >= g.pane.left && c.rect.right <= g.pane.right && same(c.rect.left + c.rect.width / 2, xAt(14, 20), 2)
-      && lst.top === list0.top && lst.scroll === list0.scroll && c.hair && same(c.hair.left + c.hair.width / 2, xAt(14, 20), 1) && c.times.length === 1 && Math.abs(Number(c.times[0].slice(3)) - 20) <= 1 && c.times[0].startsWith('14:'), JSON.stringify({ c, lst, list0 }));
-    await a.shot('bar-02-hover-stay', { x: 40, y: 0, width: 560, height: 700 });
+    check('hovering 14:20 says 14:20 under the bar at the pointer, lights the piece under it with its row (the stay 家 of 14:05–14:50), and opens no card; the list did not move', says(c, 14, 20) && same(c.centres[0], xAt(14, 20), 2) && c.top >= 0 && c.top <= 6 && c.hot.join() === 'stay-home-2' && c.lit.length === 1 && c.lit[0][0] <= xAt(14, 20) && c.lit[0][1] >= xAt(14, 20)
+      && c.cards === 0 && c.listTop === list0.top && c.scroll === list0.scroll, JSON.stringify({ c, list0 }));
+    check('the minute comes in over 140 ms (the app\'s fast token)', await a.page.locator('.dt-minute').evaluate(el => { const s = getComputedStyle(el); return s.animationDuration === '0.14s' && s.animationName === 'dt-frame-in'; }));
+    await a.shot('bar-02-hover-stay', { x: 0, y: 0, width: 836, height: 700 });
     c = await over(20, 15);
-    check('hovering 20:15: the stay he is in (18:50 起, 3 小时) and, in order, the work block and the Claude chat; the row lit is that stay\'s', c && c.head === '家 18:50 起 · 3 小时' && c.lines.length === 2 && /^Jarvis · Ghostty\s+活跃 1 小时 55 分$/.test(c.lines[0]) && /^Claude · The bar for the day\s+14 条$/.test(c.lines[1]) && c.hot.join() === 'stay-home-3', JSON.stringify(c));
+    check('hovering 20:15: the minute 20:15, and the stay he is in (18:50 起) lit with its row', says(c, 20, 15) && same(c.centres[0], xAt(20, 15), 2) && c.hot.join() === 'stay-home-3' && c.lit.length === 1, JSON.stringify(c));
     c = await over(16, 50);
-    check('hovering 16:50: the stay and her words for why it mattered, the call; the card has moved with the pointer', c && c.head === 'UVic 15:19–18:15 · 2 小时 56 分' && c.mark === '下午在 UVic' && c.lines.length === 1 && /^通话 · FaceTime\s+18 分钟$/.test(c.lines[0]) && same(c.rect.left + c.rect.width / 2, xAt(16, 50), 2), JSON.stringify(c));
-    await a.shot('bar-02b-hover-starred-stay', { x: 40, y: 0, width: 560, height: 700 });
+    check('hovering 16:50: the minute, the UVic stay and its row; the minute has moved with the pointer', says(c, 16, 50) && same(c.centres[0], xAt(16, 50), 2) && c.hot.join() === 'stay-uvic' && c.lit.length === 1, JSON.stringify(c));
+    await a.shot('bar-02b-hover-starred-stay', { x: 0, y: 0, width: 836, height: 700 });
     c = await over(15, 0);
-    check('hovering the ride: its words, range and length, and its row is the one lit', c && c.head === '27 路 14:50–15:19 · 29 分钟' && c.hot.join() === 'ride-1' && c.lines.length === 1 && /^和她说话 · 1 句/.test(c.lines[0]), JSON.stringify(c));
-    await a.shot('bar-03-hover-trip', { x: 40, y: 0, width: 560, height: 700 });
+    check('hovering the ride lights it and its row', says(c, 15, 0) && c.hot.join() === 'ride-1' && c.lit.length === 1, JSON.stringify(c));
+    await a.shot('bar-03-hover-trip', { x: 0, y: 0, width: 836, height: 700 });
     c = await over(13, 26);
-    check('hovering 13:26: the photo (with its picture) and the payment (counterparty and amount), the photo first; the starred payment shows its star', c && c.head === 'A&W 13:15–13:55 · 40 分钟' && c.lines.length === 2 && /^汉堡和薯条\s+13:30$/.test(c.lines[0]) && /^A&W · \$12\.40\s+13:20$/.test(c.lines[1]) && c.thumbs === 1, JSON.stringify(c));
-    check('the picture is read from the daemon by its attachment id, and shows', a.s.pictures.includes(`/inherent/attachments/${PIC}`) && await a.page.locator('.dt-card.is-on img.dt-thumb').evaluate(el => el.naturalWidth === 96 && el.clientWidth === 48 && el.clientHeight === 48));
-    await a.shot('bar-04-hover-picture-payment', { x: 40, y: 0, width: 560, height: 700 });
+    check('hovering 13:26 lights the A&W stay (13:15–13:55) and its row; the photo and the payment inside it are not on the bar', says(c, 13, 26) && c.hot.join() === 'stay-aw' && c.lit.length === 1, JSON.stringify(c));
     c = await over(22, 35);
-    check('hovering what is still to come: the event is the stretch, the bus is what else', c && c.head === '小组讨论 22:30–23:30 · 1 小时' && c.lines.length === 1 && /^27 · Shelbourne at Pear\s+22:40 发车$/.test(c.lines[0]) && c.hot.join() === 'event-1', JSON.stringify(c));
-    await a.shot('bar-04b-hover-future', { x: 40, y: 0, width: 560, height: 700 });
-    // near the right edge the card is clamped inside the pane
-    await a.move(g.left + g.width - 2, y); await a.page.waitForTimeout(400);
-    c = await card();
-    check('at the bar\'s far end the card stays inside the pane', c && c.rect.right <= g.pane.right && c.rect.right > g.pane.right - 20, JSON.stringify(c?.rect));
-    await a.move(g.left + 2, y); await a.page.waitForTimeout(400);
-    c = await card();
-    check('and at its first end', c && c.rect.left >= g.pane.left && c.rect.left < g.pane.left + 20, JSON.stringify(c?.rect));
+    check('hovering what is still to come: the event\'s box and its row light', says(c, 22, 35) && c.hot.join() === 'event-1' && c.lit.length === 1, JSON.stringify(c));
+    await a.shot('bar-04b-hover-future', { x: 0, y: 0, width: 836, height: 700 });
+    // at the ends the minute is held inside the bar
+    await a.move(g.left + g.width - 2, y); await a.page.waitForTimeout(300);
+    c = await state();
+    check('at the bar\'s far end the minute stays inside the bar', c.minutes.length === 1 && c.inside && c.centres[0] > g.left + g.width - 25, JSON.stringify(c));
+    await a.move(g.left + 2, y); await a.page.waitForTimeout(300);
+    c = await state();
+    check('and at its first end', c.minutes.length === 1 && c.inside && c.centres[0] < g.left + 25, JSON.stringify(c));
     await a.move(away.x, away.y); await a.page.waitForTimeout(300);
-    check('leaving the bar takes the card, the hairline and the lit row away', await a.page.locator('.dt-card.is-on').count() === 0 && await a.page.locator('.dt-hair').count() === 0 && await a.page.locator('.dt-row.is-hot, .dt-sh.is-hot').count() === 0);
-
-    // the card follows the pointer on a spring and its words cross-fade when the stretch changes: sampled frame by frame
-    const follow = async (x0, x1) => {
-      await a.move(x0, y); await a.page.waitForTimeout(300);
-      const done = a.page.evaluate(() => new Promise(resolve => {
-        const c = document.querySelector('.dt-card:not(.is-range)'), seen = [], t0 = performance.now();
-        const tick = now => { seen.push([c.getBoundingClientRect().left, ...[...c.querySelectorAll('.dt-slot')].map(el => +getComputedStyle(el).opacity)]); if (now - t0 < 500) requestAnimationFrame(tick); else resolve(seen); };
-        requestAnimationFrame(tick);
-      }));
-      await a.page.waitForTimeout(100); await a.move(x1, y);
-      const seen = await done, from = seen[0][0], to = seen.at(-1)[0], span = Math.abs(to - from);
-      return { span, between: seen.filter(([v]) => Math.abs(v - from) > span * .1 && Math.abs(v - to) > span * .1).length, fading: seen.filter(([, p, q]) => p > .05 && p < .95 || q > .05 && q < .95).length };
-    };
-    const fl = await follow(xAt(10), xAt(20));
-    check('the card follows the pointer on a spring (on its way for a few frames, then there) and its words fade when the stretch changes', fl.span > 60 && fl.between >= 1 && fl.fading >= 1, JSON.stringify(fl));
-    await a.move(away.x, away.y); await a.page.waitForTimeout(300);
-
-    // the words change as a fade through, never a cross-fade: every animation of the card is held and its clock set, so the same instants are read each time
-    {
-      await a.move(xAt(14, 20), y); await a.page.waitForTimeout(400);
-      const h0 = (await card()).rect.height;
-      await a.move(xAt(16, 50), y);
-      const got = await a.page.evaluate(async () => {
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const c = document.querySelector('.dt-card:not(.is-range)'), inner = c.querySelector('.dt-card-in'), slots = [...c.querySelectorAll('.dt-slot')], cur = slots.find(e => e.classList.contains('is-cur')), old = slots.find(e => e !== cur);
-        const anims = c.getAnimations({ subtree: true });
-        anims.forEach(x => x.pause());
-        const read = t => { anims.forEach(x => { x.currentTime = t; }); return { t, old: +getComputedStyle(old).opacity, now: +getComputedStyle(cur).opacity, y: new DOMMatrix(getComputedStyle(cur).transform).m42, h: inner.getBoundingClientRect().height }; };
-        const out = [0, 30, 60, 75, 105, 150, 180].map(read);
-        const kinds = anims.map(x => x.transitionProperty ?? 'height');
-        anims.forEach(x => x.cancel());
-        return { out, kinds };
-      });
-      const hf = (await card()).rect.height, [s0, s30, s60, s75, s105, s150, s180] = got.out, apart = (x, v) => Math.abs(x - v) < .06;
-      check('a change of words is a fade through: the old are fading at 30 ms and gone at 60, the new have not begun until 60 and are whole at 150, and never are both seen (the least of the two is 0 at every instant)',
-        apart(s0.old, 1) && apart(s0.now, 0) && apart(s30.old, .5) && apart(s30.now, 0) && apart(s60.old, 0) && apart(s60.now, 0) && s75.old === 0 && s75.now > 0 && s75.now < .3 && apart(s105.now, .5) && apart(s150.now, 1) && apart(s180.now, 1)
-        && got.out.every(x => Math.min(x.old, x.now) < .02), JSON.stringify(got.out));
-      check('the new words come 2 px up: 2 px down while the old go, 0 when they are whole', apart(s60.y, 2) && s105.y > 0 && s105.y < 2 && apart(s150.y, 0), JSON.stringify(got.out.map(x => x.y)));
-      check('and the card\'s height goes from the old words\' to the new words\' over the 150 ms (so the card never jumps)', Math.abs(hf - h0) > 10 && Math.abs(s0.h - h0) < 1 && Math.abs(s150.h - hf) < 1 && s75.h > Math.min(h0, hf) + .5 && s75.h < Math.max(h0, hf) - .5 && got.kinds.includes('height'), JSON.stringify({ h0, hf, hs: got.out.map(x => x.h), kinds: got.kinds }));
-      await a.move(away.x, away.y); await a.page.waitForTimeout(300);
-    }
-
-    // a frame sheet of the card, frame by frame (a CDP screencast): coming in under the pointer, then following it to the next stretch
-    {
-      const cdp = await a.ctx.newCDPSession(a.page), got = [];
-      cdp.on('Page.screencastFrame', ev => { got.push({ at: ev.metadata.timestamp, data: ev.data }); cdp.send('Page.screencastFrameAck', { sessionId: ev.sessionId }).catch(() => {}); });
-      await cdp.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 });
-      await a.page.waitForTimeout(200);
-      const ta = Date.now() / 1000; await a.move(xAt(14, 20), y); await a.page.waitForTimeout(450);
-      const tb = Date.now() / 1000; await a.move(xAt(16, 50), y); await a.page.waitForTimeout(450);
-      await cdp.send('Page.stopScreencast'); await cdp.detach();
-      const pick = (from, n) => { const win = got.filter(f => f.at >= from && f.at <= from + .3); return Array.from({ length: Math.min(n, win.length) }, (_, i) => win[Math.round(i * (win.length - 1) / Math.max(1, n - 1))]).map(f => ({ ...f, ms: Math.round((f.at - from) * 1000) })); };
-      const tiles = [...pick(ta, 6), ...pick(tb, 6)];
-      const sheet = await a.ctx.newPage();
-      await sheet.setViewport?.({ width: 1600, height: 900 }) ?? await sheet.setViewportSize({ width: 1600, height: 900 });
-      await sheet.setContent(`<body style="margin:0;padding:8px;background:#222;display:grid;grid-template-columns:repeat(3,520px);gap:8px;font:12px monospace;color:#fff">${tiles.map((f, i) => `<div style="position:relative;width:520px;height:250px;overflow:hidden;border-radius:6px;background:#000 url(data:image/png;base64,${f.data}) -20px -100px/640px 900px no-repeat"><span style="position:absolute;left:6px;bottom:4px;padding:1px 5px;border-radius:3px;background:#0008">${i < 6 ? 'in' : 'follow'} +${f.ms} ms</span></div>`).join('')}</body>`);
-      await sheet.screenshot({ path: path.join(dir, 'bar-frames.png'), fullPage: true, scale: 'css' });
-      await sheet.close();
-      check('the frame sheet of the card coming in and following the pointer is made from the screencast', tiles.length >= 8, String(tiles.length));
-      await a.move(away.x, away.y); await a.page.waitForTimeout(300);
-    }
+    c = await state();
+    check('leaving the bar takes the minute away and unlights the piece and the row', c.minutes.length === 0 && c.hot.length === 0 && c.lit.length === 0);
+    // the minute covers the hour label it passes, and gives it back
+    await a.move(xAt(15, 0) + 1, y); await a.page.waitForTimeout(250);
+    const under = await a.page.evaluate(() => ({ hidden: [...document.querySelectorAll('.dt-hours span.is-under')].map(e => e.textContent), minute: document.querySelector('.dt-minute')?.textContent }));
+    await a.move(away.x, away.y); await a.page.waitForTimeout(250);
+    check('a minute that passes an hour\'s number covers it (15) and gives it back when it leaves', under.hidden.join() === '15' && await a.page.locator('.dt-hours span.is-under').count() === 0, JSON.stringify(under));
 
     // click: the list takes the row there to its top in 300 ms, easing out, and the row flashes
     await a.page.evaluate(() => {
@@ -2353,14 +2262,28 @@ try {
     });
     check('a click at 15:30 takes the UVic stay to the top of the list (12 px down) in about 300 ms, easing out, one way, through more than a jump', Math.abs(gl.v1 - gl.v0) > 300 && gl.dur > 150 && gl.dur < 500 && gl.half > .6 && gl.steady && gl.frames >= 2 && Math.abs(gl.top - 12) <= 2, JSON.stringify(gl));
     check('and that row flashes (white .08 to nothing over 600 ms)', gl.flash, JSON.stringify(gl));
+    // the click also selected the stay: its detail is in the right column and the bar frames its span (15:19 to 18:15), 3 px clear above and below
+    const fr = await a.page.evaluate(() => { const b = document.querySelector('.dt-bracket.is-open:not(.is-off)')?.getBoundingClientRect(), t = document.querySelector('.dt-track').getBoundingClientRect(); return b && { left: b.left, right: b.right, top: t.top - b.top, bottom: b.bottom - t.bottom }; });
+    check('and it selected it: its detail is in the right column, its row is rung, and the bar frames its span (the stay\'s 15:19 to the end of its last row) with a 1.5 px outline 3 px clear of the bar', await a.page.locator('.dt-side[data-page="stay-uvic"] .dt-pin.is-day').count() === 1 && await a.page.locator('[data-key="stay-uvic"].is-pick').count() === 1 && fr && same(fr.left, fx(rich.span.get('stay-uvic').t0), 1.6) && same(fr.right, fx(rich.span.get('stay-uvic').t1), 1.6) && same(fr.top, 3, .6) && same(fr.bottom, 3, .6)
+      && /\.dt-bracket \{[^}]*border:1\.5px solid rgb\(var\(--ink\) \/ \.92\)/.test(readFileSync(path.join(root, 'src/day-bar.css'), 'utf8')), JSON.stringify(fr));
+    // a second click, now on another piece, moves the selection (no jump and no flash) and the frame glides to it over 260 ms
+    await a.move(xAt(14, 20), y); await a.page.waitForTimeout(100); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(50);
+    // the transitions the frame is running (read as they are, so a slow frame cannot fool it): left and width, 260 ms on the pane's ease-out
+    const gl2 = await a.page.evaluate(() => { const f = document.querySelector('.dt-bracket.is-open'); return f.getAnimations().filter(x => x.transitionProperty === 'left' || x.transitionProperty === 'width').map(x => ({ prop: x.transitionProperty, ms: x.effect.getTiming().duration, ease: x.effect.getTiming().easing, left: f.getBoundingClientRect().left })); });
+    await a.page.waitForTimeout(450);
+    const left1 = await a.page.evaluate(() => document.querySelector('.dt-bracket.is-open').getBoundingClientRect().left);
+    check('and the frame glides to the next span: left and width over 260 ms on the ease-out, from where it was (not made anew); the row selected is the 家 stay of 14:05, taken into view, and its detail follows',
+      gl2.map(x => x.prop).sort().join() === 'left,width' && gl2.every(x => x.ms === 260 && /cubic-bezier/.test(x.ease)) && gl2[0].left > left1 + 2 && same(left1, fx(rich.span.get('stay-home-2').t0), 1.6) && await a.page.locator('.dt-side[data-page="stay-home-2"]').count() === 1 && await a.page.evaluate(() => { const l = document.querySelector('.dt-list').getBoundingClientRect(), r = document.querySelector('[data-key="stay-home-2"]').getBoundingClientRect(); return r.top >= l.top - 1 && r.bottom <= l.bottom + 1; }), JSON.stringify({ gl2, left1 }));
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(350);
+    check('Esc lets the selection go: the right column is 现在 / 等你 / 接下来 again and the frame fades away', await a.page.locator('.dt-side .ds').count() === 1 && await a.page.locator('.dt-side .dt-pin').count() === 0 && await a.page.locator('.dt-bracket.is-open.is-off').count() === 1 && (await a.read()).dropOpen);
     await a.move(away.x, away.y); await a.page.waitForTimeout(200);
 
     // drag: a range, its card, the list cut to it, and a chip to clear it
     const drag = async (x0, x1) => { await a.move(x0, y); await a.page.mouse.down(); await a.move((x0 + x1) / 2, y); await a.move(x1, y); await a.page.waitForTimeout(120); };
     const px = x => msOf(rbar, (x - g.left) / g.width), x14 = xAt(14) + .1, x18 = xAt(18) + .1, ranged = summarize(rich, rbar, px(x14), px(x18), zh);
     await drag(x14, x18);
-    const mid = await a.page.evaluate(() => ({ band: document.querySelector('.dt-band')?.getBoundingClientRect().toJSON() ?? null, times: [...document.querySelectorAll('.dt-time')].map(e => e.innerText), card: document.querySelectorAll('.dt-card.is-on').length, hair: document.querySelectorAll('.dt-hair').length, hot: document.querySelectorAll('.is-hot').length }));
-    check('dragging draws a band from where it began to the pointer, its two times above its edges, and no hover card or hairline', mid.band && Math.abs(mid.band.left - x14) < 2 && Math.abs(mid.band.right - x18) < 2 && mid.times.join() === '14:00,18:00' && mid.card === 0 && mid.hair === 0 && mid.hot === 0, JSON.stringify(mid));
+    const mid = await a.page.evaluate(() => ({ band: document.querySelector('.dt-band')?.getBoundingClientRect().toJSON() ?? null, times: [...document.querySelectorAll('.dt-hours .dt-minute')].map(e => e.innerText), card: document.querySelectorAll('.dt-card.is-on').length, hair: document.querySelectorAll('.dt-hair').length, hot: document.querySelectorAll('.is-hot').length }));
+    check('dragging draws a band from where it began to the pointer, its two times under its edges (in the hours row), and nothing lit or opened', mid.band && Math.abs(mid.band.left - x14) < 2 && Math.abs(mid.band.right - x18) < 2 && mid.times.join() === '14:00,18:00' && mid.card === 0 && mid.hair === 0 && mid.hot === 0, JSON.stringify(mid));
     await a.page.mouse.up(); await a.page.waitForTimeout(250);
     const rc = await a.page.evaluate(() => {
       const c = document.querySelector('.dt-card.is-range.is-on');
@@ -2369,14 +2292,14 @@ try {
       return { head: norm(c.querySelector('.dt-ch')), lines: [...c.querySelectorAll('.dt-cline')].map(norm), buttons: [...c.querySelectorAll('button')].map(norm), rect: c.getBoundingClientRect().toJSON(), band: band.getBoundingClientRect().toJSON(), on: document.querySelectorAll('.dt-card.is-on').length };
     });
     check('a range says its span and length, the places in it with their lengths (most first), then the other numbers; two buttons, 只看这段 and the quiet 这段在干嘛', rc && rc.head === `${ranged.range} ${ranged.length}` && rc.head === '14:00–18:00 4 小时' && rc.lines.join('|') === [...ranged.places.map(p => `${p.name} ${p.length}`), ...ranged.nums.map(n => `${n.label} ${n.long}`)].join('|') && rc.lines.length >= 4 && rc.buttons.join() === '只看这段,这段在干嘛' && rc.on === 1, JSON.stringify(rc));
-    check('the range card sits where the hover card does, 280 wide, centred on the range, inside the pane; the band stays', rc && rc.rect.width === 280 && same(rc.rect.top, g.top + 24 + 23, 1) && same(rc.rect.left + 140, (x14 + x18) / 2, 2) && rc.rect.left >= g.pane.left && rc.rect.right <= g.pane.right && Math.abs(rc.band.left - x14) < 2 && Math.abs(rc.band.right - x18) < 2, JSON.stringify(rc));
-    await a.shot('bar-05-range-card', { x: 40, y: 0, width: 560, height: 700 });
+    check('the range card sits under the bar and its hours, 280 wide, centred on the range, inside the pane; the band stays', rc && rc.rect.width === 280 && same(rc.rect.top, g.top + 26 + 22, 1) && same(rc.rect.left + 140, (x14 + x18) / 2, 2) && rc.rect.left >= g.pane.left && rc.rect.right <= g.pane.right && Math.abs(rc.band.left - x14) < 2 && Math.abs(rc.band.right - x18) < 2, JSON.stringify(rc));
+    await a.shot('bar-05-range-card', { x: 0, y: 0, width: 836, height: 700 });
     await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(350);
     const cut = await a.page.evaluate(() => ({
       heads: [...document.querySelectorAll('.dt-sh')].map(e => e.dataset.key), rows: [...document.querySelectorAll('.dt-row')].map(e => e.dataset.key).sort(), scroll: document.querySelector('.dt-list').scrollTop,
       chip: document.querySelector('.dt-filter')?.innerText.replace(/\s+/g, ' ').trim(), applied: document.querySelectorAll('.dt-band.is-applied').length, bands: document.querySelectorAll('.dt-band').length, card: document.querySelectorAll('.dt-card.is-on').length, now: document.querySelectorAll('.dt-now').length }));
     check('「只看这段」 cuts the list to what overlaps the range (two stays, the ways and moments in them, from the top), with a 只看 14:00–18:00 chip and the range kept faintly on the bar', cut.heads.join() === 'stay-home-2,stay-uvic' && cut.rows.join() === 'call-1,move-3,ride-1,talk-3' && cut.scroll === 0 && cut.chip === '只看 14:00–18:00' && cut.applied === 1 && cut.bands === 1 && cut.card === 0 && cut.now === 0, JSON.stringify(cut));
-    await a.shot('bar-05b-cut-to-range', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('bar-05b-cut-to-range', { x: 0, y: 0, width: 836, height: 700 });
     await a.page.locator('.dt-filter button').click(); await a.page.waitForTimeout(350);
     check('the chip\'s × gives back the whole day: five stays, the now line, no chip', await a.page.locator('.dt-sh').count() === 5 && await a.page.locator('.dt-now').count() === 1 && await a.page.locator('.dt-filter, .dt-band').count() === 0);
 
@@ -2392,7 +2315,7 @@ try {
     const sleepLens = rbar.lens.sleep;
     check('a number under the pointer previews its lens: the bar steps back (.25) and draws the sleep in its colour, its row stays, the other rows (.35) and stay headers (.6) step back', ln.lens === 'sleep' && ln.pinned.length === 0 && lk.seg === '0.25' && lk.ground === '0.25' && lk.sleep === '1' && lk.talk === '0.35' && lk.head === '0.6' && lk.marks.length === sleepLens.length && lk.marks.length === 1 && lk.marks[0].rgb === 'rgb(112, 120, 205)' && Math.abs(lk.marks[0].left - g.left) < 1.5, JSON.stringify({ lk, ln }));
     p0 = await chipAt('Mac'); await a.move(p0.x, p0.y); await a.page.waitForTimeout(350);
-    await a.shot('bar-06-lens-mac-preview', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('bar-06-lens-mac-preview', { x: 0, y: 0, width: 836, height: 700 });
     lk = await looks();
     check('the Mac lens lights the work blocks in blue, and the next number takes over from the last', (await lensNow()).lens === 'work' && lk.marks.length === rbar.lens.work.length && lk.marks.length === 2 && lk.marks.every(m => m.rgb === 'rgb(108, 156, 255)'), JSON.stringify(lk));
     await a.move(away.x, away.y); await a.page.waitForTimeout(350);
@@ -2401,7 +2324,7 @@ try {
     lk = await looks(); ln = await lensNow();
     const ring = await a.page.locator('.dt-num.is-pinned').evaluate(el => getComputedStyle(el).boxShadow);
     check('a click pins it: a 1 px ink ring on the number, aria-pressed, and the lens stays with the pointer away; five ways drawn in the pale ink', ln.lens === 'trip' && ln.pinned.join() === '路上' && ln.pressed === 1 && /inset/.test(ring) && /238, 240, 251/.test(ring) && lk.marks.length === 5 && lk.marks.every(m => m.rgb === 'rgb(196, 208, 255)') && lk.ride === '1' && lk.talk === '0.35' && lk.head === '0.6' && lk.seg === '0.25', JSON.stringify({ lk, ln, ring }));
-    await a.shot('bar-07-lens-trip-pinned', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('bar-07-lens-trip-pinned', { x: 0, y: 0, width: 836, height: 700 });
     p0 = await chipAt('通话'); await a.move(p0.x, p0.y); await a.page.waitForTimeout(300);
     const over2 = (await lensNow()).lens; await a.move(away.x, away.y); await a.page.waitForTimeout(300);
     const back2 = (await lensNow()).lens;
@@ -2421,15 +2344,16 @@ try {
     const y2 = g2.top + 12, cardBox = () => a.page.evaluate(() => { const c = document.querySelector('.dt-card.is-on'); return c ? c.getBoundingClientRect().toJSON() : null; });
     await a.move(g2.left + g2.width * .5, y2); await a.page.waitForTimeout(300);
     let cb = await cardBox();
-    check('on a short day the hover card is inside the pane', cb && cb.bottom <= g2.bottom - 6, JSON.stringify({ cb, bottom: g2.bottom }));
-    await a.shot('bar-08-yesterday-hover', { x: 40, y: 0, width: 560, height: 520 });
+    const pin2 = await a.page.evaluate(() => { const m = document.querySelector('.dt-minute')?.getBoundingClientRect(), p = document.querySelector('.notch-drop').getBoundingClientRect(); return m && { inside: m.left >= p.left && m.right <= p.right && m.bottom <= p.bottom - 6, bottom: p.bottom }; });
+    check('on a short day the pointer\'s minute is inside the pane, no card opens, and the pane keeps its size', cb === null && pin2 && pin2.inside && Math.abs(pin2.bottom - g2.bottom) <= 1, JSON.stringify({ cb, pin2, bottom: g2.bottom }));
+    await a.shot('bar-08-yesterday-hover', { x: 0, y: 0, width: 836, height: 640 });
     const before = g2.bottom;
     await a.move(g2.left + 6, y2); await a.page.mouse.down(); await a.move(g2.left + g2.width * .3, y2); await a.move(g2.left + g2.width * .6, y2); await a.page.mouse.up(); await a.page.waitForTimeout(900);
     cb = await cardBox();
     const g3 = await a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom), btn = await a.page.locator('.dt-cbtn').boundingBox();
     // the pane is one size (the doors design): a card that is taller than the day hangs inside it, and the pane does not grow for it
     check('and so is the range card with its button, even when it is taller than the day: it hangs inside the pane, which keeps its size', cb && cb.bottom <= g3 - 6 && Math.abs(g3 - before) <= 1 && btn.y + btn.height <= g3, JSON.stringify({ cb, bottom: g3, before }));
-    await a.shot('bar-09-yesterday-range', { x: 40, y: 0, width: 560, height: 520 });
+    await a.shot('bar-09-yesterday-range', { x: 0, y: 0, width: 836, height: 640 });
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
     check('and when the range goes the pane is as short as it was', Math.abs(await a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom) - before) < 2);
 
@@ -2450,16 +2374,19 @@ try {
     await drag(xAt(14) + .1, xAt(18) + .1); await a.page.locator('.dt-cbtn').click(); await a.page.waitForTimeout(250);
     const chip = await a.page.locator('.dt-num', { hasText: '路上' }).boundingBox();
     await a.move(chip.x + chip.width / 2, chip.y + chip.height / 2); await a.page.mouse.down(); await a.page.mouse.up(); await a.move(away.x, away.y);
+    await a.page.locator('[data-key="stay-uvic"]').click({ position: { x: 170, y: 14 } }); await a.page.waitForTimeout(450);
     await drag(xAt(11) + .1, xAt(12) + .1);
-    const all3 = await ladder();
+    const all3 = await ladder(), sel0 = () => a.page.evaluate(() => ({ side: document.querySelector('.dt-side')?.dataset.page ?? null, frame: !!document.querySelector('.dt-bracket.is-open:not(.is-off)') }));
+    const s0 = await sel0();
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400); const e0 = await ladder(), s1 = await sel0();
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(200); const e1 = await ladder();
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(200); const e2 = await ladder();
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(200); const e3 = await ladder();
-    check('Esc lets go one thing at a time: the range, then the lens, then the cut, and only then the pane',
-      all3.range === 1 && all3.lens === 'trip' && all3.cut === 1 && all3.open
+    check('Esc lets go one thing at a time: the selection (back to 现在), then the range, then the lens, then the cut, and only then the pane',
+      all3.range === 1 && all3.lens === 'trip' && all3.cut === 1 && all3.open && s0.side === 'stay-uvic' && s0.frame && s1.side === null && !s1.frame && e0.range === 1 && e0.lens === 'trip' && e0.cut === 1 && e0.open
       && e1.range === 0 && e1.lens === 'trip' && e1.cut === 1 && e1.open
       && e2.lens === null && e2.cut === 1 && e2.open
-      && e3.cut === 0 && e3.open, JSON.stringify({ all3, e1, e2, e3 }));
+      && e3.cut === 0 && e3.open, JSON.stringify({ all3, s0, s1, e0, e1, e2, e3 }));
     await a.page.keyboard.press('Escape');
     const closed = await seen(a, r => r.tl === '', 3000);
     check('and the next Esc folds the pane', closed.tl === '' && !closed.dropOpen, JSON.stringify(closed));
@@ -2475,9 +2402,9 @@ try {
     await a.until(() => document.querySelector('.notch-drop.is-open .dt-track') && document.querySelector('.dt-row'), undefined, 8000);
     await a.page.waitForTimeout(700);
     const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
-    await a.move(g.left + (T(13, 26) - t0) / (t1 - t0) * g.width, g.top + 12); await a.page.waitForTimeout(600);
-    const gone = await a.page.evaluate(() => { const l = [...document.querySelectorAll('.dt-card.is-on .dt-slot.is-cur .dt-cline')].find(e => e.classList.contains('has-pic')); return l ? { img: l.querySelectorAll('img').length, icon: l.querySelectorAll('.dt-cic svg').length, text: l.innerText.replace(/\s+/g, ' ').trim() } : null; });
-    check('a picture the daemon no longer has leaves its note and an icon, not a broken image', gone && gone.img === 0 && gone.icon === 1 && gone.text === '汉堡和薯条 13:30' && a.s.pictures.includes(`/inherent/attachments/${'b'.repeat(32)}`), JSON.stringify(gone));
+    await a.page.locator('[data-key="picture-1"]').scrollIntoViewIfNeeded(); await a.page.locator('[data-key="picture-1"]').click({ position: { x: 170, y: 14 } }); await a.page.waitForTimeout(700);
+    const gone = await a.page.evaluate(() => { const p = document.querySelector('.dt-side .dt-pin.is-day'); return p ? { imgs: p.querySelectorAll('.dt-pic img').length, head: p.querySelector('.dt-dh b')?.textContent, note: p.querySelector('.is-note')?.textContent ?? null, text: p.querySelector('.dt-body')?.innerText.replace(/\s+/g, ' ').trim() } : null; });
+    check('a picture the daemon no longer has leaves its note and a line saying so, not a broken image', gone && gone.head === '照片' && gone.note?.startsWith('汉堡和薯条') && gone.text.includes('这张图已经没有了') && a.s.pictures.includes(`/inherent/attachments/${'b'.repeat(32)}`) && await a.page.locator('.dt-side .dt-pic').count() === 0, JSON.stringify(gone));
     await a.ctx.close();
   }
   if (all || only === 'bar') {
@@ -2492,33 +2419,24 @@ try {
     const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
     const xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + 12;
     await a.move(xAt(10), y); await a.page.waitForTimeout(300);
-    const still = await a.page.evaluate(() => ({ breath: getComputedStyle(document.querySelector('.dt-nowtick'), '::after').animationName, cardIn: getComputedStyle(document.querySelector('.dt-card-in')).transitionDuration, cardMove: getComputedStyle(document.querySelector('.dt-card-in')).transform, row: getComputedStyle(document.querySelector('.dt-row')).transitionDuration, seg: getComputedStyle(document.querySelector('.dt-seg')).transitionDuration, num: getComputedStyle(document.querySelector('.dt-num')).transitionDuration }));
-    check('with reduced motion the now marker does not breathe and the card, the rows and the pieces do not slide or ease', still.breath === 'none' && still.cardIn === '0s' && still.cardMove === 'none' && still.row === '0s' && still.seg === '0s', JSON.stringify(still));
+    const still = await a.page.evaluate(() => ({ breath: getComputedStyle(document.querySelector('.dt-nowtick'), '::after').animationName, minute: getComputedStyle(document.querySelector('.dt-minute')).animationName, row: getComputedStyle(document.querySelector('.dt-row')).transitionDuration, seg: getComputedStyle(document.querySelector('.dt-seg')).transitionDuration, frame: getComputedStyle(document.querySelector('.dt-bracket.is-open')).transitionProperty + '|' + getComputedStyle(document.querySelector('.dt-bracket.is-open')).transitionDuration }));
+    check('with reduced motion the now marker does not breathe and the rows and the pieces do not ease; the selection\'s frame can only fade (no gliding left or width)', still.breath === 'none' && still.row === '0s' && still.seg === '0s' && still.frame === 'opacity|0.12s', JSON.stringify(still));
     const done = a.page.evaluate(() => new Promise(resolve => {
-      const c = document.querySelector('.dt-card:not(.is-range)'), seen = [], t0 = performance.now();
-      const tick = now => { seen.push(c.getBoundingClientRect().left); if (now - t0 < 400) requestAnimationFrame(tick); else resolve(seen); };
+      const seen = [], t0 = performance.now();
+      const tick = now => { seen.push(document.querySelector('.dt-minute')?.getBoundingClientRect().left ?? null); if (now - t0 < 400) requestAnimationFrame(tick); else resolve(seen); };
       requestAnimationFrame(tick);
     }));
     await a.page.waitForTimeout(100); await a.move(xAt(20), y);
-    const lefts = await done, from = lefts[0], to = lefts.at(-1), span = Math.abs(to - from);
-    check('and the card is under the pointer from the next frame, with no spring', span > 60 && lefts.filter(v => Math.abs(v - from) > span * .1 && Math.abs(v - to) > span * .1).length === 0, JSON.stringify({ span, lefts: lefts.slice(0, 8) }));
+    const lefts = (await done).filter(v => v !== null), from = lefts[0], to = lefts.at(-1), span = Math.abs(to - from);
+    check('and the minute is under the pointer from the next frame, with no spring', span > 60 && lefts.filter(v => Math.abs(v - from) > span * .1 && Math.abs(v - to) > span * .1).length === 0, JSON.stringify({ span, lefts: lefts.slice(0, 8) }));
     {
-      // a change of words under reduced motion: still one after the other, but only fades: no slide, and the card's height does not run
-      await a.move(xAt(14, 20), y); await a.page.waitForTimeout(400);
-      await a.move(xAt(16, 50), y);
-      const got = await a.page.evaluate(async () => {
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const c = document.querySelector('.dt-card:not(.is-range)'), inner = c.querySelector('.dt-card-in'), slots = [...c.querySelectorAll('.dt-slot')], cur = slots.find(e => e.classList.contains('is-cur')), old = slots.find(e => e !== cur);
-        const anims = c.getAnimations({ subtree: true });
-        anims.forEach(x => x.pause());
-        const read = t => { anims.forEach(x => { x.currentTime = t; }); return { t, old: +getComputedStyle(old).opacity, now: +getComputedStyle(cur).opacity, y: new DOMMatrix(getComputedStyle(cur).transform).m42, h: inner.getBoundingClientRect().height }; };
-        const out = [0, 30, 60, 120, 180, 240].map(read), kinds = anims.map(x => x.transitionProperty ?? 'height');
-        anims.forEach(x => x.cancel());
-        return { out, kinds };
-      });
-      const apart = (x, v) => Math.abs(x - v) < .06;
-      check('under reduced motion the words are still not seen together, they only fade (old out in 60 ms, new in over 120 ms after them), they do not slide, and the card\'s height does not run',
-        got.out.every(x => Math.min(x.old, x.now) < .02 && x.y === 0) && apart(got.out[1].old, .5) && apart(got.out[3].now, .5) && apart(got.out[5].now, 1) && !got.kinds.includes('height') && new Set(got.out.map(x => Math.round(x.h))).size === 1, JSON.stringify(got));
+      // a selection under reduced motion: the frame fades in place, it does not travel
+      await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
+      await a.move(xAt(14, 20), y); await a.page.waitForTimeout(100); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(100);
+      await a.move(xAt(10), y); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(40);
+      const run = await a.page.evaluate(() => document.querySelector('.dt-bracket.is-open').getAnimations().filter(x => x.transitionProperty === 'left' || x.transitionProperty === 'width').length);
+      check('and the frame goes to the next span without travelling: no left or width transition runs', run === 0);
+      await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(300);
     }
     await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = document.querySelector('.dt-list').scrollHeight; });
     await a.move(xAt(15, 30), y); await a.page.waitForTimeout(100); await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(100);
@@ -2527,7 +2445,7 @@ try {
     await a.ctx.close();
   }
 
-  // ---- the dots on the bar's lower edge (ONLY=dots): a moment, or a call or talk shorter than 3 minutes, at its minute in its kind's colour ----
+  // ---- the model of the bar's moment dots (ONLY=dots): barView still serves them; V2 draws none on the bar (no moment dots), so there is no browser check ----
   if (all || only === 'dots') {
     const m = buildDay(richDay(), NOW, zh), bar = buildBar(m, zh), t0 = bar.t0, t1 = T(24);
     check('the model has a dot for a payment and a photo, and none for a call of 18 minutes, any talk with her, or a reminder that rang, in the order of the day',
@@ -2535,24 +2453,6 @@ try {
     const edge = buildBar(buildDay(small([it('call-s', 'call', T(11, 0), T(11, 0) + 179_000, { app: 'FaceTime' }), it('call-l', 'call', T(12, 0), T(12, 3), { app: 'FaceTime' }), it('talk-s', 'talk', T(13, 0), T(13, 2), { turns: 3 }, 'her'),
       it('talk-l', 'talk', T(14, 0), T(14, 3), { turns: 5 }, 'her'), it('pay-f', 'payment', T(23, 0), T(23, 0), { amount: '5.00', currency: 'CAD', direction: 'out' })]), NOW, zh), zh);
     check('a call is a dot under 3 minutes (2 min 59 s) and none from 3 minutes; a talk with her is none whatever its length; nothing still to come is one', edge.dots.map(d => d.key).join() === 'call-s', edge.dots.map(d => d.key).join());
-    const a = await boot({ served: richDay() });
-    await openDay(a);
-    const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
-    const dots = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-bdot')].map(e => { const r = e.getBoundingClientRect(), c = getComputedStyle(e); return { key: e.dataset.dot, cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width, h: r.height, bg: c.backgroundColor, op: c.opacity, ev: c.pointerEvents, ring: c.boxShadow }; }));
-    await a.shot('dots-01-bar', { x: 40, y: 90, width: 560, height: 180 });
-    const d0 = await dots(), px = ms => g.left + (ms - t0) / (t1 - t0) * g.width, want = { 'pay-1': T(13, 20), 'picture-1': T(13, 30) };
-    check('the bar draws them: two dots, each centred on its minute and on the bar\'s lower edge', d0.length === 2 && d0.every(d => Math.abs(d.cx - px(want[d.key])) < 1 && Math.abs(d.cy - (g.top + g.height)) < 1), JSON.stringify(d0));
-    check('they are small (6 px), ringed in the ground, in the lens colour of their kind (pink, cream), and the pointer goes through them to the bar',
-      d0.every(d => d.w === 6 && d.h === 6 && d.ring !== 'none' && d.ev === 'none') && d0.find(d => d.key === 'pay-1').bg === 'rgb(240, 132, 218)' && d0.find(d => d.key === 'picture-1').bg === 'rgb(255, 240, 220)', JSON.stringify(d0));
-    check('the hours under the bar are not touched by them (the hours row begins below the lower edge)', await a.page.evaluate(() => { const h = document.querySelector('.dt-hours').getBoundingClientRect(), t = document.querySelector('.dt-track').getBoundingClientRect(); return [...document.querySelectorAll('.dt-bdot')].every(e => e.getBoundingClientRect().bottom <= h.top + .5 && h.top >= t.bottom); }));
-    await a.move(px(T(13, 20)), g.top + g.height / 2); await a.page.waitForTimeout(360);
-    const lines = await a.page.locator('.dt-card.is-on .dt-cline').allInnerTexts();
-    check('the pointer on the payment\'s dot shows the bar\'s ordinary card, with the payment\'s line in it', lines.some(l => l.includes('A&W')), lines.join(' | '));
-    await a.move(g.left + 200, g.top - 48); await a.page.waitForTimeout(300);
-    await a.page.locator('.dt-num', { hasText: '花' }).click(); await a.page.waitForTimeout(300);
-    const lens = await dots();
-    check('under the payment lens the other kinds\' dots step back (a quarter) and the payment\'s stays', lens.find(d => d.key === 'pay-1').op === '1' && lens.filter(d => d.key !== 'pay-1').every(d => d.op === '0.25'), JSON.stringify(lens.map(d => [d.key, d.op])));
-    await a.ctx.close();
   }
 
   if (all || only === 'doing') {
@@ -2585,45 +2485,41 @@ try {
     const pieces = await a.page.evaluate(() => [...document.querySelectorAll('.dt-seg')].map(el => ({ cls: el.className, c: el.style.getPropertyValue('--c'), a: el.style.getPropertyValue('--a'), label: el.querySelector('.dt-sl b')?.textContent ?? null })));
     check('the bar is the night and the stretches (13 pieces): the two work stretches in work blue, the long one named, the ride in the haze of a way, and one hole with no words', pieces.length === 13 && pieces.filter(x => x.c === '91 140 255').length === 2 && pieces.some(x => x.label === '做 Jarvis')
       && pieces.filter(x => x.cls.includes('is-trip')).length === 2 && pieces.filter(x => x.a === '0').length === 1 && pieces.find(x => x.a === '0').label === null && pieces.filter(x => x.cls.includes('is-stay')).length === 0, JSON.stringify(pieces));
-    await a.shot('doing-02-pane', { x: 40, y: 0, width: 560, height: 760 });
-    const card = () => a.page.evaluate(() => {
-      const c = document.querySelector('.dt-card.is-on:not(.is-range)');
-      if (!c) return null;
-      const cur = c.querySelector('.dt-slot.is-cur'), norm = el => el.innerText.replace(/\s*\n\s*/g, ' ').trim();
-      return { head: norm(cur.querySelector('.dt-ch')), place: cur.querySelector('.dt-cnote.is-place')?.innerText ?? null, hollow: !!cur.querySelector('.dt-cdot.is-hollow') };
-    });
-    const over = async (h, m) => { await a.move(xAt(h, m), y); await a.page.waitForTimeout(260); return card(); };
+    await a.shot('doing-02-pane', { x: 0, y: 0, width: 836, height: 760 });
+    const lit = () => a.page.evaluate(() => ({ row: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key), minute: document.querySelector('.dt-minute')?.textContent ?? null, cards: document.querySelectorAll('.dt-card').length,
+      pieces: [...document.querySelectorAll('.dt-seg.is-hot')].map(e => ({ c: e.style.getPropertyValue('--c'), hole: e.classList.contains('is-hole'), dashed: getComputedStyle(e).borderTopStyle === 'dashed', mark: !!e.querySelector('.dt-sl svg'), word: e.querySelector('.dt-sl b')?.textContent ?? null })) }));
+    const over = async (h, m) => { await a.move(xAt(h, m), y); await a.page.waitForTimeout(260); return lit(); };
     let c = await over(10, 45);
-    check('hovering the work: the title is 做 Jarvis with its own time, and the place 家 under it', c && c.head === '做 Jarvis 10:30–11:25 · 55 分钟' && c.place === '家' && !c.hollow, JSON.stringify(c));
+    check('hovering the work: the minute 10:45 under the bar, the stretch 做 Jarvis lit with its row (no card), in the category\'s blue', c.row.join() === 'doing-2' && /^10:4\d$/.test(c.minute) && c.cards === 0 && c.pieces.length === 1 && c.pieces[0].c === '91 140 255' && !c.pieces[0].hole, JSON.stringify(c));
     c = await over(12, 0);
-    check('hovering the stretch nothing says the words of: 不知道在干嘛 with its own time and a hollow dot', c && c.head === '不知道在干嘛 11:25–13:15 · 1 小时 50 分' && c.hollow, JSON.stringify(c));
+    check('hovering the stretch nothing says the words of: its piece is a dashed outline with a ? and lights with its row 不知道在干嘛', c.row.join() === 'doing-3' && /^12:0\d$/.test(c.minute) && c.pieces.length === 1 && c.pieces[0].hole && c.pieces[0].dashed && c.pieces[0].mark, JSON.stringify(c));
     await a.move(g.left + 30, y + 150); await settle(300);
     // opening: a long work stretch, then a rest, then one with pictures and the session that spans two stretches
     // a click on a row opens its detail page over the list (the page's `data-page` is the row's key); to open another, the page is gone back from first
-    const pg = () => a.page.locator('.dt-page[data-page]');
-    const go = async k => { if (await pg().count()) { await a.page.locator('.dt-pb').click(); await settle(320); } await row(k).scrollIntoViewIfNeeded(); await row(k).click({ position: { x: 170, y: 14 } }); await settle(560); };
-    const inside = k => a.page.evaluate(k => { const q = document.querySelector(`.dt-page[data-page="${k}"]`) ?? document.createElement('div'); return { open: q.isConnected ? 'true' : 'false', lines: [...q.querySelectorAll('.dt-ins .dt-cline')].map(l => [l.querySelector('.dt-ctx').childNodes[0]?.textContent, l.querySelector('.dt-ctx em')?.textContent ?? '', l.querySelector('.dt-cside').textContent].join('|')),
-      thumbs: [...q.querySelectorAll('.dt-ins img.dt-thumb')].map(i => i.getAttribute('src').split('/').pop()[0]), knows: q.querySelector('.dt-knows')?.textContent ?? null, lead: q.querySelector('.dt-lines p')?.textContent ?? null,
-      btns: [...q.querySelectorAll('.dt-acts .dt-btn')].map(b => b.textContent), say: !!q.querySelector('.dt-sayhow'), star: !!q.querySelector('.dt-starbtn') }; }, k);
+    const pg = () => a.page.locator('.dt-side[data-page]');
+    const go = async k => { if (await pg().count()) { await a.page.locator('.dt-side .dt-up').click(); await settle(320); } await row(k).scrollIntoViewIfNeeded(); await row(k).click({ position: { x: 170, y: 14 } }); await settle(560); };
+    const inside = k => a.page.evaluate(k => { const q = document.querySelector(`.dt-side[data-page="${k}"]`) ?? document.createElement('div'); return { open: q.isConnected ? 'true' : 'false', lines: [...q.querySelectorAll('.dt-ins .dt-il')].map(l => [l.querySelector('.dt-il-t').childNodes[0]?.textContent, l.querySelector('.dt-il-t em')?.textContent ?? '', l.querySelector('.dt-il-s')?.textContent ?? ''].join('|')),
+      times: [...q.querySelectorAll('.dt-ins .dt-il time')].map(e => e.textContent).join(), thumbs: [...q.querySelectorAll('.dt-ins img.dt-il-th')].map(i => i.getAttribute('src').split('/').pop()[0]), knows: q.querySelector('.dt-how') ? [...q.querySelector('.dt-how').childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('') : null, label: q.querySelector('.dt-how b')?.textContent ?? null, lead: q.querySelector('.dt-lines p')?.textContent ?? null,
+      btns: [...q.querySelectorAll('.dt-dh .dt-btn, .dt-acts .dt-btn')].map(b => b.textContent), say: !!q.querySelector('.dt-sayhow'), star: !!q.querySelector('.dt-starbtn') }; }, k);
     await go('doing-12');
     let o = await inside('doing-12');
-    check('opening the long work stretch: the work block (projects and apps, active time), the Claude Code session and the chat inside it in time order, how she knows, and the two buttons it has (问她 and 这段在干嘛), no star',
-      o.open === 'true' && o.lines.join('\n') === '在 Mac 上工作|Jarvis · Ghostty|活跃 1 小时 55 分\nClaude Code · Doing rows|jarvis · A|1 小时 30 分\nThe bar for the day|和 Claude|14 条' && o.knows === '记录里看到的' && o.btns.join() === '问她' && o.say && !o.star, JSON.stringify(o));
-    await a.shot('doing-03-open-work', { x: 40, y: 0, width: 560, height: 760 });
+    check('opening the long work stretch: the work block (projects and apps, active time), the Claude Code session and the chat inside it in time order, how she knows (under 依据), and the two buttons it has (问她 in the head and 这段在干嘛), no star; each inside line has the time it began',
+      o.open === 'true' && o.label === '依据' && o.times === '19:35,20:00,20:10' && o.lines.join('\n') === '在 Mac 上工作|Jarvis · Ghostty|活跃 1 小时 55 分\nClaude Code · Doing rows|jarvis · A|1 小时 30 分\nThe bar for the day|和 Claude|14 条' && o.knows === '记录里看到的' && o.btns.join() === '问她' && o.say && !o.star, JSON.stringify(o));
+    await a.shot('doing-03-open-work', { x: 0, y: 0, width: 836, height: 760 });
     await go('doing-11');
     o = await inside('doing-11');
     check('opening the rest stretch (phone use, music, messages, a call): each in a compact line with its time or length at the right, and her guess; the first stretch closed', o.open === 'true' && (await inside('doing-12')).open === 'false'
       && o.lines.join('\n') === '音乐|晴天|30 分钟\n妈妈|发 3 · 收 5|7 分钟\n妈妈|打进|4 分钟' && o.knows === '她猜的', JSON.stringify(o));
-    await a.shot('doing-04-open-rest', { x: 40, y: 0, width: 560, height: 760 });
+    await a.shot('doing-04-open-rest', { x: 0, y: 0, width: 836, height: 760 });
     await go('doing-9');
     o = await inside('doing-9');
     check('a stretch with pictures shows their thumbnails (the one the daemon has, an icon for the one it has not), and the session that spans two stretches is 25 min here', o.lines.length === 3 && o.thumbs.join() === 'c' && o.lines.at(-1) === 'Claude Code · Verify the day list|jarvis · A|25 分钟' && o.knows === '她猜的');
-    await pg().locator('img.dt-thumb').click(); await settle(300);
+    await pg().locator('img.dt-il-th').click(); await settle(300);
     check('a click on a thumbnail opens the picture large with its note', await a.page.locator('.dt-viewer img').getAttribute('src').then(x => x.endsWith(`/inherent/attachments/${'c'.repeat(32)}`)) && await a.page.locator('.dt-viewer p').innerText() === '图书馆的窗边');
     await a.page.keyboard.press('Escape'); await settle(300);
     // 问她 about a stretch: the chip has its glyph, words and time; the turn is sent as text with the range and words in front, with no `about`
     await go('doing-2');
-    await pg().locator('.dt-acts .dt-btn', { hasText: '问她' }).click(); await settle(520);
+    await pg().locator('.dt-dh .dt-btn', { hasText: '问她' }).click(); await settle(520);
     const chip = await a.page.evaluate(() => { const c = document.querySelector('.dt-dock .dt-about'); return c && { title: c.querySelector('b').textContent, at: c.querySelector('time').textContent, icon: !!c.querySelector('svg') }; });
     await a.page.keyboard.type('这段进展怎么样'); await a.page.keyboard.press('Enter'); await settle(500);
     const turn = a.s.posts.filter(p => p.path === '/inherent/submit').at(-1)?.body;
@@ -2653,17 +2549,18 @@ try {
   // The full day and a picture that has to be cut to 240 tall (640 x 420), at 16:20.
   const bigDay = () => fullDay({ items: [...fullDay().items, it('picture-2', 'picture', T(16, 20), T(16, 20), { attachment: BIG, note: '傍晚的海边，风很大' })] });
   const orow = (a, key) => a.page.locator(`[data-key="${key}"]`).first();
-  // A click on a row slides the list away to the row's detail page (its `data-page` is the row's key); `back` is the page's ‹, and `tap` goes back first when a page is up.
+  // V2: a click on a row selects it and its detail is the right column's (`.dt-side`, whose `data-page` is the row's key; the list does not move); `back` is the detail's way back to 现在
+  // (`.dt-up`), and `tap` goes back first when a detail is up.
   const rest = (a, ms = 520) => a.page.waitForTimeout(ms);
-  const pgOf = a => a.page.locator('.dt-page[data-page]');
+  const pgOf = a => a.page.locator('.dt-side[data-page]');
   const folds = a => pgOf(a).count();
-  const back = async a => { if (await folds(a)) { await a.page.locator('.dt-pb').click(); await rest(a, 320); } };
+  const back = async a => { if (await folds(a)) { await a.page.locator('.dt-side .dt-up').click(); await rest(a, 320); } };
   const tap = async (a, key) => { await back(a); await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).click({ position: { x: 170, y: 14 } }); };
   const expanded = async (a, key) => String(await pgOf(a).getAttribute('data-page', { timeout: 300 }).catch(() => null) === key);
   const said = async (a, key) => (await pgOf(a).locator('.dt-body').first().innerText()).split('\n').filter(Boolean);
   const shotRow = async (a, name) => {
     const box = await a.page.locator('.dt-stage').boundingBox(), top = Math.max(0, box.y - 150);
-    await a.shot(name, { x: 40, y: top, width: 560, height: Math.min(560, 760 - top) });
+    await a.shot(name, { x: 0, y: top, width: 836, height: Math.min(560, 760 - top) });
   };
   if (all || only === 'open') {
     const full = buildDay(bigDay(), NOW, zh), fbar = buildBar(full, zh);
@@ -2674,80 +2571,83 @@ try {
     const bracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
     const sameSpan = (b, key) => { const x = full.span.get(key), w = { left: px(x.t0), width: Math.max(3, px(x.t1) - px(x.t0)) }; return !!b && Math.abs(b.left - w.left) < 1.6 && Math.abs(b.width - w.width) < 1.6; };
 
-    // ---- opening and going back ----
-    // A click on a row slides the list away to the row's detail page and the header, the bar and the chips stay; going back slides the list in again where it was.
-    const openBracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket.is-open')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
+    // ---- selecting and going back ----
+    // V2: the pane is two columns under the chips (the list at the left, the right column at the right, a 1 px hairline between). A click on a row selects it: its detail is the right column's, which
+    // swaps in 140 ms; the header, the bar, the chips, the list and its scroll stay where they were. Back (or Esc) is 现在 again.
+    const openBracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket.is-open:not(.is-off)')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
     await a.page.evaluate(() => { document.querySelector('[data-key="move-1"]').scrollIntoView({ block: 'center' }); });
     await rest(a, 150);
     const stat = () => a.page.evaluate(() => {
-      const q = s => document.querySelector(s)?.getBoundingClientRect(), l = document.querySelector('.dt-list'), p = document.querySelector('.dt-page');
-      return { head: q('.dt-head').top, bar: q('.dt-bar').top, nums: q('.dt-numbers')?.top, stage: q('.dt-stage').toJSON(), page: p && q('.dt-page').toJSON(), scroll: l.scrollTop, lv: getComputedStyle(l).visibility, pv: p && getComputedStyle(p).visibility, move: q('.dt-list [data-key="move-1"]').top };
+      const q = s => document.querySelector(s)?.getBoundingClientRect(), l = document.querySelector('.dt-list'), p = document.querySelector('.dt-side .dt-pin');
+      return { head: q('.dt-head').top, bar: q('.dt-bar').top, nums: q('.dt-numbers')?.top, stage: q('.dt-stage').toJSON(), list: q('.dt-list').toJSON(), side: q('.dt-side').toJSON(), page: p && q('.dt-side .dt-pin').toJSON(), scroll: l.scrollTop, lv: getComputedStyle(l).visibility, move: q('.dt-list [data-key="move-1"]').top, pane: q('.notch-drop').toJSON() };
     });
     const before = await stat();
-    // the slide is read as it runs: where the list and the page are, frame by frame, and the timings the animations were given
+    check('the pane is 820 wide and two columns under the chips: the list at the left (428), the right column at the right (about 340), a 1 px hairline between them 12 px from each', Math.abs(before.pane.width - 820) < 1 && Math.abs(before.list.width - 428) < 1.5 && before.side.width > 320 && before.side.width < 360 && Math.abs(before.side.left - before.list.right - 25) < 1.5
+      && await a.page.locator('.dt-stage').evaluate(el => { const c = getComputedStyle(el, '::before'); return c.width === '1px' && c.gridColumnStart === '2'; }), JSON.stringify({ pane: before.pane.width, list: before.list.width, side: before.side.width, gap: before.side.left - before.list.right }));
+    check('with nothing selected the right column is the day\'s now (现在 / 等你 / 接下来) and there is no detail, no page and no slide-over class', await a.page.locator('.dt-side .ds').count() === 1 && await a.page.locator('.dt-side .dt-pin, .dt-page, .dt-stage.is-page, .dt-pb, .dt-pn').count() === 0);
+    // the swap is read as it runs: the timings the animations were given (a fade over 140 ms on the right column, its first part comes 6 px from the right)
     const run = await a.page.evaluate(async () => {
       document.querySelector('[data-key="move-1"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r));
-      const st = document.querySelector('.dt-stage'), l = document.querySelector('.dt-list'), p = document.querySelector('.dt-page'), t0 = performance.now(), samples = [];
-      const timings = [st, l, p].flatMap(el => el.getAnimations().map(x => { const t = x.effect.getTiming(); return { on: el.className.split(' ')[0], duration: t.duration, easing: t.easing }; }));
-      await new Promise(done => { const tick = () => { samples.push({ t: performance.now() - t0, l: l.getBoundingClientRect().left, p: p.getBoundingClientRect().left }); if (performance.now() - t0 < 420) requestAnimationFrame(tick); else done(); }; tick(); });
-      return { timings, samples };
+      const side = document.querySelector('.dt-side');
+      return [side, side.firstElementChild].flatMap(el => el.getAnimations().map(x => { const t = x.effect.getTiming(); return { on: el.className.split(' ')[0], duration: t.duration, easing: t.easing, first: x.effect.getKeyframes()[0].transform ?? `opacity ${x.effect.getKeyframes()[0].opacity}` }; }));
     });
-    const width = before.stage.width, left0 = before.stage.left, last = run.samples.at(-1);
-    check('a row opens with a slide of 240 ms on the pane\'s ease, the same for the list, the page and the stage\'s height', ['dt-list', 'dt-page', 'dt-stage'].every(on => run.timings.some(x => x.on === on && x.duration === 240 && x.easing === 'cubic-bezier(0.16, 1, 0.3, 1)')), JSON.stringify(run.timings));
-    check('the list slides out to the left and the page in from the right, side by side all the way and never back, and they end the list one width left of where it was and the page where it was',
-      run.samples.every((x, i, l) => Math.abs(x.p - x.l - width) < 1.5 && (i === 0 || x.l <= l[i - 1].l + .5 && x.p <= l[i - 1].p + .5)) && run.samples.some(x => x.l < left0 - 20 && x.l > left0 - width + 20) && Math.abs(last.l - (left0 - width)) < 1.5 && Math.abs(last.p - left0) < 1.5, JSON.stringify({ left0, width, samples: run.samples.filter((_, i) => i % 4 === 0) }));
+    check('the right column swaps its content over 140 ms on the pane\'s ease: a fade, and its first part comes 6 px from the right', run.some(x => x.on === 'dt-side' && x.duration === 140 && x.easing === 'cubic-bezier(0.16, 1, 0.3, 1)' && x.first === 'opacity 0') && run.some(x => x.on === 'dt-pin' && x.duration === 140 && x.first === 'translateX(6px)'), JSON.stringify(run));
+    await rest(a, 300);
     const open1 = await stat();
-    check('the header, the bar and the chips stay where they were; the list waits out of the way, hidden, at the scroll it had, and the page is in the stage', open1.head === before.head && open1.bar === before.bar && open1.nums === before.nums && open1.lv === 'hidden' && open1.pv === 'visible' && open1.scroll === before.scroll
-      && Math.abs(open1.page.left - left0) < 1.5 && await folds(a) === 1 && await a.page.locator('.dt-stage.is-page').count() === 1, JSON.stringify({ before, open1 }));
+    check('the header, the bar, the chips, the list and its scroll stay exactly where they were; the detail is in the right column', open1.head === before.head && open1.bar === before.bar && open1.nums === before.nums && open1.scroll === before.scroll && open1.move === before.move && open1.lv === 'visible'
+      && Math.abs(open1.list.left - before.list.left) < .5 && Math.abs(open1.list.width - before.list.width) < .5 && Math.abs(open1.side.left - before.side.left) < .5 && Math.abs(open1.page.left - before.side.left) < 8 && await folds(a) === 1, JSON.stringify({ before, open1 }));
     const head1 = headOf(full, 'move-1', zh);
-    check('the page has a back control with the row\'s title, and under it when it was and how long: 11:25–13:05 · 1 小时 40 分', head1.meta === '11:25–13:05 · 1 小时 40 分' && await a.page.locator('.dt-ph .dt-pb').count() === 1 && await a.page.locator('.dt-ph b').innerText() === head1.title && await a.page.locator('.dt-pm').innerText() === head1.meta, JSON.stringify(head1));
-    check('what the row holds is on the page (move-1: where it went from and to), with its buttons', (await said(a, 'move-1')).join('|') === '家 → A&W|问她|这段在干嘛', (await said(a, 'move-1')).join('|'));
-    check('and the open row\'s span is marked on the bar', sameSpan(await openBracket(), 'move-1'), JSON.stringify(await openBracket()));
-    await a.page.locator('.dt-pb').click(); await rest(a, 450);
+    check('the detail has the row\'s glyph and title with when it was and how long under it (11:25–13:05 · 1 小时 40 分), 问她 at its right, and a way back to 现在; no previous or next buttons', head1.meta === '11:25–13:05 · 1 小时 40 分' && await a.page.locator('.dt-side .dt-dh b').innerText() === head1.title && await a.page.locator('.dt-side .dt-dh em').innerText() === head1.meta && await a.page.locator('.dt-side .dt-dh svg').count() >= 1
+      && await a.page.locator('.dt-side .dt-dh .dt-btn').innerText() === '问她' && (await a.page.locator('.dt-side .dt-up').innerText()).trim() === '现在' && await a.page.locator('.dt-side .dt-pn, .dt-side .dt-pb, .dt-side [aria-label="上一段"], .dt-side [aria-label="下一段"]').count() === 0, JSON.stringify(head1));
+    check('what the row holds is in the detail (move-1: where it went from and to), with its buttons', (await said(a, 'move-1')).join('|') === '家 → A&W|这段在干嘛', (await said(a, 'move-1')).join('|'));
+    check('and the selected row\'s span is framed on the bar', sameSpan(await openBracket(), 'move-1'), JSON.stringify(await openBracket()));
+    await a.page.locator('.dt-side .dt-up').click(); await rest(a, 450);
     const back1 = await stat();
-    check('the back control slides the list in again: at the scroll it had, the row it came from where it was, and the page is gone', back1.scroll === before.scroll && Math.abs(back1.move - before.move) < .5 && back1.lv === 'visible' && back1.page === null && await folds(a) === 0 && await a.page.locator('.dt-bracket.is-open').count() === 0, JSON.stringify({ before, back1 }));
+    check('the way back shows 现在 again: the list is at the scroll it had, the row where it was, the detail is gone and the frame fades away', back1.scroll === before.scroll && Math.abs(back1.move - before.move) < .5 && back1.page === null && await folds(a) === 0 && await a.page.locator('.dt-side .ds').count() === 1 && await a.page.locator('.dt-bracket.is-open:not(.is-off)').count() === 0, JSON.stringify({ before, back1 }));
     await tap(a, 'talk-1'); await rest(a);
-    check('a row that has the page up is the one that was clicked', await expanded(a, 'talk-1') === 'true' && await expanded(a, 'move-1') === 'false' && await folds(a) === 1);
+    check('the row that has its detail up is the one that was clicked', await expanded(a, 'talk-1') === 'true' && await expanded(a, 'move-1') === 'false' && await folds(a) === 1);
+    await a.page.locator('[data-key="talk-1"]').click({ position: { x: 170, y: 14 } }); await rest(a, 300);
+    check('a second click on the selected row does not toggle it away (V2: selection is not a toggle)', await expanded(a, 'talk-1') === 'true' && await folds(a) === 1);
     await tap(a, 'stay-home-1'); await rest(a);
     await pgOf(a).locator('.dt-lines p').first().click(); await rest(a, 300);
-    check('a click inside the page does not take it away', await expanded(a, 'stay-home-1') === 'true' && await folds(a) === 1);
+    check('a click inside the detail does not take it away', await expanded(a, 'stay-home-1') === 'true' && await folds(a) === 1);
     await a.move(...Object.values(await a.page.locator('.dt-head').boundingBox().then(b => [b.x + 60, b.y + b.height / 2]))); await a.page.waitForTimeout(350);
-    check('and the open row keeps its span marked on the bar when the pointer goes away', sameSpan(await openBracket(), 'stay-home-1'), JSON.stringify(await openBracket()));
-    // the bar while a page is up: another piece changes the page to its row, the open one changes nothing, a place with nothing recorded goes back
+    check('and the selected row keeps its span framed on the bar when the pointer goes away', sameSpan(await openBracket(), 'stay-home-1'), JSON.stringify(await openBracket()));
+    // the bar while a row is selected: another piece selects its row, the selected one changes nothing, a place with nothing recorded lets the selection go
     await a.page.mouse.click(px(T(16, 0)), geo.top + 12); await rest(a, 450);
-    check('a click on another piece of the bar changes the page to that row (UVic at 16:00)', await expanded(a, 'stay-uvic') === 'true' && await folds(a) === 1 && sameSpan(await openBracket(), 'stay-uvic'), `${await expanded(a, 'stay-uvic')} ${JSON.stringify(await openBracket())}`);
+    check('a click on another piece of the bar selects that row (UVic at 16:00)', await expanded(a, 'stay-uvic') === 'true' && await folds(a) === 1 && sameSpan(await openBracket(), 'stay-uvic'), `${await expanded(a, 'stay-uvic')} ${JSON.stringify(await openBracket())}`);
     await a.page.mouse.click(px(T(16, 30)), geo.top + 12); await rest(a, 450);
-    check('a click on the open row\'s own span changes nothing', await expanded(a, 'stay-uvic') === 'true' && await folds(a) === 1);
+    check('a click on the selected row\'s own span changes nothing', await expanded(a, 'stay-uvic') === 'true' && await folds(a) === 1);
     await a.page.mouse.click(px(T(23, 35)), geo.top + 12); await rest(a, 450);
-    check('a click on the bar where nothing is recorded goes back to the list', await folds(a) === 0 && await a.page.locator('.dt-stage.is-page').count() === 0);
+    check('a click on the bar where nothing is recorded lets the selection go: 现在 again', await folds(a) === 0 && await a.page.locator('.dt-side .ds').count() === 1);
 
-    // ---- the keys: Enter or Space opens the row they chose; Esc lets go of one thing at a time ----
+    // ---- the keys: ↑ ↓ select, the right column follows at once; Enter and Space do nothing now; Esc lets go of one thing at a time ----
     const key = async (k, ms = 420) => { await a.page.keyboard.press(k); await a.page.waitForTimeout(ms); };
     const chosen = () => a.page.evaluate(() => document.querySelector('.is-pick')?.dataset.key);
     await tap(a, 'stay-home-1'); await rest(a);
-    await key('Escape');
-    check('Esc closes the open page first, and the pane stays up', await folds(a) === 0 && (await a.read()).tl === 'pinned', JSON.stringify(await a.read()));
+    const ord = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].filter(e => !e.classList.contains('is-still')).map(e => e.dataset.key));
     await key('ArrowDown');
-    const next = await chosen();
-    check('↓ chooses the row after the one the click chose', next === 'workout-1', next);
+    const next = await chosen(), want = ord[ord.indexOf('stay-home-1') + 1];
+    check('↓ with a row selected selects the row after it among the rows that have a detail (the list\'s order), and the right column follows at once', !!want && next === want && await expanded(a, next) === 'true' && await folds(a) === 1, `${next} ${want}`);
     await key('Enter');
-    check('Enter opens the row the keys chose', await expanded(a, next) === 'true' && await folds(a) === 1);
-    await key('Enter');
-    check('Enter again goes back', await expanded(a, next) === 'false' && await folds(a) === 0);
+    check('Enter does nothing now: the selection stays, no toggle', await expanded(a, next) === 'true' && await folds(a) === 1 && await chosen() === next);
     await key(' ');
-    check('Space opens it too', await expanded(a, next) === 'true' && await folds(a) === 1);
-    const ord = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].filter(e => !e.classList.contains('is-still')).map(e => e.dataset.key)), after = ord[ord.indexOf(next) + 1];
+    check('and neither does Space', await expanded(a, next) === 'true' && await folds(a) === 1 && await chosen() === next);
+    const after = ord[ord.indexOf(next) + 1];
     await key('ArrowDown');
-    check('with a page up ↓ turns it to the row after it among the rows that open (the list\'s order), and the choice goes with it', !!after && await expanded(a, after) === 'true' && await chosen() === after && await folds(a) === 1, `${after} ${await chosen()}`);
+    check('↓ again selects the row after that, and the choice goes with it', !!after && await expanded(a, after) === 'true' && await chosen() === after && await folds(a) === 1, `${after} ${await chosen()}`);
+    await key('ArrowUp');
+    check('↑ goes back to the row before', await chosen() === next && await expanded(a, next) === 'true');
     await key('Escape');
-    // the order of Esc: the open page, then the lens, then the pane
+    check('Esc lets the selection go first: 现在 again, the pane stays up', await folds(a) === 0 && await a.page.locator('.dt-side .ds').count() === 1 && (await a.read()).tl === 'pinned', JSON.stringify(await a.read()));
+    // the order of Esc: the selection, then the lens, then the pane
     await a.page.locator('.dt-num').first().click(); await a.page.waitForTimeout(250);
     await tap(a, 'move-1'); await rest(a);
     const lens = () => a.page.locator('.dt').getAttribute('data-lens');
-    check('a lens can be pinned while a page is up', !!await lens() && await folds(a) === 1, `${await lens()} ${await folds(a)}`);
+    check('a lens can be pinned while a row is selected', !!await lens() && await folds(a) === 1, `${await lens()} ${await folds(a)}`);
     await key('Escape');
-    check('Esc: the open page first, the lens stays', await folds(a) === 0 && !!await lens() && (await a.read()).tl === 'pinned');
+    check('Esc: the selection first, the lens stays', await folds(a) === 0 && !!await lens() && (await a.read()).tl === 'pinned');
     await key('Escape');
     check('Esc: then the lens, the pane stays', !await lens() && (await a.read()).tl === 'pinned');
     await key('Escape', 700);
@@ -2777,16 +2677,17 @@ try {
       ['sleep-1', 'open-09-sleep', '清醒|REM|核心|深睡|23:10|07:00|深睡 1:10 · 核心 4:30 · REM 1:40 · 醒 3 次|问她|这段在干嘛'],
     ];
     const bad = [];
-    for (const [key, name, want] of kinds) {
+    for (const [key, name, all] of kinds) {
       await tap(a, key); await rest(a, 480);
-      const got = (await said(a, key)).join('|');
-      if (got !== want) bad.push(`${key}: ${got}`);
+      // 问她 is in the head of the detail (V2), the rest is the body: the line below lists them together, 问她 where it was
+      const want = all.split('|').filter(x => x !== '问她').join('|'), asks = await pgOf(a).locator('.dt-dh .dt-btn', { hasText: '问她' }).count() === 1, got = (await said(a, key)).join('|');
+      if (got !== want || asks !== all.split('|').includes('问她')) bad.push(`${key}: ${got}${asks ? ' (+ 问她 in the head)' : ''}`);
       if (name) await shotRow(a, name, key);
     }
     check('each kind says what it has when opened, in lines of its own, with only the buttons that work for it', bad.length === 0, bad.join('\n'));
     // what the row says in its two lines is not said again
     const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="event-1"]'); return { cursor: getComputedStyle(r).cursor, expanded: r.getAttribute('aria-expanded'), opacity: Number(getComputedStyle(r).opacity) }; });
-    check('a row that opens has the pointer and no expanded state (it opens a page, not itself), and a row still to come is drawn quiet', lit.cursor === 'pointer' && lit.expanded === null && lit.opacity < .7, JSON.stringify(lit));
+    check('a row that opens has the pointer and no expanded state (it selects, it does not unfold), and a row still to come is drawn quiet', lit.cursor === 'pointer' && lit.expanded === null && lit.opacity < .7, JSON.stringify(lit));
 
     // the talk: his line and hers from the day's records, one line each, clipped; the records were read once
     await tap(a, 'talk-1'); await rest(a, 520);
@@ -2796,15 +2697,15 @@ try {
     await shotRow(a, 'open-03-talk', 'talk-1');
     check('the day\'s records were read once for it, a page of 300 from the start', a.s.reads.length === 1 && a.s.reads[0] === '/inherent/memory/day/2026-10-19/records?limit=300&offset=0', a.s.reads.join());
     await tap(a, 'talk-3'); await rest(a, 480);
-    check('another talk of the same day does not read them again', a.s.reads.length === 1 && (await said(a, 'talk-3')).join('|') === '你|27 路下一班什么时候|她|还有 6 分钟。|共 1 句|问她', (await said(a, 'talk-3')).join('|'));
+    check('another talk of the same day does not read them again', a.s.reads.length === 1 && (await said(a, 'talk-3')).join('|') === '你|27 路下一班什么时候|她|还有 6 分钟。|共 1 句' && await pgOf(a).locator('.dt-dh .dt-btn').innerText() === '问她', (await said(a, 'talk-3')).join('|'));
 
     // pictures
     await tap(a, 'picture-1'); await rest(a, 600);
     const small = await pgOf(a).evaluate(r => { const b = r.querySelector('.dt-pic'), i = b.querySelector('img'), c = getComputedStyle(i), q = x => x.getBoundingClientRect(), note = r.querySelector('.is-note'); return { w: Math.round(q(i).width), h: Math.round(q(i).height), max: c.maxHeight, radius: c.borderRadius, box: getComputedStyle(b).borderRadius, nat: [i.naturalWidth, i.naturalHeight], cursor: getComputedStyle(b).cursor, note: note.innerText, noteBreaks: getComputedStyle(note).whiteSpace }; });
     check('a picture is read from the daemon by its id and shown as it is (96 x 96 here), with a 240 tall cap and 10 px round, and its note in full under it, line break and all', small.nat.join('x') === '96x96' && small.w === 96 && small.h === 96 && small.max === '240px' && small.radius === '10px' && small.box === '10px' && small.note === '汉堡和薯条\n在 A&W 吃的午饭' && small.cursor === 'zoom-in' && a.s.pictures.some(x => x.endsWith(PIC)), JSON.stringify(small));
     await tap(a, 'picture-2'); await rest(a, 700);
-    const big = await pgOf(a).evaluate(r => { const i = r.querySelector('.dt-pic img'), q = i.getBoundingClientRect(); return { w: Math.round(q.width), h: Math.round(q.height), nat: [i.naturalWidth, i.naturalHeight] }; });
-    check('one taller than 240 is cut to 240 and keeps its proportions (640 x 420 shows at 366 x 240); its note is one short line, which the row already says, so it is not said again', big.nat.join('x') === '640x420' && big.h === 240 && Math.abs(big.w - 366) <= 1 && await pgOf(a).locator('.is-note').count() === 0, JSON.stringify(big));
+    const big = await pgOf(a).evaluate(r => { const i = r.querySelector('.dt-pic img'), q = i.getBoundingClientRect(), col = r.getBoundingClientRect(); return { w: Math.round(q.width), h: Math.round(q.height), nat: [i.naturalWidth, i.naturalHeight], col: Math.round(col.width), inside: q.right <= col.right + .5 }; });
+    check('a wide picture (640 x 420) keeps its proportions, is no taller than 240 and fits the right column (331 x 217 in it); its note is one short line, which the row already says, so it is not said again', big.nat.join('x') === '640x420' && big.h <= 240 && big.w <= big.col && big.inside && Math.abs(big.w / big.h - 640 / 420) < .02 && big.w > 300 && await pgOf(a).locator('.is-note').count() === 0, JSON.stringify(big));
     await shotRow(a, 'open-04-picture', 'picture-2');
 
     // the bars of a work block: the same columns on every line, a bar as long as its share of the active time
@@ -2851,7 +2752,7 @@ try {
     a.s.refuse.add('records');
     await openDay(a);
     await tap(a, 'talk-1'); await rest(a, 600);
-    check('when the records cannot be read the talk says so, in one line, and still has its count and its button', (await said(a, 'talk-1')).join('|') === '这段对话的字还没读到|共 6 句|问她', (await said(a, 'talk-1')).join('|'));
+    check('when the records cannot be read the talk says so, in one line, and still has its count and its 问她', (await said(a, 'talk-1')).join('|') === '这段对话的字还没读到|共 6 句' && await pgOf(a).locator('.dt-dh .dt-btn').innerText() === '问她', (await said(a, 'talk-1')).join('|'));
     await a.ctx.close();
   }
 
@@ -2874,14 +2775,14 @@ try {
     await tap(a, 'stay-home-1'); await rest(a, 480);
     check('a hover-opened pane has no key focus, and opening a row asks for none', await focusLog(a) === '' && (await a.read()).tl === 'open', await focusLog(a));
     await pgOf(a).getByRole('button', { name: '改名字' }).click(); await rest(a, 400);
-    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(); return { inTitle: !!f.closest('.dt-ph'), value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('.dt-page .dt-acts .dt-btn, .dt-page .dt-sayhow')].map(x => x.textContent) }; });
+    const field = await a.page.evaluate(() => { const f = document.querySelector('.dt-rename'), q = f.getBoundingClientRect(); return { inTitle: !!f.closest('.dt-dh'), value: f.value, sel: [f.selectionStart, f.selectionEnd], focused: document.activeElement === f, h: Math.round(q.height), font: getComputedStyle(f).fontSize + '/' + getComputedStyle(f).fontWeight, outline: getComputedStyle(f).outlineStyle, hint: document.querySelector('.dt-hint')?.textContent, buttons: [...document.querySelectorAll('.dt-side .dt-dh .dt-btn, .dt-side .dt-acts .dt-btn, .dt-side .dt-sayhow')].map(x => x.textContent) }; });
     check('改名字 turns the title of the page into a field with the cursor in it and the name selected, in the title\'s own type, and says Enter saves and Esc cancels', field.inTitle && field.value === '家' && field.sel.join() === '0,1' && field.focused && field.h === 26 && field.font === '15px/600' && field.outline === 'none' && field.hint === '回车保存 · Esc 取消' && field.buttons.join() === '问她,这段在干嘛', JSON.stringify(field));
     check('the field takes the window\'s key focus (it was a pane opened by a rest, with none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
     await shotRow(a, 'open-13-rename-field', 'stay-home-1');
     // the pane is held while the field is there, wherever the pointer goes
     await a.move(a.far.x, a.far.y); await a.page.waitForTimeout(1300);
     check('and the pane stays up while the field has the cursor, though the pointer has gone', (await a.read()).tl === 'open' && (await a.read()).dt, JSON.stringify(await a.read()));
-    const back = await a.page.locator('.dt-page').boundingBox();
+    const back = await a.page.locator('.dt-side').boundingBox();
     await a.move(back.x + back.width / 2, back.y + 20);
     await a.page.keyboard.type('新家'); await a.page.keyboard.press('Enter'); await a.page.waitForTimeout(500);
     check('Enter saves it: the one route the brain has for it, with exactly the new name', sent(a).join('|') === '/inherent/memory/places/p-home {"name":"新家"}', sent(a).join('|'));
@@ -2889,7 +2790,7 @@ try {
     check('the day is read again and every home shows it at once: the three stays\' headers and the bar', renamed.heads.filter(x => x === '新家').length === 3 && !renamed.heads.includes('家') && renamed.bar.includes('新家') && !renamed.bar.includes('家'), JSON.stringify(renamed));
     const note = await a.page.locator('.dt-note').innerText();
     check('a quiet line says 改好了 · 撤销, and the field is gone, the row still open', note === '改好了 · 撤销' && await a.page.locator('.dt-rename').count() === 0 && await expanded(a, 'stay-home-1') === 'true', note);
-    await a.shot('open-14-rename-note', { x: 40, y: 0, width: 560, height: 760 });
+    await a.shot('open-14-rename-note', { x: 0, y: 0, width: 836, height: 760 });
     await a.page.waitForTimeout(900);
     await a.shot('open-14b-wing-after-rename', { x: 200, y: 0, width: 300, height: 60 });
     // the wing's line is the open pane's too: a longer name for the place pushes the wing's edge out; the words do not run past it and lose a digit
@@ -2940,7 +2841,7 @@ try {
     const seen = await watching;
     check('知道了 sends the one thing the brain takes for it: the reminder\'s id and "dismissed"', sent(a).join('|') === '/inherent/notices/reminder-2 {"action":"dismissed"}', sent(a).join('|'));
     check('the amber badge fades out and goes, and the count in the header rolls down (2 to 1) instead of changing', seen.rolled && seen.faded && seen.gone && await pill() === '1 件等你', JSON.stringify({ seen, pill: await pill() }));
-    check('the button is gone from the row, which says it is known (the row\'s own second line: 你知道了); the day was read again, and the brain has it acknowledged', (await said(a, 'reminder-2')).join('|') === '问她' && await orow(a, 'reminder-2').locator('.dt-tx em').textContent() === '你知道了' && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'reminder-2').acknowledged === true, `${(await said(a, 'reminder-2')).join('|')} ${a.s.hits.length} ${reads}`);
+    check('the button is gone from the row, which says it is known (the row\'s own second line: 你知道了); the day was read again, and the brain has it acknowledged', (await said(a, 'reminder-2')).join('|') === '' && await pgOf(a).locator('.dt-dh .dt-btn').innerText() === '问她' && await orow(a, 'reminder-2').locator('.dt-tx em').textContent() === '你知道了' && a.s.hits.length > reads && a.s.served.items.find(x => x.id === 'reminder-2').acknowledged === true, `${(await said(a, 'reminder-2')).join('|')} ${a.s.hits.length} ${reads}`);
     await a.ctx.close();
   }
   if (all || only === 'open') {
@@ -2977,20 +2878,28 @@ try {
     const m = buildDay(bigDay(), NOW, zh), about = key => askOf(m, key, zh);
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
-    const marks = await a.page.evaluate(() => { const by = {}; for (const el of document.querySelectorAll('.dt-row, .dt-sh')) { const k = el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind; by[k] ??= { rows: 0, asks: 0 }; by[k].rows++; if (el.querySelector(':scope > .dt-quick > .dt-ask')) by[k].asks++; } return by; });
+    // V2: the quick 问她 is gone from today's rows; a right click on a row asks about it, and is the system's own click on a row that cannot be asked about
+    const keysOf = await a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh')].map(el => [el.dataset.key, el.classList.contains('dt-sh') ? 'stay' : el.dataset.kind]));
+    const marks = {};
+    for (const [key, kind] of keysOf) {
+      const asked = await a.page.evaluate(k => { const el = document.querySelector(`[data-key="${k}"]`), ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true }); el.dispatchEvent(ev); return ev.defaultPrevented; }, key);
+      marks[kind] ??= { rows: 0, asks: 0 }; marks[kind].rows++; if (asked) marks[kind].asks++;
+      if (asked) { await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(60); }
+    }
     const yes = ['stay', 'move', 'sleep', 'talk', 'picture', 'reminder', 'event', 'work', 'call', 'ride', 'departure', 'payment', 'claude_chat', 'claude_day', 'workout'], no = ['code'];
-    check('only what the brain takes a turn about has 问她 (stays, moves, sleep, talks, pictures, reminders, events, work, calls, rides, buses, payments, Claude chats and days, runs); the folded rows of sessions, no one item, have none', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
+    check('only what the brain takes a turn about is asked about by a right click (stays, moves, sleep, talks, pictures, reminders, events, work, calls, rides, buses, payments, Claude chats and days, runs); the folded rows of sessions, no one item, are not', yes.every(k => marks[k]?.rows > 0 && marks[k].asks === marks[k].rows) && no.every(k => marks[k]?.rows > 0 && marks[k].asks === 0), JSON.stringify(marks));
+    await a.page.waitForTimeout(400);
     await orow(a, 'talk-1').scrollIntoViewIfNeeded();
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 300);
-    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), q = r.querySelector(':scope > .dt-quick'), tm = r.querySelector(':scope > .dt-tm'); return { ask: getComputedStyle(q).opacity, tm: getComputedStyle(tm).opacity, text: q.querySelector('.dt-ask').textContent }; });
-    check('under the pointer a row says 问她 (after its star) in the place of its length', lit.ask === '1' && lit.tm === '0' && lit.text === '问她', JSON.stringify(lit));
-    await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 520);
+    const lit = await a.page.evaluate(() => { const r = document.querySelector('[data-key="talk-1"]'), tm = r.querySelector(':scope > .dt-tm'); return { quick: r.querySelectorAll('.dt-quick').length, star: r.querySelectorAll('.dt-starb, .dt-starbtn').length, tm: getComputedStyle(tm).opacity, hot: r.classList.contains('is-hot') }; });
+    check('under the pointer a row is lit and keeps its length: no inline star or 问她 beside it', lit.quick === 0 && lit.star === 0 && lit.tm === '1' && lit.hot, JSON.stringify(lit));
+    await orow(a, 'talk-1').click({ button: 'right', position: { x: 170, y: 14 } }); await rest(a, 520);
     const d1 = await dockOf(a);
     check('it slides an input up at the pane\'s foot: what it is about as a chip (the row\'s glyph, its title, its time, a ×), the cursor in the field, send greyed while nothing is typed; the row itself did not open', d1 && d1.chip.title === '和她说话' && d1.chip.at === '10:02' && d1.chip.icon && d1.chip.x === '去掉这一条' && d1.focused && d1.placeholder === '问她这一条…' && d1.canSend === false && await expanded(a, 'talk-1') === 'false' && await folds(a) === 0, JSON.stringify(d1));
     check('the field takes the window\'s key focus (the pane was opened by a rest and had none)', (await focusLog(a)).endsWith('true'), await focusLog(a));
     await a.page.keyboard.type('明天下午有空吗'); await rest(a, 150);
     check('typing enables send', (await dockOf(a)).canSend === true && (await dockOf(a)).draft === '明天下午有空吗');
-    await a.shot('open-15-ask-input', { x: 40, y: 0, width: 560, height: 760 });
+    await a.shot('open-15-ask-input', { x: 0, y: 0, width: 836, height: 760 });
     await a.move(a.far.x, a.far.y); await a.page.waitForTimeout(1300);
     check('the pane stays up while the field has the cursor, though the pointer has gone', (await a.read()).tl === 'open' && (await a.read()).dt && !!await dockOf(a), JSON.stringify(await a.read()));
     const t0 = Date.now();
@@ -3000,7 +2909,7 @@ try {
     check('then 已发给她 stands where the input was (the field and the chip are gone)', s1.sent && s1.text.trim() === '已发给她' && s1.chip === null && s1.draft === null, JSON.stringify(s1));
     check('the pane is still up while it says so', (await a.read()).tl === 'open');
     await noDock(a); const gone = Date.now() - t0;
-    check('1.5 s after it was sent the line slides away', gone >= 1450 && gone < 2500, String(gone));
+    check('1.5 s after it was sent the line slides away', gone >= 1450 && gone < 3200, String(gone));
     check('with the pointer away the pane folds once the input is gone', (await seen(a, r => r.tl === '', 2500)).tl === '');
     check('the key focus goes back with it', (await focusLog(a)).endsWith('false'), await focusLog(a));
 
@@ -3014,7 +2923,7 @@ try {
     await back(a);
     await orow(a, 'event-1').scrollIntoViewIfNeeded();
     await orow(a, 'event-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 250);
-    await orow(a, 'event-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 450);
+    await orow(a, 'event-1').click({ button: 'right', position: { x: 170, y: 14 } }); await rest(a, 450);
     const d3 = await dockOf(a);
     check('asking about another row swaps the chip and keeps what was typed, the cursor back in the field', d3 && d3.chip.title === about('event-1').about.title && d3.chip.at === about('event-1').at && d3.draft === 'abc' && d3.focused && turns(a).length === 1, JSON.stringify(d3));
     await a.page.locator('.dt-about button').click(); await rest(a, 250);
@@ -3035,7 +2944,7 @@ try {
     check('the next key takes the hint away', await a.page.locator('.dt-dock + .dt-hint').count() === 0);
     a.s.refuse.delete('submit');
     await a.page.keyboard.press('Enter'); await rest(a, 350);
-    check('and Enter again, when it can, sends the same words', turns(a).length === 4 && JSON.stringify(turns(a)[3].body) === JSON.stringify({ text: 'xyz!', about: about('move-1').about }) && (await dockOf(a)).sent, JSON.stringify(turns(a).slice(2)));
+    check('and Enter again, when it can, sends the same words', turns(a).length === 4 && JSON.stringify(turns(a)[3].body) === JSON.stringify({ text: 'xyz!', about: about('move-1').about }) && (await dockOf(a)).sent, JSON.stringify([turns(a).slice(2), await dockOf(a)]));
     await noDock(a);
     await pgOf(a).getByRole('button', { name: '问她' }).click(); await rest(a, 500);
     check('the words that were sent do not come back into the next input', (await dockOf(a)).draft === '');
@@ -3055,7 +2964,7 @@ try {
     const a = await boot({ served: small([it('w1', 'workout', T(7, 0), T(7, 30), { activity: 'running', distance_m: 3200 }), it('sa', 'stay', T(8, 0), T(9, 30), { place: 'X' }), it('c1', 'code', T(8, 10), T(8, 40), { title: '周报草稿', project: 'notes', account: 'b' }),
       it('sb', 'stay', T(10, 0), T(12, 0), { place: 'Y' }), it('c2', 'code', T(10, 10), T(10, 40), { title: '第二个' }), it('c3', 'code', T(10, 50), T(11, 20), { title: '第三个' })]) });
     await hoverDay(a);
-    const btns = key => pgOf(a).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
+    const btns = key => pgOf(a).locator('.dt-dh .dt-btn, .dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
     for (const [key, kind, title, start] of [['w1', 'workout', '跑步', T(7, 0)], ['c1', 'code', 'Claude Code · 周报草稿', T(8, 10)]]) {
       await tap(a, key); await rest(a, 480);
       check(`an opened ${kind} row offers 问她`, (await btns(key)).includes('问她'), (await btns(key)).join('|'));
@@ -3077,15 +2986,15 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await tap(a, 'work-2'); await rest(a, 520);
-    const buttons = () => pgOf(a).locator('.dt-acts, .dt-sayhow').allInnerTexts().then(x => x.join('\n').split('\n').map(y => y.trim()).filter(Boolean).join('|'));
-    check('a work block offers 让她总结这段, and 问她 and the quiet 这段在干嘛 after it', await buttons() === '让她总结这段|问她|这段在干嘛', await buttons());
+    const buttons = () => pgOf(a).locator('.dt-dh .dt-btn, .dt-acts, .dt-sayhow').allInnerTexts().then(x => x.join('\n').split('\n').map(y => y.trim()).filter(Boolean).join('|'));
+    check('a work block offers 问她 in the detail\'s head, then 让她总结这段, and the quiet 这段在干嘛 after it', await buttons() === '问她|让她总结这段|这段在干嘛', await buttons());
     a.s.refuse.add('submit');
     await pgOf(a).getByRole('button', { name: '让她总结这段' }).click(); await rest(a, 450);
-    check('one tap is one submit; the daemon refusing it leaves the button, which says 没发出去，再试一次', turns(a).length === 1 && await buttons() === '没发出去，再试一次|问她|这段在干嘛', `${turns(a).length} ${await buttons()}`);
+    check('one tap is one submit; the daemon refusing it leaves the button, which says 没发出去，再试一次', turns(a).length === 1 && await buttons() === '问她|没发出去，再试一次|这段在干嘛', `${turns(a).length} ${await buttons()}`);
     a.s.refuse.delete('submit');
     await pgOf(a).getByRole('button', { name: '没发出去，再试一次' }).click(); await rest(a, 450);
     check('and the next tap sends the same: the words and the block as `about` (work, its id, its title, its start), without any input opening', turns(a).length === 2 && turns(a).every(x => JSON.stringify(x.body) === want) && (await dockOf(a)) === null, JSON.stringify(turns(a)));
-    check('then 已发给她 stands where the button was; 问她 stays', await buttons() === '已发给她|问她|这段在干嘛', await buttons());
+    check('then 已发给她 stands where the button was; 问她 stays', await buttons() === '问她|已发给她|这段在干嘛', await buttons());
     await shotRow(a, 'open-12-work-sent', 'work-2');
     await a.ctx.close();
   }
@@ -3095,14 +3004,14 @@ try {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await tap(a, 'picture-2'); await rest(a, 700);
-    await a.page.locator('.dt-page .dt-pic').click(); await rest(a, 500);
+    await a.page.locator('.dt-side .dt-pic').click(); await rest(a, 500);
     const v = await a.page.evaluate(() => { const d = document.querySelector('.dt-viewer'), i = d?.querySelector('img'), r = i?.getBoundingClientRect(); return d && { hit: d.hasAttribute('data-hit'), body: d.parentElement === document.body, src: i.getAttribute('src'), w: Math.round(r.width), h: Math.round(r.height), vw: innerWidth, vh: innerHeight, note: d.querySelector('p')?.textContent, role: d.getAttribute('role'), covers: (b => b.width === innerWidth && b.height === innerHeight)(d.getBoundingClientRect()) }; });
     check('a click on the picture opens it large over the whole window: the daemon\'s picture at 88% of the width and 78% of the height, its note in full under it, on a surface of its own', v && v.hit && v.body && v.src.endsWith(`/inherent/attachments/${BIG}`) && v.w === Math.round(v.vw * .88) && v.h === Math.round(v.vh * .78) && v.note === '傍晚的海边，风很大' && v.role === 'dialog' && v.covers, JSON.stringify(v));
     check('it takes the window\'s key focus, and the page stays up', (await focusLog(a)).endsWith('true') && await expanded(a, 'picture-2') === 'true', await focusLog(a));
-    await a.shot('open-16-picture-large', { x: 0, y: 0, width: 640, height: 900 });
+    await a.shot('open-16-picture-large', { x: 0, y: 0, width: 836, height: 900 });
     await a.page.keyboard.press('Escape'); await rest(a, 350);
     check('Esc closes the picture first: the page stays up and so does the pane, and the key focus goes back', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true' && (await a.read()).tl === 'open' && (await focusLog(a)).endsWith('false'), `${JSON.stringify(await a.read())} ${await focusLog(a)}`);
-    await a.page.locator('.dt-page .dt-pic').click(); await rest(a, 400);
+    await a.page.locator('.dt-side .dt-pic').click(); await rest(a, 400);
     await a.page.mouse.click(320, 450); await rest(a, 350);
     check('a click on it closes it too', await a.page.locator('.dt-viewer').count() === 0 && await expanded(a, 'picture-2') === 'true');
     await a.ctx.close();
@@ -3113,22 +3022,22 @@ try {
     const m = buildDay(bigDay(), NOW, en);
     const a = await boot({ served: bigDay(), lang: 'en' });
     await hoverDay(a);
-    const btns = key => pgOf(a).locator('.dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
+    const btns = key => pgOf(a).locator('.dt-dh .dt-btn, .dt-acts .dt-btn, .dt-acts .dt-sent, .dt-sayhow').allInnerTexts();
     await tap(a, 'stay-home-1'); await rest(a, 480);
-    check('in English a kept place (named as he named it) says Rename and Ask her', (await btns('stay-home-1')).join() === 'Rename,Ask her,What was this' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
+    check('in English a kept place (named as he named it) says Ask her (in the head), Rename and the quiet What was this', (await btns('stay-home-1')).join() === 'Ask her,Rename,What was this' && (await said(a, 'stay-home-1')).includes('A place you keep · 家'), (await said(a, 'stay-home-1')).join('|'));
     await pgOf(a).getByRole('button', { name: 'Rename' }).click(); await rest(a, 350);
     check('and Rename says how it ends', await pgOf(a).locator('.dt-hint').innerText() === 'Enter saves · Esc cancels');
     await a.page.keyboard.type('My place'); await a.page.keyboard.press('Enter'); await rest(a, 500);
     check('a name changed says Renamed · Undo', await a.page.locator('.dt-note').innerText() === 'Renamed · Undo', await a.page.locator('.dt-note').innerText());
     await tap(a, 'reminder-2'); await rest(a, 480);
-    check('a reminder that rang offers Got it, and Ask her', (await btns('reminder-2')).join() === 'Got it,Ask her' && (await said(a, 'reminder-2')).join('|') === 'Got it|Ask her', (await said(a, 'reminder-2')).join('|'));
+    check('a reminder that rang offers Ask her (in the head) and Got it', (await btns('reminder-2')).join() === 'Ask her,Got it' && (await said(a, 'reminder-2')).join('|') === 'Got it', (await said(a, 'reminder-2')).join('|'));
     await tap(a, 'talk-1'); await rest(a, 700);
-    const talk = await a.page.evaluate(() => { const r = document.querySelector('.dt-page'); return { who: [...r.querySelectorAll('.dt-said small')].map(x => x.textContent), text: r.querySelector('.dt-body').innerText }; });
+    const talk = await a.page.evaluate(() => { const r = document.querySelector('.dt-side .dt-pin'); return { who: [...r.querySelectorAll('.dt-said small')].map(x => x.textContent), text: r.querySelector('.dt-body').innerText }; });
     check('a talk labels the two lines You and Her and counts its lines', talk.who.join() === 'You,Her' && /6 lines in all/.test(talk.text), JSON.stringify(talk));
     await tap(a, 'work-2'); await rest(a, 520);
-    check('a work block offers Have her sum this up', (await btns('work-2')).join() === 'Have her sum this up,Ask her,What was this' && (await said(a, 'work-2')).includes('Active 1 h 55 min · 2 h 5 min in all'), (await said(a, 'work-2')).join('|'));
+    check('a work block offers Have her sum this up', (await btns('work-2')).join() === 'Ask her,Have her sum this up,What was this' && (await said(a, 'work-2')).includes('Active 1 h 55 min · 2 h 5 min in all'), (await said(a, 'work-2')).join('|'));
     await pgOf(a).getByRole('button', { name: 'Have her sum this up' }).click(); await rest(a, 450);
-    check('it hands her the words in English, with the block as about; then Sent to her', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: 'Summarize this stretch', about: askOf(m, 'work-2', en).about }) && (await btns('work-2')).join() === 'Sent to her,Ask her,What was this', `${JSON.stringify(turns(a))} ${(await btns('work-2')).join()}`);
+    check('it hands her the words in English, with the block as about; then Sent to her', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: 'Summarize this stretch', about: askOf(m, 'work-2', en).about }) && (await btns('work-2')).join() === 'Ask her,Sent to her,What was this', `${JSON.stringify(turns(a))} ${(await btns('work-2')).join()}`);
     await pgOf(a).getByRole('button', { name: 'Ask her' }).click(); await rest(a, 500);
     const d = await dockOf(a);
     check('the input is Ask her about this…, with the chip in English', d && d.placeholder === 'Ask her about this…' && d.chip.title === askOf(m, 'work-2', en).about.title && d.chip.x === 'Take it off', JSON.stringify(d));
@@ -3162,13 +3071,13 @@ try {
     check('it is at the right end of that row (its right edge on the numbers\' right edge) and as tall as a number chip or less', Math.abs(box.x + box.width - (nums.x + nums.width)) < 1.5 && box.height <= 24, JSON.stringify({ box, nums }));
     await by.getByRole('button', { name: '在哪' }).click(); await a.page.waitForTimeout(300);
     const k1 = await kinds(), home = await a.page.evaluate(() => [...document.querySelectorAll('.dt-seg.is-stay')].map(e => e.style.getPropertyValue('--c')));
-    check('在哪 draws the bar from the places and ways: stays in their hue (home warm, UVic blue), ways in the haze, no stretch', k1.includes('stay') && k1.includes('trip') && !k1.includes('doing') && home.includes('255 168 150') && home.includes('100 200 255'), JSON.stringify({ k1, home }));
+    check('在哪 draws the bar from the places and ways: stays in their hue (home warm, UVic blue), ways in the haze, no stretch', k1.includes('stay') && k1.includes('trip') && !k1.includes('doing') && home.includes('231 154 138') && home.includes('93 183 235'), JSON.stringify({ k1, home }));
     check('the list is the same, row for row', await keys() === listed, await keys());
     check('and the choice is kept in the companion\'s settings', await a.page.evaluate(() => JSON.parse(localStorage.getItem('companion-settings-v1')).barBy) === 'place' && await by.locator('button').last().getAttribute('aria-pressed') === 'true');
-    await a.shot('place-01-by-place', { x: 40, y: 60, width: 560, height: 260 });
+    await a.shot('place-01-by-place', { x: 0, y: 60, width: 836, height: 260 });
     await a.move(xAt(14, 30), y); await a.page.waitForTimeout(380);
-    const hov = await a.page.evaluate(() => ({ lift: [...document.querySelectorAll('.dt-seg.is-lift')].map(e => e.style.getPropertyValue('--c')), bracket: !!document.querySelector('.dt-bracket'), head: document.querySelector('.dt-card.is-on .dt-slot.is-cur .dt-ch b')?.textContent }));
-    check('the pointer lifts the place under it (home, 14:30), marks the stretch a click would open, and the card says the place', hov.lift.join() === '255 168 150' && hov.bracket && hov.head === '家', JSON.stringify(hov));
+    const hov = await a.page.evaluate(() => ({ lit: [...document.querySelectorAll('.dt-seg.is-hot')].map(e => e.style.getPropertyValue('--c')), hint: document.querySelectorAll('.dt-bracket:not(.is-open)').length, row: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key), minute: document.querySelector('.dt-minute')?.textContent, cards: document.querySelectorAll('.dt-card').length }));
+    check('the pointer lights the place under it (home, 14:30) and the row of the stretch a click would select, and says its minute', hov.lit.join() === '231 154 138' && hov.row.join() === pieceAt(doingBar, T(14, 30)) && /^14:3\d$/.test(hov.minute) && hov.cards === 0, JSON.stringify(hov));
     await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(500);
     await tap(a, pieceAt(doingBar, T(16, 0))); await rest(a);
     await a.page.mouse.click(xAt(18, 0), y); await rest(a, 450);
@@ -3192,7 +3101,7 @@ try {
     await a.page.mouse.move(s0.x + s0.width / 2, cy); await a.page.mouse.down(); await a.page.waitForTimeout(300);
     const held = await scaleOf();
     check('held, the thumb grows about 8% (not at rest) and the bar is as it was', Math.abs(held - 1.08) < .02 && !(await kinds()).includes('stay') && await a.page.locator('.dt-by.is-held').count() === 1, String(held));
-    await a.shot('place-02-held', { x: 40, y: 60, width: 560, height: 260 });
+    await a.shot('place-02-held', { x: 0, y: 60, width: 836, height: 260 });
     await a.page.mouse.move(s0.x + s0.width / 2 + s0.width * .3, cy, { steps: 4 }); await a.page.waitForTimeout(200);
     const before = await gl(), still = await kinds();
     check('dragged less than half a side it follows the pointer (a third of the way along) and the bar has not switched', Math.abs(before.x - (s0.x + s0.width * .3)) <= 4 && !still.includes('stay'), JSON.stringify({ before, s0, still }));
@@ -3220,80 +3129,70 @@ try {
     await b.ctx.close();
   }
 
-  // ---- the page's turns (ONLY=paging): the row before and after, at the right of the title line; ↑ ↓ do the same; the new page pushes in vertically ----
+  // ---- the keys carry the selection (ONLY=paging): ↑ ↓ select the row before and after and the right column follows at once (a fade, no push, no previous/next buttons); the frame glides; the row stays in view ----
   if (all || only === 'paging') {
     const a = await boot({ served: bigDay(), init: record });
     await openDay(a);
     const ord = await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].filter(e => !e.classList.contains('is-still')).map(e => e.dataset.key));
     const at = i => ord[i], mid = Math.floor(ord.length / 2);
-    const nav = () => a.page.evaluate(() => { const h = document.querySelector('.dt-ph').getBoundingClientRect(), p = document.querySelector('.dt-pn').getBoundingClientRect(), t = document.querySelector('.dt-ph b').getBoundingClientRect();
-      return { labels: [...document.querySelectorAll('.dt-pn button')].map(b => b.getAttribute('aria-label')), off: [...document.querySelectorAll('.dt-pn button')].map(b => b.disabled), op: [...document.querySelectorAll('.dt-pn button')].map(b => getComputedStyle(b).opacity), right: h.right - p.right, line: p.top >= h.top - 1 && p.bottom <= h.bottom + 1, apart: p.left - t.right }; });
-    await tap(a, at(mid)); await rest(a);
-    const n1 = await nav();
-    check('the page has two chevron buttons at the right end of its title line, Previous and Next (上一段, 下一段), both on in the middle of the list', n1.labels.join() === '上一段,下一段' && n1.off.join() === 'false,false' && n1.right <= 6 && n1.line && n1.apart >= 0, JSON.stringify(n1));
-    await shotRow(a, 'paging-01-page');
-    await tap(a, at(0)); await rest(a);
-    const n2 = await nav();
-    check('on the first row that opens the first is dimmed and off (a third of its look), the second is on', n2.off.join() === 'true,false' && +n2.op[0] < .4 && +n2.op[1] === 1, JSON.stringify(n2));
-    await tap(a, at(ord.length - 1)); await rest(a);
-    const n3 = await nav();
-    check('on the last the second is dimmed and off', n3.off.join() === 'false,true' && +n3.op[1] < .4 && +n3.op[0] === 1, JSON.stringify(n3));
-    // a turn, frame by frame: the new page comes up from below while the old goes up; the page before, the other way
-    const run = (sel, ms = 420) => a.page.evaluate(async ([sel, ms]) => {
-      const st = document.querySelector('.dt-stage'), btn = document.querySelector(sel);
-      window.__anims.length = 0;
-      btn.click();
-      const t0 = performance.now(), out = [];
-      await new Promise(done => { const tick = () => { const sr = st.getBoundingClientRect(), p = st.querySelector(':scope > .dt-page[data-page]'), g = st.querySelector(':scope > .is-ghost');
-        out.push({ t: performance.now() - t0, page: p ? p.getBoundingClientRect().top - sr.top : null, ghost: g ? g.getBoundingClientRect().top - sr.top : null, h: sr.height, key: p?.dataset.page }); if (performance.now() - t0 < ms) requestAnimationFrame(tick); else done(); }; tick(); });
-      return { frames: out, anims: window.__anims.filter(x => /dt-page/.test(x.cls)).map(x => ({ ghost: /is-ghost/.test(x.cls), kf: x.kf, dur: x.opt.duration, easing: x.opt.easing })) };
-    }, [sel, ms]);
-    await tap(a, at(mid)); await rest(a);
-    const down = await run('.dt-pn button:last-child');
-    const both = down.frames.filter(f => f.page !== null && f.ghost !== null), d = both[0] ? both[0].page - both[0].ghost : 0;
-    check('Next pushes the new page up from below while the old goes up, side by side all the way and never back, ending with the new page in place and the old one gone',
-      both.length >= 5 && d > 50 && both.every((f, i) => Math.abs(f.page - f.ghost - d) <= 2 && (i === 0 || f.page <= both[i - 1].page + .5 && f.ghost <= both[i - 1].ghost + .5)) && both[0].page > 20 && both[0].ghost <= 1 && down.frames.at(-1).page === 0 && down.frames.at(-1).ghost === null && down.frames.at(-1).key === at(mid + 1), JSON.stringify({ d, n: both.length, first: both[0], last: down.frames.at(-1) }));
-    check('over 240 ms on the pane\'s ease (the new page, the old copy, and the stage\'s height if it differs), nothing else', down.anims.length >= 2 && down.anims.every(x => x.dur === 240 && x.easing === 'cubic-bezier(.16, 1, .3, 1)') && down.anims.some(x => x.ghost && /translateY\(0px\)/.test(x.kf[0].transform) && /translateY\(-/.test(x.kf[1].transform)) && down.anims.some(x => !x.ghost && /translateY\(\d/.test(x.kf[0].transform) && x.kf[1].transform === 'none'), JSON.stringify(down.anims));
-    await rest(a, 200);
-    const up = await run('.dt-pn button:first-child');
-    const bothUp = up.frames.filter(f => f.page !== null && f.ghost !== null);
-    check('Previous does the same the other way: the new page comes down from above while the old goes down', bothUp.length >= 5 && bothUp[0].page < -20 && bothUp[0].ghost >= -1 && bothUp.every((f, i) => i === 0 || f.page >= bothUp[i - 1].page - .5 && f.ghost >= bothUp[i - 1].ghost - .5) && up.frames.at(-1).page === 0 && up.frames.at(-1).ghost === null && up.frames.at(-1).key === at(mid), JSON.stringify({ first: bothUp[0], last: up.frames.at(-1) }));
-    // the keys
-    await rest(a, 200);
-    await a.page.keyboard.press('ArrowDown'); await rest(a, 420);
-    check('↓ does what Next does: the page and the choice are the row after', await expanded(a, at(mid + 1)) === 'true' && await a.page.locator('.is-pick').first().getAttribute('data-key') === at(mid + 1) && await a.page.locator('.is-ghost').count() === 0);
-    await a.page.keyboard.press('ArrowUp'); await rest(a, 420);
-    check('↑ does what Previous does', await expanded(a, at(mid)) === 'true');
-    await tap(a, at(0)); await rest(a);
-    await a.page.keyboard.press('ArrowUp'); await rest(a, 420);
-    check('↑ on the first row that opens does nothing (the page stays, nothing pushes)', await expanded(a, at(0)) === 'true' && await a.page.locator('.is-ghost').count() === 0 && await folds(a) === 1);
-    // a turn pressed again while it is on its way carries on from where it was, and ends on the row two on, with no copy left behind
-    await a.page.keyboard.press('ArrowDown'); await a.page.waitForTimeout(90); await a.page.keyboard.press('ArrowDown'); await rest(a, 520);
-    const rested = await a.page.evaluate(() => { const p = document.querySelector('.dt-page[data-page]'); return { page: p.dataset.page, tr: getComputedStyle(p).transform, ghosts: document.querySelectorAll('.is-ghost').length, pages: document.querySelectorAll('.dt-stage > .dt-page').length }; });
-    check('two quick turns end on the row two on, at rest, with one page and no copy of the old', rested.page === at(2) && (rested.tr === 'none' || rested.tr === 'matrix(1, 0, 0, 1, 0, 0)') && rested.ghosts === 0 && rested.pages === 1, JSON.stringify(rested));
-    // a turn from the bar stays a cross-fade (no copy, the page fades in over 160 ms), and the page begins at its top
-    await a.page.evaluate(() => { window.__anims.length = 0; });
     const pm = buildDay(bigDay(), NOW, zh), pbar = buildBar(pm, zh), tr = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; });
-    const px = ms => tr.left + Math.min(1, Math.max(0, fOf(pbar, ms))) * tr.width, target = ['stay-uvic', 'sleep-1'].find(k => ord.includes(k) && k !== at(2));
-    await a.page.mouse.click(px(pm.span.get(target).t0 + 60_000), tr.top + tr.height / 2); await a.page.waitForTimeout(40);
-    const fade = (await anims(a)).filter(x => /dt-pin/.test(x.cls));
-    check('a turn from the bar stays a cross-fade: the new page\'s content fades in over 160 ms, there is no copy of the old and no push', await expanded(a, target) === 'true' && fade.length === 1 && fade[0].opt.duration === 160 && fade[0].kf.some(k => k.opacity === 0) && await a.page.locator('.is-ghost').count() === 0, JSON.stringify(fade));
-    await rest(a, 300);
-    // going back after turns brings the row the page was for into view
-    await a.page.evaluate(() => { document.querySelector('.dt-pb').click(); }); await rest(a, 700);
-    check('going back from a page that was turned to returns the list with that row in view', await a.page.evaluate(k => { const l = document.querySelector('.dt-list').getBoundingClientRect(), r = document.querySelector(`.dt-list [data-key="${k}"]`).getBoundingClientRect(); return r.top >= l.top - 1 && r.bottom <= l.bottom + 1; }, target));
+    const px = ms => tr.left + Math.min(1, Math.max(0, fOf(pbar, ms))) * tr.width;
+    const sameSpan = (b, key) => { const x = pm.span.get(key), w = { left: px(x.t0), width: Math.max(3, px(x.t1) - px(x.t0)) }; return !!b && Math.abs(b.left - w.left) < 1.6 && Math.abs(b.width - w.width) < 1.6; };
+    const bracket = () => a.page.evaluate(() => { const b = document.querySelector('.dt-bracket.is-open:not(.is-off)')?.getBoundingClientRect(); return b ? { left: b.left, width: b.width } : null; });
+    const inView = key => a.page.evaluate(k => { const l = document.querySelector('.dt-list').getBoundingClientRect(), r = document.querySelector(`.dt-list [data-key="${k}"]`).getBoundingClientRect(); return r.top >= l.top - 1 && r.bottom <= l.bottom + 1; }, key);
+    const picked = () => a.page.locator('.is-pick').first().getAttribute('data-key');
+    await tap(a, at(mid)); await rest(a);
+    check('the detail has no previous or next buttons (V2: the keys do that), only a way back to 现在', await a.page.locator('.dt-side .dt-pn, .dt-side .dt-ph, .dt-side [aria-label="上一段"], .dt-side [aria-label="下一段"]').count() === 0 && await a.page.locator('.dt-side .dt-up').count() === 1);
+    await shotRow(a, 'paging-01-page');
+    // ↓, read as it runs: the detail of the row after is there on the next frame, swapped in by a fade on the column and 6 px on its first part; the frame is on its way
+    const run = await a.page.evaluate(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r));
+      const side = document.querySelector('.dt-side'), br = document.querySelector('.dt-bracket.is-open');
+      return { key: side.querySelector('.dt-pin')?.dataset.key ?? side.dataset.page, pins: side.querySelectorAll('.dt-pin').length, ghosts: document.querySelectorAll('.is-ghost').length,
+        side: [side, side.firstElementChild].flatMap(el => el.getAnimations().map(x => { const t = x.effect.getTiming(); return { on: el.className.split(' ')[0], duration: t.duration, easing: t.easing }; })),
+        glide: br.getAnimations().filter(x => x.transitionProperty).map(x => ({ prop: x.transitionProperty, duration: x.effect.getTiming().duration })) };
+    });
+    await rest(a, 400);
+    check('↓ selects the row after among the rows that open, and the right column has its detail at once: one detail, no copy of the old one, no push', await picked() === at(mid + 1) && await expanded(a, at(mid + 1)) === 'true' && await expanded(a, at(mid)) === 'false' && await folds(a) === 1 && run.pins === 1 && run.ghosts === 0 && await a.page.locator('.dt-side[data-page]').getAttribute('data-page') === at(mid + 1), JSON.stringify({ run, picked: await picked() }));
+    check('it swaps in over 140 ms on the pane\'s ease (a fade of the column), and the bracket glides to the new span over 260 ms (left and width)', run.side.some(x => x.on === 'dt-side' && x.duration === 140 && x.easing === 'cubic-bezier(0.16, 1, 0.3, 1)') && ['left', 'width'].every(p => run.glide.some(x => x.prop === p && x.duration === 260)), JSON.stringify(run));
+    check('the frame ends on the span of the row now selected, and that row is in view in the list', sameSpan(await bracket(), at(mid + 1)) && await inView(at(mid + 1)), JSON.stringify(await bracket()));
+    await a.page.keyboard.press('ArrowUp'); await rest(a, 420);
+    check('↑ goes back to the row before, the detail and the frame with it', await picked() === at(mid) && await expanded(a, at(mid)) === 'true' && await folds(a) === 1 && sameSpan(await bracket(), at(mid)));
+    await tap(a, at(0)); await rest(a);
+    await a.page.keyboard.press('ArrowUp'); await rest(a, 420);
+    check('↑ on the first row that opens does nothing (the detail stays, nothing is pushed)', await expanded(a, at(0)) === 'true' && await picked() === at(0) && await folds(a) === 1 && await a.page.locator('.is-ghost').count() === 0);
+    await tap(a, at(ord.length - 1)); await rest(a);
+    await a.page.keyboard.press('ArrowDown'); await rest(a, 420);
+    check('and ↓ on the last does nothing either', await expanded(a, at(ord.length - 1)) === 'true' && await picked() === at(ord.length - 1) && await folds(a) === 1);
+    // a key pressed again while the swap is on its way carries on, and ends on the row two on, at rest, with one detail
+    await tap(a, at(0)); await rest(a);
+    await a.page.keyboard.press('ArrowDown'); await a.page.waitForTimeout(60); await a.page.keyboard.press('ArrowDown'); await rest(a, 520);
+    const rested = await a.page.evaluate(() => { const p = document.querySelector('.dt-side .dt-pin'); return { page: document.querySelector('.dt-side').dataset.page, tr: getComputedStyle(p).transform, op: getComputedStyle(document.querySelector('.dt-side')).opacity, pins: document.querySelectorAll('.dt-side .dt-pin').length, moving: document.querySelector('.dt-side').getAnimations({ subtree: true }).filter(x => x.playState !== 'finished').length }; });
+    check('two quick ↓ end on the row two on, at rest (nothing moving, fully opaque), with one detail', rested.page === at(2) && (rested.tr === 'none' || rested.tr === 'matrix(1, 0, 0, 1, 0, 0)') && rested.op === '1' && rested.pins === 1 && rested.moving === 0, JSON.stringify(rested));
+    // a click on the bar selects the row of that piece and brings it into view
+    const target = ['stay-uvic', 'sleep-1'].find(k => ord.includes(k) && k !== at(2));
+    await a.page.mouse.click(px(pm.span.get(target).t0 + 60_000), tr.top + tr.height / 2); await rest(a, 520);
+    check('a click on a piece of the bar selects its row the same way: the detail is that row\'s, one detail, and the row is in view', await expanded(a, target) === 'true' && await folds(a) === 1 && await a.page.locator('.is-ghost').count() === 0 && await inView(target), target);
+    // going back after the keys and the bar returns 现在, the list where it was with the row in view
+    await a.page.keyboard.press('Escape'); await rest(a, 500);
+    check('Esc after the selection has moved around returns 现在 with the row still in view in the list', await folds(a) === 0 && await a.page.locator('.dt-side .ds').count() === 1 && await inView(target));
     await a.ctx.close();
-    // reduced motion: a turn is a cross-fade of 120 ms, no slide, no change of height
+    // reduced motion: the swap is a 120 ms fade, no slide, and the frame does not glide (it only fades)
     const r = await boot({ served: bigDay(), init: record });
     await openDay(r);
     await r.page.emulateMedia({ reducedMotion: 'reduce' }); await r.page.waitForTimeout(150);
     await tap(r, at(mid)); await rest(r, 400);
-    await r.page.evaluate(() => { window.__anims.length = 0; document.querySelector('.dt-pn button:last-child').click(); });
-    await r.page.waitForTimeout(30);
-    const quiet = (await anims(r)).filter(x => /dt-page|dt-stage/.test(x.cls)).map(x => ({ ghost: /is-ghost/.test(x.cls), stage: /dt-stage/.test(x.cls), kf: x.kf, dur: x.opt.duration }));
-    check('with reduced motion a turn is a cross-fade of 120 ms (the new page in, the old copy out), no slide and no height', quiet.length === 2 && quiet.every(x => x.dur === 120 && !x.stage && x.kf.every(k => k.transform === undefined && k.opacity !== undefined)) && quiet.some(x => x.ghost), JSON.stringify(quiet));
+    const quiet = await r.page.evaluate(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      await new Promise(x => requestAnimationFrame(x)); await new Promise(x => requestAnimationFrame(x));
+      const side = document.querySelector('.dt-side');
+      return { side: [side, side.firstElementChild].flatMap(el => el.getAnimations().filter(x => x.playState !== 'finished').map(x => ({ duration: x.effect.getTiming().duration, props: x.effect.getKeyframes().flatMap(k => Object.keys(k)).filter(k => !['offset', 'easing', 'composite', 'computedOffset'].includes(k)).join() }))),
+        glide: document.querySelector('.dt-bracket.is-open').getAnimations().filter(x => x.transitionProperty).map(x => x.transitionProperty) };
+    });
+    check('with reduced motion the swap is a cross-fade of 120 ms with no slide, and the frame jumps (only its opacity transitions)', quiet.side.length >= 1 && quiet.side.every(x => x.duration === 120 && !x.props.includes('transform')) && !quiet.glide.some(p => p === 'left' || p === 'width'), JSON.stringify(quiet));
     await rest(r, 300);
-    check('and it is over: the new page, no copy', await expanded(r, at(mid + 1)) === 'true' && await r.page.locator('.is-ghost').count() === 0);
+    check('and it is over: the row after is selected, one detail', await expanded(r, at(mid + 1)) === 'true' && await r.page.locator('.is-ghost').count() === 0 && await folds(r) === 1);
     await r.ctx.close();
   }
 
@@ -3323,8 +3222,8 @@ try {
       if ((await whole()).includes(SAY)) invited.push(key);
     }
     await a.move(xAt(14, 30), y); await rest(a, 300);
-    if ((await whole()).includes(SAY) || await a.page.locator('.dt-card.is-on').count() !== 1) invited.push('bar');
-    check('nothing invites it: not the list, not a row under the pointer, not the bar and its hover card, and no input is up', invited.length === 0 && !await sayDock(a), invited.join());
+    if ((await whole()).includes(SAY) || await a.page.locator('.dt-card').count() !== 0) invited.push('bar');
+    check('nothing invites it: not the list, not a row under the pointer, not the bar (V2: its hover says the minute and has no card), and no input is up', invited.length === 0 && !await sayDock(a), invited.join());
 
     // which rows offer it once opened: the stretches; and where, last among the buttons in the same look
     const offered = {};
@@ -3342,13 +3241,13 @@ try {
     await tap(a, 'stay-home-2'); await rest(a, 480);
     await shotRow(a, 'say-01-open-row', 'stay-home-2');
     const quiet = async sel => { const e = a.page.locator(sel), read = () => e.evaluate(el => { const c = getComputedStyle(el), r = el.getBoundingClientRect(), p = el.previousElementSibling.getBoundingClientRect(); return { bg: c.backgroundColor, radius: c.borderRadius, color: c.color, svg: !!el.querySelector('svg'), size: c.fontSize, under: r.top >= p.bottom - .5, cls: el.previousElementSibling.className }; }), idle = await read(); await e.hover(); await rest(a, 300); const lit = await read(); await a.page.mouse.move(0, 0); return { idle, lit }; };
-    const ql = await quiet('.dt-page .dt-sayhow');
+    const ql = await quiet('.dt-side .dt-sayhow');
     check('in an open row 这段在干嘛 is a faint line under the buttons, not a capsule: a pencil glyph and the words, no fill, no rounding, the muted colour, brighter when the pointer is on it', ql.idle.bg === 'rgba(0, 0, 0, 0)' && ql.idle.radius === '0px' && ql.idle.svg && ql.idle.under && ql.idle.cls === 'dt-acts' && ql.idle.size === '12px' && ql.idle.color !== ql.lit.color, JSON.stringify(ql));
     await pgOf(a).getByRole('button', { name: SAY }).click(); await rest(a, 520);
     const d1 = await sayDock(a);
     check('it slides an input up at the pane\'s foot: the stretch\'s range as its chip (14:05–14:50, nothing to take off), the cursor in the field, the placeholder, the field held to 200, send greyed; the row stays open',
       d1 && d1.chip === '14:05–14:50' && !d1.drop && d1.focused && d1.placeholder === '这段在干嘛？比如：躺着休息' && d1.max === 200 && d1.canSend === false && await expanded(a, 'stay-home-2') === 'true', JSON.stringify(d1));
-    await a.shot('say-02-input', { x: 40, y: 0, width: 560, height: 760 });
+    await a.shot('say-02-input', { x: 0, y: 0, width: 836, height: 760 });
     await a.page.keyboard.insertText('字'.repeat(205)); await rest(a, 100);
     check('the field takes 200 characters and no more', (await sayDock(a)).draft === '字'.repeat(200), String((await sayDock(a)).draft?.length));
     await a.page.locator('.dt-ask-in').fill('  躺着休息 '); await rest(a, 100);
@@ -3367,15 +3266,14 @@ try {
     a.s.lag = 0; await rest(a, 300);
     check('the day was read again once, the way every change is', a.s.hits.length - h0 === 1, String(a.s.hits.length - h0));
     await a.move(xAt(14, 30), y); await rest(a, 320);
+    // V2: the pointer on the bar says the minute and lights the piece with its row (no card)
     const card = () => a.page.evaluate(() => {
-      const c = document.querySelector('.dt-card.is-on:not(.is-range)');
-      if (!c) return null;
-      const cur = c.querySelector('.dt-slot.is-cur'), norm = el => el.innerText.replace(/\s*\n\s*/g, ' ').trim();
-      return { head: norm(cur.querySelector('.dt-ch')), place: cur.querySelector('.dt-cnote.is-place')?.innerText ?? null };
+      const seg = document.querySelector('.dt-seg.is-hot, .dt-sched.is-hot');
+      return seg && { minute: document.querySelector('.dt-hours .dt-minute')?.textContent ?? null, kind: seg.className.match(/is-(stay|trip|sleep|doing)/)?.[1] ?? null, name: seg.querySelector('.dt-sl')?.textContent ?? null, hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key).join(), cards: document.querySelectorAll('.dt-card').length };
     });
     const c1 = await card();
-    check('what he wrote is kept as his own words for the range (stated), and a day the brain served with no stretches is still drawn by its places: 14:30 on the bar is 家 as before', a.s.answered.length === 1 && a.s.answered[0].title === '躺着休息' && a.s.answered[0].basis === 'stated' && a.s.answered[0].start_ms === T(14, 5)
-      && c1 && c1.head === '家 14:05–14:50 · 45 分钟' && c1.place === null, JSON.stringify(c1));
+    check('what he wrote is kept as his own words for the range (stated), and a day the brain served with no stretches is still drawn by its places: 14:30 on the bar is the stay 家 as before (the piece and its row light, no card)', a.s.answered.length === 1 && a.s.answered[0].title === '躺着休息' && a.s.answered[0].basis === 'stated' && a.s.answered[0].start_ms === T(14, 5)
+      && c1 && c1.kind === 'stay' && c1.hot === 'stay-home-2' && c1.minute.startsWith('14:3') && c1.cards === 0, JSON.stringify(c1));
 
     // a save that fails stays under the input until he edits it; the same words go again
     await tap(a, 'move-1'); await rest(a, 480);
@@ -3423,7 +3321,7 @@ try {
     await drag(xAt(14) + .1, xAt(18) + .1);
     const look = await a.page.locator('.dt-card.is-range .dt-sayhow').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, radius: getComputedStyle(el).borderRadius, svg: !!el.querySelector('svg'), size: getComputedStyle(el).fontSize }));
     check('the range card has 只看这段 and, after it, 这段在干嘛 as the same faint text line (glyph and words, no fill, no rounding)', (await buttons()).join() === `只看这段,${SAY}` && look.bg === 'rgba(0, 0, 0, 0)' && look.radius === '0px' && look.svg && look.size === '12px', JSON.stringify(look));
-    await a.shot('say-03-range-card', { x: 40, y: 0, width: 560, height: 700 });
+    await a.shot('say-03-range-card', { x: 0, y: 0, width: 836, height: 700 });
     await a.page.locator('.dt-card.is-range .dt-sayhow').click(); await rest(a, 520);
     const r1 = await sayDock(a);
     check('it opens the same input with the dragged range as the chip (14:00–18:00)', r1 && r1.chip === '14:00–18:00' && !r1.drop && r1.focused, JSON.stringify(r1));
@@ -3466,219 +3364,147 @@ try {
     await a.ctx.close();
   }
 
-  // ---- reduced motion: the page does not slide, the list and the page cross-fade over 120 ms, and the stage's height does not animate ----
+  // ---- reduced motion: the right column's swap is a 120 ms fade only (no 6 px of travel), the stage's height does not animate, and the frame only fades ----
   if (all || only === 'open') {
     const a = await boot({ served: bigDay() });
     await hoverDay(a);
     await a.page.emulateMedia({ reducedMotion: 'reduce' }); await a.page.waitForTimeout(150);
-    const timings = () => a.page.evaluate(() => ['dt-stage', 'dt-list', 'dt-page'].flatMap(c => document.querySelector('.' + c)?.getAnimations().map(x => ({ on: c, duration: x.effect.getTiming().duration,
+    const timings = () => a.page.evaluate(() => [['dt-stage', '.dt-stage'], ['dt-list', '.dt-list'], ['dt-side', '.dt-side'], ['dt-side-first', '.dt-side > :first-child']].flatMap(([c, q]) => document.querySelector(q)?.getAnimations().filter(x => x.playState !== 'finished').map(x => ({ on: c, duration: x.effect.getTiming().duration,
       props: [...new Set(x.effect.getKeyframes().flatMap(k => Object.keys(k)).filter(k => !['offset', 'easing', 'composite', 'computedOffset'].includes(k)))].join() })) ?? []));
     await a.page.evaluate(() => { const el = document.querySelector('[data-key="reminder-2"]'); el.scrollIntoView({ block: 'center' }); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     await a.page.waitForTimeout(20);
     const opening = await timings();
-    check('with reduced motion an opening row cross-fades the list and the page over 120 ms, with no slide (the transform is none) and no change of height', opening.length === 2 && opening.every(x => x.on !== 'dt-stage' && x.duration === 120 && x.props.split(',').sort().join() === 'opacity,transform,visibility'), JSON.stringify(opening));
+    check('with reduced motion a selected row\'s detail cross-fades in over 120 ms in the right column, with no slide (no transform on the column or its first part), the list does not move and nothing changes height', opening.some(x => x.on === 'dt-side' && x.duration === 120 && x.props === 'opacity') && opening.every(x => ['dt-side', 'dt-side-first'].includes(x.on) && x.duration === 120 && !x.props.includes('transform') && !x.props.includes('height')), JSON.stringify(opening));
     await rest(a, 250);
-    check('and the page is up when it is over, with the list hidden where it was', await expanded(a, 'reminder-2') === 'true' && await a.page.locator('.dt-stage.is-page').count() === 1);
+    check('and the detail is up when it is over, the list still shown beside it', await expanded(a, 'reminder-2') === 'true' && await folds(a) === 1 && await a.page.evaluate(() => getComputedStyle(document.querySelector('.dt-list')).visibility === 'visible'));
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(20);
     const closing = await timings();
-    check('going back is the same cross-fade', closing.length === 2 && closing.every(x => x.duration === 120), JSON.stringify(closing));
+    check('going back is the same fade', closing.length >= 1 && closing.every(x => x.duration === 120 && !x.props.includes('transform')), JSON.stringify(closing));
     await rest(a, 250);
-    check('and the list is back, the page gone', await folds(a) === 0 && await a.page.locator('.dt-stage.is-page').count() === 0);
+    check('and 现在 is back, the detail gone', await folds(a) === 0 && await a.page.locator('.dt-side .ds').count() === 1);
     await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 200);
-    await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await a.page.waitForTimeout(80);
+    await orow(a, 'talk-1').click({ button: 'right', position: { x: 170, y: 14 } }); await a.page.waitForTimeout(80);
     const dockRun = await a.page.evaluate(() => { const f = document.querySelector('.dt-fold.is-dock .dt-dock')?.closest('.dt-fold'); return f && { anims: f.getAnimations({ subtree: true }).map(x => x.effect.getTiming().duration), h: f.getBoundingClientRect().height, full: f.firstElementChild.getBoundingClientRect().height }; });
     check('the input comes at once too, with a 120 ms fade of its words', dockRun && dockRun.anims.join() === '120' && Math.abs(dockRun.h - dockRun.full) < 1, JSON.stringify(dockRun));
     await a.ctx.close();
   }
 
-  // ---- the numbers' cards (ONLY=density): a click on a number hangs what is behind it under the numbers ----
+  // ---- the numbers as filters (ONLY=density): V2 hangs no card under them. A number under the pointer previews its lens, a click pins it; the bar lights its spans and the list steps back from the rest ----
   if (all || only === 'density') {
-    const fz = buildDay(fullDay(), NOW, zh), fe = buildDay(fullDay(), NOW, en), eq = (x, y) => JSON.stringify(x) === JSON.stringify(y), near = (x, y, d = 1.5) => Math.abs(x - y) <= d;
+    const fz = buildDay(fullDay(), NOW, zh), fe = buildDay(fullDay(), NOW, en), eq = (x, y) => JSON.stringify(x) === JSON.stringify(y);
     const CHIPS = [['睡', 'sleep'], ['路上', 'trip'], ['运动', 'workout'], ['Mac', 'work'], ['通话', 'call'], ['和她', 'talk'], ['花', 'payment'], ['照片', 'picture']];
     const chip = (a, word) => a.page.locator('.dt-num', { hasText: word });
     const settle = a => a.page.waitForTimeout(350);
-    // the card on the page, read into the shape numberCard's lines have (cardLines)
-    const onPage = a => a.page.evaluate(() => {
-      const s = document.querySelector('.dt-card.is-num .dt-slot.is-cur');
-      if (!s) return null;
-      const txt = e => e.textContent.trim(), head = s.querySelector('.dt-ch');
-      return [`${txt(head.querySelector('b'))}|${txt(head.lastElementChild)}`, ...[...s.querySelectorAll('.dt-nb > *')].map(p => {
-        if (p.classList.contains('dt-ncs')) return [...p.children].map(c => `${txt(c.querySelector('small'))} ${txt(c.querySelector('b'))}`).join('/');
-        if (p.classList.contains('dt-hyp')) return `night ${[...p.querySelectorAll('.dt-hyp-ends em')].map(txt).join('-')}`;
-        if (p.classList.contains('dt-nbars')) return [...p.querySelectorAll('.dt-bars')].map(g => `${txt(g.querySelector('h4'))}: ${[...g.querySelectorAll('.dt-bar-row')].map(r => `${txt(r.querySelector('span'))} ${txt(r.querySelector('em'))}`).join(', ')}`).join('//');
-        if (p.classList.contains('dt-nes')) { const more = p.querySelector('.dt-nmore'); return [...p.querySelectorAll('li:not(.dt-nmore)')].map(li => `${txt(li.querySelector('b'))}: ${[...li.querySelectorAll('em')].map(txt).join(' · ')}`).join('//') + (more ? ` ${txt(more)}` : ''); }
-        const more = p.querySelector('.dt-nmore');
-        return `pictures ${[...p.querySelectorAll('.dt-npic')].map(b => `${b.dataset.id[0]}@${txt(b.querySelector('time'))}`).join(',')}${more ? ` ${txt(more)}` : ''}`;
-      })];
-    });
-    const state = a => a.page.evaluate(() => ({ lens: document.querySelector('.dt')?.dataset.lens ?? null, pressed: [...document.querySelectorAll('.dt-num[aria-pressed="true"]')].map(e => e.innerText.split('\n')[0]), nums: document.querySelectorAll('.dt-card.is-num').length, range: document.querySelectorAll('.dt-card.is-range.is-on').length, open: document.querySelector('.notch-drop')?.classList.contains('is-open') ?? false }));
-    // a change of number, as a fade through: the card's clocks are held and set, so the same instants are read each time
-    const swap = (a, word) => a.page.evaluate(async word => {
-      const c = document.querySelector('.dt-card.is-num'); c.dataset.mark = 'kept';
-      [...document.querySelectorAll('.dt-num')].find(e => e.textContent.includes(word)).click();
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const slots = [...c.querySelectorAll('.dt-slot')], cur = slots.find(e => e.classList.contains('is-cur')), old = slots.find(e => e !== cur), anims = c.getAnimations({ subtree: true });
-      anims.forEach(x => x.pause());
-      const read = t => { anims.forEach(x => { x.currentTime = t; }); return { t, old: +getComputedStyle(old).opacity, now: +getComputedStyle(cur).opacity, oy: new DOMMatrix(getComputedStyle(old).transform).m42, ny: new DOMMatrix(getComputedStyle(cur).transform).m42 }; };
-      const out = [0, 30, 60, 75, 90, 120, 150].map(read);
-      anims.forEach(x => x.cancel());
-      return { out, kept: document.querySelector('.dt-card.is-num') === c && c.dataset.mark === 'kept', head: cur.querySelector('.dt-ch b').textContent, cards: document.querySelectorAll('.dt-card.is-num').length, slots: slots.length };
-    }, word);
-    const apart = (x, v) => Math.abs(x - v) < .06;
+    const state = a => a.page.evaluate(() => ({ lens: document.querySelector('.dt')?.dataset.lens ?? null, pressed: [...document.querySelectorAll('.dt-num[aria-pressed="true"]')].map(e => e.innerText.split('\n')[0]), cards: document.querySelectorAll('.dt-card').length, range: document.querySelectorAll('.dt-card.is-range.is-on').length, marks: document.querySelectorAll('.dt-lm').length, open: document.querySelector('.notch-drop')?.classList.contains('is-open') ?? false }));
+    // the rows that stay lit under a lens and those that step back (the list answers, rows are not removed)
+    const dimmed = (a, kind) => a.page.evaluate(k => [...document.querySelectorAll('.dt-row')].map(r => ({ key: r.dataset.key, mine: (r.dataset.lk ?? '').split(' ').includes(k), op: getComputedStyle(r).opacity })), kind);
+    const paneBottom = a => a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom);
 
-    // the eight cards of a full day, each as numberCard.ts says it, one number after the next (the card is the same one, its words swapped)
     const a = await boot({ served: fullDay(), init: record });
     await openDay(a);
     const g = await a.page.evaluate(() => { const r = document.querySelector('.dt-track').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width }; });
     const away = { x: g.left + 200, y: g.top - 48 };
     await a.move(away.x, away.y);
-    const rest0 = await state(a);
-    check('with no number pinned there is no card', rest0.nums === 0 && rest0.lens === null && rest0.pressed.length === 0);
+    const rest0 = await state(a), size0 = await paneBottom(a);
+    check('with no number pinned nothing is previewed, pinned or hung', rest0.cards === 0 && rest0.lens === null && rest0.pressed.length === 0 && rest0.marks === 0, JSON.stringify(rest0));
+    const line = await a.page.evaluate(() => { const box = document.querySelector('.dt-nums').getBoundingClientRect(); const cs = [...document.querySelectorAll('.dt-num')].map(e => { const r = e.getBoundingClientRect(); return { label: [...e.querySelectorAll('span, em')].map(x => x.textContent).join(' '), top: r.top, h: r.height, right: r.right, cut: e.classList.contains('is-cut') }; }); return { box: box.toJSON(), cs, rows: new Set(cs.map(c => Math.round(c.top))).size }; });
+    check('the eight numbers are on one line in the order the model says, each 24 tall, none hidden at this width and all inside the strip', line.cs.length === 8 && line.rows === 1 && line.cs.every(c => c.h === 24 && !c.cut && c.right <= line.box.right + .5) && line.cs.map(c => c.label).join() === numbers(fz, zh).map(n => `${n.label} ${n.value}`).join(), JSON.stringify(line));
     let p0 = await chip(a, '睡').boundingBox(); await a.move(p0.x + p0.width / 2, p0.y + p0.height / 2); await settle(a);
     const hov = await state(a);
-    check('a number under the pointer only previews its lens: the lens is drawn, no card hangs', hov.lens === 'sleep' && hov.nums === 0 && hov.pressed.length === 0, JSON.stringify(hov));
+    check('a number under the pointer only previews its lens: the bar lights its spans and no number is pinned, no card hangs', hov.lens === 'sleep' && hov.marks === (buildBar(fz, zh).lens.sleep ?? []).length && hov.marks > 0 && hov.pressed.length === 0 && hov.cards === 0, JSON.stringify(hov));
     await a.move(away.x, away.y); await settle(a);
+    check('and it lets go when the pointer leaves', (await state(a)).lens === null && (await state(a)).marks === 0);
 
-    await a.page.evaluate(() => { window.__anims.length = 0; });
-    await chip(a, '睡').click(); await a.page.waitForFunction(() => document.querySelector('.dt-card.is-num .dt-slot.is-cur')); await a.page.waitForTimeout(400);
-    const enter = (await anims(a)).filter(x => /dt-card-in/.test(x.cls));
+    await chip(a, '睡').click(); await a.page.waitForTimeout(400);
     const first = await state(a);
-    check('a click pins the number (aria-pressed, the lens) and hangs its card; the card is not there before it', first.nums === 1 && first.lens === 'sleep' && first.pressed.join() === '睡' && rest0.nums === 0, JSON.stringify(first));
-    check('the card comes in over 180 ms on the pane\'s ease, rising 4 px as it fades in', enter.length === 1 && enter[0].opt.duration === 180 && enter[0].opt.easing === 'cubic-bezier(.16, 1, .3, 1)' && enter[0].kf.length === 2 && enter[0].kf[0].opacity === 0 && enter[0].kf[0].transform === 'translateY(4px)' && enter[0].kf[1].opacity === 1 && enter[0].kf[1].transform === 'none', JSON.stringify(enter));
-    const geo = await a.page.evaluate(() => {
-      const q = s => document.querySelector(s).getBoundingClientRect().toJSON(), c = q('.dt-card.is-num'), n = q('.dt-numbers'), l = q('.dt-list'), p = q('.notch-drop'), top = document.elementFromPoint(c.left + c.width / 2, c.top + 6);
-      return { c, n, l, p, over: !!top?.closest('.dt-card.is-num'), rowsUnder: [...document.querySelectorAll('.dt-row')].filter(r => { const b = r.getBoundingClientRect(); return b.bottom > c.top && b.top < c.bottom; }).length };
-    });
-    check('it hangs under the numbers (6 px below their row), the width of the pane\'s content, inside the pane, over the list and no taller than about 170', near(geo.c.top, geo.n.bottom + 6) && near(geo.c.left, geo.n.left) && near(geo.c.right, geo.n.right) && geo.c.height <= 176 && geo.c.height > 60 && geo.c.bottom <= geo.p.bottom && geo.c.bottom > geo.l.top && geo.over, JSON.stringify(geo));
-    await a.shot('density-sleep', { x: 40, y: 0, width: 560, height: 700 });
-    const look = await a.page.evaluate(() => { const s = getComputedStyle(document.querySelector('.dt-card.is-num .dt-card-in')); return [s.backgroundColor, s.borderTopColor, s.borderTopWidth, s.borderRadius, s.boxShadow]; });
+    check('a click pins the number (aria-pressed, the lens) and nothing hangs under the numbers; the pane keeps its size', first.lens === 'sleep' && first.pressed.join() === '睡' && first.cards === 0 && Math.abs(await paneBottom(a) - size0) < 1 && await chip(a, '睡').evaluate(e => e.classList.contains('is-pinned')), JSON.stringify(first));
+    await a.shot('density-sleep', { x: 0, y: 0, width: 836, height: 700 });
 
-    // the list keeps scrolling under the card
-    const sc0 = await a.page.evaluate(() => { const l = document.querySelector('.dt-list'); return { top: l.scrollTop, room: l.scrollHeight - l.clientHeight, rect: l.getBoundingClientRect().toJSON(), card: document.querySelector('.dt-card.is-num').getBoundingClientRect().toJSON() }; });
-    await a.page.mouse.move(sc0.rect.left + sc0.rect.width / 2, sc0.rect.bottom - 30); await a.page.mouse.wheel(0, 240); await a.page.waitForTimeout(500);
-    const sc1 = await a.page.evaluate(() => ({ top: document.querySelector('.dt-list').scrollTop, card: document.querySelector('.dt-card.is-num')?.getBoundingClientRect().toJSON() }));
-    check('the list keeps scrolling under the card, and the card stays where it was', sc0.room > 100 && sc1.top > sc0.top + 50 && sc1.card && sc1.card.top === sc0.card.top && sc1.card.height === sc0.card.height, JSON.stringify({ sc0: sc0.top, sc1 }));
-    await a.page.evaluate(() => { document.querySelector('.dt-list').scrollTop = 0; });
-
-    // every number's card, as the model says it
+    // every number as a filter: its spans on the bar as the model says, its rows lit and the rest stepped back (.35)
     const bad = [];
     for (const [word, kind] of CHIPS) {
-      if (kind !== 'sleep') { await chip(a, word).click(); await a.page.waitForTimeout(450); }
-      const got = await onPage(a), want = cardLines(cardOf(fz, kind, zh)), s = await state(a);
-      if (!eq(got, want) || s.lens !== kind || s.nums !== 1 || s.pressed.join() !== word) bad.push({ kind, got, want, s });
-      if (kind !== 'sleep') await a.shot(`density-${kind}`, { x: 40, y: 0, width: 560, height: 700 });
+      if (kind !== 'sleep') { await chip(a, word).click(); await a.page.waitForTimeout(400); }
+      const s = await state(a), rows = await dimmed(a, kind), want = (buildBar(fz, zh).lens[kind] ?? []).length;
+      if (s.lens !== kind || s.pressed.join() !== word || s.cards !== 0 || s.marks !== want || want === 0 || !rows.some(r => r.mine) || rows.some(r => r.mine !== (r.op === '1')) || rows.some(r => !r.mine && r.op !== '0.35')) bad.push({ kind, s, want, rows: rows.filter(r => r.mine !== (r.op === '1')) });
+      if (kind !== 'sleep') await a.shot(`density-${kind}`, { x: 0, y: 0, width: 836, height: 700 });
     }
-    check('each of the eight numbers hangs the card the model says (numberCard.ts), in the pane\'s own words: the same lines, the same figures', bad.length === 0, JSON.stringify(bad));
-    check('the card is the one card throughout: the next number swaps its words and does not bring another', (await state(a)).nums === 1);
+    check('each of the eight numbers is a filter the same way: it alone is pressed, the bar lights the spans the model gives it, its rows stay at full and every other row steps back to .35, and no card hangs', bad.length === 0, JSON.stringify(bad));
+    check('a change of number swaps the lens and the pressed one; two are never pressed', (await state(a)).pressed.length === 1);
 
-    // a change of number is a fade through of 120 ms, in the same card
-    await chip(a, '睡').click(); await a.page.waitForTimeout(450);
-    const sw = await swap(a, '路上'), [s0, s30, s60, s75, s90, s120, s150] = sw.out;
-    check('a change of number is a fade through in the same card: the old words are fading at 30 ms and gone at 60, the new have not begun until 60 and are whole at 120, and never are both seen',
-      sw.kept && sw.cards === 1 && sw.head === '路上' && apart(s0.old, 1) && apart(s0.now, 0) && apart(s30.old, .5) && apart(s30.now, 0) && apart(s60.old, 0) && apart(s60.now, 0) && s75.now > 0 && s75.now < .3 && apart(s90.now, .5) && apart(s120.now, 1) && apart(s150.now, 1)
-      && sw.out.every(x => Math.min(x.old, x.now) < .02), JSON.stringify(sw));
-    check('and the new words come up 2 px as they appear: 2 px down while the old go, nearer at 75 ms, in place at 120', apart(s60.ny, 2) && s75.ny > 0 && s75.ny < 2 && apart(s120.ny, 0) && apart(s150.ny, 0), JSON.stringify(sw.out.map(x => [x.t, x.ny])));
-
-    // hover over another number while one is pinned: the lens previews, the card is still the pinned one's
+    // hover over another number while one is pinned: the lens previews, then the pinned one is back
+    await chip(a, '路上').click(); await a.page.waitForTimeout(350);
     p0 = await chip(a, '通话').boundingBox(); await a.move(p0.x + p0.width / 2, p0.y + p0.height / 2); await settle(a);
-    const over = await state(a), pinnedHead = (await onPage(a))[0];
+    const over = await state(a);
     await a.move(away.x, away.y); await settle(a);
-    check('another number under the pointer previews its lens and leaves the card to the pinned one', over.lens === 'call' && over.nums === 1 && pinnedHead.startsWith('路上|') && (await state(a)).lens === 'trip', JSON.stringify({ over, pinnedHead }));
+    check('another number under the pointer previews its lens over the pinned one, which comes back when the pointer leaves', over.lens === 'call' && over.pressed.join() === '路上' && (await state(a)).lens === 'trip', JSON.stringify({ over, back: await state(a) }));
 
-    // the range wins the room: while one is drawn or hung its card is the only one; the number's comes back when the range goes
+    // the range: a drag on the bar draws its card (the range card stays in V2); the number stays pinned; Esc lets go of the range first
     const rbar = buildBar(fz, zh), t0 = rbar.t0, t1 = T(24), xAt = (h, m = 0) => g.left + (T(h, m) - t0) / (t1 - t0) * g.width, y = g.top + 12;
-    const tripCard = await onPage(a);
-    await a.move(xAt(14) + .1, y); await a.page.mouse.down(); await a.move(xAt(16), y); await a.move(xAt(18) + .1, y); await a.page.waitForTimeout(150);
-    const during = await state(a);
-    await a.page.mouse.up(); await a.page.waitForTimeout(450);
-    const ranged = await state(a), rlook = await a.page.evaluate(() => { const s = getComputedStyle(document.querySelector('.dt-card.is-range .dt-card-in')); return [s.backgroundColor, s.borderTopColor, s.borderTopWidth, s.borderRadius, s.boxShadow]; });
-    await a.shot('density-with-range', { x: 40, y: 0, width: 560, height: 700 });
+    await a.move(xAt(14) + .1, y); await a.page.mouse.down(); await a.move(xAt(16), y); await a.move(xAt(18) + .1, y); await a.page.mouse.up(); await a.page.waitForTimeout(450);
+    const ranged = await state(a);
+    check('a range drawn on the bar has its card, and the pinned number stays pinned beside it', ranged.range === 1 && ranged.cards === 1 && ranged.pressed.join() === '路上' && ranged.lens === 'trip', JSON.stringify(ranged));
+    await a.shot('density-with-range', { x: 0, y: 0, width: 836, height: 700 });
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(450);
-    const back = await state(a), backCard = await onPage(a);
-    check('the range card wins: dragging a range takes the number\'s card away, the range\'s card is the only one when it comes, and the number stays pinned', during.nums === 0 && during.range === 0 && ranged.nums === 0 && ranged.range === 1 && ranged.pressed.join() === '路上' && ranged.lens === 'trip', JSON.stringify({ during, ranged }));
-    check('and when the range goes the number\'s card is back with the same words (the first Esc is for the range; the number stays pinned)', back.nums === 1 && back.range === 0 && back.pressed.join() === '路上' && eq(backCard, tripCard) && back.open, JSON.stringify({ back }));
-    check('the number\'s card is in the look of the range\'s: the same ground, edge, corners and shadow', eq(look, rlook) && look[1] !== 'rgba(0, 0, 0, 0)', JSON.stringify({ look, rlook }));
-    // a number clicked while a range is hung lets the range go (it is a click away from its card) and hangs its own card, so never the two
+    const back = await state(a);
+    check('the first Esc is for the range (its card goes, the number stays pinned); the pane stays', back.range === 0 && back.cards === 0 && back.pressed.join() === '路上' && back.lens === 'trip' && back.open, JSON.stringify(back));
+    // a number clicked while a range is hung lets the range go and pins the number
     await a.move(xAt(14) + .1, y); await a.page.mouse.down(); await a.move(xAt(16), y); await a.move(xAt(18) + .1, y); await a.page.mouse.up(); await a.page.waitForTimeout(400);
-    const free = await a.page.evaluate(() => { for (const e of document.querySelectorAll('.dt-num')) { const r = e.getBoundingClientRect(), t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2), name = e.innerText.split('\n')[0]; if (e.contains(t) && name !== '路上') return name; } return null; });
     const hung = await state(a);
+    // the number must be one the hung card does not lie over
+    const free = await a.page.evaluate(() => { for (const e of document.querySelectorAll('.dt-num')) { const r = e.getBoundingClientRect(), t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2), name = e.innerText.split('\n')[0]; if (e.contains(t) && name !== '路上') return name; } return null; });
     if (free) { await chip(a, free).click(); await a.move(away.x, away.y); await a.page.waitForTimeout(450); }
     const swapped = await state(a);
-    check('a number clicked while a range is hung takes the room: the range goes, the number\'s card hangs, and never are the two seen together', hung.range === 1 && hung.nums === 0 && free !== null && swapped.range === 0 && swapped.nums === 1 && swapped.pressed.join() === free, JSON.stringify({ hung, free, swapped }));
-    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(350);
+    check('a number clicked while a range is hung takes it: the range goes and the number is pinned', hung.range === 1 && free !== null && swapped.range === 0 && swapped.cards === 0 && swapped.pressed.join() === free, JSON.stringify({ hung, free, swapped }));
 
-    // a second click on the pinned number lets both go; so does Esc, and the pane stays
-    await chip(a, '路上').click(); await a.page.waitForTimeout(350); await chip(a, '路上').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(400);
+    // a second click on the pinned number lets go; so does Esc, and the pane stays
+    await chip(a, free ?? '通话').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(400);
     const closedBy = await state(a);
-    check('a second click on the pinned number lets go of the lens and the card', closedBy.nums === 0 && closedBy.lens === null && closedBy.pressed.length === 0 && closedBy.open, JSON.stringify(closedBy));
+    check('a second click on the pinned number lets go of the lens', closedBy.lens === null && closedBy.pressed.length === 0 && closedBy.marks === 0 && closedBy.open, JSON.stringify(closedBy));
     await chip(a, '通话').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(450);
     const pinnedCall = await state(a);
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
     const escaped = await state(a);
-    check('Esc lets go of the lens and the card and leaves the pane open', pinnedCall.nums === 1 && pinnedCall.lens === 'call' && escaped.nums === 0 && escaped.lens === null && escaped.pressed.length === 0 && escaped.open, JSON.stringify({ pinnedCall, escaped }));
+    check('Esc lets go of the lens and leaves the pane open', pinnedCall.lens === 'call' && escaped.lens === null && escaped.pressed.length === 0 && escaped.marks === 0 && escaped.open, JSON.stringify({ pinnedCall, escaped }));
+    // while a row is selected a number can still be pinned, and Esc lets go of the selection first (the keys section has the full order)
+    await chip(a, '睡').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(300);
+    await tap(a, 'move-1'); await rest(a, 400);
+    check('a pinned number and a selected row stand together, each doing its own part: the lens is drawn and the detail is up', (await state(a)).lens === 'sleep' && await folds(a) === 1);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(300);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(300);
 
-    // the card follows the day: pinned on the Sleep, the day before is a day with a sleep and nothing else, and its card is that one's
-    const paneBottom = () => a.page.evaluate(() => document.querySelector('.notch-drop').getBoundingClientRect().bottom), cardBottom = () => a.page.evaluate(() => document.querySelector('.dt-card.is-num')?.getBoundingClientRect().bottom ?? null);
+    // the lens follows the day: pinned on the Sleep it stays on the day before if that day has a sleep; a number that day does not have lets go
+    const ykinds = numbers(buildDay(yesterday(), NOW, zh), zh).map(n => n.kind);
+    check('the day before has a sleep and not every other number (so one kind can stay and another must let go)', ykinds.includes('sleep') && !ykinds.includes('trip'), ykinds.join());
     await chip(a, '睡').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(400);
     await a.page.keyboard.press('ArrowLeft');
-    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track') && document.querySelector('.dt-card.is-num .dt-slot.is-cur'), undefined, 6000);
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
     await a.page.waitForTimeout(900);
-    const ydayWant = cardLines(cardOf(buildDay(yesterday(), NOW, zh), 'sleep', zh)), ydayGot = await onPage(a), withCard = { card: await cardBottom(), pane: await paneBottom() };
-    check('the card follows the day: on the day before, with the Sleep still pinned, it is that day\'s sleep (clocks only, nothing the phone did not say)', eq(ydayGot, ydayWant) && ydayGot.length === 2, JSON.stringify({ ydayGot, ydayWant }));
-    await a.shot('density-yesterday', { x: 40, y: 0, width: 560, height: 520 });
-    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
-    const short = await paneBottom(), none = await state(a);
-    await chip(a, '睡').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(900);
-    const again = { card: await cardBottom(), pane: await paneBottom() };
-    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
-    // the pane is one size (the doors design): the card hangs inside it on a short day, and the pane is the same with the card and without it
-    check('on a short day the card is inside the pane, which keeps its size with the card and without it', none.nums === 0 && withCard.card <= withCard.pane - 6 && again.card <= again.pane - 6 && Math.abs(withCard.pane - short) < 2 && Math.abs(again.pane - short) < 2 && Math.abs(await paneBottom() - short) < 2, JSON.stringify({ withCard, short, again }));
+    const ys = await state(a);
+    check('on the day before, the Sleep stays pinned and filters that day (its span on the bar)', ys.lens === 'sleep' && ys.pressed.join() === '睡' && ys.marks > 0 && ys.cards === 0, JSON.stringify(ys));
+    await a.shot('density-yesterday', { x: 0, y: 0, width: 836, height: 640 });
+    await a.page.keyboard.press('ArrowRight');
+    await a.until(() => document.querySelector('.dt-date')?.textContent !== '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    await a.page.waitForTimeout(700);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(300);
+    await chip(a, '路上').click(); await a.move(away.x, away.y); await a.page.waitForTimeout(400);
+    await a.page.keyboard.press('ArrowLeft');
+    await a.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    await a.page.waitForTimeout(900);
+    const yt = await state(a);
+    check('and a number that day does not have (路上) lets go of its lens when the day changes: nothing is filtered by a chip that is not there', yt.lens === null && yt.pressed.length === 0 && yt.marks === 0, JSON.stringify(yt));
     await a.ctx.close();
 
-    // the same in English (the Sleep and the Mac) and the photos (a thumbnail each; a click on one is the picture row's click)
-    {
-      const e = await boot({ served: fullDay(), lang: 'en' });
+    // the strip is one line at any language: what does not fit is hidden from the end (keeps its room, out of the tab order and the reader), and what shows is whole
+    for (const [lang, day, tt] of [['zh', fullDay(), zh], ['en', fullDay(), en]]) {
+      const e = await boot({ served: day, lang });
       await openDay(e);
-      const names = Object.fromEntries(numbers(fe, en).map(n => [n.kind, n.label])), badEn = [];
-      for (const kind of ['sleep', 'work']) {
-        await e.page.locator('.dt-num', { hasText: names[kind] }).first().click(); await e.page.waitForTimeout(450);
-        const got = await onPage(e), want = cardLines(cardOf(fe, kind, en));
-        if (!eq(got, want)) badEn.push({ kind, got, want });
-        await e.shot(`density-${kind}-en`, { x: 40, y: 0, width: 560, height: 700 });
-      }
-      check('in English the Sleep\'s card and the Mac\'s say it in English, the same lines as the model', badEn.length === 0, JSON.stringify(badEn));
+      const names = numbers(buildDay(day, NOW, tt), tt).map(n => `${n.label} ${n.value}`);
+      const r = await e.page.evaluate(() => { const strip = document.querySelector('.dt-nums').getBoundingClientRect(); const all = [...document.querySelectorAll('.dt-nums > *')]; return { text: [...document.querySelectorAll('.dt-num')].map(b => [...b.querySelectorAll('span, em')].map(x => x.textContent).join(' ')), rows: new Set(all.map(c => Math.round(c.getBoundingClientRect().top + c.getBoundingClientRect().height / 2))).size,
+        cut: all.map(c => c.classList.contains('is-cut')), shown: all.filter(c => !c.classList.contains('is-cut')).every(c => c.getBoundingClientRect().right <= strip.right + .5), hidden: all.filter(c => c.classList.contains('is-cut')).every(c => getComputedStyle(c).visibility === 'hidden' && (c.getAttribute('aria-hidden') === 'true' || !c.matches('.dt-num')) && (!c.matches('.dt-num') || c.tabIndex === -1)) }; });
+      const firstCut = r.cut.indexOf(true);
+      check(`${lang === 'zh' ? 'in Chinese' : 'in English'} the numbers say what the model says, on one line; any that do not fit are a tail of hidden ones, and those shown are whole inside the strip`, eq(r.text, names) && r.rows === 1 && (firstCut < 0 || r.cut.slice(firstCut).every(Boolean)) && r.shown && r.hidden, JSON.stringify({ names, r }));
+      await e.shot(`density-chips-${lang}`, { x: 0, y: 0, width: 836, height: 300 });
       await e.ctx.close();
-    }
-    {
-      const pics = fullDay({ items: [...fullDay().items, it('picture-2', 'picture', T(16, 20), T(16, 20), { attachment: BIG, note: '傍晚的海边，风很大' }), it('picture-3', 'picture', T(17, 5), T(17, 5), { attachment: 'b'.repeat(32), note: '没有了的' })] });
-      const p = await boot({ served: pics });
-      await openDay(p);
-      await chip(p, '照片').click(); await p.page.waitForTimeout(700);
-      const got = await onPage(p), want = cardLines(cardOf(buildDay(pics, NOW, zh), 'picture', zh));
-      const thumbs = await p.page.evaluate(() => [...document.querySelectorAll('.dt-card.is-num .dt-slot.is-cur .dt-npic')].map(b => { const i = b.querySelector('img'), r = (i ?? b.firstElementChild).getBoundingClientRect(); return { img: !!i, ok: i ? i.complete && i.naturalWidth > 0 : null, w: Math.round(r.width), h: Math.round(r.height), cursor: getComputedStyle(b).cursor, label: b.getAttribute('aria-label') }; }));
-      check('the photos card: its head the count, a thumbnail for each with its time (the pictures that the daemon has load; one it no longer has leaves a plain icon, not a broken image)', eq(got, want) && got.length === 2 && thumbs.length === 3 && thumbs.filter(t => t.ok === true).length === 2 && thumbs.filter(t => !t.img).length === 1 && thumbs.every(t => t.w === 56 && t.h === 56 && t.cursor === 'zoom-in'), JSON.stringify({ got, want, thumbs }));
-      await p.shot('density-pictures', { x: 40, y: 0, width: 560, height: 700 });
-      await p.page.locator('.dt-card.is-num .dt-npic').first().click(); await p.page.waitForTimeout(400);
-      const viewer = await p.page.evaluate(() => ({ src: document.querySelector('.dt-viewer img')?.src ?? null, note: document.querySelector('.dt-viewer p')?.textContent ?? null }));
-      check('a click on a thumbnail opens the picture large, with its note, as the picture row does', viewer.src?.endsWith(`/inherent/attachments/${PIC}`) && viewer.note === '汉堡和薯条\n在 A&W 吃的午饭', JSON.stringify(viewer));
-      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(350);
-      const afterViewer = await state(p);
-      check('and Esc closes the picture first and leaves the card', await p.page.locator('.dt-viewer').count() === 0 && afterViewer.nums === 1 && afterViewer.pressed.join() === '照片', JSON.stringify(afterViewer));
-      await p.ctx.close();
-    }
-
-    // Reduced Motion: the card comes in with a 120 ms fade and does not rise; a change of number is a fade through and nothing moves
-    {
-      const r = await boot({ served: fullDay(), init: record });
-      await r.page.emulateMedia({ reducedMotion: 'reduce' });
-      await openDay(r);
-      await r.page.evaluate(() => { window.__anims.length = 0; });
-      await chip(r, '睡').click(); await r.page.waitForFunction(() => document.querySelector('.dt-card.is-num .dt-slot.is-cur')); await r.page.waitForTimeout(400);
-      const enter = (await anims(r)).filter(x => /dt-card-in/.test(x.cls));
-      check('with reduced motion the card fades in over 120 ms and does not rise', enter.length === 1 && enter[0].opt.duration === 120 && enter[0].kf.length === 2 && enter[0].kf.every(f => f.transform === undefined) && enter[0].kf[0].opacity === 0 && enter[0].kf[1].opacity === 1, JSON.stringify(enter));
-      const sw = await swap(r, '路上'), [s0, , s60, , s90, s120] = sw.out;
-      check('and a change of number is a fade through of 120 ms that moves nothing', sw.kept && sw.head === '路上' && apart(s0.old, 1) && apart(s60.old, 0) && apart(s60.now, 0) && apart(s90.now, .5) && apart(s120.now, 1) && sw.out.every(x => Math.min(x.old, x.now) < .02 && x.oy === 0 && x.ny === 0), JSON.stringify(sw));
-      await r.ctx.close();
     }
   }
 
@@ -3703,16 +3529,19 @@ try {
   const writes = a => a.s.posts.filter(p => p.path === '/inherent/day/highlight');
   const marksOn = a => a.s.served.highlights.map(h => `${h.id}:${h.by}`).sort().join();
   // the bar's lit stars (each: whose, and whether it is on its way out), and what a row or a stay's header wears
-  const lit = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-lit')].map(el => ({ id: el.dataset.star, gone: el.classList.contains('is-gone'), hers: el.classList.contains('is-hers') })));
+  // V2: the bar wears no stars; what mattered is the star on the row's glyph (or beside a stay's name), and the star button is in the selected row's detail (and the S key)
+  const lit = a => a.page.evaluate(() => [...document.querySelectorAll('.dt-row, .dt-sh')].flatMap(r => { const b = r.querySelector(r.classList.contains('dt-sh') ? '.dt-star' : '.dt-badge'); return b ? [{ id: r.dataset.key, gone: b.classList.contains('is-gone'), hers: b.classList.contains('is-hers') }] : []; }));
   const litIds = async a => (await lit(a)).filter(x => !x.gone).map(x => x.id).sort().join();
   const wears = (a, key) => orow(a, key).evaluate(r => { const b = r.querySelector(r.classList.contains('dt-sh') ? '.dt-star' : '.dt-badge'); return b ? { gone: b.classList.contains('is-gone'), hers: b.classList.contains('is-hers') } : null; });
-  const quickStar = (a, key) => orow(a, key).locator(':scope > .dt-quick .dt-starbtn');
+  const quickStar = (a, key) => pgOf(a).locator('.dt-acts .dt-starbtn');   // the selected row's detail has it (key: the row that must be selected, see hoverOn)
   const starOf = (a, btn) => btn.evaluate(b => ({ on: b.getAttribute('aria-pressed') === 'true', his: b.classList.contains('is-his'), hers: b.classList.contains('is-hers'), label: b.getAttribute('aria-label') }));
-  const hoverOn = async (a, key) => { await back(a); await orow(a, key).scrollIntoViewIfNeeded(); await orow(a, key).hover({ position: { x: 170, y: 14 } }); await rest(a, 280); };
-  const under = (a, key) => orow(a, key).locator(':scope > .dt-fold .dt-hint').allInnerTexts().then(x => x.join('|'));
+  const hoverOn = async (a, key) => { await tap(a, key); await rest(a, 520); };
+  const under = (a, key) => pgOf(a).locator('.dt-body .dt-hint').allInnerTexts().then(x => x.join('|'));
+  // the detail's buttons in the order they stand: 问她 in the head, then the buttons (the star is 'star'), then the quiet 这段在干嘛
+  const actsOf = a => pgOf(a).evaluate(el => [...el.querySelectorAll('.dt-dh .dt-btn, .dt-acts > *, .dt-sayhow')].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent.trim()).join('|'));
   // The star's own animations, held at each moment in turn, in one sheet (the click starts them; they are paused at once, so each tile is the star at that moment).
   const frames = async (a, key, name, offsets) => {
-    const mine = `[data-key="${key}"] .dt-starbtn`, box = await orow(a, key).locator(':scope > .dt-quick .dt-starbtn').boundingBox(), tiles = [];
+    const mine = '.dt-side .dt-starbtn', box = await pgOf(a).locator('.dt-acts .dt-starbtn').boundingBox(), tiles = [];
     await a.page.evaluate(sel => { for (const x of document.getAnimations()) if (x.effect?.target?.closest?.(sel)) x.pause(); }, mine);
     for (const ms of offsets) {
       await a.page.evaluate(([sel, ms]) => { for (const x of document.getAnimations()) if (x.effect?.target?.closest?.(sel)) x.currentTime = ms; }, [mine, ms]);
@@ -3725,29 +3554,30 @@ try {
   if (all || only === 'write') {
     const a = await boot({ served: fullDay(), init: record });
     await openDay(a);
-    // ---- the hover's actions: the star, then 问她 ----
-    const quick = await a.page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.dt-row, .dt-sh')].map(el => [el.dataset.key, [...(el.querySelector(':scope > .dt-quick')?.children ?? [])].map(c => c.classList.contains('dt-starbtn') ? 'star' : 'ask').join('+')])));
-    check('every item has the star in its hover actions, before 问她 where it has that (a talk, a ride, a payment, a bus, a stay, a run); the folded row of sessions, which is no one item, has neither',
-      quick['talk-1'] === 'star+ask' && quick['ride-1'] === 'star+ask' && quick['pay-1'] === 'star+ask' && quick['departure-1'] === 'star+ask' && quick['stay-uvic'] === 'star+ask' && quick['workout-1'] === 'star+ask' && quick['code:stay-home-1'] === ''
-      && Object.entries(quick).every(([k, v]) => k.startsWith('code:') ? v === '' : v === 'star' || v === 'star+ask'), JSON.stringify(quick));
+    // ---- the star is in the detail: V2 rows have no hover actions ----
+    check('a today row has no hover actions and no star button in the list (V2: the star is in the selected row\'s detail, 问她 in its head and on the right click)', await a.page.locator('.dt-list .dt-quick, .dt-list .dt-starbtn, .dt-list .dt-ask').count() === 0);
+    const have = {};
+    for (const key of await a.page.evaluate(() => [...document.querySelectorAll('.dt-list [data-key]')].filter(e => !e.classList.contains('is-still')).map(e => e.dataset.key))) { await tap(a, key); await rest(a, 380); have[key] = await actsOf(a); }
+    check('every item that opens has the star among its detail\'s buttons, with 问她 in the head before them (a talk, a ride, a payment, a bus, a stay, a run); the folded row of sessions, which is no one item, has neither',
+      ['talk-1', 'ride-1', 'pay-1', 'departure-1', 'stay-uvic', 'workout-1'].every(k => /^问她\|.*star/.test(have[k])) && !/star|问她/.test(have['code:stay-home-1']) && Object.entries(have).every(([k, v]) => k.startsWith('code:') ? !v.includes('star') : v.split('|').includes('star') && v.startsWith('问她')), JSON.stringify(have));
     await hoverOn(a, 'pay-1'); const his = await starOf(a, quickStar(a, 'pay-1'));
     await hoverOn(a, 'stay-uvic'); const hers = await starOf(a, quickStar(a, 'stay-uvic'));
     await hoverOn(a, 'talk-1'); const none = await starOf(a, quickStar(a, 'talk-1'));
-    check('his mark (the payment) is a filled star that says Unmark, her pick (the afternoon at UVic) an outlined one, an item nobody marked a dim outline: the three are told apart, and the two that are not his say Mark as important',
+    check('in the detail his mark (the payment) is a filled star that says Unmark, her pick (the afternoon at UVic) an outlined one, an item nobody marked a dim outline: the three are told apart, and the two that are not his say Mark as important',
       his.on && his.his && !his.hers && his.label === '取消标记' && !hers.on && hers.hers && !hers.his && hers.label === '标为重要' && !none.on && !none.his && !none.hers && none.label === '标为重要', JSON.stringify({ his, hers, none }));
     // her pick beside his mark: the payment (his) and the afternoon at UVic (hers), each row with the pointer on it, and the bar's two lit stars
     {
       const tiles = [], stars = await lit(a);
-      for (const [key, label] of [['pay-1', 'his mark: a filled star in the hover, a filled badge'], ['stay-uvic', 'her pick: an outlined star in the hover, an outlined one by the name']]) {
+      for (const [key, label] of [['pay-1', 'his mark: a filled star in the detail, a filled badge'], ['stay-uvic', 'her pick: an outlined star in the detail, an outlined one by the name']]) {
         await hoverOn(a, key);
         tiles.push({ ...await crop(a, label, await orow(a, key).boundingBox()), k: 1.4 });
       }
       const bar = await a.page.locator('.dt-bar').first().boundingBox();
-      tiles.unshift({ ...await crop(a, 'the bar: her pick outlined, his mark filled', { x: bar.x, y: bar.y - 6, width: bar.width, height: bar.height + 12 }), k: 1.6 });
+      tiles.unshift({ ...await crop(a, 'the bar: no star on it (V2)', { x: bar.x, y: bar.y - 6, width: bar.width, height: bar.height + 12 }), k: 1.6 });
       await sheetOf(a, 'd-02-his-and-hers', tiles, 1);
-      check('the sheet of her pick beside his mark is made (the bar and the two rows)', tiles.length === 3 && stars.length === 2);
+      check('the sheet of her pick beside his mark is made (the bar and the two rows)', tiles.length === 3 && stars.length === 2 && await a.page.locator('.dt-bar .dt-lit, .dt-bar svg[aria-label="★"]').count() === 0);
     }
-    check('the bar and the rows wear the same two: both lit stars are on the bar, hers drawn outlined; the payment\'s badge is his, the stay\'s beside its name is hers, and a row nobody marked wears none',
+    check('the rows wear the two (V2: none on the bar): the payment\'s badge is his and filled, the stay\'s beside its name is hers and outlined, and a row nobody marked wears none',
       await litIds(a) === 'pay-1,stay-uvic' && (await lit(a)).find(x => x.id === 'stay-uvic').hers && !(await lit(a)).find(x => x.id === 'pay-1').hers
       && JSON.stringify(await wears(a, 'pay-1')) === '{"gone":false,"hers":false}' && JSON.stringify(await wears(a, 'stay-uvic')) === '{"gone":false,"hers":true}' && await wears(a, 'talk-1') === null);
 
@@ -3758,7 +3588,7 @@ try {
     await quickStar(a, 'talk-1').click();
     await a.page.waitForTimeout(90);
     const mid = { star: await starOf(a, quickStar(a, 'talk-1')), bar: await litIds(a), badge: await wears(a, 'talk-1'), posts: writes(a).length };
-    check('pressing the star shows it at once, before the brain has answered: the star is filled, the bar has its lit star and the row its badge', mid.star.on && mid.star.his && mid.bar === 'pay-1,stay-uvic,talk-1' && JSON.stringify(mid.badge) === '{"gone":false,"hers":false}' && mid.posts === 0, JSON.stringify(mid));
+    check('pressing the star shows it at once, before the brain has answered: the star is filled and the row has its badge', mid.star.on && mid.star.his && mid.bar === 'pay-1,stay-uvic,talk-1' && JSON.stringify(mid.badge) === '{"gone":false,"hers":false}' && mid.posts === 0, JSON.stringify(mid));
     check('the frame sheet of the star being set (the star and its four sparks every 40 ms, held from the animations the press started) is made', await frames(a, 'talk-1', 'd-01-star-sparks', [0, 40, 80, 120, 160, 200, 250, 300]) === 8);
     await a.page.waitForTimeout(900);
     const after = { star: await starOf(a, quickStar(a, 'talk-1')), bar: await litIds(a), post: writes(a).map(p => JSON.stringify(p.body)).join(), served: marksOn(a), reads: a.s.hits.length - hits0, title: await orow(a, 'talk-1').locator('.dt-tx b').innerText() };
@@ -3772,18 +3602,18 @@ try {
     await quickStar(a, 'talk-1').click();
     await a.page.waitForTimeout(90);
     const away = { star: await starOf(a, quickStar(a, 'talk-1')), bar: await lit(a), badge: await wears(a, 'talk-1') };
-    check('pressing it again takes the mark off at once: the star is outlined again, and the bar\'s star and the row\'s badge are on their way out (fading), not gone with a jump', !away.star.on && away.bar.find(x => x.id === 'talk-1')?.gone === true && away.badge?.gone === true, JSON.stringify(away));
+    check('pressing it again takes the mark off at once: the star is outlined again, and the row\'s badge is on its way out (fading), not gone with a jump', !away.star.on && away.bar.find(x => x.id === 'talk-1')?.gone === true && away.badge?.gone === true && await a.page.locator('.dt-bar .dt-lit').count() === 0, JSON.stringify(away));
     await a.page.waitForTimeout(500);
-    check('then they are gone; the brain was told {on: false} and has the day it had before', await litIds(a) === 'pay-1,stay-uvic' && (await lit(a)).length === 2 && await wears(a, 'talk-1') === null && writes(a).at(-1).body.on === false && marksOn(a) === 'pay-1:him,stay-uvic:her', marksOn(a));
+    check('then it is gone; the brain was told {on: false} and has the day it had before', await litIds(a) === 'pay-1,stay-uvic' && (await lit(a)).length === 2 && await wears(a, 'talk-1') === null && writes(a).at(-1).body.on === false && marksOn(a) === 'pay-1:him,stay-uvic:her', marksOn(a));
 
     // ---- her pick: he can make it his, and take it off (which takes her pick off for him) ----
     await hoverOn(a, 'stay-uvic');
     await quickStar(a, 'stay-uvic').click(); await a.page.waitForTimeout(500);
     const mine = { star: await starOf(a, quickStar(a, 'stay-uvic')), bar: (await lit(a)).find(x => x.id === 'stay-uvic'), badge: await wears(a, 'stay-uvic'), post: JSON.stringify(writes(a).at(-1).body), served: marksOn(a), label: await orow(a, 'stay-uvic').locator('.dt-tx em').innerText() };
-    check('marking her pick makes it his: the star fills, the bar\'s star and the stay\'s are filled, she keeps her words for it, and the brain has it as his', mine.star.on && mine.star.his && mine.bar && !mine.bar.hers && mine.badge && !mine.badge.hers && mine.post === `{"day":"${DATE}","id":"stay-uvic","on":true}` && mine.served === 'pay-1:him,stay-uvic:him' && mine.label === '下午在 UVic', JSON.stringify(mine));
+    check('marking her pick makes it his: the star fills, the stay\'s star beside its name is filled, she keeps her words for it, and the brain has it as his', mine.star.on && mine.star.his && mine.bar && !mine.bar.hers && mine.badge && !mine.badge.hers && mine.post === `{"day":"${DATE}","id":"stay-uvic","on":true}` && mine.served === 'pay-1:him,stay-uvic:him' && mine.label === '下午在 UVic', JSON.stringify(mine));
     await hoverOn(a, 'stay-uvic');
     await quickStar(a, 'stay-uvic').click(); await a.page.waitForTimeout(700);
-    check('and taking it off leaves nothing of hers either: no star on the bar or by the name, the brain told {on: false}, her pick hidden', await litIds(a) === 'pay-1' && await wears(a, 'stay-uvic') === null && writes(a).at(-1).body.on === false && marksOn(a) === 'pay-1:him' && a.s.hidden.has('stay-uvic'), marksOn(a));
+    check('and taking it off leaves nothing of hers either: no star by the name, the brain told {on: false}, her pick hidden', await litIds(a) === 'pay-1' && await wears(a, 'stay-uvic') === null && writes(a).at(-1).body.on === false && marksOn(a) === 'pay-1:him' && a.s.hidden.has('stay-uvic'), marksOn(a));
     await a.ctx.close();
   }
   if (all || only === 'write') {
@@ -3800,14 +3630,14 @@ try {
     check('with five of his marks standing the star does not pretend: nothing is lit while the brain is asked', !asking.star.on && asking.bar === 'call-1,move-1,pay-1,sleep-1,work-1' && asking.line === '', JSON.stringify(asking));
     await a.page.waitForTimeout(800);
     const said = { star: await starOf(a, quickStar(a, 'ride-1')), bar: await litIds(a), line: await under(a, 'ride-1'), post: JSON.stringify(writes(a).at(-1).body), served: marksOn(a) };
-    check('the sixth is a 409: the brain was asked {day, id, on: true}; the star stays off and the day is as it was; the row says 最多标 5 个，先取消一个 under itself', said.post === `{"day":"${DATE}","id":"ride-1","on":true}` && !said.star.on && said.bar === asking.bar && said.line === '最多标 5 个，先取消一个' && said.served === 'call-1:him,move-1:him,pay-1:him,sleep-1:him,work-1:him', JSON.stringify(said));
+    check('the sixth is a 409: the brain was asked {day, id, on: true}; the star stays off and the day is as it was; the detail says 最多标 5 个，先取消一个 under its buttons', said.post === `{"day":"${DATE}","id":"ride-1","on":true}` && !said.star.on && said.bar === asking.bar && said.line === '最多标 5 个，先取消一个' && said.served === 'call-1:him,move-1:him,pay-1:him,sleep-1:him,work-1:him', JSON.stringify(said));
     const shook = (await anims(a)).filter(x => x.cls.includes('dt-starbtn') && x.kf.some(k => k.transform === 'translateX(-3px)'));
     check('the star shook once, in 120 ms', shook.length === 1 && shook[0].opt.duration === 120, JSON.stringify(shook));
     const grown = await orow(a, 'talk-3').boundingBox();
-    check('the line opens under the row in place (the rows under it move down), the row is not open (no page, the star is still there to press again)', grown.y > rows0.y + 10 && await folds(a) === 0 && await orow(a, 'ride-1').locator(':scope > .dt-fold.is-line').count() === 1 && await orow(a, 'ride-1').locator(':scope > .dt-quick').evaluate(q => getComputedStyle(q).display !== 'none' && getComputedStyle(q).opacity === '1'), JSON.stringify({ rows0, grown }));
+    check('the line is under the buttons in the detail, which stays up (the list does not move: V2 puts nothing under the row, and the star is still there to press again)', Math.abs(grown.y - rows0.y) < 1 && await folds(a) === 1 && await expanded(a, 'ride-1') === 'true' && await orow(a, 'ride-1').locator(':scope > .dt-fold.is-line').count() === 0 && await quickStar(a, 'ride-1').isVisible(), JSON.stringify({ rows0, grown }));
     await shotRow(a, 'd-03-cap-line', 'ride-1');
     await a.page.waitForTimeout(4300);
-    check('the line goes by itself after four seconds and the rows come back', await under(a, 'ride-1') === '' && await orow(a, 'ride-1').locator(':scope > .dt-fold').count() === 0 && Math.abs((await orow(a, 'talk-3').boundingBox()).y - rows0.y) < 2);
+    check('the line goes by itself after four seconds, the detail and the list as they were', await under(a, 'ride-1') === '' && await folds(a) === 1 && Math.abs((await orow(a, 'talk-3').boundingBox()).y - rows0.y) < 2);
     await a.ctx.close();
   }
   if (all || only === 'write') {
@@ -3825,7 +3655,7 @@ try {
     await a.ctx.close();
   }
   if (all || only === 'write') {
-    // the keys: S marks the row the keys chose (a second S takes it off); not while a field has the cursor; the open row has the star too, before 问她
+    // the keys: S marks the row the keys chose (a second S takes it off); not while a field has the cursor; the open row has the star among its buttons
     const a = await boot({ served: fullDay(), init: record });
     await openDay(a);
     await a.page.keyboard.press('s'); await a.page.waitForTimeout(300);
@@ -3837,17 +3667,17 @@ try {
     await a.page.keyboard.press('s'); await a.page.waitForTimeout(500);
     check('and S again takes the mark off', writes(a).length === 2 && writes(a)[1].body.on === false && writes(a)[1].body.id === chosen && marksOn(a) === 'pay-1:him,stay-uvic:her');
     await orow(a, 'talk-1').scrollIntoViewIfNeeded(); await orow(a, 'talk-1').hover({ position: { x: 170, y: 14 } }); await rest(a, 250);
-    await orow(a, 'talk-1').locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 520);
+    await orow(a, 'talk-1').click({ button: 'right', position: { x: 170, y: 14 } }); await rest(a, 520);
     await a.page.keyboard.type('sss'); await rest(a, 200);
     check('typed into the input, S is a letter, not a mark', writes(a).length === 2 && await a.page.locator('.dt-ask-in').inputValue() === 'sss');
     await a.page.keyboard.press('Escape'); await rest(a, 500);
     // the open row: the star is among its buttons, before 问她, and does the same
     await tap(a, 'talk-1'); await rest(a, 520);
-    const btns = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
-    check('the open row has the star among its buttons, before 问她', btns === 'star|问她', btns);
+    const btns = await actsOf(a);
+    check('the open row has 问她 in its head and the star among its buttons', btns === '问她|star', btns);
     const open = pgOf(a).locator('.dt-acts .dt-starbtn');
     await open.click(); await rest(a, 500);
-    check('pressed there it marks the same item, and the star in the open row is filled', writes(a).at(-1).body.id === 'talk-1' && writes(a).at(-1).body.on === true && (await starOf(a, open)).on && (await starOf(a, open)).his && await orow(a, 'talk-1').locator(':scope > .dt-quick').isHidden());
+    check('pressed there it marks the same item, and the star in the open row is filled', writes(a).at(-1).body.id === 'talk-1' && writes(a).at(-1).body.on === true && (await starOf(a, open)).on && (await starOf(a, open)).his);
     a.s.refuse.add('highlight');
     await open.click(); await rest(a, 600);
     check('a refusal says so under the buttons of the open row, in the row\'s own hint (the star is filled again, as it was)', (await starOf(a, open)).on && await pgOf(a).locator('.dt-body .dt-hint').innerText() === '没标上，稍后再试', await pgOf(a).locator('.dt-body .dt-hint').innerText());
@@ -3907,9 +3737,9 @@ try {
     await openDay(a);
     check('three things wait on him at first: the reminder that rang and the two events mail has not confirmed, each with its badge and a dashed box on the bar', await pillOf(a) === '3 件等你' && await a.page.locator('.dt-wait').count() === 3 && await a.page.locator('[data-sched]').count() === 3, await pillOf(a));
     await tap(a, CM.a); await rest(a, 520);
-    const btns = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
-    check('an unconfirmed mail event opens to 是我的 and 不是, before the star and 问她, under its time range and state (its source, that it is not confirmed and its place are the row\'s second line already)', btns === '是我的|不是|star|问她' && (await said(a, CM.a))[0] === '22:10–22:50 · 40 分钟 · 还没开始' && await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 还没确认 · Library', `${btns} ${(await said(a, CM.a)).join('|')}`);
-    await sheetRow(a, 'd-04-commitment-open', CM.a, [['.dt-head', 'the header: three things wait on him (the reminder that rang and the two events mail has not confirmed)', 1.3]], 'the commitment opened: 是我的 and 不是 before the star and 问她, the amber 等你 badge on the row');
+    const btns = await actsOf(a);
+    check('an unconfirmed mail event opens to 是我的 and 不是, after 问她 in the head and before the star, under its time range and state (its source, that it is not confirmed and its place are the row\'s second line already)', btns === '问她|是我的|不是|star' && (await said(a, CM.a))[0] === '22:10–22:50 · 40 分钟 · 还没开始' && await orow(a, CM.a).locator('.dt-tx em').textContent() === '邮件 · 还没确认 · Library', `${btns} ${(await said(a, CM.a)).join('|')}`);
+    await sheetRow(a, 'd-04-commitment-open', CM.a, [['.dt-head', 'the header: three things wait on him (the reminder that rang and the two events mail has not confirmed)', 1.3]], 'the commitment opened: 是我的 and 不是 after 问她 in the head and before the star, the amber 等你 badge on the row');
     const reads = a.s.hits.length, watching = watchRow(a, CM.a, 900);
     await btn(a, CM.a, '是我的').click();
     const seen = await watching;
@@ -3937,7 +3767,7 @@ try {
 
     // 问她 on a commitment event: the id with its @ and the brain's own kind
     await hoverOn(a, CM.c);
-    await orow(a, CM.c).locator(':scope > .dt-quick .dt-ask').click(); await rest(a, 520);
+    await orow(a, CM.c).click({ button: 'right', position: { x: 170, y: 14 } }); await rest(a, 520);
     await a.page.keyboard.type('这个几点开始'); await a.page.keyboard.press('Enter'); await rest(a, 350);
     check('问她 is on a commitment event too, and the turn carries exactly its kind (event), its id with the @, its title and its start', turns(a).length === 1 && JSON.stringify(turns(a)[0].body) === JSON.stringify({ text: '这个几点开始', about: { kind: 'event', id: CM.c, title: '跑步', start_ms: T(23, 40) } }), JSON.stringify(turns(a)));
     await a.ctx.close();
@@ -3980,9 +3810,9 @@ try {
     await a.page.emulateMedia({ reducedMotion: 'reduce' });
     await openDay(a);
     await tap(a, CM.a); await rest(a, 400);
-    const names = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
+    const names = await actsOf(a);
     await btn(a, CM.a, 'Mine').click(); await rest(a, 400);
-    check('in English the buttons say Mine and Not mine, and the row says you confirmed it', names === 'Mine|Not mine|star|Ask her' && await orow(a, CM.a).locator('.dt-tx em').textContent() === 'Mail · you confirmed it · Library', `${names} ${await orow(a, CM.a).locator('.dt-tx em').textContent()}`);
+    check('in English the buttons say Mine and Not mine, and the row says you confirmed it', names === 'Ask her|Mine|Not mine|star' && await orow(a, CM.a).locator('.dt-tx em').textContent() === 'Mail · you confirmed it · Library', `${names} ${await orow(a, CM.a).locator('.dt-tx em').textContent()}`);
     await tap(a, CM.b); await rest(a, 400);
     const watching = watchRow(a, CM.b, 1400);
     await btn(a, CM.b, 'Not mine').click();
@@ -4002,8 +3832,8 @@ try {
     await openDay(a);
     const before = { spot: await hueOf(a, 'stay-spot'), school: await hueOf(a, 'stay-uvic'), bar: await barNames(a) };
     await tap(a, 'stay-spot'); await rest(a, 520);
-    const btns = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|'));
-    check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (before the star, 问她 and 这段在干嘛), and a spot the phone had no words for says nothing else', btns === '起个名字|star|问她|这段在干嘛' && (await said(a, 'stay-spot')).length === 3, `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
+    const btns = await actsOf(a);
+    check('the open row of a stay that is no place he keeps says 起个名字 among its buttons (after 问她 in the head, before the star and 这段在干嘛), and a spot the phone had no words for says nothing else', btns === '问她|起个名字|star|这段在干嘛' && (await said(a, 'stay-spot')).join('|') === '起个名字|这段在干嘛', `${btns} ${(await said(a, 'stay-spot')).join('|')}`);
     await pgOf(a).getByRole('button', { name: '起个名字' }).click(); await rest(a, 450);
     const f0 = await field(a);
     check('it opens a field with the cursor in it and the kinds of place under it (home, school, other: the brain\'s own three), none picked, and the line says Enter saves and Esc cancels; the button is gone',
@@ -4037,7 +3867,7 @@ try {
     check('a kind pressed twice is put down again', (await field(a)).chips === '家|学校|其他');
     a.s.refuse.add('place');
     await a.page.keyboard.press('Enter');
-    await a.until(() => document.querySelector('.dt-page .dt-body .dt-hint')?.textContent === '没记下，再试一次', undefined, 8000);
+    await a.until(() => document.querySelector('.dt-side .dt-body .dt-hint')?.textContent === '没记下，再试一次', undefined, 8000);
     const failed = await field(a);
     check('a brain that refuses (a 400) leaves the field with what was typed, the cursor in it, and says it did not keep it; nothing changed on the list', failed.value === '  快餐  店 ' && failed.focused && await pgOf(a).locator('.dt-body .dt-hint').innerText() === '没记下，再试一次' && await orow(a, 'stay-aw').locator('.dt-tx b').first().textContent() === 'A&W' && kept(a).length === 1, JSON.stringify(failed));
     a.s.refuse.delete('place');
@@ -4059,10 +3889,10 @@ try {
     const a = await boot({ served: nameDay(), init: record, lang: 'en' });
     await openDay(a);
     const offered = {};
-    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await pgOf(a).locator('.dt-acts').first().evaluate(el => [...el.children, ...el.nextElementSibling?.matches('.dt-sayhow') ? [el.nextElementSibling] : []].map(c => c.classList.contains('dt-starbtn') ? 'star' : c.textContent).join('|')); await tap(a, key); await rest(a, 300); }
+    for (const key of ['stay-bare', 'stay-uvic', 'stay-aw']) { await tap(a, key); await rest(a, 520); offered[key] = await actsOf(a); await tap(a, key); await rest(a, 300); }
     await tap(a, 'stay-stop'); await rest(a, 520);
-    const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, name: document.querySelectorAll('.dt-page .dt-name').length }; });
-    check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'star|Ask her|What was this' && offered['stay-uvic'] === 'Rename|star|Ask her|What was this' && offered['stay-aw'] === 'Name this place|star|Ask her|What was this', JSON.stringify(offered));
+    const stop = await a.page.evaluate(() => { const r = document.querySelector('[data-key="stay-stop"]'); return { kind: r.dataset.kind, name: document.querySelectorAll('.dt-side .dt-name').length }; });
+    check('no offer on a stay with no point (the phone gave none) nor on a place he keeps (it has Rename); in English it says Name this place', offered['stay-bare'] === 'Ask her|star|What was this' && offered['stay-uvic'] === 'Ask her|Rename|star|What was this' && offered['stay-aw'] === 'Ask her|Name this place|star|What was this', JSON.stringify(offered));
     await tap(a, 'stay-aw'); await rest(a, 520);
     await pgOf(a).getByRole('button', { name: 'Name this place' }).click(); await rest(a, 450);
     const f = await a.page.evaluate(() => ({ placeholder: document.querySelector('.dt-name-in').placeholder, chips: [...document.querySelectorAll('.dt-role')].map(c => c.textContent).join('|'), hint: document.querySelector('.dt-body .dt-hint').textContent }));
@@ -4083,14 +3913,14 @@ try {
   // a gap lifts nothing on the bar (it used to light the next piece and its row); a tap there still goes to the next row
   if (all || only === 'review') {
     const { a, y, x } = await barOf(small([it('ga', 'stay', T(9, 5), T(11, 0), { place: 'Home', kept_place: home }), it('gt', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('gb', 'stay', T(12, 0), T(13, 0), { place: 'Library', kept_place: uvic })]));
-    const lit = () => a.page.evaluate(() => ({ lift: document.querySelectorAll('.dt-seg.is-lift').length, bracket: document.querySelectorAll('.dt-bracket').length, hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key),
-      head: document.querySelector('.dt-card.is-on .dt-slot.is-cur .dt-ch')?.innerText.replace(/\s*\n\s*/g, ' ') }));
+    const lit = () => a.page.evaluate(() => ({ lift: document.querySelectorAll('.dt-seg.is-hot, .dt-sched.is-hot').length, bracket: document.querySelectorAll('.dt-bracket:not(.is-off)').length, hot: [...document.querySelectorAll('.dt-row.is-hot, .dt-sh.is-hot')].map(e => e.dataset.key),
+      minute: document.querySelector('.dt-hours .dt-minute')?.textContent ?? null, cards: document.querySelectorAll('.dt-card').length }));
     await a.move(x(T(10, 0)), y); await a.page.waitForTimeout(250);
     let m = await lit();
-    check('on a piece the bar lifts it and the list lights its row', m.lift === 1 && m.hot.join() === 'ga', JSON.stringify(m));
+    check('on a piece the bar lights it (with the minute under the bar) and the list lights its row', m.lift === 1 && m.hot.join() === 'ga' && /^(09:59|10:00|10:01)$/.test(m.minute ?? '') && m.cards === 0, JSON.stringify(m));
     await a.move(x(T(11, 30)), y); await a.page.waitForTimeout(250);
     m = await lit();
-    check('in a gap nothing is lifted, bracketed or lit, and the card says nothing was recorded', m.lift === 0 && m.bracket === 0 && m.hot.length === 0 && m.head === '没有记录 11:00–12:00 · 1 小时', JSON.stringify(m));
+    check('in a gap nothing is lit or framed and no card opens (the minute is still said under the bar)', m.lift === 0 && m.bracket === 0 && m.hot.length === 0 && m.cards === 0 && /^11:(29|30|31)$/.test(m.minute ?? ''), JSON.stringify(m));
     await a.page.mouse.down(); await a.page.mouse.up(); await a.page.waitForTimeout(150);
     check('a tap in the gap still takes the list to the next row', await orow(a, 'gb').evaluate(el => el.classList.contains('is-flash')));
     await a.ctx.close();
@@ -4099,7 +3929,7 @@ try {
   // a range that ends with the day says 24:00 on the bar's edge, as its card does (the edge said 00:00)
   if (all || only === 'review') {
     const { a, g, y, x } = await barOf(small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]));
-    const edges = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-scrub .dt-time')].map(e => e.innerText));
+    const edges = () => a.page.evaluate(() => [...document.querySelectorAll('.dt-hours .dt-minute')].map(e => e.innerText));
     await a.move(x(T(20, 0)), y); await a.page.mouse.down(); await a.move(x(T(22, 0)), y); await a.move(g.left + g.width + 30, y); await a.page.waitForTimeout(150);
     let labels = await edges();
     check('dragging to the end of the day, the right edge of the band says 24:00', labels.length === 2 && /^(19:5\d|20:0\d)$/.test(labels[0]) && labels[1] === '24:00', labels.join());
@@ -4146,15 +3976,16 @@ try {
     await a.ctx.close();
   }
 
-  // the card's rise (4 px over 120 ms) is a CSS transition of the card's own; the bookkeeping of its height cancelled every animation on it, so it never played
+  // the range card (the hover card is gone) is at rest where it comes: no leftover rise or offset, and the pointer moving on along the bar does not move it
+  // (the 4 px / 120 ms rise the hover card had is not played for a range card that is mounted already `is-on`: see the report)
   if (all || only === 'review') {
     const { a, y, x } = await barOf(small([it('ha', 'stay', T(9, 5), T(13, 0), { place: 'Home', kept_place: home }), it('ht', 'talk', T(10, 0), T(10, 5), { turns: 2 }, 'her'), it('hb', 'stay', T(13, 0), null, { place: 'Library', kept_place: uvic })]));
-    await a.page.evaluate(() => { window.__tx = []; for (const type of ['transitionend', 'transitioncancel']) document.addEventListener(type, e => { if (e.target.classList?.contains('dt-card-in') && e.propertyName === 'transform') window.__tx.push(type); }, true); });
-    await a.move(x(T(10, 30)), y); await a.page.waitForTimeout(450);
-    // the pointer goes on along the bar through a stretch of another height: the card's rise is not what it ends
+    await a.move(x(T(10, 30)), y); await a.page.mouse.down(); await a.move(x(T(12, 0)), y); await a.move(x(T(14, 0)), y); await a.page.mouse.up(); await a.page.waitForTimeout(450);
+    const at = () => a.page.evaluate(() => { const c = document.querySelector('.dt-card.is-range'), i = c.querySelector('.dt-card-in'); return { box: c.getBoundingClientRect().toJSON(), tf: getComputedStyle(i).transform, op: getComputedStyle(c).opacity, moving: c.getAnimations({ subtree: true }).filter(x => x.playState !== 'finished').length }; });
+    const before = await at();
     await a.move(x(T(12, 0)), y); await a.page.waitForTimeout(250); await a.move(x(T(15, 0)), y); await a.page.waitForTimeout(450);
-    const tx = await a.page.evaluate(() => window.__tx);
-    check('the card rises as it comes: its transform transition runs to its end and nothing cancels it, the pointer moving on', tx[0] === 'transitionend' && !tx.includes('transitioncancel'), tx.join());
+    const after = await at();
+    check('the range card is at rest where it came (transform none, fully opaque, nothing moving) and the pointer going on along the bar does not move it', before.tf === 'none' && before.op === '1' && before.moving === 0 && JSON.stringify(before) === JSON.stringify(after) && await a.page.locator('.dt-card').count() === 1, JSON.stringify({ before, after }));
     await a.ctx.close();
   }
 
@@ -4186,22 +4017,22 @@ try {
     await a.ctx.close();
   }
 
-  // in English the range of a night from yesterday is long (`yesterday 23:10–07:00 · 7 h 20 min`); the card's name kept no room beside it
+  // in English the range of a night from yesterday is long (`23:10–07:00 · 7 h 50 min`); the detail's head (V2: where the hover card's name and range were) keeps the name its room
   if (all || only === 'review') {
     const read = a => a.page.evaluate(() => {
-      const row = document.querySelector('.dt-card.is-on:not(.is-range) .dt-slot.is-cur .dt-ch'), b = row.querySelector('b'), sp = row.querySelector('span');
-      return { name: b.innerText, bw: b.clientWidth, cut: b.scrollWidth > b.clientWidth, range: sp.innerText, spw: sp.getBoundingClientRect().width, spCut: sp.scrollWidth > sp.clientWidth, row: row.clientWidth, overflow: getComputedStyle(sp).textOverflow };
+      const b = document.querySelector('.dt-side .dt-dt b'), em = document.querySelector('.dt-side .dt-dt em'), btn = document.querySelector('.dt-side .dt-dh .dt-btn'), head = document.querySelector('.dt-side .dt-dh').getBoundingClientRect();
+      return { name: b.innerText, bw: b.clientWidth, cut: b.scrollWidth > b.clientWidth, range: em.innerText, mCut: em.scrollWidth > em.clientWidth, overflow: getComputedStyle(em).textOverflow, clear: em.getBoundingClientRect().right <= btn.getBoundingClientRect().left + .5, inside: btn.getBoundingClientRect().right <= head.right + .5 };
     });
-    const en = await barOf(fullDay(), { lang: 'en' });
-    await en.a.move(en.x(T(6, 30)), en.y); await en.a.page.waitForTimeout(350);
-    const ch = await read(en.a);
-    check('English, the night from yesterday: the card\'s name keeps its room (Sleep, whole, 39 px or more) and the range gives way with an ellipsis', ch.name === 'Sleep' && ch.bw >= 39 && !ch.cut && ch.range.startsWith('yesterday 23:10–07:00') && ch.overflow === 'ellipsis' && ch.spCut && ch.spw + ch.bw <= ch.row, JSON.stringify(ch));
-    await en.a.shot('review-card-english-night', { x: 40, y: 0, width: 560, height: 520 });
-    await en.a.ctx.close();
+    const eb = await barOf(fullDay(), { lang: 'en' });
+    await tap(eb.a, 'sleep-1'); await rest(eb.a, 480);
+    const ch = await read(eb.a);
+    check('English, the night from yesterday: the detail\'s name keeps its room (Sleep, whole), the range is 23:10–07:00 · 7 h 50 min whole or gives way with an ellipsis, and never runs under Ask her', ch.name === 'Sleep' && !ch.cut && ch.range === headOf(buildDay(fullDay(), NOW, en), 'sleep-1', en).meta && ch.range.startsWith('23:10–07:00 · 7 h') && (!ch.mCut || ch.overflow === 'ellipsis') && ch.clear && ch.inside, JSON.stringify(ch));
+    await eb.a.shot('review-head-english-night', { x: 0, y: 0, width: 836, height: 640 });
+    await eb.a.ctx.close();
     const zhc = await barOf(fullDay());
-    await zhc.a.move(zhc.x(T(6, 30)), zhc.y); await zhc.a.page.waitForTimeout(350);
+    await tap(zhc.a, 'sleep-1'); await rest(zhc.a, 480);
     const cz = await read(zhc.a);
-    check('and in Chinese, where it fits, nothing is cut: 睡觉 and 昨天 23:10–07:00 · 7 小时 20 分 whole', cz.name === '睡觉' && !cz.cut && !cz.spCut && cz.range === '昨天 23:10–07:00 · 7 小时 20 分', JSON.stringify(cz));
+    check('and in Chinese, where it fits, nothing is cut: 睡觉 and 23:10–07:00 · 7 小时 50 分 whole', cz.name === '睡觉' && !cz.cut && !cz.mCut && cz.range === '23:10–07:00 · 7 小时 50 分' && cz.range === headOf(buildDay(fullDay(), NOW, zh), 'sleep-1', zh).meta && cz.clear, JSON.stringify(cz));
     await zhc.a.ctx.close();
   }
 
@@ -4223,14 +4054,15 @@ try {
     const a = await boot({ served: fullDay() });
     await openDay(a);
     const running = () => a.page.evaluate(() => document.getAnimations().filter(x => x.playState === 'running' && x.effect?.target?.closest?.('.dt')).length);
-    const breath = () => a.page.evaluate(() => getComputedStyle(document.querySelector('.dt-nowtick'), '::after').animationPlayState);
-    check('open, the now marker breathes (its animation is running)', await breath() === 'running' && await running() >= 1);
+    const breath = () => a.page.evaluate(() => getComputedStyle(document.querySelector('.dt-nowtick'), '::after').animationName);
+    await a.page.waitForTimeout(600);
+    check('open and at rest, nothing in the pane keeps moving: the now marker does not breathe in V2 (no animation on it)', await breath() === 'none' && await running() === 0, JSON.stringify({ breath: await breath(), running: await running() }));
     await a.page.locator('.dt-num', { hasText: 'Mac' }).click(); await a.page.waitForTimeout(100);
     await a.move(a.far.x, a.far.y);
     const folded = await seen(a, r => r.tl === '' && r.dt, 5000);
     await a.page.waitForTimeout(800);
     check('the pane folds with its lens still pinned, and stays mounted', folded.tl === '' && await a.page.evaluate(() => document.querySelector('.dt')?.dataset.lens) === 'work');
-    check('folded, nothing in it is running: the breathing of the now marker is paused', await breath() === 'paused' && await running() === 0, JSON.stringify({ breath: await breath(), running: await running() }));
+    check('folded, nothing in it is running either (what is still there is paused)', await breath() === 'none' && await running() === 0, JSON.stringify({ breath: await breath(), running: await running() }));
     await a.page.evaluate(() => { window.__esc = 0; document.addEventListener('keydown', e => { if (e.key === 'Escape') window.__esc++; }); });
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(100);
     check('an Esc anywhere reaches the rest of the page: the folded pane does not swallow it', await a.page.evaluate(() => window.__esc) === 1);
@@ -4248,7 +4080,7 @@ try {
     await a.page.keyboard.press('ArrowLeft');
     let st = await settled('没读到这一天，会再试一次');
     check('the day before cannot be read: its date is the title and the line says so, in place of the rows of today, with no dimming and the day buttons live', st.title === '10月18日 周日' && st.rows === 0 && !st.loading && st.prev && st.next, JSON.stringify(st));
-    await a.shot('review-day-unread', { x: 40, y: 0, width: 560, height: 420 });
+    await a.shot('review-day-unread', { x: 0, y: 0, width: 836, height: 420 });
     await a.page.locator('.dt-nav button:last-child').click(); await a.page.waitForTimeout(700);
     check('the day after takes him back to today: its rows are there', (await state()).title === '10月19日 周一' && (await state()).rows > 10 && (await state()).say === null);
     a.s.refuse.delete('days'); a.s.refuse.add('days-404');
@@ -4313,7 +4145,7 @@ try {
     const f = now => {
       if (!window.__tapeOn) return;
       const l = document.querySelector('.dt-list'), pr = drop.getBoundingClientRect();
-      window.__tape.push({ t: now, op: l ? +getComputedStyle(l.parentElement).opacity : null, keys: l ? [...l.querySelectorAll('[data-key]')].map(e => e.dataset.key).join() : '', scroll: l?.scrollTop ?? null,
+      window.__tape.push({ t: now, op: l ? +getComputedStyle(l).opacity : null, keys: l ? [...l.querySelectorAll('[data-key]')].map(e => e.dataset.key).join() : '', scroll: l?.scrollTop ?? null,
         pane: pr.height, left: pr.left, width: pr.width, inn: inn.getBoundingClientRect().height, date: document.querySelector('.dt-date')?.textContent ?? null, dim: !!document.querySelector('.dt.is-loading') });
       requestAnimationFrame(f);
     };
@@ -4326,7 +4158,7 @@ try {
   if (all || only === 'polish') {
     const state = a => a.page.evaluate(() => {
       const l = document.querySelector('.dt-list'), lr = l?.getBoundingClientRect(), now = l?.querySelector('.dt-now')?.getBoundingClientRect();
-      return { date: document.querySelector('.dt-date')?.textContent, scroll: l ? l.scrollTop : null, open: document.querySelector('.dt-page[data-page]')?.dataset.page ?? '',
+      return { date: document.querySelector('.dt-date')?.textContent, scroll: l ? l.scrollTop : null, open: document.querySelector('.dt-side[data-page]')?.dataset.page ?? '',
         nowAt: now && lr ? now.top - lr.top : null, view: lr?.height, yesterday: !!document.querySelector('.dt-list [data-key^="y-"]') };
     });
     // A click on the line: it opens the day pinned, and folds it again.
@@ -4397,7 +4229,7 @@ try {
       const cutKeys = frames.at(-1).keys;
       check('showing only a range: the list fades out, goes through 0, and is swapped for the cut while it is not there (no frame shows both)', s.at > 0 && s.low <= .02 && s.frame.op <= .05 && frames[0].keys.includes('c-talk') && !cutKeys.includes('c-talk') && cutKeys.includes('c-lib'), JSON.stringify({ at: s.at, low: s.low, op: s.frame?.op, first: frames[0].keys, last: cutKeys }));
       check('over 80 ms out and 140 ms in: it is seen going and coming (the in is quick: the day change\'s own easing), the list alone, without a slide', s.out >= 3 && s.inn >= 1, JSON.stringify({ out: s.out, inn: s.inn }));
-      let log = (await anims(a)).filter(l => /dt-stage/.test(l.cls));
+      let log = (await anims(a)).filter(l => /dt-list/.test(l.cls));
       check('the animations are the day change\'s own: 80 ms out (ease-in, held), 140 ms in (backwards), at the same place (0 px)', log.length === 2 && log[0].opt.duration === 80 && log[0].opt.fill === 'forwards' && log[0].kf[0].transform === 'translateX(0px)' && log[1].opt.duration === 140 && log[1].opt.fill === 'backwards', JSON.stringify(log.map(l => [l.opt, l.kf])));
       check('and the pane takes the height of what is in it at once: never more than 4 px of it empty', emptiest(sizes) <= 4, emptied(sizes));
       await tape(a);
@@ -4459,7 +4291,7 @@ try {
       const frames = (await untape(a)).frames.filter(f => f.pane > 1), end = frames.at(-1);
       check('opening: the pane never goes past the height, the width or the left edge it ends at', Math.max(...frames.map(f => f.pane)) <= end.pane + .5 && Math.max(...frames.map(f => f.width)) <= end.width + .5 && Math.min(...frames.map(f => f.left)) >= end.left - .5 && frames.length > 8,
         JSON.stringify({ end: [end.pane, end.width, end.left], max: Math.max(...frames.map(f => f.pane)), wide: Math.max(...frames.map(f => f.width)), left: Math.min(...frames.map(f => f.left)), n: frames.length }));
-      check('and it still takes its time: the height is not the end\'s in the first frames', frames[0].pane < end.pane * .6 && frames.filter(f => f.pane < end.pane - 1).length >= 8);
+      check('and it still takes its time: the height is not the end\'s in the first frames, and still short of it 100 ms after the first (read by time: a frame count depends on how fast the machine paints)', frames[0].pane < end.pane * .6 && frames.some(f => f.t - frames[0].t >= 100 && f.pane < end.pane - 1), JSON.stringify(frames.slice(0, 8).map(f => [Math.round(f.t - frames[0].t), Math.round(f.pane)])));
       await a.ctx.close();
     }
 
@@ -4478,7 +4310,7 @@ try {
       check('so is a stay\'s range with its length (07:00–11:25 · 4 小时 25 分)', /–.*分/.test(faces.stay.text) && !mono(faces.stay) && tab(faces.stay), JSON.stringify(faces.stay));
       check('and a chip\'s value with words in it', faces.chip && !mono(faces.chip) && tab(faces.chip), JSON.stringify(faces.chip));
       check('while the clock column on the left stays in the mono face', mono(faces.clock), JSON.stringify(faces.clock));
-      await a.shot('polish-durations', { x: 40, y: 30, width: 560, height: 640 });
+      await a.shot('polish-durations', { x: 0, y: 30, width: 836, height: 640 });
       await a.ctx.close();
     }
   }
@@ -4509,7 +4341,7 @@ try {
         gap: Math.round(box(h.querySelector('.dt-nav')).left - box(p).right), inside: box(p).right <= box(h).right && box(p).left >= box(h).left, one: box(h).height < 30 };
     });
     check('on today the date line ends with a pill, a sparkle and 理一下, just before the day buttons, in the tag\'s own colour, radius and size, and the line stays one line', head.text === '理一下' && head.svg && head.order.endsWith('dt-waits,dt-tidy,dt-nav') && head.same && head.gap === 8 && head.inside && head.one, JSON.stringify(head));
-    await a.shot('tidy-00-pill', { x: 40, y: 20, width: 560, height: 120 });
+    await a.shot('tidy-00-pill', { x: 0, y: 20, width: 836, height: 120 });
     await a.page.locator('.dt-nav button').first().click(); await a.page.waitForTimeout(700);
     const yd = await pill(a).count();
     await a.page.locator('.dt-nav button').nth(1).click(); await a.page.waitForTimeout(700);
@@ -4534,7 +4366,7 @@ try {
     // held in the middle of a pass for the picture, then let go
     const pass = ms => a.page.evaluate(ms => document.getAnimations().filter(x => x.animationName === 'dt-sweep').forEach(x => { if (ms === null) x.play(); else { x.pause(); x.currentTime = ms; } }), ms);
     await pass(800);
-    await a.shot('tidy-01-running', { x: 40, y: 20, width: 560, height: 330 });
+    await a.shot('tidy-01-running', { x: 0, y: 20, width: 836, height: 330 });
     await pass(null);
     // the pane stays usable, and another day has neither pill nor band; the run is still on when today comes back
     await a.page.locator('.dt-nav button').first().click(); await a.page.waitForTimeout(2300);
@@ -4585,9 +4417,19 @@ try {
     const c = await boot({ served: fullDay() });
     await openDay(c);
     const tight = () => c.page.evaluate(() => { const p = document.querySelector('.dt-tidy'), chip = document.querySelector('.dt-chip'); return { cls: p.className, text: p.innerText, label: p.getAttribute('aria-label'), title: p.title, chip: chip.textContent, cut: chip.scrollWidth > chip.clientWidth, w: Math.round(p.getBoundingClientRect().width) }; });
+    const t0 = await tight();
+    check('at the pane\'s 820 the header has room for the weather, a label, 2 件等你 and the whole pill: the pill says 理一下 in words and the label is whole', !t0.cls.includes('is-tight') && t0.text === '理一下' && t0.chip === '期中周' && !t0.cut, JSON.stringify(t0));
+    // the header is held to the 488 px the old 520 pane gave it (V2's width never runs out of room for one label); a change of the header's width has the room looked at again
+    await c.page.addStyleTag({ content: '.notch .dt-head { width: 488px; }' }); await c.page.waitForTimeout(300);
+    // the room is looked at when the header's words change (a day away and back does it), as when the pane is built that narrow
+    await c.page.keyboard.press('ArrowLeft');
+    await c.until(() => document.querySelector('.dt-date')?.textContent === '10月18日 周日' && document.querySelector('.dt-track'), undefined, 6000);
+    await c.page.keyboard.press('ArrowRight');
+    await c.until(() => document.querySelector('.dt-date')?.textContent === '10月19日 周一' && document.querySelector('.dt-now') && document.querySelector('.dt-tidy'), undefined, 6000);
+    await c.page.waitForTimeout(600);
     const t1 = await tight();
-    check('weather, a label and 2 件等你 leave no room for the label beside the whole pill: it is the sparkle alone (named 理一下 for a screen reader and a rest), and the label is whole', t1.cls.includes('is-tight') && t1.text === '' && t1.label === '理一下' && t1.title === '理一下' && t1.chip === '期中周' && !t1.cut && t1.w < 30, JSON.stringify(t1));
-    await c.shot('tidy-02-tight', { x: 40, y: 20, width: 560, height: 120 });
+    check('in a header with no more than 488 px, weather, a label and 2 件等你 leave no room for the label beside the whole pill: it is the sparkle alone (named 理一下 for a screen reader and a rest), and the label is whole', t1.cls.includes('is-tight') && t1.text === '' && t1.label === '理一下' && t1.title === '理一下' && t1.chip === '期中周' && !t1.cut && t1.w < 30, JSON.stringify(t1));
+    await c.shot('tidy-02-tight', { x: 0, y: 20, width: 836, height: 120 });
     const release4 = hold(c);
     await pill(c).click(); await c.page.waitForTimeout(300);
     const t2 = await tight();

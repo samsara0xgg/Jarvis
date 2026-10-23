@@ -15,14 +15,14 @@ const browser = await chromium.launch({ headless: true, channel: 'chrome' });
 const check = (name, pass, detail = '') => { assert.ok(pass, `${name} ${detail}`); console.log(`PASS ${name}`); };
 try {
   for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${web}/`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
-  const page = await (await browser.newContext({ viewport: { width: 640, height: 722 } })).newPage();
+  const page = await (await browser.newContext({ viewport: { width: 836, height: 722 } })).newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(() => {
     // The window starts as the whole stage; every ask replaces it.
-    window.__sent = { w: 640, h: 722 }; window.__asks = []; window.__over = 0; window.__cursorCb = null;
+    window.__sent = { w: 836, h: 722 }; window.__asks = []; window.__over = 0; window.__cursorCb = null;
     window.jarvis = {
-      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
+      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 836, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {},
       onCursor: cb => { window.__cursorCb = cb; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async () => {}, material: () => {},
@@ -47,7 +47,7 @@ try {
   const shown = sel => page.evaluate(sel => { const r = document.querySelector(sel).getBoundingClientRect(); return { right: r.right, bottom: r.bottom }; }, sel);
 
   let s = await sent();
-  check('idle: the window shrank to the island and the ball (not the 640 x 722 stage)', s.w < 640 && s.h <= 140, JSON.stringify(s));
+  check('idle: the window shrank to the island and the ball (not the 836 x 722 stage)', s.w < 836 && s.h <= 140, JSON.stringify(s));
   const island = await shown('.companion-island-target');
   check('idle: it still holds the island', s.w >= island.right && s.h >= island.bottom, JSON.stringify(s));
 
@@ -82,7 +82,7 @@ try {
   await page.waitForTimeout(14000);
   s = await sent();
   // (The pointer still rests on the island, so she peeks a little below it.)
-  check('everything folded: the window is the island again', s.w < 640 && s.h <= 160, JSON.stringify(s));
+  check('everything folded: the window is the island again', s.w < 836 && s.h <= 160, JSON.stringify(s));
   check('no page errors', errors.length === 0, errors.join(' | '));
   console.log('asks:', await page.evaluate(() => window.__asks.map(a => `${a.w}x${a.h}`).join(' ')));
 } finally { await browser.close(); server.kill(); }
