@@ -16,12 +16,15 @@ import json
 import math
 import re
 import zipfile
+from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from google.transit import gtfs_realtime_pb2
+
+from scripts.tool_exam_mailbox import ME, arrived, expanded
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -33,6 +36,17 @@ ROUNDING = 0.05
 """How far a figure a result states may be from the one derived: half a rounding step."""
 NIGHT_BEGINS, NIGHT_ENDS = 19, 7
 """Apple's own split of a day: the daytime part is 07:00 to 19:00, the overnight part the rest."""
+INBOX_UNREAD = ("INBOX", "UNREAD", "CATEGORY_PERSONAL")
+"""The labels a mailbox message has when it names none (``tests.support.gmail_fake.PRIMARY``)."""
+CATEGORY_NAMES = {
+    "CATEGORY_PERSONAL": "Primary",
+    "CATEGORY_SOCIAL": "Social",
+    "CATEGORY_PROMOTIONS": "Promotions",
+    "CATEGORY_UPDATES": "Updates",
+    "CATEGORY_FORUMS": "Forums",
+}
+WAITING_DAYS = 14
+"""How far back ``list`` ``waiting`` looks for threads (ADR 0364)."""
 
 
 def _bodies(recording: Recording | None, host: str, needle: str = "") -> list[dict[str, Any]]:
@@ -1062,6 +1076,103 @@ def search_rows_dated(
     return problems
 
 
+def _address(text: str) -> str:
+    found = re.search(r"<([^>]+)>", text)
+    return (found.group(1) if found else text).strip().lower()
+
+
+def _category(message: Mapping[str, Any]) -> str:
+    """The Gmail category a mailbox message sits in (Primary when it names none)."""
+    labels = message.get("labels", INBOX_UNREAD)
+    return next((CATEGORY_NAMES[one] for one in labels if one in CATEGORY_NAMES), "Primary")
+
+
+def mail_unread_counted_by_category(
+    item: Mapping[str, Any],
+    recording: Recording | None,
+    out: Mapping[str, Any],
+) -> list[str]:
+    """A list says how many unread mails the inbox holds and counts the rest by category.
+
+    The mailbox is the recording's own: the total is every message in the inbox with the unread
+    label, the rows are the newest of them, and what the rows leave out is counted by the Gmail
+    category label each of those carries; the summary must state exactly those numbers.
+    """
+    if recording is None or not recording.data.get("mailbox"):
+        return ["the recording holds no mailbox"]
+    now = _now(item)
+    unread = [
+        m for m in expanded(recording.data["mailbox"])
+        if {"INBOX", "UNREAD"} <= set(m.get("labels", INBOX_UNREAD))
+    ]
+    newest = sorted(unread, key=lambda m: arrived(m, now), reverse=True)
+    shown = [r["message"] for r in out.get("rows") or ()]
+    summary, problems = str(out.get("summary", "")), []
+    if not summary.startswith(f"{len(unread)} unread"):
+        problems.append(f"the inbox holds {len(unread)} unread; the summary says: {summary[:60]!r}")
+    if shown != [m["id"] for m in newest[: len(shown)]]:
+        problems.append("the rows are not the newest unread mails, newest first")
+    left = Counter(_category(m) for m in unread if m["id"] not in shown)
+    if left and f"Not shown: {sum(left.values())} (" not in summary:
+        problems.append(f"{sum(left.values())} mails are not shown and the summary does not say so")
+    problems += [
+        f"{n} unread {name} mails are not shown; the summary lacks '{name} {n}'"
+        for name, n in left.items()
+        if f"{name} {n}" not in summary
+    ]
+    return problems
+
+
+def mail_waiting_threads(
+    item: Mapping[str, Any],
+    recording: Recording | None,
+    out: Mapping[str, Any],
+) -> list[str]:
+    """``waiting`` lists the threads whose last message is someone else's, and only those.
+
+    From the recording's mailbox: a thread counts when its newest message came within two weeks,
+    is not his own (sent, or from his address), is not bulk or automated by its headers, and has
+    him in To. The result's rows must be exactly those threads.
+    """
+    if recording is None or not recording.data.get("mailbox"):
+        return ["the recording holds no mailbox"]
+    now = _now(item)
+    me = _address(ME)
+    threads: dict[str, list[dict[str, Any]]] = {}
+    for m in expanded(recording.data["mailbox"]):
+        threads.setdefault(m.get("thread") or m["id"], []).append(m)
+
+    def mine(m: Mapping[str, Any]) -> bool:
+        return "SENT" in m.get("labels", ()) or _address(m.get("sender", "")) == me
+
+    def bulk(m: Mapping[str, Any]) -> bool:
+        heads = {k.lower(): str(v).lower() for k, v in (m.get("headers") or {}).items()}
+        return (
+            "list-unsubscribe" in heads or "list-id" in heads
+            or heads.get("precedence") in {"bulk", "list", "junk"}
+            or heads.get("auto-submitted", "no") != "no"
+        )
+
+    expected = set()
+    for thread, messages in threads.items():
+        last = max(messages, key=lambda m: arrived(m, now))
+        recent = arrived(last, now) >= now - timedelta(days=WAITING_DAYS)
+        to_him = me in _to(last)
+        if recent and not mine(last) and not bulk(last) and to_him:
+            expected.add(thread)
+    by_id = {m["id"]: m.get("thread") or m["id"] for ms in threads.values() for m in ms}
+    got = {by_id.get(r["message"], r["message"]) for r in out.get("rows") or ()}
+    return [
+        *(f"thread {t} waits on him; the result leaves it out" for t in sorted(expected - got)),
+        *(f"thread {t} does not wait on him; the result lists it" for t in sorted(got - expected)),
+    ]
+
+
+def _to(message: Mapping[str, Any]) -> set[str]:
+    """The addresses in a mailbox message's To (his own when it names none)."""
+    return {_address(one) for one in str(message.get("to", ME)).split(",")}
+
+
 CHECKERS: dict[
     str, Callable[[Mapping[str, Any], Recording | None, Mapping[str, Any]], list[str]]
 ] = {
@@ -1082,4 +1193,6 @@ CHECKERS: dict[
     "map_search_in_area": map_search_in_area,
     "around_candidates_within_reach": around_candidates_within_reach,
     "search_rows_dated": search_rows_dated,
+    "mail_unread_counted_by_category": mail_unread_counted_by_category,
+    "mail_waiting_threads": mail_waiting_threads,
 }

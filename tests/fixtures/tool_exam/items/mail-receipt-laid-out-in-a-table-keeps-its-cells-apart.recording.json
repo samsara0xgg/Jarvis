@@ -1,0 +1,14 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "rcpt1",
+    "subject": "Your receipt from Corner Cafe",
+    "sender": "Corner Cafe <receipts@example.com>",
+    "ago": 60,
+    "html": "<div>Thanks for your order.</div><table><tr><td>Flat white</td><td>$4.80</td></tr><tr><td>Almond croissant</td><td>$5.20</td></tr><tr><td>Tax</td><td>$2.40</td></tr><tr><td>Total</td><td>$12.40</td></tr></table>"
+   }
+  ]
+ }
+}

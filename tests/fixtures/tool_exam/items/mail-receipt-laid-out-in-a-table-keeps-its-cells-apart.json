@@ -1,0 +1,32 @@
+{
+  "id": "mail-receipt-laid-out-in-a-table-keeps-its-cells-apart",
+  "tool": "mail",
+  "said": "what did I pay at the cafe",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "rcpt1"
+  },
+  "recording": "mail-receipt-laid-out-in-a-table-keeps-its-cells-apart.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Total | $12.40"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Flat white | $4.80"
+      },
+      {
+        "path": "text",
+        "op": "not_contains",
+        "value": "Total$12.40"
+      }
+    ]
+  }
+}

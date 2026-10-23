@@ -1,0 +1,28 @@
+{
+  "id": "mail-preheader-padding-is-not-in-the-rows-opening-line",
+  "tool": "mail",
+  "said": "any new mail",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "mail-preheader-padding-is-not-in-the-rows-opening-line.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "rows.0.opening",
+        "op": "contains",
+        "value": "Our autumn catalogue is out"
+      }
+    ],
+    "result_must_not_mention": [
+      "͏",
+      "​",
+      "‌",
+      "‍",
+      "⁠",
+      "﻿",
+      "­"
+    ]
+  }
+}

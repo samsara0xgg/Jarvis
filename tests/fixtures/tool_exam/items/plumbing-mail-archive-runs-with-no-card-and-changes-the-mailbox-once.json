@@ -1,0 +1,61 @@
+{
+  "id": "plumbing-mail-archive-runs-with-no-card-and-changes-the-mailbox-once",
+  "layer": "plumbing",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "said": "archive the first two",
+  "setup": [
+    {
+      "tool": "mail",
+      "args": {}
+    }
+  ],
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "mail",
+          "arguments": {
+            "action": "archive",
+            "message": "1,2"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Archived both."
+    }
+  ],
+  "recording": "plumbing-mail-archive-runs-with-no-card-and-changes-the-mailbox-once.recording.json",
+  "expect": {
+    "model_requests": 2,
+    "text_must": [
+      "Archived"
+    ],
+    "events_after": {
+      "must": [
+        "mail.inbox_changed",
+        "action.result_observed"
+      ],
+      "must_not": [
+        "confirmation.requested"
+      ]
+    },
+    "gmail": [
+      {
+        "tool": "gmail_batchModify",
+        "args": {
+          "messageIds": [
+            "m1",
+            "m2"
+          ],
+          "removeLabelIds": [
+            "INBOX"
+          ]
+        },
+        "count": 1
+      }
+    ]
+  }
+}
