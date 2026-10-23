@@ -43,7 +43,9 @@ def guard_context(  # noqa: PLR0913 - one argument per thing a turn's context ca
     budget: int,
     live_context: tuple[str, ...] = (),
     history: Sequence[dict[str, Any]] = (),
+    registry: object | None = None,
 ) -> DecideContext:
+    """A turn's context; ``registry`` replaces the default tool registry."""
     paths = StubRuntimePaths(
         event_log=tmp_path / "events.db", artifacts_root=tmp_path / "artifacts"
     )
@@ -51,7 +53,7 @@ def guard_context(  # noqa: PLR0913 - one argument per thing a turn's context ca
     return DecideContext(
         conn=conn,
         runtime_paths=cast("RuntimePathsLike", paths),
-        tool_registry=cast("ToolRegistryLike", build_default_registry()),
+        tool_registry=cast("ToolRegistryLike", registry or build_default_registry()),
         lifecycle=cast("LifecycleLike", ActionLifecycle()),
         llm_client=cast("LLMClient", llm),
         system_prompt="stub system prompt",
@@ -89,13 +91,18 @@ def spoken_turn(  # noqa: PLR0913 - one argument per thing a spoken turn can car
     live_context: tuple[str, ...] = (),
     history: Sequence[dict[str, Any]] = (),
     budget: int = 8,
+    registry: object | None = None,
+    words: str = "把明天开会记一下",
 ) -> tuple[Any, sqlite3.Connection]:
-    """Run one spoken turn through ``decide()`` on the scripted model; the caller closes it."""
+    """Run one spoken turn through ``decide()`` on the scripted model; the caller closes it.
+
+    ``words`` is what he said and ``registry`` the tools the model has.
+    """
     conn = open_event_log(tmp_path / "events.db")
     trigger = emit_event(
         conn,
         type="utterance.received",
-        payload={"transcript": "把明天开会记一下", "turn_id": "T_say", "channel": "speech"},
+        payload={"transcript": words, "turn_id": "T_say", "channel": "speech"},
         correlation={"turn_id": "T_say"},
     )
     context = spoken_risk_context(
@@ -126,7 +133,7 @@ def spoken_turn(  # noqa: PLR0913 - one argument per thing a spoken turn can car
         segment_guard=run.admission_guard,
         structured=structured,
     )
-    ctx = guard_context(conn, tmp_path, model, budget, live_context, history)
+    ctx = guard_context(conn, tmp_path, model, budget, live_context, history, registry)
     return decide(trigger, replace(ctx, routine_stream=route)), conn
 
 

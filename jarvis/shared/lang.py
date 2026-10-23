@@ -1014,6 +1014,9 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "I used up this turn's tool calls before I had an answer. Try asking a smaller"
         " part of the question.",
     },
+    # ADR 0359: the heading of the list of pages a deep search's answer rests on, which code writes
+    # under the written part of her answer.
+    "sources.heading": {"zh": "来源", "en": "Sources"},
     # What the companion shows under her while a tool is really running
     # (ADR 0115): one fixed line per kind of work, never a model's words.
     "tool_status.web": {"zh": "正在搜索网页…", "en": "Searching the web..."},

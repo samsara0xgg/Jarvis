@@ -179,6 +179,7 @@ def test_a_search_that_ran_out_of_its_minute_hands_over_the_pages_it_found(
     assert result["pages"] == [one.row() for one in (ONE, TWO)]
     assert "stopped at a minute before writing its brief" in result["summary"]
     assert "2 pages found" in result["summary"]
+    assert "under your answer" in result["summary"]
     assert result.receipt.status == "done"
 
 

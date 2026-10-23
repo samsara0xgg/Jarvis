@@ -32,6 +32,7 @@ from jarvis.execution.tools import (
 )
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.receipts import Covered, Receipt
+from jarvis.shared.sources import Source
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -111,37 +112,12 @@ _SCHEMA: Final[Mapping[str, Any]] = {
     "required": ["query", "depth"],
 }
 
-_SOURCE_TITLE_CHARS: Final[int] = 70
 _PAGES_CHARS: Final[int] = 3_000
 """The pages an unfinished deep search lists, in JSON characters; rows go whole to fit it."""
 _SUMMARY_ROOM: Final[int] = 420
 """What a deep result keeps free of :data:`_RESULT_CHARS` for its first line, written last."""
 _BRIEF_MIN_CHARS: Final[int] = 600
 """The brief gets at least this much, whatever the sources take."""
-
-
-@dataclass(frozen=True)
-class Source:
-    """A page a deep search found or rests on: title, site, the page's date if the search gave one.
-
-    ``site`` is the host without ``www.``. ``date`` is the day as ``YYYY-MM-DD`` when the search's
-    page age names one, else the age as the search wrote it, ``None`` when it gave none. ``url`` is
-    whole: it is the link a device shows.
-    """
-
-    title: str
-    site: str
-    date: str | None
-    url: str
-
-    def row(self) -> dict[str, str]:
-        """The row the model reads and the answer's list of sources is written from."""
-        row = {"title": speakable.cut(self.title, _SOURCE_TITLE_CHARS) or self.site}
-        row["site"] = self.site
-        if self.date:
-            row["date"] = self.date
-        row["url"] = self.url
-        return row
 
 
 @dataclass(frozen=True)
@@ -577,8 +553,8 @@ def _pages_line(findings: DeepFindings, said: str, *, shown: int) -> str:
     why = "failed" if findings.stopped == "failed" else "stopped at a minute"
     line = (
         f"Deep search for '{said}' {why} before writing its brief; "
-        f"{_plural(len(findings.pages), 'page')} found, listed below with site and date. "
-        "Read one with web_fetch, or search again with depth quick."
+        f"{_plural(len(findings.pages), 'page')} found, listed below with site and date and "
+        "under your answer. Read one with web_fetch, or search again with depth quick."
     )
     if shown < len(findings.pages):
         line += f" Showing {shown}; {len(findings.pages) - shown} more left out to keep this short."
