@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
-from jarvis.shared.job_names import is_tracking_system
+from jarvis.shared.job_names import company_key, employer_of, is_platform, is_tracking_system
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
@@ -536,7 +536,11 @@ def delete_mail(path: Path, message_id: str) -> bool:
         )
 
 
-def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
+type _MailRow = Mapping[str, Any]
+"""One ``job_mail`` row as a plain mapping, so a mail can be moved to another company."""
+
+
+def _next_event(mails: Sequence[_MailRow], now: datetime) -> str | None:
     """The earliest event time among a company's mails that is still ahead, or None."""
     upcoming = sorted(
         (m["event_at"] for m in mails if (at := _moment(m["event_at"])) and at >= now),
@@ -545,7 +549,7 @@ def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
     return upcoming[0] if upcoming else None
 
 
-def _later_reading(mails: Sequence[sqlite3.Row], at: str | None) -> str | None:
+def _later_reading(mails: Sequence[_MailRow], at: str | None) -> str | None:
     """The later reading (ADR 0379) of the event at ``at``, from the newest mail with that time.
 
     ``mails`` are a company's, oldest first, as :func:`_interview_step` takes them.
@@ -553,7 +557,7 @@ def _later_reading(mails: Sequence[sqlite3.Row], at: str | None) -> str | None:
     return next((m["event_later_at"] for m in reversed(mails) if at and m["event_at"] == at), None)
 
 
-def _mail_view(m: sqlite3.Row) -> dict[str, Any]:
+def _mail_view(m: _MailRow) -> dict[str, Any]:
     return {
         "message_id": m["message_id"],
         "thread_id": m["thread_id"],
@@ -573,9 +577,9 @@ def list_ledger(path: Path, now: datetime) -> list[dict[str, Any]]:
             " event_text"
             " FROM job_mail WHERE deleted = 0 ORDER BY received_at DESC, message_id",
         ).fetchall()
-    groups: dict[str, list[sqlite3.Row]] = {}
+    groups: dict[str, list[_MailRow]] = {}
     for row in rows:
-        groups.setdefault(str(row["company"]).casefold(), []).append(row)
+        groups.setdefault(str(row["company"]).casefold(), []).append(dict(row))
     ledger = []
     for mails in groups.values():
         newest = mails[0]
@@ -619,7 +623,7 @@ _NO_LINKS: Final[dict[str, None]] = dict.fromkeys(_LINK_FIELDS)
 
 
 def _interview_step(
-    mails: Sequence[sqlite3.Row], upcoming: str | None, status: str
+    mails: Sequence[_MailRow], upcoming: str | None, status: str
 ) -> dict[str, Any] | None:
     """The interview itself: the next event ahead (not once rejected), else the newest past one.
 
@@ -638,7 +642,7 @@ def _interview_step(
 
 
 def _timeline(
-    applied_at: str | None, mails: Sequence[sqlite3.Row], step: dict[str, Any] | None
+    applied_at: str | None, mails: Sequence[_MailRow], step: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
     """Applied, then each interview invitation, offer and rejection by date, and the interview.
 
@@ -675,7 +679,7 @@ def _timeline(
 
 
 def _interview(
-    mails: Sequence[sqlite3.Row],
+    mails: Sequence[_MailRow],
     read: Mapping[str, Mapping[str, Any]],
     step: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -704,7 +708,7 @@ def _interview(
     }
 
 
-def _links(mails: Sequence[sqlite3.Row], read: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def _links(mails: Sequence[_MailRow], read: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """The newest portal and posting address any mail carries."""
     got = [read.get(m["message_id"]) or {} for m in reversed(mails)]
     return {name: next((one[name] for one in got if one.get(name)), None) for name in _LINK_FIELDS}
@@ -712,7 +716,7 @@ def _links(mails: Sequence[sqlite3.Row], read: Mapping[str, Mapping[str, Any]]) 
 
 def _mail_application(
     company: str,
-    mails: list[sqlite3.Row],
+    mails: list[_MailRow],
     edit: sqlite3.Row | None,
     now: datetime,
     read: Mapping[str, Mapping[str, Any]],
@@ -769,6 +773,42 @@ def _mail_application(
     }
 
 
+def _by_employer(rows: Sequence[_MailRow]) -> dict[str, list[_MailRow]]:
+    """The mails grouped by the company each is for, a platform's mail by its employer.
+
+    A mail of a tracking system joins the other company's application with the same role. Any
+    other mail of a platform (or of a job board) goes to the employer its subject names, spelled
+    as that employer's own mail spells it; with no employer named it stays under the platform's
+    name. The mail keeps its own company; only a moved one is rewritten to its employer.
+    """
+    by_company: dict[str, list[_MailRow]] = {}
+    for m in rows:
+        by_company.setdefault((m["company"] or "").casefold(), []).append(m)
+    roles = {
+        k: {r for g in group if (r := (g["role"] or "").casefold())}
+        for k, group in by_company.items()
+        if k and not is_tracking_system(k)
+    }
+    for key in [k for k in by_company if k and is_tracking_system(k)]:
+        for m in by_company[key][:]:
+            role = (m["role"] or "").casefold()
+            home = next((k for k, held in roles.items() if role and role in held), None)
+            if home:
+                by_company[key].remove(m)
+                by_company[home].append(m)
+    known: dict[str, str] = {}
+    for m in rows:
+        if m["company"] and not is_platform(m["company"]):
+            known.setdefault(company_key(m["company"]), m["company"])
+    for key in [k for k in by_company if k and is_platform(k)]:
+        for m in by_company[key][:]:
+            employer = employer_of(m["company"], m["subject"] or "", known)
+            if employer:
+                by_company[key].remove(m)
+                by_company.setdefault(employer.casefold(), []).append({**m, "company": employer})
+    return by_company
+
+
 def _applications(
     path: Path,
     now: datetime,
@@ -776,18 +816,21 @@ def _applications(
 ) -> list[dict[str, Any]]:
     """Every application, hidden ones too: the visible ledger mails grouped, plus Allen's rows.
 
-    One application per company, case-folded. A mail whose company is only an applicant-tracking
-    system's name joins the other company's application with the same role, else it stays its
-    own. A mail-derived application has Allen's ``edit`` row of its company (the newest, when
-    there are several) override its fields; a ``manual`` or ``said`` row is an application of its
-    own. ``details`` reads the interview and links out of a body start (ADR 0182).
+    One application per company, case-folded; a hiring platform's mail is grouped by its employer
+    (:func:`_by_employer`). A mail-derived application has Allen's ``edit`` row of its company
+    (the newest, when there are several) override its fields; a ``manual`` or ``said`` row is an
+    application of its own. ``details`` reads the interview and links out of a body start
+    (ADR 0182).
     """
     with _db(path) as conn:
-        rows = conn.execute(
-            "SELECT message_id, thread_id, received_at, subject, kind, company, role, event_at,"
-            " event_text, event_later_at"
-            " FROM job_mail WHERE deleted = 0",
-        ).fetchall()
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT message_id, thread_id, received_at, subject, kind, company, role, event_at,"
+                " event_text, event_later_at"
+                " FROM job_mail WHERE deleted = 0",
+            ).fetchall()
+        ]
         mine = conn.execute("SELECT * FROM job_application").fetchall()
         kept = (
             conn.execute(
@@ -805,21 +848,7 @@ def _applications(
         (r for r in mine if r["source"] == "edit"), key=lambda r: r["updated_at"] or ""
     ):
         edits[(row["company"] or "").casefold()] = row  # the newest edit of a company is last
-    by_company: dict[str, list[sqlite3.Row]] = {}
-    for m in rows:
-        by_company.setdefault((m["company"] or "").casefold(), []).append(m)
-    roles = {
-        k: {r for g in group if (r := (g["role"] or "").casefold())}
-        for k, group in by_company.items()
-        if k and not is_tracking_system(k)
-    }
-    for key in [k for k in by_company if k and is_tracking_system(k)]:
-        for m in by_company[key][:]:
-            role = (m["role"] or "").casefold()
-            home = next((k for k, held in roles.items() if role and role in held), None)
-            if home:
-                by_company[key].remove(m)
-                by_company[home].append(m)
+    by_company = _by_employer(rows)
     found = []
     for company, mails in by_company.items():
         if mails:

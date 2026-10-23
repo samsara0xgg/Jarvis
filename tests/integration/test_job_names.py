@@ -79,3 +79,24 @@ def test_a_platforms_subject_names_the_employer_in_the_spelling_its_own_mail_use
     assert employer_of("Workable", "Your weekly digest", known) == ""
     assert employer_of("Acme Inc", "Your weekly digest", known) == "Acme Inc"
 
+
+def test_the_page_puts_a_platforms_confirmation_under_the_employer_its_subject_names(
+    tmp_path: Path,
+) -> None:
+    """Workable's "Thanks for applying to Acme" is Acme's application, as Acme's mail spells it."""
+    memory = tmp_path / "memory.db"
+    write_mail(memory, "m1", ledger_at(5, 9), kind="rejection", company="Acme Inc", role="Analyst")
+    write_mail(
+        memory, "m2", ledger_at(6, 9), kind="receipt", company="Workable",
+        subject="Thanks for applying to Acme!",
+    )
+    write_mail(
+        memory, "m3", ledger_at(7, 9), kind="receipt", company="Workable",
+        subject="Thanks for applying to Orbit Co.",
+    )
+    write_mail(memory, "m4", ledger_at(7, 10), kind="job_other", company="Workable", subject="Hi")
+    by_company = {a["company"]: a for a in list_applications(memory, NOW)}
+    assert sorted(by_company) == ["Acme Inc", "Orbit Co", "Workable"]
+    assert by_company["Acme Inc"]["count"] == 2
+    assert [m["message_id"] for m in by_company["Orbit Co"]["mails"]] == ["m3"]
+    assert [m["message_id"] for m in by_company["Workable"]["mails"]] == ["m4"]
