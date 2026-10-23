@@ -402,12 +402,10 @@ class JevSettings:
 
 @dataclass(frozen=True)
 class MailReplySettings:
-    """``home.mail_reply`` (ADR 0123, 0141): Jev's marks on the inbox, and whether it rates."""
+    """``home.mail_reply`` (ADR 0124, 0141): Jev's junk mark on the inbox, and whether it rates."""
 
     model: str
     timeout_ms: int
-    yes_at: float
-    fyi_at: float
     junk_at: float
     importance: bool
 
@@ -1257,31 +1255,28 @@ def _jev(raw: Mapping[str, Any], config_path: Path) -> JevSettings:
 
 
 def _mail_reply(raw: Mapping[str, Any], config_path: Path) -> MailReplySettings | None:
-    """``home.mail_reply`` (ADR 0123): off unless enabled; bad values stop the load."""
+    """``home.mail_reply`` (ADR 0124): off unless enabled; bad values stop the load.
+
+    ADR 0364 dropped the reply question: a ``yes_at`` or ``fyi_at`` still written is not read.
+    """
     home = raw.get("home")
     block = home.get("mail_reply") if isinstance(home, Mapping) else None
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
-    model, timeout = block.get("model"), block.get("timeout_ms")
-    bars = [  # fyi_at, yes_at, junk_at
-        v for v in (block.get("fyi_at"), block.get("yes_at"), block.get("junk_at"))
-        if isinstance(v, int | float) and not isinstance(v, bool)
-    ]
+    model, timeout, junk = block.get("model"), block.get("timeout_ms"), block.get("junk_at")
     if (
         not isinstance(model, str) or not model.strip()
         or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
-        or len(bars) != 3 or not 0 <= bars[0] < bars[1] <= 1  # noqa: PLR2004 — fyi_at, yes_at
-        or not 0 < bars[2] <= 1
+        or isinstance(junk, bool) or not isinstance(junk, int | float) or not 0 < junk <= 1
     ):
         msg = (
             f"runtime: {config_path} home.mail_reply needs model (text), timeout_ms (positive"
-            " int), fyi_at < yes_at, both in [0, 1], and junk_at in (0, 1]"
+            " int) and junk_at in (0, 1]"
         )
         raise RuntimeBootstrapError(msg)
     rating = block.get("importance")  # ADR 0141
     return MailReplySettings(
-        model=model.strip(), timeout_ms=timeout, yes_at=float(bars[1]), fyi_at=float(bars[0]),
-        junk_at=float(bars[2]),
+        model=model.strip(), timeout_ms=timeout, junk_at=float(junk),
         importance=isinstance(rating, Mapping) and rating.get("enabled") is True,
     )
 

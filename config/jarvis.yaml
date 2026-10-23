@@ -724,27 +724,26 @@ weather:
 # home: {weather: {latitude: 48.48, longitude: -123.38, country_code: CA}}。country_code
 # （两位国家码）让天气警报可用；不写就没有警报。不写经纬度就不显示天气。
 home:
-  # ADR 0123, 0124.  Ask Jev (TypeSafe's hosted decision model, through OpenRouter) once per
-  # unread letter on the home whether it needs Allen's own reply; only the sender's
-  # display name and the subject leave the Mac.  A letter is marked yes at
-  # probability >= yes_at, fyi at <= fyi_at, and left unmarked in between, on
-  # a late answer (timeout_ms is the wait per mail poll; the answer is kept for the
-  # next one) or on any error.  Needs OPENROUTER_API_KEY in ~/.jarvis/env.  Off
-  # here; switch it on in settings.yaml.  Requests carry provider.zdr: true.
-  # The same request asks whether the letter is junk (marketing, cold sales, spam,
-  # newsletters Allen did not ask for); at probability >= junk_at the home offers to
-  # archive it with one tap.  Nothing is archived without that tap, and nothing is deleted.
+  # ADR 0124, 0364.  Ask Jev (TypeSafe's hosted decision model, through OpenRouter) once per
+  # unread letter on the home whether it is junk (marketing, cold sales, spam, newsletters
+  # Allen did not ask for); only the sender's display name and the subject leave the Mac.  At
+  # probability >= junk_at the home offers to archive the letter with one tap; nothing is
+  # archived without that tap, and nothing is deleted.  A late answer (timeout_ms is the wait
+  # per mail poll; the answer is kept for the next one) or any error leaves the letter
+  # unflagged.  Needs OPENROUTER_API_KEY in ~/.jarvis/env.  Off here; switch it on in
+  # settings.yaml.  Requests carry provider.zdr: true.
+  # Whether a letter waits on his reply is not asked of Jev: the home reads it from the
+  # conversation (someone else wrote last, not bulk or automated, to him).  A yes_at or
+  # fyi_at left in settings.yaml from before is not read.
   mail_reply:
     enabled: false
     model: typesafe/jev-1.13
-    yes_at: 0.9
-    fyi_at: 0.1
     junk_at: 0.9
     timeout_ms: 1500
     # ADR 0141.  Two more questions in the same request rate each letter (urgent,
     # important, normal, low) and name its kind; the home returns importance (expected
     # score 0-3) and category per letter so it can show the most important first.  The
-    # reply and junk marks do not change.  Off here.
+    # junk flag does not change.  Off here.
     importance:
       enabled: false
 
