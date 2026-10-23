@@ -127,6 +127,9 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
         {"_AFTER", "_ASKS", "_BEFORE", "_BODY_CUES", "_DATES", "_DUE_WORDS", "_NEUTRAL",
          "_NUMBER_WORDS", "_PAID", "_REFUND", "_SUBJECT_CUES", "_SYMBOLS", "_WEAK_ASKS", "_rank"}
     ),
+    # A recipient who means himself is read by the Chinese words for it, and the commas of either
+    # language separate recipients (ADR 0366).
+    "jarvis/execution/mail_people.py": frozenset({"_ME", "_SEPARATORS"}),
     # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).
     "jarvis/state/timesink_moment.py": frozenset({"call_app"}),
     "jarvis/surface/sentence_splitter.py": frozenset({"_DELIMITERS"}),

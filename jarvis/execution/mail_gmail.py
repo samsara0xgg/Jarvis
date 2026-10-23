@@ -2,9 +2,10 @@
 
 A search gives ids and thread ids and pages on with a token. A read gives the message in the
 server's own shape (``metadata``, ``full``) or as Gmail's own object (``minimal``; ``raw``, the
-whole RFC 822 message, base64url). Nothing here writes. Every failure is a ``ToolError`` worded
-for the model: Gmail not connected, Gmail needing a new sign-in and Gmail not answering are three
-different sentences.
+whole RFC 822 message, base64url). A draft is written, sent and moved to Trash through the three
+write methods at the end of :class:`Mailbox`; nothing else here writes. Every failure is a
+``ToolError`` worded for the model: Gmail not connected, Gmail needing a new sign-in and Gmail not
+answering are three different sentences.
 
 Layer rules: execution; stdlib and ``jarvis.state.mail_message``, ``jarvis.state.mail_text``.
 """
@@ -16,6 +17,7 @@ import binascii
 import html
 import re
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -110,6 +112,15 @@ class Head:
     """What the server calls the body: the plain part when there is one, else the HTML."""
     files: tuple[Attachment, ...] = ()
     """The attachments' names, types and sizes, with no bytes."""
+
+
+@dataclass(frozen=True)
+class Draft:
+    """A draft Gmail holds: its id, the id of its message and the conversation it is in."""
+
+    id: str
+    message: str
+    thread: str
 
 
 @dataclass(frozen=True)
@@ -216,7 +227,7 @@ class Mailbox:
         self.raw_max_bytes = raw_max_bytes
         self._lock = threading.Lock()
         self._envelopes: dict[str, Envelope | None] = {}
-        self._own: frozenset[str] | None = None
+        self._own: tuple[str, ...] | None = None
         self._own_at = datetime.min.replace(tzinfo=UTC)
 
     # --- the server ----------------------------------------------------------------------------
@@ -384,23 +395,78 @@ class Mailbox:
         with ThreadPoolExecutor(min(len(ids), _WORKERS), thread_name_prefix="mail-env") as pool:
             return {message: env for message, env, there in pool.map(one, ids) if there}
 
-    def own(self, now: datetime) -> frozenset[str]:
-        """His own addresses: the distinct From addresses of his newest sent mail, kept a day."""
+    def _mine(self, now: datetime) -> tuple[str, ...]:
+        """His own addresses, the one he sends from most first, kept a day."""
         with self._lock:
             if self._own is not None and now - self._own_at < _OWN_KEPT:
                 return self._own
         found = self.search("in:sent", cap=_OWN_SENT)
-        sent = self.heads([one.id for one in found.hits])
-        mine = frozenset(one.sender.address.lower() for one in sent if one and one.sender.address)
+        sent = self.heads([one.id for one in found.hits])  # newest first
+        used = Counter(one.sender.address.lower() for one in sent if one and one.sender.address)
+        newest = {address: n for n, address in enumerate(used)}  # a tie goes to the newer
+        mine = tuple(sorted(used, key=lambda address: (-used[address], newest[address])))
         with self._lock:
             self._own, self._own_at = mine, now
         return mine
+
+    def own(self, now: datetime) -> frozenset[str]:
+        """His own addresses: the distinct From addresses of his newest sent mail, kept a day."""
+        return frozenset(self._mine(now))
+
+    def me(self, now: datetime) -> str:
+        """The address he sends from most; empty when he has sent nothing."""
+        mine = self._mine(now)
+        return mine[0] if mine else ""
+
+    # --- writing -------------------------------------------------------------------------------
+
+    def draft(  # noqa: PLR0913 — the parts of a letter Gmail takes.
+        self, *, to: Sequence[str], cc: Sequence[str], bcc: Sequence[str], subject: str, body: str,
+        thread: str = "",
+    ) -> Draft:
+        """Write a Gmail draft of a letter (``gmail_createDraft``); ``thread`` makes it a reply."""
+        ask: dict[str, Any] = {"to": ", ".join(to), "subject": subject, "body": body}
+        if cc:
+            ask["cc"] = ", ".join(cc)
+        if bcc:
+            ask["bcc"] = ", ".join(bcc)
+        if thread:
+            ask["threadId"] = thread
+        made = self.ask("gmail_createDraft", ask, changing=True)
+        message = made.get("message")
+        inner = message if isinstance(message, dict) else {}
+        draft, message_id = str(made.get("id") or ""), str(inner.get("id") or "")
+        if not draft or not message_id:
+            msg = "Gmail did not say which draft it wrote; tell him the letter may not be saved"
+            raise ToolError(msg, code="network_error")
+        return Draft(draft, message_id, str(inner.get("threadId") or thread or message_id))
+
+    def send_draft(self, draft: str) -> str:
+        """Send a draft (``gmail_sendDraft``); the id of the message Gmail says it sent."""
+        sent = self.ask("gmail_sendDraft", {"draftId": draft}, changing=True)
+        labels = sent.get("labelIds")
+        said = str(sent.get("id") or "")
+        if not said or (isinstance(labels, list) and "SENT" not in labels):
+            msg = "Gmail did not say the letter was sent; tell him it may not have gone"
+            raise ToolError(msg, code="network_error")
+        return said
+
+    def trash(self, message: str) -> bool:
+        """Move a message to Trash (``gmail_modify``); False when the server will not."""
+        try:
+            self.ask(
+                "gmail_modify", {"messageId": message, "addLabelIds": ["TRASH"]}, changing=True,
+            )
+        except ToolError:
+            return False
+        return True
 
 
 __all__ = [
     "DEFAULT_LIST_CAP",
     "DEFAULT_RAW_MAX_BYTES",
     "Call",
+    "Draft",
     "Found",
     "Head",
     "Hit",

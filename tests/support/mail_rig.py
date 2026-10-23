@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from jarvis.shared import RawResult
+    from jarvis.shared.receipts import Completed
 
 ZONE = ZoneInfo("America/Vancouver")
 NOW = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)  # 11:00 on Wednesday in Vancouver
@@ -60,6 +61,16 @@ class Rig:
         """One call as the model makes it."""
         self._n += 1
         return self.world.dispatch(tool_request("mail", f"A{self._n}", arguments=args))
+
+    def leased(self, **args: Any) -> RawResult:  # noqa: ANN401 — a call Allen's button released.
+        """One call run with the lease an accepted card gives it."""
+        self._n += 1
+        request = tool_request("mail", f"A{self._n}", arguments=args, lease=True)
+        return self.world.dispatch(request)
+
+    def complete(self, **args: Any) -> Completed:  # noqa: ANN401 — the model's arguments.
+        """What the decision loop makes of a call that needs a card, before the card."""
+        return self.world.registry.complete("mail", args, self.world.conn, self.world.paths)
 
     def ok(self, **args: Any) -> dict[str, Any]:  # noqa: ANN401 — the model's arguments.
         """The answer of a call that worked."""
