@@ -21,14 +21,13 @@ if TYPE_CHECKING:
     from jarvis.execution.tools import ToolRegistry
 
 REPO = Path(__file__).resolve().parents[2]
-OFF_MENU = ("save_briefing", "save_knowledge", "search_knowledge", "record_application")
+OFF_MENU = ("save_briefing", "save_knowledge", "search_knowledge")
 PLUGIN_TOOLS = ("list_plugins", "open_plugin", "disable_plugin", "remove_plugin")
 # What he might need, in the model's English keywords, and the tool tool_search must bring.
 SEARCHES = (
     ("save a daily briefing", "save_briefing"),
     ("save a knowledge item", "save_knowledge"),
     ("search saved knowledge", "search_knowledge"),
-    ("record a job application", "record_application"),
 )
 
 
@@ -45,7 +44,7 @@ def shipped(tmp_path_factory: pytest.TempPathFactory) -> tuple[ToolRegistry, set
     return tool_exam._exam_registry(config, recorded), menu  # noqa: SLF001
 
 
-def test_the_four_tools_are_registered_deferred_and_not_on_the_menu(
+def test_the_three_tools_are_registered_deferred_and_not_on_the_menu(
     shipped: tuple[ToolRegistry, set[str]],
 ) -> None:
     """Registered for the model to call, but its menu carries none of them."""
@@ -86,7 +85,7 @@ def test_a_tool_off_the_menu_is_still_dispatched_by_name(
     tools = tuple(t for t in registry.get_definitions() if t.name in OFF_MENU)
     fx = ToolWorld(tmp_path, tools=tools)
     try:
-        calls = {"record_application": {"company": "Acme"}}
+        calls = {"search_knowledge": {"query": "acme"}}
         for number, (name, args) in enumerate(calls.items()):
             fx.dispatch(tool_request(name, f"A{number}", arguments=args))
             assert "error" not in json.loads(tool_chain(fx, f"A{number}")["tool_output"]), name

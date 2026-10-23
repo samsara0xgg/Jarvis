@@ -201,7 +201,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 group, {s: sources.get(s, f"mcp-{s}") for s in servers}, one, bare, base,
             ),
             make_late=lambda _plugins: (
-                MagicMock(ledger=dict, add_application=lambda _fields: ""),
+                MagicMock(jobs_view=dict, add_application=lambda _fields: ""),
                 MagicMock(mail=dict, gmail=lambda *_: {}),
             ),
             memory_db=base / "memory.db", doing=MagicMock(tidy=lambda: ""),

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     from jarvis.decision.llm import LLMClient
 
-READ_ONLY = {"job_ledger": True, "create_memo": False}
+READ_ONLY = {"jobs": True, "create_memo": False}
 LANGUAGE = "[Reply language for this turn: Chinese]"
 USAGE = {"input": 10, "output": 2, "cache_read": 0, "cache_write": 0, "status": "reported"}
 
@@ -36,7 +36,7 @@ def _chat(*items: dict[str, Any]) -> dict[str, Any]:
     return {"messages": [{"role": "system", "content": "stub"}, ask, *items]}
 
 
-LEDGER = {"type": "function_call", "call_id": "c0", "name": "job_ledger", "arguments": "{}"}
+LEDGER = {"type": "function_call", "call_id": "c0", "name": "jobs", "arguments": "{}"}
 LEDGER_OUT = {"type": "function_call_output", "call_id": "c0", "output": '{"count": 3}'}
 MEMO = {"type": "function_call", "call_id": "c1", "name": "create_memo",
         "arguments": '{"text": "x"}'}
@@ -75,7 +75,7 @@ def test_a_repeated_call_gets_the_note_and_one_more_step(monkeypatch: pytest.Mon
     """Responses shape: the repeat's result is the note; the second step is what is judged."""
     request = _responses(LEDGER, LEDGER_OUT)
     line, sent = _run(
-        monkeypatch, request, _answer("", ("job_ledger", "{}")), _answer("还是三条。"),
+        monkeypatch, request, _answer("", ("jobs", "{}")), _answer("还是三条。"),
     )
     assert len(sent) == 2
     followed = sent[1]["input"][len(request["input"]) :]
@@ -87,7 +87,7 @@ def test_a_repeated_call_gets_the_note_and_one_more_step(monkeypatch: pytest.Mon
     assert line["text"] == "还是三条。"
     assert line["calls"] == []
     assert line["guarded"] == {
-        "kind": "repeat", "first_calls": [{"name": "job_ledger", "args": {}}],
+        "kind": "repeat", "first_calls": [{"name": "jobs", "args": {}}],
         "first_text": "", "first_usage": USAGE,
     }
     assert line["total_s"] == 2.0
@@ -99,7 +99,7 @@ def test_a_repeat_after_a_write_is_left_alone(monkeypatch: pytest.MonkeyPatch) -
     """The write between them may have changed the answer, so the repeat is the step."""
     line, sent = _run(
         monkeypatch, _responses(LEDGER, LEDGER_OUT, MEMO, MEMO_OUT),
-        _answer("", ("job_ledger", "{}")),
+        _answer("", ("jobs", "{}")),
     )
     assert len(sent) == 1
     assert "guarded" not in line
@@ -111,7 +111,7 @@ def test_a_response_with_a_call_that_would_run_is_left_alone(
     """Its result is unknown here, so the exam does not guess the follow-up."""
     line, sent = _run(
         monkeypatch, _responses(LEDGER, LEDGER_OUT),
-        _answer("", ("job_ledger", "{}"), ("create_memo", '{"text": "y"}')),
+        _answer("", ("jobs", "{}"), ("create_memo", '{"text": "y"}')),
     )
     assert len(sent) == 1
     assert "guarded" not in line

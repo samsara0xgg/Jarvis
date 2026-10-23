@@ -106,7 +106,7 @@ LIVE_READ = frozenset({
     "web_search", "web_fetch", "weather", "where_am_i", "places",
     "map_search",  # reads Google Places; its spend rows go to the sandbox's log
     "look_at_picture",  # calls the vision preset's model
-    "job_ledger", "mail",  # mail() rates unrated unread letters with Jev (OpenRouter)
+    "mail",  # mail() rates unrated unread letters with Jev (OpenRouter)
     "conversation", "archive", "my_day",
     "list_plugins", "tool_search", "read_skill",
     "search_notes",  # a device tool: device_not_connected on this host
@@ -114,7 +114,7 @@ LIVE_READ = frozenset({
 SANDBOX_WRITE = frozenset({
     "keep", "schedule", "plan", "ask_user", "dismiss_card",
     "save_place", "forget_place", "save_knowledge",
-    "save_briefing", "record_application", "mark_highlight",
+    "save_briefing", "jobs", "mark_highlight",
     "bus",  # pins and rides write the sandbox; the times (to=...) read Google Routes LIVE
     "show_on_dashboard",  # its push goes to a recorder
 })

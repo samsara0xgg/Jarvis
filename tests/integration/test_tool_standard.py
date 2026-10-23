@@ -48,7 +48,7 @@ def test_a_rebuilt_tool_must_leave_the_pre_standard_list() -> None:
 OFF_IN_A_BARE_BOOT = {
     "web_search", "weather", "map_search", "write_mail_draft", "open_path", "search_notes",
     "read_file", "read_clipboard", "open_url", "screen_look", "start_night_run", "end_night_run",
-    "job_ledger", "record_application",
+    "jobs",
 }
 
 
