@@ -10,10 +10,12 @@ Two intakes, both append-only and both answered only after the bytes are safe:
   Sending the same bytes again adds nothing and is answered ``already_held``.
 - :meth:`Shipments.receive_file`: one binary file (a TimeSink screenshot) under
   ``imports/<source>/files/<relative path>``, written whole or not at all, answered with its
-  SHA-256 so the Mac keeps its cursor until the digest matches. The one other file source is
+  SHA-256 so the Mac keeps its cursor until the digest matches. Another file source is
   ``claude-code-daily`` (ADR 0303): a Markdown day report (``<date>.md``, at most 256 KiB) or
   the day's kept dialogue (``dialogue/<date>.md``, at most 8 MiB), which may be sent again with
-  other bytes (the newest stands) and is read by ``ClaudeDailyIntake``.
+  other bytes (the newest stands) and is read by ``ClaudeDailyIntake``. The third is
+  ``claude-code-log`` (ADR 0384): a gzip piece of a Claude Code transcript, named by its own
+  content (:mod:`jarvis.state.code_log`), checked against its name and kept for good.
 
 Both stop at the disk floor, like the lifelog archive (ADR 0238), so the brain's databases never
 run out of room; the refusal is 507 and the Mac keeps what it holds and tries later.
@@ -33,7 +35,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.state import imports
+from jarvis.state import code_log, imports
 from jarvis.state.import_parsers import Parsed
 from jarvis.state.imports import SHIPPED_SOURCES, Counts, keep_raw
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES
@@ -47,7 +49,7 @@ MAX_FILE_BYTES: Final = 16 * 1024 * 1024
 FILES_DIRNAME: Final = "files"
 CODE_DAY_SOURCE: Final = "claude-code-daily"
 """The Mac's day report of his Claude Code work (ADR 0303), shipped as ``<date>.md`` files."""
-FILE_SOURCES: Final = ("timesink", CODE_DAY_SOURCE)
+FILE_SOURCES: Final = ("timesink", CODE_DAY_SOURCE, code_log.SOURCE)
 MAX_REPORT_BYTES: Final = 256 * 1024
 MAX_DIALOGUE_BYTES: Final = 8 * 1024 * 1024
 DIALOGUE_DIRNAME: Final = "dialogue"
@@ -192,13 +194,16 @@ class Shipments:
 
         Raises:
             ShipRefused: the source takes no files, the path cannot name a file here, the bytes
-                are not a picture (a UTF-8 Markdown report for ``claude-code-daily``), they are
-                over the cap, a picture's path holds other bytes, or the disk is below its floor.
+                are not a picture (a UTF-8 Markdown report for ``claude-code-daily``, a piece
+                that matches its name for ``claude-code-log``), they are over the cap, a
+                picture's path holds other bytes, or the disk is below its floor.
         """
         if source not in FILE_SOURCES:
             raise ShipRefused(404, f"{source!r} ships no files")
         if source == CODE_DAY_SOURCE:
             return self._receive_report(relpath, data)
+        if source == code_log.SOURCE:
+            return self._receive_code_log(relpath, data)
         if not RELPATH.fullmatch(relpath) or relpath.rsplit(".", 1)[-1].lower() not in _IMAGE_EXT:
             raise ShipRefused(422, "the path is not a relative picture path")
         if not data:
@@ -229,6 +234,35 @@ class Shipments:
         digest = hashlib.sha256(data).hexdigest()
         target = self.directory / CODE_DAY_SOURCE / FILES_DIRNAME / relpath
         if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+            return StoredFile(digest, len(data), created=False)
+        self._room(target.parent, len(data))
+        partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.part"
+        try:
+            _fsync_write(partial, data)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
+        return StoredFile(digest, len(data), created=True)
+
+    def _receive_code_log(self, relpath: str, data: bytes) -> StoredFile:
+        """Keep a transcript piece at ``claude-code-log/files/<relpath>`` (ADR 0384).
+
+        The name carries the piece's length and digest, so a path already kept holds these
+        same raw bytes and is answered as held, with the digest of what was sent.
+        """
+        if (error := code_log.relpath_error(relpath)) is not None:
+            raise ShipRefused(422, error)
+        if not data:
+            raise ShipRefused(400, "the piece is empty")
+        if len(data) > code_log.MAX_PIECE_GZ:
+            raise ShipRefused(413, "the piece is larger than 64 MiB")
+        try:
+            code_log.raw_of(relpath, data)
+        except ValueError as exc:
+            raise ShipRefused(422, str(exc)) from None
+        digest = hashlib.sha256(data).hexdigest()
+        target = self.directory / code_log.SOURCE / FILES_DIRNAME / relpath
+        if target.exists():
             return StoredFile(digest, len(data), created=False)
         self._room(target.parent, len(data))
         partial = target.parent / f".{target.name}.{uuid.uuid4().hex}.part"
