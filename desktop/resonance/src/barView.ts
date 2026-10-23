@@ -1,4 +1,4 @@
-import { clean, clock, covered, dur, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
+import { clean, clock, covered, dur, durShort, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
 
 // The day in one bar (ADR 0308): the axis, the pieces the bar is made of, what the pointer finds at a minute (the stretch it is in and
 // what else was going on), a range of the bar, and the day's numbers. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in
@@ -284,7 +284,7 @@ export function numbers(model: DayModel, t: Say, win?: { a: number; b: number })
     const label = t(LABELS[kind]), n = sum[kind];
     let value = '', long = '';
     if (kind === 'sleep' || kind === 'trip' || kind === 'work') { if (Math.round(n) > 0) { value = hm(n); long = dur(n, t); } }
-    else if (kind === 'call' || kind === 'workout') { if (Math.round(n) > 0) value = long = dur(n, t); }
+    else if (kind === 'call' || kind === 'workout') { if (Math.round(n) > 0) { value = durShort(n, t); long = dur(n, t); } }
     else if (kind === 'talk') { if (n > 0) value = long = t([`${n}×`, `${n} 次`]); }
     else if (kind === 'picture') { if (n > 0) value = long = String(n); }
     else if (out.size) {
