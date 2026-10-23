@@ -18,6 +18,7 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution import speakable
+from jarvis.execution.mail_bills import row_facts
 from jarvis.state.mail_text import clean, is_forward
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
 
     from jarvis.execution.mail_gmail import Found, Head, Hit, Mailbox
+    from jarvis.state.mail_bill import Facts
     from jarvis.state.mail_message import Person
 
 PAGE_ROWS: Final = 8
@@ -230,6 +232,8 @@ class Row:
     opening: str
     unread: bool | None
     last: Last | None
+    bill: Facts | None = None
+    """What the mail states of a bill or a payment (ADR 0365)."""
 
 
 def opening(head: Head) -> str:
@@ -270,6 +274,8 @@ def row_json(row: Row, now: datetime, zone: tzinfo) -> dict[str, Any]:
         out["unread"] = True
     if row.last is not None and (line := state_line(row.last, now, zone)):
         out["state"] = line
+    if row.bill is not None:
+        out["bill"] = row.bill.line
     return out
 
 
@@ -304,6 +310,7 @@ def page_rows(  # noqa: PLR0913 — the list, the page, what was asked, the time
             n, one, opening(one),
             None if ask.unread_only else "UNREAD" in labels.get(one.id, frozenset()),
             last.get(one.thread) if newest.get(one.thread) == one.id else None,
+            row_facts(one),
         )
         for n, one in kept
     ], len(chosen) - len(kept)

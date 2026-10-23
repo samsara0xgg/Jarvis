@@ -22,7 +22,7 @@ from jarvis.execution.tools import ToolError
 from jarvis.state.mail_message import Attachment, Person, attachment_text
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import datetime, tzinfo
 
     from jarvis.execution.mail_gmail import Mailbox, Read
@@ -160,10 +160,14 @@ def _notice(read: Read, raw_max_bytes: int) -> str:
 
 def mail_json(  # noqa: PLR0913 — what one read is told: the mail, the part and where he is.
     read: Read, *, page: int, looking_for: str, limit: int, raw_max_bytes: int,
-    now: datetime, zone: tzinfo,
+    now: datetime, zone: tzinfo, extras: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One mail read: its headers, the part of its text he asked for and what was left out."""
-    head = _head(read, now, zone)
+    """One mail read: its headers, the part of its text he asked for and what was left out.
+
+    ``extras`` are what the tool knows of the mail besides its text (a bill's facts, ADR 0365):
+    they come after the headers and before the text.
+    """
+    head = {**_head(read, now, zone), **(extras or {})}
     # The headers take room too: the text gets what a result of about 4,000 characters has left.
     room = max(_MIN_TEXT, min(limit, RESULT_CHARS - _size(head) - 300))
     shown, extra = view(read.mail.text, page=page, looking_for=looking_for, limit=room)

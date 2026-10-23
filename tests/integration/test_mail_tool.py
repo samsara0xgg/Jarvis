@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -28,26 +27,30 @@ from jarvis.execution.tools import ReadOnlyToolRegistry, Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.receipts import call_asks, call_risk, only_reads
 from jarvis.state.event_log import emit_event, iter_events_of_types
-from tests.support.clock import FakeClock
 from tests.support.gmail_fake import PROMOTIONS, SENT, UPDATES, Gmail
 from tests.support.mail_raw import pdf
-from tests.support.tool_world import ToolWorld, tool_request
+from tests.support.mail_rig import (
+    BANK,
+    BOT,
+    KIM,
+    ME,
+    NEWS,
+    NOW,
+    SAM,
+    SHOP,
+    ZONE,
+    Rig,
+    ago,
+    mailbox,
+    receipt_of,
+)
+from tests.support.tool_world import tool_request
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from jarvis.shared import RawResult
 
-ZONE = ZoneInfo("America/Vancouver")
-NOW = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)  # 11:00 on Wednesday in Vancouver
-ME = "Allen <allen@example.com>"
-SAM = "Sam Lee <sam@example.com>"
-KIM = "Kim Ray <kim@example.com>"
-SHOP = "Shop <deals@shop.example.com>"
-BANK = "Bank <alerts@bank.example.com>"
-NEWS = {"List-Unsubscribe": "<mailto:u@shop.example.com>"}
-BOT = {"Auto-Submitted": "auto-generated"}
 ACTIONS = ("list", "search", "read", "thread", "attachment", "draft", "send", "archive")
 NOT_YET = (
     "mail: writing and sending a letter is not available yet; tell him you cannot write or send"
@@ -55,81 +58,24 @@ NOT_YET = (
 )
 
 
-def _ago(**span: float) -> datetime:
-    return NOW - timedelta(**span)
-
-
-def _receipt(result: RawResult) -> dict[str, Any]:
-    """The row form of the receipt a call ended in."""
-    assert result.receipt is not None
-    return result.receipt.to_json()
-
-
-class Rig:
-    """One ``mail`` tool over a fake Gmail, dispatched as the daemon does, with its event log."""
-
-    def __init__(self, tmp_path: Path, gmail: Gmail, *, cap: int = 500) -> None:
-        """Wire the tool, a dispatcher, an event log and a clock at 11:00 in Vancouver."""
-        self.gmail = gmail
-        self.box = Mailbox(gmail.tool, cap=cap)
-        (self.tool,) = build_mail_tool(self.box)
-        self.world = ToolWorld(tmp_path, tools=(self.tool,), clock=FakeClock(NOW, zone=ZONE))
-        self._n = 0
-
-    def run(self, **args: Any) -> RawResult:  # noqa: ANN401 — the model's arguments.
-        """One call as the model makes it."""
-        self._n += 1
-        return self.world.dispatch(tool_request("mail", f"A{self._n}", arguments=args))
-
-    def ok(self, **args: Any) -> dict[str, Any]:  # noqa: ANN401 — the model's arguments.
-        """The answer of a call that worked."""
-        result = self.run(**args)
-        assert result.error is None, result.tool_output
-        assert result.tool_output is not None
-        assert len(result.tool_output) < 4400, len(result.tool_output)
-        return dict(result.payload)
-
-    def fails(self, **args: Any) -> dict[str, Any]:  # noqa: ANN401 — the model's arguments.
-        """The ``{"error", "code", "kind"}`` the model reads for a call that failed."""
-        result = self.run(**args)
-        assert result.error is not None, result.tool_output
-        assert result.receipt is not None
-        assert result.receipt.status == "failed"
-        assert result.tool_output is not None
-        return dict(json.loads(result.tool_output))
-
-    def searches(self) -> list[str]:
-        """The queries of every search made so far."""
-        return [str(args["query"]) for args in self.gmail.of("gmail_search")]
-
-    def close(self) -> None:
-        """Close the event log."""
-        self.world.close()
-
-
-def _mailbox() -> Gmail:
-    """A mailbox where one old sent message tells which address is his."""
-    gmail = Gmail(now=NOW)
-    gmail.add("sent0", "Hello", sender=ME, to=SAM, labels=SENT, at=_ago(days=40))
-    return gmail
 
 
 def _morning() -> Gmail:
     """Fourteen unread: five from people, seven shop promotions, two from his bank."""
-    gmail = _mailbox()
+    gmail = mailbox()
     for n, minutes in enumerate((10, 20, 30, 40, 50)):
         gmail.add(
             f"p{n}", f"Plan {n}", sender=SAM if n % 2 == 0 else KIM, to=ME,
-            at=_ago(minutes=minutes), plain=f"Hello, this is plan {n}.\n\nDetails follow.",
+            at=ago(minutes=minutes), plain=f"Hello, this is plan {n}.\n\nDetails follow.",
         )
     for n, minutes in enumerate((15, 25, 35, 45, 55, 65, 75)):
         gmail.add(
-            f"q{n}", f"Deal {n}", sender=SHOP, to=ME, at=_ago(minutes=minutes), labels=PROMOTIONS,
+            f"q{n}", f"Deal {n}", sender=SHOP, to=ME, at=ago(minutes=minutes), labels=PROMOTIONS,
             headers=NEWS, plain="Big sale.",
         )
     for n, minutes in enumerate((5, 60)):
         gmail.add(
-            f"u{n}", f"Alert {n}", sender=BANK, to=ME, at=_ago(minutes=minutes), labels=UPDATES,
+            f"u{n}", f"Alert {n}", sender=BANK, to=ME, at=ago(minutes=minutes), labels=UPDATES,
             headers=BOT, plain="Statement ready.",
         )
     return gmail
@@ -268,7 +214,7 @@ def test_a_row_is_the_mails_own_words_and_says_who_wrote_last(rig: Rig) -> None:
 def test_the_receipt_of_a_list_says_what_it_covered_and_how_to_get_the_rest(rig: Rig) -> None:
     """A read; the window, the rows shown, the six left and the page that has them."""
     result = rig.run()
-    receipt = _receipt(result)
+    receipt = receipt_of(result)
     assert receipt["reads_only"] is True
     assert receipt["line"] == "read mail, unread in his inbox: 14 found, 8 shown"
     assert receipt["covered"] == {
@@ -314,7 +260,7 @@ def test_a_list_nothing_matches_says_what_was_looked_at_and_how_to_look_otherwis
     tmp_path: Path,
 ) -> None:
     """An empty inbox and an empty narrowed list are sentences, not empty arrays alone."""
-    quiet = _rig(tmp_path, _mailbox())
+    quiet = _rig(tmp_path, mailbox())
     try:
         assert quiet.ok()["summary"] == "No unread mail in his inbox."
         out = quiet.ok(**{"from": "Nobody"}, when="this week")
@@ -335,7 +281,7 @@ def test_a_list_past_the_cap_says_more_than_and_that_only_a_narrower_ask_reaches
         assert out["summary"].startswith("More than 10 unread in his inbox, newest first.")
         assert "Not shown: more than 2" in out["summary"]
         assert "Past the first 10 only a narrower when or from reaches the rest." in out["summary"]
-        assert _receipt(capped.run())["line"].endswith("more than 10 found, 8 shown")
+        assert receipt_of(capped.run())["line"].endswith("more than 10 found, 8 shown")
     finally:
         capped.close()
 
@@ -352,7 +298,7 @@ def test_waiting_lists_the_conversations_someone_else_wrote_last_and_says_what_i
     )
     assert [one["message"] for one in out["rows"]] == ["p0", "p1", "p2", "p3", "p4"]
     assert {one["state"] for one in out["rows"]} == {"waiting on him"}
-    receipt = _receipt(rig.run(waiting=True))
+    receipt = receipt_of(rig.run(waiting=True))
     assert receipt["line"].startswith("read mail waiting on him, the last 14 days: 5 found")
 
 
@@ -360,10 +306,10 @@ def test_a_conversation_he_answered_is_not_waiting_and_the_answer_is_counted(
     tmp_path: Path,
 ) -> None:
     """His reply ends it, whatever the window held; the summary counts it."""
-    gmail = _mailbox()
-    gmail.add("a1", "Lunch?", sender=SAM, to=ME, thread="ta", at=_ago(hours=5))
-    gmail.add("a2", "Re: Lunch?", sender=ME, to=SAM, thread="ta", labels=SENT, at=_ago(hours=4))
-    gmail.add("b1", "Plan", sender=KIM, to=ME, thread="tb", at=_ago(days=2))
+    gmail = mailbox()
+    gmail.add("a1", "Lunch?", sender=SAM, to=ME, thread="ta", at=ago(hours=5))
+    gmail.add("a2", "Re: Lunch?", sender=ME, to=SAM, thread="ta", labels=SENT, at=ago(hours=4))
+    gmail.add("b1", "Plan", sender=KIM, to=ME, thread="tb", at=ago(days=2))
     solo = _rig(tmp_path, gmail)
     try:
         out = solo.ok(waiting=True)
@@ -411,11 +357,11 @@ def test_a_list_stays_within_its_result_budget_with_every_field_at_its_longest(
 
     The rows that do not fit are named in the summary, so he can read them by number.
     """
-    gmail = _mailbox()
+    gmail = mailbox()
     for n in range(10):
         gmail.add(
             f"w{n}", "S" * 300, sender=f"{'N' * 200} <long{n}@example.com>", to=ME,
-            at=_ago(minutes=n + 1), plain=("word " * 200),
+            at=ago(minutes=n + 1), plain=("word " * 200),
             attachments=[(f"{'f' * 80}{k}.pdf", "application/pdf", pdf(["x"])) for k in range(6)],
         )
     long = _rig(tmp_path, gmail)
@@ -429,7 +375,7 @@ def test_a_list_stays_within_its_result_budget_with_every_field_at_its_longest(
         assert f"{8 - shown} rows did not fit; read them with {numbers}." in out["summary"]
         assert all(len(one["subject"]) <= 100 and len(one["from"]) <= 40 for one in out["rows"])
         assert all(len(one["files"]) == 4 for one in out["rows"])  # three named, "+3 more"
-        receipt = _receipt(long.run())["covered"]
+        receipt = receipt_of(long.run())["covered"]
         assert (receipt["shown"], receipt["more"]) == (shown, 10 - shown)  # all 10 less those shown
     finally:
         long.close()
@@ -536,7 +482,7 @@ def test_a_search_with_no_match_and_a_search_with_no_terms(rig: Rig) -> None:
 def _long_mail(gmail: Gmail) -> None:
     paragraphs = [f"Paragraph {n}. " + ("The quick brown fox jumps. " * 15) for n in range(1, 25)]
     gmail.add(
-        "long", "The long report", sender=KIM, to=ME, at=_ago(hours=2),
+        "long", "The long report", sender=KIM, to=ME, at=ago(hours=2),
         plain="\n\n".join(paragraphs),
     )
 
@@ -545,7 +491,7 @@ def test_a_long_mail_is_read_in_parts_that_say_which_part_and_how_to_get_the_nex
     tmp_path: Path,
 ) -> None:
     """Part 1 of N is cut at a paragraph; page=2 is the next; the receipt says what is left."""
-    gmail = _mailbox()
+    gmail = mailbox()
     _long_mail(gmail)
     long = _rig(tmp_path, gmail)
     try:
@@ -560,7 +506,7 @@ def test_a_long_mail_is_read_in_parts_that_say_which_part_and_how_to_get_the_nex
         last_of_first = int(re.findall(r"Paragraph (\d+)\.", first["text"])[-1])
         # The cut falls between paragraphs: the next part opens with the next one.
         assert second["text"].startswith(f"Paragraph {last_of_first + 1}.")
-        receipt = _receipt(long.run(action="read", message="long"))
+        receipt = receipt_of(long.run(action="read", message="long"))
         assert receipt["line"].endswith(f", part 1 of {parts}")
         assert receipt["covered"]["more"] == parts - 1
         assert receipt["covered"]["how_more"] == "page=2"
@@ -575,10 +521,10 @@ def test_a_long_mail_is_read_in_parts_that_say_which_part_and_how_to_get_the_nex
 
 def test_looking_for_gives_the_opening_and_the_paragraphs_that_match(tmp_path: Path) -> None:
     """What he is looking for picks the paragraphs, in the mail's order, and says what it left."""
-    gmail = _mailbox()
+    gmail = mailbox()
     paragraphs = [f"Paragraph {n}. " + ("Filler text goes here. " * 18) for n in range(1, 25)]
     paragraphs[17] = "Paragraph 18. The refund of $212.50 will arrive by Friday."
-    gmail.add("long", "Report", sender=KIM, to=ME, at=_ago(hours=2), plain="\n\n".join(paragraphs))
+    gmail.add("long", "Report", sender=KIM, to=ME, at=ago(hours=2), plain="\n\n".join(paragraphs))
     long = _rig(tmp_path, gmail)
     try:
         out = long.ok(action="read", message="long", looking_for="refund")
@@ -600,16 +546,16 @@ def test_up_to_three_mails_are_read_at_once_each_in_its_share(rig: Rig) -> None:
         "Hello, this is plan 0.\n\nDetails follow.", "Big sale.",
         "Hello, this is plan 1.\n\nDetails follow.",
     ]
-    receipt = _receipt(rig.run(action="read", message="p0,p1"))
+    receipt = receipt_of(rig.run(action="read", message="p0,p1"))
     assert receipt["line"] == "read 2 mails"
 
 
 def test_three_long_mails_each_get_a_third_and_the_summary_says_so(tmp_path: Path) -> None:
     """Long mails share the result a part would have: each is cut; one read alone has the rest."""
-    gmail = _mailbox()
+    gmail = mailbox()
     for name in ("one", "two", "three"):
         paragraphs = [f"{name} paragraph {n}. " + ("Word salad. " * 40) for n in range(1, 13)]
-        gmail.add(name, f"Report {name}", sender=KIM, to=ME, at=_ago(hours=3),
+        gmail.add(name, f"Report {name}", sender=KIM, to=ME, at=ago(hours=3),
                   plain="\n\n".join(paragraphs))
     three = _rig(tmp_path, gmail)
     try:
@@ -631,7 +577,7 @@ def test_a_message_gmail_has_not_got_names_the_id_and_the_next_step(rig: Rig) ->
 
 def test_the_receipt_of_a_read_names_whose_mail_it_was_and_covers_one_message(rig: Rig) -> None:
     """The line she can say; the window is the message; nothing is left out of a short mail."""
-    receipt = _receipt(rig.run(action="read", message="p0"))
+    receipt = receipt_of(rig.run(action="read", message="p0"))
     assert receipt["status"] == "done"
     assert receipt["reads_only"] is True
     assert receipt["line"] == 'read Sam Lee\'s mail "Plan 0"'
@@ -645,7 +591,7 @@ def test_the_receipt_of_a_read_names_whose_mail_it_was_and_covers_one_message(ri
 
 def _invoice(gmail: Gmail) -> None:
     gmail.add(
-        "inv", "Invoice 114", sender=KIM, to=ME, at=_ago(hours=3), plain="Invoice attached.",
+        "inv", "Invoice 114", sender=KIM, to=ME, at=ago(hours=3), plain="Invoice attached.",
         attachments=[
             ("invoice.pdf", "application/pdf", pdf(["Total due $40.00", "Due Nov 1"])),
             ("logo.png", "image/png", b"\x89PNG" + b"0" * 100),
@@ -655,7 +601,7 @@ def _invoice(gmail: Gmail) -> None:
 
 def test_an_attachment_is_read_by_number_or_by_part_of_its_name(tmp_path: Path) -> None:
     """A PDF is its text; a picture is named with its type and size; a mail lists its files."""
-    gmail = _mailbox()
+    gmail = mailbox()
     _invoice(gmail)
     box = _rig(tmp_path, gmail)
     try:
@@ -671,7 +617,7 @@ def test_an_attachment_is_read_by_number_or_by_part_of_its_name(tmp_path: Path) 
             "logo.png is a PNG file: only its name, type and size can be given"
         )
         assert "text" not in by_name
-        assert _receipt(box.run(action="attachment", message="inv", file="1"))["line"] == (
+        assert receipt_of(box.run(action="attachment", message="inv", file="1"))["line"] == (
             "read invoice.pdf from a mail"
         )
     finally:
@@ -682,12 +628,12 @@ def test_an_attachment_with_no_file_named_lists_them_unless_there_is_only_one(
     tmp_path: Path,
 ) -> None:
     """Several files need a choice, said with the list; a single file needs none."""
-    gmail = _mailbox()
+    gmail = mailbox()
     _invoice(gmail)
     memo = pdf(["The meeting moves to Thursday."])
-    gmail.add("one", "One file", sender=KIM, to=ME, at=_ago(hours=4), plain="See file.",
+    gmail.add("one", "One file", sender=KIM, to=ME, at=ago(hours=4), plain="See file.",
               attachments=[("memo.pdf", "application/pdf", memo)])
-    gmail.add("none", "No files", sender=KIM, to=ME, at=_ago(hours=5), plain="Nothing.")
+    gmail.add("none", "No files", sender=KIM, to=ME, at=ago(hours=5), plain="Nothing.")
     box = _rig(tmp_path, gmail)
     try:
         error = box.fails(action="attachment", message="inv")
@@ -711,7 +657,7 @@ def test_an_attachment_of_a_message_too_big_to_read_raw_says_it_was_not_read(
     tmp_path: Path,
 ) -> None:
     """Past the size limit the files are not downloaded, and asking for one says why."""
-    gmail = _mailbox()
+    gmail = mailbox()
     _invoice(gmail)
     gmail.messages["inv"].size = 99_000_000
     box = _rig(tmp_path, gmail)
@@ -730,11 +676,11 @@ def test_an_attachment_of_a_message_too_big_to_read_raw_says_it_was_not_read(
 
 
 def _trip(gmail: Gmail) -> None:
-    gmail.add("t1", "Trip plan", sender=SAM, to=ME, thread="T", at=_ago(days=3),
+    gmail.add("t1", "Trip plan", sender=SAM, to=ME, thread="T", at=ago(days=3),
               plain="Shall we go Saturday?")
-    gmail.add("t2", "Re: Trip plan", sender=ME, to=SAM, thread="T", labels=SENT, at=_ago(days=2),
+    gmail.add("t2", "Re: Trip plan", sender=ME, to=SAM, thread="T", labels=SENT, at=ago(days=2),
               plain="Saturday works.\n\nOn Sun, Sam Lee wrote:\n> Shall we go Saturday?")
-    gmail.add("t3", "Re: Trip plan", sender=SAM, to=ME, thread="T", at=_ago(days=1),
+    gmail.add("t3", "Re: Trip plan", sender=SAM, to=ME, thread="T", at=ago(days=1),
               plain="Great, I will book it.\n\nOn Mon, Allen wrote:\n> Saturday works.")
 
 
@@ -742,7 +688,7 @@ def test_a_conversation_is_its_messages_oldest_first_each_with_its_own_new_text(
     tmp_path: Path,
 ) -> None:
     """Found by its subject and thread id; quotes cut by structure; the cut is said."""
-    gmail = _mailbox()
+    gmail = mailbox()
     _trip(gmail)
     box = _rig(tmp_path, gmail)
     try:
@@ -754,7 +700,7 @@ def test_a_conversation_is_its_messages_oldest_first_each_with_its_own_new_text(
             "Shall we go Saturday?", "Saturday works.", "Great, I will book it.",
         ]
         assert out["messages"][1]["left_out"] == ["an older message it quotes"]
-        receipt = _receipt(box.run(action="thread", message="t3"))
+        receipt = receipt_of(box.run(action="thread", message="t3"))
         assert receipt["line"] == 'read the conversation "Trip plan": 3 of 3 messages'
         # Its messages are the rows now: row 2 is his reply.
         assert box.ok(action="read", message="2")["from"] == ME
@@ -767,10 +713,10 @@ def test_a_long_conversation_shows_the_newest_six_and_the_earlier_page_needs_no_
     tmp_path: Path,
 ) -> None:
     """Nine messages: page 1 is 4-9 and says 3 are earlier; page 2 comes from the held thread."""
-    gmail = _mailbox()
+    gmail = mailbox()
     for n in range(1, 10):
         gmail.add(f"c{n}", "Re: Budget" if n > 1 else "Budget", sender=SAM if n % 2 else KIM,
-                  to=ME, thread="B", at=_ago(days=10 - n), plain=f"Message number {n}.")
+                  to=ME, thread="B", at=ago(days=10 - n), plain=f"Message number {n}.")
     box = _rig(tmp_path, gmail)
     try:
         newest = box.ok(action="thread", message="c9")
@@ -784,7 +730,7 @@ def test_a_long_conversation_shows_the_newest_six_and_the_earlier_page_needs_no_
         assert [one["n"] for one in earlier["messages"]] == [1, 2, 3]
         assert len(box.gmail.calls) == calls  # the held conversation, not read again
         assert len(box.gmail.of("gmail_search")) == searched
-        assert _receipt(box.run(action="thread", message="c9", page=2))["covered"] == {
+        assert receipt_of(box.run(action="thread", message="c9", page=2))["covered"] == {
             "sources": ["Gmail"], "window": 'conversation "Budget"', "shown": 3, "more": 0,
             "how_more": "",
         }
@@ -796,7 +742,7 @@ def test_a_message_with_no_subject_is_a_conversation_of_itself_and_says_so(
     tmp_path: Path,
 ) -> None:
     """With nothing to search by, only the message is found, and the answer says that."""
-    gmail = _mailbox()
+    gmail = mailbox()
     gmail.add("bare", "", sender=SAM, to=ME, thread="Z", plain="Call me.")
     gmail.add("other", "Re: something", sender=KIM, to=ME, thread="Z", plain="Elsewhere.")
     box = _rig(tmp_path, gmail)
@@ -824,7 +770,7 @@ def test_archive_takes_two_rows_out_of_the_inbox_in_one_call_and_gives_the_undo(
     assert event.payload == {
         "message_ids": ["p0", "q0"], "in_inbox": False, "action_id": result.action_id,
     }
-    receipt = _receipt(result)
+    receipt = receipt_of(result)
     assert receipt == {
         "status": "done", "reads_only": False, "line": "took 2 mails out of his inbox",
         "object": "mail:p0", "undo": event.event_uid,
@@ -866,7 +812,7 @@ def test_the_undo_puts_them_back_once_and_a_second_undo_changes_nothing(rig: Rig
         "messageIds": ["p0", "p1"], "addLabelIds": ["INBOX"],
     }
     assert {"INBOX"} <= rig.gmail.labels("p0") & rig.gmail.labels("p1")
-    assert _receipt(back) == {
+    assert receipt_of(back) == {
         "status": "done", "reads_only": False, "line": "put 2 mails back in his inbox",
         "object": "mail:p0",
     }
@@ -988,7 +934,7 @@ def test_archive_is_a_change_for_the_receipts_and_the_live_view_and_a_list_is_a_
         rig.world.conn, rig.world.paths, rig.world.lifecycle,
     )
     assert refused.error == "reads_only_view"
-    assert _receipt(refused)["failure"] == "impossible"
+    assert receipt_of(refused)["failure"] == "impossible"
     assert rig.gmail.of("gmail_batchModify") == []
     for n, action in enumerate(("draft", "send"), 3):  # a letter is a change in that view as well
         rig.world.lifecycle.register(f"L{n}")
@@ -1046,7 +992,7 @@ def test_without_gmail_every_action_is_an_error_that_says_so(
         msg = "mcp server 'gmail' is not connected"
         raise LookupError(msg)
 
-    down = _rig(tmp_path, _mailbox())
+    down = _rig(tmp_path, mailbox())
     down.box._call = not_connected  # noqa: SLF001 — the connection is what is missing.
     try:
         error = down.fails(**arguments)
@@ -1082,9 +1028,9 @@ def test_every_read_receipt_says_what_it_covered_and_the_numbers_agree(
     _invoice(gmail)
     for n in range(1, 4):
         gmail.add(f"c{n}", "Re: Budget" if n > 1 else "Budget", sender=SAM if n % 2 else KIM,
-                  to=ME, thread="B", at=_ago(days=5 - n), plain=f"Message number {n}.")
+                  to=ME, thread="B", at=ago(days=5 - n), plain=f"Message number {n}.")
     paragraphs = [f"Paragraph {n}. " + ("Word salad. " * 60) for n in range(1, 30)]
-    gmail.add("long", "Long report", sender=KIM, to=ME, at=_ago(hours=6),
+    gmail.add("long", "Long report", sender=KIM, to=ME, at=ago(hours=6),
               plain="\n\n".join(paragraphs))
     box = _rig(tmp_path, gmail)
     try:
@@ -1093,7 +1039,7 @@ def test_every_read_receipt_says_what_it_covered_and_the_numbers_agree(
             box.ok()  # a later page is the held list's
         result = box.run(**args)
         assert result.error is None, result.tool_output
-        receipt = _receipt(result)
+        receipt = receipt_of(result)
         assert receipt["status"] == "done"
         assert receipt["reads_only"] is True
         assert receipt["line"]
