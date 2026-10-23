@@ -38,7 +38,7 @@ import pytest
 from jarvis.decision.attention_threads import Asked, ThreadBrief, read_threads
 from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.doing_day import DayDoing, Lane
-from jarvis.runtime.doing_run import DoingSchedule
+from jarvis.runtime.doing_run import DoingSchedule, read_brief, read_thread_brief
 from jarvis.state import attention, imports
 from jarvis.state.day_line import DaySources
 from jarvis.state.doing import Doing
@@ -424,6 +424,32 @@ def _schedule(world: World, client: Writer, *, prompt: str | None = TELL) -> Doi
         llm_config={}, pricing_table={}, client=client,  # type: ignore[arg-type]
         threads_client=client,  # type: ignore[arg-type]
     )
+
+
+def test_a_told_key_nobody_shows_is_named_as_held_names_it_and_never_whole(
+    world: World, tmp_path: Path,
+) -> None:
+    """The threads brief lists a told key absent from the window by the cut name, not the key."""
+    world = _shipped_world(world, tmp_path)
+    path = "~/Documents/coop/the very long folder/notes/final.md"
+    title = "Release notes " + "x" * 40
+    told = {
+        f"mac|Cursor|{path}": ("coop", "study"),
+        f"mac|Safari|{title}": ("coop", "study"),
+        "app|com.tencent.xin": ("chat", "social"),
+    }
+    append_attention_threads(world.memory, told, origin="model", model="m", day="d")
+    brief = read_brief(DAY, world.sources, world.log, _at(15))
+    assert brief is not None
+    asked = read_thread_brief(brief, world.sources, world.memory)
+    assert asked is not None
+    (coop,) = (keys for name, _, keys in asked.known if name == "coop")
+    assert sorted(coop) == sorted([
+        attention.held({"appName": "Cursor", "document": "file:///Users/x/" + path[2:]})[1],
+        attention.held({"appName": "Safari", "title": title})[1],
+    ])
+    assert all(len(k.split(" ", 1)[1]) <= attention.TITLE_MAX_CHARS for k in coop)
+    assert [keys for name, _, keys in asked.known if name == "chat"] == [["com.tencent.xin"]]
 
 
 def test_a_run_first_has_the_new_keys_told_and_the_page_names_their_threads(

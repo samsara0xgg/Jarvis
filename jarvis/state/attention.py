@@ -141,12 +141,30 @@ def held(fields: Mapping[str, Any]) -> tuple[tuple[str, str], str]:
     document = fields.get("document")
     path = _path_of(str(document)) if document else None
     if path is not None:
-        what = path
-        shown = path if len(path) <= TITLE_MAX_CHARS else "…" + path[1 - TITLE_MAX_CHARS :]
+        return (app, path), _named(app, path, is_path=True)
+    what = " ".join(str(document or fields.get("title") or "").split())
+    return (app, what), _named(app, what, is_path=False)
+
+
+def _named(app: str, what: str, *, is_path: bool) -> str:
+    """How a Mac key is named: the app and ``what`` cut to :data:`TITLE_MAX_CHARS`."""
+    if is_path:
+        what = what if len(what) <= TITLE_MAX_CHARS else "…" + what[1 - TITLE_MAX_CHARS :]
     else:
-        what = " ".join(str(document or fields.get("title") or "").split())
-        shown = _cut(what)
-    return (app, what), f"{app} {shown}" if what and what != app else app
+        what = _cut(what)
+    return f"{app} {what}" if what and what != app else app
+
+
+def key_name(key: str) -> str:
+    """How a key is named when no piece shows it: a Mac key as :func:`held` names it.
+
+    A ``what`` that is rooted or starts with ``~`` was a path; a device key is its bundle.
+    """
+    kind, _, rest = key.partition("|")
+    if kind != MAC:
+        return rest.strip()
+    app, _, what = rest.partition("|")
+    return _named(app, what, is_path=what.startswith(("/", "~")))
 
 
 def mac_spans(
@@ -459,6 +477,7 @@ __all__ = [
     "Piece",
     "Thread",
     "held",
+    "key_name",
     "mac_spans",
     "pieces",
     "read",

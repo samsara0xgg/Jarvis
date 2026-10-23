@@ -238,7 +238,7 @@ def read_thread_brief(brief: Brief, sources: DaySources, memory_db: Path) -> Thr
     if not asked:
         return None
     names = {p.key: p.name for p in pieces}
-    shown = {key: names.get(key) or " ".join(key.split("|")[1:]).strip() for key in told}
+    shown = {key: names.get(key) or attention.key_name(key) for key in told}
     projects = sorted({
         (str(item.get("project") or ""), str(item.get("title") or ""))
         for item in brief.items if item["kind"] == "code" and item.get("project")
