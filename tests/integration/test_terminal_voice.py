@@ -49,6 +49,7 @@ from jarvis.surface.terminal_speaker import (
 )
 from jarvis.surface.terminal_voice import BrainVoice, encode_event
 from jarvis.surface.voice_media import journal as media_journal
+from jarvis.surface.voice_media import lane as media_lane
 from jarvis.surface.voice_media import pipeline as media_pipeline
 from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from jarvis.surface.voice_tts import (
@@ -802,7 +803,11 @@ def test_playback_rows_are_taken_from_a_voice_terminal_only_and_once(tmp_path: P
 
 def test_the_allowlists_are_what_the_media_actor_writes() -> None:
     """Every row type the media actor emits is forwardable, and observer types are unchanged."""
-    source = inspect.getsource(media_pipeline) + inspect.getsource(media_journal)
+    source = (
+        inspect.getsource(media_pipeline)
+        + inspect.getsource(media_lane)
+        + inspect.getsource(media_journal)
+    )
     emitted = {kind for kind in PLAYBACK_EVENT_TYPES if f'"{kind}"' in source}
     assert emitted == PLAYBACK_EVENT_TYPES
     assert not PLAYBACK_EVENT_TYPES & OBSERVER_EVENT_TYPES
