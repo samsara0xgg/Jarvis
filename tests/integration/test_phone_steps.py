@@ -516,16 +516,25 @@ def test_an_archive_is_its_own_step_and_every_other_call_of_the_mail_tool_checks
     assert steps.phrase("mail", archive) == "归档了邮件"
 
 
-def test_writing_or_sending_a_letter_is_the_write_mail_step_whatever_the_tool_was() -> None:
-    """ADR 0366: a draft or a send of the ``mail`` tool says what the old draft tool said."""
-    for action in ("draft", "send"):
-        call = {"action": action, "to": "Sam", "body": "Yes"}
-        assert steps.kind("mail", call) == steps.kind("mail", json.dumps(call)) == "mail_write"
-        assert steps.label("mail", call) == "Writing mail"
-        assert steps.phrase("mail", call) == "wrote mail"
+def test_writing_a_letter_and_sending_one_are_their_own_steps_whatever_the_tool_was() -> None:
+    """ADR 0366: a draft of the ``mail`` tool says what the old draft tool said; a send sends."""
+    draft = {"action": "draft", "to": "Sam", "body": "Yes"}
+    send = {"action": "send", "draft": "a1b2c3d4"}
+    for call in (draft, send):
+        assert steps.kind("mail", json.dumps(call)) == steps.kind("mail", call)
+    assert steps.kind("mail", draft) == "mail_write"
+    assert (steps.label("mail", draft), steps.phrase("mail", draft)) == (
+        "Writing mail", "wrote mail",
+    )
+    assert steps.kind("mail", send) == "mail_send"
+    assert (steps.label("mail", send), steps.phrase("mail", send)) == (
+        "Sending mail", "sent mail",
+    )
     assert steps.kind("write_mail_draft") == "generic"  # the old tool is gone
     lang.set_language("zh")
-    assert steps.label("mail", {"action": "send"}) == "写邮件"
+    assert steps.label("mail", draft) == "写邮件"
+    assert steps.label("mail", send) == "发邮件"
+    assert steps.phrase("mail", send) == "发了邮件"
 
 
 def test_the_history_follows_an_answer_whose_turn_ran_tools_with_its_receipts(

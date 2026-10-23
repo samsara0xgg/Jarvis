@@ -1,9 +1,10 @@
-"""ADR 0361, 0362: each ``mail`` call has its own level, through the real ``decide()`` loop.
+"""ADR 0361, 0362, 0366: each ``mail`` call has its own level, through the real ``decide()`` loop.
 
-A scripted model calls the real ``mail`` tool over the Gmail fake of ``tests.support``. A read and
-an archive run with no card (the archive with its undo); a draft fails until ADR 0366 builds it;
-a send cannot be completed yet, so it makes no card either, and Gmail is not asked for anything
-that writes. Asserts on the rows a turn leaves, the receipts, and what the model was sent.
+A scripted model calls the real ``mail`` tool over the Gmail fake of ``tests.support``. A read, an
+archive and a draft run with no card (the archive and the draft with their undo); a send is
+completed into a card that shows the letter, writes nothing until the button, and then sends it.
+Asserts on the rows a turn leaves, the receipts, the card the clients read and what the model was
+sent.
 """
 
 from __future__ import annotations
@@ -11,25 +12,39 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
+
 from jarvis.decision import DecideContext, LifecycleLike, RuntimePathsLike, ToolRegistryLike
 from jarvis.decision.confirm_grammar import load_confirm_grammar
 from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.tools import ActionLifecycle, build_default_registry
+from jarvis.runtime.daemon.cards import confirmation_card
+from jarvis.shared import lang
 from jarvis.shared.realtime import Wave1FeatureFlags
 from jarvis.state.event_log import iter_events_of_types, open_event_log
-from tests.support.consent import REPO, tool_results
-from tests.support.gmail_fake import Gmail
+from tests.support.consent import REPO, tool_results, waiting_card
+from tests.support.gmail_fake import SENT, Gmail
 from tests.support.mail_raw import SAM
 from tests.support.model import Call, Reply, ScriptedModel
 from tests.support.plugin_approval import Paths, logged_dicts, press, say
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
 
 NOW = datetime.now(UTC)
+
+
+@pytest.fixture(autouse=True)
+def _english() -> Iterator[None]:
+    """The questions of a card are in English; the language is put back."""
+    before = lang.language()
+    lang.set_language("en")
+    yield
+    lang.set_language(before)
 
 
 def _mailbox() -> Gmail:
@@ -221,5 +236,78 @@ def test_a_name_that_matches_two_people_makes_no_card_and_asks_him_which(tmp_pat
         assert (result["is_error"], result["kind"]) == (True, "needs_him")
         assert "Sam Wu <sam.wu@example.org>" in result["error"]
         assert set(gmail.names()) <= {"gmail_search", "gmail_get"}
+    finally:
+        ctx.conn.close()
+
+
+def _own_mailbox() -> Gmail:
+    """The mailbox, with one old sent mail that tells which address is his."""
+    gmail = _mailbox()
+    gmail.add(
+        "sent0", "Hello", sender="Allen <allen@example.com>", to=SAM, labels=SENT,
+        at=NOW - timedelta(days=40),
+    )
+    return gmail
+
+
+def test_the_card_the_clients_read_lists_every_recipient_with_his_own_marked(
+    tmp_path: Path,
+) -> None:
+    """To, Cc and Bcc by name and address, (you) after his own, the whole body, and the question."""
+    gmail = _own_mailbox()
+    llm = ScriptedModel(
+        _send(
+            to=["Sam", "me"], cc="kim@example.com", bcc="pat@example.com", subject="Plans",
+            body="Noon.",
+        ),
+        "Shall I?",
+    )
+    ctx = _context(tmp_path, llm, gmail)
+    try:
+        say(ctx, "email Sam and me", "T1")
+        slot = waiting_card(ctx)
+        assert slot is not None
+        card = confirmation_card(slot, "mac")
+        assert (card["tool"], card["action"], card["letter"]) == ("mail", "send this email", True)
+        assert card["args"] == {
+            "to": [
+                "Sam Lee <sam@example.com>", "allen@example.com (you)",
+                "Cc kim@example.com", "Bcc pat@example.com",
+            ],
+            "subject": "Plans", "body": "Noon.",
+        }
+        assert slot.template_line == (
+            "The email to Sam Lee, allen@example.com (you) (Cc kim@example.com)"
+            ' (Bcc pat@example.com) is ready, subject "Plans". Send it?'
+        )
+    finally:
+        ctx.conn.close()
+
+
+def test_a_reply_card_carries_the_thread_and_his_edit_is_asked_and_sent_as_edited(
+    tmp_path: Path,
+) -> None:
+    """``threadId`` is the answered conversation; the new question names the edited subject."""
+    gmail = _own_mailbox()
+    llm = ScriptedModel(_send(reply_to="p0", body="Yes"), "Shall I?", "Sent.")
+    ctx = _context(tmp_path, llm, gmail)
+    try:
+        say(ctx, "tell Sam yes", "T1")
+        slot = waiting_card(ctx)
+        assert slot is not None
+        assert confirmation_card(slot, None)["args"] == {
+            "to": ["Sam Lee <sam@example.com>"], "subject": "Re: Plan 0", "body": "Yes",
+            "threadId": "p0",
+        }
+        edits = {"body": "Yes, noon.", "subject": "Re: Plan 0 (noon)"}
+        press(ctx, {
+            "confirmation_id": slot.confirmation_id, "decision": "accept", "edits": edits,
+        }, "T2")
+        question = logged_dicts(ctx.conn, "confirmation.requested")[-1]["calls"][0]["question"]
+        assert question == 'The email to Sam Lee is ready, subject "Re: Plan 0 (noon)". Send it?'
+        (made,) = gmail.of("gmail_createDraft")
+        assert (made["subject"], made["body"], made["threadId"]) == (
+            "Re: Plan 0 (noon)", "Yes, noon.", "p0",
+        )
     finally:
         ctx.conn.close()
