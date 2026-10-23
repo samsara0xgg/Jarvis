@@ -244,7 +244,7 @@ try {
     check('only the one that waits on him has the amber tag 等你; the live ones have the lit ring, the finished ones do not',
       by['c-line'].tag === '等你' && ['c-ci', 'c-exam', 'r-readme', 'r-tests'].every(k => by[k].tag === '') && by['c-line'].icon.includes('is-on') && by['c-exam'].icon.includes('is-on') && !by['c-ci'].icon.includes('is-on') && !by['r-tests'].icon.includes('is-on'));
     check('the side says how long it ran: a finished one to its last change, a live one to now (a working one with the live dot); a Codex session says nothing',
-      by['c-ci'].side === '1 时 15 分' && by['c-exam'].side === '1 时 35 分' && by['c-line'].side === '2 时 10 分' && by['r-readme'].side === '' && by['r-tests'].side === ''
+      by['c-ci'].side === '1 小时 15 分' && by['c-exam'].side === '1 小时 35 分' && by['c-line'].side === '2 小时 10 分' && by['r-readme'].side === '' && by['r-tests'].side === ''
       && await a.page.locator('.notch .dt-row[data-key="c-exam"] .dt-tm .dt-live i').count() === 1 && await a.page.locator('.notch .dt-row[data-key="c-line"] .dt-tm .dt-live').count() === 0, JSON.stringify(list.map(r => r.side)));
 
     // ---- Agents: the marks on the bar ----
@@ -351,7 +351,7 @@ try {
     const ask = (await a.rows()).find(r => r.key === 'c-ask');
     check('a question it asks is read in its words and is not allowed by one tap: the buttons are 先放着 and 打开', by['c-ask'].sub === 'Claude · 在问：用哪个方案？' && by['c-ask'].tag === '等你' && ask.quick.join('|') === '先放着|打开', JSON.stringify([by['c-ask'].sub, ask.quick]));
     check('a session that began yesterday has the date in the time column, and its span starts at the bar\'s left edge',
-      by['c-night'].at === '10/18' && by['c-night'].side === '22 时 50 分' && order(list)[0] === 'c-night', JSON.stringify([by['c-night'].at, by['c-night'].side, order(list)]));
+      by['c-night'].at === '10/18' && by['c-night'].side === '22 小时 50 分' && order(list)[0] === 'c-night', JSON.stringify([by['c-night'].at, by['c-night'].side, order(list)]));
     const g = await a.geo(), mk = await a.marks(), night = mk.find(m => m.key === 'c-night');
     check('and a span from before the day is cut at the day: it starts at the track\'s left edge and runs to now', night.kind === 'span' && same(night.x, g.track.left, 1.2) && same(night.x + night.w, xAt(g, T(21, 50)), 1.2) && night.tone === 'on', JSON.stringify(night));
     check('a Claude session that does not say when it began is a point at its last change, with no length', by['c-bare'].at === '13:00' && by['c-bare'].side === '' && mk.filter(m => m.key === 'c-bare').length === 1 && mk.find(m => m.key === 'c-bare').kind === 'point', JSON.stringify([by['c-bare'], mk.filter(m => m.key === 'c-bare')]));
@@ -390,7 +390,7 @@ try {
     await a.openDay(); await a.arrive(); await a.door('agents');
     const list = await a.rows(), by = Object.fromEntries(list.map(r => [r.key, r])), g = await a.geo(), mk = await a.marks();
     check('Startrail\'s sessions are rows: by their start (a Codex one that does not say: its last change), the brand of the agent they run, what they ask or how they ended, how long they ran',
-      order(list).join() === 'st-done,st-wait,now' && by['st-wait'].at === '18:30' && by['st-wait'].title === '接上登录' && by['st-wait'].sub === 'Claude · 想跑 npm test' && by['st-wait'].tag === '等你' && by['st-wait'].side === '3 时 20 分'
+      order(list).join() === 'st-done,st-wait,now' && by['st-wait'].at === '18:30' && by['st-wait'].title === '接上登录' && by['st-wait'].sub === 'Claude · 想跑 npm test' && by['st-wait'].tag === '等你' && by['st-wait'].side === '3 小时 20 分'
       && by['st-done'].at === '15:00' && by['st-done'].sub === 'Codex · 做完了 · 文档整理好了' && by['st-done'].side === '', JSON.stringify(list.map(r => [r.key, r.at, r.sub, r.side])));
     const wait = mk.filter(m => m.key === 'st-wait'), done = mk.filter(m => m.key === 'st-done');
     check('their marks: the waiting one is lit from its start to when it asked (21:30) and amber since; the finished one is a dim point at its last change (15:00)',
@@ -434,7 +434,7 @@ try {
     await a.until(() => document.querySelector('.notch .dt-date')?.textContent === '10月18日 周日' && document.querySelectorAll('.notch .dt-row[data-key]').length === 2, undefined, 6000); await a.page.waitForTimeout(600);
     const g1 = await a.geo(), list = await a.rows(), mk = await a.marks();
     check('the day before shows that day\'s Claude Code sessions from the day itself: oldest first, title or project, project and account, how long; no now line, no buttons',
-      list.map(r => [r.key, r.at, r.title, r.sub, r.side, r.quick.length].join('/')).join('|') === 'code-aaa/10:00/改登录页/Claude · jarvis · A/1 时 30 分/0|code-bbb/10:30/typlus/Claude · typlus · B/20 分/0', JSON.stringify(list));
+      list.map(r => [r.key, r.at, r.title, r.sub, r.side, r.quick.length].join('/')).join('|') === 'code-aaa/10:00/改登录页/Claude · jarvis · A/1 小时 30 分/0|code-bbb/10:30/typlus/Claude · typlus · B/20 分钟/0', JSON.stringify(list));
     check('their spans are dim and packed into lanes (the 10:30 one overlaps the 10:00 one, so it is in the second lane)',
       mk.length === 2 && mk.every(m => m.kind === 'span' && m.tone === 'dim') && mk[0].top === lanes[0] && mk[1].top === lanes[1] && same(mk[0].x, xAt(g1, T(10, 0, 18), 18), 1.2) && same(mk[0].x + mk[0].w, xAt(g1, T(11, 30, 18), 18), 1.2), JSON.stringify(mk));
     check('the line and the number say it is that day\'s, and the pane has not moved',
@@ -481,7 +481,7 @@ try {
     check('the rows: what has a time in time order with the now line among them, then the heading 没定时间 and the rest (all-day events first, then to-dos by due, none last)',
       list.map(r => r.key).join() === 'ev:ev-class,td:td-a3,now,ev:ev-mom,td:td-pay,heading,ev:ev-bday,td:td-old,td:td-read,td:td-lee' && list.slice(0, 5).map(r => r.at ?? r.text).join('|') === '14:00|17:00|现在 21:50|22:00|23:30' && list[5].text === '没定时间', JSON.stringify(list.map(r => [r.key, r.at])));
     check('an event says when it is (HH:MM–HH:MM, or 全天); one still to come is in the future look and says how long until it (within two hours); one that is over is faded',
-      by['ev:ev-class'].sub === '14:00–15:20' && by['ev:ev-class'].cls.includes('is-read') && by['ev:ev-mom'].sub === '22:00–22:30' && by['ev:ev-mom'].cls.includes('is-future') && by['ev:ev-mom'].side === '还有 10 分' && by['ev:ev-bday'].sub === '全天' && by['ev:ev-bday'].at === '', JSON.stringify([by['ev:ev-class'], by['ev:ev-mom']]));
+      by['ev:ev-class'].sub === '14:00–15:20' && by['ev:ev-class'].cls.includes('is-read') && by['ev:ev-mom'].sub === '22:00–22:30' && by['ev:ev-mom'].cls.includes('is-future') && by['ev:ev-mom'].side === '还有 10 分钟' && by['ev:ev-bday'].sub === '全天' && by['ev:ev-bday'].at === '', JSON.stringify([by['ev:ev-class'], by['ev:ev-mom']]));
     check('a to-do past its time has the amber tag 过期; a date-only due is untimed and says its day in the time column (今天, or the date), none says nothing',
       by['td:td-a3'].tag === '过期' && by['td:td-old'].tag === '过期' && by['td:td-pay'].tag === '' && by['td:td-read'].at === '今天' && by['td:td-old'].at === '10/17' && by['td:td-lee'].at === '' && by['td:td-a3'].sub === '待办', JSON.stringify(list.filter(r => r.key.startsWith('td')).map(r => [r.key, r.at, r.tag])));
     check('the circle is an open circle on a to-do and the calendar glyph on an event', await a.page.evaluate(() => { const g = k => document.querySelector(`.notch .dt-row[data-key="${k}"] .dt-ic svg`)?.innerHTML.length ?? 0; return g('td:td-a3') > 0 && g('td:td-a3') !== g('ev:ev-class'); }));
