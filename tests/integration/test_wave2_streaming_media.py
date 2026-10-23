@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from jarvis.runtime.daemon import output_watchers, voice_wiring
+from jarvis.shared import lang
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
@@ -2204,7 +2205,7 @@ def test_a_break_after_a_good_answer_says_the_cached_network_lost_line_not_the_t
             )
             asyncio.run(submit_response(pipeline, first))
             assert pipeline.wait_until_idle(timeout_s=3.0)
-            wait_until(lambda: bool(pipeline._network_lost_pcm))  # noqa: SLF001
+            wait_until(lambda: pipeline._network_lost.line(lang.language()) is not None)  # noqa: SLF001
             pump.blocks.clear()
             second = emit_response(
                 conn, response_id="RLINE-2", group_id="GLINE-2", turn_id="TLINE-2",
@@ -2256,8 +2257,9 @@ def test_a_kept_network_lost_line_is_read_from_disk_not_synthesized_again(
             )
             asyncio.run(submit_response(pipeline, first))
             assert pipeline.wait_until_idle(timeout_s=3.0)
-            wait_until(lambda: bool(pipeline._network_lost_pcm))  # noqa: SLF001
-            line = next(iter(pipeline._network_lost_pcm.values()))  # noqa: SLF001
+            wait_until(lambda: pipeline._network_lost.line(lang.language()) is not None)  # noqa: SLF001
+            line = pipeline._network_lost.line(lang.language())  # noqa: SLF001
+            assert line is not None
         finally:
             assert pipeline.close()
             conn.close()

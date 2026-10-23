@@ -21,7 +21,7 @@ import pytest
 from jarvis.shared import lang
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_tts
-from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media import spare as media_spare
 from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.media import (
     CallbackPump,
@@ -129,7 +129,7 @@ def test_the_next_spare_reads_the_language_of_the_last_answer(tmp_path: Path) ->
 def test_a_stale_spare_is_closed_and_the_answer_connects_its_own(tmp_path: Path) -> None:
     """Past its age a spare may already be closed by MiniMax: never trusted."""
     provider = FakeProvider(candidate_count=1)
-    with patch.object(media_pipeline, "SPARE_SESSION_MAX_AGE_S", -1.0):
+    with patch.object(media_spare, "SPARE_SESSION_MAX_AGE_S", -1.0):
         _answer_after_he_talked(tmp_path, provider)
     assert provider.created == 2
     assert provider.opened == [("R", 0)]
