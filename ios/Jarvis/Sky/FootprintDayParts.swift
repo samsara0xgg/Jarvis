@@ -108,10 +108,16 @@ struct FootprintDayReplay: View {
 
     private func play() {
         guard let replay = model.replay(.day) else { return }
-        let state = ui.footprint, entries = entries, model = model
-        state.player.emit = { f, r in state.hold(FootprintMoment(f, height: r.height), model: model, entries: entries) }
+        Self.connect(ui.footprint, model: model, entries: entries)
+        ui.footprint.player.play(replay)
+    }
+
+    /// what the player's frames do on this page, played or under a finger: the moment held, and at the end the day's whole again
+    static func connect(_ state: FootprintDayState, model: FootprintModel, entries: [TLEntry]) {
+        state.player.emit = { f, r, playing in
+            state.hold(playing ? FootprintMoment(f, height: r.height) : FootprintMoment(finger: f, model: model), model: model, entries: entries)
+        }
         state.player.ended = { withAnimation(.easeOut(duration: 0.2)) { state.release() } }
-        state.player.play(replay)
     }
 }
 
@@ -229,7 +235,7 @@ struct FootprintDayBar: View {
     private func scrubbed(_ t: Double, _ x: Double, _ bar: DayTimelineModel) {
         let state = ui.footprint
         state.player.touch()          // a finger on the bar pauses the replay
-        guard let model, model.barLayout.hasSegments, let moment = model.barLayout.moment(atX: x, model: model) else {
+        guard let model, model.barLayout.hasSegments, let replay = model.replay(.day) else {
             state.minute = t
             let id = FootprintDayContent.hot(at: t, in: entries)
             if id != state.list.hot {
@@ -242,17 +248,18 @@ struct FootprintDayBar: View {
             if state.lastStretch != s { state.lastStretch = s; Haptic.selection() }
             return
         }
-        state.hold(moment, model: model, entries: entries)
-        if state.player.phase == .paused, let r = state.player.replay { state.player.seek(r.seconds(atX: moment.x ?? x)) }          // ▶ goes on from here
+        FootprintDayReplay.connect(state, model: model, entries: entries)
+        state.player.point(at: replay.seconds(atX: x), of: replay)          // the moment comes from the player, eased; ▶ goes on from where it stands
         let s = model.barLayout.stretch(atX: x)
         if state.lastStretch != s { state.lastStretch = s; Haptic.selection() }
     }
 
     /// the finger lifted: the bar turns back and the camera goes back to the day's whole, unless a replay stands paused, which keeps its playhead
     private func lifted() {
-        let state = ui.footprint
+        let state = ui.footprint, rest = state.player.phase == .rest
         state.lastStretch = nil
-        if state.player.phase == .rest { withAnimation(.easeOut(duration: 0.2)) { state.release() } }
+        state.player.lift()
+        if rest { withAnimation(.easeOut(duration: 0.2)) { state.release() } }
     }
 }
 

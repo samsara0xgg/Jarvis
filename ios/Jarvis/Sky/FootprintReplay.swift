@@ -14,12 +14,14 @@ struct FootprintReplay {
         /// where the playhead stands on the held bar (the trip layout)
         var x: Double
         var coord: CLLocationCoordinate2D
-        /// degrees clockwise from north; kept while he is still
+        /// degrees clockwise from north: along the line; through a stop the way it goes there, and through a long stay turning from the way the outing before ended to the way the next begins
         var heading: Double
         var beat: Beat?
         var outingId: String?
         /// a beat in which the camera flies from one place to the next: the coordinate is not on a line then
         var flying: Bool
+        /// a long stay's beat: the outing after it (else the one before), whose height a finger there takes
+        var near: String? = nil
     }
 
     static let beatSeconds = 1.0, minOutingSeconds = 3.0, flyMetres = 20.0
@@ -35,7 +37,7 @@ struct FootprintReplay {
 
     private enum Part {
         case move(track: FootprintTrack, d0: Double, d1: Double, ms: ClosedRange<Int64>, ahead: Double, hold: Double)
-        case beat(Beat, ms: ClosedRange<Int64>, from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, heading: Double, fly: Bool)
+        case beat(Beat, ms: ClosedRange<Int64>, from: CLLocationCoordinate2D, to: CLLocationCoordinate2D, heading: (from: Double, to: Double), fly: Bool, near: String?)
     }
     /// a stretch of the replay with where it lies on the trip bar and in time, so that a finger's x or a curve's time can be turned back into a second
     private struct Slot { var t0: Double, t1: Double; var x0: Double, x1: Double; var ms: ClosedRange<Int64>; var outing: String?; var part: Part }
@@ -106,7 +108,7 @@ struct FootprintReplay {
                 let to = next.flatMap { $0.track.coord(atDistance: 0) } ?? from
                 guard let from, let to, let stay = r.stays.first(where: { $0.id == id }) else { continue }
                 let fly = prev != nil && metres(from, to) > Self.flyMetres
-                add(Self.beatSeconds, nil, x: it.x0...it.x1, ms: it.ms0...it.ms1, .beat(.stay(id: id, minutes: stay.minutes(now: r.now_ms)), ms: it.ms0...it.ms1, from: from, to: to, heading: (fly || prev == nil ? next?.start : prev?.end) ?? 0, fly: fly))
+                add(Self.beatSeconds, nil, x: it.x0...it.x1, ms: it.ms0...it.ms1, .beat(.stay(id: id, minutes: stay.minutes(now: r.now_ms)), ms: it.ms0...it.ms1, from: from, to: to, heading: ((prev?.end ?? next?.start) ?? 0, (next?.start ?? prev?.end) ?? 0), fly: fly, near: (next ?? prev)?.id))
             case let .segment(id):
                 guard let run = runs[id] else { continue }
                 let share = moving.shares[seen], length = run.track.length, runCount = it.pieces.filter { if case .run = $0.kind { true } else { false } }.count
@@ -115,8 +117,8 @@ struct FootprintReplay {
                     case let .run(d0, d1):
                         add(length > 0 ? share * (d1 - d0) / length : share / Double(runCount), id, x: p.x0...p.x1, ms: p.ms0...p.ms1, .move(track: run.track, d0: d0, d1: d1, ms: p.ms0...p.ms1, ahead: run.ahead, hold: run.end))
                     case let .notch(stop, number):
-                        let d = run.track.distance(atMs: p.ms0), c = run.track.coord(atDistance: d) ?? CLLocationCoordinate2D()
-                        add(Self.beatSeconds, id, x: p.x0...p.x1, ms: p.ms0...p.ms1, .beat(.stop(id: stop, number: number, minutes: Int((Double(p.ms1 - p.ms0) / 60_000).rounded())), ms: p.ms0...p.ms1, from: c, to: c, heading: run.track.heading(atDistance: d, ahead: run.ahead) ?? run.end, fly: false))
+                        let d = run.track.distance(atMs: p.ms0), c = run.track.coord(atDistance: d) ?? CLLocationCoordinate2D(), h = run.track.heading(atDistance: d, ahead: run.ahead) ?? run.end
+                        add(Self.beatSeconds, id, x: p.x0...p.x1, ms: p.ms0...p.ms1, .beat(.stop(id: stop, number: number, minutes: Int((Double(p.ms1 - p.ms0) / 60_000).rounded())), ms: p.ms0...p.ms1, from: c, to: c, heading: (h, h), fly: false, near: nil))
                     }
                 }
                 seen += 1
@@ -137,10 +139,11 @@ struct FootprintReplay {
             let d = d0 + (d1 - d0) * u
             return Frame(ms: min(max(track.ms(atDistance: d), ms.lowerBound), ms.upperBound), x: s.x0 + (s.x1 - s.x0) * u, coord: track.coord(atDistance: d) ?? CLLocationCoordinate2D(), heading: track.heading(atDistance: d, ahead: ahead) ?? hold,
                          beat: nil, outingId: s.outing, flying: false)
-        case let .beat(beat, ms, from, to, heading, fly):
+        case let .beat(beat, ms, from, to, heading, fly, near):
             let e = u * u * (3 - 2 * u)         // eased at both ends
             let c = fly ? CLLocationCoordinate2D(latitude: from.latitude + (to.latitude - from.latitude) * e, longitude: from.longitude + (to.longitude - from.longitude) * e) : from
-            return Frame(ms: ms.lowerBound + Int64((Double(ms.upperBound - ms.lowerBound) * u).rounded()), x: s.x0 + (s.x1 - s.x0) * u, coord: c, heading: heading, beat: beat, outingId: s.outing, flying: fly)
+            let h = (heading.from + FootprintCamera.turn(from: heading.from, to: heading.to) * e + 360).truncatingRemainder(dividingBy: 360)
+            return Frame(ms: ms.lowerBound + Int64((Double(ms.upperBound - ms.lowerBound) * u).rounded()), x: s.x0 + (s.x1 - s.x0) * u, coord: c, heading: h, beat: beat, outingId: s.outing, flying: fly, near: near)
         }
     }
 
