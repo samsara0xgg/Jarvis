@@ -106,6 +106,8 @@ enum StateChange {
     case call(started: Bool)
     /// The charge in whole percent; the charging state goes along as the frame's detail (`charging`, `full`, `unplugged`)
     case battery(percent: Int)
+    /// The watch's charge, as `battery` (ADR 0377)
+    case watchBattery(percent: Int)
 
     var signal: String {
         switch self {
@@ -115,6 +117,7 @@ enum StateChange {
         case .headphones: "headphones"
         case .call: "call"
         case .battery: "battery"
+        case .watchBattery: "watch_battery"
         }
     }
 
@@ -124,7 +127,7 @@ enum StateChange {
         case .alarm(let snoozed): snoozed ? "snoozed" : "stopped"
         case .power(let connected), .headphones(let connected): connected ? "connected" : "disconnected"
         case .call(let started): started ? "started" : "ended"
-        case .battery(let percent): String(percent)
+        case .battery(let percent), .watchBattery(let percent): String(percent)
         }
     }
 }
@@ -336,7 +339,10 @@ extension ReportFrame {
                 ts = e
                 payload = body
             case let .state(change, when, detail):
-                if case .battery(let percent) = change, !(0...100).contains(percent) { return nil }
+                switch change {
+                case .battery(let percent), .watchBattery(let percent): if !(0...100).contains(percent) { return nil }
+                default: break
+                }
                 let t = Self.at(when, now)
                 type = "phone.state_observed"
                 key = "\(change.signal),\(change.value),\(t)"

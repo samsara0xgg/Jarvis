@@ -87,6 +87,7 @@ enum WatchAsk: Codable, Equatable {
     case talkStart(id: UUID)                // he started talking; audio follows as data messages tagged with this talk
     case talkEnd(id: UUID)                  // he stopped (a tap, or the watch heard the pause)
     case talkCancel(id: UUID)
+    case charge(percent: Int, state: String, at: Date)   // the watch's charge in whole percent, `charging`, `full` or `unplugged`, when it read it (ADR 0377)
 }
 
 /// From the phone to the watch.

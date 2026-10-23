@@ -10,7 +10,8 @@ final class WatchWireTests: XCTestCase {
     }
 
     func testEveryAskRoundTrips() {
-        let asks: [WatchAsk] = [.refresh, .answer(id: "reminder-1", action: "ack"), .talkStart(id: talk), .talkEnd(id: talk), .talkCancel(id: talk)]
+        let asks: [WatchAsk] = [.refresh, .answer(id: "reminder-1", action: "ack"), .talkStart(id: talk), .talkEnd(id: talk), .talkCancel(id: talk),
+                              .charge(percent: 87, state: "charging", at: Date(timeIntervalSince1970: 1_790_000_123.456))]
         for a in asks { XCTAssertEqual(WatchWire.decode(WatchAsk.self, WatchWire.encode(a)), a) }
     }
 
