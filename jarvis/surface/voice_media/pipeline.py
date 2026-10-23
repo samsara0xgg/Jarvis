@@ -34,6 +34,7 @@ from jarvis.surface.voice_media.contract import (
 )
 from jarvis.surface.voice_media.gain import OutputGain
 from jarvis.surface.voice_media.journal import PlaybackJournal
+from jarvis.surface.voice_media.network_lost import NetworkLostCue
 from jarvis.surface.voice_media.pcm import SegmentResampler, cut_off_cue, head_dropped
 from jarvis.surface.voice_media.player_stop import PlayerStopper
 from jarvis.surface.voice_media.registry import ActivePlaybackRegistry
@@ -45,6 +46,7 @@ from jarvis.surface.voice_media.response import (
     ResponseChunk,
 )
 from jarvis.surface.voice_media.shutdown_clock import ShutdownClock
+from jarvis.surface.voice_media.spare import SpareSessions
 from jarvis.surface.voice_tts import (
     AudioStreamPlayer,
     PlayerStartResult,
@@ -64,16 +66,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# A session connected while Allen is still talking spares his answer the
-# transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
-# 2026-09-29). MiniMax closes a started task after 120 s without an event.
-SPARE_SESSION_MAX_AGE_S = 60.0
-# The cut-off line is synthesized ahead of time as a response of its own; this
-# id never reaches the Event Log's response rows, only tts.usage_observed.
-_NETWORK_LOST_RESPONSE_ID = "network-lost-line"
-_NETWORK_LOST_PREFETCH_TIMEOUT_S = 20.0
-# A kept copy of the line is trusted this long, so a changed voice shows up within a month.
-_NETWORK_LOST_KEEP_S = 30 * 24 * 3600.0
 # The rate the say fallback renders at; the player resamples it like provider PCM.
 _SAY_RATE_HZ = 24_000
 _RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
@@ -191,16 +183,22 @@ class StreamingTTSPipeline:
         # behind the answer. Insertion-ordered so the oldest can be trimmed.
         self._answered_groups: dict[str, None] = {}
         self._gain = OutputGain(player)
-        # Connected for the next answer while Allen talks; actor-owned.
-        self._spare: TTSSession | None = None
-        self._spare_language: lang.Language = "en"
         # Language of the last answer's first segment: what he speaks, so what the next spare reads.
         self._last_answer_language: lang.Language | None = None
-        self._spare_ready_at = 0.0
-        self._spare_task: asyncio.Task[None] | None = None
-        # Canonical PCM of the spoken "tts.network_lost" line, per language, in memory.
-        self._network_lost_pcm: dict[str, bytes] = {}
-        self._network_lost_task: asyncio.Task[None] | None = None
+        self._spare = SpareSessions(
+            provider=provider,
+            config=self._config,
+            clock=self._clock,
+            admitting=self._admitting,
+            language=lambda: self._last_answer_language or lang.language(),
+        )
+        self._network_lost = NetworkLostCue(
+            provider=provider,
+            config=self._config,
+            clock=self._clock,
+            journal=self._journal,
+            admitting=self._admitting,
+        )
         self._thread = threading.Thread(
             target=self._thread_main,
             name="jarvis-media-owner",
@@ -1064,7 +1062,7 @@ class StreamingTTSPipeline:
     async def _suspend_for_sleep_owned(self) -> bool:
         """Actor-owned power transition; distinct from speech interruption."""
         self._power_suspended = True
-        await self._close_spare()
+        await self._spare.close()
         if self._active is not None and not await self._interrupt_active(
             reason="system_sleep",
         ):
@@ -1133,185 +1131,15 @@ class StreamingTTSPipeline:
     async def _hold_output_owned(self, *, held: bool) -> None:
         self._held = held
         if held:
-            await self._prewarm()
+            await self._spare.prewarm()
         if held or self._device_held:
             return
         parked, self._parked = self._parked, deque()
         for response in parked:
             await self._schedule_response(response)
 
-    async def _prewarm(self) -> None:
-        """Allen started talking: have the first session of his answer connected now."""
-        if self._spare_task is not None or self._power_suspended or not self._accepting.is_set():
-            return
-        if self._spare is not None:
-            if self._spare_fresh():
-                return
-            await self._drop_spare()
-        # His words are not recognized yet, so the spare reads the language of his
-        # last answer (the system language before any); an answer in the other one
-        # does not take it.
-        language = self._last_answer_language or lang.language()
-        session = self._provider.create_tts_session(
-            endpoint_index=0,
-            language=language,
-            idle_close_s=self._config.session_idle_close_s,
-            command_queue_capacity=self._config.session_command_capacity,
-            audio_queue_capacity=self._config.session_audio_capacity,
-        )
-        self._spare_task = asyncio.create_task(
-            self._connect_spare(session, language), name="tts-spare-connect",
-        )
-
-    async def _connect_spare(self, session: TTSSession, language: lang.Language) -> None:
-        try:
-            await session.connect()
-        except Exception:  # noqa: BLE001 - a spare that cannot connect is only not used
-            LOGGER.debug("spare TTS session did not connect", exc_info=True)
-            await self._clock.wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
-            return
-        finally:
-            self._spare_task = None
-        if self._power_suspended or not self._accepting.is_set():
-            await self._clock.wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
-            return
-        self._spare, self._spare_ready_at = session, asyncio.get_running_loop().time()
-        self._spare_language = language
-        record_realtime_trace("tts_session_prewarmed", measurement_semantics="spare_connected")
-
-    def _prefetch_network_lost_line(self) -> None:
-        """Once the network has just worked, have the cut-off line synthesized in the background."""
-        if (
-            not self._config.prefetch_network_lost_line
-            or lang.language() in self._network_lost_pcm
-            or self._network_lost_task is not None
-            or self._power_suspended
-            or not self._accepting.is_set()
-        ):
-            return
-        self._network_lost_task = asyncio.create_task(
-            self._synthesize_network_lost_line(lang.language()),
-            name="tts-network-lost-prefetch",
-        )
-
-    async def _synthesize_network_lost_line(self, code: lang.Language) -> None:
-        """Own session, no player, no response rows: a failure only leaves the tones."""
-        session: TTSSession | None = None
-        try:
-            kept = await asyncio.to_thread(self._read_kept_network_lost_line, code)
-            if kept is not None:
-                self._network_lost_pcm[code] = kept
-                record_realtime_trace("tts_network_lost_line_cached", language=code, source="disk")
-                return
-            session = self._provider.create_tts_session(
-                endpoint_index=0,
-                language=code,
-                idle_close_s=self._config.session_idle_close_s,
-                command_queue_capacity=self._config.session_command_capacity,
-                audio_queue_capacity=self._config.session_audio_capacity,
-            )
-            parts: list[bytes] = []
-            async with asyncio.timeout(_NETWORK_LOST_PREFETCH_TIMEOUT_S):
-                await session.open(_NETWORK_LOST_RESPONSE_ID, 0)
-                await session.send(
-                    TTSResponseSegment(
-                        response_id=_NETWORK_LOST_RESPONSE_ID,
-                        playback_generation_id=0,
-                        sequence=0,
-                        text=lang.t("tts.network_lost", lang=code),
-                    ),
-                )
-                resampler: SegmentResampler | None = None
-                async for event in session.audio_events():
-                    if isinstance(event, TTSAudioChunk):
-                        if event.pcm:
-                            resampler = resampler or SegmentResampler(
-                                input_rate_hz=event.sample_rate_hz,
-                                output_rate_hz=self._config.canonical_sample_rate_hz,
-                            )
-                            parts.append(resampler.feed(event.pcm))
-                        continue
-                    if resampler is not None:
-                        parts.append(resampler.finish())
-                    self._journal.tts_usage(
-                        event.usage, response_id=_NETWORK_LOST_RESPONSE_ID, sequence=0,
-                    )
-                    break
-            if parts:
-                self._network_lost_pcm[code] = b"".join(parts)
-                record_realtime_trace(
-                    "tts_network_lost_line_cached",
-                    language=code,
-                    pcm_bytes=len(self._network_lost_pcm[code]),
-                )
-                await asyncio.to_thread(
-                    self._keep_network_lost_line, code, self._network_lost_pcm[code],
-                )
-        except Exception:  # noqa: BLE001 - the tones remain the fallback
-            LOGGER.debug("network-lost line was not synthesized", exc_info=True)
-        finally:
-            self._network_lost_task = None
-            if session is not None:
-                await self._clock.wait_task_bounded(
-                    asyncio.create_task(session.close()), timeout_s=0.5,
-                )
-
-    def _network_lost_file(self, code: lang.Language) -> Path | None:
-        """The kept audio of the line: named by its text and rate, so an edit starts afresh."""
-        directory = self._config.network_lost_cache_dir
-        if directory is None:
-            return None
-        key = f"{lang.t('tts.network_lost', lang=code)}|{self._config.canonical_sample_rate_hz}"
-        digest = hashlib.sha256(key.encode()).hexdigest()[:16]
-        return directory / f"network-lost-{code}-{digest}.pcm"
-
-    def _read_kept_network_lost_line(self, code: lang.Language) -> bytes | None:
-        """The line's audio from an earlier run, or ``None`` when absent, stale or unreadable."""
-        path = self._network_lost_file(code)
-        try:
-            if path is None or time.time() - path.stat().st_mtime > _NETWORK_LOST_KEEP_S:
-                return None
-            return path.read_bytes() or None
-        except OSError:
-            return None
-
-    def _keep_network_lost_line(self, code: lang.Language, pcm: bytes) -> None:
-        """Keep the line's audio for the next run; a disk that refuses only costs a call then."""
-        path = self._network_lost_file(code)
-        if path is None:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            partial = path.with_suffix(".tmp")
-            partial.write_bytes(pcm)
-            partial.replace(path)
-        except OSError:
-            LOGGER.debug("network-lost line was not kept on disk", exc_info=True)
-
-    def _spare_fresh(self) -> bool:
-        return asyncio.get_running_loop().time() - self._spare_ready_at <= SPARE_SESSION_MAX_AGE_S
-
-    async def _take_spare(self, language: lang.Language) -> TTSSession | None:
-        """The connected spare for an answer's first endpoint, if fresh and in its language.
-
-        One still connecting is left to become the next answer's spare.
-        """
-        if self._spare is not None and self._spare_fresh() and self._spare_language == language:
-            spare, self._spare = self._spare, None
-            return spare
-        await self._drop_spare()
-        return None
-
-    async def _drop_spare(self) -> None:
-        spare, self._spare = self._spare, None
-        if spare is not None:
-            await self._clock.wait_task_bounded(asyncio.create_task(spare.close()), timeout_s=0.5)
-
-    async def _close_spare(self) -> None:
-        """Shutdown and sleep: no spare survives, including one still connecting."""
-        if self._spare_task is not None:
-            await self._clock.wait_task_bounded(self._spare_task, timeout_s=0.5)
-        await self._drop_spare()
+    def _admitting(self) -> bool:
+        return not self._power_suspended and self._accepting.is_set()
 
     async def _hold_for_devices_owned(self, *, held: bool) -> bool:
         self._device_held = held
@@ -2088,7 +1916,7 @@ class StreamingTTSPipeline:
                     if session is None:
                         language = self._last_answer_language = lang.text_language(text)
                         session = (
-                            await self._take_spare(language) if endpoint_index == 0 else None
+                            await self._spare.take(language) if endpoint_index == 0 else None
                         ) or self._provider.create_tts_session(
                             endpoint_index=endpoint_index,
                             language=language,
@@ -2192,7 +2020,7 @@ class StreamingTTSPipeline:
                             response_id=active.response.response_id,
                             sequence=sequence,
                         )
-                        self._prefetch_network_lost_line()
+                        self._network_lost.prefetch()
                         break
                     break
                 except asyncio.CancelledError:
@@ -2277,7 +2105,7 @@ class StreamingTTSPipeline:
 
     async def _play_cut_off_cue(self, active: ActiveResponse, *, sequence: int) -> None:
         """Play what was accepted to its end, then her spoken line or tones, before the terminal."""
-        line = self._network_lost_pcm.get(lang.language())
+        line = self._network_lost.line(lang.language())
         cue = line or cut_off_cue(self._config.canonical_sample_rate_hz)
         await self._write_all(active, cue, sequence=sequence)
         record_realtime_trace(
@@ -3184,10 +3012,8 @@ class StreamingTTSPipeline:
 
     async def _shutdown_owned(self) -> None:
         self._accepting.clear()
-        await self._close_spare()
-        if self._network_lost_task is not None:
-            self._network_lost_task.cancel()
-            await self._clock.wait_task_bounded(self._network_lost_task, timeout_s=0.5)
+        await self._spare.close()
+        await self._network_lost.close()
         if self._active is not None:
             await self._interrupt_active(reason="media_owner_shutdown")
         while self._fallback_janitors:
