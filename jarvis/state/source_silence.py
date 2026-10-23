@@ -9,8 +9,10 @@ reads the rows.
 A source is judged by three fixed things, borrowed from how a commercial tracker judges its own:
 
 - **A precondition.** Time counts against a source only while it should be producing: the Mac is
-  awake for the microphone; awake, unlocked, not idle and not paused, with TimeSink running, for
-  TimeSink. A closed lid is not a silence.
+  awake for the microphone; awake, unlocked, not idle, not paused and not hands-off, with TimeSink
+  running, for TimeSink. A closed lid is not a silence. And only time the brain has heard from the
+  Mac counts: a sleeping Mac ships its sleep mark after it wakes, so eligible time ends at the
+  newest TimeSink row the copy holds.
 - **The time since the last success**, counted in that eligible time alone, so a night asleep adds
   nothing. A source is silent once it passes its allowed gap (:data:`SOURCES`).
 - **Debounce.** The allowed gap is two windows of the source's own cadence (:data:`SOURCES`): one
@@ -48,35 +50,45 @@ MIC: Final = "mac.mic"
 
 # TimeSink's state events, as the Mac copy holds them (kind ``stateEvent``). The kinds come in
 # pairs of opposites; a group is bad from its first member until its second.
+_RUN, _LOCK, _SLEEP, _IDLE, _TRACKING, _CAPTURE, _HANDS = range(7)
+_GROUPS: Final = 7
 _BAD_AT: Final[dict[str, int]] = {
-    "stop": 0, "lock": 1, "sleep": 2, "idle": 3,
-    "tracking_pause": 4, "pause": 4, "screen_denied": 4,
+    "stop": _RUN, "lock": _LOCK, "sleep": _SLEEP, "idle": _IDLE,
+    "tracking_pause": _TRACKING, "pause": _CAPTURE, "screen_denied": _CAPTURE,
+    "hands_off": _HANDS,
 }
 _GOOD_AT: Final[dict[str, tuple[int, ...]]] = {
-    "start": (0, 4), "unlock": (1,), "wake": (2,), "active": (3,),
-    "tracking_resume": (4,), "resume": (4,),
+    "unlock": (_LOCK,), "wake": (_SLEEP,), "active": (_IDLE,),
+    "tracking_resume": (_TRACKING,), "resume": (_CAPTURE,), "hands_on": (_HANDS,),
 }
-_GROUPS: Final = 5
-_ALL_GROUPS: Final = frozenset(range(_GROUPS))
-_AWAKE_GROUPS: Final = frozenset({0, 2})
+_RESETS: Final = frozenset({"start", "stop"})
+"""TimeSink's own start and stop: what it said about the Mac before them no longer holds."""
+_ENDS_HANDS_OFF: Final = frozenset({"idle", "lock", "sleep"})
+"""A hands-off stretch ends where he goes idle, locks the screen or the Mac sleeps."""
+_SPAN_GROUPS: Final = frozenset({_RUN, _LOCK, _SLEEP, _IDLE, _TRACKING, _HANDS})
+_OCR_GROUPS: Final = frozenset({_RUN, _LOCK, _SLEEP, _IDLE, _TRACKING, _CAPTURE})
+_AWAKE_GROUPS: Final = frozenset({_RUN, _SLEEP})
 """TimeSink running and the Mac awake: all the microphone can be said to need."""
 
 _STATE_LOOKBACK_MS: Final = 7 * 24 * HOUR_MS
-"""How far before the window the state events are read, to know the state at its start."""
+"""How far before the window the state events are kept, to know the state at its start."""
 RETIRED_AFTER_MS: Final = 14 * 24 * HOUR_MS
 """A source with no arrival at all for this long was switched off on purpose, not broken."""
 
+# Spans, capture health and the heard-from probe walk the time index from the window (`INDEXED BY`:
+# the planner would otherwise take the (source, key) index and walk every TimeSink row ever
+# shipped, 100,000 spans). The state marks are few and read by key, as the doing lane reads them:
+# `+at_ms` keeps the planner on that range.
 _SQL_STATES: Final = (
-    "SELECT at_ms, json_extract(fields, '$.kind') FROM import_entries INDEXED BY import_entries_at "
-    "WHERE source = 'timesink' AND kind = 'stateEvent' AND at_ms >= ? AND at_ms <= ? "
-    "ORDER BY at_ms"
+    "SELECT at_ms, json_extract(fields, '$.kind') FROM import_entries "
+    "WHERE source = 'timesink' AND key >= 'stateEvent:' AND key < 'stateEvent;' "
+    "AND +at_ms >= ? AND +at_ms <= ? ORDER BY at_ms"
 )
 _SQL_SPANS: Final = (
-    "SELECT DISTINCT at_ms FROM import_entries INDEXED BY import_entries_at "
+    "SELECT DISTINCT at_ms, json_extract(fields, '$.end') "
+    "FROM import_entries INDEXED BY import_entries_at "
     "WHERE source = 'timesink' AND kind = 'span' AND at_ms >= ? AND at_ms <= ? ORDER BY at_ms"
 )
-# `INDEXED BY` on all four: the planner would otherwise take the (source, key) index and walk every
-# TimeSink row ever shipped (100,000 spans), not the days asked for.
 # A row of the 10-minute health table is shipped again as it grows (a revision per version), all
 # at the row's own start: the best of its versions is what it did.
 _SQL_OCR: Final = (
@@ -90,7 +102,15 @@ _SQL_ALIVE: Final = (
     "WHERE source = 'timesink' AND kind = ? "
     "AND at_ms >= ? AND at_ms <= ? LIMIT 1"
 )
+# The newest moment a row of TimeSink's own activity carries: the Mac ships what it has seen, so
+# its newest row is the last the brain heard from it (a configuration row says nothing of that).
+_SQL_HEARD: Final = (
+    "SELECT MAX(at_ms) FROM import_entries INDEXED BY import_entries_at "
+    "WHERE source = 'timesink' AND kind IN ('span', 'captureHealth', 'stateEvent') "
+    "AND at_ms <= ?"
+)
 ALL_QUERIES: Final[tuple[tuple[str, str], ...]] = (
+    ("silence_heard", _SQL_HEARD),
     ("silence_alive", _SQL_ALIVE),
     ("silence_states", _SQL_STATES),
     ("silence_spans", _SQL_SPANS),
@@ -118,14 +138,14 @@ class Source:
 SOURCES: Final[tuple[Source, ...]] = (
     Source(
         SPANS,
-        "a TimeSink span starts (kind span of the Mac copy, at its start)",
-        "TimeSink running, Mac awake and unlocked, not idle, not paused",
-        HOUR_MS,
+        "a TimeSink span starts, or a shipped version of one ends (kind span of the Mac copy)",
+        "TimeSink running, Mac awake and unlocked, not idle, not hands-off, tracking not paused",
+        2 * HOUR_MS,
     ),
     Source(
         OCR,
         "a 10-minute capture row with at least one OCR run that did not fail",
-        "the same as spans",
+        "TimeSink running, Mac awake and unlocked, not idle, tracking and capture not paused",
         HOUR_MS,
     ),
     Source(
@@ -142,7 +162,9 @@ _GAP: Final = {one.name: one.allowed_gap_ms for one in SOURCES}
 class Evidence:
     """The rows a judgement needs, already read.
 
-    ``ocr`` is ``(start, runs that did not fail, runs that failed)`` per 10-minute row. A source
+    ``spans`` are the instants a span started or a shipped version of one ended. ``ocr`` is
+    ``(start, runs that did not fail, runs that failed)`` per 10-minute row. ``until_ms`` is the
+    newest moment the brain has heard from the Mac, where the judgement stops. A source
     that is not judged, and why, is in ``skipped``: its rows could not be read, or it has not
     arrived at all for :data:`RETIRED_AFTER_MS`.
     """
@@ -152,6 +174,7 @@ class Evidence:
     ocr: tuple[tuple[int, int, int], ...] = ()
     pieces: tuple[tuple[int, int], ...] = ()
     skipped: tuple[tuple[str, str], ...] = ()
+    until_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -221,10 +244,21 @@ def _count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _utc_ms(text: object) -> int | None:
+    """The UTC millisecond of a TimeSink ``DATETIME`` text like ``2026-10-19 05:01:47.282``."""
+    if not isinstance(text, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return None
+    return int(moment.replace(tzinfo=moment.tzinfo or UTC).timestamp() * 1000)
+
+
 def read_evidence(
     shipped: sqlite3.Connection, lifelog_dir: Path, *, since_ms: int, ref_ms: int,
 ) -> Evidence:
-    """The rows of ``[since_ms, ref_ms]``, read-only.
+    """The rows of ``[since_ms, ref_ms]``, read-only, up to where the brain last heard the Mac.
 
     ``shipped`` is the Mac copy (``imports/shipped.db``) opened read-only; the recording pieces
     are read from the archive's file names alone and never opened. A source the rows cannot
@@ -233,28 +267,40 @@ def read_evidence(
     Raises:
         sqlite3.Error: ``shipped`` is not the Mac copy.
     """
+    (heard,) = shipped.execute(_SQL_HEARD, (ref_ms,)).fetchone()
+    if not isinstance(heard, int):
+        why = "the Mac copy holds no TimeSink rows yet"
+        return Evidence(skipped=tuple((one.name, why) for one in SOURCES), until_ms=ref_ms)
+    until = min(ref_ms, heard)
     states = tuple(
         (_count(at), kind)
-        for at, kind in shipped.execute(_SQL_STATES, (since_ms - _STATE_LOOKBACK_MS, ref_ms))
+        for at, kind in shipped.execute(_SQL_STATES, (since_ms - _STATE_LOOKBACK_MS, until))
         if isinstance(kind, str)
     )
-    spans = tuple(_count(at) for (at,) in shipped.execute(_SQL_SPANS, (since_ms, ref_ms)))
+    span_rows = shipped.execute(_SQL_SPANS, (since_ms, until)).fetchall()
+    started = {_count(at) for at, _end in span_rows}
+    ended = {
+        moment for _at, text in span_rows
+        if (moment := _utc_ms(text)) is not None and moment <= until
+    }
     ocr = tuple(
         (_count(at), max(_count(ok), 0), _count(failed))
-        for at, ok, failed in shipped.execute(_SQL_OCR, (since_ms, ref_ms))
+        for at, ok, failed in shipped.execute(_SQL_OCR, (since_ms, until))
     )
     recent = ref_ms - RETIRED_AFTER_MS
     skipped: dict[str, str] = {}
     for name, kind in ((SPANS, "span"), (OCR, "captureHealth")):
-        if shipped.execute(_SQL_ALIVE, (kind, min(recent, since_ms), ref_ms)).fetchone() is None:
+        if shipped.execute(_SQL_ALIVE, (kind, min(recent, since_ms), until)).fetchone() is None:
             skipped[name] = _RETIRED
-    pieces = _pieces(lifelog_dir, min(recent, since_ms), ref_ms)
+    pieces = _pieces(lifelog_dir, min(recent, since_ms), until)
     if pieces is None:
         skipped[MIC] = f"no {LIFELOG_DIRNAME}/audio archive to read the recording pieces from"
     elif not pieces:
         skipped[MIC] = _RETIRED
     kept = tuple(piece for piece in pieces or () if since_ms <= piece[1])
-    return Evidence(states, spans, ocr, kept, tuple(sorted(skipped.items())))
+    return Evidence(
+        states, tuple(sorted(started | ended)), ocr, kept, tuple(sorted(skipped.items())), until,
+    )
 
 
 def _pieces(lifelog_dir: Path, since_ms: int, ref_ms: int) -> tuple[tuple[int, int], ...] | None:
@@ -286,13 +332,26 @@ def _pieces(lifelog_dir: Path, since_ms: int, ref_ms: int) -> tuple[tuple[int, i
 # --- Judging ------------------------------------------------------------------------------
 
 
+def _marked(bad: list[bool], kind: str) -> None:
+    """Apply one state mark to the groups' badness, in place."""
+    if kind in _RESETS:
+        bad[:] = [False] * _GROUPS
+    if kind in _BAD_AT:
+        bad[_BAD_AT[kind]] = True
+    if kind in _ENDS_HANDS_OFF:
+        bad[_HANDS] = False
+    for group in _GOOD_AT.get(kind, ()):
+        bad[group] = False
+
+
 def eligible_intervals(
     states: tuple[tuple[int, str], ...], groups: frozenset[int], since_ms: int, ref_ms: int,
 ) -> list[tuple[int, int]]:
     """The stretches of ``[since_ms, ref_ms]`` where every state group in ``groups`` is good.
 
     Every group starts good and a state event turns one bad or good again; the events before
-    ``since_ms`` give the state at its start. Kinds this module does not know are ignored.
+    ``since_ms`` give the state at its start. TimeSink's own start and stop clear the marks it
+    made before them. Kinds this module does not know are ignored.
     """
     bad = [False] * _GROUPS
     out: list[tuple[int, int]] = []
@@ -300,10 +359,7 @@ def eligible_intervals(
     for at, kind in states:
         if at > ref_ms:
             break
-        if kind in _BAD_AT:
-            bad[_BAD_AT[kind]] = True
-        for group in _GOOD_AT.get(kind, ()):
-            bad[group] = False
+        _marked(bad, kind)
         good = not any(bad[group] for group in groups)
         if at <= since_ms:
             open_at = since_ms if good else None
@@ -362,19 +418,25 @@ def silences(  # noqa: PLR0913 - the source's arrivals and gate, and the window 
 
 
 def judge(evidence: Evidence, *, since_ms: int, ref_ms: int) -> Judgement:
-    """Judge every source in :data:`SOURCES` that ``evidence`` does not skip."""
+    """Judge every source in :data:`SOURCES` that ``evidence`` does not skip.
+
+    The window ends where the brain last heard from the Mac (``evidence.until_ms``) if that is
+    before ``ref_ms``: the Mac's own marks of a sleep arrive after it wakes.
+    """
+    ref_ms = ref_ms if evidence.until_ms is None else min(ref_ms, evidence.until_ms)
     left_out = {name for name, _why in evidence.skipped}
-    timesink = eligible_intervals(evidence.states, _ALL_GROUPS, since_ms, ref_ms)
+    spans_gate = eligible_intervals(evidence.states, _SPAN_GROUPS, since_ms, ref_ms)
+    ocr_gate = eligible_intervals(evidence.states, _OCR_GROUPS, since_ms, ref_ms)
     awake = eligible_intervals(evidence.states, _AWAKE_GROUPS, since_ms, ref_ms)
     found: list[Silence] = []
     if SPANS not in left_out:
         found += silences(
-            SPANS, list(evidence.spans), timesink, gap_ms=_GAP[SPANS],
+            SPANS, list(evidence.spans), spans_gate, gap_ms=_GAP[SPANS],
             since_ms=since_ms, ref_ms=ref_ms,
         )
     if OCR not in left_out:
         found += silences(
-            OCR, [at for at, ok, _failed in evidence.ocr if ok > 0], timesink, gap_ms=_GAP[OCR],
+            OCR, [at for at, ok, _failed in evidence.ocr if ok > 0], ocr_gate, gap_ms=_GAP[OCR],
             failures=[(at, failed) for at, _ok, failed in evidence.ocr if failed],
             since_ms=since_ms, ref_ms=ref_ms,
         )

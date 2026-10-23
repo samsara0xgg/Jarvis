@@ -575,7 +575,7 @@ def _sources_arrive(scope: _Scope, found: _Found) -> None:
         )
         return
     try:
-        conn = open_read_only(shipped, probe=source_silence.SHIPPED_PROBE)
+        conn = open_read_only(shipped, probe=source_silence.SHIPPED_PROBE, rollback_journal=True)
     except LogCheckError as exc:
         found.detail = found.skipped = str(exc)
         return
@@ -711,6 +711,7 @@ INVARIANTS: Final[tuple[Invariant, ...]] = (
 
 def open_read_only(
     event_log: Path, *, probe: str = "SELECT 1 FROM events LIMIT 1",
+    rollback_journal: bool = False,
 ) -> sqlite3.Connection:
     """Open ``event_log`` without writing to it or its directory.
 
@@ -719,7 +720,10 @@ def open_read_only(
     file would create the ``-shm`` and ``-wal`` files; ``immutable=1`` does not.
 
     ``probe`` is a statement that fails unless the file is the database expected (the Mac copy of
-    ADR 0294 is opened the same way).
+    ADR 0294 is opened the same way). A file in rollback-journal mode (that copy is) has no
+    ``-wal`` file whether or not a daemon is writing it, so it is always opened ``mode=ro`` and
+    takes SQLite's read locks: ``immutable=1`` would never see a commit and could read a page
+    mid-write.
 
     Raises:
         LogCheckError: There is no such file, or it is not an event log.
@@ -728,7 +732,7 @@ def open_read_only(
         message = f"no event log at {event_log}"
         raise LogCheckError(message)
     written_by_a_daemon = event_log.with_name(event_log.name + "-wal").exists()
-    flags = "mode=ro" if written_by_a_daemon else "mode=ro&immutable=1"
+    flags = "mode=ro" if written_by_a_daemon or rollback_journal else "mode=ro&immutable=1"
     try:
         conn = sqlite3.connect(f"{event_log.resolve().as_uri()}?{flags}", uri=True, timeout=5.0)
     except sqlite3.Error as exc:

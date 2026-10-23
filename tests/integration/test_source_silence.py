@@ -19,7 +19,7 @@ import pytest
 
 from jarvis.state import source_silence
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.log_invariants import check_event_log
+from jarvis.state.log_invariants import check_event_log, open_read_only
 from tests.support.check_log import MIN, NOW
 from tests.support.source_silence import DAY, HOUR, MARKER, MacWorld, window_start
 
@@ -310,6 +310,129 @@ def test_every_statement_is_a_search_on_the_time_index_never_a_scan_of_the_table
             ]
             assert not [line for line in plan if line.startswith("SCAN import_entries")], name
             assert any(
-                line.startswith("SEARCH import_entries USING INDEX import_entries_at")
-                for line in plan
+                line.startswith("SEARCH import_entries USING INDEX") for line in plan
             ), f"{name}: {plan}"
+
+
+# --- The brain judges only the time it has heard from the Mac (review findings) -----------------
+
+
+def _asleep_unannounced(world: MacWorld) -> None:
+    """The Mac slept 3 hours ago; its sleep mark ships only after it wakes, so none is here yet."""
+    world.live(window_start(), NOW - 3 * HOUR)
+
+
+def test_a_mac_that_has_not_been_heard_from_is_not_judged_for_the_time_it_was_silent(
+    tmp_path: Path,
+) -> None:
+    """Nothing shipped for 3 hours and no mark yet: eligible time ends where it last heard."""
+    _world(tmp_path, _asleep_unannounced)
+    judged = _judged(tmp_path)
+    assert judged.silences == ()
+    assert judged.ref_ms <= NOW - 3 * HOUR + 10 * MIN
+
+
+def test_the_sleep_that_ships_after_the_wake_leaves_nothing_to_report(tmp_path: Path) -> None:
+    """Once the marks arrive the stretch is a sleep, which is no silence."""
+    def build(world: MacWorld) -> None:
+        _asleep_unannounced(world)
+        world.state(NOW - 3 * HOUR + MIN, "sleep")
+        world.state(NOW - 5 * MIN, "wake")
+        world.live(NOW - 5 * MIN, NOW)
+
+    _world(tmp_path, build)
+    assert _judged(tmp_path).silences == ()
+
+
+def test_the_nightly_check_stops_at_the_last_shipment_too(tmp_path: Path) -> None:
+    """A copy whose Mac slept for the last 3 hours reports no silence."""
+    _world(tmp_path, _asleep_unannounced)
+    _event_log(tmp_path)
+    assert _result(tmp_path).status == "ok"
+
+
+def test_a_long_span_is_alive_while_its_end_keeps_moving(tmp_path: Path) -> None:
+    """One span of 3 hours, shipped again every hour with a later end, is not a silence."""
+    def build(world: MacWorld) -> None:
+        _live(world, dark={"spans": [(NOW - 3 * HOUR, NOW)]})
+        for hours_ago in (2, 1, 0):
+            world.span(NOW - 3 * HOUR, end_ms=NOW - hours_ago * HOUR - 5 * MIN, ident=777)
+
+    _world(tmp_path, build)
+    assert [one.source for one in _judged(tmp_path).silences] == []
+
+
+def test_a_hands_off_stretch_is_no_time_a_span_is_owed(tmp_path: Path) -> None:
+    """A call he is on but not touching: no new span for 3 hours is not a silence for spans."""
+    def build(world: MacWorld) -> None:
+        world.state(NOW - 3 * HOUR, "hands_off")
+        _live(world, dark={"spans": [(NOW - 3 * HOUR, NOW)]})
+
+    _world(tmp_path, build)
+    assert [one.source for one in _judged(tmp_path).silences] == []
+
+
+def test_the_screen_capture_pause_gates_screen_text_only(tmp_path: Path) -> None:
+    """Capture paused: no OCR is owed, but spans still are; tracking paused: neither is."""
+    def idle_capture_rows(world: MacWorld) -> None:
+        """TimeSink still writes its capture-health rows (no OCR run in them) while paused."""
+        for at in range(NOW - 5 * HOUR, NOW, 10 * MIN):
+            world.ocr(at, ok=0, failed=0)
+
+    def captures_paused(world: MacWorld) -> None:
+        world.state(NOW - 5 * HOUR, "pause")
+        _live(world, dark={"ocr": [_ago(5, 0)], "spans": [_ago(5, 0)]})
+        idle_capture_rows(world)
+
+    def tracking_paused(world: MacWorld) -> None:
+        world.state(NOW - 5 * HOUR, "tracking_pause")
+        _live(world, dark={"ocr": [_ago(5, 0)], "spans": [_ago(5, 0)]})
+        idle_capture_rows(world)
+
+    _world(tmp_path / "a", captures_paused)
+    assert [one.source for one in _judged(tmp_path / "a").silences] == [SPANS]
+    _world(tmp_path / "b", tracking_paused)
+    assert _judged(tmp_path / "b").silences == ()
+
+
+def test_timesink_starting_again_clears_what_it_said_before(tmp_path: Path) -> None:
+    """Idle, stopped, started: the idle mark no longer holds, so a silence after it counts."""
+    def build(world: MacWorld) -> None:
+        world.state(NOW - 6 * HOUR, "idle")
+        world.state(NOW - 5 * HOUR, "stop")
+        world.state(NOW - 4 * HOUR, "start")
+        _live(world, dark={"ocr": [_ago(4, 0)]})
+
+    _world(tmp_path, build)
+    assert [(one.source, one.ongoing) for one in _judged(tmp_path).silences] == [(OCR, True)]
+
+
+def test_the_state_marks_are_read_by_key_not_by_walking_the_days_of_every_source(
+    tmp_path: Path,
+) -> None:
+    """EXPLAIN QUERY PLAN: TimeSink's state marks come from the (source, key) index range."""
+    _world(tmp_path, _live)
+    shipped = source_silence.shipped_path(tmp_path)
+    queries = dict(source_silence.ALL_QUERIES)
+    with closing(sqlite3.connect(f"{shipped.as_uri()}?mode=ro", uri=True)) as conn:
+        plan = [
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN " + queries["silence_states"], (0, 0),
+            )
+        ]
+    assert any("sqlite_autoindex_import_entries_2" in line for line in plan), plan
+
+
+def test_the_mac_copy_is_read_with_its_locks_since_a_daemon_writes_it(tmp_path: Path) -> None:
+    """shipped.db is a rollback-journal file: opened immutable, no commit would ever be seen."""
+    _world(tmp_path, _live)
+    shipped = source_silence.shipped_path(tmp_path)
+    with closing(
+        open_read_only(shipped, probe=source_silence.SHIPPED_PROBE, rollback_journal=True),
+    ) as conn:
+        before = conn.execute("SELECT COUNT(*) FROM import_entries").fetchone()[0]
+        with closing(sqlite3.connect(shipped)) as writer:
+            writer.execute("DELETE FROM import_entries WHERE kind = 'span'")
+            writer.commit()
+        assert conn.execute("SELECT COUNT(*) FROM import_entries").fetchone()[0] < before

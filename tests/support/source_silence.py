@@ -49,13 +49,19 @@ class MacWorld:
         """A TimeSink state event: ``lock``, ``unlock``, ``sleep``, ``wake``, ``idle``..."""
         self._add("stateEvent", at_ms, {"at": utc_text(at_ms), "kind": kind})
 
-    def span(self, at_ms: int) -> None:
-        """A span that starts at ``at_ms``."""
-        self._add(
-            "span", at_ms,
-            {"start": utc_text(at_ms), "end": utc_text(at_ms + MIN), "title": MARKER},
-            MARKER,
-        )
+    def span(self, at_ms: int, end_ms: int | None = None, ident: int | None = None) -> None:
+        """A span that starts at ``at_ms`` and, as last shipped, ends at ``end_ms``.
+
+        A span that is still open is shipped again as it grows: the same ``ident`` with a later
+        ``end_ms`` is its next revision.
+        """
+        end = at_ms + MIN if end_ms is None else end_ms
+        fields: dict[str, object] = {
+            "start": utc_text(at_ms), "end": utc_text(end), "title": MARKER,
+        }
+        if ident is not None:
+            fields["id"] = ident
+        self._add("span", at_ms, fields, MARKER)
 
     def ocr(self, at_ms: int, *, ok: int = 10, failed: int = 0) -> None:
         """A 10-minute capture row with ``ok`` OCR runs that worked and ``failed`` that did not."""
