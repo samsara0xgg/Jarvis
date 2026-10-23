@@ -417,8 +417,9 @@ final class ReporterFlushTests: XCTestCase {
 
     override func tearDown() async throws { try? FileManager.default.removeItem(at: dir) }
 
-    private func reporter() -> Reporter {
-        let r = Reporter(queue: ReportQueue(url: dir.appending(path: "q.sqlite")))
+    /// a phone's reporter unless told otherwise, on an iPad's destination too
+    private func reporter(sensing: Bool = true) -> Reporter {
+        let r = Reporter(queue: ReportQueue(url: dir.appending(path: "q.sqlite")), sensing: sensing)
         r.autoFlush = false
         return r
     }
@@ -489,6 +490,18 @@ final class ReporterFlushTests: XCTestCase {
         await r.tell(PhoneSignalChange.chargerConnected.change)
         XCTAssertEqual(r.queue.count, 1)
         r.queue.remove(sense: ReportSense.focusAlarm.rawValue)
+        XCTAssertEqual(r.queue.count, 0)
+    }
+
+    func testAnIPadSendsNoShortcutsChangeWithItsSwitchOn() async {
+        let was = ReportMemory.isOn(.focusAlarm)
+        defer { ReportMemory.set(.focusAlarm, on: was) }
+        let r = reporter(sensing: false)
+        let t = ScriptedTransport { frames in frames.map { FrameAck(eventUid: $0.eventUid, ok: true, code: nil) } }
+        r.transport = t
+        ReportMemory.set(.focusAlarm, on: true)
+        await r.tell(PhoneSignalChange.alarmSnoozed.change)
+        XCTAssertEqual(t.sent.count, 0, "an iPad's automations say nothing of him (ADR 0338)")
         XCTAssertEqual(r.queue.count, 0)
     }
 
