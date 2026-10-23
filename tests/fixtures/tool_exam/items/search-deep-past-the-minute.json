@@ -1,0 +1,55 @@
+{
+  "id": "search-deep-past-the-minute",
+  "tool": "web_search",
+  "said": "帮我认真查一下，哪种燕麦奶最适合做拿铁",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "fake_clock": true,
+  "args": {
+    "query": "which oat milk is best for lattes, compare several sources",
+    "depth": "deep"
+  },
+  "recording": "search-deep-past-the-minute.recording.json",
+  "expect": {
+    "summary_must": [
+      "^Deep search for 'which oat milk is best for lattes, compare several sources' stopped at a minute before writing its brief; 3 pages found, listed below with site and date\\."
+    ],
+    "result": [
+      {
+        "path": "unfinished",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "pages",
+        "op": "len",
+        "value": 3
+      },
+      {
+        "path": "pages[1].site",
+        "op": "eq",
+        "value": "cafe-notes.example.org"
+      },
+      {
+        "path": "pages[1].date",
+        "op": "eq",
+        "value": "2026-10-19"
+      },
+      {
+        "path": "brief",
+        "op": "absent"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.anthropic.com/v1/messages",
+        "count": 1
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

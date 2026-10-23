@@ -1,0 +1,77 @@
+{
+  "id": "search-deep-paused-then-brief",
+  "tool": "web_search",
+  "said": "帮我认真查一下，哪种燕麦奶最适合做拿铁",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "query": "which oat milk is best for lattes, compare several sources",
+    "depth": "deep"
+  },
+  "recording": "search-deep-paused-then-brief.recording.json",
+  "expect": {
+    "summary_must": [
+      "^Deep search for 'which oat milk is best for lattes, compare several sources': brief below, from 3 sources, newest yesterday \\(Tue\\); 2 searches\\. The sources are listed under your answer\\.$"
+    ],
+    "result": [
+      {
+        "path": "brief",
+        "op": "matches",
+        "value": "^Barista blends steam best"
+      },
+      {
+        "path": "sources",
+        "op": "len",
+        "value": 3
+      },
+      {
+        "path": "sources[0].site",
+        "op": "eq",
+        "value": "beans.example.com"
+      },
+      {
+        "path": "sources[0].date",
+        "op": "eq",
+        "value": "2026-10-14"
+      },
+      {
+        "path": "sources[2].date",
+        "op": "eq",
+        "value": "2026-10-20"
+      },
+      {
+        "path": "unfinished",
+        "op": "absent"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.anthropic.com/v1/messages",
+        "count": 2,
+        "nth": 1,
+        "body": [
+          {
+            "path": "messages",
+            "op": "len",
+            "value": 2
+          },
+          {
+            "path": "messages[1].role",
+            "op": "eq",
+            "value": "assistant"
+          },
+          {
+            "path": "messages[1].content[2].type",
+            "op": "eq",
+            "value": "server_tool_use"
+          }
+        ]
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}
