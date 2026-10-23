@@ -560,22 +560,22 @@ def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
 ) -> None:
     """``POST /inherent/mail/{id}/draft/send``: save the edit, raise the send card (no model turn).
 
-    The card is the confirmed ``gmail_send`` ADR 0033 asks for, with the letter's thread; his
-    button on it is what sends. A ValueError (empty body) is the route's 400, a missing
-    gmail send tool its 404.
+    The card is the ``mail`` tool's send (ADR 0361), answering the open letter; his button on it
+    is what sends. A ValueError (empty body) is the route's 400, a missing ``mail`` tool its 404,
+    and a send the tool cannot complete yet (ADR 0366 builds it) the route's 502 with its reason.
     """
     if not body.strip():
         msg = "the draft is empty"
         raise ValueError(msg)
     view = save_draft(home, drafts, letter_id, subject, body)["draft"]
     args = {
-        "to": view["to"], "subject": view["subject"], "body": view["body"],
-        "threadId": home.letter(letter_id)["thread_id"],
+        "action": "send", "to": view["to"], "subject": view["subject"], "body": view["body"],
+        "reply_to": letter_id,
     }
     conn = open_runtime_event_log(runtime.runtime_paths.event_log)
     try:
         asked = request_confirmation(
-            conn, cast("ToolRegistryLike", runtime.tool_registry), "mcp__gmail__gmail_send", args,
+            conn, cast("ToolRegistryLike", runtime.tool_registry), "mail", args,
             ttl_ms=runtime.config.confirmation.ttl_ms, runtime_paths=runtime.runtime_paths,
             lang=lang.language(),
         )
@@ -583,7 +583,7 @@ def _send_draft(  # noqa: PLR0913 — the route's body plus what the card needs.
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     if asked is None:
-        msg = "gmail send is not connected"
+        msg = "the mail tool is not connected"
         raise LookupError(msg)
 
 

@@ -48,7 +48,11 @@ SHOP = "Shop <deals@shop.example.com>"
 BANK = "Bank <alerts@bank.example.com>"
 NEWS = {"List-Unsubscribe": "<mailto:u@shop.example.com>"}
 BOT = {"Auto-Submitted": "auto-generated"}
-ACTIONS = ("list", "search", "read", "thread", "attachment", "archive")
+ACTIONS = ("list", "search", "read", "thread", "attachment", "draft", "send", "archive")
+NOT_YET = (
+    "mail: writing and sending a letter is not available yet; tell him you cannot write or send"
+    " mail just now"
+)
 
 
 def _ago(**span: float) -> datetime:
@@ -152,20 +156,21 @@ def _tool() -> Tool:
 
 
 def test_mail_is_one_flat_tool_with_a_level_per_action() -> None:
-    """Reads are L0, an archive L1 with no card; the tool is for the model, on the first menu."""
+    """Reads are L0, an archive or a draft L1 with no card, a send L3; on the first menu."""
     tool = _tool()
     assert tool.name == "mail"
     assert not tool.deferred
     assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
-    assert (tool.risk_level, tool.read_only, tool.requires_confirmation) == ("L1", False, False)
+    assert (tool.risk_level, tool.read_only, tool.requires_confirmation) == ("L3", False, False)
     assert {one: call_risk(tool, {"action": one}) for one in ACTIONS} == {
         "list": "L0", "search": "L0", "read": "L0", "thread": "L0", "attachment": "L0",
-        "archive": "L1",
+        "draft": "L1", "send": "L3", "archive": "L1",
     }
     assert call_risk(tool, {}) == "L0"  # the default action lists
-    assert not any(call_asks(tool, {"action": one}) for one in ACTIONS)
+    assert {one for one in ACTIONS if call_asks(tool, {"action": one})} == {"send"}
     assert only_reads(tool, {"action": "read"})
     assert not only_reads(tool, {"action": "archive", "message": "1"})
+    assert not only_reads(tool, {"action": "send"})
     validate_requires_confirmation([tool], "L3")  # the boot check, per action, accepts it
 
 
@@ -223,7 +228,7 @@ def test_arguments_are_checked_for_their_type(rig: Rig) -> None:
     """A flag is true or false (or those words); a page is a whole number; the action is known."""
     assert "unread must be true or false" in rig.fails(query="x", unread="maybe")["error"]
     assert "page must be a whole number" in rig.fails(page=0)["error"]
-    assert "action must be one of list, search" in rig.fails(action="send")["error"]
+    assert "action must be one of list, search" in rig.fails(action="nope")["error"]
     assert "query must be text" in rig.fails(query={"a": 1})["error"]
     assert rig.ok(action="search", query="plan 2", unread="true")["message"] == "p2"
 
@@ -985,7 +990,43 @@ def test_archive_is_a_change_for_the_receipts_and_the_live_view_and_a_list_is_a_
     assert refused.error == "reads_only_view"
     assert _receipt(refused)["failure"] == "impossible"
     assert rig.gmail.of("gmail_batchModify") == []
+    for n, action in enumerate(("draft", "send"), 3):  # a letter is a change in that view as well
+        rig.world.lifecycle.register(f"L{n}")
+        rig.world.lifecycle.transition(f"L{n}", "authorized")
+        letter = view.dispatch(
+            tool_request("mail", f"L{n}", arguments={"action": action, "to": "sam"}),
+            rig.world.conn, rig.world.paths, rig.world.lifecycle,
+        )
+        assert letter.error == "reads_only_view"
     assert list(iter_events_of_types(rig.world.conn, ["mail.inbox_changed"])) == []
+
+
+# --- draft and send: in the schema, built by ADR 0366 -----------------------------------------
+
+
+@pytest.mark.parametrize("arguments", [{}, {"to": "sam", "subject": "Hi", "body": "Thursday"}])
+def test_a_draft_fails_with_one_sentence_whatever_it_is_given_and_asks_gmail_nothing(
+    rig: Rig, arguments: dict[str, Any],
+) -> None:
+    """Until ADR 0366 builds it: kind impossible, a failed receipt, and no Gmail call."""
+    error = rig.fails(action="draft", **arguments)
+    assert (error["error"], error["code"], error["kind"]) == (NOT_YET, "unavailable", "impossible")
+    assert rig.gmail.calls == []
+
+
+def test_a_send_with_no_lease_is_refused_at_l4_and_cannot_be_completed_so_no_card_is_made(
+    rig: Rig,
+) -> None:
+    """L4 refuses the L3 call before the tool runs; its completion fails, so no card is raised."""
+    refused = rig.fails(action="send", to="sam", subject="Hi", body="Thursday")
+    assert (refused["code"], refused["kind"]) == ("no_lease", "dont_retry")
+    assert rig.gmail.calls == []
+    done = rig.world.registry.complete(
+        "mail", {"action": "send", "to": "sam"}, rig.world.conn, rig.world.paths,
+    )
+    assert (done.arguments, done.error, done.code, done.kind) == (
+        None, NOT_YET, "unavailable", "impossible",
+    )
 
 
 # --- when Gmail is not there -------------------------------------------------------------------
@@ -1013,3 +1054,56 @@ def test_without_gmail_every_action_is_an_error_that_says_so(
         assert (error["code"], error["kind"]) == ("unavailable", "impossible")
     finally:
         down.close()
+
+
+# --- the covered check -------------------------------------------------------------------------
+
+READS: dict[str, dict[str, Any]] = {
+    "list": {},
+    "list_page_two": {"page": 2},
+    "list_waiting": {"waiting": True},
+    "search": {"action": "search", "query": "plan"},
+    "search_none": {"action": "search", "query": "no such words anywhere"},
+    "read_one": {"action": "read", "message": "p0"},
+    "read_two": {"action": "read", "message": "p0,p1"},
+    "read_long_in_parts": {"action": "read", "message": "long"},
+    "thread": {"action": "thread", "message": "c3"},
+    "attachment": {"action": "attachment", "message": "inv", "file": "1"},
+    "attachment_a_picture": {"action": "attachment", "message": "inv", "file": "2"},
+}
+
+
+@pytest.mark.parametrize("name", list(READS))
+def test_every_read_receipt_says_what_it_covered_and_the_numbers_agree(
+    tmp_path: Path, name: str,
+) -> None:
+    """The covered check: sources, a window, shown and more that add up, and how to get more."""
+    gmail = _morning()
+    _invoice(gmail)
+    for n in range(1, 4):
+        gmail.add(f"c{n}", "Re: Budget" if n > 1 else "Budget", sender=SAM if n % 2 else KIM,
+                  to=ME, thread="B", at=_ago(days=5 - n), plain=f"Message number {n}.")
+    paragraphs = [f"Paragraph {n}. " + ("Word salad. " * 60) for n in range(1, 30)]
+    gmail.add("long", "Long report", sender=KIM, to=ME, at=_ago(hours=6),
+              plain="\n\n".join(paragraphs))
+    box = _rig(tmp_path, gmail)
+    try:
+        args = READS[name]
+        if name == "list_page_two":
+            box.ok()  # a later page is the held list's
+        result = box.run(**args)
+        assert result.error is None, result.tool_output
+        receipt = _receipt(result)
+        assert receipt["status"] == "done"
+        assert receipt["reads_only"] is True
+        assert receipt["line"]
+        covered = receipt["covered"]
+        assert covered["sources"] == ["Gmail"]
+        assert covered["window"]  # what was looked at, in words
+        assert covered["shown"] >= 0
+        assert covered["more"] >= 0
+        assert (covered["more"] > 0) == bool(covered["how_more"])  # what is left has a way to it
+        if covered["how_more"]:
+            assert covered["how_more"].startswith(("page=", "message=", "file="))
+    finally:
+        box.close()

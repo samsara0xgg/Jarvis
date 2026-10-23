@@ -46,7 +46,7 @@ def test_a_rebuilt_tool_must_leave_the_pre_standard_list() -> None:
 
 # What the exam's stand-ins switch on that a keyless, deviceless, mail-less boot leaves off.
 OFF_IN_A_BARE_BOOT = {
-    "web_search", "weather", "map_search", "write_mail_draft", "open_path", "search_notes",
+    "web_search", "weather", "map_search", "open_path", "search_notes",
     "read_file", "read_clipboard", "open_url", "screen_look", "start_night_run", "end_night_run",
     "jobs",
 }

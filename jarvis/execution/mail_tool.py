@@ -6,7 +6,8 @@ message id always works. The tool composes three modules: ``mail_gmail`` (the se
 messages, headers kept by id), ``mail_lists`` (his words as one Gmail query, exact counts, who
 wrote last) and ``mail_reads`` (a mail, an attachment and a conversation read in parts). An
 archive removes Gmail's inbox label, writes one ``mail.inbox_changed`` event and gives the id
-that puts the mails back.
+that puts the mails back. ``draft`` and ``send`` are ADR 0366's: they are in the schema and fail
+until it is built (see :data:`_STUBBED`).
 
 Layer rules: execution; ``jarvis.state`` for the event log.
 """
@@ -45,12 +46,26 @@ _DESCRIPTION: Final = (
     " mail's own opening line, files, unread) or one mail's text, in parts when long; a row's"
     " number works until the next listing, a message id always."
 )
-_ACTIONS: Final = ("list", "search", "read", "thread", "attachment", "archive")
+_ACTIONS: Final = ("list", "search", "read", "thread", "attachment", "draft", "send", "archive")
 _ACTION_TEXT: Final = (
     "list (default): his unread inbox, or the mail he received narrowed by the fields below."
     " search: all his mail; a single match comes back read. read: a mail's text. thread: a"
     " conversation, oldest first. attachment: one file's text. archive: take mails out of his"
-    " inbox, or put them back with undo."
+    " inbox, or put them back with undo. draft, send: writing a letter and sending it; not"
+    " available yet."
+)
+_STUBBED: Final = frozenset({"draft", "send"})
+"""The actions ADR 0366 builds. Until it does they fail with :data:`_NOT_YET`; the plan is below.
+
+Part 6 plugs in at three places: :meth:`_Mail.run` hands these actions to their handlers instead
+of raising; :func:`_effect` already says what each is (a draft is L1 with an undo, a send L3);
+and :func:`_complete` turns a send's names, reply and draft into the full letter before the
+card is made. The parameters they take (``to``, ``cc``, ``bcc``, ``subject``, ``body``,
+``reply_to``, ``reply_all``, ``replaces``, ``draft``) join :data:`_TAKEN` then.
+"""
+_NOT_YET: Final = (
+    "mail: writing and sending a letter is not available yet; tell him you cannot write or send"
+    " mail just now"
 )
 _TAKEN: Final[Mapping[str, tuple[str, ...]]] = {
     "query": ("list", "search"),
@@ -130,6 +145,7 @@ _NAMED: Final = 3
 _UNDO_CHARS: Final = 8
 """How much of an archive's event id is its undo id: the start of it names the archive."""
 _SUBJECT_CHARS: Final = 40
+_WRITES: Final = 'mail(action="draft" or "send", ...)'
 _SUPERSEDES: Final = {
     "mcp__gmail__gmail_search": 'mail(action="search", query=...)',
     "mcp__gmail__gmail_get": 'mail(action="read", message=<id>)',
@@ -137,13 +153,30 @@ _SUPERSEDES: Final = {
     "mcp__gmail__gmail_modify": 'mail(action="archive", message=<id>)',
     "mcp__gmail__gmail_batchModify": 'mail(action="archive", message=<id>)',
     "mcp__gmail__gmail_modifyThread": 'mail(action="archive", message=<id>)',
+    "mcp__gmail__gmail_listLabels": 'mail(action="search", query=...)',
+    "mcp__gmail__gmail_createDraft": _WRITES,
+    "mcp__gmail__gmail_send": _WRITES,
+    "mcp__gmail__gmail_sendDraft": _WRITES,
 }
-"""The plugin's Gmail tools whose job ``mail`` does. The draft and send tools are ADR 0366's."""
+"""The plugin's Gmail tools whose job ``mail`` does, so tool search loads none of them while
+``mail`` is on the menu. ``gmail_createLabel`` is left out: ``mail`` creates no labels, so there
+is nothing to point to."""
+
+_EFFECTS: Final[Mapping[str, RiskLevel]] = {"archive": "L1", "draft": "L1", "send": "L3"}
 
 
 def _effect(args: Mapping[str, Any]) -> RiskLevel:
-    """Reading is L0; an archive changes his inbox, with an undo, and needs no card (ADR 0361)."""
-    return "L1" if args.get("action") == "archive" else "L0"
+    """The call's level (ADR 0361, 0362): a read L0, an archive or a draft L1, a send L3."""
+    return _EFFECTS.get(str(args.get("action")), "L0")
+
+
+def _complete(_args: Mapping[str, Any], _ctx: ToolContext) -> Mapping[str, Any]:
+    """The full arguments of a call that needs a card (ADR 0361): only a send does.
+
+    Until ADR 0366 builds it a send cannot be completed, so it fails here with no card; the
+    completion that turns names, a reply and a draft into the letter replaces this.
+    """
+    raise ToolError(_NOT_YET, code="unavailable", kind="impossible")
 
 
 # --- the arguments -----------------------------------------------------------------------------
@@ -371,6 +404,8 @@ class _Mail:
 
     def run(self, args: Mapping[str, Any], ctx: ToolContext) -> Receipted:
         """Check the arguments, then do the action; a failure of Gmail's is already worded."""
+        if _text(args.get("action"), "action") in _STUBBED:
+            raise ToolError(_NOT_YET, code="unavailable", kind="impossible")  # ADR 0366 plugs in
         action, given = _arguments(args)
         if action in {"list", "search"}:
             return self._list(given, ctx, searching=action == "search")
@@ -722,9 +757,10 @@ def build_mail_tool(box: Mailbox) -> tuple[Tool, ...]:
             input_schema=_SCHEMA,
             handler=_Mail(box).run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L1",
+            risk_level="L3",
             read_only=False,
             effect=_effect,
+            complete=_complete,
             supersedes=_SUPERSEDES,
         ),
     )

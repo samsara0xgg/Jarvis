@@ -94,7 +94,6 @@ if TYPE_CHECKING:
     from jarvis.execution.around import Surroundings
     from jarvis.execution.bus_tool import RideControl
     from jarvis.execution.highlight_tool import HighlightMarker
-    from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
     from jarvis.execution.transit_tool import BusTimes, TransitOffers
     from jarvis.execution.weather_tool import WeatherRequest
@@ -2738,7 +2737,6 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     daily_report_run: DailyReportRun | None = None,
     night: NightControl | None = None,
     voice_settings: VoiceSettings | None = None,
-    mail_drafts: DraftStore | None = None,
     device_link: DeviceLink | None = None,
     weather_lookup: Callable[[WeatherRequest], Mapping[str, Any]] | None = None,
     transit_api_key: str | None = None,
@@ -2813,8 +2811,6 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
             registered as proxies to the terminal, whose run they drive.
         voice_settings: ADR 0174 — her voice volume and speed; `None` leaves
             `set_voice` off the menu.
-        mail_drafts: ADR 0147 — the Dashboard's reply drafts; `None` leaves
-            `write_mail_draft` off the menu.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -2939,7 +2935,6 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
     from jarvis.execution.highlight_tool import build_highlight_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.keep_tool import build_keep_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
-    from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.map_tool import build_map_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
@@ -2985,8 +2980,6 @@ def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a
         *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)
-    for draft_tool in build_mail_draft_tool(mail_drafts):
-        registry.register(draft_tool)
     if device_link is not None:
         registry.set_device_tools(device_catalogue)
     return registry

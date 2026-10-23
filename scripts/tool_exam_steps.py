@@ -109,7 +109,7 @@ LIVE_READ = frozenset({
     "web_search", "web_fetch", "weather", "where_am_i", "places",
     "map_search",  # reads Google Places; its spend rows go to the sandbox's log
     "look_at_picture",  # calls the vision preset's model
-    "mail",  # reads run; its archive is stubbed (_STUB_ACTIONS), the copy holds his real mailbox
+    "mail",  # reads run; archive, draft and send are stubbed (_STUB_ACTIONS): his real mailbox
     "conversation", "archive", "my_day",
     "list_plugins", "tool_search", "read_skill",
     "search_notes",  # a device tool: device_not_connected on this host
@@ -124,11 +124,11 @@ SANDBOX_WRITE = frozenset({
 STUB = frozenset({
     "open_url", "open_path", "read_file", "read_clipboard", "screen_look",
     "start_night_run", "end_night_run", "refresh_work_state", "daily_work_report", "set_voice",
-    "write_mail_draft", "open_plugin", "disable_plugin", "remove_plugin",
+    "open_plugin", "disable_plugin", "remove_plugin",
     "tidy_day",  # asks the doing lane's model (Opus) and writes a run
     "spawn_worker", "wait_worker", "send_input", "close_worker",  # Codex threads (tools.workers)
 })
-_STUB_ACTIONS: Final = {"mail": frozenset({"archive"})}
+_STUB_ACTIONS: Final = {"mail": frozenset({"archive", "draft", "send"})}
 """The calls of a live tool that must not run: its ``action`` values that change his real mail."""
 _STUB_NOTE = {"stubbed": True, "note": "sandbox: not run"}
 _MICROSOFT_NOTE = {"value": [], "note": "sandbox: calendar not connected"}
