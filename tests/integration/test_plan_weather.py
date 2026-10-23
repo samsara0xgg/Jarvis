@@ -2,9 +2,9 @@
 
 The real ``Home`` over the fake WeatherKit of ``weatherkit_world`` (a throwaway key, no network),
 the real ``PlanWatch`` over fresh stores, and stub models and legs. The day is Wednesday
-2026-10-21, 09:30 in Victoria. It is dry at home all day and it rains at the clinic from 10:00 to
-11:00, so the day at home and the hours of the outing differ and the request that was made says
-which of them a plan was given. The places and the times are invented.
+2026-10-21, 09:30 in Victoria. It is dry at home all day and it rains at the clinic for the hour
+of an outing there, so the day at home and the hours of the outing differ and the request that was
+made says which of them a plan was given. The places and the times are invented.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from tests.integration.weatherkit_world import call as tool_call
 from tests.support.home_routes import Connections
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -51,6 +51,13 @@ DENTIST = plan.PlanItem(
     minutes=60, place="Clinic", route=LEG,
 )
 """10:00 to 11:00 at the clinic, leaving at 09:40: the notice is due from 09:15."""
+CHECKUP = plan.PlanItem(
+    item_id="p10", title="Check-up", firmness="fixed", source="item:thing-c2", start="15:00",
+    minutes=60, place="Clinic",
+    route={"from": "Home", "leave_at": "14:20", "line": "26", "board": "Main St",
+           "arrive_at": "14:38", "backup": None},
+)
+"""15:00 to 16:00 at the clinic, leaving at 14:20: the notice is due from 13:55."""
 
 
 def _at(clock: str) -> datetime:
@@ -62,12 +69,16 @@ def _dry(_local: datetime) -> dict[str, Any]:
             "temperature": 12.0}
 
 
-def _rain_at_ten(local: datetime) -> dict[str, Any]:
-    """The clinic's day: dry, and one hour of rain from 10:00."""
-    if local.hour == 10:
-        return {"conditionCode": "Rain", "precipitationAmount": 1.0, "precipitationChance": 0.9,
-                "temperature": 9.0}
-    return _dry(local)
+def _rain_at(hour: int) -> Callable[[datetime], dict[str, Any]]:
+    """The clinic's day: dry, and one hour of rain from ``hour`` o'clock."""
+
+    def profile(local: datetime) -> dict[str, Any]:
+        if local.hour == hour:
+            return {"conditionCode": "Rain", "precipitationAmount": 1.0,
+                    "precipitationChance": 0.9, "temperature": 9.0}
+        return _dry(local)
+
+    return profile
 
 
 def _where(url: str) -> str:
@@ -118,13 +129,15 @@ class World:
         """He keeps the place ``name`` at ``point``."""
         places.save(self.memory, name=name, lat=point[0], lng=point[1], origin="user")
 
-    def tick(self) -> dict[str, Any]:
-        """The 09:35 tick: he is up, and the dentist's notice is due (he leaves at 09:40).
+    def tick(self, clock: str = "09:35") -> dict[str, Any]:
+        """The tick at ``clock``: he is up, and the notice of an outing is due.
 
         What the decider was asked about the outing, and the opening's input, as the models saw
-        them. The notice is taken before the opening, as the watcher does.
+        them. The notice is taken before the opening, as the watcher does. WeatherKit's client
+        keeps the same time.
         """
-        self.watch.tick(_at("09:35"))
+        self.kit.clock = _at(clock).timestamp
+        self.watch.tick(_at(clock))
         notice = json.loads(self.asked[0])["notice"]["facts"] if self.asked else {}
         return {"outing_soon": notice, "opening": json.loads(self.opened[0])}
 
@@ -171,28 +184,28 @@ def test_an_outing_at_a_kept_place_is_given_that_places_hours_not_the_home_day(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Dry all day at home, rain at the clinic from 10:00: she is told the clinic's hours."""
+    """Dry all day at home, rain at the clinic at 15:00: she is told the clinic's hours."""
     world = _world(
         tmp_path, monkeypatch, key, open_leg=_legs(None), hours=_dry,
-        hours_at={CLINIC_AT: _rain_at_ten},
+        hours_at={CLINIC_AT: _rain_at(15)},
     )
     world.keep("Clinic", CLINIC)
-    world.drafted(DENTIST)
-    seen = world.tick()
+    world.drafted(CHECKUP)
+    seen = world.tick("14:00")
     expected = {
-        "at": "Clinic", "from": "9:40 AM", "to": "11 AM", "max_chance_pct": 90, "rain_mm": 1.0,
-        "low_c": 9.0, "high_c": 12.0, "likely_from": "10 AM", "likely_to": "11 AM",
+        "at": "Clinic", "from": "2:20 PM", "to": "4 PM", "max_chance_pct": 90, "rain_mm": 1.0,
+        "low_c": 9.0, "high_c": 12.0, "likely_from": "3 PM", "likely_to": "4 PM",
         "hours": [
-            {"at": "9 AM", "temp_c": 12.0, "condition": "clear", "rain_chance_pct": 0,
+            {"at": "2 PM", "temp_c": 12.0, "condition": "clear", "rain_chance_pct": 0,
              "precip_mm": 0.0},
-            {"at": "10 AM", "temp_c": 9.0, "condition": "rain", "rain_chance_pct": 90,
+            {"at": "3 PM", "temp_c": 9.0, "condition": "rain", "rain_chance_pct": 90,
              "precip_mm": 1.0},
         ],
     }
     assert seen["outing_soon"]["weather"] == expected
     assert "notes" not in seen["outing_soon"]
     assert seen["opening"]["outings"] == [
-        {"item_id": "p9", "place": "Clinic", "weather": expected},
+        {"item_id": "p10", "place": "Clinic", "weather": expected},
     ]
     assert {_where(url) for url in world.net.weather()} == {HOME_AT, CLINIC_AT}
 
@@ -255,7 +268,7 @@ def test_an_outing_not_kept_is_read_where_the_leg_just_read_ends(
     """The refresh knows the end of the leg it just planned; the opening, after it, does not."""
     world = _world(
         tmp_path, monkeypatch, key, open_leg=_legs({"lat": CLINIC[0], "lng": CLINIC[1]}),
-        hours=_dry, hours_at={CLINIC_AT: _rain_at_ten},
+        hours=_dry, hours_at={CLINIC_AT: _rain_at(10)},
     )
     world.drafted(DENTIST)
     seen = world.tick()
