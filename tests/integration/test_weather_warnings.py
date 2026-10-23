@@ -230,12 +230,14 @@ def test_a_shower_starts_and_stops_where_the_summary_of_the_hour_says(
     assert (led["now"], led["starts_at"]) == ("dry", "09:52")
 
 
-def test_a_minute_at_a_low_chance_is_dry_with_a_summary_or_without(
-    monkeypatch: pytest.MonkeyPatch, key: tuple[Path, ec.EllipticCurvePrivateKey],
+@pytest.mark.parametrize("minutes", ["low-chance", "summary-unlikely", "dry"])
+def test_a_low_chance_is_dry_with_a_summary_or_without(
+    minutes: str, monkeypatch: pytest.MonkeyPatch,
+    key: tuple[Path, ec.EllipticCurvePrivateKey],
 ) -> None:
-    """Intensity at a 20% chance is not a shower: no start, no kind."""
+    """Intensity at a 20% chance, a summary period at 30%, or nothing: no start, no kind."""
     for summary in (True, False):
-        found = _next_hour(Net(monkeypatch, minutes="low-chance", summary=summary), key)
+        found = _next_hour(Net(monkeypatch, minutes=minutes, summary=summary), key)
         assert (found["now"], found["starts_at"], found["stops_at"]) == ("dry", None, None)
         assert found["peak_mm_h"] == 0
         assert "kind" not in found
