@@ -3894,9 +3894,14 @@ def test_late_compensating_stop_debt_auto_converges_cleanup_ledger(
     wait_until_true(lambda: not player.physical_open)
     assert player.start_calls == 1
     assert player.max_owners == 1
-    assert media._player_stop_thread is not None
-    media._player_stop_thread.join(timeout=HANG_S)
-    assert not media._player_stop_thread.is_alive()
+    janitors = [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "jarvis-media-shutdown-player-debt"
+    ]
+    for janitor in janitors:
+        janitor.join(timeout=HANG_S)
+        assert not janitor.is_alive()
 
 
 def test_open_unadmitted_shutdown_stop_debt_auto_converges_cleanup_ledger(
