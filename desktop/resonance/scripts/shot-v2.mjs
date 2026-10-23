@@ -109,7 +109,7 @@ try {
   await park();
 
   // ---- 今天, nothing selected ----
-  const g = await page.evaluate(() => { const r = s => document.querySelector(s)?.getBoundingClientRect().toJSON(); return { drop: r('.notch-drop'), inner: r('.notch-pane-in'), dt: r('.notch .dt'), list: r('.notch .dt-list'), side: r('.notch .dt-side'), stage: r('.notch .dt-stage'), head: r('.notch .dt-head'), bar: r('.notch .dt-bar'), doors: r('.notch .dt-doors'), home: !!document.querySelector('.notch .dt-side .dt-stage-home') }; });
+  const g = await page.evaluate(() => { const r = s => document.querySelector(s)?.getBoundingClientRect().toJSON(); return { drop: r('.notch-drop'), inner: r('.notch-pane-in'), dt: r('.notch .dt'), list: r('.notch .dt-list'), side: r('.notch .dt-side'), stage: r('.notch .dt-stage'), head: r('.notch .dt-head'), bar: r('.notch .dt-bar'), doors: r('.notch .dt-doors'), home: !!document.querySelector('.notch .dt-side .ds') }; });
   check('the pane is 820 wide on the stage of 836, centred', Math.abs(g.drop.width - PANE) < 1.5 && Math.abs((g.drop.left + g.drop.right) / 2 - STAGE / 2) < 1.5, JSON.stringify(g.drop));
   check('the day is 584 tall', Math.abs(g.dt.height - 584) < .5, String(g.dt.height));
   check('the header, the bar and the doors span the pane; below the bar the list is at the left and the right column at the right, one hairline between', g.bar.width > 760 && g.doors.width > 300 && g.list.right < g.side.left && g.list.width > 400 && g.list.width < 460 && g.side.width > 320 && Math.abs(g.side.right - g.stage.right) < 1 && g.stage.top > g.bar.bottom - 1 && g.stage.bottom < g.doors.top, JSON.stringify(g));
@@ -121,7 +121,7 @@ try {
   const before = await rect('.notch .dt-list'), top0 = await page.evaluate(() => document.querySelector('.notch .dt-list').scrollTop);
   await pressOn('.notch .dt-list .dt-row[data-key="work-2"]');
   await settle(500);
-  check('a click on a row selects it: ring on the row, its detail in the right column, the home slot gone', await sel() === 'work-2' && await page.locator('.notch .dt-side .dt-pin').count() === 1 && await page.locator('.notch .dt-side .dt-stage-home').count() === 0);
+  check('a click on a row selects it: ring on the row, its detail in the right column, the home slot gone', await sel() === 'work-2' && await page.locator('.notch .dt-side .dt-pin').count() === 1 && await page.locator('.notch .dt-side .ds').count() === 0);
   check('the list and the pane did not move', Math.abs((await rect('.notch .dt-list')).top - before.top) < .5 && Math.abs((await rect('.notch-drop')).height - g.drop.height) < .5 && await page.evaluate(() => document.querySelector('.notch .dt-list').scrollTop) === top0);
   await park(); await settle(200);
   await shot('today-selected');
@@ -129,7 +129,7 @@ try {
   const up = await sel();
   check('↑ selects the row above that has a detail, and the right column follows', !!up && up !== 'work-2' && await page.locator('.notch .dt-side .dt-pin').count() === 1, String(up));
   await page.keyboard.press('Escape'); await settle(300);
-  const esc = { sel: await sel(), home: await page.locator('.notch .dt-side .dt-stage-home').count(), open: await page.locator('.notch-drop.is-open').count() };
+  const esc = { sel: await sel(), home: await page.locator('.notch .dt-side .ds').count(), open: await page.locator('.notch-drop.is-open').count() };
   check('Esc clears the selection back to the home slot, and the pane stays open', esc.sel === null && esc.home === 1 && esc.open === 1, JSON.stringify(esc));
   await page.keyboard.press('ArrowDown'); await settle(300);
   check('↓ with nothing selected selects a row', await sel() !== null);

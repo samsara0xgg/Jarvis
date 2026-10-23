@@ -849,7 +849,9 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
         {hasList ? <div className={`dt-stage${tooled ? ' is-tool' : ''}`}>
           <div ref={list} className={`dt-list${timeless ? ' is-timeless' : ''}`} tabIndex={-1} onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={selected} t={t} cx={cx}/>}</div>
           <div ref={sideBox} className="dt-side" tabIndex={-1} data-page={selected ?? undefined} onFocus={e => { if (page && (e.target as Element).matches('input, textarea')) setTyping(true); }} onBlur={e => { if ((e.target as Element).matches('input, textarea')) setTyping(false); }}>
-            {selected ? page ? shownDoor?.node : detail(selected) : !page && <DayStage model={model} now={now} t={t} onPick={onPage} sessions={sessions}/>}</div>
+            {selected ? page ? shownDoor?.node : detail(selected) : !page && <DayStage model={model} now={now} t={t} onPick={onPage} sessions={sessions}
+              acts={{ ack: id => void acknowledge(id), commit: (key, hex, action) => void settle(key, hex, action), state: w => work[w] as 'busy' | 'failed' | '' | undefined }}
+              onAgent={id => { pickDoor('agents'); setSelected(id); }}/>}</div>
         </div>
           : page ? <p className="dt-say">{pageSay}</p> : cut && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}
