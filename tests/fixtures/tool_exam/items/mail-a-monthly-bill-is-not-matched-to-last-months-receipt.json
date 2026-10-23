@@ -1,0 +1,33 @@
+{
+  "id": "mail-a-monthly-bill-is-not-matched-to-last-months-receipt",
+  "tool": "mail",
+  "said": "did I pay this month's Example Cloud bill",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "oct1"
+  },
+  "recording": "mail-a-monthly-bill-is-not-matched-to-last-months-receipt.recording.json",
+  "expect": {
+    "summary_must": [
+      "No receipt from example.com since"
+    ],
+    "result_must_not_mention": [
+      "Paid:",
+      "R-4401"
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_search",
+        "query": "from:example.com after:1791788400 ",
+        "count": 1
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

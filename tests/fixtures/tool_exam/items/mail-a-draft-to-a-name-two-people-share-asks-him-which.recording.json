@@ -1,0 +1,26 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "sent0",
+    "subject": "Hello",
+    "plain": "Hi.",
+    "sender": "Allen <allen@example.com>",
+    "to": "Sam Lee <sam@example.com>",
+    "labels": [
+     "SENT"
+    ],
+    "at": "2026-09-11T11:00:00-07:00"
+   },
+   {
+    "id": "wu1",
+    "subject": "Notes",
+    "plain": "Notes.",
+    "sender": "Sam Wu <sam.wu@example.org>",
+    "to": "Allen <allen@example.com>",
+    "at": "2026-10-16T11:00:00-07:00"
+   }
+  ]
+ }
+}

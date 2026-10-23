@@ -558,3 +558,31 @@ def test_the_block_d_check_compares_the_results_count_with_block_ds_own_line() -
     assert len(none) == 1
     assert "None" in none[0]
     assert off == []
+
+
+def _plumbing_copy(tmp_path: Path, name: str, change: dict[str, Any]) -> str:
+    """The plumbing item ``name`` with ``change`` laid over it, written to ``tmp_path``."""
+    item = json.loads((ITEMS / f"{name}.json").read_text(encoding="utf-8"))
+    shutil.copy(ITEMS / item["recording"], tmp_path)
+    (tmp_path / "x.json").write_text(json.dumps({**item, "id": "x", **change}), encoding="utf-8")
+    return str(item["id"])
+
+
+def test_a_plumbing_turn_can_press_the_waiting_card_and_the_card_the_clients_read_is_judged(
+    tmp_path: Path,
+) -> None:
+    """``press`` is the button; ``card`` is what the card shows after the turn, key by key."""
+    name = "plumbing-mail-an-edit-on-the-card-is-the-letter-that-is-sent"
+    _plumbing_copy(tmp_path, name, {})
+    assert exam.score(tmp_path)["failed"] == {}
+    item = json.loads((ITEMS / f"{name}.json").read_text(encoding="utf-8"))
+    wrong = [{**item["turns"][0], "card": {"letter": False, "args": {"to": ["x@example.com"]}}}]
+    _plumbing_copy(tmp_path, name, {"turns": [*wrong, item["turns"][1]]})
+    failed = exam.score(tmp_path)["failed"]["x"]
+    assert any(m.startswith("after turn 0: card letter: expected False") for m in failed)
+    assert any(m.startswith("after turn 0: card args: expected {'to': ['x@") for m in failed)
+    _plumbing_copy(tmp_path, name, {"turns": [item["turns"][1]]})
+    assert any("press: no card is waiting" in m for m in exam.score(tmp_path)["failed"]["x"])
+    waiting = {"expect": {**item["expect"], "card": None}, "turns": item["turns"][:1]}
+    _plumbing_copy(tmp_path, name, waiting)
+    assert any("a card is waiting: mail" in m for m in exam.score(tmp_path)["failed"]["x"])

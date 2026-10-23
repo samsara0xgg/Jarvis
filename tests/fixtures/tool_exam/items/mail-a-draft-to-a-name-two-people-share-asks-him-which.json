@@ -1,0 +1,37 @@
+{
+  "id": "mail-a-draft-to-a-name-two-people-share-asks-him-which",
+  "tool": "mail",
+  "said": "write Sam that Thursday works",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "draft",
+    "to": "Sam",
+    "subject": "Lunch",
+    "body": "Thursday works."
+  },
+  "recording": "mail-a-draft-to-a-name-two-people-share-asks-him-which.recording.json",
+  "expect": {
+    "error_kind": "needs_him",
+    "result": [
+      {
+        "path": "code",
+        "op": "eq",
+        "value": "ambiguous_recipient"
+      }
+    ],
+    "summary_must": [
+      "more than one person in his mail",
+      "Sam Wu <sam.wu@example.org>",
+      "Sam Lee <sam@example.com>",
+      "ask him which"
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "count": 0
+      }
+    ]
+  }
+}

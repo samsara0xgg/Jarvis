@@ -1,0 +1,34 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "inv1",
+    "subject": "Your Example Cloud invoice IN-4821",
+    "plain": "Invoice IN-4821\nTotal | $5.00 USD\nAmount due | $5.00 USD\nDue date | Oct 20, 2026\n",
+    "sender": "Example Cloud <billing@example.com>",
+    "at": "2026-10-12T08:00:10-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_UPDATES"
+    ]
+   },
+   {
+    "id": "news1",
+    "subject": "What is new in Example Cloud",
+    "plain": "New regions are open.",
+    "sender": "Example Cloud <billing@example.com>",
+    "at": "2026-10-14T09:00:00-07:00",
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    },
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PROMOTIONS"
+    ]
+   }
+  ]
+ }
+}

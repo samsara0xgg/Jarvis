@@ -1,0 +1,30 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "sent0",
+    "subject": "Hello",
+    "plain": "Hi.",
+    "sender": "Allen <allen@example.com>",
+    "to": "Sam Lee <sam@example.com>",
+    "labels": [
+     "SENT"
+    ],
+    "at": "2026-09-11T11:00:00-07:00"
+   },
+   {
+    "id": "lunch1",
+    "subject": "Lunch Thursday?",
+    "plain": "Can we have lunch Thursday?",
+    "sender": "Sam Lee <sam@example.com>",
+    "to": "Allen <allen@example.com>",
+    "thread": "T9",
+    "headers": {
+     "Reply-To": "Sam at Home <sam.home@example.org>"
+    },
+    "at": "2026-10-21T08:00:00-07:00"
+   }
+  ]
+ }
+}

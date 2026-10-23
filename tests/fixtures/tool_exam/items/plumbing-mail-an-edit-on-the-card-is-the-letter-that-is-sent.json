@@ -1,0 +1,84 @@
+{
+  "id": "plumbing-mail-an-edit-on-the-card-is-the-letter-that-is-sent",
+  "layer": "plumbing",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "turns": [
+    {
+      "said": "tell Sam yes",
+      "script": [
+        {
+          "tool_calls": [
+            {
+              "name": "mail",
+              "arguments": {
+                "action": "send",
+                "to": "Sam",
+                "subject": "Re: Plan",
+                "body": "Yes."
+              }
+            }
+          ]
+        }
+      ],
+      "card": {
+        "tool": "mail",
+        "letter": true,
+        "args": {
+          "to": [
+            "Sam Lee <sam@example.com>"
+          ],
+          "subject": "Re: Plan",
+          "body": "Yes."
+        }
+      }
+    },
+    {
+      "press": {
+        "decision": "accept",
+        "edits": {
+          "body": "Yes, at noon."
+        }
+      },
+      "script": [
+        {
+          "text": "Sent."
+        }
+      ]
+    }
+  ],
+  "recording": "plumbing-mail-an-edit-on-the-card-is-the-letter-that-is-sent.recording.json",
+  "expect": {
+    "model_requests": [
+      1,
+      1
+    ],
+    "events_after": {
+      "must": [
+        "confirmation.accepted"
+      ],
+      "must_not": []
+    },
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "args": {
+          "body": "Yes, at noon."
+        },
+        "count": 1
+      },
+      {
+        "tool": "gmail_createDraft",
+        "args": {
+          "body": "Yes."
+        },
+        "count": 0
+      },
+      {
+        "tool": "gmail_sendDraft",
+        "count": 1
+      }
+    ]
+  }
+}

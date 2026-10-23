@@ -5,10 +5,15 @@ No model is called and the network is blocked. An item is JSON, like a tool-laye
 ``expect.events_after`` and ``expect.state_after``, which mean the same here) with ``"layer":
 "plumbing"`` and, in place of ``tool`` and ``args``:
 
-- ``turns``: ``[{said, script, after_s?}]``; a single turn may give ``said`` and ``script`` at the
-  top. ``script`` is the model's replies in order, each ``{text?, tool_calls?: [{name, arguments}
-  or {name, arguments_json}]}`` (``arguments_json`` is sent raw, so it can be malformed).
-  ``after_s`` lets that many seconds pass before the turn, on the frozen clock.
+- ``turns``: ``[{said, script, after_s?, press?, card?}]``; a single turn may give ``said`` and
+  ``script`` at the top. ``script`` is the model's replies in order, each ``{text?, tool_calls?:
+  [{name, arguments} or {name, arguments_json}]}`` (``arguments_json`` is sent raw, so it can be
+  malformed). ``after_s`` lets that many seconds pass before the turn, on the frozen clock.
+  ``press`` (``{decision, edits?}``) is Allen's button on the card now waiting, in place of
+  ``said``. ``card`` is what the clients read of the card left waiting after the turn (see
+  ``expect.card``).
+- ``expect.card``: the same, after the last turn. Each key given is compared with the card
+  (``tool``, ``action``, ``letter``, ``args``, whole); ``"card": null`` says none is waiting.
 - ``expect.text_must`` / ``text_must_not``: regexes on the last turn's answer.
 - ``expect.model_requests``: how many requests the model got, per turn (one number for one turn).
 - ``expect.request_has``: ``[{turn?, request, role?, tool?, matches?, not_matches?}]``; some message
@@ -26,6 +31,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import DecideContext, decide
+from jarvis.runtime.daemon.cards import read_card
 from jarvis.runtime.turn.context import max_tool_iterations
 from jarvis.state.event_log import emit_event
 from scripts.tool_exam_steps import ScriptedModel
@@ -54,14 +60,49 @@ def _turns(raw: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return list(raw.get("turns") or [{"said": raw["said"], "script": raw["script"]}])
 
 
-def play_turn(box: Box, said: str, model: ScriptedModel) -> str:
-    """One typed utterance through ``decide()`` with ``model`` answering; the answer text."""
+def _waiting(box: Box) -> dict[str, Any] | None:
+    """The card the clients read now, or None."""
+    card = read_card(box.runtime)["card"]
+    return card if isinstance(card, dict) else None
+
+
+def card_failures(box: Box, want: Mapping[str, Any] | None, where: str) -> list[str]:
+    """Where the waiting card differs from ``want``: each key it gives, or none waiting (None)."""
+    got = _waiting(box)
+    if want is None:
+        return [f"{where}: a card is waiting: {got.get('tool')}"] if got else []
+    if got is None:
+        return [f"{where}: no card is waiting"]
+    return [
+        f"{where}: card {key}: expected {value!r}, got {got.get(key)!r}"
+        for key, value in want.items()
+        if got.get(key) != value
+    ]
+
+
+def play_turn(
+    box: Box, said: str, model: ScriptedModel, press: Mapping[str, Any] | None = None,
+) -> str:
+    """One typed utterance, or Allen's ``press`` of the waiting card, through ``decide()``.
+
+    ``model`` answers; the result is the answer text.
+    """
     runtime = box.runtime
     turn_id = f"T{uuid.uuid4().hex[:12]}"
+    payload: dict[str, Any] = {"transcript": said, "turn_id": turn_id, "channel": "cli_stdin"}
+    if press is not None:
+        waiting = _waiting(box)
+        if waiting is None:
+            msg = "press: no card is waiting"
+            raise RuntimeError(msg)
+        payload = {
+            "transcript": "", "turn_id": turn_id, "channel": "card",
+            "confirmation_decision": {"confirmation_id": waiting["id"], **press},
+        }
     trigger = emit_event(
         runtime.conn,
         type="surface.user_intent",
-        payload={"transcript": said, "turn_id": turn_id, "channel": "cli_stdin"},
+        payload=payload,
         correlation={"turn_id": turn_id},
     )
     ctx = DecideContext(
@@ -137,6 +178,8 @@ def _judge(
             failures.append(f"{where.strip()}: nothing matches /{check['matches']}/")
         if "not_matches" in check and hit(check["not_matches"]):
             failures.append(f"{where.strip()}: something matches /{check['not_matches']}/")
+    if "card" in expect:
+        failures += card_failures(box, expect["card"], "after the last turn")
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
     failures += gmail_failures(box, expect.get("gmail", ()))
     return failures + state_failures(box, expect.get("state_after", ()))
@@ -170,7 +213,9 @@ def run_item(item: Item) -> list[str]:
                     box.clock.shift(turn["after_s"])
                 model = ScriptedModel(turn["script"])
                 models.append(model)
-                texts.append(play_turn(box, turn["said"], model))
+                texts.append(play_turn(box, turn.get("said", ""), model, turn.get("press")))
+                if "card" in turn:
+                    failures += card_failures(box, turn["card"], f"after turn {len(texts) - 1}")
             failures += _judge(box, raw.get("expect") or {}, texts, models, after)
     except (LookupError, RuntimeError, TimeoutError) as exc:
         failures.append(f"{type(exc).__name__}: {exc}")
