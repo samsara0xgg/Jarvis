@@ -137,7 +137,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
         else None
     )
     # ADR 0147: the Dashboard's mail page exists only with ``dashboard.mail.enabled``.
-    mail_home = None if runtime.mail_drafts is None else runtime.home
+    mail_home = None if runtime.mail_page is None else runtime.home
     local_zone = runtime.config.zone
     return InherentDeps(
         submit_callable=submit_callable,
@@ -278,7 +278,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
         mail_mark_read=None if mail_home is None else functools.partial(mark_mail_read, mail_home),
         mail_trash=None if mail_home is None else functools.partial(mail_trash, mail_home),
         view_set=None if runtime.view is None else runtime.view.set,
-        **draft_deps(runtime, mail_home),
+        **draft_deps(runtime),
         **settings_notice_deps(
             notice_deps(
                 runtime.job_mail, runtime.reminders, runtime.moment,

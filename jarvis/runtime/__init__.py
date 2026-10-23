@@ -74,7 +74,6 @@ if TYPE_CHECKING:
         DailySchedule,
     )
     from jarvis.runtime.dashboard import (
-        MailDrafts,
         ViewState,
     )
     from jarvis.runtime.decision_state import DecisionStateCache
@@ -84,6 +83,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.ledger import LedgerContext
     from jarvis.runtime.locate import Locator
     from jarvis.runtime.mail_codes import MailCodes
+    from jarvis.runtime.mail_page import MailPage
     from jarvis.runtime.moment import Moment
     from jarvis.runtime.night_run import NightRun
     from jarvis.runtime.picture_files import PictureFiles
@@ -226,9 +226,10 @@ class JarvisRuntime:
     view: ViewState | None = None
     # ADR 0302, 0310: the writer of the doing lane, on its clock and when he asks. None = off.
     doing: DoingSchedule | None = None
-    # ADR 0147: the Dashboard's mail page's reply drafts (``dashboard.mail.enabled``, which
-    # needs the view: a draft goes under the letter the view has open). None = off.
-    mail_drafts: MailDrafts | None = None
+    # ADR 0147, 0366: the Dashboard's mail page's reply draft, a Gmail draft the ``mail`` tool
+    # wrote (``dashboard.mail.enabled``, which needs the view: a draft goes under the letter the
+    # view has open). None = off.
+    mail_page: MailPage | None = None
     # ADR 0148: one line each for the state block, in order; None skips a producer.
     live_context: tuple[Callable[[], str | None], ...] = ()
     # ADR 0152: what his voice carried that the words did not; shared with the voice path.

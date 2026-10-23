@@ -1587,13 +1587,14 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # page can name it; `mail.draft_closed` says how it ended: `replaced` by a revision,
     # `discarded` (its undo, naming the row it reverses in `undoes`) or `sent`. A draft is open
     # until a closing row names it; `in_drafts` is true when Gmail would not move a replaced or
-    # discarded draft to Trash, so it is still there.
+    # discarded draft to Trash, so it is still there. `by` is `owner` on a draft his own edit on
+    # the Dashboard's mail page wrote; absent on one the tool wrote.
     EventTypeSchema(
         event_type="mail.draft_written",
         owner_layer="L4",
         actor="jarvis_llm",
         required_payload=("draft_id", "message_id", "thread_id", "letter"),
-        optional_payload=("action_id", "replaces", "reply_to"),
+        optional_payload=("action_id", "replaces", "reply_to", "by"),
         schema_version=1,
     ),
     EventTypeSchema(

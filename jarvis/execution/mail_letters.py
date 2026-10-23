@@ -130,6 +130,8 @@ class Written:
     """It ended, but Gmail would not move it to Trash, so it is still in Drafts."""
     replaced_by: str = ""
     """The event id of the draft that took its place."""
+    by: str = ""
+    """``owner`` when his own edit on the Dashboard's page wrote it; empty when the tool did."""
 
     @property
     def short(self) -> str:
@@ -149,6 +151,8 @@ class Cause:
     action_id: str = ""
     source: str | None = None
     actor: str | None = None
+    by: str = ""
+    """``owner`` for the page's edit; it is kept on the draft that edit writes."""
 
     def fields(self) -> dict[str, Any]:
         """The keyword arguments of ``emit_event`` for it."""
@@ -173,7 +177,7 @@ def drafts(conn: Connection) -> list[Written]:
                 event.event_uid, draft_id, str(said.get("message_id") or ""),
                 str(said.get("thread_id") or ""), Letter.from_payload(said.get("letter")),
                 event.ts_epoch_ms, str(said.get("reply_to") or ""),
-                str(said.get("replaces") or ""),
+                str(said.get("replaces") or ""), by=str(said.get("by") or ""),
             )
         elif (before := found.get(draft_id)) is not None:
             found[draft_id] = replace(
@@ -229,10 +233,12 @@ def record_written(  # noqa: PLR0913 — the draft Gmail made, its letter and wh
         payload["reply_to"] = reply_to
     if replaces:
         payload["replaces"] = replaces
+    if cause.by:
+        payload["by"] = cause.by
     event = emit_event(conn, type=_WRITTEN, payload=payload, **cause.fields())
     return Written(
         event.event_uid, made.id, made.message, made.thread, letter, event.ts_epoch_ms,
-        reply_to, replaces,
+        reply_to, replaces, by=cause.by,
     )
 
 
