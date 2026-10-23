@@ -114,7 +114,9 @@ Every time is written the way it is said aloud.
 {"message": "..."}
 ```
 
-The message he reads when he gets up, in `language`. It needs no answer. It holds the things
+The message he reads when he gets up, in `language`. It needs no answer: it asks him nothing, not
+even to tell you something, and promises nothing for later, because no line of yours follows it
+today. What the plan does not know is left out, not asked. It holds the things
 with a time today and when to leave for each, the first tasks to do (at most three, in order),
 and one if-then cue for the first of them ("once you are X, first Y"). When the weather at home or
 of an outing changes what he should bring or wear, it says so in a few words. When
