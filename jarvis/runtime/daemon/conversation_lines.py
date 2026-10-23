@@ -103,7 +103,7 @@ def say_job_line(runtime: JarvisRuntime) -> None:
 
 
 def plan_hooks(runtime: JarvisRuntime, controls: voice_controls.VoiceControls) -> Hooks:
-    """ADR 0383: how the plan watcher delivers a line: the quiet level, the Mac, a call, the phone.
+    """ADR 0385: how the plan watcher delivers a line: the quiet level, the Mac, a call, the phone.
 
     It says nothing aloud: a line is her record in the conversation, and a silent push while he
     is away from the Mac. All of it runs on the watcher's thread.

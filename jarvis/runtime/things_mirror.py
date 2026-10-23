@@ -12,7 +12,7 @@ Only what the mirror closed is reopened by it: a thing closed by Allen or by her
 
 An event whose id is some thing's ``outlook_id`` is Jarvis's own (an interview's, ADR 0186) and is
 not read in. A mirrored thing has no rings, by default: the plan may give it a leave-by ring
-(ADR 0383). Nothing is written when the connection is absent or a read fails: one line is logged
+(ADR 0385). Nothing is written when the connection is absent or a read fails: one line is logged
 for each kind of failure.
 """
 

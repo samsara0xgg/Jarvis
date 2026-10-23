@@ -1,4 +1,4 @@
-"""ADR 0383: which unprompted plan lines are due, as a table over the gate (pure, no I/O).
+"""ADR 0385: which unprompted plan lines are due, as a table over the gate (pure, no I/O).
 
 Facts are built by hand, the clock is an argument, and the examples are invented. Each row is
 one rule: due, not due, switched off, capped, already said, outside its hours.

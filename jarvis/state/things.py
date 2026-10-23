@@ -14,7 +14,7 @@ Nothing is deleted: a wrong item is cancelled with its reason.
 
 A ring is a string: ``-30m`` (30 minutes before the thing's time), ``-0m`` (at it), ``-1d@20:00``
 (the day before, at 20:00 local) or ``@09:00`` (that day, at 09:00 local). Rings are ADR 0179
-reminders whose ids start with :data:`RING_PREFIX`. ``rings_from`` says whose they are (ADR 0383):
+reminders whose ids start with :data:`RING_PREFIX`. ``rings_from`` says whose they are (ADR 0385):
 ``asked`` (he named them, or a writer chose them on purpose; every thing written before the field),
 ``default`` (the ledger's rule, :func:`default_rings`) or ``leave`` (the plan's leave-by ring,
 :func:`leave_ring`, which only ever replaces default ones and moves with the thing).

@@ -1,4 +1,4 @@
-"""The plan watcher at run time (ADR 0383): her unprompted lines, due by the log, never chased.
+"""The plan watcher at run time (ADR 0385): her unprompted lines, due by the log, never chased.
 
 Off unless ``day_plan.watch`` is true. Once a minute, in a thread, for a date that has a plan (or a
 failed draft), the watcher reads the facts the log holds (:func:`jarvis.state.plan_facts.facts_at`),

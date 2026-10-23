@@ -5,7 +5,7 @@ carries the whole item list). ``plan.draft_failed`` says the nightly draft did n
 nightly job (runtime), her ``plan`` tool, her unprompted lines and the phone all read the same
 fold. The ``plan.settled`` and ``plan.opened`` rows of old logs (ADR 0288, 0291) are not read.
 
-Her unprompted lines (ADR 0383) add three more types beside the fold: ``plan.said`` (a line of
+Her unprompted lines (ADR 0385) add three more types beside the fold: ``plan.said`` (a line of
 hers went out, by key), ``plan.closed`` (where each task left undone on a day goes) and
 ``plan.muted`` (his switch for a kind of line). They are read back per date, or across dates for
 the switch, never folded into the plan. :func:`apply_changes` is the one place that turns a list
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 TYPES: Final[tuple[str, ...]] = ("plan.drafted", "plan.revised", "plan.draft_failed")
 KINDS: Final[tuple[str, ...]] = ("morning", "new", "leave", "evening")
-"""The four kinds of unprompted line (ADR 0383); a line's key starts with its kind or is it."""
+"""The four kinds of unprompted line (ADR 0385); a line's key starts with its kind or is it."""
 DESTINATIONS: Final[tuple[str, ...]] = ("tomorrow", "later", "drop")
 """Where a task left undone goes when the day closes."""
 ACTOR: Final[str] = "jarvis_runtime"

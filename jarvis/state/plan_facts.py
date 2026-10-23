@@ -1,4 +1,4 @@
-"""What the log says about a day as of a moment, for the plan watcher (ADR 0383).
+"""What the log says about a day as of a moment, for the plan watcher (ADR 0385).
 
 :func:`facts_at` reads only events timed at or before ``now_ms``, so a past day can be replayed
 minute by minute and a line is due, or not, the same way live and in replay. It reuses the phone

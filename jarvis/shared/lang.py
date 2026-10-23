@@ -453,10 +453,10 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "reminder.line": {"zh": "提醒：{text}", "en": "Reminder: {text}"},
     "reminder.late_minutes": {"zh": "（晚了 {n} 分钟）", "en": " ({n} minutes late)"},
     "reminder.late_hours": {"zh": "（晚了 {n} 小时）", "en": " ({n} hours late)"},
-    # ADR 0291, 0383: a line about a private item, pushed or handed to a model: its time only.
+    # ADR 0291, 0385: a line about a private item, pushed or handed to a model: its time only.
     "plan.private": {"zh": "{time} 那件事。", "en": "The {time} thing."},
     "plan.private_untimed": {"zh": "计划里有件事。", "en": "Something on your plan."},
-    # ADR 0383: the fixed line for a new hard thing (a mail or the calendar added it).
+    # ADR 0385: the fixed line for a new hard thing (a mail or the calendar added it).
     "plan.new_thing": {
         "zh": "新加了一件事：{when} {title}{place}。", "en": "New: {when} {title}{place}.",
     },
@@ -1269,7 +1269,7 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     # thing says only that something is on.
     "thing.rem.line": {"zh": "{time} {title}{place}", "en": "{time} {title}{place}"},
     "thing.rem.private": {"zh": "{time} 有一件事", "en": "{time} you have something on"},
-    # ADR 0383: a leave-by ring, at the leave time of the leg to the thing.
+    # ADR 0385: a leave-by ring, at the leave time of the leg to the thing.
     "thing.rem.line_leave": {
         "zh": "该出门了：{time} {title}{place}", "en": "Time to leave: {time} {title}{place}",
     },

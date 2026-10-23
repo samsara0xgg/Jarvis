@@ -4,7 +4,7 @@ The real ``Home`` over the fake WeatherKit of ``weatherkit_world`` (a throwaway 
 the real ``PlanWatch`` over fresh stores, and a stub model and legs. The day is Wednesday
 2026-10-21, 09:30 in Victoria. It is dry at home all day and it rains at the clinic for the hour
 of an outing there, so the day at home and the hours of the outing differ and the request that was
-made says which of them the morning line was given (ADR 0383). The places and the times are
+made says which of them the morning line was given (ADR 0385). The places and the times are
 invented.
 """
 

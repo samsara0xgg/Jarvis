@@ -11,7 +11,7 @@ Data-driven checks over a real event log and memory.db with a fake model and a f
 - the inputs: the ledger's things (ADR 0299) as fixed items, upcoming ones, all-day labels and
   open tasks, goals, missing sources noted, and his earlier changes to plans as preferences, in
   the prompt too; a past plan with the old sources still loads;
-- the morning and the evening prompts and their parsers (ADR 0383), a private item masked;
+- the morning and the evening prompts and their parsers (ADR 0385), a private item masked;
 - the draft: success, every failure writes ``plan.draft_failed``, a day he changed is kept;
 - the schedule: once at ``at``, and a catch-up on start.
 """

@@ -308,7 +308,7 @@ def _preferences(conn: Any, day: date) -> tuple[dict[str, Any], ...]:  # noqa: A
 
 
 def _carried(conn: Any, day: date) -> tuple[dict[str, Any], ...]:  # noqa: ANN401 - a sqlite conn
-    """The tasks of the day before that its evening sent on to ``day`` (ADR 0383)."""
+    """The tasks of the day before that its evening sent on to ``day`` (ADR 0385)."""
     before = day - timedelta(days=1)
     held = plan.for_day(conn, before)
     sent = {u.item_id: u for u in plan.closed(conn, before) or () if u.to == "tomorrow"}

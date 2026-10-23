@@ -1465,7 +1465,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # The day's plan (ADR 0288): one plan per local date, a fold over these three types
     # (`jarvis.state.plan`). A `drafted` or `revised` carries the whole item list, so the last of
     # the two per date wins; `draft_failed` says no draft came. `settled` and `opened` (ADR 0288)
-    # and `noticed` and `decided` (ADR 0291) are no longer written (ADR 0383); kept so the rows
+    # and `noticed` and `decided` (ADR 0291) are no longer written (ADR 0385); kept so the rows
     # already in a log still read.
     EventTypeSchema(
         event_type="plan.drafted",
@@ -1523,7 +1523,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(),
         schema_version=1,
     ),
-    # Her unprompted lines (ADR 0383): `said` is a line that went out (once per key and date),
+    # Her unprompted lines (ADR 0385): `said` is a line that went out (once per key and date),
     # `closed` where each task left undone on a day goes, `muted` his switch for a kind of line.
     # Read back per date (the switch across dates) by `jarvis.state.plan`, never folded into the
     # plan itself.

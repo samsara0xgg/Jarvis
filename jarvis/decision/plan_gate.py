@@ -1,4 +1,4 @@
-"""Which of her unprompted lines about the day are due, as the program sees it (ADR 0383). Pure.
+"""Which of her unprompted lines about the day are due, as the program sees it (ADR 0385). Pure.
 
 :func:`due` compares what the log holds (:mod:`jarvis.state.plan_facts`), what she has already
 said today and what he switched off, and names each line that is due now: the morning line, a new

@@ -1,9 +1,9 @@
-# ADR 0383 — Unprompted plan lines are four kinds gated in code, and never follow up
+# ADR 0385 — Unprompted plan lines are four kinds gated in code, and never follow up
 
 **Status:** Accepted
 **Date:** 2026-10-23
 **Supersedes:** 0291
-**Amends:** ADR 0288 (the opening, settling)
+**Amends:** ADR 0288 (the opening, settling), ADR 0355 (whom the outing weather goes to)
 
 ## Context
 
@@ -41,7 +41,8 @@ model only writes the words of the morning and the evening line.
   signal, the Mac in use again, his words, a ride or a walk or drive), before 17:00. The model
   gets the day's plan with its fixed-time things and leave times, and writes a short message:
   the fixed-time things and when to leave, at most three steps in order, and one if-then cue.
-  It asks nothing.
+  It asks nothing. It gets today at home and each outing's own weather, as ADR 0355 gave the
+  opening; with the `outing_soon` notice gone, the morning is the only line that reads them.
 - **New hard thing**: a thing with an hour today or tomorrow that mail or the calendar mirror
   added or moved (`by` `mail` or `mirror`) after the morning line, said by a fixed zh/en line. A
   thing from his own words (`her`, `pass`, `him`) is never told back to him.

@@ -1075,7 +1075,7 @@ def test_writes_join_a_transaction_the_caller_holds(log: _Log) -> None:
         things.get(log.conn, one.thing_id)
 
 
-# --- whose rings: asked, default, leave (ADR 0383) -------------------------------------------
+# --- whose rings: asked, default, leave (ADR 0385) -------------------------------------------
 
 
 def test_rings_are_his_unless_the_writer_says_they_are_the_default(log: _Log) -> None:

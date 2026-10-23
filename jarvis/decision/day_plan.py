@@ -1,4 +1,4 @@
-"""The day-plan prompts and the parser of the model's answers (ADR 0288, 0383). Pure: no I/O.
+"""The day-plan prompts and the parser of the model's answers (ADR 0288, 0385). Pure: no I/O.
 
 The nightly draft, the morning line and the evening line all use the ``day-plan`` skill. The
 model's answer is untrusted JSON: :func:`parse_items` keeps only the items that read, do not

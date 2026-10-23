@@ -228,7 +228,7 @@ def read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked a
     lane when TimeSink cannot be read live, and gives his Claude Code sessions.
     ``summary`` is the day's steps, resting heart rate and heart rate variability from the phone
     (``None`` if the log cannot be read); ``plan_said`` is her latest unprompted line of the day
-    (ADR 0383: ``kind``, ``text``, ``at_ms``), ``None`` when she said none, beside the day
+    (ADR 0385: ``kind``, ``text``, ``at_ms``), ``None`` when she said none, beside the day
     prose's ``line``; ``weather`` is the day's weather card
     (``Home.day_weather_card``, kept per day), ``None`` when it has none.
     """
