@@ -100,14 +100,6 @@ function Roll({ n }: { n: number }) {
   }, [was, shown]);
   return <span className="dt-roll">{was !== null && <i key={`o${was}`} className="is-old" aria-hidden="true">{was}</i>}<i key={`n${shown}`} className={was !== null ? 'is-new' : undefined}>{shown}</i></span>;
 }
-// What a row's hover offers in the place of its right column while the row is lit: the star that marks it as what mattered, then 问她 (neither opens the row).
-function Quick({ keyed, cx, t }: { keyed: string; cx: Cx; t: (l: L) => string }) {
-  const star = cx.star.can.has(keyed), ask = !!cx.ask && cx.asks.has(keyed);
-  return star || ask ? <span className="dt-quick">
-    {star && <StarToggle mark={cx.star.marks.get(keyed) ?? null} nth={cx.star.refused[keyed] ?? 0} press={() => cx.star.press(keyed)} t={t}/>}
-    {ask && <button type="button" className="dt-ask" tabIndex={-1} onClick={e => { e.stopPropagation(); cx.ask!(keyed); }}>{t(['Ask her', '问她'])}</button>}
-  </span> : null;
-}
 // A right click on a row asks her about it (when it can be asked about); anywhere else the click is the system's.
 const menu = (cx: Cx, key: string) => (e: MouseEvent) => { if (cx.ask && cx.asks.has(key)) { e.preventDefault(); cx.ask(key); } };
 // The lit star on a row's glyph or beside a stay's name: his filled, hers outlined; it fades in when the item is marked and out when it is not.
@@ -132,7 +124,6 @@ function RowView({ row, hot, onHot, pick, t, how, cx }: { row: Row; how: string 
     <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}<Lit on={row.star} hers={row.hers} className="dt-badge"/></i>
     <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{badge && <i className={`dt-wait${row.wait ? '' : ' is-gone'}`}>{t(['Waiting', '等你'])}</i>}</span>
       {seg ? sub && <em className="dt-sub">{row.detail && <span>{row.detail}</span>}{seg.counts.map(c => <i key={c.icon} className="dt-cn"><Ic icon={c.icon} size={11}/>{c.n}</i>)}</em> : row.detail && <em>{row.detail}</em>}</span>
-    <Quick keyed={row.key} cx={cx} t={t}/>
     <span className={`dt-tm${row.value ? ' is-value' : ''}`}>{row.right}</span>
     <Under keyed={row.key} cx={cx}/>
   </div>;
@@ -174,7 +165,6 @@ function StayView({ b, gap, hot, onHot, pick, t, cx }: { b: Extract<Block, { typ
       onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, b.key)} onContextMenu={menu(cx, b.key)}>
       <span className="dt-at"/><i className="dt-dot"/>
       <span className="dt-tx"><span className="dt-ttl"><b>{b.head.name}</b><Lit on={b.head.star !== null} hers={b.head.hers} className="dt-star"/></span>{b.head.star && <em>{b.head.star}</em>}</span>
-      <Quick keyed={b.key} cx={cx} t={t}/>
       <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
       {!plain && <i className="dt-chev" aria-hidden="true"/>}
       <Under keyed={b.key} cx={cx}/>
@@ -696,7 +686,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
       line: line.on && line.key === key ? line.text : '',
     };
     const renaming = rename?.key === key ? { draft: rename.draft, busy: rename.state === 'busy', set: (text: string) => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: (on: boolean) => setLeft(!on) } : null;
-    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={drop} prev={aside(-1) ? () => turn(-1) : null} next={aside(1) ? () => turn(1) : null}/>;
+    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={drop} home={model?.today ? t(['Now', '现在']) : t(['The day', '这一天'])}/>;
   };
   // The rows and their order come before the door's detail, which asks `aside` for its neighbours as this is drawn.
   const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];

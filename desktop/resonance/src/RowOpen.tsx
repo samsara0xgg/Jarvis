@@ -1,13 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { CaretDown, CaretLeft, CaretRight, CaretUp, Check, PencilSimpleLine } from '@phosphor-icons/react';
+import { CaretLeft, CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
-import { stageLook, type Inside as Line1 } from './dayView';
+import { stageLook } from './dayView';
 import { Ic } from './dayIcons';
-import { talkLines, type Bar, type Head, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
+import { talkLines, type Bar, type Head, type InsideLine as Line1, type Night, type Open, type Part, type Rec, type Session, type Words } from './dayOpen';
 
-// What a row's detail page holds (ADR 0308, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today, under
-// the row's title and when it was.
+// What a row's detail holds (ADR 0308, spec-r3 section 8): the parts dayOpen.ts made of it, drawn, and the buttons that work today, under
+// the row's head. In the V2 pane it is the right column's content while the row is selected (DayTimeline.tsx), so it has no page chrome of its own
+// but a small way back to the column's home.
 export const EASE = 'cubic-bezier(.16, 1, .3, 1)';
 export const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -141,22 +142,26 @@ function Sessions({ list, t }: { list: Session[]; t: (l: L) => string }) {
 }
 
 // What is inside an opened stretch of what he was doing: one compact line each, its glyph (a picture shows its thumbnail, which opens large), its words and its time or length.
-function InsideIcon({ x, acts }: { x: Line1; acts: Acts }) {
-  const [broken, setBroken] = useState(false);
-  return x.picture && acts.port && !broken
-    ? <button type="button" className="dt-tbtn" aria-label={acts.t(['Open the picture', '看大图'])} onClick={() => acts.picture(x.picture, x.note)}>
-      <img className="dt-thumb" alt="" width={48} height={48} decoding="async" src={`http://127.0.0.1:${acts.port}/inherent/attachments/${x.picture}`} onError={() => setBroken(true)}/></button>
-    : <span className="dt-cic"><Ic icon={x.icon} size={13}/></span>;
+// One line each: when it was, its glyph (a picture shows its thumbnail, which opens large), the words (the title, then what the row says under it) and its length (a moment has its time already).
+function InsideItem({ x, acts }: { x: Line1; acts: Acts }) {
+  const [broken, setBroken] = useState(false), pic = !!x.picture && !!acts.port && !broken;
+  return <li className={`dt-il${pic ? ' has-pic' : ''}`}>
+    <time>{x.at}</time>
+    {pic
+      ? <button type="button" className="dt-il-b" aria-label={acts.t(['Open the picture', '看大图'])} onClick={() => acts.picture(x.picture, x.note)}>
+        <img className="dt-il-th" alt="" width={36} height={36} decoding="async" src={`http://127.0.0.1:${acts.port}/inherent/attachments/${x.picture}`} onError={() => setBroken(true)}/></button>
+      : <span className="dt-il-i"><Ic icon={x.icon} size={13}/></span>}
+    <span className="dt-il-t">{x.title}{x.detail && <em>{x.detail}</em>}</span>{x.side && x.side !== x.at && <span className="dt-il-s">{x.side}</span>}
+  </li>;
 }
 function Inside({ list, acts }: { list: Line1[]; acts: Acts }) {
-  return <ul className="dt-ins">{list.map(x => <li key={x.key} className={`dt-cline${x.picture ? ' has-pic' : ''}`}>
-    <InsideIcon x={x} acts={acts}/><span className="dt-ctx">{x.title}{x.detail && <em>{x.detail}</em>}</span><span className="dt-cside">{x.side}</span></li>)}</ul>;
+  return <ul className="dt-ins">{list.map(x => <InsideItem key={x.key} x={x} acts={acts}/>)}</ul>;
 }
 
 function PartView({ part, acts }: { part: Part; acts: Acts }) {
   switch (part.type) {
     case 'inside': return <Inside list={part.list} acts={acts}/>;
-    case 'knows': return <p className="dt-knows">{part.text}</p>;
+    case 'knows': return null;
     case 'lines': return <div className="dt-lines">{part.lines.map((w, i) => <Line key={i} w={w}/>)}</div>;
     case 'talk': return <Talk part={part} acts={acts}/>;
     case 'picture': return <Picture part={part} acts={acts}/>;
@@ -189,9 +194,9 @@ export function SayWhat({ press, t }: { press: () => void; t: (l: L) => string }
   return <button type="button" className="dt-sayhow" onClick={press}><PencilSimpleLine size={12} aria-hidden="true"/>{t(['What was this', '这段在干嘛'])}</button>;
 }
 
-// The buttons: what can be done from the row, only where the route to do it works today; under them 这段在干嘛, and a line when there is something to say.
+// The buttons: what can be done from the row, only where the route to do it works today (问她 is in the head); under them 这段在干嘛, and a line when there is something to say.
 function Buttons({ acts, say }: { acts: Acts; say: string }) {
-  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(acts.ask || rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
+  const { t, rename, name, ack, commit, summarize, star } = acts, any = !!(rename?.state === 'idle' || name?.state === 'idle' || ack || commit || summarize || star);
   return <>
     {any && <div className="dt-acts">
       {rename?.state === 'idle' && <button type="button" className="dt-btn" onClick={rename.start}>{t(['Rename', '改名字'])}</button>}
@@ -205,7 +210,6 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
         ? <span className="dt-sent"><Check size={12} weight="bold" aria-hidden="true"/>{t(['Sent to her', '已发给她'])}</span>
         : <button type="button" className="dt-btn" disabled={summarize.state === 'busy'} onClick={summarize.press}>{summarize.state === 'failed' ? t(["Didn't send. Try again", '没发出去，再试一次']) : t(['Have her sum this up', '让她总结这段'])}</button>)}
       {star}
-      {acts.ask && <button type="button" className="dt-btn" onClick={acts.ask}>{t(['Ask her', '问她'])}</button>}
     </div>}
     {acts.say && <SayWhat press={acts.say} t={t}/>}
     {name && name.state !== 'idle' && <NameField name={name} t={t}/>}
@@ -216,9 +220,11 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
 function OpenBody({ open, acts }: { open: Open; acts: Acts }) {
   const { t } = acts;
   const say = acts.rename?.state === 'editing' || acts.name?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.name?.state === 'failed' ? t(["Couldn't keep it. Try again.", '没记下，再试一次']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' || acts.commit?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
+  const knows = open.parts.find((p): p is Extract<Part, { type: 'knows' }> => p.type === 'knows');
   return <>
     {open.parts.map((p, i) => <PartView key={`${p.type}${i}`} part={p} acts={acts}/>)}
     <Buttons acts={acts} say={say}/>
+    {knows && <p className="dt-how"><b>{t(['Based on', '依据'])}</b>{knows.text}</p>}
   </>;
 }
 
@@ -231,22 +237,36 @@ function RenameField({ draft, busy, set, save, field, t }: Rename & { t: (l: L) 
     onChange={e => set(e.target.value)} onFocus={() => field(true)} onBlur={() => field(false)} onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); save(); } }}/>;
 }
 
-// A row's detail page (it slides over the list: DayTimeline.tsx): a back control with the row's title, when it was and how long, then what the row holds and the
-// buttons that work for it. The title is the field while a kept place is being renamed.
-// `prev` and `next` turn it to the row before and after (null at either end: dimmed).
-export function DetailPage({ head, open, acts, rename, back, prev, next }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void; prev: (() => void) | null; next: (() => void) | null }) {
-  const { t } = acts;
-  return <div className="dt-pin">
-    <header className="dt-ph">
-      <button type="button" className="dt-pb" aria-label={t(['Back to the day', '回到这一天'])} onClick={back}><CaretLeft size={14} weight="bold" aria-hidden="true"/></button>
-      {rename ? <RenameField {...rename} t={t}/> : <b>{head.title}</b>}
-      <span className="dt-pn">
-        <button type="button" aria-label={t(['Previous', '上一段'])} disabled={!prev} onClick={prev ?? undefined}><CaretUp size={14} weight="bold" aria-hidden="true"/></button>
-        <button type="button" aria-label={t(['Next', '下一段'])} disabled={!next} onClick={next ?? undefined}><CaretDown size={14} weight="bold" aria-hidden="true"/></button>
-      </span>
-    </header>
-    {head.meta && <p className="dt-pm">{head.meta}</p>}
-    <div className="dt-body"><OpenBody open={open} acts={acts}/></div>
+// The edges of a column that scrolls fade over 16 px where there is more past them (the list's own look, day-timeline.css); the classes follow the scroll and the content's size.
+function useEdges(box: RefObject<HTMLDivElement | null>, inner: RefObject<HTMLDivElement | null>) {
+  useLayoutEffect(() => {
+    const el = box.current, body = inner.current;
+    if (!el || !body) return;
+    const edges = () => { el.classList.toggle('more-below', el.scrollTop + el.clientHeight < el.scrollHeight - 2); el.classList.toggle('more-above', el.scrollTop > 2); };
+    edges();
+    el.addEventListener('scroll', edges, { passive: true });
+    const ro = new ResizeObserver(edges);
+    ro.observe(el); ro.observe(body);
+    return () => { el.removeEventListener('scroll', edges); ro.disconnect(); };
+  }, []);
+}
+
+// A row's detail in the right column (the V2 pane: DayTimeline.tsx): a small way back to what the column shows with nothing selected (`home` says what that is; Esc is the same),
+// the head (the row's glyph in its own colour, its title, when it was and how long, and 问她 at its right), then what the row holds and the buttons that work for it, and last how
+// she knows. The title is the field while a kept place is being renamed. The column scrolls on its own, its edges fading.
+export function DetailPage({ head, open, acts, rename, back, home }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void; home: string }) {
+  const { t } = acts, box = useRef<HTMLDivElement>(null), inner = useRef<HTMLDivElement>(null);
+  useEdges(box, inner);
+  return <div ref={box} className="dt-pin is-day">
+    <div ref={inner} className="dt-dp">
+      <button type="button" className="dt-up" onClick={back}><CaretLeft size={10} weight="bold" aria-hidden="true"/>{home}</button>
+      <header className="dt-dh">
+        <i className={`dt-ic dt-dic${head.rgb ? ' has-c' : ''}${head.unknown ? ' is-unknown' : ''}`} style={head.rgb ? { '--c': head.rgb.join(' ') } as CSSProperties : undefined}>{head.icon === 'dot' ? <span className="dt-pip"/> : head.icon ? <Ic icon={head.icon}/> : null}</i>
+        <span className="dt-dt">{rename ? <RenameField {...rename} t={t}/> : <b>{head.title}</b>}{head.meta && <em>{head.meta}</em>}</span>
+        {acts.ask && <button type="button" className="dt-btn" onClick={acts.ask}>{t(['Ask her', '问她'])}</button>}
+      </header>
+      <div className="dt-body"><OpenBody open={open} acts={acts}/></div>
+    </div>
   </div>;
 }
 

@@ -1,6 +1,6 @@
 import type { L } from './companionSettings';
 import { endClock, hm } from './barView.ts';
-import { accountOf, askable, ATTACHMENT, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Say } from './dayView.ts';
+import { accountOf, askable, ATTACHMENT, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Rgb, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0308, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
@@ -17,6 +17,8 @@ export type Bar = { name: string; text: string; share: number };
 export type Session = { id: string; at: string; title: string; meta: string; length: string; recap: string };
 // What the night looked like: where each stage was on the row's own time scale, and the totals in words.
 export type Night = { from: number; to: number; at: [string, string]; slices: { stage: string; s: number; e: number }[]; totals: string };
+// One line inside an opened stretch as the right column draws it: the line the row has (dayView.ts), and when it began.
+export type InsideLine = Inside & { at: string };
 export type Part =
   | { type: 'lines'; lines: Words[] }
   | { type: 'talk'; day: string; from: number; to: number }
@@ -25,7 +27,7 @@ export type Part =
   | { type: 'night'; night: Night }
   | { type: 'sessions'; list: Session[] }
   | { type: 'titles'; list: string[] }
-  | { type: 'inside'; list: Inside[] }
+  | { type: 'inside'; list: InsideLine[] }
   | { type: 'knows'; text: string };
 // `rename`: the kept place under a stay, and the name it has; `ack`: the reminder that rang and waits for a `知道了`; `summarize`: a work block
 // can be handed to her at one tap; `star`: the item can be marked as what mattered (every item with an id the brain takes; a folded row of
@@ -92,17 +94,18 @@ function openSegment(m: DayModel, key: string): Open | null {
   if (!seg) return null;
   const parts: Part[] = [];
   if (seg.detail) parts.push(lines(say(seg.detail, 'ink')));
-  if (seg.inside.length) parts.push({ type: 'inside', list: seg.inside });
+  if (seg.inside.length) parts.push({ type: 'inside', list: seg.inside.map(x => { const it = m.items.find(i => i.id === x.key); return { ...x, at: it ? clock(Math.max(it.start_ms, seg.start), m.tz) : m.rows.get(x.key)?.at ?? '' }; }) });
   if (seg.knows) parts.push({ type: 'knows', text: seg.knows });
   return { key, kind: 'doing', parts, rename: null, name: null, ack: null, summarize: false, star: false, commit: null };
 }
-// What a detail page says over its content: the row's title, and its time range, length and place in one line (a moment has its time alone).
-export type Head = { title: string; meta: string };
+// What a detail says over its content: the row's title, and its time range, length and place in one line (a moment has its time alone), and the glyph the row has in its
+// own colour (`rgb`: the stretch's category or the stay's place; none for a row that has none; `unknown`: nothing says what it was, so its ring is dashed).
+export type Head = { title: string; meta: string; icon: Icon | 'dot' | null; rgb: Rgb | null; unknown: boolean };
 export function headOf(m: DayModel, key: string, t: Say): Head | null {
   const row = m.rows.get(key), seg = m.segs.get(key), stay = m.heads.get(key), it = m.items.find(x => x.id === key);
-  if (row && seg) return { title: row.title, meta: [seg.end > seg.start ? `${clock(seg.start, m.tz)}–${endClock(seg.end, m.reply, m.tz)}` : row.at, seg.end > seg.start ? row.right : '', row.detail].filter(Boolean).join(' · ') };
-  if (stay) return { title: stay.name, meta: [stay.when, stay.dur].join(' · ') };
-  return row ? { title: row.title, meta: it ? span(it, m, t) : [row.at, row.right].filter(Boolean).join(' · ') } : null;
+  if (row && seg) return { title: row.title, meta: [seg.end > seg.start ? `${clock(seg.start, m.tz)}–${endClock(seg.end, m.reply, m.tz)}` : row.at, seg.end > seg.start ? row.right : '', row.detail].filter(Boolean).join(' · '), icon: row.icon, rgb: seg.rgb, unknown: seg.unknown };
+  if (stay) return { title: stay.name, meta: [stay.when, stay.dur].join(' · '), icon: stay.icon, rgb: stay.rgb, unknown: false };
+  return row ? { title: row.title, meta: it ? span(it, m, t) : [row.at, row.right].filter(Boolean).join(' · '), icon: row.icon, rgb: null, unknown: false } : null;
 }
 export function openOf(m: DayModel, key: string, t: Say): Open | null {
   if (m.segs.has(key)) return openSegment(m, key);
