@@ -158,7 +158,6 @@ _LINK_CHARS: Final = 300
 _NEXT_CHARS: Final = 60
 _NO_TIME_NAMED: Final = 4
 _PRIVATE: Final = "something private"
-_UNCONFIRMED: Final = " (from a mail, not confirmed yet)"
 _EVENING: Final = "-1d@20:00"
 _RELATIVE: Final = {-1: "yesterday", 0: "today", 1: "tomorrow"}
 _ISO_DAY: Final = re.compile(r"\d{4}-\d{2}-\d{2}(?:[t ]|$)")
@@ -285,10 +284,31 @@ def _said(at: datetime, now: datetime, zone: tzinfo) -> str:
     return f"{speakable.day_name(local.date(), today)}, {speakable.clock(local)}"
 
 
+def _origin(one: things.Thing) -> str:
+    """``mail:<id>`` for a thing a mail made, so one ``mail`` read opens its source (ADR 0365).
+
+    An interview's reference (``job:<n>``) is the ledger's, not a message id, so it names none.
+    """
+    if one.source == "mail" and one.source_ref and ":" not in one.source_ref:
+        return f"mail:{one.source_ref}"
+    return ""
+
+
+def _mark(one: things.Thing, *, unsure: bool, not_confirmed: str) -> str:
+    """What follows a thing's name when a mail made it: that mail, and that it is unconfirmed."""
+    origin = _origin(one)
+    if origin and unsure:
+        return f" (from {origin}, {not_confirmed})"
+    if origin:
+        return f" (from {origin})"
+    return f" (from a mail, {not_confirmed})" if unsure else ""
+
+
 def _name(one: things.Thing) -> str:
     """The thing as the sentences name it: quoted, and marked when a mail made it."""
-    unsure = " (from a mail, not confirmed)" if one.source == "mail" and not one.confirmed else ""
-    return f'"{speakable.cut(one.title, _WHAT_CHARS)}"{unsure}'
+    unsure = one.source == "mail" and not one.confirmed
+    mark = _mark(one, unsure=unsure, not_confirmed="not confirmed")
+    return f'"{speakable.cut(one.title, _WHAT_CHARS)}"{mark}'
 
 
 def _when_of(one: things.Thing) -> _Time:
@@ -928,8 +948,7 @@ class _Schedule:
             "id": things.short_id(one),
             "what": _PRIVATE if one.private else speakable.cut(one.title, _WHAT_CHARS),
         }
-        if not one.confirmed:
-            fields["what"] += _UNCONFIRMED
+        fields["what"] += _mark(one, unsure=not one.confirmed, not_confirmed="not confirmed yet")
         if when:
             fields["when"] = when
         fields["kind"] = one.kind
