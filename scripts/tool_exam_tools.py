@@ -25,6 +25,7 @@ An item (JSON, one per file) holds his words and the moment, place and data they
   trip is those stops.
 - ``setup``: earlier calls, ``[{tool, args, after_s?}]``, made through the same dispatcher;
   ``after_s`` lets that many seconds of the frozen clock pass after the call.
+- ``fake_clock``: optional, true to have the runtime's clock follow the frozen wall time.
 - ``recording``: path (relative to the item's directory) of what each provider answered, or null.
   A provider call the recording lacks fails the item. A request the recording holds more than once
   is answered by each in order, the last one every time after: a read that works, then fails.
@@ -56,6 +57,13 @@ JSON; ``"any_body": true`` answers any body (a model chooses its own query), ``"
 from the first by what it carries). ``"headers": {"location": ...}`` gives the headers a page
 needs besides its content type. httpx requests are answered from it like ``urlopen`` ones.
 
+An entry may be a stream (``"content_type": "text/event-stream"`` with the events as its body): it
+reaches the SDK's async client, which the tool reads on its own thread. ``"hang_s": N`` makes the
+stream go silent once its body is read, after letting N seconds pass on the frozen clock, which is
+how an item shows a deadline passing while a server says nothing. An item with ``"fake_clock":
+true`` has the runtime's own clock stand on that frozen wall time, so its waits end when the
+frozen time passes and not when real time does.
+
 Every result also passes :func:`assert_tool_result`, the spec's rules for a result and an error.
 The ``baseline.json`` beside the items lists the ids that fail; a run fails when an item outside it
 fails, and names a listed item that now passes, so the list only shrinks.
@@ -67,6 +75,7 @@ memory that no key value is in the bytes it writes; it never prints one.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -105,6 +114,7 @@ from jarvis.deployment import load_env_file
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.shared import ActionRequest, CallerPrincipal
+from jarvis.shared.clock import SystemClock
 from jarvis.shared.receipts import call_risk
 from jarvis.state.event_log import emit_event
 from jarvis.state.ride_progress import StopTime
@@ -113,7 +123,7 @@ from jarvis.state.rides import write_start as write_ride_start
 from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 
     from jarvis.runtime import JarvisRuntime
 
@@ -437,6 +447,8 @@ class _Transport:
         self._real_urlopen = urllib.request.urlopen
         self._stack = contextlib.ExitStack()
         self._open = threading.local()
+        self.clock: Any = None
+        """The frozen clock, set once the sandbox is up: a ``hang_s`` entry lets time pass on it."""
 
     def __enter__(self) -> Self:
         real_call, real_direct = McpServers._call, McpServers.call  # noqa: SLF001
@@ -466,6 +478,11 @@ class _Transport:
         self._stack.enter_context(
             patch.object(httpx.HTTPTransport, "handle_request", self._httpx_handler())
         )
+        self._stack.enter_context(
+            patch.object(
+                httpx.AsyncHTTPTransport, "handle_async_request", self._httpx_async_handler()
+            )
+        )
         self._stack.enter_context(patch.object(McpServers, "_call", call))
         if not self.live:  # a call outside a model turn skips the "connected" check when replayed
             self._stack.enter_context(patch.object(McpServers, "call", direct))
@@ -489,6 +506,20 @@ class _Transport:
             if getattr(self._open, "model", False):  # the exam's own model request goes out
                 return real_handle(transport, request)
             return self._httpx(request, lambda: real_handle(transport, request))
+
+        return handle
+
+    def _httpx_async_handler(
+        self,
+    ) -> Callable[[httpx.AsyncHTTPTransport, httpx.Request], Awaitable[httpx.Response]]:
+        """What httpx's async transport does while this one is open: the same, recorded."""
+        real_handle = httpx.AsyncHTTPTransport.handle_async_request
+
+        async def handle(
+            transport: httpx.AsyncHTTPTransport, request: httpx.Request,
+        ) -> httpx.Response:
+            await request.aread()
+            return await self._httpx_async(request, lambda: real_handle(transport, request))
 
         return handle
 
@@ -563,6 +594,11 @@ class _Transport:
                 reply.status_code, content=payload, request=request,
                 headers={**headers, "content-type": ctype} if ctype else headers,
             )
+        return self._replayed(request)
+
+    def _replayed(self, request: httpx.Request) -> httpx.Response:
+        """The recorded answer to an httpx request, or the miss that fails the item."""
+        method, full, body = request.method, str(request.url), request.content
         entry = self.recording.http(method, full, body)
         if entry is None:
             shown = body.decode("utf-8", "replace")[:400]
@@ -575,7 +611,36 @@ class _Transport:
         headers = {**entry.get("headers", {})}
         if entry.get("content_type"):
             headers["content-type"] = entry["content_type"]
+        if entry.get("hang_s") is not None:
+            stream = _Hang(payload, lambda: self._time_passes(float(entry["hang_s"])))
+            return httpx.Response(entry["status"], headers=headers, stream=stream, request=request)
         return httpx.Response(entry["status"], content=payload, headers=headers, request=request)
+
+    def _time_passes(self, seconds: float) -> None:
+        """Let ``seconds`` pass on the frozen clock, as a server that says nothing lets them."""
+        if self.clock is None:
+            msg = "an entry with hang_s needs the sandbox's frozen clock"
+            raise RuntimeError(msg)
+        self.clock.shift(seconds)
+
+    async def _httpx_async(
+        self, request: httpx.Request, real: Callable[[], Awaitable[httpx.Response]],
+    ) -> httpx.Response:
+        """One async httpx request: answered from the recording, or made and stored."""
+        method, full, body = request.method, str(request.url), request.content
+        self._note(method, full, body)
+        if not self.live:
+            return self._replayed(request)
+        reply = await real()
+        payload = await reply.aread()
+        ctype = reply.headers.get("content-type", "")
+        headers = {k: v for k in _KEPT_HEADERS if (v := reply.headers.get(k))}
+        self._store(method, full, body, dict(request.headers), reply.status_code, payload,
+                    ctype, headers)
+        return httpx.Response(
+            reply.status_code, content=payload, request=request,
+            headers={**headers, "content-type": ctype} if ctype else headers,
+        )
 
     def _record(  # noqa: PLR0913 - the call as made and what it was reduced to
         self,
@@ -667,6 +732,57 @@ class _Transport:
             raise RecordingMiss(msg)
         result: dict[str, Any] = entry["result"]
         return result
+
+
+class _Hang(httpx.AsyncByteStream):
+    """A response body that arrives whole and then goes quiet, never ending on its own.
+
+    The quiet comes after a short real pause, so the thread that reads the stream has taken
+    what arrived before ``silence`` lets the frozen time pass.
+    """
+
+    PAUSE_S = 0.25
+
+    def __init__(self, body: bytes, silence: Callable[[], None]) -> None:
+        self._body, self._silence = body, silence
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._body
+        await asyncio.sleep(self.PAUSE_S)
+        self._silence()
+        await asyncio.Event().wait()  # until the reader cancels the request
+
+    async def aclose(self) -> None:
+        """Nothing is held open."""
+
+
+@contextmanager
+def fake_clock(item: Item) -> Iterator[None]:
+    """For an item with ``fake_clock``: the runtime's clock stands on the frozen wall time.
+
+    Its monotonic time is the frozen time, and a wait ends when the event is set or the frozen
+    time reaches the deadline, polled in short real slices. Time then moves only when the item
+    says so (a ``hang_s`` entry), so a minute's deadline is passed without a minute of waiting.
+    """
+    if not item.raw.get("fake_clock"):
+        yield
+        return
+
+    def monotonic(_clock: SystemClock) -> float:
+        return time.time()
+
+    def wait(_clock: SystemClock, event: threading.Event, timeout: float | None) -> bool:
+        end = None if timeout is None else time.time() + max(timeout, 0.0)
+        while not event.wait(0.002):
+            if end is not None and time.time() >= end:
+                break
+        return event.is_set()
+
+    with (
+        patch.object(SystemClock, "monotonic", monotonic),
+        patch.object(SystemClock, "wait", wait),
+    ):
+        yield
 
 
 def _refuse(*_a: object, **_k: object) -> None:
@@ -1233,7 +1349,8 @@ def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.alarm(ITEM_TIMEOUT_S)
     try:
-        with transport, sandbox(item, recording) as box:
+        with transport, fake_clock(item), sandbox(item, recording) as box:
+            transport.clock = box.clock
             _setup(box, item)
             after = int(
                 box.runtime.conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]

@@ -37,6 +37,7 @@ from scripts.tool_exam_tools import (
     _events_since,
     _Transport,
     dispatch,
+    fake_clock,
     sandbox,
     state_failures,
 )
@@ -154,7 +155,8 @@ def run_item(item: Item) -> list[str]:
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.alarm(ITEM_TIMEOUT_S)
     try:
-        with transport, sandbox(item, recording) as box:
+        with transport, fake_clock(item), sandbox(item, recording) as box:
+            transport.clock = box.clock
             for step in raw.get("setup") or ():
                 dispatch(box, step["tool"], step.get("args") or {}, raw.get("said", ""))
             after = int(
