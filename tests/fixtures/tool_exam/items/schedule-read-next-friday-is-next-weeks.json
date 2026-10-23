@@ -1,0 +1,11 @@
+{
+  "id": "schedule-read-next-friday-is-next-weeks",
+  "tool": "schedule",
+  "said": "what do I have next Friday",
+  "at": "2026-10-19T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {"at": "next Fri"},
+  "recording": null,
+  "expect": {"summary_must": ["Fri Oct 30"], "summary_must_not": ["Oct 23"]}
+}
