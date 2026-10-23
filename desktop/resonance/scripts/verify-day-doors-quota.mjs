@@ -1,5 +1,6 @@
-// The 额度 door of the day pane (src/doors/quota.tsx): Claude's 5-hour limit as a page of the day under the bar. A level on the bar for each window (past ones dim, the running one lit and carried on
-// dashed to the bar's end), a row each, the now line, the reset to come, the line, the numbers and the count on the door. Headless Chrome against the built page with the native bridge stubbed and a
+// The 额度 door of the day pane (src/doors/quota.tsx), V2: Claude's 5-hour limit as a page of the day: a list of windows at the left, the selected window's page (a meter of the used part and of the time gone) at the right,
+// opened on the running window. The bar draws only the door's own band: a level for each window (past ones dim, the running one lit and carried on dashed to the bar's end), not the day under it. A row each, the now line,
+// the reset to come, the line, the numbers and the count on the door. Headless Chrome against the built page with the native bridge stubbed and a
 // fake daemon that serves the day, the days before it, /inherent/usage and /inherent/usage/history (the route is built on another branch: this fake reads a pool of readings the way that route
 // does, the last reading before the span leading each list). Run after `npm run build`.
 // Screenshots (2x) land in $OUT (default verify-out/doors-quota/, not committed).
@@ -109,7 +110,7 @@ const browser = await chromium.launch({ headless: true, ...exe ? { executablePat
 // A page on the fake daemon. `s.usage`: which usage answer (a key of USAGE, 'fail' for a 500, 'missing' for a 404); `s.history`: 'ok', 'none' (nothing in reach), 'fail', 'missing' (the route is not served);
 // `s.hits`: how many times each route was asked; `s.asked`: the spans the history was asked for; `s.bad`: asks a real daemon would refuse (a 400); `s.slow`: a span's `from_ms` to the ms its answer waits.
 async function boot({ lang = 'zh', usage = 'plain', history = 'ok' } = {}) {
-  const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
+  const ctx = await browser.newContext({ viewport: { width: 836, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   const s = { usage, history, hits: {}, asked: [], bad: [], slow: new Map() };
   page.on('pageerror', e => errors.push(e.message));
@@ -117,7 +118,7 @@ async function boot({ lang = 'zh', usage = 'plain', history = 'ok' } = {}) {
   await page.addInitScript(([settings]) => {
     localStorage.setItem('companion-settings-v1', JSON.stringify(settings));
     window.jarvis = {
-      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
+      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 836, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {}, wearing: () => {}, onDictation: () => () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async () => {}, material: () => {}, codexTitles: async () => ({}),
@@ -168,7 +169,7 @@ async function boot({ lang = 'zh', usage = 'plain', history = 'ok' } = {}) {
   };
   const geo = () => page.evaluate(() => {
     const r = e => { const b = e?.getBoundingClientRect(); return b ? b.toJSON() : null; }, q = s => document.querySelector(s), dt = q('.notch .dt');
-    return { drop: r(q('.notch-drop')), inner: r(q('.notch-pane-in')), shape: r(q('.notch-shape path')), dt: r(dt), head: r(dt.querySelector('.dt-head')), bar: r(dt.querySelector('.dt-bar')), track: r(dt.querySelector('.dt-track')), doors: r(dt.querySelector('.dt-doors')), from: dt.querySelector('.dt-bar')?.dataset.from ?? null };
+    return { drop: r(q('.notch-drop')), inner: r(q('.notch-pane-in')), shape: r(q('.notch-shape path')), dt: r(dt), head: r(dt.querySelector('.dt-head')), bar: r(dt.querySelector('.dt-bar')), track: r(dt.querySelector('.dt-track')), doors: r(dt.querySelector('.dt-doors')), list: r(dt.querySelector('.dt-list')), side: r(dt.querySelector('.dt-side')), from: dt.querySelector('.dt-bar')?.dataset.from ?? null };
   });
   // The levels on the bar, in the order they are drawn: tone, the area's points and the line's, and the dashed run if it has one (viewBox units: x 0..1000 across the bar, y 0..24 down the track).
   const levels = () => page.evaluate(() => [...document.querySelectorAll('.notch .dt-track svg.dt-mk-lv')].map(svg => {
@@ -176,10 +177,14 @@ async function boot({ lang = 'zh', usage = 'plain', history = 'ok' } = {}) {
     return { tone: ['on', 'dim', 'amber'].find(t => svg.classList.contains(`is-${t}`)), area: pts(svg.querySelector('.dt-lv-fill')), line: pts(svg.querySelector('.dt-lv-top')), view: svg.getAttribute('viewBox'), muted: svg.classList.contains('is-muted'),
       run: run ? { x1: +run.getAttribute('x1'), y1: +run.getAttribute('y1'), x2: +run.getAttribute('x2'), y2: +run.getAttribute('y2'), dash: getComputedStyle(run).strokeDasharray } : null };
   }));
-  const shot = async (name, g) => page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 60, y: 0, width: 520, height: Math.ceil(Math.max(g.drop.bottom, g.dt.bottom)) + 2 } });
-  return { page, ctx, s, move, read, until, press, pressOn, hoverOn, texts, keys, door, openDay, geo, levels, rect, shot };
+  // What is selected in the list, what the right column holds, and a click on a row (the page in the right column is waited for).
+  const picked = () => page.evaluate(() => [...document.querySelectorAll('.notch .dt-list .dt-row.is-pick')].map(e => e.dataset.key).join());
+  const sidePage = () => page.evaluate(() => document.querySelector('.notch .dt-side')?.dataset.page ?? null);
+  const select = async key => { await pressOn(`.notch .dt-row[data-key="${key}"] .dt-tx`); await until(key => document.querySelector('.notch .dt-side')?.dataset.page === key, key); await page.waitForTimeout(250); };
+  const shot = async (name, g) => page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 0, y: 0, width: 836, height: Math.ceil(Math.max(g.drop.bottom, g.dt.bottom)) + 2 } });
+  return { page, ctx, s, move, read, until, press, pressOn, hoverOn, texts, keys, door, openDay, geo, levels, picked, sidePage, select, rect, shot };
 }
-const moved = (g0, g1) => [['pane', 'drop', 'height'], ['pane inside', 'inner', 'height'], ['shape', 'shape', 'height'], ['day', 'dt', 'height'], ['day', 'dt', 'top'], ['head', 'head', 'top'], ['bar', 'bar', 'top'], ['doors', 'doors', 'top']]
+const moved = (g0, g1) => [['pane', 'drop', 'height'], ['pane', 'drop', 'width'], ['pane inside', 'inner', 'height'], ['shape', 'shape', 'height'], ['day', 'dt', 'height'], ['day', 'dt', 'width'], ['day', 'dt', 'top'], ['head', 'head', 'top'], ['bar', 'bar', 'top'], ['doors', 'doors', 'top']]
   .filter(([, k, p]) => !same(g0[k][p], g1[k][p])).map(([name, k, p]) => `${name} ${p} ${g0[k][p]} -> ${g1[k][p]}`);
 // The bar runs from the hour in `data-from` to 24:00 of its day. Where a moment is on it: in pixels of the page, and in the level's own units (x 0..1000, y 0..24 from the top; 0% at the foot, 100% at 1).
 const axis = (g, day = 19) => { const [h, m] = g.from.split(':').map(Number); return { t0: T(h, m, day), t1: T(24, 0, day) }; };
@@ -212,9 +217,10 @@ try {
     check('the door shows Claude\'s 5-hour percent as its count: 额度 38%', (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === '额度 38%', (await a.texts('.notch .dt-door')).join('|'));
     check('and it asked for the history of the day: from its start to its end, in whole milliseconds (nothing a real daemon would refuse)', a.s.asked.length >= 1 && a.s.asked.every(x => x.from === T(0) && x.to === T(24)) && a.s.bad.length === 0, JSON.stringify([a.s.asked, a.s.bad]));
     await a.door('quota');
-    await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 4);
+    await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 5);
     const g1 = await a.geo();
-    check('on 额度 the pane, its shape, the day, the head, the bar and the doors row are where they were on 今天 and the same size (584 pt)', moved(g0, g1).length === 0 && same(g1.dt.height, 584), moved(g0, g1).join('; '));
+    check('on 额度 the pane, its shape, the day, the head, the bar and the doors row are where they were on 今天 and the same size (820 x 584 pt), the list at the left and the page at the right',
+      moved(g0, g1).length === 0 && same(g1.dt.height, 584) && same(g1.drop.width, 820, 1.5) && g1.list.right <= g1.side.left + 1 && g1.list.width > 400 && g1.side.width > 300 && g1.side.width < 380, `${moved(g0, g1).join('; ')} ${JSON.stringify([g1.drop.width, g1.list, g1.side])}`);
     check('the line is written from the facts: this 5 hours, its reset, and the week', (await a.texts('.notch .dt-line'))[0] === '这 5 小时用了 38%，02:10 重置；这周用了 61%。', (await a.texts('.notch .dt-line')).join());
     check('the numbers row: 5 小时 38%, 本周 61%, API 今天 $3.20 (OpenAI 0.84 and the whole Anthropic account 2.36, not the 0.31 Jarvis made itself), DeepSeek ≈ $8.17; no Codex, no OpenAI, MiniMax or Anthropic balance (none reported), and no link',
       (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '5 小时 38%|本周 61%|API 今天 $3.20|DeepSeek ≈ $8.17' && await a.page.locator('.notch .dt-numbers .dt-go').count() === 0, (await a.texts('.notch .dt-numbers .dt-num')).join('|'));
@@ -223,16 +229,17 @@ try {
     // ---- the rows ----
     const ks = { w1: wKey(R.w1), w2: wKey(R.w2), w3: wKey(R.w3) };
     const order = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-list .dt-row, .notch .dt-list .dt-now')].map(e => e.dataset.key ?? 'now'));
-    check('one row per window of the day, oldest first, the now line after the running one and the reset after that', order.join() === [ks.w1, ks.w2, ks.w3, 'now', 'reset'].join(), order.join());
+    check('one row per window of the day, oldest first, the now line after the running one and the reset after that, then the week (Claude\'s, after its heading)', order.join() === [ks.w1, ks.w2, ks.w3, 'now', 'reset', 'week'].join(), order.join());
     const rows = await a.page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.notch .dt-row[data-key]')].map(r => [r.dataset.key, {
       at: r.querySelector('.dt-at')?.textContent, title: r.querySelector('.dt-ttl b')?.textContent, sub: r.querySelector('.dt-tx em')?.textContent, side: r.querySelector('.dt-tm')?.textContent, value: !!r.querySelector('.dt-tm .is-value'),
       ring: r.querySelector('.dt-ic')?.classList.contains('is-on'), future: r.classList.contains('is-future'), still: r.classList.contains('is-still'), glyph: !!r.querySelector('.dt-ic svg') }])));
     const want = (at, title, sub, side, extra = {}) => JSON.stringify({ at, title, sub, side, value: false, ring: false, future: false, still: false, glyph: true, ...extra });
-    check('a past window\'s row: when it began, 5 小时额度, from and to, and how high it got (用到 15%, 用到 64%)',
-      JSON.stringify(rows[ks.w1]) === want('10:30', '5 小时额度', '10:30 – 15:30', '用到 15%') && JSON.stringify(rows[ks.w2]) === want('16:10', '5 小时额度', '16:10 – 21:10', '用到 64%'), JSON.stringify([rows[ks.w1], rows[ks.w2]]));
-    check('the running window\'s row says 已用 38% in the value look, its glyph ring is lit', JSON.stringify(rows[ks.w3]) === want('21:10', '5 小时额度', '21:10 – 02:10', '已用 38%', { value: true, ring: true }), JSON.stringify(rows[ks.w3]));
-    check('the reset to come: its clock, 重置, "a new window starts", how long is left (4 小时 20 分, as the day writes durations), in the future look', JSON.stringify(rows.reset) === want('02:10', '重置', '这 5 小时重新算', '还有 4 小时 20 分', { future: true }), JSON.stringify(rows.reset));
-    check('every row is a way into a page (the Dashboard\'s usage page): none is still', await a.page.locator('.notch .dt-row[data-key].is-still').count() === 0 && await a.page.locator('.notch .dt-row[data-key]:not(.is-still)').count() === 4);
+    check('a past window\'s row: when it began, which part of the day it is (早上这段, 下午这段), from and to, and how high it got (用到 15%, 用到 64%)',
+      JSON.stringify(rows[ks.w1]) === want('10:30', '早上这段', '10:30–15:30', '用到 15%') && JSON.stringify(rows[ks.w2]) === want('16:10', '下午这段', '16:10–21:10', '用到 64%'), JSON.stringify([rows[ks.w1], rows[ks.w2]]));
+    check('the running window\'s row is 现在这段 and says 已用 38% in the value look, its glyph ring is lit', JSON.stringify(rows[ks.w3]) === want('21:10', '现在这段', '21:10–02:10', '已用 38%', { value: true, ring: true }), JSON.stringify(rows[ks.w3]));
+    check('the reset to come: its clock, 重置, "a new window starts", how long is left (4 小时 20 分, as the day writes durations), in the future look (it has no page: still)', JSON.stringify(rows.reset) === want('02:10', '重置', '这 5 小时重新算', '还有 4 小时 20 分', { future: true, still: true }), JSON.stringify(rows.reset));
+    check('the windows and the week are ways into a page in the right column; the reset to come is not (it only says when)', await a.page.locator('.notch .dt-row[data-key].is-still').count() === 1 && await a.page.locator('.notch .dt-row[data-key="reset"].is-still').count() === 1 && await a.page.locator('.notch .dt-row[data-key]:not(.is-still)').count() === 4);
+    check('no row has a button of its own', await a.page.locator('.notch .dt-list button, .notch .dt-quick').count() === 0);
 
     // ---- the levels on the bar ----
     const lv = await a.levels();
@@ -244,39 +251,55 @@ try {
     check('and from now it is carried on dashed (3 3) to the bar\'s end, at 38%', !!run && same(run.x1, unit(g1, NOW, .38)[0], .1) && run.x2 === 1000 && same(run.y1, 1 + 23 * .62, .1) && same(run.y2, run.y1, .01) && /3(px)?,? 3/.test(run.dash), JSON.stringify(run));
     check('a window that is over is not carried on', lv[0].run === null && lv[1].run === null);
     check('the area of each is closed on the foot of the track (its polygon runs from the start to the end of the line along y = 24)', lv.every(x => x.area[0][1] === 24 && x.area.at(-1)[1] === 24 && x.area[0][0] === x.line[0][0] && x.area.at(-1)[0] === x.line.at(-1)[0]));
-    check('the bar is in page mode: what he was doing steps back to .25', await a.page.locator('.notch .dt-bar.is-page').count() === 1 && await a.page.evaluate(() => getComputedStyle(document.querySelector('.notch .dt-bar.is-page .dt-seg')).opacity === '0.25'));
+    check('only 今天 draws the day: on 额度 the bar has none of the dimmed day under the quota line (no place pieces, no events, no empty-past words), only the track, the hours, the now line and the frame',
+      await a.page.locator('.notch .dt-bar.is-page').count() === 1 && await a.page.locator('.notch .dt-bar .dt-seg, .notch .dt-bar .dt-sched, .notch .dt-bar .dt-void').count() === 0 && await a.page.locator('.notch .dt-bar .dt-ground').count() >= 1
+      && await a.page.locator('.notch .dt-bar .dt-hours span').count() >= 3 && await a.page.locator('.notch .dt-bar .dt-nowtick').count() === 1);
     await a.hoverOn('.notch .dt-head');
     await a.shot('quota', g1);
 
+    // ---- it opens on the running window, with its page in the right column ----
+    const rest = await a.page.evaluate(() => ({ pick: [...document.querySelectorAll('.notch .dt-row.is-pick')].map(e => e.dataset.key).join(), page: document.querySelector('.notch .dt-side')?.dataset.page, sec: document.querySelector('.notch .dt-side .dd-sec b')?.textContent, range: document.querySelector('.notch .dt-side .dd-sec em')?.textContent,
+      big: document.querySelector('.notch .dt-side .dd-big')?.innerText.replace(/\s+/g, ' ').trim(), legend: document.querySelector('.notch .dt-side .dd-legend')?.innerText.replace(/\s+/g, ' ').trim(), note: [...document.querySelectorAll('.notch .dt-side .dd-note')].map(e => e.innerText.trim()),
+      meters: document.querySelectorAll('.notch .dt-side .dd-meter').length, ask: document.querySelector('.notch .dt-side .dd-btn')?.innerText, nav: document.querySelectorAll('.notch .dt-side .dt-pb, .notch .dt-side .dt-pn, .notch .dt-side .dt-pp, .notch .dt-side .pg-back').length }));
+    check('额度 opens on the running window: its row is the selected one and the right column holds its page: 现在这段, 21:10–02:10, 38% 用掉了, the meter with what has gone, the legend, the pace, 问她怎么省, and the week under it',
+      rest.pick === ks.w3 && rest.page === ks.w3 && rest.sec === '现在这段' && rest.range === '21:10–02:10' && rest.big === '38% 用掉了' && rest.meters === 2 && /^用掉的 38%\s+过去的时间 \d+%$/.test(rest.legend) && rest.note[0].startsWith('照现在的速度') && rest.ask === '问她怎么省' && rest.note.length === 2 && rest.note[1].startsWith('这周过了'), JSON.stringify(rest));
+    check('the right column has no ‹ back and no ↑ ↓ buttons, and the pane is not slid over', rest.nav === 0 && await a.page.locator('.notch .dt-page').count() === 0);
+    check('the selected window has its frame on the bar: round its level from 21:10 to the bar\'s end of the window (02:10 is past the bar, so to 24:00)', await a.page.evaluate(() => { const b = document.querySelector('.notch .dt-bracket.is-open:not(.is-off)')?.getBoundingClientRect(); return b ? [b.left, b.right] : null; }).then(x => !!x && same(x[0], xAt(g1, T(21, 10)), 2) && same(x[1], xAt(g1, T(24, 0)), 2)));
+
     // ---- pointer on a row, and on the bar ----
     await a.hoverOn(`.notch .dt-row[data-key="${ks.w1}"]`); await a.page.waitForTimeout(250);
-    const hot = await a.page.evaluate(() => ({ hot: [...document.querySelectorAll('.notch .dt-row.is-hot')].map(e => e.dataset.key), brackets: [...document.querySelectorAll('.notch .dt-bracket')].map(e => { const b = e.getBoundingClientRect(); return { l: b.left, r: b.right }; }),
-      times: [...document.querySelectorAll('.notch .dt-scrub .dt-time:not(.is-now)')].map(e => e.innerText) }));
-    check('the pointer on a window\'s row brackets its level from its start to its end and says both times above the bar (10:30, 15:30)', hot.hot.join() === ks.w1 && hot.brackets.length === 1 && same(hot.brackets[0].l, xAt(g1, T(10, 30)), 1.5) && same(hot.brackets[0].r, xAt(g1, T(15, 30)), 1.5) && hot.times.join() === '10:30,15:30', JSON.stringify(hot));
+    const hot = await a.page.evaluate(() => ({ hot: [...document.querySelectorAll('.notch .dt-row.is-hot')].map(e => e.dataset.key), pick: [...document.querySelectorAll('.notch .dt-row.is-pick')].map(e => e.dataset.key), brackets: [...document.querySelectorAll('.notch .dt-bracket:not(.is-open)')].map(e => { const b = e.getBoundingClientRect(); return { l: b.left, r: b.right }; }),
+      times: [...document.querySelectorAll('.notch .dt-hours .dt-minute')].map(e => e.innerText) }));
+    check('the pointer on a window\'s row brackets its level from its start to its end and says both times under the bar (10:30, 15:30); the selected window stays selected', hot.hot.join() === ks.w1 && hot.pick.join() === ks.w3 && hot.brackets.length === 1 && same(hot.brackets[0].l, xAt(g1, T(10, 30)), 1.5) && same(hot.brackets[0].r, xAt(g1, T(15, 30)), 1.5) && hot.times.join() === '10:30,15:30', JSON.stringify(hot));
     const y = g1.track.top + g1.track.height / 2;
     await a.press(xAt(g1, T(18, 0)), y); await a.page.waitForTimeout(500);
-    const picked = await a.page.evaluate(() => ({ pick: [...document.querySelectorAll('.notch .dt-row.is-pick')].map(e => e.dataset.key), open: !!document.querySelector('.notch .dt-page[data-page]') }));
-    check('a click on the bar under a level (18:00) picks that window\'s row and opens nothing', picked.pick.join() === ks.w2 && !picked.open, JSON.stringify(picked));
+    await a.until(() => document.querySelector('.notch .dt-side')?.dataset.page);
+    check('a click on the bar under a level (18:00) selects that window\'s row and the right column follows (the afternoon window, up to 64%)', await a.picked() === ks.w2 && await a.sidePage() === ks.w2 && (await a.texts('.notch .dt-side .dd-big'))[0] === '64% 最高用到', `${await a.picked()} ${(await a.texts('.notch .dt-side .dd-big'))[0]}`);
     await a.pressOn(`.notch .dt-row[data-key="${ks.w1}"] .dt-tx`);
-    await a.until(() => document.querySelector('.notch .dt-page .ad.is-only[data-page="usage"] .pg-head .pg-back'), undefined, 8000); await a.page.waitForTimeout(600);
-    const opened = await a.page.evaluate(() => { const pg = document.querySelector('.notch .dt-stage > .dt-page[data-page]'); return { stage: document.querySelector('.notch .dt-stage')?.className ?? '', ownHead: !!pg?.querySelector('.dt-pin, .dt-ph, .dt-pn'),
-      dial: !!pg?.querySelector('.ad.is-only .dial[aria-valuenow="38"]'), door: document.querySelector('.notch .dt')?.dataset.door }; });
-    check('a click on a window\'s row opens the Dashboard\'s own usage page in the pane, under its own ‹ and with no head of the frame\'s: Claude\'s 5-hour window at 38%, still on 额度, and the frame has not moved',
-      /\bis-tool\b/.test(opened.stage) && !opened.ownHead && opened.dial && opened.door === 'quota' && moved(g1, await a.geo()).length === 0, JSON.stringify(opened));
-    await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(800);
-    check('its ‹ at the page\'s root takes it back to 额度\'s rows, and the frame has not moved', await a.page.locator('.notch .dt-page').count() === 0 && (await a.keys()).join() === [ks.w1, ks.w2, ks.w3, 'reset'].join() && moved(g1, await a.geo()).length === 0, (await a.keys()).join());
+    await a.until(() => document.querySelector('.notch .dt-side .dd-sec em')?.textContent === '10:30–15:30', undefined, 8000); await a.page.waitForTimeout(500);
+    const opened = await a.page.evaluate(() => ({ pick: [...document.querySelectorAll('.notch .dt-row.is-pick')].map(e => e.dataset.key).join(), stage: document.querySelector('.notch .dt-stage')?.className ?? '', sec: document.querySelector('.notch .dt-side .dd-sec b')?.textContent, range: document.querySelector('.notch .dt-side .dd-sec em')?.textContent,
+      big: document.querySelector('.notch .dt-side .dd-big')?.innerText.replace(/\s+/g, ' ').trim(), marks: document.querySelectorAll('.notch .dt-side .dd-meter u').length, ask: document.querySelectorAll('.notch .dt-side .dd-btn').length, door: document.querySelector('.notch .dt')?.dataset.door }));
+    check('a click on a past window\'s row selects it and its page replaces the other in the right column: 5 小时额度, 10:30–15:30, 15% 最高用到, a meter with no mark (it is over), no button; still on 额度, and the frame has not moved',
+      opened.pick === ks.w1 && opened.sec === '5 小时额度' && opened.range === '10:30–15:30' && opened.big === '15% 最高用到' && opened.marks === 0 && opened.ask === 0 && opened.door === 'quota' && !/\bis-tool\b/.test(opened.stage) && moved(g1, await a.geo()).length === 0, JSON.stringify(opened));
+    await a.select('week');
+    check('the week\'s row has its own page: 本周, when it resets, 61% 用掉了, the meter with the part of the week gone and the sentence that says it', await a.page.evaluate(() => ({ sec: document.querySelector('.notch .dt-side .dd-sec b')?.textContent, big: document.querySelector('.notch .dt-side .dd-big')?.innerText.replace(/\s+/g, ' ').trim(), note: document.querySelector('.notch .dt-side .dd-note')?.innerText, mark: document.querySelectorAll('.notch .dt-side .dd-meter u').length })).then(x => x.sec === '本周' && x.big === '61% 用掉了' && /^这周过了 \d+% 的时间，用了 61%。$/.test(x.note) && x.mark === 1));
+    await a.pressOn('.notch .dt-row[data-key="reset"] .dt-tx'); await a.page.waitForTimeout(300);
+    check('the reset row only says when: a click flashes it and the right column stays where it was (the week)', await a.sidePage() === 'week' && await a.picked() === 'week');
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
+    check('Esc lets go of the selection (the right column empties) and stays on 额度', await a.picked() === '' && await a.sidePage() === null && (await a.read()).door === 'quota' && moved(g1, await a.geo()).length === 0);
 
     // ---- a range of the day cuts the page ----
     const from = xAt(g1, T(17, 30)) + .1, to = xAt(g1, T(19, 0)) + .1;
     await a.move(from, y); await a.page.mouse.down(); await a.move((from + to) / 2, y); await a.move(to, y); await a.page.waitForTimeout(150); await a.page.mouse.up(); await a.page.waitForTimeout(300);
+    await a.until(() => document.querySelector('.notch .dt-card.is-range .dt-cbtn')); await a.page.waitForTimeout(300);
     await a.pressOn('.notch .dt-card.is-range .dt-cbtn'); await a.page.waitForTimeout(450);
-    check('a range of 17:30 to 19:00 cuts the page to the window that overlaps it; the other windows and the reset leave, and the frame does not move', (await a.keys()).join() === ks.w2 && (await a.texts('.notch .dt-filter'))[0] === '只看 17:30–19:00' && moved(g1, await a.geo()).length === 0, (await a.keys()).join());
+    check('a range of 17:30 to 19:00 cuts the page to the window that overlaps it; the other windows, the reset and the week leave, and the frame does not move', (await a.keys()).join() === ks.w2 && (await a.texts('.notch .dt-filter'))[0] === '只看 17:30–19:00' && moved(g1, await a.geo()).length === 0, (await a.keys()).join());
     await a.pressOn('.notch .dt-filter button'); await a.page.waitForTimeout(450);
-    check('the chip gives the whole day back', (await a.keys()).length === 4);
+    check('the chip gives the whole day back', (await a.keys()).length === 5);
 
     // ---- the other doors and back: the count stays, the page is the same ----
-    await a.door('today'); await a.door('quota'); await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 4);
-    check('another door and back to 额度 is the same page, and the door count is still 38%', (await a.keys()).length === 4 && (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === '额度 38%');
+    await a.door('today'); await a.door('quota'); await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 5);
+    check('another door and back to 额度 is the same page (and opens on the running window again), and the door count is still 38%', (await a.keys()).length === 5 && await a.picked() === ks.w3 && (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === '额度 38%');
 
     // ---- ← goes to the 18th and stays on 额度; the history is asked for that day ----
     await a.hoverOn('.notch .dt-head');
@@ -286,7 +309,7 @@ try {
     const k18 = [wKey(R.b), wKey(R.c), wKey(R.d)];
     check('← goes to the 18th and stays on 额度: its history is asked for that day, and the rows are the three windows that touched it, oldest first (the first began on the 17th, 22:00)',
       (await a.read()).door === 'quota' && a.s.asked.some(x => x.from === T(0, 0, 18) && x.to === T(24, 0, 18)) && (await a.keys()).join() === k18.join()
-      && (await a.texts('.notch .dt-row .dt-at')).join('|') === '22:00|06:20|18:40' && (await a.texts('.notch .dt-row .dt-tx em')).join('|') === '22:00 – 03:00|06:20 – 11:20|18:40 – 23:40' && (await a.texts('.notch .dt-row .dt-tm')).join('|') === '用到 22%|用到 45%|用到 47%', `${(await a.keys()).join()} ${(await a.texts('.notch .dt-row .dt-tm')).join('|')}`);
+      && (await a.texts('.notch .dt-row .dt-at')).join('|') === '22:00|06:20|18:40' && (await a.texts('.notch .dt-row .dt-tx em')).join('|') === '22:00–03:00|06:20–11:20|18:40–23:40' && (await a.texts('.notch .dt-row .dt-tm')).join('|') === '用到 22%|用到 45%|用到 47%', `${(await a.keys()).join()} ${(await a.texts('.notch .dt-row .dt-tm')).join('|')}`);
     check('on that day there is no now line, no reset, no running window: nothing is lit and nothing is carried on', await a.page.locator('.notch .dt-now').count() === 0 && !(await a.keys()).includes('reset') && y18.every(x => x.tone === 'dim' && x.run === null) && await a.page.locator('.notch .dt-row.is-future, .notch .dt-ic.is-on').count() === 0);
     check('the line and the number are that day\'s: three windows, the highest 47%; not today\'s', (await a.texts('.notch .dt-line'))[0] === '这天开了 3 段 5 小时，最高用到 47%。' && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '最高 47%', `${(await a.texts('.notch .dt-line'))[0]} ${(await a.texts('.notch .dt-numbers .dt-num')).join('|')}`);
     check('the door still counts now: 额度 38%', (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === '额度 38%');
@@ -310,9 +333,9 @@ try {
     const cutEnd = [...stair(T(22, 0, 17), OF[R.b].steps, T(24, 0, 17)).map(([ms, v]) => unit(g3, ms, v, 17))];
     check('the 17th: two windows, and the one that goes on past midnight is cut at the bar\'s end (24:00) at its level there (22%); nothing is drawn beyond the bar', y17.length === 2 && closeTo(y17[1].line, cutEnd) && y17[1].line.at(-1)[0] === 1000 && y17.every(x => x.line.every(p => p[0] >= 0 && p[0] <= 1000)), JSON.stringify(y17[1]?.line.slice(-3)));
     await a.page.keyboard.press('ArrowRight'); await a.page.keyboard.press('ArrowRight');
-    await a.until(() => document.querySelector('.notch .dt-date')?.textContent === '10月19日 周一' && document.querySelectorAll('.notch .dt-row[data-key]').length === 4 && document.querySelectorAll('.notch .dt-track svg.dt-mk-lv').length === 3, undefined, 8000); await a.page.waitForTimeout(500);
+    await a.until(() => document.querySelector('.notch .dt-date')?.textContent === '10月19日 周一' && document.querySelectorAll('.notch .dt-row[data-key]').length === 5 && document.querySelectorAll('.notch .dt-track svg.dt-mk-lv').length === 3, undefined, 8000); await a.page.waitForTimeout(500);
     const g4 = await a.geo(), back = await a.levels();
-    check('→ twice is back on today: the four rows, the three levels (the running one carried on), the numbers of now, and nothing moved', moved(g1, g4).length === 0 && back.length === 3 && back[2].tone === 'on' && !!back[2].run && (await a.texts('.notch .dt-numbers .dt-num')).length === 4);
+    check('→ twice is back on today: the five rows, the three levels (the running one carried on), the numbers of now, and nothing moved', moved(g1, g4).length === 0 && back.length === 3 && back[2].tone === 'on' && !!back[2].run && (await a.texts('.notch .dt-numbers .dt-num')).length === 4);
     await a.ctx.close();
   }
 
@@ -320,12 +343,12 @@ try {
   {
     const a = await boot({ history: 'missing' });
     await a.openDay(); await a.door('quota');
-    await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 2);
+    await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 3);
     const g = await a.geo(), lv = await a.levels(), start = T(21, 10);
     check('with no history (a 404) the bar draws the running window alone: one level, lit, from 21:10 (its reset less 5 h) flat at 38% to now, then carried on dashed to the bar\'s end',
       lv.length === 1 && lv[0].tone === 'on' && closeTo(lv[0].line, [unit(g, start, .38), unit(g, NOW, .38)]) && !!lv[0].run && lv[0].run.x2 === 1000 && same(lv[0].run.y1, 1 + 23 * .62, .1), JSON.stringify(lv));
     const order = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-list .dt-row, .notch .dt-list .dt-now')].map(e => e.dataset.key ?? 'now'));
-    check('and says nothing about it: the row of that window, the now line and the reset, the same line and numbers, and no word of a missing route', order.join() === [wKey(R.w3), 'now', 'reset'].join() && (await a.texts('.notch .dt-line'))[0] === '这 5 小时用了 38%，02:10 重置；这周用了 61%。' && (await a.texts('.notch .dt-say')).length === 0 && (await a.texts('.notch .dt-numbers .dt-num')).length === 4);
+    check('and says nothing about it: the row of that window, the now line and the reset, the same line and numbers, and no word of a missing route', order.join() === [wKey(R.w3), 'now', 'reset', 'week'].join() && (await a.texts('.notch .dt-line'))[0] === '这 5 小时用了 38%，02:10 重置；这周用了 61%。' && (await a.texts('.notch .dt-say')).length === 0 && (await a.texts('.notch .dt-numbers .dt-num')).length === 4);
     check('the door still says 额度 38% and the pane is the size it is on 今天', (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === '额度 38%' && same(g.dt.height, 584));
     await a.page.keyboard.press('ArrowLeft');
     await a.until(() => document.querySelector('.notch .dt-date')?.textContent === '10月18日 周日', undefined, 8000); await a.page.waitForTimeout(700);
@@ -335,7 +358,7 @@ try {
   {
     const a = await boot({ history: 'fail' });
     await a.openDay(); await a.door('quota');
-    await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 2);
+    await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 3);
     const g = await a.geo(), lv = await a.levels();
     check('a history that fails (a 500) on today is the same: the running window alone, flat at 38%, carried on dashed, and the page is whole', lv.length === 1 && lv[0].tone === 'on' && lv[0].line.length === 2 && !!lv[0].run && same(g.dt.height, 584) && (await a.texts('.notch .dt-say')).length === 0, JSON.stringify(lv.map(x => x.line)));
     await a.ctx.close();
@@ -346,7 +369,7 @@ try {
     const a = await boot({ usage: 'full' });
     await a.openDay();
     const g0 = await a.geo();
-    await a.door('quota'); await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 4);
+    await a.door('quota'); await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 6);
     const g1 = await a.geo();
     check('with Codex and the balances reported the numbers are: 5 小时, 本周, Codex 46% (its primary window, whatever its length), API 今天, then each account that has a balance (DeepSeek, OpenAI, MiniMax, Anthropic)',
       (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '5 小时 38%|本周 61%|Codex 46%|API 今天 $3.20|DeepSeek ≈ $8.17|OpenAI $12.50|MiniMax $15.36|Anthropic $179.40', (await a.texts('.notch .dt-numbers .dt-num')).join('|'));
@@ -371,10 +394,11 @@ try {
   }
 
   // ================= nothing to show, said in words =================
-  for (const [name, opts, line, say, door] of [
-    ['no usage is set up on this daemon (it answers with no services)', { usage: 'none', history: 'none' }, '还没读到额度。', '这台 Jarvis 还没设置额度', '额度'],
-    ['the 5-hour window is idle (a percent and no reset), and nothing was recorded today', { usage: 'idle', history: 'none' }, '这 5 小时用了 0%；这周用了 61%。', '今天还没有额度记录', '额度 0%'],
-    ['both routes fail', { usage: 'fail', history: 'fail' }, '', '没读到这一页，会再试一次', '额度'],
+  for (const [name, opts, line, say, door, rowKeys] of [
+    ['no usage is set up on this daemon (it answers with no services)', { usage: 'none', history: 'none' }, '还没读到额度。', '这台 Jarvis 还没设置额度', '额度', ''],
+    // the week still has its number, so the page is not empty: it is the week's row alone, with nothing selected (there is no running window to open on) and no words
+    ['the 5-hour window is idle (a percent and no reset), and nothing was recorded today', { usage: 'idle', history: 'none' }, '这 5 小时用了 0%；这周用了 61%。', '', '额度 0%', 'week'],
+    ['both routes fail', { usage: 'fail', history: 'fail' }, '', '没读到这一页，会再试一次', '额度', ''],
   ]) {
     const a = await boot(opts);
     await a.openDay();
@@ -382,8 +406,8 @@ try {
     await a.door('quota');
     await a.page.waitForTimeout(600);
     const g1 = await a.geo();
-    check(`when ${name} the page says ${say}: ${line ? `the line "${line}", ` : 'no line, '}no rows and no levels, the door reads ${door}, and the frame has not moved`,
-      (await a.texts('.notch .dt-line')).join() === line && (await a.texts('.notch .dt-say')).join() === say && (await a.keys()).length === 0 && (await a.levels()).length === 0 && (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === door && moved(g0, g1).length === 0,
+    check(`when ${name} the page says ${say || 'nothing'}: ${line ? `the line "${line}", ` : 'no line, '}${rowKeys ? 'only the week\'s row, nothing selected' : 'no rows'} and no levels, the door reads ${door}, and the frame has not moved`,
+      (await a.texts('.notch .dt-line')).join() === line && (await a.texts('.notch .dt-say')).join() === say && (await a.keys()).join() === rowKeys && (await a.levels()).length === 0 && await a.picked() === '' && (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === door && moved(g0, g1).length === 0,
       `${(await a.texts('.notch .dt-line'))[0]} / ${(await a.texts('.notch .dt-say')).join()} / ${(await a.texts('.notch .dt-door[data-door="quota"]'))[0]} ${moved(g0, g1).join('; ')}`);
     await a.ctx.close();
   }
@@ -394,18 +418,18 @@ try {
     await a.openDay();
     await a.until(() => /\d%/.test(document.querySelector('.notch .dt-door[data-door="quota"]')?.textContent ?? ''));
     const g0 = await a.geo();
-    await a.door('quota'); await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 4);
-    const rows = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-row[data-key]')].map(r => [r.querySelector('.dt-ttl b')?.textContent, r.querySelector('.dt-tx em')?.textContent, r.querySelector('.dt-tm')?.textContent].join(' | ')));
+    await a.door('quota'); await a.until(() => document.querySelectorAll('.notch .dt-row[data-key]').length === 6);
+    const rows = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-row[data-key]')].slice(0, 4).map(r => [r.querySelector('.dt-ttl b')?.textContent, r.querySelector('.dt-tx em')?.textContent, r.querySelector('.dt-tm')?.textContent].join(' | ')));
     check('in English: the door is Usage 38%, the line (the longest of the page, it stays on one line) and the numbers follow, and so do the rows, and the frame has not moved',
       (await a.texts('.notch .dt-door[data-door="quota"]'))[0] === 'Usage 38%' && (await a.texts('.notch .dt-line'))[0] === '38% of this 5-hour window used, resets at 02:10; 61% this week.'
       && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '5-hour 38%|Week 61%|Codex 46%|API today $3.20|DeepSeek ≈ $8.17|OpenAI $12.50|MiniMax $15.36|Anthropic $179.40'
-      && rows.join('; ') === '5-hour window | 10:30 – 15:30 | Up to 15%; 5-hour window | 16:10 – 21:10 | Up to 64%; 5-hour window | 21:10 – 02:10 | Used 38%; Resets | A new window starts | in 4 h 20 min'
+      && rows.join('; ') === 'Morning window | 10:30–15:30 | Up to 15%; Afternoon window | 16:10–21:10 | Up to 64%; This window | 21:10–02:10 | Used 38%; Resets | A new window starts | in 4 h 20 min'
       && moved(g0, await a.geo()).length === 0, `${(await a.texts('.notch .dt-line'))[0]} ${rows.join('; ')} ${moved(g0, await a.geo()).join('; ')}`);
     await a.page.keyboard.press('ArrowLeft');
     await a.until(() => document.querySelector('.notch .dt-date')?.textContent === 'Sun, Oct 18' && document.querySelectorAll('.notch .dt-row[data-key]').length === 3, undefined, 8000); await a.page.waitForTimeout(400);
     check('and on another day: "3 five-hour windows that day, up to 47%." with the one number, Highest 47%', (await a.texts('.notch .dt-line'))[0] === '3 five-hour windows that day, up to 47%.' && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === 'Highest 47%', `${(await a.texts('.notch .dt-line'))[0]}`);
     await a.page.keyboard.press('ArrowRight');
-    await a.until(() => document.querySelector('.notch .dt-date')?.textContent === 'Mon, Oct 19' && document.querySelectorAll('.notch .dt-row[data-key]').length === 4, undefined, 8000); await a.page.waitForTimeout(500);
+    await a.until(() => document.querySelector('.notch .dt-date')?.textContent === 'Mon, Oct 19' && document.querySelectorAll('.notch .dt-row[data-key]').length === 6, undefined, 8000); await a.page.waitForTimeout(500);
     await a.hoverOn('.notch .dt-head');
     await a.shot('quota-en', await a.geo());
     await a.ctx.close();

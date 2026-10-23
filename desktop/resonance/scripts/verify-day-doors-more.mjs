@@ -1,7 +1,8 @@
-// The 更多 door of the day pane (src/doors/more.tsx): the old Dashboard's other pages, each opened alone in the pane (AroundDashboard `only`, DayTimeline.tsx `bare`). Headless Chrome against
+// The 更多 door of the day pane (src/doors/more.tsx), V2: a narrow menu at the left (184 pt) and, in the right column, the old Dashboard's other pages, each opened alone (AroundDashboard `only`, DayTimeline.tsx `bare`),
+// opened on 记忆; the bar and the numbers are not drawn on this door. Headless Chrome against
 // the built page with the native bridge stubbed and a fake daemon that serves a day and what the opened pages read. Run after `npm run build`.
-// The pages the door lists are opened one at a time: the pane is the size it is on 今天 throughout, the page's own ‹ and Esc go back by its steps (an item, a category, a field) and then to the
-// list, and a page reads only what it shows. Then a build of its own (a stand-in for the 额度 door that opens every Dashboard page through `ctx.tool`, in a temp folder; `dist` is not touched)
+// The pages the door lists are opened one at a time: the pane is the size it is on 今天 throughout, the page's own ‹ and Esc go back by its steps (an item, a category, a field) and then let go of the
+// selection (the right column empties), and a page reads only what it shows. Then a build of its own (a stand-in for the 额度 door that opens every Dashboard page through `ctx.tool`, in a temp folder; `dist` is not touched)
 // shows that every `Page` renders inside the pane, `usage` among them.
 // Screenshots (2x) of the list and of 设置 land in $OUT (default verify-out/doors-more/, not committed).
 import { chromium } from 'playwright';
@@ -86,7 +87,7 @@ const browser = await chromium.launch({ headless: true, ...exe ? { executablePat
 
 // A page on the fake daemon. `s.gets`: what the page read (path and query); `s.posts`: what it sent; `s.views`: what it told the daemon is on screen (ADR 0176).
 async function boot({ lang = 'zh', at = web } = {}) {
-  const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2, timezoneId: TZ });
+  const ctx = await browser.newContext({ viewport: { width: 836, height: 900 }, deviceScaleFactor: 2, timezoneId: TZ });
   const page = await ctx.newPage();
   const s = { gets: [], posts: [], views: [] };
   page.on('pageerror', e => errors.push(e.message));
@@ -94,7 +95,7 @@ async function boot({ lang = 'zh', at = web } = {}) {
   await page.addInitScript(([settings]) => {
     localStorage.setItem('companion-settings-v1', JSON.stringify(settings));
     window.jarvis = {
-      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
+      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 836, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {}, wearing: () => {}, onDictation: () => () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async () => {}, material: () => {}, codexTitles: async () => ({}),
@@ -151,22 +152,25 @@ async function boot({ lang = 'zh', at = web } = {}) {
   // Where the frame's parts are: the pane (the dialog, its inside, the black shape), the day inside it, and what must never move in it.
   const geo = () => page.evaluate(() => {
     const r = e => { const b = e?.getBoundingClientRect(); return b ? b.toJSON() : null; }, q = s => document.querySelector(s), dt = q('.notch .dt');
-    return { drop: r(q('.notch-drop')), inner: r(q('.notch-pane-in')), shape: r(q('.notch-shape path')), dt: r(dt), head: r(dt.querySelector('.dt-head')), bar: r(dt.querySelector('.dt-bar')), track: r(dt.querySelector('.dt-track')), doors: r(dt.querySelector('.dt-doors')) };
+    return { drop: r(q('.notch-drop')), inner: r(q('.notch-pane-in')), shape: r(q('.notch-shape path')), dt: r(dt), head: r(dt.querySelector('.dt-head')), bar: r(dt.querySelector('.dt-bar')), track: r(dt.querySelector('.dt-track')), doors: r(dt.querySelector('.dt-doors')), list: r(dt.querySelector('.dt-list')), side: r(dt.querySelector('.dt-side')) };
   });
   // A Dashboard page in the pane: where it is and what it is made of.
   const tool = () => page.evaluate(() => {
-    const r = e => { const b = e?.getBoundingClientRect(); return b ? b.toJSON() : null; }, q = s => document.querySelector(s), stage = q('.notch .dt-stage'), pg = stage?.querySelector(':scope > .dt-page[data-page]');
-    const ad = pg?.querySelector(':scope > .ad.is-only'), view = ad?.querySelector(':scope > .view'), sec = view?.querySelector(':scope > section.page'), body = sec?.querySelector(':scope > .pg-body'), cs = ad && getComputedStyle(ad);
-    return { stageClass: stage?.className ?? null, stage: r(stage), page: r(pg), ad: r(ad), view: r(view), sec: r(sec), body: r(body), dt: r(q('.notch .dt')), doors: r(q('.notch .dt-doors')),
+    const r = e => { const b = e?.getBoundingClientRect(); return b ? b.toJSON() : null; }, q = s => document.querySelector(s), stage = q('.notch .dt-stage'), pg = stage?.querySelector(':scope > .dt-side[data-page]');
+    const ad = pg?.querySelector(':scope > .ad.is-only'), view = ad?.querySelector(':scope > .view'), sec = view?.querySelector(':scope > section.page'), body = sec?.querySelector(':scope > .pg-body'), cs = ad && getComputedStyle(ad), list = stage?.querySelector(':scope > .dt-list');
+    return { stageClass: stage?.className ?? null, stage: r(stage), page: r(pg), ad: r(ad), view: r(view), sec: r(sec), body: r(body), dt: r(q('.notch .dt')), doors: r(q('.notch .dt-doors')), list: r(list),
       pad: cs ? [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].join(' ') : null, viewStyle: view?.getAttribute('style') ?? null, inner: ad?.dataset.page ?? null, frame: pg?.dataset.page ?? null,
       title: sec?.querySelector(':scope > .pg-head h3')?.textContent ?? null, meta: sec?.querySelector(':scope > .pg-head .meta')?.textContent ?? null, back: !!sec?.querySelector(':scope > .pg-head .pg-back'),
-      ownHead: !!pg?.querySelector('.dt-pin, .dt-ph, .dt-pn'), scroll: body ? getComputedStyle(body).overflowY : null, pageScrolls: pg ? pg.scrollHeight > pg.clientHeight + 1 : null, lists: stage?.querySelector(':scope > .dt-list') ? getComputedStyle(stage.querySelector(':scope > .dt-list')).visibility : null };
+      ownHead: !!pg?.querySelector('.dt-pin, .dt-ph, .dt-pn, .dd-head'), scroll: body ? getComputedStyle(body).overflowY : null, pageScrolls: pg ? pg.scrollHeight > pg.clientHeight + 1 : null, lists: list ? getComputedStyle(list).visibility : null };
   });
-  const shot = async (name, g) => page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 60, y: 0, width: 520, height: Math.ceil(Math.max(g.drop.bottom, g.dt.bottom)) + 2 } });
-  return { page, ctx, s, move, read, until, press, pressOn, hoverOn, texts, keys, door, openDay, wing, geo, tool, rect, shot };
+  // Whether a bar is on the screen (this door keeps none in the page, it is not displayed), what is selected in the list, and what the right column holds.
+  const barShown = () => page.evaluate(() => { const e = document.querySelector('.notch .dt-bar'); return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().height > 0; });
+  const picked = () => page.evaluate(() => [...document.querySelectorAll('.notch .dt-list .dt-row.is-pick')].map(e => e.dataset.key).join());
+  const shot = async (name, g) => page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 0, y: 0, width: 836, height: Math.ceil(Math.max(g.drop.bottom, g.dt.bottom)) + 2 } });
+  return { page, ctx, s, move, read, until, press, pressOn, hoverOn, texts, keys, door, openDay, wing, geo, tool, barShown, picked, rect, shot };
 }
-// What moved between two looks at the frame: the sizes of the pane and its black shape, and the places of the head, the bar and the doors.
-const moved = (g0, g1) => [['pane', 'drop', 'height'], ['pane inside', 'inner', 'height'], ['shape', 'shape', 'height'], ['day', 'dt', 'height'], ['day', 'dt', 'top'], ['head', 'head', 'top'], ['bar', 'bar', 'top'], ['doors', 'doors', 'top']]
+// What moved between two looks at the frame: the sizes of the pane and its black shape, and the places of the head, the bar (where both have one) and the doors.
+const moved = (g0, g1, bar = true) => [['pane', 'drop', 'height'], ['pane', 'drop', 'width'], ['pane inside', 'inner', 'height'], ['shape', 'shape', 'height'], ['day', 'dt', 'height'], ['day', 'dt', 'width'], ['day', 'dt', 'top'], ['head', 'head', 'top'], ...bar ? [['bar', 'bar', 'top']] : [], ['doors', 'doors', 'top']]
   .filter(([, k, p]) => !same(g0[k][p], g1[k][p])).map(([name, k, p]) => `${name} ${p} ${g0[k][p]} -> ${g1[k][p]}`);
 const inside = (b, dt, doors) => !!b && b.left >= dt.left - 1 && b.right <= dt.right + 1 && b.top >= dt.top && b.bottom <= doors.top + 1;
 const GONE = /\/inherent\/(today|notices|mail|jobs|setup|projects)\b/;
@@ -179,39 +183,47 @@ try {
     await a.openDay();
     const g0 = await a.geo();
     const board = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-door')].map(e => e.dataset.door).join());
-    check('the pane opens on 今天 with the doors row as the frame made it, 更多 last', board === 'today,mail,todo,agents,quota,more' && same(g0.dt.height, 584), board);
+    check('the pane opens on 今天 with the doors row as the frame made it, 更多 last, 820 pt wide on the stage of 836 and 584 high', board === 'today,mail,todo,agents,quota,more' && same(g0.dt.height, 584) && same(g0.drop.width, 820, 1.5), board);
 
     // ---- the list ----
     await a.door('more');
     const g1 = await a.geo();
-    check('更多 is lit, and the pane, its shape, the day, the head, the bar and the doors row are where they were on 今天', await a.page.locator('.notch .dt-door[aria-current="page"]').getAttribute('data-door') === 'more' && moved(g0, g1).length === 0, moved(g0, g1).join('; '));
-    check('the line says what is here, and there are no chips, no link, no marks on the bar, no now line and no number on the door',
-      (await a.texts('.notch .dt-line'))[0] === '聊天记录、记忆、项目、插件和设置都在这里。' && await a.page.locator('.notch .dt-numbers .dt-num, .notch .dt-numbers .dt-go').count() === 0 && await a.page.locator('.notch .dt-mk').count() === 0
-      && await a.page.locator('.notch .dt-bar.is-page').count() === 1 && await a.page.locator('.notch .dt-list .dt-now').count() === 0 && await a.page.locator('.notch .dt-door[data-door="more"] em').count() === 0, (await a.texts('.notch .dt-line')).join());
+    check('更多 is lit, and the pane, its shape, the day, the head and the doors row are where they were on 今天 (the bar is not drawn)', await a.page.locator('.notch .dt-door[aria-current="page"]').getAttribute('data-door') === 'more' && moved(g0, g1, false).length === 0, moved(g0, g1, false).join('; '));
+    check('the left column is the narrow menu (184 pt) and the right column, with a hairline between, has all the rest of the width', same(g1.list.width, 184, 2) && g1.side.left >= g1.list.right && g1.side.width > 540, JSON.stringify([g1.list, g1.side]));
+    check('the line says what is here, and there is no bar, no chips, no link, no now line and no number on the door',
+      (await a.texts('.notch .dt-line'))[0] === '聊天记录、记忆、项目、插件和设置都在这里。' && !await a.barShown() && await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-numbers')].every(e => getComputedStyle(e).display === 'none' || !e.querySelector('.dt-num, .dt-go')))
+      && await a.page.locator('.notch .dt-list .dt-now').count() === 0 && await a.page.locator('.notch .dt-door[data-door="more"] em').count() === 0, (await a.texts('.notch .dt-line')).join());
     await a.until(() => document.querySelector('.notch .dt-row[data-key="memory"] .dt-tx em'));
-    const rows = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-row[data-key]')].map(r => ({ key: r.dataset.key, title: r.querySelector('.dt-ttl b')?.textContent, sub: r.querySelector('.dt-tx em')?.textContent ?? null, at: r.querySelector('.dt-at')?.textContent, icon: !!r.querySelector('.dt-ic svg'), opens: !r.classList.contains('is-still') })));
-    check('seven rows, in this order: 聊天记录, 记忆, 项目, 插件, 设置, 早报, 求职邮件, each with a glyph in its circle, no time, and each opens', rows.map(r => `${r.key}:${r.title}`).join() === PAGES.map(([k, t]) => `${k}:${t}`).join()
-      && rows.every(r => r.icon && r.opens && r.at === ''), JSON.stringify(rows));
+    const rows = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-row[data-key]')].map(r => ({ key: r.dataset.key, title: r.querySelector('.dt-ttl b')?.textContent, tag: r.querySelector('.dt-ttl i')?.textContent ?? null, sub: r.querySelector('.dt-tx em')?.textContent ?? null, subShown: !!r.querySelector('.dt-tx em') && getComputedStyle(r.querySelector('.dt-tx em')).display !== 'none', at: r.querySelector('.dt-at')?.textContent, icon: !!r.querySelector('.dt-ic svg'), opens: !r.classList.contains('is-still'), buttons: r.querySelectorAll('button').length })));
+    check('seven rows, in this order: 聊天记录, 记忆, 项目, 插件, 设置, 早报, 求职邮件, each with a glyph in its circle, no time, no button, and each opens', rows.map(r => `${r.key}:${r.title}`).join() === PAGES.map(([k, t]) => `${k}:${t}`).join()
+      && rows.every(r => r.icon && r.opens && r.at === '' && r.buttons === 0), JSON.stringify(rows));
     const gutter = await a.page.evaluate(() => [...document.querySelectorAll('.notch .dt-row[data-key]')].map(r => r.querySelector('.dt-ic').getBoundingClientRect().left - r.getBoundingClientRect().left));
     check('rows with no time have no time column: each circle starts within 8 pt of its row\'s edge', gutter.length === 7 && gutter.every(x => x >= 0 && x <= 8), JSON.stringify(gutter));
-    check('a row says what the Dashboard\'s home says of its page where it can: how many notes are kept and how many are new, and today\'s brief in its first line; the others say nothing',
-      rows.find(r => r.key === 'memory').sub === '记着 4 条 · 2 条新的' && rows.find(r => r.key === 'brief').sub === BRIEF.summary && rows.filter(r => r.sub).map(r => r.key).join() === 'memory,brief', JSON.stringify(rows.map(r => [r.key, r.sub])));
+    check('the menu is one line a row: the words under a title are not shown (the page says them), and 记忆 says how many are new as a tag (2 新); the data under it is what the Dashboard\'s home says: how many notes are kept, and today\'s brief in its first line',
+      rows.every(r => !r.subShown) && rows.find(r => r.key === 'memory').tag === '2 新' && rows.filter(r => r.tag).length === 1
+      && rows.find(r => r.key === 'memory').sub === '记着 4 条 · 2 条新的' && rows.find(r => r.key === 'brief').sub === BRIEF.summary && rows.filter(r => r.sub).map(r => r.key).join() === 'memory,brief', JSON.stringify(rows.map(r => [r.key, r.tag, r.sub, r.subShown])));
+
+    // ---- it opens on 记忆 ----
+    await a.until(() => document.querySelectorAll('.notch .dt-side[data-page="memory"] .ad.is-only .mem-row').length === 4, undefined, 8000); await a.page.waitForTimeout(500);
+    let tl = await a.tool();
+    check('更多 opens on 记忆: its row is the selected one and the memory page is in the right column (its title and how many are kept, four notes), with nothing of the frame\'s head; the right column\'s ‹ is the page\'s own',
+      await a.picked() === 'memory' && tl.frame === 'memory' && tl.inner === 'memory' && tl.title === '记忆' && tl.meta === '记着 4 条' && !tl.ownHead && tl.back && /\bis-tool\b/.test(tl.stageClass), JSON.stringify([await a.picked(), tl.frame, tl.title, tl.meta, tl.ownHead, tl.back, tl.stageClass]));
     await a.hoverOn('.notch .dt-head');
     await a.shot('more-list', g1);
 
     // ---- 设置: the page opens alone, inside the pane ----
     const mark = a.s.gets.length;
     await a.pressOn('.notch .dt-row[data-key="settings"] .dt-tx');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="settings"] .ad.is-only .pg-head h3'), undefined, 8000); await a.page.waitForTimeout(800);
-    let tl = await a.tool(), g = await a.geo();
-    check('a row opens the Dashboard\'s own settings page in the pane: its ‹ and its title (设置) at the top, the frame draws no head of its own, and the pane is the size it was',
-      tl.title === '设置' && tl.back && !tl.ownHead && tl.inner === 'settings' && tl.frame === 'settings' && moved(g0, g).length === 0, `${JSON.stringify([tl.title, tl.back, tl.ownHead, tl.inner, tl.frame])} ${moved(g0, g).join('; ')}`);
-    check('the stage gives it all the room (from under the bar to the doors row), the page fills the stage and its page is up from the first frame; the list waits hidden',
-      /\bis-page\b/.test(tl.stageClass) && /\bis-tool\b/.test(tl.stageClass) && same(tl.page.height, tl.stage.height, 1) && same(tl.ad.height, tl.page.height, 1) && tl.doors.top - tl.stage.bottom >= 0 && tl.doors.top - tl.stage.bottom <= 24 && tl.lists === 'hidden', JSON.stringify([tl.stageClass, tl.stage, tl.page, tl.ad, tl.doors, tl.lists]));
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="settings"] .ad.is-only .pg-head h3'), undefined, 8000); await a.page.waitForTimeout(800);
+    tl = await a.tool(); let g = await a.geo();
+    check('a row opens the Dashboard\'s own settings page in the right column (it takes the place of 记忆): its ‹ and its title (设置) at the top, the frame draws no head of its own, the row is the selected one, and the pane is the size it was',
+      tl.title === '设置' && tl.back && !tl.ownHead && tl.inner === 'settings' && tl.frame === 'settings' && await a.picked() === 'settings' && moved(g0, g, false).length === 0, `${JSON.stringify([tl.title, tl.back, tl.ownHead, tl.inner, tl.frame])} ${moved(g0, g, false).join('; ')}`);
+    check('the right column gives it all the room (from under the line to the doors row), the page fills the column, and the menu stays at the left, 184 pt, in view',
+      /\bis-tool\b/.test(tl.stageClass) && !/\bis-page\b/.test(tl.stageClass) && same(tl.page.height, tl.stage.height, 1) && same(tl.ad.height, tl.page.height, 1) && tl.doors.top - tl.stage.bottom >= 0 && tl.doors.top - tl.stage.bottom <= 24 && tl.lists === 'visible' && same(tl.list.width, 184, 2) && tl.page.left >= tl.list.right, JSON.stringify([tl.stageClass, tl.stage, tl.page, tl.ad, tl.doors, tl.lists, tl.list]));
     check('it is inside the pane (not out past its edges, not under the doors), with none of the panel\'s box: no padding, no height of the home on its view',
       inside(tl.sec, tl.dt, tl.doors) && inside(tl.ad, tl.dt, tl.doors) && tl.pad === '0px 0px 0px 0px' && tl.viewStyle === null && same(tl.sec.height, tl.view.height, 1), JSON.stringify([tl.sec, tl.dt, tl.pad, tl.viewStyle]));
     check('the page scrolls inside itself (its body), not the frame\'s page', tl.scroll === 'auto' && tl.pageScrolls === false && tl.body.height > 100, JSON.stringify([tl.scroll, tl.pageScrolls, tl.body]));
-    check('it is the settings page: the Jarvis connection in its head and the categories under it', /Jarvis 已连接/.test(tl.meta ?? '') && await a.page.locator('.notch .dt-page .ad.is-only .st-cat').count() >= 5, tl.meta);
+    check('it is the settings page: the Jarvis connection in its head and the categories under it', /Jarvis 已连接/.test(tl.meta ?? '') && await a.page.locator('.notch .dt-side .ad.is-only .st-cat').count() >= 5, tl.meta);
     const read = a.s.gets.slice(mark).filter(x => !/^\/inherent\/(day|claude-sessions|usage|work-state|controls|agent-marks|memory|brief)\b/.test(x));
     check('a page that is shown alone reads only what it shows: the settings, and none of the home\'s (today, notices, mail, jobs, the voice, projects), and the projects are not sorted for it',
       read.some(x => x.startsWith('/inherent/settings')) && !a.s.gets.slice(mark).some(x => GONE.test(x)) && !a.s.posts.some(x => x.path === '/inherent/projects/refresh'), JSON.stringify([read, a.s.gets.slice(mark)]));
@@ -224,85 +236,91 @@ try {
     for (const key of ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Space', 'Enter']) await a.page.keyboard.press(key);
     await a.page.waitForTimeout(500);
     tl = await a.tool();
-    check('← → ↑ ↓ Space and Enter do nothing to a page shown alone: the same day, the same page, still up', (await a.texts('.notch .dt-date'))[0] === title0 && tl.frame === 'settings' && tl.title === '设置' && /\bis-page\b/.test(tl.stageClass), JSON.stringify([title0, tl.frame, tl.title]));
+    check('← → ↑ ↓ Space and Enter do nothing to a page shown alone (its keys are its own: only the doors are the frame\'s): the same day, the same page, still up, the same row selected', (await a.texts('.notch .dt-date'))[0] === title0 && tl.frame === 'settings' && tl.title === '设置' && await a.picked() === 'settings', JSON.stringify([title0, tl.frame, tl.title]));
 
     // ---- deeper steps go back inside the page ----
-    await a.pressOn('.notch .dt-page .ad.is-only .st-cat'); await a.page.waitForTimeout(500);
+    await a.pressOn('.notch .dt-side .ad.is-only .st-cat'); await a.page.waitForTimeout(500);
     tl = await a.tool();
     const category = tl.title;
     check('a category of the settings opens in the page (its title is the category\'s)', category !== '设置' && category !== null && /\bis-tool\b/.test(tl.stageClass), category);
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(500);
     tl = await a.tool();
-    check('Esc goes back one step inside the page: the settings again, the page still up and the pane the size it was', tl.title === '设置' && /\bis-page\b/.test(tl.stageClass) && moved(g0, await a.geo()).length === 0, tl.title);
-    await a.pressOn('.notch .dt-page .ad.is-only .st-cat'); await a.page.waitForTimeout(400);
-    await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(500);
+    check('Esc goes back one step inside the page: the settings again, the page still up and the pane the size it was', tl.title === '设置' && tl.frame === 'settings' && moved(g0, await a.geo(), false).length === 0, tl.title);
+    await a.pressOn('.notch .dt-side .ad.is-only .st-cat'); await a.page.waitForTimeout(400);
+    await a.pressOn('.notch .dt-side .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(500);
     tl = await a.tool();
-    check('the page\'s ‹ does the same from a category', tl.title === '设置' && /\bis-page\b/.test(tl.stageClass), tl.title);
+    check('the page\'s ‹ does the same from a category', tl.title === '设置' && tl.frame === 'settings', tl.title);
 
-    // ---- ‹ at the root of the page, and Esc, go back to the list ----
-    await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(800);
-    check('‹ at the root of the page slides it away and the list is back on 更多, as it was; the pane has not moved',
-      await a.page.locator('.notch .dt-page').count() === 0 && !/\bis-page\b|\bis-tool\b/.test((await a.tool()).stageClass) && (await a.keys()).join() === PAGES.map(([k]) => k).join() && (await a.read()).door === 'more' && moved(g0, await a.geo()).length === 0, (await a.tool()).stageClass);
+    // ---- ‹ at the root of the page, and Esc, let go of the selection ----
+    await a.pressOn('.notch .dt-side .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(800);
+    check('‹ at the root of the page lets go of the selection: the right column empties, the menu is on 更多 as it was; the pane has not moved',
+      await a.page.locator('.notch .dt-side[data-page]').count() === 0 && await a.picked() === '' && (await a.keys()).join() === PAGES.map(([k]) => k).join() && (await a.read()).door === 'more' && moved(g0, await a.geo(), false).length === 0, `${(await a.tool()).stageClass} ${(await a.keys()).join()}`);
     check('and it told the daemon that nothing is on screen any more', a.s.views.at(-1)?.page === null, JSON.stringify(a.s.views.at(-1)));
     await a.pressOn('.notch .dt-row[data-key="settings"] .dt-tx');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="settings"] .ad.is-only .pg-head h3'), undefined, 8000); await a.page.waitForTimeout(800);
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="settings"] .ad.is-only .pg-head h3'), undefined, 8000); await a.page.waitForTimeout(800);
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(800);
-    check('Esc at the root of the page does the same, and stays on 更多', await a.page.locator('.notch .dt-page').count() === 0 && (await a.read()).door === 'more' && (await a.keys()).length === 7);
+    check('Esc at the root of the page does the same, and stays on 更多', await a.page.locator('.notch .dt-side[data-page]').count() === 0 && await a.picked() === '' && (await a.read()).door === 'more' && (await a.keys()).length === 7);
 
     // ---- 记忆 ----
     await a.pressOn('.notch .dt-row[data-key="memory"] .dt-tx');
-    await a.until(() => document.querySelectorAll('.notch .dt-page[data-page="memory"] .ad.is-only .mem-row').length === 4, undefined, 8000); await a.page.waitForTimeout(600);
+    await a.until(() => document.querySelectorAll('.notch .dt-side[data-page="memory"] .ad.is-only .mem-row').length === 4, undefined, 8000); await a.page.waitForTimeout(600);
     tl = await a.tool(); g = await a.geo();
     check('记忆 opens the memory page in the pane: its title, how many are kept in its head, the four notes it keeps, and the pane the size it was',
-      tl.title === '记忆' && tl.meta === '记着 4 条' && inside(tl.sec, tl.dt, tl.doors) && moved(g0, g).length === 0 && a.s.gets.some(x => x === '/inherent/memory'), `${tl.title} ${tl.meta} ${moved(g0, g).join('; ')}`);
+      tl.title === '记忆' && tl.meta === '记着 4 条' && inside(tl.sec, tl.dt, tl.doors) && moved(g0, g, false).length === 0 && a.s.gets.some(x => x === '/inherent/memory'), `${tl.title} ${tl.meta} ${moved(g0, g, false).join('; ')}`);
     check('and it did not sort the projects or read the home\'s routes for it', !a.s.posts.some(x => x.path === '/inherent/projects/refresh'));
     await a.hoverOn('.notch .dt-head'); await a.shot('more-memory', g);
-    await a.hoverOn('.notch .dt-page .ad.is-only .pg-body'); await a.page.mouse.wheel(0, 260); await a.page.waitForTimeout(500);
-    const scrolled = await a.page.evaluate(() => document.querySelector('.notch .dt-page .ad.is-only .pg-body').scrollTop);
-    check('the wheel scrolls the page inside the pane, and the frame stays where it is', scrolled > 100 && moved(g0, await a.geo()).length === 0 && !(await a.tool()).pageScrolls, String(scrolled));
-    await a.page.evaluate(() => document.querySelector('.notch .dt-page .ad.is-only .mem-row').scrollIntoView({ block: 'nearest' })); await a.page.waitForTimeout(200);
-    await a.pressOn('.notch .dt-page .ad.is-only .mem-row'); await a.page.waitForTimeout(700);
+    await a.hoverOn('.notch .dt-side .ad.is-only .pg-body'); await a.page.mouse.wheel(0, 260); await a.page.waitForTimeout(500);
+    const scrolled = await a.page.evaluate(() => document.querySelector('.notch .dt-side .ad.is-only .pg-body').scrollTop);
+    check('the wheel scrolls the page inside the pane, and the frame stays where it is', scrolled > 40 && moved(g0, await a.geo(), false).length === 0 && !(await a.tool()).pageScrolls, String(scrolled));
+    await a.page.evaluate(() => document.querySelector('.notch .dt-side .ad.is-only .mem-row').scrollIntoView({ block: 'nearest' })); await a.page.waitForTimeout(200);
+    await a.pressOn('.notch .dt-side .ad.is-only .mem-row'); await a.page.waitForTimeout(700);
     tl = await a.tool();
-    check('a note opens inside the page (its text is there, the page is still the memory page, and nothing of the frame\'s head)', /住在维多利亚|早上先看邮件/.test(await a.page.locator('.notch .dt-page .ad.is-only .pg-body').innerText()) && tl.title === '记忆' && !tl.ownHead && tl.inner === 'memory');
+    check('a note opens inside the page (its text is there, the page is still the memory page, and nothing of the frame\'s head)', /住在维多利亚|早上先看邮件/.test(await a.page.locator('.notch .dt-side .ad.is-only .pg-body').innerText()) && tl.title === '记忆' && !tl.ownHead && tl.inner === 'memory');
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(600);
-    check('Esc goes back from the note to the notes, inside the page', await a.page.locator('.notch .dt-page[data-page="memory"] .ad.is-only .mem-row').count() === 4 && (await a.read()).door === 'more');
-    await a.page.evaluate(() => document.querySelector('.notch .dt-page .ad.is-only .mem-row').scrollIntoView({ block: 'nearest' })); await a.page.waitForTimeout(200);
-    await a.pressOn('.notch .dt-page .ad.is-only .mem-row'); await a.page.waitForTimeout(700);
+    check('Esc goes back from the note to the notes, inside the page', await a.page.locator('.notch .dt-side[data-page="memory"] .ad.is-only .mem-row').count() === 4 && (await a.read()).door === 'more');
+    await a.page.evaluate(() => document.querySelector('.notch .dt-side .ad.is-only .mem-row').scrollIntoView({ block: 'nearest' })); await a.page.waitForTimeout(200);
+    await a.pressOn('.notch .dt-side .ad.is-only .mem-row'); await a.page.waitForTimeout(700);
 
     // ---- a fold keeps the page, as it keeps any open page ----
     await a.wing();
     check('the pane folds with the page up, and the page tells the daemon that nothing is on screen', (await a.read()).tl === '' && a.s.views.at(-1)?.page === null, JSON.stringify([await a.read(), a.s.views.at(-1)]));
     await a.wing();
-    await a.until(() => document.querySelector('.notch-drop.is-open .dt-page[data-page="memory"]'), undefined, 8000); await a.page.waitForTimeout(600);
+    await a.until(() => document.querySelector('.notch-drop.is-open .dt-side[data-page="memory"]'), undefined, 8000); await a.page.waitForTimeout(600);
     check('and when it is opened again soon after, it is the page that was left: 记忆 with the note open, and on screen again as far as the daemon is told',
-      (await a.read()).door === 'more' && /住在维多利亚|早上先看邮件/.test(await a.page.locator('.notch .dt-page .ad.is-only .pg-body').innerText()) && a.s.views.at(-1)?.page === 'memory', JSON.stringify(a.s.views.at(-1)));
+      (await a.read()).door === 'more' && /住在维多利亚|早上先看邮件/.test(await a.page.locator('.notch .dt-side .ad.is-only .pg-body').innerText()) && a.s.views.at(-1)?.page === 'memory', JSON.stringify(a.s.views.at(-1)));
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(500);
-    await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(800);
-    check('and ‹ takes it back to the list', await a.page.locator('.notch .dt-page').count() === 0 && (await a.keys()).length === 7);
+    await a.pressOn('.notch .dt-side .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(800);
+    check('and ‹ takes it back to the list', await a.page.locator('.notch .dt-side[data-page]').count() === 0 && (await a.keys()).length === 7);
 
     // ---- a field the page has the cursor in lets go on the first Esc ----
     await a.pressOn('.notch .dt-row[data-key="plugins"] .dt-tx');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="plugins"] .ad.is-only input[type="search"]'), undefined, 8000); await a.page.waitForTimeout(700);
-    await a.pressOn('.notch .dt-page .ad.is-only input[type="search"]'); await a.page.keyboard.type('git');
-    check('the plugins page has its search field with the cursor in it', await a.page.evaluate(() => document.activeElement?.matches('.ad.is-only input[type="search"]')) && await a.page.locator('.notch .dt-page .ad.is-only input[type="search"]').inputValue() === 'git');
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="plugins"] .ad.is-only input[type="search"]'), undefined, 8000); await a.page.waitForTimeout(700);
+    await a.pressOn('.notch .dt-side .ad.is-only input[type="search"]'); await a.page.keyboard.type('git');
+    check('the plugins page has its search field with the cursor in it', await a.page.evaluate(() => document.activeElement?.matches('.ad.is-only input[type="search"]')) && await a.page.locator('.notch .dt-side .ad.is-only input[type="search"]').inputValue() === 'git');
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
-    check('the first Esc lets go of the field and the page stays', !await a.page.evaluate(() => document.activeElement?.matches('input')) && await a.page.locator('.notch .dt-page[data-page="plugins"]').count() === 1);
+    check('the first Esc lets go of the field and the page stays', !await a.page.evaluate(() => document.activeElement?.matches('input')) && await a.page.locator('.notch .dt-side[data-page="plugins"]').count() === 1);
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(800);
-    check('the second goes back to the list', await a.page.locator('.notch .dt-page').count() === 0 && (await a.read()).door === 'more');
+    check('the second goes back to the list', await a.page.locator('.notch .dt-side[data-page]').count() === 0 && (await a.read()).door === 'more');
 
     // ---- the rest of the pages ----
     const sent = a.s.posts.length;
     const seen = [];
     for (const [key, , title] of PAGES.filter(([k]) => !['settings', 'memory', 'plugins'].includes(k))) {
       await a.pressOn(`.notch .dt-row[data-key="${key}"] .dt-tx`);
-      await a.until(key => document.querySelector(`.notch .dt-page[data-page="${key}"] .ad.is-only .pg-head h3`), key, 8000); await a.page.waitForTimeout(700);
+      await a.until(key => document.querySelector(`.notch .dt-side[data-page="${key}"] .ad.is-only .pg-head h3`), key, 8000); await a.page.waitForTimeout(700);
       const t = await a.tool(), gg = await a.geo();
-      if (t.title !== title || !t.back || t.ownHead || !inside(t.sec, t.dt, t.doors) || moved(g0, gg).length || /\bis-tool\b/.test(t.stageClass) === false) seen.push(`${key}: ${t.title} ${moved(g0, gg).join(', ')}`);
-      await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(700);
-      if (await a.page.locator('.notch .dt-page').count() !== 0) seen.push(`${key}: ‹ did not go back`);
+      if (t.title !== title || !t.back || t.ownHead || !inside(t.sec, t.dt, t.doors) || moved(g0, gg, false).length || /\bis-tool\b/.test(t.stageClass) === false) seen.push(`${key}: ${t.title} ${moved(g0, gg, false).join(', ')}`);
+      await a.pressOn('.notch .dt-side .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(700);
+      if (await a.page.locator('.notch .dt-side[data-page]').count() !== 0) seen.push(`${key}: ‹ did not go back`);
     }
     check('聊天记录, 项目, 早报 and 求职邮件 each open their page in the pane under its own title (对话, 项目, 早报, 求职邮件), inside it, with the pane the size it was, and ‹ closes each', seen.length === 0, seen.join('; '));
     check('only the projects page sorts the projects (one POST of /inherent/projects/refresh, for the one page that is about them)', a.s.posts.slice(sent).filter(x => x.path === '/inherent/projects/refresh').length === 1, JSON.stringify(a.s.posts.slice(sent).map(x => x.path)));
+    // with nothing selected Esc goes back to 今天 (the menu has no rest row to come back on), and then folds the pane
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(600);
+    let r = await a.read();
+    check('Esc with nothing selected goes back to 今天 and the pane stays', r.door === 'today' && r.tl !== '', JSON.stringify(r));
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(900);
+    check('and one more Esc folds the pane', (await a.read()).tl === '');
     await a.ctx.close();
   }
 
@@ -315,7 +333,7 @@ try {
     check('in English the line, the rows and the memory row\'s words follow', (await a.texts('.notch .dt-line'))[0] === 'Your conversation, memory, projects, plugins and settings live here.'
       && (await a.texts('.notch .dt-row .dt-ttl b')).join('|') === 'Conversation|Memory|Projects|Plugins|Settings|Morning brief|Job mail' && (await a.texts('.notch .dt-row[data-key="memory"] .dt-tx em'))[0] === '4 kept · 2 new', (await a.texts('.notch .dt-line')).join());
     await a.pressOn('.notch .dt-row[data-key="settings"] .dt-tx');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="settings"] .ad.is-only .pg-head h3'), undefined, 8000);
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="settings"] .ad.is-only .pg-head h3'), undefined, 8000);
     check('and the page is the Dashboard\'s in English', (await a.tool()).title === 'Settings');
     await a.ctx.close();
   }
@@ -330,18 +348,18 @@ try {
     for (const key of ALL_PAGES) {
       await a.page.evaluate(key => document.querySelector(`.notch .dt-row[data-key="${key}"]`).scrollIntoView({ block: 'nearest' }), key);
       await a.pressOn(`.notch .dt-row[data-key="${key}"] .dt-tx`);
-      await a.until(key => document.querySelector(`.notch .dt-page[data-page="${key}"] .ad.is-only .pg-head h3`), key, 8000); await a.page.waitForTimeout(600);
+      await a.until(key => document.querySelector(`.notch .dt-side[data-page="${key}"] .ad.is-only .pg-head h3`), key, 8000); await a.page.waitForTimeout(600);
       const t = await a.tool(), g = await a.geo();
       if (t.title !== ALL_TITLES[key] || t.inner !== key || !t.back || t.ownHead || !inside(t.sec, t.dt, t.doors) || moved(g0, g).length) bad.push(`${key}: ${t.title} ${moved(g0, g).join(', ')}`);
       if (key === 'usage') await a.shot('usage', g);
-      await a.pressOn('.notch .dt-page .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(600);
-      if (await a.page.locator('.notch .dt-page').count() !== 0) bad.push(`${key}: ‹ did not go back`);
+      await a.pressOn('.notch .dt-side .ad.is-only .pg-head .pg-back'); await a.page.waitForTimeout(600);
+      if (await a.page.locator('.notch .dt-side[data-page]').count() !== 0) bad.push(`${key}: ‹ did not go back`);
     }
     check('through the renderer the pane is handed (`ctx.tool`), every page of the Dashboard opens alone inside the pane, under its own title and ‹, with the pane the size it was: ' + ALL_PAGES.join(', '), bad.length === 0, bad.join('; '));
     await a.page.evaluate(() => document.querySelector('.notch .dt-row[data-key="usage"]').scrollIntoView({ block: 'nearest' }));
     await a.pressOn('.notch .dt-row[data-key="usage"] .dt-tx');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="usage"] .ad.is-only .dial'), undefined, 8000);
-    check('the usage page shows Claude\'s 5-hour window at 38% from the daemon, in the pane', await a.page.locator('.notch .dt-page[data-page="usage"] .ad.is-only .dial[aria-valuenow="38"]').count() === 1);
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="usage"] .ad.is-only .dial'), undefined, 8000);
+    check('the usage page shows Claude\'s 5-hour window at 38% from the daemon, in the pane', await a.page.locator('.notch .dt-side[data-page="usage"] .ad.is-only .dial[aria-valuenow="38"]').count() === 1);
     await a.ctx.close();
   }
 

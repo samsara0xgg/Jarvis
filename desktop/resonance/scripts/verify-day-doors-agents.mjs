@@ -1,4 +1,5 @@
-// The day pane's Agents door and 待办 door (src/doors/agents.tsx, src/doors/todo.tsx) inside the doors frame (src/DayTimeline.tsx, src/DayDoors.tsx). Headless Chrome against the built page with the
+// The day pane's Agents door and 待办 door (src/doors/agents.tsx, src/doors/todo.tsx) inside the V2 doors frame (src/DayTimeline.tsx, src/DayDoors.tsx): the list at the left, the page of the selected row at the right
+// (a door opens on its rest row), the acts on the page and none in the rows; Agents draws only its own spans on the bar, 待办 draws no bar. Headless Chrome against the built page with the
 // native bridge stubbed and a fake daemon that serves a day, the day before it, Claude Code and Codex sessions (one waiting on a permission, one working, finished ones) and today's calendar and to-dos,
 // and, for one scenario, a stand-in for Startrail's agent host (its event stream and the routes the page answers and marks through). Run after `npm run build`.
 // Screenshots (2x) of both pages land in $OUT (default verify-out/doors-agents/, not committed).
@@ -92,7 +93,7 @@ const waits = r => r.phase === 'needs_input' || !!r.request;
 // A page on the fake daemon. `s` is what the daemon holds and what it was sent: `claude`, `codex`, `today` (null: a daemon that has no such route), `host` (Startrail's sessions, when the page is given a host) and `posts`
 // (the host's under `host:`); `s.refuse`: routes that answer with an error.
 async function boot({ lang = 'zh', agentsWindow = true, claude: c = baseClaude(), codex: x = baseCodex(), today = baseToday(), host = null } = {}) {
-  const ctx = await browser.newContext({ viewport: { width: 640, height: 900 }, deviceScaleFactor: 2 });
+  const ctx = await browser.newContext({ viewport: { width: 836, height: 900 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
   const s = { posts: [], refuse: new Set(), claude: c.filter(r => !waits(r)), later: c.filter(waits), codex: x, today, marks: {}, reads: [], polls: 0, host: (host ?? []).filter(r => r.st !== 'wait'), hostLater: (host ?? []).filter(r => r.st === 'wait'), hellos: 0 };
   page.on('pageerror', e => errors.push(e.message));
@@ -101,7 +102,7 @@ async function boot({ lang = 'zh', agentsWindow = true, claude: c = baseClaude()
     localStorage.setItem('companion-settings-v1', JSON.stringify(settings));
     const jump = (...a) => { (window.__jumps ??= []).push(a); };
     window.jarvis = {
-      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 640, compactWidth: 0, displayId: 1 }),
+      placement: async () => ({ docked: false, topInset: 32, notchWidth: 185, surfaceWidth: 836, compactWidth: 0, displayId: 1 }),
       onPlacement: () => () => {}, onDisplayLeave: () => () => {}, displayReady: () => {}, companionSettings: () => {}, wearing: () => {}, onDictation: () => () => {},
       onCursor: callback => { window.__cursor = callback; return () => {}; }, onCommand: () => () => {},
       passthrough: () => {}, focus: async () => {}, material: () => {}, codexTitles: async () => ({}),
@@ -174,7 +175,7 @@ async function boot({ lang = 'zh', agentsWindow = true, claude: c = baseClaude()
   // Where the frame's parts are: the pane (the dialog, its inside, the black shape), the day inside it, and what must never move in it.
   const geo = () => page.evaluate(() => {
     const r = e => { const b = e?.getBoundingClientRect(); return b ? b.toJSON() : null; }, q = s => document.querySelector(s), dt = q('.notch .dt');
-    return { drop: r(q('.notch-drop')), inner: r(q('.notch-pane-in')), shape: r(q('.notch-shape path')), dt: r(dt), head: r(dt.querySelector('.dt-head')), bar: r(dt.querySelector('.dt-bar')), track: r(dt.querySelector('.dt-track')), doors: r(dt.querySelector('.dt-doors')), from: dt.querySelector('.dt-bar')?.dataset.from ?? null };
+    return { drop: r(q('.notch-drop')), inner: r(q('.notch-pane-in')), shape: r(q('.notch-shape path')), dt: r(dt), head: r(dt.querySelector('.dt-head')), bar: r(dt.querySelector('.dt-bar')), track: r(dt.querySelector('.dt-track')), doors: r(dt.querySelector('.dt-doors')), list: r(dt.querySelector('.dt-list')), side: r(dt.querySelector('.dt-side')), from: dt.querySelector('.dt-bar')?.dataset.from ?? null };
   });
   // The page's marks on the bar: for each, its row's key, its kind and tone, where it is (x and width) and, for a span, which lane (its top under the track's top: 2, 9 or 16).
   const marks = () => page.evaluate(() => {
@@ -187,8 +188,14 @@ async function boot({ lang = 'zh', agentsWindow = true, claude: c = baseClaude()
     if (e.classList.contains('dt-now')) return { key: 'now', text: e.innerText.replace(/\s+/g, ' ').trim() };
     if (e.classList.contains('dt-uh')) return { key: 'heading', text: e.innerText.trim() };
     const q = s => e.querySelector(s)?.innerText.replace(/\s+/g, ' ').trim() ?? '';
-    return { key: e.dataset.key, at: q('.dt-at'), title: q('.dt-ttl b'), tag: q('.dt-ttl i'), sub: q('.dt-tx > em'), side: q('.dt-tm'), quick: [...e.querySelectorAll('.dt-quick button')].map(b => b.innerText.trim()), cls: e.className, icon: e.querySelector('.dt-ic')?.className ?? '' };
+    return { key: e.dataset.key, at: q('.dt-at'), title: q('.dt-ttl b'), tag: q('.dt-ttl i'), sub: q('.dt-tx > em'), side: q('.dt-tm'), buttons: e.querySelectorAll('button, .dt-quick').length, cls: e.className, icon: e.querySelector('.dt-ic')?.className ?? '' };
   }));
+  // Whether a bar is on the screen (a door that draws no day keeps none in the page, it is not displayed), what is selected in the list, and what the right column holds.
+  const barShown = () => page.evaluate(() => { const e = document.querySelector('.notch .dt-bar'); return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().height > 0; });
+  const picked = () => page.evaluate(() => [...document.querySelectorAll('.notch .dt-list .dt-row.is-pick')].map(e => e.dataset.key).join());
+  const sidePage = () => page.evaluate(() => document.querySelector('.notch .dt-side')?.dataset.page ?? null);
+  // The page of a row is in the right column: a click on the row, and the column's content is waited for.
+  const select = async key => { await pressOn(`.notch .dt-row[data-key="${key}"] .dt-tx`); await until(key => document.querySelector('.notch .dt-side')?.dataset.page === key, key); await page.waitForTimeout(250); };
   // The waiting sessions come in, and the page has read two lists since (it reads every 1.5 s; the host's stream is read again every second).
   const arrive = async () => {
     s.claude = [...s.claude, ...s.later]; s.later = [];
@@ -197,11 +204,11 @@ async function boot({ lang = 'zh', agentsWindow = true, claude: c = baseClaude()
     while (s.polls < n + 2 || host && s.hellos < h + 2) await page.waitForTimeout(100);
     await page.waitForTimeout(300);
   };
-  const shot = async (name, g) => page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 60, y: 0, width: 520, height: Math.ceil(Math.max(g.drop.bottom, g.dt.bottom)) + 2 } });
-  return { page, ctx, s, move, read, until, press, pressOn, hoverOn, texts, keys, door, openDay, arrive, geo, marks, rows, rect, shot };
+  const shot = async (name, g) => page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 0, y: 0, width: 836, height: Math.ceil(Math.max(g.drop.bottom, g.dt.bottom)) + 2 } });
+  return { page, ctx, s, move, read, until, press, pressOn, hoverOn, texts, keys, door, openDay, arrive, geo, barShown, picked, sidePage, select, marks, rows, rect, shot };
 }
-// What moved between two looks at the frame: the sizes of the pane and its black shape, and the places of the head, the bar and the doors.
-const moved = (g0, g1) => [['pane', 'drop', 'height'], ['pane inside', 'inner', 'height'], ['shape', 'shape', 'height'], ['day', 'dt', 'height'], ['day', 'dt', 'top'], ['head', 'head', 'top'], ['bar', 'bar', 'top'], ['doors', 'doors', 'top']]
+// What moved between two looks at the frame: the sizes of the pane and its black shape, and the places of the head, the bar (where both have one) and the doors.
+const moved = (g0, g1, bar = true) => [['pane', 'drop', 'height'], ['pane', 'drop', 'width'], ['pane inside', 'inner', 'height'], ['shape', 'shape', 'height'], ['day', 'dt', 'height'], ['day', 'dt', 'width'], ['day', 'dt', 'top'], ['head', 'head', 'top'], ...bar ? [['bar', 'bar', 'top']] : [], ['doors', 'doors', 'top']]
   .filter(([, k, p]) => !same(g0[k][p], g1[k][p])).map(([name, k, p]) => `${name} ${p} ${g0[k][p]} -> ${g1[k][p]}`);
 // The x of a moment on the bar the geometry describes (the bar runs from the hour in `data-from` to 24:00 of the day).
 const xAt = (g, ms, day = 19) => { const [h, m] = g.from.split(':').map(Number), t0 = T(h, m, day), t1 = T(24, 0, day); return g.track.left + (ms - t0) / (t1 - t0) * g.track.width; };
@@ -222,7 +229,12 @@ try {
       (await a.texts('.notch .dt-door[data-door="agents"]'))[0] === 'Agents 2' && await a.page.locator('.notch .dt-door[data-door="agents"] em.is-amber').count() === 1, (await a.texts('.notch .dt-door')).join('|'));
     await a.door('agents');
     const g1 = await a.geo();
-    check('on Agents the pane, its shape, the day, the head, the bar and the doors row are where they were on 今天 and the same size (584 pt)', moved(g0, g1).length === 0 && same(g1.dt.height, 584), moved(g0, g1).join('; '));
+    check('on Agents the pane, its shape, the day, the head, the bar and the doors row are where they were on 今天 and the same size (820 x 584 pt), the list at the left and the page at the right',
+      moved(g0, g1).length === 0 && same(g1.dt.height, 584) && same(g1.drop.width, 820, 1.5) && g1.list.right <= g1.side.left + 1 && g1.list.width > 400 && g1.side.width > 300 && g1.side.width < 380, `${moved(g0, g1).join('; ')} ${JSON.stringify([g1.drop.width, g1.list, g1.side])}`);
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="c-line"] .m-req'));
+    check('Agents opens on the session that waits on him (时间线): its row is the selected one and its page is in the right column: the head, where it runs, the conversation, what it asks with 先放着 and 同意',
+      await a.picked() === 'c-line' && await a.sidePage() === 'c-line' && await a.page.evaluate(() => ({ head: document.querySelector('.notch .dt-side .dd-head b')?.innerText, btn: [...document.querySelectorAll('.notch .dt-side .m-req .dt-ask')].map(b => b.innerText.trim()).join('|') })).then(x => x.head === '时间线' && x.btn === '先放着|同意'));
+    check('the right column has no ‹ back and no ↑ ↓ buttons, and the pane is not slid over', await a.page.locator('.notch .dt-side .dt-pb, .notch .dt-side .dt-pn, .notch .dt-side .dt-pp, .notch .dt-side .pg-back').count() === 0 && await a.page.locator('.notch .dt-page').count() === 0);
     check('the line is written from the facts: the one that waits by name, and how many more run',
       (await a.texts('.notch .dt-line'))[0] === '时间线 在等你点头；另外 1 个在跑。', (await a.texts('.notch .dt-line')).join());
     check('the numbers: 等你 1 (amber, a lens), 在跑 1, 今天做完 3 (a Claude session and the two Codex ones), and the link to the Agents window',
@@ -259,33 +271,36 @@ try {
       ofKey('r-readme').length === 1 && ofKey('r-readme')[0].kind === 'point' && ofKey('r-readme')[0].tone === 'dim' && same(ofKey('r-readme')[0].mid, xAt(g1, T(10, 40)), 1.2)
       && ofKey('r-tests')[0].kind === 'point' && same(ofKey('r-tests')[0].mid, xAt(g1, T(21, 5)), 1.2), JSON.stringify(mk));
     check('amber is only the waiting part: nothing else on the bar is amber', mk.filter(m => m.tone === 'amber').length === 1 && lineWait.tone === 'amber');
+    check('only 今天 draws the day: on Agents the bar has none of the dimmed day under the lanes (no place pieces, no events, no empty-past words), only the track, the hours, the now line and the frame',
+      await a.page.locator('.notch .dt-bar .dt-seg, .notch .dt-bar .dt-sched, .notch .dt-bar .dt-void').count() === 0 && await a.page.locator('.notch .dt-bar .dt-ground').count() >= 1 && await a.page.locator('.notch .dt-bar .dt-hours span').count() >= 3
+      && await a.page.locator('.notch .dt-bar .dt-nowtick').count() === 1 && await a.page.locator('.notch .dt-bar .dt-bracket.is-open:not(.is-off)').count() === 1);
+    check('the selected row has its frame on the bar: round the span of 时间线 (19:40 to 21:50)', await a.page.evaluate(() => { const b = document.querySelector('.notch .dt-bracket.is-open').getBoundingClientRect(); return [b.left, b.right]; }).then(([l, r]) => same(l, xAt(g1, T(19, 40)), 2) && same(r, xAt(g1, T(21, 50)), 2)));
     await a.shot('agents', g1);
 
-    // ---- Agents: the waiting row's buttons ----
+    // ---- Agents: the rows have no buttons; the acts are on the page ----
     await a.hoverOn('.notch .dt-row[data-key="c-line"]');
     await a.page.waitForTimeout(250);
-    const hot = await a.rows(), hotLine = hot.find(r => r.key === 'c-line');
-    check('on a rest on the row that waits (with a permission it holds) the buttons are 先放着 and 同意, and 同意 is the amber filled pill',
-      hotLine.quick.join('|') === '先放着|同意' && await a.page.evaluate(() => { const b = [...document.querySelectorAll('.notch .dt-row[data-key="c-line"] .dt-quick button')], c = b.map(x => getComputedStyle(x).backgroundColor); return c[1] === 'rgb(255, 201, 143)' && c[0] !== c[1] && getComputedStyle(document.querySelector('.notch .dt-row[data-key="c-line"] .dt-quick')).opacity === '1'; }), JSON.stringify(hotLine.quick));
-    check('every other row has just 打开 (a Claude session in Ghostty, a Codex session in Codex)', hot.filter(r => r.key !== 'c-line' && r.key !== 'now').every(r => r.quick.join() === '打开'), JSON.stringify(hot.map(r => [r.key, r.quick])));
+    const hot = await a.rows();
+    check('neither the selected row (the one that waits) nor the row under the pointer shows a button: no row has any, in the list', hot.filter(r => r.key !== 'now' && r.key !== 'heading').every(r => r.buttons === 0), JSON.stringify(hot.map(r => [r.key, r.buttons])));
+    check('on the page of the one that waits (with a permission it holds) the buttons are 先放着 and 同意, and 同意 is the amber filled pill', await a.page.evaluate(() => { const b = [...document.querySelectorAll('.notch .dt-side .m-req .dt-ask')], c = b.map(x => getComputedStyle(x).backgroundColor); return b.map(x => x.innerText.trim()).join('|') === '先放着|同意' && c[1] === 'rgb(255, 201, 143)' && c[0] !== c[1]; }));
     await a.shot('agents-hover', g1);
-    await a.pressOn('.notch .dt-row[data-key="c-ci"] .dt-quick button');
-    await a.hoverOn('.notch .dt-row[data-key="c-ci"]');
-    await a.pressOn('.notch .dt-row[data-key="c-ci"] .dt-quick button');
-    await a.hoverOn('.notch .dt-row[data-key="r-tests"]');
-    await a.pressOn('.notch .dt-row[data-key="r-tests"] .dt-quick button');
+    await a.select('c-ci');
+    check('the page of a finished session has no 先放着 and no 同意, and keeps the way to where it runs', await a.page.locator('.notch .dt-side .m-req').count() === 0 && (await a.texts('.notch .dt-side .dt-ag-top .dt-ask')).join() === '在它那里打开');
+    await a.pressOn('.notch .dt-side .dt-ag-top .dt-ask');
+    await a.select('r-tests');
+    await a.pressOn('.notch .dt-side .dt-ag-top .dt-ask');
     const jumps = await a.page.evaluate(() => window.__jumps ?? []);
-    check('打开 goes to where it runs and does not open the row: a Claude session in Ghostty (by its title), a Codex one in Codex', jumps.some(j => j[0] === 'ghostty' && j[1] === '修 CI') && jumps.some(j => j[0] === 'codex' && j[1] === 'r-tests') && await a.page.locator('.notch .dt-page[data-page]').count() === 0, JSON.stringify(jumps));
+    check('在它那里打开 on the page goes to where it runs: a Claude session in Ghostty (by its title), a Codex one in Codex', jumps.some(j => j[0] === 'ghostty' && j[1] === '修 CI') && jumps.some(j => j[0] === 'codex' && j[1] === 'r-tests') && await a.sidePage() === 'r-tests', JSON.stringify(jumps));
 
     // ---- Agents: allow ----
-    await a.hoverOn('.notch .dt-row[data-key="c-line"]');
-    await a.pressOn('.notch .dt-row[data-key="c-line"] .dt-quick button.is-yes');
+    await a.select('c-line');
+    await a.pressOn('.notch .dt-side .m-req .dt-ask.is-yes');
     await a.page.waitForTimeout(500);
     const allowed = a.s.posts.filter(p => p.path.startsWith('/inherent/claude-requests/'));
     check('同意 answers the request the daemon holds: a POST to /inherent/claude-requests/req-1 with the decision allow', allowed.length === 1 && allowed[0].path === '/inherent/claude-requests/req-1' && allowed[0].body.decision === 'allow', JSON.stringify(allowed));
     const after = await a.rows(), line1 = after.find(r => r.key === 'c-line');
     check('the row stops waiting at once (no tag, no buttons, no amber, "已同意"), and so do the door, the chip and the line',
-      line1.tag === '' && line1.sub === 'Claude · 已同意' && line1.quick.join() === '打开' && (await a.marks()).every(m => m.tone !== 'amber') && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '在跑 2|今天做完 3'
+      line1.tag === '' && line1.sub === 'Claude · 已同意' && await a.page.locator('.notch .dt-side .m-req').count() === 0 && (await a.marks()).every(m => m.tone !== 'amber') && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '在跑 2|今天做完 3'
       && (await a.texts('.notch .dt-door[data-door="agents"]'))[0] === 'Agents 2' && await a.page.locator('.notch .dt-door[data-door="agents"] em.is-amber').count() === 0 && (await a.texts('.notch .dt-line'))[0] === '2 个在跑。', JSON.stringify(after.map(r => [r.key, r.tag, r.sub])));
     await a.ctx.close();
   }
@@ -296,45 +311,45 @@ try {
     a.s.refuse.add('request');
     await a.openDay(); await a.arrive(); await a.door('agents');
     const rows0 = await a.geo();
-    await a.hoverOn('.notch .dt-row[data-key="c-line"]');
-    await a.pressOn('.notch .dt-row[data-key="c-line"] .dt-quick button.is-yes');
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="c-line"] .m-req'));
+    await a.pressOn('.notch .dt-side .m-req .dt-ask.is-yes');
     await a.page.waitForTimeout(500);
     const row = (await a.rows()).find(r => r.key === 'c-line');
     check('when the daemon says the request is gone, the row waits again and the line says it could not be sent', row.tag === '等你' && (await a.texts('.notch .dt-line'))[0] === '没送出去，可能已经有人回答了。', JSON.stringify(row));
     // ---- park and take back ----
-    await a.hoverOn('.notch .dt-row[data-key="c-line"]');
-    await a.pressOn('.notch .dt-row[data-key="c-line"] .dt-quick button:first-child');
+    await a.pressOn('.notch .dt-side .m-req .dt-ask:first-child');
     await a.page.waitForTimeout(500);
     const parked = a.s.posts.filter(p => p.path === '/inherent/agent-marks/c-line');
     check('先放着 is the notch\'s own park: his mark goes to the daemon (agent-marks, park true) and the row is parked',
       parked.length >= 1 && parked.at(-1).body.park === true && (await a.rows()).find(r => r.key === 'c-line').tag === '先放着', JSON.stringify(parked));
-    const p1 = await a.rows(), pl = p1.find(r => r.key === 'c-line'), seen = { cls: pl.cls, quick: pl.quick, amber: (await a.marks()).filter(m => m.tone === 'amber').length, nums: (await a.texts('.notch .dt-numbers .dt-num')).join('|'),
+    const p1 = await a.rows(), pl = p1.find(r => r.key === 'c-line'), seen = { cls: pl.cls, quick: await a.texts('.notch .dt-side .m-req .dt-ask'), still: await a.sidePage(), amber: (await a.marks()).filter(m => m.tone === 'amber').length, nums: (await a.texts('.notch .dt-numbers .dt-num')).join('|'),
       door: (await a.texts('.notch .dt-door[data-door="agents"]'))[0], doorAmber: await a.page.locator('.notch .dt-door[data-door="agents"] em.is-amber').count(), line: (await a.texts('.notch .dt-line'))[0] };
-    check('a parked session does not wait on him any more: no amber (the tag, the door, the chip, the bar) and the page says so; it can be taken back',
-      seen.cls.includes('is-read') && seen.quick.join('|') === '拿回来|打开' && seen.amber === 0 && seen.nums === '在跑 1|今天做完 3' && seen.doorAmber === 0 && seen.line === '1 个在跑；1 个先放着。', JSON.stringify(seen));
-    await a.hoverOn('.notch .dt-row[data-key="c-line"]');
-    await a.pressOn('.notch .dt-row[data-key="c-line"] .dt-quick button:first-child');
+    check('a parked session does not wait on him any more: no amber (the tag, the door, the chip, the bar) and the page says so; it can be taken back, on its page (the right column), not in its row',
+      seen.cls.includes('is-read') && seen.quick.join('|') === '拿回来' && seen.still === 'c-line' && seen.amber === 0 && seen.nums === '在跑 1|今天做完 3' && seen.doorAmber === 0 && seen.line === '1 个在跑；1 个先放着。', JSON.stringify(seen));
+    await a.pressOn('.notch .dt-side .m-req .dt-ask');
     await a.page.waitForTimeout(500);
     const back = a.s.posts.filter(p => p.path === '/inherent/agent-marks/c-line').at(-1);
     check('拿回来 gives it back to his turn: park false to the daemon, and it waits (amber) again', back.body.park === false && (await a.rows()).find(r => r.key === 'c-line').tag === '等你' && (await a.marks()).some(m => m.tone === 'amber'), JSON.stringify(back));
 
-    // ---- a row's page ----
-    await a.pressOn('.notch .dt-row[data-key="c-line"] .dt-ic');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="c-line"] .m-you'), undefined, 6000);
+    // ---- a row's page: the conversation is in the right column, with what it asks and the way to where it runs ----
+    await a.select('c-line');
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="c-line"] .m-you'), undefined, 6000);
     await a.page.waitForTimeout(500);
-    const pg = await a.page.evaluate(() => ({ title: document.querySelector('.notch .dt-page .dt-ph b')?.innerText, you: [...document.querySelectorAll('.notch .dt-page .m-you')].map(e => e.innerText), it: [...document.querySelectorAll('.notch .dt-page .m-it')].map(e => e.innerText), strong: document.querySelectorAll('.notch .dt-page .m-it strong').length,
-      at: document.querySelector('.notch .dt-ag-top p')?.innerText, buttons: [...document.querySelectorAll('.notch .dt-page button.dt-ask')].map(b => b.innerText.trim()), ask: document.querySelector('.notch .dt-ag-ask')?.innerText, reply: !!document.querySelector('.notch .dt-page .pg-input') }));
-    check('a click on a row opens its page: the title, where it runs, the conversation (his words, its answer with the bold rendered), what it asks, and the buttons',
-      pg.title === '时间线' && pg.you.join() === '跑一下测试' && pg.it.join().startsWith('好的，我先跑测试') && pg.strong === 1 && pg.at === 'Claude · Ghostty · main' && pg.ask === '想跑 npm test'
-      && pg.buttons.join('|') === '在它那里打开|先放着|同意' && !pg.reply && a.s.reads.includes('c-line'), JSON.stringify(pg));
+    const pg = await a.page.evaluate(() => ({ title: document.querySelector('.notch .dt-side .dd-head b')?.innerText, you: [...document.querySelectorAll('.notch .dt-side .m-you')].map(e => e.innerText), it: [...document.querySelectorAll('.notch .dt-side .m-it')].map(e => e.innerText), strong: document.querySelectorAll('.notch .dt-side .m-it strong').length,
+      at: (() => { const p = document.querySelector('.notch .dt-ag-top p'), b = p?.querySelector('b'); return b ? `${b.innerText} | ${p.textContent.slice(b.textContent.length)}` : p?.textContent; })(), buttons: [...document.querySelectorAll('.notch .dt-side button.dt-ask')].map(b => b.innerText.trim()), ask: document.querySelector('.notch .dt-ag-ask')?.innerText, reply: !!document.querySelector('.notch .dt-side .pg-input') }));
+    check('the selected row\'s page: the title, where it runs, the conversation (his words, its answer with the bold rendered), what it asks, and the buttons',
+      pg.title === '时间线' && pg.you.join() === '跑一下测试' && pg.it.join().startsWith('好的，我先跑测试') && pg.strong === 1 && pg.at === 'jarvis | Claude · Ghostty · main' && pg.ask === '想跑 npm test'
+      && pg.buttons.join('|') === '问她|在它那里打开|先放着|同意' && !pg.reply && a.s.reads.includes('c-line'), JSON.stringify(pg));
     const g2 = await a.geo();
     check('and the pane has not changed size for it', moved(rows0, g2).length === 0 && same(g2.dt.height, 584), moved(rows0, g2).join('; '));
     await a.shot('agents-page', g2);
-    await a.pressOn('.notch .dt-page button.dt-ask');
+    await a.pressOn('.notch .dt-side .dt-ag-top .dt-ask');
     const jumps = await a.page.evaluate(() => window.__jumps ?? []);
     check('在它那里打开 goes to where it runs', jumps.some(j => j[0] === 'ghostty' && j[1] === '时间线'), JSON.stringify(jumps));
     await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(500);
-    check('Esc closes the page and stays on Agents', (await a.read()).door === 'agents' && await a.page.locator('.notch .dt-page[data-page]').count() === 0);
+    check('Esc lets go of the selection (the right column empties) and stays on Agents', (await a.read()).door === 'agents' && await a.picked() === '' && await a.sidePage() === null);
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(500);
+    check('the next Esc goes back to 今天, and the pane stays', (await a.read()).door === 'today' && (await a.read()).tl !== '');
     await a.ctx.close();
   }
 
@@ -347,9 +362,9 @@ try {
     const a = await boot({ claude: c, codex: [...baseCodex(), codex('r-run', { state: 'running', prompt: '跑回归', detail: 'npm run check', since_ms: T(21, 20) })] });
     await a.openDay(); await a.arrive(); await a.door('agents');
     const list = await a.rows(), by = Object.fromEntries(list.map(r => [r.key, r]));
-    await a.hoverOn('.notch .dt-row[data-key="c-ask"]');
-    const ask = (await a.rows()).find(r => r.key === 'c-ask');
-    check('a question it asks is read in its words and is not allowed by one tap: the buttons are 先放着 and 打开', by['c-ask'].sub === 'Claude · 在问：用哪个方案？' && by['c-ask'].tag === '等你' && ask.quick.join('|') === '先放着|打开', JSON.stringify([by['c-ask'].sub, ask.quick]));
+    await a.select('c-ask');
+    const askBtns = await a.texts('.notch .dt-side .m-req .dt-ask');
+    check('a question it asks is read in its words and is not allowed by one tap: on its page the only button is 先放着 (the way to where it runs is the page\'s link)', by['c-ask'].sub === 'Claude · 在问：用哪个方案？' && by['c-ask'].tag === '等你' && askBtns.join('|') === '先放着' && (await a.texts('.notch .dt-side .dt-ag-top .dt-ask')).join() === '在它那里打开', JSON.stringify([by['c-ask'].sub, askBtns]));
     check('a session that began yesterday has the date in the time column, and its span starts at the bar\'s left edge',
       by['c-night'].at === '10/18' && by['c-night'].side === '22 小时 50 分' && order(list)[0] === 'c-night', JSON.stringify([by['c-night'].at, by['c-night'].side, order(list)]));
     const g = await a.geo(), mk = await a.marks(), night = mk.find(m => m.key === 'c-night');
@@ -367,20 +382,28 @@ try {
     check('the 等你 chip is a lens: the rows it does not keep step back, and so do their marks', lens.filter(r => r.cls?.includes('is-off')).map(r => r.key).sort().join() === 'c-bare,c-bg,c-ci,c-exam,c-night,r-readme,r-run,r-tests' && mk2.filter(m => m.muted).length > 0 && mk2.filter(m => !m.muted).every(m => ['c-line', 'c-ask'].includes(m.key)), JSON.stringify(lens.map(r => [r.key, r.cls?.includes('is-off')])));
     await a.hoverOn('.notch .dt-head');
     // the idle background session takes a reply
-    await a.pressOn('.notch .dt-row[data-key="c-bg"] .dt-ic');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="c-bg"] .pg-input input'), undefined, 6000);
+    await a.select('c-bg');
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="c-bg"] .pg-input input'), undefined, 6000);
     await a.page.waitForTimeout(500);
-    await a.page.fill('.notch .dt-page .pg-input input', '把标题改短一点');
+    await a.page.fill('.notch .dt-side .pg-input input', '把标题改短一点');
     // with the text cursor in the box the pane holds itself open: the pointer leaves it for longer than the grace and it stays
     await a.move(20, 700);
     await a.page.waitForTimeout(1200);
-    check('the pane is held open while he types into the box, with the pointer away from it', await a.page.locator('.notch-drop.is-open .dt-page .pg-input input').count() === 1 && await a.page.evaluate(() => document.activeElement?.closest?.('.pg-input') !== null));
+    check('the pane is held open while he types into the box, with the pointer away from it', await a.page.locator('.notch-drop.is-open .dt-side .pg-input input').count() === 1 && await a.page.evaluate(() => document.activeElement?.closest?.('.pg-input') !== null));
     await a.hoverOn('.notch .dt-head');
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
+    check('Esc with the cursor in the reply box lets go of the keys first: the box is not focused, the line is kept, the session stays selected, on Agents', await a.page.evaluate(() => !document.activeElement?.closest?.('.pg-input')) && await a.page.inputValue('.notch .dt-side .pg-input input') === '把标题改短一点' && await a.sidePage() === 'c-bg' && (await a.read()).door === 'agents');
+    await a.page.focus('.notch .dt-side .pg-input input');
     await a.page.keyboard.press('Enter');
     await a.page.waitForTimeout(600);
     const reply = a.s.posts.filter(p => p.path === '/inherent/claude-sessions/c-bg/reply');
     check('an idle background session takes a line typed into it: POST reply with the text, and the line shows at once on its page (and the box waits for the record)',
-      reply.length === 1 && reply[0].body.text === '把标题改短一点' && (await a.texts('.notch .dt-page .m-you')).includes('把标题改短一点'), JSON.stringify(reply));
+      reply.length === 1 && reply[0].body.text === '把标题改短一点' && (await a.texts('.notch .dt-side .m-you')).includes('把标题改短一点'), JSON.stringify(reply));
+    // Esc lets go of one thing at a time: the selection, then the door
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
+    check('the next Esc (the cursor is not in the box) clears the selection: the right column empties; the door stays', await a.picked() === '' && await a.sidePage() === null && (await a.read()).door === 'agents');
+    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(400);
+    check('and the next goes back to 今天', (await a.read()).door === 'today');
     await a.ctx.close();
   }
 
@@ -396,31 +419,27 @@ try {
     check('their marks: the waiting one is lit from its start to when it asked (21:30) and amber since; the finished one is a dim point at its last change (15:00)',
       wait.length === 2 && wait[0].tone === 'on' && wait[1].tone === 'amber' && same(wait[0].x, xAt(g, T(18, 30)), 1.2) && same(wait[0].x + wait[0].w, xAt(g, T(21, 30)), 1.2) && same(wait[1].x + wait[1].w, xAt(g, T(21, 50)), 1.2)
       && done.length === 1 && done[0].kind === 'point' && done[0].tone === 'dim' && same(done[0].mid, xAt(g, T(15, 0)), 1.2), JSON.stringify(mk));
-    await a.hoverOn('.notch .dt-row[data-key="st-wait"]');
-    check('the waiting one offers 先放着 and 同意 (the request came from the host\'s conversation)', (await a.rows()).find(r => r.key === 'st-wait').quick.join('|') === '先放着|同意');
-    await a.pressOn('.notch .dt-row[data-key="st-wait"] .dt-quick button:first-child');
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="st-wait"] .m-req'), undefined, 6000);
+    check('Agents opens on the waiting one, and its page offers 先放着 and 同意 (the request came from the host\'s conversation); no row has a button', await a.picked() === 'st-wait' && (await a.texts('.notch .dt-side .m-req .dt-ask')).join('|') === '先放着|同意' && (await a.rows()).every(r => !r.buttons));
+    await a.pressOn('.notch .dt-side .m-req .dt-ask:first-child');
     await a.page.waitForTimeout(400);
     const metas = () => a.s.posts.filter(p => p.path === 'host:/sessions/st-wait/meta');
     check('先放着 is the host\'s own mark (parked true, archived false) and nothing goes to the daemon for it; the row is parked',
       metas().at(-1)?.body.parked === true && metas().at(-1).body.archived === false && !a.s.posts.some(p => p.path.startsWith('/inherent/agent-marks/')) && (await a.rows()).find(r => r.key === 'st-wait').tag === '先放着', JSON.stringify(a.s.posts));
-    await a.hoverOn('.notch .dt-row[data-key="st-wait"]');
-    await a.pressOn('.notch .dt-row[data-key="st-wait"] .dt-quick button:first-child');
+    await a.pressOn('.notch .dt-side .m-req .dt-ask');
     await a.page.waitForTimeout(400);
     check('拿回来 takes the mark back at the host (parked false), and the row waits again', metas().at(-1).body.parked === false && (await a.rows()).find(r => r.key === 'st-wait').tag === '等你');
     // its page reads the host's conversation
-    await a.pressOn('.notch .dt-row[data-key="st-wait"] .dt-ic');
-    await a.until(() => document.querySelector('.notch .dt-page[data-page="st-wait"] .m-it'), undefined, 6000);
-    const pg = await a.page.evaluate(() => ({ you: [...document.querySelectorAll('.notch .dt-page .m-you')].map(e => e.innerText), it: [...document.querySelectorAll('.notch .dt-page .m-it')].map(e => e.innerText), at: document.querySelector('.notch .dt-ag-top p')?.innerText, ask: document.querySelector('.notch .dt-ag-ask')?.innerText }));
-    check('its page is the host\'s conversation (his words and its answer), where it runs, and what it asks', pg.you.join() === '接上登录' && pg.it.join() === '登录接好了，我跑一下测试。' && pg.at === 'Claude · Startrail · main' && pg.ask === '想跑 npm test', JSON.stringify(pg));
-    await a.page.keyboard.press('Escape'); await a.page.waitForTimeout(500);
-    await a.hoverOn('.notch .dt-row[data-key="st-wait"]');
-    await a.pressOn('.notch .dt-row[data-key="st-wait"] .dt-quick button.is-yes');
+    await a.until(() => document.querySelector('.notch .dt-side[data-page="st-wait"] .m-it'), undefined, 6000);
+    const pg = await a.page.evaluate(() => ({ you: [...document.querySelectorAll('.notch .dt-side .m-you')].map(e => e.innerText), it: [...document.querySelectorAll('.notch .dt-side .m-it')].map(e => e.innerText), at: (() => { const p = document.querySelector('.notch .dt-ag-top p'), b = p?.querySelector('b'); return b ? `${b.innerText} | ${p.textContent.slice(b.textContent.length)}` : p?.textContent; })(), ask: document.querySelector('.notch .dt-ag-ask')?.innerText }));
+    check('its page is the host\'s conversation (his words and its answer), where it runs, and what it asks', pg.you.join() === '接上登录' && pg.it.join() === '登录接好了，我跑一下测试。' && pg.at === 'app | Claude · Startrail · main' && pg.ask === '想跑 npm test', JSON.stringify(pg));
+    await a.pressOn('.notch .dt-side .m-req .dt-ask.is-yes');
     await a.page.waitForTimeout(500);
     const answers = a.s.posts.filter(p => p.path === 'host:/sessions/st-wait/answer');
     check('同意 answers through the agent host (POST /sessions/<id>/answer with the request and allow), not the daemon', answers.length === 1 && answers[0].body.req === 'sreq-1' && answers[0].body.decision === 'allow' && !a.s.posts.some(p => p.path.startsWith('/inherent/claude-requests/')) && (await a.rows()).find(r => r.key === 'st-wait').sub === 'Claude · 已同意', JSON.stringify(a.s.posts));
-    await a.hoverOn('.notch .dt-row[data-key="st-done"]');
-    await a.pressOn('.notch .dt-row[data-key="st-done"] .dt-quick button');
-    check('打开 on a Startrail session opens the Agents window on it', (await a.page.evaluate(() => window.__jumps ?? [])).some(j => j[0] === 'agents' && j[1] === 'st-done'));
+    await a.select('st-done');
+    await a.pressOn('.notch .dt-side .dt-ag-top .dt-ask');
+    check('在它那里打开 on a Startrail session\'s page opens the Agents window on it', (await a.page.evaluate(() => window.__jumps ?? [])).some(j => j[0] === 'agents' && j[1] === 'st-done'));
     await a.ctx.close();
   }
 
@@ -433,8 +452,8 @@ try {
     await a.page.keyboard.press('ArrowLeft');
     await a.until(() => document.querySelector('.notch .dt-date')?.textContent === '10月18日 周日' && document.querySelectorAll('.notch .dt-row[data-key]').length === 2, undefined, 6000); await a.page.waitForTimeout(600);
     const g1 = await a.geo(), list = await a.rows(), mk = await a.marks();
-    check('the day before shows that day\'s Claude Code sessions from the day itself: oldest first, title or project, project and account, how long; no now line, no buttons',
-      list.map(r => [r.key, r.at, r.title, r.sub, r.side, r.quick.length].join('/')).join('|') === 'code-aaa/10:00/改登录页/Claude · jarvis · A/1 小时 30 分/0|code-bbb/10:30/typlus/Claude · typlus · B/20 分钟/0', JSON.stringify(list));
+    check('the day before shows that day\'s Claude Code sessions from the day itself: oldest first, title or project, project and account, how long; no now line, no buttons, and nothing selected (those are finished sessions with no page)',
+      list.map(r => [r.key, r.at, r.title, r.sub, r.side, r.buttons].join('/')).join('|') === 'code-aaa/10:00/改登录页/Claude · jarvis · A/1 小时 30 分/0|code-bbb/10:30/typlus/Claude · typlus · B/20 分钟/0' && await a.picked() === '' && await a.sidePage() === null, JSON.stringify(list));
     check('their spans are dim and packed into lanes (the 10:30 one overlaps the 10:00 one, so it is in the second lane)',
       mk.length === 2 && mk.every(m => m.kind === 'span' && m.tone === 'dim') && mk[0].top === lanes[0] && mk[1].top === lanes[1] && same(mk[0].x, xAt(g1, T(10, 0, 18), 18), 1.2) && same(mk[0].x + mk[0].w, xAt(g1, T(11, 30, 18), 18), 1.2), JSON.stringify(mk));
     check('the line and the number say it is that day\'s, and the pane has not moved',
@@ -470,10 +489,12 @@ try {
     await a.openDay();
     await a.until(() => document.querySelector('.notch .dt-door[data-door="todo"] em'));
     const g0 = await a.geo();
-    check('the door counts the open to-dos', (await a.texts('.notch .dt-door[data-door="todo"]'))[0] === '待办 5' && await a.page.locator('.notch .dt-door[data-door="todo"] em.is-amber').count() === 0);
+    check('the door counts the open to-dos, in amber because some are past their time (V2: the count is amber when something waits on him)', (await a.texts('.notch .dt-door[data-door="todo"]'))[0] === '待办 5' && await a.page.locator('.notch .dt-door[data-door="todo"] em.is-amber').count() === 1, (await a.texts('.notch .dt-door')).join('|'));
     await a.door('todo');
     const g1 = await a.geo();
-    check('on 待办 the pane, its shape, the day, the head, the bar and the doors row are where they were on 今天 and the same size (584 pt)', moved(g0, g1).length === 0 && same(g1.dt.height, 584), moved(g0, g1).join('; '));
+    check('on 待办 the pane, its shape, the day, the head and the doors row are where they were on 今天 and the same size (820 x 584 pt); there is no bar (only 今天 draws a day)', moved(g0, g1, false).length === 0 && same(g1.dt.height, 584) && same(g1.drop.width, 820, 1.5) && !await a.barShown(), moved(g0, g1, false).join('; '));
+    await a.until(() => document.querySelector('.notch .dt-side[data-page] .dd-head'));
+    check('待办 opens on the first to-do past its time (续借图书证): its row is the selected one, and its page is in the right column: the head with 问她, when it is due, 做完了', await a.picked() === 'td:td-old' && await a.page.evaluate(() => ({ head: document.querySelector('.notch .dt-side .dd-head b')?.innerText, acts: [...document.querySelectorAll('.notch .dt-side .dd-acts .dd-btn')].map(b => b.innerText.trim()).join('|'), ask: document.querySelector('.notch .dt-side .dd-head .dt-ask')?.innerText })).then(x => x.head === '续借图书证' && x.acts === '做完了' && x.ask === '问她'));
     check('the line puts what is past its time first (the earliest due, and how many more)', (await a.texts('.notch .dt-line'))[0] === '续借图书证 等 2 件过了时间还没做。', (await a.texts('.notch .dt-line')).join());
     check('the numbers: 待办 5, 日程 3, and 过期 2 in amber (a lens); no link (the app has nothing to open for it)',
       (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '待办 5|日程 3|过期 2' && await a.page.locator('.notch .dt-numbers button.dt-num.is-amber').count() === 1 && await a.page.locator('.notch .dt-numbers .dt-go').count() === 0, (await a.texts('.notch .dt-numbers .dt-num')).join('|'));
@@ -485,32 +506,29 @@ try {
     check('a to-do past its time has the amber tag 过期; a date-only due is untimed and says its day in the time column (今天, or the date), none says nothing',
       by['td:td-a3'].tag === '过期' && by['td:td-old'].tag === '过期' && by['td:td-pay'].tag === '' && by['td:td-read'].at === '今天' && by['td:td-old'].at === '10/17' && by['td:td-lee'].at === '' && by['td:td-a3'].sub === '待办', JSON.stringify(list.filter(r => r.key.startsWith('td')).map(r => [r.key, r.at, r.tag])));
     check('the circle is an open circle on a to-do and the calendar glyph on an event', await a.page.evaluate(() => { const g = k => document.querySelector(`.notch .dt-row[data-key="${k}"] .dt-ic svg`)?.innerHTML.length ?? 0; return g('td:td-a3') > 0 && g('td:td-a3') !== g('ev:ev-class'); }));
-    const mk = await a.marks(), ofKey = key => mk.find(m => m.key === key);
-    check('the marks: a point at each to-do\'s due time (amber when it is past due and open, else lit) and a dim one at each timed event\'s start; nothing for what has no time',
-      mk.length === 4 && ofKey('td:td-a3').tone === 'amber' && ofKey('td:td-pay').tone === 'on' && ofKey('ev:ev-class').tone === 'dim' && ofKey('ev:ev-mom').tone === 'dim'
-      && [['td:td-a3', T(17, 0)], ['td:td-pay', T(23, 30)], ['ev:ev-class', T(14, 0)], ['ev:ev-mom', T(22, 0)]].every(([k, ms]) => ofKey(k).kind === 'point' && same(ofKey(k).mid, xAt(g1, ms), 1.2)), JSON.stringify(mk));
     await a.shot('todo', g1);
 
-    // ---- tick ----
+    // ---- tick: the button is on the page, not in the row ----
     await a.hoverOn('.notch .dt-row[data-key="td:td-a3"]');
     await a.page.waitForTimeout(250);
-    check('a rest on a to-do offers 完成, and an event offers nothing', (await a.rows()).find(r => r.key === 'td:td-a3').quick.join() === '完成' && (await a.rows()).filter(r => r.key.startsWith('ev:')).every(r => r.quick.length === 0));
-    await a.pressOn('.notch .dt-row[data-key="td:td-a3"] .dt-quick button');
+    check('the rows have no button, the one under the pointer neither; a to-do\'s page has 做完了 and an event\'s has none', (await a.rows()).every(r => !r.buttons) && (await a.texts('.notch .dt-side .dd-acts .dd-btn')).join() === '做完了');
+    await a.select('ev:ev-mom');
+    check('an event\'s page says when it is and how long until it, and has no button', (await a.texts('.notch .dt-side .dd-head em'))[0] === '日历 · 22:00–22:30' && (await a.texts('.notch .dt-side .dd-gist'))[0] === '还有 10 分钟 开始。' && await a.page.locator('.notch .dt-side .dd-btn').count() === 0, (await a.texts('.notch .dt-side')).join());
+    await a.select('td:td-a3');
+    await a.pressOn('.notch .dt-side .dd-acts .dd-btn');
     await a.page.waitForTimeout(400);
     const ticked = a.s.posts.filter(p => p.path === '/inherent/today/todo');
     const l1 = await a.rows(), t1 = l1.find(r => r.key === 'td:td-a3');
     check('完成 ticks it as the Dashboard does: POST /inherent/today/todo {id, done: true}',
       ticked.length === 1 && ticked[0].body.id === 'td-a3' && ticked[0].body.done === true, JSON.stringify(ticked));
-    await a.hoverOn('.notch .dt-row[data-key="td:td-a3"]');
-    await a.page.waitForTimeout(250);
-    const l2 = await a.rows(), t2 = l2.find(r => r.key === 'td:td-a3'), mk2 = await a.marks();
-    check('it stays as a faded row with a check in the circle and the way back (撤销), no amber tag, no mark; the numbers, the door and the line follow',
-      t1.cls.includes('is-read') && t1.tag === '' && t2.quick.join() === '撤销' && !mk2.some(m => m.key === 'td:td-a3') && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '待办 4|日程 3|过期 1'
+    const t2 = (await a.rows()).find(r => r.key === 'td:td-a3'), back2 = await a.texts('.notch .dt-side .dd-acts .dd-btn');
+    check('it stays as a faded row with a check in the circle, no amber tag, and the way back (做完了 · 撤销) on its page; the numbers, the door and the line follow',
+      t1.cls.includes('is-read') && t1.tag === '' && t2.buttons === 0 && back2.join() === '做完了 · 撤销' && await a.sidePage() === 'td:td-a3' && (await a.texts('.notch .dt-numbers .dt-num')).join('|') === '待办 4|日程 3|过期 1'
       && (await a.texts('.notch .dt-door[data-door="todo"]'))[0] === '待办 4' && (await a.texts('.notch .dt-line'))[0] === '续借图书证 过了时间还没做。', JSON.stringify([t1, t2]));
-    await a.pressOn('.notch .dt-row[data-key="td:td-a3"] .dt-quick button');
+    await a.pressOn('.notch .dt-side .dd-acts .dd-btn');
     await a.page.waitForTimeout(400);
     const undone = a.s.posts.filter(p => p.path === '/inherent/today/todo').at(-1);
-    check('撤销 puts it back: POST done false, the row is open again with its amber tag and mark', undone.body.done === false && (await a.rows()).find(r => r.key === 'td:td-a3').tag === '过期' && (await a.marks()).some(m => m.key === 'td:td-a3' && m.tone === 'amber'), JSON.stringify(undone));
+    check('撤销 puts it back: POST done false, the row is open again with its amber tag, and the page offers 做完了 again', undone.body.done === false && (await a.rows()).find(r => r.key === 'td:td-a3').tag === '过期' && (await a.texts('.notch .dt-side .dd-acts .dd-btn')).join() === '做完了', JSON.stringify(undone));
     await a.ctx.close();
   }
 
@@ -519,11 +537,11 @@ try {
     const a = await boot();
     a.s.refuse.add('todo');
     await a.openDay(); await a.door('todo');
-    await a.hoverOn('.notch .dt-row[data-key="td:td-pay"]');
-    await a.pressOn('.notch .dt-row[data-key="td:td-pay"] .dt-quick button');
+    await a.select('td:td-pay');
+    await a.pressOn('.notch .dt-side .dd-acts .dd-btn');
     await a.page.waitForTimeout(500);
-    const back = (await a.rows()).find(r => r.key === 'td:td-pay'), told = { quick: back.quick, faded: back.cls.includes('is-read'), line: (await a.texts('.notch .dt-line'))[0], door: (await a.texts('.notch .dt-door[data-door="todo"]'))[0] };
-    check('a tick that To Do cannot take is put back (open again, 完成 on offer, counted), and the page\'s line says so', told.quick.join() === '完成' && !told.faded && told.line === '连不上 To Do。' && told.door === '待办 5', JSON.stringify(told));
+    const back = (await a.rows()).find(r => r.key === 'td:td-pay'), told = { quick: await a.texts('.notch .dt-side .dd-acts .dd-btn'), faded: back.cls.includes('is-read'), line: (await a.texts('.notch .dt-line'))[0], door: (await a.texts('.notch .dt-door[data-door="todo"]'))[0] };
+    check('a tick that To Do cannot take is put back (open again, 做完了 on its page, counted), and the page\'s line says so', told.quick.join() === '做完了' && !told.faded && told.line === '连不上 To Do。' && told.door === '待办 5', JSON.stringify(told));
     await a.hoverOn('.notch .dt-head');
     await a.hoverOn('.notch .dt-numbers button.dt-num');
     await a.page.waitForTimeout(300);
@@ -543,8 +561,8 @@ try {
     await a.page.keyboard.press('ArrowLeft');
     await a.until(() => document.querySelector('.notch .dt-date')?.textContent === '10月18日 周日', undefined, 6000); await a.page.waitForTimeout(600);
     const g = await a.geo();
-    check('another day says that to-dos are for today only, with no rows, no marks and no numbers; the door still counts',
-      (await a.texts('.notch .dt-line'))[0] === '待办只看今天的。' && (await a.keys()).length === 0 && (await a.marks()).length === 0 && (await a.texts('.notch .dt-numbers .dt-num')).length === 0 && (await a.texts('.notch .dt-door[data-door="todo"]'))[0] === '待办 2' && same(g.dt.height, 584));
+    check('another day says that to-dos are for today only, with no rows and no numbers, and no bar; the door still counts',
+      (await a.texts('.notch .dt-line'))[0] === '待办只看今天的。' && (await a.keys()).length === 0 && !await a.barShown() && (await a.texts('.notch .dt-numbers .dt-num')).length === 0 && (await a.texts('.notch .dt-door[data-door="todo"]'))[0] === '待办 2' && same(g.dt.height, 584));
     await a.ctx.close();
     const t1 = { weather: null, events: [], todos: [] };
     const b = await boot({ today: t1 });
