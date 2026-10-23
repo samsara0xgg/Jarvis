@@ -813,6 +813,7 @@ def _applications(
     path: Path,
     now: datetime,
     details: Callable[[str], Mapping[str, Any]] | None = None,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Every application, hidden ones too: the visible ledger mails grouped, plus Allen's rows.
 
@@ -820,7 +821,7 @@ def _applications(
     (:func:`_by_employer`). A mail-derived application has Allen's ``edit`` row of its company
     (the newest, when there are several) override its fields; a ``manual`` or ``said`` row is an
     application of its own. ``details`` reads the interview and links out of a body start
-    (ADR 0182).
+    (ADR 0182). With ``until``, a mail received after it is not in any application yet.
     """
     with _db(path) as conn:
         rows = [
@@ -830,6 +831,7 @@ def _applications(
                 " event_text, event_later_at"
                 " FROM job_mail WHERE deleted = 0",
             ).fetchall()
+            if until is None or ((at := _moment(row["received_at"])) is not None and at <= until)
         ]
         mine = conn.execute("SELECT * FROM job_application").fetchall()
         kept = (
@@ -891,15 +893,17 @@ def list_applications(
     path: Path,
     now: datetime,
     details: Callable[[str], Mapping[str, Any]] | None = None,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
 
     Newest activity first within a status. Hidden applications are left out. Where the mail's
     zone label reads two ways (ADR 0379), ``next_event_at`` and ``interview["at"]`` are the
     earlier reading and ``next_event_later_at`` and ``interview["later_at"]`` the later; else
-    those are None.
+    those are None. With ``until``, mail received after it is left out, as a block as of then
+    needs (ADR 0367).
     """
-    shown = [app for app in _applications(path, now, details) if not app.pop("hidden")]
+    shown = [app for app in _applications(path, now, details, until) if not app.pop("hidden")]
     return sorted(
         shown,
         key=lambda a: (
