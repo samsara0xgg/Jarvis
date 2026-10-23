@@ -1,8 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, Star, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
+import { Coins, ChatCircleDots, Image as PictureIcon, Laptop, Moon, Path, PersonSimpleRun, Phone, SunHorizon, X, type Icon as PhosphorIcon } from '@phosphor-icons/react';
 import { tr, useCompanionSettings, type L } from './companionSettings';
-import { spring, step } from './starCore';
-import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, peek, pieceAt, rowAt, snap, summarize, type BarBy, type BarSeg, type BarStar, type Line, type Peek, type Summary } from './barView';
+import { buildBar, endClock, fit, fOf, msOf, numbers, PAD_PX, pieceAt, rowAt, snap, summarize, type BarBy, type BarSeg, type Summary } from './barView';
 import { clock, type DayModel, type Icon, type LensKind, type Rgb } from './dayView';
 import { cardOf } from './numberCard';
 import { CardBody, Swap } from './CardView';
@@ -13,12 +12,13 @@ import { DoorMarks, extentOf, nearestMark, type Extent } from './DayDoors';
 import type { BarMark } from './doors';
 import './day-bar.css';
 
-// The day in one bar (ADR 0308), above the rows: what each stretch is, written in it; now; what is still to come; the stars of what
-// mattered. The pointer reads it: a hairline and a card with what the stretch was and what else was going on, a click jumps the list
-// there, a drag chooses a range. Under it the day's numbers, each a lens. The rows are DayTimeline's: they meet this at a row's key.
+// The day in one bar (ADR 0308), above the rows: 26 px, what each stretch is, written in it when the name fits (its icon always); now; what is still to
+// come. The pointer reads it: the minute under the bar, the stretch under it lit together with its row; a click jumps the list there, a drag chooses a
+// range. The row that is selected has a frame round its span that glides when the selection changes. Under it the day's numbers, each a lens. The rows
+// are DayTimeline's: they meet this at a row's key.
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 const LABEL = '600 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif', MONO = '600 11px "JetBrains Mono", Menlo, monospace';
-const CARD_W = 280, EDGE = 4, TAP_PX = 3, FOLLOW_HZ = 11.7, ATTACHMENT = /^[0-9a-f]{32}$/;
+const CARD_W = 280, EDGE = 4, TAP_PX = 3, FLASH_MS = 600, PIN_HALF = 19;
 const rgb = (c: readonly number[]) => c.join(' ');
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 let measuring: CanvasRenderingContext2D | null = null;
@@ -51,33 +51,6 @@ export function useBarState() {
 }
 export type BarState = ReturnType<typeof useBarState>;
 
-function Thumb({ id, port, icon }: { id: string | null; port: string | null; icon: Icon }) {
-  const [broken, setBroken] = useState(false);
-  return id && port && ATTACHMENT.test(id) && !broken
-    ? <img className="dt-thumb" alt="" width={48} height={48} decoding="async" src={`http://127.0.0.1:${port}/inherent/attachments/${id}`} onError={() => setBroken(true)}/>
-    : <span className="dt-cic"><Ic icon={icon} size={14}/></span>;
-}
-function CardLine({ l, port }: { l: Line; port: string | null }) {
-  return <li className={`dt-cline${l.picture ? ' has-pic' : ''}`}>
-    {l.picture ? <Thumb id={l.picture} port={port} icon={l.icon}/> : <span className="dt-cic"><Ic icon={l.icon} size={13}/></span>}
-    <span className="dt-ctx">{l.star && <Star size={10} weight="fill" className="dt-cstar" aria-hidden="true"/>}{l.text}</span>
-    <span className="dt-cside">{l.side}</span>
-  </li>;
-}
-function PeekBody({ p, port, t }: { p: Peek; port: string | null; t: (l: L) => string }) {
-  const { stretch } = p;
-  return <>
-    <div className="dt-ch">
-      <i className={`dt-cdot${stretch.rgb ? '' : ' is-hollow'}`} style={stretch.rgb ? { '--c': rgb(stretch.rgb), '--a': stretch.a } as CSSProperties : undefined}/>
-      <b>{stretch.name}</b><span>{[stretch.range, stretch.length].filter(Boolean).join(' · ')}</span>
-    </div>
-    {stretch.place && <div className="dt-cnote is-place">{stretch.place}</div>}
-    {stretch.note && <div className="dt-cnote">{stretch.note}</div>}
-    {p.star && <div className="dt-cmark"><Star size={11} weight="fill" aria-hidden="true"/><span>{p.star.label || (p.star.by === 'her' ? t(['She marked this', '她觉得这段重要']) : t(['You marked this', '你标过这段']))}</span></div>}
-    {p.lines.length ? <ul className="dt-cl">{p.lines.map(l => <CardLine key={l.key} l={l} port={port}/>)}</ul> : <p className="dt-cnone">{t(['Nothing else was recorded then', '这段时间没有别的记录'])}</p>}
-    <p className="dt-cfoot">{t(['Click to jump here · drag to pick a range', '点一下跳到这里 · 拖动框一段'])}</p>
-  </>;
-}
 function RangeBody({ s, say, onSay, onOnly, t }: { s: Summary; say: Said | null; onSay: (said: Said) => void; onOnly: () => void; t: (l: L) => string }) {
   return <>
     <div className="dt-ch"><b>{s.range}</b><span>{s.length}</span></div>
@@ -117,22 +90,6 @@ function ByToggle({ value, onChange, t }: { value: BarBy; onChange: (by: BarBy) 
   </div>;
 }
 
-// What mattered: a lit star at the start of each highlighted item, his filled and hers outlined. One that comes fades in (the style does it); one
-// that goes stays 200 ms and fades out (120 under reduced motion). The day's own stars are drawn again for another day (the key), never faded.
-function Stars({ stars }: { stars: BarStar[] }) {
-  const [gone, setGone] = useState<BarStar[]>([]), last = useRef(stars), live = useRef(true);
-  useEffect(() => () => { live.current = false; }, []);
-  useEffect(() => {
-    const now = new Set(stars.map(s => s.id)), left = last.current.filter(s => !now.has(s.id));
-    last.current = stars;
-    if (!left.length && !gone.length) return;
-    setGone(g => [...g.filter(s => !now.has(s.id)), ...left]);
-    if (left.length) setTimeout(() => { if (live.current) setGone(g => g.filter(s => !left.includes(s))); }, reduced.matches ? 120 : 200);
-  }, [stars]);
-  const one = (s: BarStar, away: boolean) => <i key={s.id} className={`dt-lit${s.hers ? ' is-hers' : ''}${away ? ' is-gone' : ''}`} data-star={s.id} style={{ left: `${s.f * 100}%` }}><Star size={9} weight={s.hers ? 'bold' : 'fill'}/></i>;
-  return <>{stars.map(s => one(s, false))}{gone.map(s => one(s, true))}</>;
-}
-
 // While the day is being tidied (ADR 0310) a soft band of light crosses the bar from left to right, 1.6 s a pass, over and over (the style does it). When the tidy ends the pass it is
 // on is finished first, so it never stops half way. Under reduced motion there is none.
 function Sweep({ on }: { on: boolean }) {
@@ -144,13 +101,13 @@ function Sweep({ on }: { on: boolean }) {
 // A door's page on the bar (doors.ts): the day steps back to .25 and the page's marks are lit over it (`mute`: the keys of the rows a lit chip keeps, the marks of the others are
 // drawn at .25); the page's numbers row goes under the bar in place of the day's. What the pointer and a click find is then the page's marks, not the day's pieces.
 export type PageBar = { marks: BarMark[]; mute: ReadonlySet<string> | null; numbers: ReactNode };
-// `open`: the row whose detail page is up; its span stays marked, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
+// `open`: the row that is selected (its detail is up); a frame sits round its span and glides when it changes, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
 // `sweep`: the day is being tidied. `door`: a door's page is under the bar.
 export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, onJump, onPage, onPicture, onSay }: { model: DayModel; port: string | null; ui: BarState; cut: Range | null; sweep: boolean; hot: string | null; open: string | null; door: PageBar | null; onHot: (key: string | null) => void; onJump: (key: string) => void; onPage: (piece: string | null) => void; onPicture: (id: string, note: string) => void; onSay: (said: Said) => void }) {
   const [{ lang, barBy }, setSettings] = useCompanionSettings(), t = (l: L) => tr(lang, l);
   const bar = useMemo(() => buildBar(model, t, barBy), [model, lang, barBy]), nums = useMemo(() => numbers(model, t), [model, lang]);
-  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), card = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
-  const [hover, setHover] = useState<{ x: number; left: number } | null>(null), [on, setOn] = useState(false), [band, setBand] = useState<Range | null>(null);
+  const box = useRef<HTMLDivElement>(null), track = useRef<HTMLDivElement>(null), nIn = useRef<HTMLDivElement>(null), [width, setWidth] = useState(0);
+  const frame = useRef<{ date: string; at: CSSProperties } | null>(null), epoch = useRef(0), [hover, setHover] = useState<{ x: number } | null>(null), [band, setBand] = useState<Range | null>(null), [flash, setFlash] = useState<string | null>(null), flashEnd = useRef(0);
   // The pinned number's card hangs under the numbers; a range being chosen or chosen has the room (its card wins), and the number's comes back when the range goes.
   const numCard = useMemo(() => ui.pinned && !door ? cardOf(model, ui.pinned, t, nums) : null, [model, lang, nums, ui.pinned, !!door]), numKind = numCard && !ui.sel && !band ? numCard.kind : null;
   useLayoutEffect(() => {
@@ -180,12 +137,19 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
   // A lens whose number the day does not have (the day was changed) lets go, pinned or previewed by a chip that is not there to say it has left.
   useEffect(() => { if (ui.pinned && !nums.some(n => n.kind === ui.pinned)) ui.setPinned(null); if (ui.preview && !nums.some(n => n.kind === ui.preview)) ui.setPreview(null); }, [nums]);
 
-  // The card opens after the pointer has rested 50 ms on the bar.
+  // A row that flashes (DayTimeline puts `is-flash` on it: a tap on a row with no detail, a jump from the bar) flashes its span here for the same 600 ms. The row's own animation
+  // is the signal, so the bar needs nothing passed in; under reduced motion the row does not flash and neither does the bar.
   useEffect(() => {
-    if (!hover) { setOn(false); return; }
-    const timer = setTimeout(() => setOn(true), 50);
-    return () => clearTimeout(timer);
-  }, [!!hover]);
+    const root = box.current?.closest('.dt');
+    if (!root) return;
+    const seen = (e: Event) => {
+      const key = (e.target as HTMLElement).dataset?.key;
+      if ((e as AnimationEvent).animationName !== 'dt-flash' || !key) return;
+      setFlash(key); clearTimeout(flashEnd.current); flashEnd.current = window.setTimeout(() => setFlash(null), FLASH_MS);
+    };
+    root.addEventListener('animationstart', seen);
+    return () => { root.removeEventListener('animationstart', seen); clearTimeout(flashEnd.current); };
+  }, [!!bar]);
   // A number's card comes in over 180 ms on the pane's ease, rising 4 px; under reduced motion it fades in over 120.
   useLayoutEffect(() => {
     if (!numKind) return;
@@ -200,8 +164,8 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
     return () => window.removeEventListener('pointerdown', down, true);
   }, [!!ui.sel]);
 
-  const laid = useMemo(() => bar ? bar.segs.map(s => { const w = (s.f1 - s.f0) * width - 1; return { s, w, how: s.hole ? 'none' as const : fit(w, textWidth(s.short, s.mono), s.short) }; }) : [], [bar, width]);
-  const boxes = useMemo(() => bar ? bar.sched.filter(x => x.kind === 'event').map(x => { const w = (x.f1 - x.f0) * width; return { x, w, how: fit(w, textWidth(x.short, false), x.short) }; }) : [], [bar, width]);
+  const laid = useMemo(() => bar ? bar.segs.map(s => { const w = (s.f1 - s.f0) * width - 1; return { s, w, how: fit(w, textWidth(s.short, s.mono), s.short) }; }) : [], [bar, width]);
+  const boxes = useMemo(() => bar ? bar.sched.filter(x => x.kind === 'event').map(x => { const w = (x.f1 - x.f0) * width - 1; return { x, w, how: fit(w, textWidth(x.short, false), x.short) }; }) : [], [bar, width]);
   const ms = (x: number) => msOf(bar!, width ? x / width : 0);
   const bounds = () => { const el = box.current!, h = el.closest('.dt')!.getBoundingClientRect(), b = el.getBoundingClientRect(); return { min: h.left - b.left + EDGE, max: h.right - b.left - EDGE - CARD_W }; };
   const left = (center: number) => { const { min, max } = bounds(); return clamp(center - CARD_W / 2, min, Math.max(min, max)); };
@@ -225,7 +189,7 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
     const x = at(e), p = press.current;
     if (p && !p.drag && Math.abs(x - p.x0) > TAP_PX) { p.drag = true; setHover(null); onHot(null); }
     if (p?.drag) setBand({ a: snap(ms(p.x0)), b: snap(ms(x)) });
-    else { setHover({ x, left: left(x) }); onHot(door ? near(e) : pieceAt(bar, ms(x))); }
+    else { setHover({ x }); onHot(door ? near(e) : pieceAt(bar, ms(x))); }
   };
   // A drag that ends where it began (to the minute) is a click: a range of no length is none.
   const up = (e: ReactPointerEvent) => {
@@ -241,42 +205,6 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
   };
   const leave = () => { if (press.current) return; setHover(null); onHot(null); };
 
-  // The card follows the pointer on a critically damped spring (about 90 ms to settle); under reduced motion it jumps.
-  const follow = useRef({ sp: spring(0), goal: 0, raf: 0, last: 0, shown: false });
-  const target = hover?.left ?? 0;
-  useLayoutEffect(() => {
-    const f = follow.current, el = card.current;
-    if (!el || !hover) { f.shown = false; return; }
-    f.goal = target;
-    const draw = () => { el.style.transform = `translateX(${f.sp.value}px)`; };
-    if (reduced.matches || !f.shown) { f.sp.value = target; f.sp.velocity = 0; f.shown = true; draw(); return; }
-    if (f.raf) return;
-    f.last = performance.now();
-    const tick = (now: number) => {
-      const moving = step(f.sp, f.goal, FOLLOW_HZ, 1, Math.min(.05, (now - f.last) / 1000));
-      f.last = now; draw();
-      f.raf = moving ? requestAnimationFrame(tick) : 0;
-    };
-    f.raf = requestAnimationFrame(tick);
-  }, [target, !!hover]);
-  useEffect(() => () => cancelAnimationFrame(follow.current.raf), []);
-
-  // What the card says is two layers that swap when the stretch changes: the words that were fade out, then the new ones fade in (the style
-  // does that), never both at once; and the card's height goes to the new words' meanwhile (150 ms, from where it is if it was on its way).
-  const live = hover && bar ? peek(model, bar, ms(hover.x), t) : null;
-  const slots = useRef<{ cur: 0 | 1; at: [Peek | null, Peek | null] }>({ cur: 0, at: [null, null] });
-  if (live) { const s = slots.current; if (s.at[s.cur]?.id !== live.id) s.cur = s.cur ? 0 : 1; s.at[s.cur] = live; }
-  // Only the height's own animation is kept in hand and started again: the card's CSS transitions (its rise) are not this effect's to cancel.
-  const cardIn = useRef<HTMLDivElement>(null), needed = useRef<number | null>(null), sizing = useRef<Animation | null>(null);
-  useLayoutEffect(() => {
-    const el = cardIn.current, before = needed.current;
-    if (!el || !live) { needed.current = null; return; }
-    const moving = sizing.current?.playState === 'running', from = moving ? el.getBoundingClientRect().height : before;
-    sizing.current?.cancel();
-    const to = needed.current = el.getBoundingClientRect().height;
-    sizing.current = from != null && Math.abs(from - to) > .5 && !reduced.matches ? el.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 150, easing: 'cubic-bezier(.16, 1, .3, 1)' }) : null;
-  });
-
   if (!bar) return null;
   const sel = band ?? ui.sel, shown = sel ?? ui.filter, a = shown && Math.min(shown.a, shown.b), b = shown && Math.max(shown.a, shown.b);
   const summary = ui.sel ? summarize(model, bar, ui.sel.a, ui.sel.b, t) : null, lens = !door && ui.lens && nums.some(n => n.kind === ui.lens) ? ui.lens : null;
@@ -285,41 +213,55 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
   // The sun's marks sit in the hours row. An hour's number always wins: a mark that would sit on one is only a tick under the bar.
   const hours = bar.ticks.map(k => ({ k, px: k.f < .02 ? 6 : k.f > .98 ? width - 6 : k.f * width }));
   const suns = bar.sun.map(x => { const px = clamp(x.f * width, 6, Math.max(6, width - 6)); return { ...x, px, bare: hours.some(h => Math.abs(h.px - px) < 14) }; });
-  const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(16px, ${x}px, calc(100% - 16px))` });
-  // By place on a day with stretches the pointer lifts the place under it, but a click or the span marked is the stretch's (the list's row there).
-  // On a door page the pointer lifts none of the day's pieces, and the span marked is the row's own marks (a point is a 10 px box).
-  const lifted = live?.row ?? null, hit = door ? null : barBy === 'place' && model.segs.size && live ? bar.segs.find(x => x.s <= live.ms && live.ms < x.e)?.row ?? null : lifted;
+  const bx = (x: number) => `${clamp(x, 0, 1) * 100}%`, edge = (x: number) => ({ left: `clamp(${PIN_HALF}px, ${x}px, calc(100% - ${PIN_HALF}px))` });
+  // What is lit together: with the pointer on the bar, the piece under it (by place the place's, not the stretch's); otherwise the row the list has lit (under its pointer or chosen by the keys),
+  // by place every place its span crosses. On a door page the pointer lifts none of the day's pieces, and the span marked is the row's own marks (a point is a 10 px box).
   type Bracket = { t0: number; t1: number; point?: boolean };
-  const spanned: Bracket | null | undefined = door ? hot && hot !== open ? extentOf(door.marks, hot) : null : hot && hot !== hit && hot !== open ? model.span.get(hot) : null;
+  const cursor = hover && !band && !door ? ms(hover.x) : null, under = cursor === null ? null : bar.segs.find(x => x.s <= cursor && cursor < x.e) ?? null;
+  const underEvent = cursor === null || under ? null : bar.sched.find(x => x.kind === 'event' && x.s <= cursor && cursor <= x.e)?.key ?? null;
+  const placed = barBy === 'place' && model.segs.size > 0, heard = !door && !hover && hot ? model.span.get(hot) : undefined;
+  const lights = (s: BarSeg) => !door && (cursor !== null ? under === s : hot !== null && (placed ? !!heard && s.s < Math.max(heard.t1, heard.t0 + 1) && s.e > heard.t0 : s.row === hot));
+  // A row that flashes flashes the pieces of the bar it is: its own, or those its span crosses.
+  const flashed = flash !== null ? model.span.get(flash) : undefined, owned = flash !== null && bar.segs.some(x => x.row === flash);
+  const pulses = (s: BarSeg) => flash !== null && (s.row === flash || !owned && !!flashed && s.s < Math.max(flashed.t1, flashed.t0 + 1) && s.e > flashed.t0);
   const opened: Bracket | null | undefined = open ? door ? extentOf(door.marks, open) : model.span.get(open) : null;
-  // A door page's row that is lit (under the pointer, or chosen by the keys) says its mark's time in the scrub row, as a range does; the now label stays unless it would be under it.
+  const inBar = (x: Bracket | null | undefined): x is Bracket => !!x && x.t1 >= bar.t0 && x.t0 <= bar.t1;
+  const geo = (x: Bracket): CSSProperties => x.point ? { left: `calc(${bx(fOf(bar, x.t0))} - 5px)`, width: 10 } : { left: bx(fOf(bar, x.t0)), width: `max(4px, ${(clamp(fOf(bar, x.t1), 0, 1) - clamp(fOf(bar, x.t0), 0, 1)) * 100}%)` };
+  // The selection's frame is one piece that stays: it glides to the new span (the style does it), and fades when nothing is selected, leaving where it was. One that comes back to a bar with no
+  // frame (the first, or another day's) is made in place, not glided in from nowhere.
+  const framed = inBar(opened) ? opened : null, was = frame.current;
+  if (framed) { if (!was || was.date !== model.reply.date) epoch.current++; frame.current = { date: model.reply.date, at: geo(framed) }; }
+  else if (was && was.date !== model.reply.date) frame.current = null;
+  // On a door page a row the pointer is on is only hinted: its marks have no piece of the day to light.
+  const hint = door && hot && hot !== open ? extentOf(door.marks, hot) : null;
+  // A door page's row that is lit (under the pointer, or chosen by the keys) says its mark's time under the bar, as a range does.
   const timesOf = (e: Extent) => {
     const f0 = clamp(fOf(bar, e.t0), 0, 1) * width, f1 = clamp(fOf(bar, e.t1), 0, 1) * width, one = e.point || f1 - f0 < 36;
     return one ? [{ x: (f0 + f1) / 2, text: e.point ? clock(e.t0, model.tz) : `${clock(e.t0, model.tz)}–${endClock(e.t1, model.reply, model.tz)}` }] : [{ x: f0, text: clock(e.t0, model.tz) }, { x: f1, text: endClock(e.t1, model.reply, model.tz) }];
   };
-  const lit = door && !hover && !sel && hot ? extentOf(door.marks, hot) : null, litTimes = lit && lit.t1 >= bar.t0 && lit.t0 <= bar.t1 ? timesOf(lit) : [], nowX = (bar.nowF ?? 0) * width;
+  const marked = door && !hover && !sel && hot ? extentOf(door.marks, hot) : null;
+  // What is said under the bar, in the hours row: the minute at the pointer, a range's two ends (or its one time where they would meet), a lit door row's times.
+  const pins: { x: number; text: string }[] = [];
+  if (hover && !band) pins.push({ x: hover.x, text: clock(ms(hover.x), model.tz) });
+  if (marked && marked.t1 >= bar.t0 && marked.t0 <= bar.t1) pins.push(...timesOf(marked));
+  if (sel && a !== null && b !== null) {
+    if ((fOf(bar, b) - fOf(bar, a)) * width < 36) pins.push({ x: (fOf(bar, a) + fOf(bar, b)) / 2 * width, text: `${clock(a, model.tz)}–${endClock(b, model.reply, model.tz)}` });
+    else pins.push({ x: fOf(bar, a) * width, text: clock(a, model.tz) }, { x: fOf(bar, b) * width, text: endClock(b, model.reply, model.tz) });
+  }
   const by = model.segs.size > 0 && <ByToggle value={barBy} onChange={k => setSettings({ barBy: k })} t={t}/>;
   return <>
     <div ref={box} className={`dt-bar${lens ? ' is-lens' : ''}${door ? ' is-page' : ''}${opened ? ' has-open' : ''}`} data-from={clock(bar.t0, model.tz)} role="group" aria-label={t(['The day in one bar', '一天的总览条'])} style={lens ? { '--k': rgb(KIND[lens]) } as CSSProperties : undefined}>
-      <div className="dt-scrub" aria-hidden="true">
-        {bar.nowF !== null && !hover && !sel && !litTimes.some(x => Math.abs(x.x - nowX) < 34) && <span className="dt-time is-now" style={{ left: `clamp(16px, ${bar.nowF * 100}%, calc(100% - 16px))` }}>{clock(model.now, model.tz)}</span>}
-        {hover && !band && <span className="dt-time" style={edge(hover.x)}>{live?.at}</span>}
-        {litTimes.map((x, i) => <span key={i} className="dt-time" style={edge(x.x)}>{x.text}</span>)}
-        {sel && a !== null && b !== null && (fOf(bar, b) - fOf(bar, a)) * width < 36
-          ? <span className="dt-time" style={edge((fOf(bar, a) + fOf(bar, b)) / 2 * width)}>{clock(a, model.tz)}–{endClock(b, model.reply, model.tz)}</span>
-          : sel && a !== null && b !== null && <><span className="dt-time" style={edge(fOf(bar, a) * width)}>{clock(a, model.tz)}</span><span className="dt-time" style={edge(fOf(bar, b) * width)}>{endClock(b, model.reply, model.tz)}</span></>}
-      </div>
       <div className="dt-trackbox">
         <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
-          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${hit === s.row ? ' is-lift' : ''}${spanned && hot === s.row ? ' is-hot' : ''}`}
+          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${s.hole ? ' is-hole' : ''}${lights(s) ? ' is-hot' : ''}${pulses(s) ? ' is-pulse' : ''}`}
             style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}>
-            {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon={s.icon} size={12}/>}{how !== 'icon' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
+            {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}><Ic icon={s.hole ? 'unknown' : s.icon} size={12}/>{how === 'both' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
           {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
-          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${spanned && hot === x.key ? ' is-hot' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
-            {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}>{how !== 'name' && <Ic icon="event" size={12}/>}{how !== 'icon' && <b>{x.short}</b>}</span>}
+          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${hot === x.key && !door && cursor === null || underEvent === x.key ? ' is-hot' : ''}${flash === x.key ? ' is-pulse' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
+            {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}><Ic icon="event" size={12}/>{how === 'both' && <b>{x.short}</b>}</span>}
           </i>)}
           {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
           <Sweep on={sweep}/>
@@ -329,19 +271,15 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
         <div className="dt-over" aria-hidden="true">
           {sel && a !== null && b !== null && <i className="dt-band" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
           {!sel && ui.filter && a !== null && b !== null && <i className="dt-band is-applied" style={{ left: bx(fOf(bar, a)), width: `${(clamp(fOf(bar, b), 0, 1) - clamp(fOf(bar, a), 0, 1)) * 100}%` }}/>}
-          {[spanned, opened].map((x, i) => x && x.t1 >= bar.t0 && x.t0 <= bar.t1 && <i key={i} className={`dt-bracket${i ? ' is-open' : ''}`} style={x.point ? { left: `calc(${bx(fOf(bar, x.t0))} - 5px)`, width: 10 } : { left: bx(fOf(bar, x.t0)), width: `max(3px, ${(clamp(fOf(bar, x.t1), 0, 1) - clamp(fOf(bar, x.t0), 0, 1)) * 100}%)` }}/>)}
-          {bar.dots.map(d => <i key={d.key} className={`dt-bdot${lens === d.kind ? ' is-on' : ''}`} data-dot={d.key} style={{ left: bx(d.f), '--k': rgb(KIND[d.kind]) } as CSSProperties}/>)}
-          <Stars key={model.reply.date} stars={bar.stars}/>
+          {inBar(hint) && <i className="dt-bracket" style={geo(hint)}/>}
+          <i key={epoch.current} className={`dt-bracket is-open${framed ? '' : ' is-off'}`} style={frame.current?.at ?? { left: '50%', width: 0 }}/>
           {bar.nowF !== null && <i className="dt-nowtick" style={{ left: bx(bar.nowF) }}/>}
-          {hover && !band && <i className="dt-hair" style={{ left: hover.x }}/>}
         </div>
       </div>
       <div className="dt-hours" aria-hidden="true">
-        {hours.map(({ k }) => <span key={k.label} className={k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
+        {hours.map(({ k, px }) => <span key={k.label} className={`${k.f < .02 ? 'is-start' : k.f > .98 ? 'is-end' : ''}${pins.some(x => Math.abs(x.x - px) < PIN_HALF + 10) ? ' is-under' : ''}`} style={{ left: `${k.f * 100}%` }}>{k.label}</span>)}
+        {pins.map((x, i) => <i key={i} className="dt-pin" style={edge(x.x)}>{x.text}</i>)}
         {suns.map(x => <span key={x.kind} className={`dt-sun${x.bare ? ' is-tick' : ''}`} data-sun={x.kind} style={{ left: x.px }}>{!x.bare && <SunHorizon size={11}/>}</span>)}
-      </div>
-      <div ref={card} className={`dt-card${on && !ui.sel && !band ? ' is-on' : ''}`} aria-hidden="true">
-        <div ref={cardIn} className="dt-card-in">{slots.current.at.map((p, i) => <div key={i} className={`dt-slot${i === slots.current.cur ? ' is-cur' : ''}`}>{p && <PeekBody p={p} port={port} t={t}/>}</div>)}</div>
       </div>
       {summary && <div className="dt-card is-range is-on" style={{ transform: `translateX(${left((fOf(bar, summary.a) + fOf(bar, summary.b)) / 2 * width)}px)` }}>
         <div className="dt-card-in"><div className="dt-slot is-cur"><RangeBody s={summary} say={sayRange(model, summary.a, summary.b)} onSay={onSay} t={t} onOnly={() => { ui.setFilter({ a: summary.a, b: summary.b }); ui.setSel(null); }}/></div></div>

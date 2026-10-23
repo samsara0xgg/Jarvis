@@ -1,12 +1,9 @@
-/* The day's bar (DayBar.tsx, ADR 0308): 24 px of black with the day in it. A stay is its place's hue, a way he went a pale hatch, sleep a
-   deep blue; what is not recorded is the track's own white, and what is still to come is fainter and drawn dashed. Words sit inside
-   their stretch (dark ink on a light fill, ink on a dark one); nothing is written above it but the time of the pointer or of now.
-   The day's numbers are the chips under it, and each is a lens. Amber is never used here: it is "waiting on you". */
+/* The day's bar (DayBar.tsx, ADR 0308): 26 px of black with the day in it, the full width of the pane (its pieces are percentages, so any width does). A stay is its place's hue,
+   a way he went a pale hatch, sleep a deep blue; a stretch nothing recorded is a dashed outline with a question mark, and what is still to come is fainter and drawn dashed.
+   Words sit inside their stretch when the name fits, its icon always (dark ink on a light fill, ink on a dark one); nothing is written above the bar, and under it only the hours
+   and, while the pointer is on it, the pointer's minute. The day's numbers are the chips under it, and each is a lens. Amber is never used here: it is "waiting on you". */
 .notch .dt { --ink:238 240 251; }
-.notch .dt-bar { --bar:24px; --scrub:20px; position:relative; display:flex; flex-direction:column; user-select:none; -webkit-user-select:none; }
-.notch .dt-scrub { position:relative; flex:none; height:var(--scrub); }
-.notch .dt-time { position:absolute; bottom:6px; transform:translateX(-50%); font:10px/12px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; white-space:nowrap; color:rgb(var(--ink) / .86); }
-.notch .dt-time.is-now { bottom:7px; color:rgb(var(--now)); }
+.notch .dt-bar { --bar:26px; position:relative; display:flex; flex-direction:column; user-select:none; -webkit-user-select:none; }
 .notch .dt-trackbox { position:relative; flex:none; height:var(--bar); }
 .notch .dt-track { position:absolute; inset:0; overflow:hidden; border-radius:7px; cursor:pointer; touch-action:none; }
 /* the bar as it was, laid over the new one while it fades out (DayBar.tsx); and, while the day is being tidied, a soft band of light that crosses the bar left to right, 1.6 s a pass, clipped by the track */
@@ -15,10 +12,16 @@
 @keyframes dt-sweep { from { transform:translateX(-100%); } to { transform:translateX(250%); } }
 .notch .dt-ground { position:absolute; top:0; bottom:0; left:0; background:rgb(255 255 255 / .06); transition:opacity 150ms; }
 .notch .dt-ground.is-future { right:0; width:auto; background:rgb(255 255 255 / .035); }
-.notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); transition:filter 120ms,opacity 150ms; }
+.notch .dt-seg { position:absolute; top:0; bottom:0; background:rgb(var(--c) / var(--a)); transition:filter var(--motion-fast) linear,opacity 150ms; }
 .notch .dt-seg.is-trip { background:repeating-linear-gradient(45deg, rgb(var(--ink) / .16) 0 2px, transparent 2px 5px), rgb(var(--c) / var(--a)); }
-.notch .dt-seg.is-lift { filter:brightness(1.22); }
-.notch .dt-seg.is-hot,.notch .dt-sched.is-hot { filter:brightness(1.12); }
+.notch .dt-seg.is-hot,.notch .dt-sched.is-hot { filter:brightness(1.18); }
+/* a stretch nothing recorded is a question, not a missing piece of data: a dashed outline and a question mark */
+.notch .dt-seg.is-hole { box-sizing:border-box; border:1px dashed rgb(var(--ink) / .4); border-radius:4px; background:transparent; }
+.notch .dt-seg.is-hole .dt-sl { color:rgb(var(--ink) / .62); }
+.notch .dt-seg.is-hole.is-hot { border-color:rgb(var(--ink) / .7); background:rgb(var(--ink) / .12); filter:none; }
+/* a row with no detail, tapped: its piece flashes with it, 600 ms (DayBar.tsx sees the row's own flash) */
+.notch .dt-seg.is-pulse,.notch .dt-sched.is-pulse { animation:dt-seg-flash 600ms var(--ease-out); }
+@keyframes dt-seg-flash { 0% { filter:brightness(1.7); box-shadow:inset 0 0 0 1.5px rgb(255 255 255 / .95); } 100% { filter:none; box-shadow:inset 0 0 0 1.5px rgb(255 255 255 / 0); } }
 /* the words in a stretch: icon and name, or one of them, 6 px in from each side */
 .notch .dt-sl { position:absolute; inset:0; display:flex; align-items:center; gap:4px; padding-inline:6px; overflow:hidden; font:600 11px/13px -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; white-space:nowrap; color:rgb(var(--ink) / .96); }
 .notch .dt-sl.is-icon { justify-content:center; padding-inline:0; }
@@ -37,38 +40,36 @@
 .notch .dt-bar.is-lens .dt-seg,.notch .dt-bar.is-lens .dt-ground,.notch .dt-bar.is-lens .dt-sched { opacity:.25; }
 .notch .dt-lm { position:absolute; top:0; bottom:0; min-width:2px; border-radius:1px; background:rgb(var(--k)); }
 .notch .dt-lm.is-point { width:3px !important; margin-left:-1.5px; }
-/* over the track, free of its rounding: now, what mattered, the pointer, a row's span, a range */
+/* over the track, free of its rounding: now, the selected row's frame, a range */
 .notch .dt-over { position:absolute; inset:0; pointer-events:none; }
-/* a moment or a short call or talk: a dot on the bar's lower edge at its minute, in its kind's colour, ringed in the ground so it reads over any piece; under a lens the other kinds step back */
-.notch .dt-bdot { position:absolute; top:100%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:rgb(var(--k)); box-shadow:0 0 0 1px rgb(15 15 15); transition:opacity 150ms; }
-.notch .dt-bar.is-lens .dt-bdot:not(.is-on) { opacity:.25; }
 .notch .dt-nowtick { position:absolute; top:-5px; bottom:-5px; width:2px; margin-left:-1px; border-radius:1px; background:rgb(var(--now)); }
-.notch .dt-nowtick::after { content:''; position:absolute; inset:0; border-radius:1px; box-shadow:0 0 6px rgb(var(--now) / .6); animation:dt-breathe 2.4s ease-in-out infinite; }
-@keyframes dt-breathe { 0%,100% { opacity:.5; } 50% { opacity:1; } }
-.notch .dt-lit { position:absolute; top:0; display:grid; place-items:center; width:9px; height:9px; margin:-4.5px 0 0 -4.5px; color:rgb(var(--now)); filter:drop-shadow(0 0 3px rgb(var(--now) / .7)); animation:dt-lit-in 200ms linear; transition:opacity 200ms linear; }
-.notch .dt-lit.is-hers { filter:drop-shadow(0 0 2px rgb(var(--now) / .45)); }
-.notch .dt-lit.is-gone { opacity:0; }
-@media (prefers-reduced-motion:reduce) { .notch .dt-lit { animation-duration:120ms; transition-duration:120ms; } }
-.notch .dt-hair { position:absolute; top:-4px; bottom:-4px; width:1px; margin-left:-.5px; background:rgb(var(--ink) / .7); }
+.notch .dt-nowtick::after { content:''; position:absolute; inset:0; border-radius:1px; box-shadow:0 0 6px rgb(var(--now) / .6); }
 .notch .dt-bracket { position:absolute; top:0; bottom:0; box-sizing:border-box; border:1.5px solid rgb(var(--ink) / .92); border-radius:5px; }
-/* with a detail page up its row's span stays marked; the piece the pointer is on is only hinted */
-.notch .dt-bar.has-open .dt-bracket:not(.is-open) { border-width:1px; border-color:rgb(var(--ink) / .5); }
+/* the selected row's span is framed (3 px clear above and below, 1.5 px); the frame is one piece that glides to the next span over 260 ms and fades when nothing is selected. A door row
+   the pointer is on is only hinted, thinner. */
+.notch .dt-bracket:not(.is-open) { border-width:1px; border-color:rgb(var(--ink) / .5); }
+.notch .dt-bracket.is-open { top:-3px; bottom:-3px; border-radius:6px; animation:dt-frame-in var(--motion-fast) linear; transition:left var(--motion-medium) var(--ease-out), width var(--motion-medium) var(--ease-out), opacity var(--motion-fast) linear; }
+.notch .dt-bracket.is-open.is-off { opacity:0; }
+@keyframes dt-frame-in { from { opacity:0; } }
 .notch .dt-band { position:absolute; top:-3px; bottom:-3px; box-sizing:border-box; border-inline:1px solid rgb(var(--ink) / .5); background:rgb(255 255 255 / .12); }
 .notch .dt-band.is-applied { border-color:rgb(var(--ink) / .3); background:rgb(255 255 255 / .07); }
 .notch .dt-void { position:absolute; top:0; bottom:0; left:0; display:grid; place-items:center; font-size:11px; white-space:nowrap; color:var(--p-faint); pointer-events:none; }
-.notch .dt-hours { position:relative; flex:none; height:14px; margin-top:3px; font:10px/14px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
+.notch .dt-hours { position:relative; flex:none; height:12px; margin-top:4px; font:10px/12px "JetBrains Mono", Menlo, monospace; color:var(--p-faint); }
 .notch .dt-hours span { position:absolute; top:0; transform:translateX(-50%); }
+.notch .dt-hours span.is-under { opacity:0; }
 .notch .dt-hours span.is-start { transform:none; } .notch .dt-hours span.is-end { transform:translateX(-100%); }
 /* the sun's marks: where it comes up and goes down, a hairline from the bar and a little sun on the horizon (no words) */
-.notch .dt-sun { display:grid; place-items:center; width:11px; height:14px; color:rgb(var(--ink) / .5); }
+.notch .dt-sun { display:grid; place-items:center; width:11px; height:12px; color:rgb(var(--ink) / .5); }
 /* where an hour's number is on it, the sun is only a warm tick hanging from the bar */
 .notch .dt-sun.is-tick { width:1px; height:4px; top:-3px; background:rgb(255 224 186 / .8); }
 .notch .dt-sun.is-tick::before { content:none; }
 .notch .dt-sun::before { content:''; position:absolute; left:5px; top:-3px; width:1px; height:5px; background:rgb(var(--ink) / .3); }
 
-/* the card: 280 pt at the pointer, under the bar and its hours (it never cuts through their words), over the list (it never pushes anything);
-   the pointer's own is for reading, a range's has a button */
-.notch .dt-card { position:absolute; left:0; top:calc(var(--scrub) + var(--bar) + 23px); z-index:6; width:280px; opacity:0; visibility:hidden; pointer-events:none; transition:opacity 80ms linear, visibility 0s linear 80ms; }
+/* the pointer's minute, said only while it is on the bar: under it in the hours row, never above the bar; it covers the hour it passes, and comes in over 140 ms */
+.notch .dt-pin { position:absolute; top:0; z-index:1; transform:translateX(-50%); padding:0 4px; border-radius:3px; background:#000; box-shadow:0 0 0 3px #000; font:600 10px/12px "JetBrains Mono", Menlo, monospace; font-style:normal; font-variant-numeric:tabular-nums; white-space:nowrap; color:rgb(var(--ink) / .95); pointer-events:none; animation:dt-frame-in var(--motion-fast) linear; }
+
+/* a range's card (the drag on the bar): 280 pt, under the bar and its hours (it never cuts through their words), over the list (it never pushes anything); it has a button */
+.notch .dt-card { position:absolute; left:0; top:calc(var(--bar) + 22px); z-index:6; width:280px; opacity:0; visibility:hidden; pointer-events:none; transition:opacity 80ms linear, visibility 0s linear 80ms; }
 .notch .dt-card.is-on { opacity:1; visibility:visible; transition:opacity 120ms var(--ease-out); }
 .notch .dt-card.is-range { pointer-events:auto; }
 .notch .dt-card-in { position:relative; box-sizing:border-box; overflow:hidden; padding:10px 12px; border:1px solid rgb(255 255 255 / .08); border-radius:12px; background:rgb(16 18 30); box-shadow:0 10px 28px rgb(0 0 0 / .5);
@@ -83,19 +84,14 @@
 .notch .dt-ch span { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; line-height:16px; font-variant-numeric:tabular-nums; color:var(--p-faint); }
 .notch .dt-cdot { flex:none; box-sizing:border-box; width:8px; height:8px; border-radius:50%; background:rgb(var(--c) / var(--a)); }
 .notch .dt-cdot.is-hollow { border:1px dashed rgb(var(--ink) / .5); background:transparent; }
-.notch .dt-cnote { margin:3px 0 0 15px; font-size:12px; line-height:16px; color:var(--p-muted); }
-.notch .dt-cmark { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12.5px; line-height:18px; color:rgb(var(--now)); }
-.notch .dt-cmark svg { flex:none; }
 .notch .dt-cl { display:flex; flex-direction:column; gap:6px; margin:9px 0 0; padding:9px 0 0; border-top:1px solid rgb(255 255 255 / .06); list-style:none; }
 .notch .dt-cline { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; gap:0 8px; min-height:20px; font-size:12.5px; line-height:18px; }
 .notch .dt-cline.has-pic { grid-template-columns:48px minmax(0,1fr) auto; min-height:48px; }
 .notch .dt-cic { display:grid; place-items:center; width:20px; height:20px; color:var(--p-muted); }
 .notch .dt-thumb { display:block; width:48px; height:48px; border-radius:8px; object-fit:cover; background:rgb(255 255 255 / .06); }
 .notch .dt-ctx { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--p-ink); }
-.notch .dt-cstar { margin-right:5px; vertical-align:-1px; color:rgb(var(--now)); }
 .notch .dt-cside { font-size:11.5px; line-height:16px; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-faint); }
 .notch .dt-cnone { margin:9px 0 0; padding-top:9px; border-top:1px solid rgb(255 255 255 / .06); font-size:12.5px; line-height:18px; color:var(--p-faint); }
-.notch .dt-cfoot { margin:10px 0 0; font-size:11px; line-height:14px; color:var(--p-faint); }
 .notch .dt-cbtns { display:flex; align-items:center; gap:12px; margin-top:10px; }
 .notch .dt-cbtn { height:26px; padding:0 12px; border-radius:var(--radius-control); background:var(--p-ink); font-size:12px; font-weight:600; color:#10131d; }
 .notch .dt-cbtn:hover { background:#fff; }
@@ -161,13 +157,13 @@
 .notch .dt[data-lens="picture"] .dt-row:not([data-lk~="picture"]) { opacity:.35; }
 .notch .dt[data-lens] .dt-sh { opacity:.6; }
 
-/* reduced motion: no slides, glow or follow, only fades */
+/* reduced motion: no slides, glides or flashes, only fades */
 @media (prefers-reduced-motion:reduce) {
-  .notch .dt-nowtick::after { animation:none; }
+  .notch .dt-bracket.is-open { transition:opacity 120ms linear !important; }
   .notch .dt-card-in { transform:none; transition:none; }
   .notch .dt-seg,.notch .dt-sched { transition:none; }
   .notch .dt-sched.is-leaving { transition:opacity 120ms linear !important; }
-  /* style.css turns every transition off under reduced motion; what is only a fade is allowed back: the card's, and its words' (out in 60 ms, in over 120) */
+  /* style.css turns every transition off under reduced motion; what is only a fade is allowed back: the frame's, the card's, and its words' (out in 60 ms, in over 120) */
   .notch .dt-card { transition:opacity 120ms linear, visibility 0s linear 120ms !important; }
   .notch .dt-card.is-on { transition:opacity 120ms linear !important; }
   .notch .dt-slot.is-cur { transition:opacity 120ms linear 60ms !important; }
