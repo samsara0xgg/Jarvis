@@ -16,14 +16,14 @@ enum LifelogVerdict: Equatable {
     case repair
 }
 
-/// Sends closed pieces to the paired brain (PUT /inherent/lifelog/audio/{id}, or /motion/{id} for a ride's device motion) on a background session,
+/// Sends closed pieces to the paired brain (PUT /inherent/lifelog/audio/{id}, /motion/{id} for a ride's device motion, /accel/{id} for the accelerometer) on a background session,
 /// so a piece finishes after the app is suspended or killed. One at a time, oldest first, on Wi-Fi only. A piece is deleted only when the brain answers with the sha256 of the same bytes.
 @MainActor
 @Observable
 final class LifelogUploader {
     static let shared = LifelogUploader()
 
-    /// recordings closed and not yet in the brain, for the settings line (a ride's motion is not a recording he turned on)
+    /// recordings closed and not yet in the brain, for the settings line (a ride's motion and the accelerometer are not recordings he turned on)
     private(set) var waiting = 0
     /// the brain refused this pairing's token; clears by itself when he pairs again
     private(set) var needsRepair = false
