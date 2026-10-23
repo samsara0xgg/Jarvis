@@ -25,7 +25,12 @@ from jarvis.runtime.ledger import LedgerContext, LedgerSettings, ProseSettings
 from jarvis.shared import lang
 from jarvis.state import core_memory, reminders, things
 from jarvis.state.event_log import emit_event, open_event_log
-from jarvis.state.job_ledger import add_application, list_applications
+from jarvis.state.job_ledger import (
+    add_application,
+    application_id,
+    edit_application,
+    list_applications,
+)
 from jarvis.state.ledger import (
     LedgerSources,
     TerminalScreen,
@@ -77,8 +82,8 @@ def test_standing_text_computes_days_job_hunt_and_notes(tmp_path: Path) -> None:
     assert "Job events: application confirmed (Acme Robotics, Co-op Dev, from Pat Lee)" in text
     # Job hunt as of midnight: today's mail (Beta Labs) is not in it, the dated invitation is.
     hunt = job_hunt_text(src, MIDNIGHT)
-    assert "Application confirmed (2): Acme Robotics (Pat Lee), Gamma Inc (Pat Lee)" in hunt
-    assert "Interview mail (1): Delta Corp (Pat Lee)" in hunt
+    assert "Applied (2): Acme Robotics - Co-op Dev (Pat Lee); Gamma Inc - Co-op (Pat Lee)" in hunt
+    assert "Interviewing (1): Delta Corp - Intern (Pat Lee)" in hunt
     assert (
         "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 [upcoming;"
         in hunt
@@ -86,7 +91,9 @@ def test_standing_text_computes_days_job_hunt_and_notes(tmp_path: Path) -> None:
     assert "Beta Labs" not in hunt
     # As of now it counts today's mail too; the standing text carries no job hunt at all.
     now_hunt = job_hunt_text(src, NOW)
-    assert "Interview mail (2): Beta Labs (Pat Lee), Delta Corp (Pat Lee)" in now_hunt
+    assert (
+        "Interviewing (2): Beta Labs - Co-op (Pat Lee); Delta Corp - Intern (Pat Lee)" in now_hunt
+    )
     assert "[Job hunt" not in text
     # This week so far: Mon 10-05 to Wed 10-07 is 1h30m + 0h45m.
     assert "[This week so far · Mon 10-05 to Wed 10-07; today is in Today so far]" in text
@@ -238,7 +245,103 @@ def test_a_store_made_before_the_later_reading_still_gives_the_invitation_line(
         "Delta Corp (Intern): latest dated invitation Fri 2026-10-09 at 14:00-14:30 [upcoming;"
         in hunt
     )
-    assert "Application confirmed (2): Acme Robotics (Pat Lee), Gamma Inc (Pat Lee)" in hunt
+    assert "Applied (2): Acme Robotics - Co-op Dev (Pat Lee); Gamma Inc - Co-op (Pat Lee)" in hunt
+
+
+def _hunt_lines(src: LedgerSources, as_of: datetime) -> dict[str, str]:
+    """Block D's list lines by their label: ``Applied`` -> ``Cedar Ltd - QA; ...``."""
+    lines = {}
+    for line in job_hunt_text(src, as_of).splitlines():
+        found = re.match(r"  (Applied|No reply|Interviewing|Offer|Rejected) \(\d+\): (.*)$", line)
+        if found:
+            lines[found[1]] = found[2]
+    return lines
+
+
+def test_the_job_hunt_lists_are_the_jobs_pages_statuses_after_his_edit(tmp_path: Path) -> None:
+    """ADR 0367: a status he sets on the Jobs page moves the company to that list in block D."""
+    src = ledger_world(tmp_path)  # Gamma Inc, Acme Robotics applied; Beta Labs, Delta Corp invited
+    before = _hunt_lines(src, NOW)
+    assert "Acme Robotics" in before["Applied"]
+    assert "Acme Robotics" not in before["Rejected"]
+    edit_application(src.memory_db, NOW, application_id("Acme Robotics"), {"status": "rejected"})
+
+    after = _hunt_lines(src, NOW)
+
+    assert after["Rejected"] == "Acme Robotics - Co-op Dev (Pat Lee)"
+    assert "Acme Robotics" not in after["Applied"]
+    assert after["Applied"] == "Gamma Inc - Co-op (Pat Lee)"
+    hunt = job_hunt_text(src, NOW)
+    assert "Rejected (1):" in hunt
+    assert "Applied (1):" in hunt
+    assert "4 applications." in hunt
+
+
+def test_the_job_hunt_lists_leave_out_a_hidden_row_and_add_the_ones_he_told_her(
+    tmp_path: Path,
+) -> None:
+    """The count and the lists are the page's: a row he hid is gone, one he told her is in."""
+    src = ledger_world(tmp_path)
+    add_application(src.memory_db, NOW, company="Garnet Co", role="Data Co-op",
+                    applied_at="2026-10-06", source="said")
+    quill = add_application(src.memory_db, NOW, company="Quill Inc", applied_at="2026-10-05")
+    edit_application(src.memory_db, NOW, quill, {"hidden": True})
+
+    lines = _hunt_lines(src, NOW)
+
+    assert lines["Applied"] == (
+        "Acme Robotics - Co-op Dev (Pat Lee); Gamma Inc - Co-op (Pat Lee); Garnet Co - Data Co-op"
+    )
+    assert "Quill" not in job_hunt_text(src, NOW)
+    pages = list_applications(src.memory_db, NOW)
+    assert f"{len(pages)} applications." in job_hunt_text(src, NOW)
+
+
+def test_the_job_hunt_lists_a_platforms_confirmation_under_its_employer(tmp_path: Path) -> None:
+    """A Workable confirmation that names the employer in its subject is that employer's row."""
+    src = ledger_world(tmp_path)
+    write_mail(
+        src.memory_db, "w1", ledger_at(7, 15), kind="receipt", company="Workable",
+        role="QA Co-op", sender_name="Workable", sender_domain="workable.example",
+        subject="Thank you for applying to Nova Foods!",
+    )
+
+    lines = _hunt_lines(src, NOW)
+
+    assert "Nova Foods - QA Co-op" in lines["Applied"]
+    assert "Workable" not in job_hunt_text(src, NOW)
+
+
+def test_the_no_reply_list_is_an_application_that_went_quiet(tmp_path: Path) -> None:
+    """Applied and nothing for three weeks is its own list, as on the Jobs page."""
+    src = ledger_world(tmp_path)
+    write_mail(
+        src.memory_db, "q1", ledger_at(8, 9) - timedelta(days=30), kind="receipt",
+        company="Quiet Corp", role="Intern", sender_name="Kim Reyes",
+        subject="We received your application",
+    )
+
+    lines = _hunt_lines(src, NOW)
+
+    assert lines["No reply"] == "Quiet Corp - Intern (Kim Reyes)"
+    assert "Quiet Corp" not in lines["Applied"]
+
+
+def test_the_job_hunt_of_a_store_job_mail_never_made_is_empty_and_makes_nothing(
+    tmp_path: Path,
+) -> None:
+    """Block D is read every turn, job mail on or off: with no ledger it reads, creates nothing."""
+    memory = tmp_path / "memory.db"
+    open_memory_db(memory).close()
+    src = LedgerSources(memory, tmp_path / "events.db", None, ZONE)
+
+    hunt = job_hunt_text(src, NOW)
+
+    assert "0 applications." in hunt
+    with closing(sqlite3.connect(memory)) as conn:
+        tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master")}
+    assert "job_application" not in tables
+    assert "job_mail" not in tables
 
 
 def test_a_day_that_ran_past_midnight_stops_at_its_real_end_from_five(tmp_path: Path) -> None:
@@ -671,7 +774,7 @@ def test_applications_submitted_counts_each_submission_once_across_three_sources
     ) in line
     assert "Told me or added: Orbit Co (Data Co-op, 10-08); Hand Made Ltd (10-02)." in line
     assert "portal application with no mail and no such page is not visible" in hunt
-    assert "Application confirmed (" in hunt  # the existing lines stay
+    assert "Applied (" in hunt  # the lists stay
 
 
 def test_a_brains_ledger_reads_its_terminals_timesink_and_equals_one_machines(

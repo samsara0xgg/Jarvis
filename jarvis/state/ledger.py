@@ -43,6 +43,7 @@ from jarvis.shared.job_names import company_key, employer_of, is_platform
 from jarvis.state import device_reads, imports, phone_day, places, reminders, things, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
+from jarvis.state.job_ledger import list_applications
 from jarvis.state.things_late import due_is_day, late, when_ms
 
 if TYPE_CHECKING:
@@ -533,6 +534,11 @@ class _Data:
         return self._mail(self.src, self.as_of)
 
     @cached_property
+    def applications(self) -> list[dict[str, Any]]:
+        """The Jobs page's applications as of as_of (ADR 0367): his edits in, hidden out."""
+        return self._applications(self.src, self.as_of)
+
+    @cached_property
     def commits(self) -> list[tuple[datetime, str]]:
         return self._commits(self.src, self.lo, self.as_of)
 
@@ -656,6 +662,18 @@ class _Data:
                 ),
             )
         return out
+
+    @staticmethod
+    def _applications(src: LedgerSources, as_of: datetime) -> list[dict[str, Any]]:
+        """None where job mail never made its tables: the read creates nothing."""
+        with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
+            try:
+                made = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_application'",
+                ).fetchone()
+            except sqlite3.Error:
+                return []
+        return list_applications(src.memory_db, as_of, until=as_of) if made else []
 
     @staticmethod
     def _commits(src: LedgerSources, lo: datetime, as_of: datetime) -> list[tuple[datetime, str]]:
@@ -1105,18 +1123,6 @@ def _weeks(data: _Data) -> str:
     return "\n".join(out)
 
 
-def _by_company(mail: Sequence[_Mail]) -> dict[str, dict[str, list[_Mail]]]:
-    comp: dict[str, dict[str, list[_Mail]]] = defaultdict(
-        lambda: {"receipt": [], "rejection": [], "interview": [], "offer": []},
-    )
-    for m in mail:
-        if m.company:
-            kind = "rejection" if m.cancelled else m.kind
-            if kind in comp[m.company]:
-                comp[m.company][kind].append(m)
-    return comp
-
-
 def _invitation_line(mail: _Mail, as_of: datetime, zone: tzinfo, company: str | None = None) -> str:
     """One interview mail's invitation: its time in ``zone`` from the stored readings (ADR 0379).
 
@@ -1407,42 +1413,59 @@ def _submitted_line(data: _Data) -> str:
     return line
 
 
+# ADR 0367: block D's lists are the Jobs page's statuses, in this order, and the kind of mail whose
+# sender is the contact for each (a status he set by hand with no such mail names any sender).
+_HUNT_LISTS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("applied", "Applied", "receipt"),
+    ("no_reply", "No reply", "receipt"),
+    ("interviewing", "Interviewing", "interview"),
+    ("offer", "Offer", "offer"),
+    ("rejected", "Rejected", "rejection"),
+)
+
+
+def _hunt_entry(app: Mapping[str, Any], mails: Sequence[_Mail], kind: str) -> str:
+    """One application as a list shows it: company, role and the contact who wrote to him."""
+    chosen = [m for m in mails if m.kind == kind and not m.cancelled] or list(mails)
+    contact = next((m.sender for m in chosen if m.sender), "")
+    role = _trim(str(app["role"]), _ROLE_CHARS)
+    name = f"{app['company']} - {role}" if role else str(app["company"])
+    return f"{name} ({contact})" if contact else name
+
+
 def _job_hunt(data: _Data) -> str:
-    comp = _by_company(data.mail)
-
-    def who(company: str, kind: str) -> str:
-        sender = next((m.sender for m in comp[company][kind] if m.sender), "")
-        return f"{company} ({sender})" if sender else company
-
-    applied = sorted(c for c, v in comp.items() if v["receipt"])
-    rejected = sorted(
-        c for c, v in comp.items()
-        if v["rejection"] and not any(m.cancelled for m in v["rejection"])
-    )
-    interview = sorted(c for c, v in comp.items() if v["interview"])
-    offers = sorted(c for c, v in comp.items() if v["offer"])
-    every = sorted(c for c, v in comp.items() if any(v.values()))
+    seen = {m.message_id: m for m in data.mail}
+    apps = sorted(data.applications, key=lambda a: str(a["company"]).casefold())
+    mails = {
+        a["id"]: sorted(
+            (seen[m["message_id"]] for m in a["mails"] if m["message_id"] in seen),
+            key=lambda m: m.at,
+        )
+        for a in apps
+    }
     out = [
-        "[Job hunt as of now · the lists below are from job mail (ATS senders mapped to the real "
-        "company, contact name in brackets); the submitted count also uses submission pages seen "
-        "in the browser and applications he told me or added, so a portal application with no "
-        f"mail and no such page is not visible unless he tells me] {len(every)} companies have "
-        "confirmation, rejection or interview mail.",
+        "[Job hunt as of now · the lists below are his applications by status, the same list the "
+        "Jobs page and the jobs tool show: job mail (a hiring platform's mail filed under its "
+        "employer, contact name in brackets), his own edits to a status, and applications he "
+        "told me or added; the submitted count also uses submission pages seen in the browser, so "
+        f"a portal application with no mail and no such page is not visible unless he tells me] "
+        f"{len(apps)} applications.",
         _submitted_line(data),
-        f"  Application confirmed ({len(applied)}): "
-        f"{', '.join(who(c, 'receipt') for c in applied) or 'none'}",
-        f"  Rejected ({len(rejected)}): "
-        f"{', '.join(who(c, 'rejection') for c in rejected) or 'none'}",
-        f"  Interview mail ({len(interview)}): "
-        f"{', '.join(who(c, 'interview') for c in interview) or 'none'}",
     ]
-    if offers:
-        out.append(f"  Offer mail ({len(offers)}): {', '.join(who(c, 'offer') for c in offers)}")
-    for company in interview:
-        dated = [m for m in comp[company]["interview"] if m.event_at]
+    for status, label, kind in _HUNT_LISTS:
+        held = [a for a in apps if a["status"] == status]
+        if held or status != "offer":
+            listed = "; ".join(_hunt_entry(a, mails[a["id"]], kind) for a in held) or "none"
+            out.append(f"  {label} ({len(held)}): {listed}")
+    for app in (a for a in apps if a["status"] == "interviewing"):
+        dated = [m for m in mails[app["id"]] if m.kind == "interview" and m.event_at
+                 and not m.cancelled]
         if dated:
-            out.append(_invitation_line(max(dated, key=lambda m: m.at), data.as_of, data.zone))
-        out += [_cancel_line(m) for m in data.mail if m.company == company and m.cancelled]
+            out.append(
+                _invitation_line(max(dated, key=lambda m: m.at), data.as_of, data.zone,
+                                 str(app["company"])),
+            )
+        out += [_cancel_line(m) for m in mails[app["id"]] if m.cancelled]
     return "\n".join(out)
 
 
