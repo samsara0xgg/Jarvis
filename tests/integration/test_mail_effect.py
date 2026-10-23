@@ -22,7 +22,7 @@ from tests.support.consent import REPO, tool_results
 from tests.support.gmail_fake import Gmail
 from tests.support.mail_raw import SAM
 from tests.support.model import Call, Reply, ScriptedModel
-from tests.support.plugin_approval import Paths, logged_dicts, say
+from tests.support.plugin_approval import Paths, logged_dicts, press, say
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,10 +30,6 @@ if TYPE_CHECKING:
     from jarvis.decision.llm import LLMClient
 
 NOW = datetime.now(UTC)
-NOT_YET = (
-    "mail: writing and sending a letter is not available yet; tell him you cannot write or send"
-    " mail just now"
-)
 
 
 def _mailbox() -> Gmail:
@@ -104,41 +100,126 @@ def test_an_archive_runs_with_no_card_and_gives_the_undo_that_puts_it_back(
         ctx.conn.close()
 
 
-def test_a_draft_is_a_small_change_and_fails_until_it_is_built(tmp_path: Path) -> None:
-    """A draft is L1, so no card; the stub fails it with a receipt and nothing reaches Gmail."""
+def test_a_draft_is_a_small_change_that_runs_with_no_card_and_gives_its_undo(
+    tmp_path: Path,
+) -> None:
+    """A draft is L1: a Gmail draft and one event, a receipt whose undo names it; none is sent."""
     gmail = _mailbox()
-    llm = ScriptedModel(_call(action="draft", to="Sam", body="Thursday works"), "I can't.")
+    draft = _call(action="draft", to="Sam", subject="Plan", body="Thursday works")
+    llm = ScriptedModel(draft, "Done.")
     ctx = _context(tmp_path, llm, gmail)
     try:
-        assert say(ctx, "write Sam back", "T1") == "I can't."
+        assert say(ctx, "write Sam back", "T1") == "Done."
         assert logged_dicts(ctx.conn, "confirmation.requested") == []
         (proposed,) = logged_dicts(ctx.conn, "action.proposed")
         assert proposed["risk_level"] == "L1"
-        (result,) = tool_results(llm, 1)
-        assert (result["is_error"], result["kind"]) == (True, "impossible")
-        assert result["code"] == "unavailable"
-        assert result["error"] == NOT_YET
-        assert gmail.calls == []
+        (done,) = logged_dicts(ctx.conn, "action.result_observed")
+        (event,) = iter_events_of_types(ctx.conn, ["mail.draft_written"])
+        assert done["receipt"]["undo"] == event.event_uid
+        assert done["receipt"]["object"] == f"draft:{event.event_uid[:8]}"
+        assert gmail.names().count("gmail_createDraft") == 1
+        assert "gmail_sendDraft" not in gmail.names()
     finally:
         ctx.conn.close()
 
 
-def test_a_send_makes_no_card_while_it_cannot_be_completed_and_changes_nothing(
+def _send(**args: Any) -> Reply:  # noqa: ANN401 — the model's arguments.
+    return _call(action="send", **args)
+
+
+def test_a_send_is_completed_into_a_card_and_writes_nothing_until_the_button(
     tmp_path: Path,
 ) -> None:
-    """A send is L3: its completion fails first, so no card, no proposal, a failed receipt."""
+    """The card is asked with the letter made (names found, thread, who is his); Gmail is read."""
     gmail = _mailbox()
-    llm = ScriptedModel(_call(action="send", to="Sam", subject="Re: Plan", body="Yes"), "I can't.")
+    llm = ScriptedModel(_send(to="Sam", subject="Re: Plan", body="Yes"), "Shall I?")
     ctx = _context(tmp_path, llm, gmail)
     try:
-        assert say(ctx, "tell Sam yes", "T1") == "I can't."
+        say(ctx, "tell Sam yes", "T1")
+        (card,) = logged_dicts(ctx.conn, "confirmation.requested")
+        (frozen,) = card["calls"]
+        assert frozen["args_meta"] == {
+            "action": "send", "to": ["Sam Lee <sam@example.com>"], "cc": [], "bcc": [],
+            "subject": "Re: Plan", "body": "Yes", "thread": "", "draft": "", "you": [],
+        }
+        assert frozen["risk_level"] == "L3"
+        assert logged_dicts(ctx.conn, "action.result_observed") == []
+        assert set(gmail.names()) <= {"gmail_search", "gmail_get"}  # nothing written yet
+    finally:
+        ctx.conn.close()
+
+
+def test_the_button_sends_the_frozen_letter_with_one_new_draft_and_one_send(tmp_path: Path) -> None:
+    """Accept: the lease, the leased run, a new draft and its send, once each."""
+    gmail = _mailbox()
+    llm = ScriptedModel(_send(to="Sam", subject="Re: Plan", body="Yes"), "Shall I?", "Sent.")
+    ctx = _context(tmp_path, llm, gmail)
+    try:
+        say(ctx, "tell Sam yes", "T1")
+        (card,) = logged_dicts(ctx.conn, "confirmation.requested")
+        press(ctx, {"confirmation_id": card["confirmation_id"], "decision": "accept"}, "T2")
+        (done,) = logged_dicts(ctx.conn, "action.result_observed")
+        assert done["receipt"]["status"] == "done"
+        assert done["receipt"]["object"] == "mail:d1"
+        assert [n for n in gmail.names() if n in {"gmail_createDraft", "gmail_sendDraft"}] == [
+            "gmail_createDraft", "gmail_sendDraft",
+        ]
+        assert gmail.of("gmail_createDraft") == [
+            {"to": "sam@example.com", "subject": "Re: Plan", "body": "Yes"},
+        ]
+    finally:
+        ctx.conn.close()
+
+
+def test_a_letter_he_edits_on_the_card_is_the_letter_that_goes(tmp_path: Path) -> None:
+    """The Mac's edit of subject and body re-freezes the call; the send holds the edit."""
+    gmail = _mailbox()
+    llm = ScriptedModel(_send(to="Sam", subject="Re: Plan", body="Yes"), "Shall I?", "Sent.")
+    ctx = _context(tmp_path, llm, gmail)
+    try:
+        say(ctx, "tell Sam yes", "T1")
+        (card,) = logged_dicts(ctx.conn, "confirmation.requested")
+        edits = {"body": "Yes, at noon.", "subject": "Re: Plan 2"}
+        press(ctx, {
+            "confirmation_id": card["confirmation_id"], "decision": "accept", "edits": edits,
+        }, "T2")
+        assert [c["subject"] for c in gmail.of("gmail_createDraft")] == ["Re: Plan 2"]
+        assert gmail.of("gmail_createDraft")[0]["body"] == "Yes, at noon."
+        assert len(gmail.of("gmail_sendDraft")) == 1
+        revised = logged_dicts(ctx.conn, "confirmation.requested")[-1]["calls"][0]["args_meta"]
+        assert (revised["subject"], revised["body"]) == ("Re: Plan 2", "Yes, at noon.")
+    finally:
+        ctx.conn.close()
+
+
+def test_a_refused_card_sends_nothing_and_writes_nothing(tmp_path: Path) -> None:
+    """Reject: no draft, no send."""
+    gmail = _mailbox()
+    llm = ScriptedModel(_send(to="Sam", subject="Re: Plan", body="Yes"), "Shall I?", "OK.")
+    ctx = _context(tmp_path, llm, gmail)
+    try:
+        say(ctx, "tell Sam yes", "T1")
+        (card,) = logged_dicts(ctx.conn, "confirmation.requested")
+        press(ctx, {"confirmation_id": card["confirmation_id"], "decision": "reject"}, "T2")
+        assert logged_dicts(ctx.conn, "action.result_observed") == []
+        assert set(gmail.names()) <= {"gmail_search", "gmail_get"}
+    finally:
+        ctx.conn.close()
+
+
+def test_a_name_that_matches_two_people_makes_no_card_and_asks_him_which(tmp_path: Path) -> None:
+    """The completion fails with needs_him naming both; nothing is proposed, nothing written."""
+    gmail = _mailbox()
+    gmail.add("wu", "Notes", sender="Sam Wu <sam.wu@example.org>", at=NOW - timedelta(days=4))
+    llm = ScriptedModel(_send(to="Sam", subject="Re: Plan", body="Yes"), "Which Sam?")
+    ctx = _context(tmp_path, llm, gmail)
+    try:
+        assert say(ctx, "tell Sam yes", "T1") == "Which Sam?"
         assert logged_dicts(ctx.conn, "confirmation.requested") == []
         assert logged_dicts(ctx.conn, "action.proposed") == []
         (result,) = tool_results(llm, 1)
-        assert (result["is_error"], result["kind"]) == (True, "impossible")
-        assert result["code"] == "unavailable"
-        assert result["error"] == NOT_YET
-        assert result["receipt"].startswith("r")
-        assert gmail.calls == []
+        assert (result["is_error"], result["kind"]) == (True, "needs_him")
+        assert "Sam Wu <sam.wu@example.org>" in result["error"]
+        assert set(gmail.names()) <= {"gmail_search", "gmail_get"}
     finally:
         ctx.conn.close()

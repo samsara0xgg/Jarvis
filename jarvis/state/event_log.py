@@ -1582,6 +1582,28 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=("undoes",),
         schema_version=1,
     ),
+    # A mail draft in his Gmail (ADR 0366). `mail.draft_written` holds the draft's Gmail ids, the
+    # conversation it is in and the letter, so a send from any device and the Dashboard's mail
+    # page can name it; `mail.draft_closed` says how it ended: `replaced` by a revision,
+    # `discarded` (its undo, naming the row it reverses in `undoes`) or `sent`. A draft is open
+    # until a closing row names it; `in_drafts` is true when Gmail would not move a replaced or
+    # discarded draft to Trash, so it is still there.
+    EventTypeSchema(
+        event_type="mail.draft_written",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("draft_id", "message_id", "thread_id", "letter"),
+        optional_payload=("action_id", "replaces", "reply_to"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="mail.draft_closed",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("draft_id", "how"),
+        optional_payload=("action_id", "undoes", "in_drafts", "message_id"),
+        schema_version=1,
+    ),
     # A followed bus ride (ADR 0224): the ride is a fold over these types (`jarvis.state.rides`).
     # `started` is his tap or his words (the actor is him); the watch is the model's reading of
     # "I'm heading out"; the question, the warning and the end are the daemon's own bookkeeping.

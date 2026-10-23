@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.decision import CompletionRefused
 from jarvis.decision.llm import ChatResult
 from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.mail_tool import build_mail_tool
@@ -28,7 +27,8 @@ from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
-from tests.support.gmail_fake import Gmail
+from tests.support.gmail_fake import SENT, Gmail
+from tests.support.mail_rig import ME, SAM
 from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
@@ -226,8 +226,10 @@ def _page(
     return TestClient(app), model
 
 
-def test_the_pages_send_asks_the_mail_tool_and_says_why_it_cannot_yet(tmp_path: Path) -> None:
-    """The page's send is a ``mail`` send for the card; until ADR 0366 it is refused, no card."""
+def test_the_pages_send_asks_the_mail_tool_for_a_card_that_holds_the_letter_made(
+    tmp_path: Path,
+) -> None:
+    """The page's send is a ``mail`` send: completed (reply, recipients, thread), then a card."""
     log = tmp_path / "events.db"
     open_event_log(log).close()
     view = ViewState()
@@ -237,18 +239,26 @@ def test_the_pages_send_asks_the_mail_tool_and_says_why_it_cannot_yet(tmp_path: 
         ("America/Vancouver", ZoneInfo("America/Vancouver")), None, None, view, None,
     )
     registry = build_default_registry()
-    registry.register(*build_mail_tool(Mailbox(Gmail(now=datetime.now(UTC)).tool)))
+    gmail = Gmail(now=datetime.now(UTC))
+    gmail.add("sent0", "Hello", sender=ME, to=SAM, labels=SENT, at=datetime.now(UTC))
+    gmail.add("plain", "Lunch", sender=SAM, to=ME, thread="tl", at=datetime.now(UTC))
+    registry.register(*build_mail_tool(Mailbox(gmail.tool)))
     runtime = SimpleNamespace(
         runtime_paths=SimpleNamespace(event_log=log, artifacts_root=tmp_path),
         tool_registry=registry,
         config=SimpleNamespace(confirmation=SimpleNamespace(ttl_ms=600_000)),
     )
-    with pytest.raises(CompletionRefused, match="not available yet") as refused:
-        _send_draft(runtime, home, drafts, "plain", "Re: Lunch", "Thursday works.")  # type: ignore[arg-type]
-    assert (refused.value.code, refused.value.kind) == ("unavailable", "impossible")
+    _send_draft(runtime, home, drafts, "plain", "Re: Lunch", "Thursday works.")  # type: ignore[arg-type]
     assert drafts.get("plain") is not None  # his edit is kept
     with closing(open_event_log(log)) as conn:
-        assert list(iter_events_of_types(conn, ["confirmation.requested"])) == []
+        (card,) = [one.payload for one in iter_events_of_types(conn, ["confirmation.requested"])]
+    (frozen,) = card["calls"]
+    assert frozen["args_meta"] == {
+        "action": "send", "to": ["deals@shop.example"], "cc": [], "bcc": [],
+        "subject": "Re: Lunch", "body": "Thursday works.", "thread": "tl", "draft": "",
+        "you": [],
+    }
+    assert [name for name in gmail.names() if name.startswith(("gmail_create", "gmail_send"))] == []
 
 
 @pytest.mark.parametrize(("name", "layout"), [("plain", "text"), ("table", "html")])

@@ -221,3 +221,52 @@ def test_his_own_addresses_are_the_from_of_his_sent_mail_kept_for_a_day() -> Non
     assert len(gmail.calls) == calls
     box.own(gmail.now + timedelta(hours=25))
     assert len(gmail.calls) > calls
+
+
+def test_the_address_he_sends_from_most_is_the_one_me_means_and_a_tie_goes_to_the_newer() -> None:
+    """``me`` is the most used From of his sent mail; none sent, none known."""
+    gmail = Gmail()
+    gmail.add("a1", "One", sender="Allen <old@example.com>", to=ALEX, labels=SENT,
+              at=gmail.now - timedelta(days=9))
+    gmail.add("a2", "Two", sender="Allen <old@example.com>", to=ALEX, labels=SENT,
+              at=gmail.now - timedelta(days=8))
+    gmail.add("b1", "Three", sender="Allen <new@example.com>", to=ALEX, labels=SENT,
+              at=gmail.now - timedelta(days=1))
+    box = Mailbox(gmail.tool)
+    assert box.me(gmail.now) == "old@example.com"
+    gmail.add("b2", "Four", sender="Allen <new@example.com>", to=ALEX, labels=SENT,
+              at=gmail.now - timedelta(hours=1))
+    assert Mailbox(gmail.tool).me(gmail.now) == "new@example.com"  # two each: the newer
+    assert Mailbox(Gmail().tool).me(gmail.now) == ""
+
+
+def test_a_draft_is_created_with_bare_addresses_and_a_thread_and_sent_by_its_id() -> None:
+    """``gmail_createDraft`` takes comma-joined addresses and ``threadId``; its ids come back."""
+    gmail = Gmail()
+    gmail.add("t1", "Plan", sender=ALEX, thread="tp")
+    box = Mailbox(gmail.tool)
+    made = box.draft(
+        to=["a@example.com", "b@example.com"], cc=["c@example.com"], bcc=[], subject="Re: Plan",
+        body="Yes.", thread="tp",
+    )
+    assert (made.id, made.message, made.thread) == ("r1", "d1", "tp")
+    assert gmail.of("gmail_createDraft") == [{
+        "to": "a@example.com, b@example.com", "cc": "c@example.com", "subject": "Re: Plan",
+        "body": "Yes.", "threadId": "tp",
+    }]
+    assert box.send_draft(made.id) == "d1"
+    assert gmail.of("gmail_sendDraft") == [{"draftId": "r1"}]
+
+
+def test_a_send_is_sent_only_when_gmail_says_so_and_a_trash_that_fails_is_false() -> None:
+    """No id in the answer is an error; ``trash`` reports a refusal as False, not as an error."""
+    gmail = Gmail()
+    gmail.add("t1", "Plan", sender=ALEX, thread="tp")
+    box = Mailbox(gmail.tool)
+    gmail.fail["gmail_sendDraft"] = "Backend Error"
+    with pytest.raises(ToolError, match="Backend Error"):
+        box.send_draft("r1")
+    assert box.trash("t1") is True
+    assert "TRASH" in gmail.labels("t1")
+    gmail.fail["gmail_modify"] = "Insufficient permissions"
+    assert box.trash("t1") is False

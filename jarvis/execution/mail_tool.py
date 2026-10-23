@@ -6,8 +6,9 @@ message id always works. The tool composes three modules: ``mail_gmail`` (the se
 messages, headers kept by id), ``mail_lists`` (his words as one Gmail query, exact counts, who
 wrote last) and ``mail_reads`` (a mail, an attachment and a conversation read in parts). An
 archive removes Gmail's inbox label, writes one ``mail.inbox_changed`` event and gives the id
-that puts the mails back. ``draft`` and ``send`` are ADR 0366's: they are in the schema and fail
-until it is built (see :data:`_STUBBED`).
+that puts the mails back. A ``draft`` is a Gmail draft, recorded in the event log (``mail_letters``;
+recipients are named or found in his mail by ``mail_people``); ``send`` sends a draft or a letter,
+and its completion (ADR 0361) turns names, a reply and a draft into the letter the card shows.
 
 Layer rules: execution; ``jarvis.state`` for the event log.
 """
@@ -21,8 +22,17 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution import mail_bills, mail_lists, mail_reads, speakable
+from jarvis.execution import (
+    mail_bills,
+    mail_letters,
+    mail_lists,
+    mail_people,
+    mail_reads,
+    speakable,
+)
 from jarvis.execution.mail_gmail import Hit
+from jarvis.execution.mail_letters import Cause, Letter, Letters
+from jarvis.execution.mail_people import People
 from jarvis.execution.paragraphs import PART_CHARS
 from jarvis.execution.tools import Receipted, Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
@@ -33,6 +43,7 @@ from jarvis.state.mail_bill import Seen, mail_facts
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from datetime import datetime, tzinfo
+    from sqlite3 import Connection
 
     from jarvis.execution.mail_gmail import Mailbox, Read
     from jarvis.execution.mail_lists import Ask, Waiting
@@ -42,44 +53,40 @@ if TYPE_CHECKING:
 
 _DESCRIPTION: Final = (
     "Use for any question about his mail: what came, what a mail says, what is waiting on his"
-    " reply, a file attached to one, and taking mail out of his inbox. His job applications are"
-    " jobs's and his schedule is schedule's. Returns numbered rows (sender, time, subject, the"
-    " mail's own opening line, files, unread) or one mail's text, in parts when long; a row's"
-    " number works until the next listing, a message id always."
+    " reply, a file attached to one, taking mail out of his inbox, and writing a reply or a new"
+    " letter. His job applications are jobs's and his schedule is schedule's. Returns numbered"
+    " rows (sender, time, subject, the mail's own opening line, files, unread), one mail's text,"
+    " in parts when long, or a letter as it will go; a row's number works until the next listing,"
+    " a message id always."
 )
 _ACTIONS: Final = ("list", "search", "read", "thread", "attachment", "draft", "send", "archive")
 _ACTION_TEXT: Final = (
     "list (default): his unread inbox, or the mail he received narrowed by the fields below."
     " search: all his mail; a single match comes back read. read: a mail's text. thread: a"
     " conversation, oldest first. attachment: one file's text. archive: take mails out of his"
-    " inbox, or put them back with undo. draft, send: writing a letter and sending it; not"
-    " available yet."
-)
-_STUBBED: Final = frozenset({"draft", "send"})
-"""The actions ADR 0366 builds. Until it does they fail with :data:`_NOT_YET`; the plan is below.
-
-Part 6 plugs in at three places: :meth:`_Mail.run` hands these actions to their handlers instead
-of raising; :func:`_effect` already says what each is (a draft is L1 with an undo, a send L3);
-and :func:`_complete` turns a send's names, reply and draft into the full letter before the
-card is made. The parameters they take (``to``, ``cc``, ``bcc``, ``subject``, ``body``,
-``reply_to``, ``reply_all``, ``replaces``, ``draft``) join :data:`_TAKEN` then.
-"""
-_NOT_YET: Final = (
-    "mail: writing and sending a letter is not available yet; tell him you cannot write or send"
-    " mail just now"
+    " inbox, or put them back with undo. draft: write a letter or reply to his Gmail drafts, or"
+    " discard one with undo. send: send a letter or a draft."
 )
 _TAKEN: Final[Mapping[str, tuple[str, ...]]] = {
     "query": ("list", "search"),
     "when": ("list", "search"),
     "from": ("list", "search"),
-    "to": ("list", "search"),
+    "to": ("list", "search", "draft", "send"),
+    "cc": ("draft", "send"),
+    "bcc": ("draft", "send"),
+    "subject": ("draft", "send"),
+    "body": ("draft", "send"),
+    "reply_to": ("draft", "send"),
+    "reply_all": ("draft", "send"),
+    "replaces": ("draft",),
+    "draft": ("send",),
     "unread": ("list", "search"),
     "waiting": ("list",),
     "page": ("list", "search", "read", "thread", "attachment"),
     "looking_for": ("read", "attachment"),
     "message": ("read", "thread", "attachment", "archive"),
     "file": ("attachment",),
-    "undo": ("archive",),
+    "undo": ("archive", "draft"),
 }
 """Each argument and the actions that take it. One an action does not take is an error."""
 _ABOUT: Final[Mapping[str, str]] = {
@@ -89,7 +96,21 @@ _ABOUT: Final[Mapping[str, str]] = {
         " Not Gmail dates."
     ),
     "from": "Who sent it, as he said it: a name or an address.",
-    "to": "Who it went to, as he said it: a name or an address.",
+    "to": (
+        "Who it went to, or who the letter goes to, as he said it: a name or an address, me for"
+        " his own. draft and send take several as a list, and find a name in his mail."
+    ),
+    "cc": "As to: who also gets the letter.",
+    "bcc": "As to: who gets it unseen.",
+    "subject": "A reply has one already; give it only to change it.",
+    "body": "The letter's text.",
+    "reply_to": (
+        "The mail this answers, a row number or a message id: goes in its thread, to its"
+        " reply-to address or sender."
+    ),
+    "reply_all": "True: also to the others on the mail it answers.",
+    "replaces": "An earlier draft's number: this one takes its place and keeps what is not given.",
+    "draft": "A draft's number, instead of a letter.",
     "unread": "True: only unread mail.",
     "waiting": (
         "True: only conversations where someone else wrote last and is waiting on him, over the"
@@ -108,10 +129,16 @@ _ABOUT: Final[Mapping[str, str]] = {
         " to 50, as 1,2,3 or 1-3."
     ),
     "file": "The attachment's number or name, as read listed it.",
-    "undo": "The undo id an earlier archive gave: puts those mails back in his inbox.",
+    "undo": "The undo id an earlier archive or draft gave: puts the mails back, or discards it.",
 }
-_TYPES: Final = {"unread": "boolean", "waiting": "boolean", "page": "integer"}
-_FLAGS: Final = frozenset({"unread", "waiting"})
+_TYPES: Final = {
+    "unread": "boolean", "waiting": "boolean", "reply_all": "boolean", "page": "integer",
+}
+_FLAGS: Final = frozenset({"unread", "waiting", "reply_all"})
+_RECIPIENTS: Final = ("to", "cc", "bcc")
+_LETTER: Final = ("to", "cc", "bcc", "subject", "body", "reply_to", "reply_all")
+"""What a letter is made of: a send names a draft or these, not both."""
+_WRITING: Final = frozenset({"draft", "send"})
 
 
 def _properties() -> dict[str, Any]:
@@ -171,15 +198,6 @@ def _effect(args: Mapping[str, Any]) -> RiskLevel:
     return _EFFECTS.get(str(args.get("action")), "L0")
 
 
-def _complete(_args: Mapping[str, Any], _ctx: ToolContext) -> Mapping[str, Any]:
-    """The full arguments of a call that needs a card (ADR 0361): only a send does.
-
-    Until ADR 0366 builds it a send cannot be completed, so it fails here with no card; the
-    completion that turns names, a reply and a draft into the letter replaces this.
-    """
-    raise ToolError(_NOT_YET, code="unavailable", kind="impossible")
-
-
 # --- the arguments -----------------------------------------------------------------------------
 
 
@@ -199,6 +217,16 @@ def _message(value: object) -> str:
     if isinstance(value, list | tuple):
         return ",".join(_text(one, "message") for one in value)
     return _text(value, "message")
+
+
+def _body(value: object) -> str:
+    """The letter's text as given: its line breaks and spacing kept, a Windows break made one."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        msg = "mail: body must be text"
+        raise ToolError(msg, code="invalid_arguments")
+    return value.replace("\r\n", "\n").strip()
 
 
 def _flag(value: object, name: str) -> bool:
@@ -237,6 +265,12 @@ def _arguments(args: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
             empty = value == 1
         elif name in _FLAGS:
             value = _flag(raw, name)
+            empty = not value
+        elif name in _RECIPIENTS and action in _WRITING:
+            value = mail_people.split(raw)
+            empty = not value
+        elif name == "body":
+            value = _body(raw)
             empty = not value
         else:
             value = _message(raw) if name == "message" else _text(raw, name)
@@ -402,14 +436,19 @@ class _Mail:
         self._box = box
         self._lock = threading.Lock()
         self._listing: _Listing | None = None
+        self._letters = Letters(box, People(box))
 
     def run(self, args: Mapping[str, Any], ctx: ToolContext) -> Receipted:
         """Check the arguments, then do the action; a failure of Gmail's is already worded."""
-        if _text(args.get("action"), "action") in _STUBBED:
-            raise ToolError(_NOT_YET, code="unavailable", kind="impossible")  # ADR 0366 plugs in
+        if _completed(args):  # a send the card froze: its letter, already made
+            return self._send(args, ctx)
         action, given = _arguments(args)
         if action in {"list", "search"}:
             return self._list(given, ctx, searching=action == "search")
+        if action == "draft":
+            return self._discard(given, ctx) if "undo" in given else self._draft(given, ctx)
+        if action == "send":
+            return self._send(self._completion(given, ctx), ctx)
         if action == "archive" and "undo" in given:
             return self._put_back(given, ctx)
         if "message" not in given:
@@ -780,19 +819,223 @@ class _Mail:
         )
 
 
+    # --- draft and send ------------------------------------------------------------------------
+
+    def complete(self, args: Mapping[str, Any], ctx: ToolContext) -> Mapping[str, Any]:
+        """The full arguments of a call that needs a card (ADR 0361): a send's letter, made.
+
+        Names are found in his mail, a reply gets its recipients, subject and thread, and a draft
+        its letter; it only reads. Any other call is as it was given.
+        """
+        if _text(args.get("action"), "action") != "send":
+            return dict(args)
+        action, given = _arguments(args)
+        return self._completion(given, ctx) if action == "send" else dict(args)
+
+    def _cause(self, ctx: ToolContext) -> Cause:
+        return Cause(ctx.action_id, _get_running_event_uid(ctx.conn, ctx.action_id))
+
+    def _compose(
+        self, given: Mapping[str, Any], ctx: ToolContext, action: str, *, replied: str = "",
+    ) -> mail_letters.Composed:
+        """The letter ``given`` describes; ``replied`` is the mail a revision already answers."""
+        if "reply_to" in given:
+            (replied,) = self._targets(given["reply_to"], limit=1, action=action)
+        return self._letters.compose(given, replied, ctx.clock.now(), ctx.clock.zone, action)
+
+    @staticmethod
+    def _open_draft(conn: Connection, given: str, doing: str) -> mail_letters.Written:
+        held = mail_letters.drafts(conn)
+        one = mail_letters.named(held, given)
+        if not one.is_open:
+            msg = f"mail: draft {one.short} {mail_letters.how_it_ended(one, held)}; {doing}"
+            raise ToolError(msg, code="invalid_arguments")
+        return one
+
+    def _completion(self, given: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        """A send's flat completed arguments: the letter, with the draft it comes from."""
+        if "draft" in given:
+            if any(name in given for name in _LETTER):
+                msg = "mail: send takes draft=<number>, or a letter (to, subject, body), not both"
+                raise ToolError(msg, code="invalid_arguments")
+            one = self._open_draft(ctx.conn, given["draft"], "nothing was sent")
+            letter, short = one.letter, one.short
+            who = self._letters.parse(letter, ctx.clock.now())
+        else:
+            composed = self._compose(given, ctx, "send")
+            letter, who, short = composed.letter, composed.who, ""
+        return {
+            "action": "send", "to": list(letter.to), "cc": list(letter.cc),
+            "bcc": list(letter.bcc), "subject": letter.subject, "body": letter.body,
+            "thread": letter.thread, "draft": short, "you": mail_people.own_marks(who),
+        }
+
+    def _drafted(
+        self, composed: mail_letters.Composed, written: mail_letters.Written,
+        old: mail_letters.Written | None, *, left: bool,
+    ) -> Receipted:
+        """What a written draft says: the letter as it will go, its number, and what it replaced."""
+        letter, short = composed.letter, written.short
+        out: dict[str, Any] = {"to": composed.marked(letter.to)}
+        for key, group in (("cc", letter.cc), ("bcc", letter.bcc)):
+            if group:
+                out[key] = composed.marked(group)
+        shown = letter.body if len(letter.body) <= mail_letters.BODY_SHOWN else (
+            letter.body[: mail_letters.BODY_SHOWN - 1] + "…"
+        )
+        out |= {"subject": letter.subject, "body": shown}
+        if composed.answers:
+            out["answers"] = composed.answers
+        said = f"Wrote draft {short} in his Gmail drafts; nothing was sent."
+        for note in composed.notes:
+            said += f" {note}"
+        if old is not None:
+            said += f" It replaces draft {old.short}" + (
+                ", which is still in his Drafts: Gmail would not move it to Trash." if left
+                else ", which was moved to Trash."
+            )
+            out["replaced"] = old.short
+        if shown != letter.body:
+            said += (
+                f" The body shown is cut at {mail_letters.BODY_SHOWN} characters; the draft has"
+                " it all."
+            )
+        said += (
+            f" Send it with action=send and draft={short}; discard it with action=draft and"
+            f" undo={short}."
+        )
+        called = _called(composed.who)
+        return Receipted(
+            {"summary": said, "draft": short, **out, "undo": short},
+            Receipt(
+                "done", reads_only=False,
+                line=f"wrote a draft to {called}: {speakable.cut(letter.subject, _SUBJECT_CHARS)}",
+                object=f"draft:{short}", undo=written.uid,
+            ),
+        )
+
+    def _draft(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Write a Gmail draft: a new letter, a reply, or a revision of an earlier draft."""
+        old, replied, said = None, "", dict(given)
+        if "replaces" in given:
+            old = self._open_draft(ctx.conn, given["replaces"], "there is nothing to replace")
+            kept = old.letter
+            said.pop("replaces")
+            for key, value in (
+                ("to", kept.to), ("cc", kept.cc), ("bcc", kept.bcc), ("subject", kept.subject),
+                ("body", kept.body),
+            ):
+                said.setdefault(key, list(value) if isinstance(value, tuple) else value)
+            replied = old.reply_to
+        composed = self._compose(said, ctx, "draft", replied=replied)
+        written, left = self._letters.write(
+            ctx.conn, composed, self._cause(ctx), replaces=old,
+        )
+        return self._drafted(composed, written, old, left=left)
+
+    def _discard(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """A draft's undo: its message moves to Trash, once."""
+        if len(given) > 1:
+            msg = "mail: give undo alone to discard a draft"
+            raise ToolError(msg, code="invalid_arguments")
+        held = mail_letters.drafts(ctx.conn)
+        one = mail_letters.named(held, str(given["undo"]))
+        if not one.is_open:
+            said = f"Draft {one.short} {mail_letters.how_it_ended(one, held)}; nothing changed."
+            return Receipted(
+                {"summary": said, "discarded": ""},
+                Receipt(
+                    "done", reads_only=False, line=f"draft {one.short} was closed already",
+                    object=f"draft:{one.short}",
+                ),
+            )
+        if not self._letters.discard(ctx.conn, one, self._cause(ctx)):
+            msg = (
+                f"mail: Gmail would not move draft {one.short} to Trash, so it is still in his"
+                " Drafts; tell him to delete it there"
+            )
+            raise ToolError(msg, code="unavailable", kind="impossible")
+        return Receipted(
+            {"summary": f"Discarded draft {one.short}: moved to Trash.", "discarded": one.short},
+            Receipt(
+                "done", reads_only=False, line=f"discarded draft {one.short}",
+                object=f"draft:{one.short}",
+            ),
+        )
+
+    def _send(self, done: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Send the completed letter: its draft when unchanged, else a new draft in its place."""
+        letter, short = _finished(done)
+        who = self._letters.parse(letter, ctx.clock.now())
+        problem = Letters.problem(who, letter.subject, letter.body, "send")
+        if problem or any(not mail_people.valid(one.address) for one in who):
+            msg = problem or "mail: a recipient is not an address"
+            raise ToolError(msg, code="invalid_arguments")
+        draft = None
+        if short:
+            draft = mail_letters.named(mail_letters.drafts(ctx.conn), short)
+        sent = self._letters.send(ctx.conn, letter, draft, self._cause(ctx))
+        called = _called(who)
+        return Receipted(
+            {
+                "summary": f'Sent "{letter.subject}" to {called}.',
+                "sent": sent, "to": [one.marked for one in who[: len(letter.to)]],
+            },
+            Receipt(
+                "done", reads_only=False,
+                line=f"sent {speakable.cut(letter.subject, _SUBJECT_CHARS)} to {called}",
+                object=f"mail:{sent}",
+            ),
+        )
+
+
+def _completed(args: Mapping[str, Any]) -> bool:
+    """A send in the form a completion makes: flat, with the thread it answers and who is his."""
+    return args.get("action") == "send" and "thread" in args and "you" in args
+
+
+def _strings(done: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    value = done.get(key)
+    if not isinstance(value, list) or not all(isinstance(one, str) for one in value):
+        msg = f"mail: {key} must be a list of recipients"
+        raise ToolError(msg, code="invalid_arguments")
+    return tuple(value)
+
+
+def _finished(done: Mapping[str, Any]) -> tuple[Letter, str]:
+    """The letter in a completed send, and the number of the draft it came from."""
+    subject, body = done.get("subject"), done.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        msg = "mail: subject and body must be text"
+        raise ToolError(msg, code="invalid_arguments")
+    letter = Letter(
+        _strings(done, "to"), _strings(done, "cc"), _strings(done, "bcc"), subject, body,
+        str(done.get("thread") or ""),
+    )
+    return letter, str(done.get("draft") or "")
+
+
+def _called(who: Sequence[mail_people.Who]) -> str:
+    """Up to three recipients by name (else address), with how many more."""
+    names = [one.name or one.address for one in who[:_NAMED]]
+    more = f" and {len(who) - _NAMED} more" if len(who) > _NAMED else ""
+    return ", ".join(names) + more
+
+
 def build_mail_tool(box: Mailbox) -> tuple[Tool, ...]:
     """``mail`` over his Gmail: ``box`` is the one :class:`Mailbox` the runtime wired."""
+    mail = _Mail(box)
     return (
         Tool(
             name="mail",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Mail(box).run,
+            handler=mail.run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L3",
             read_only=False,
             effect=_effect,
-            complete=_complete,
+            complete=mail.complete,
             supersedes=_SUPERSEDES,
         ),
     )

@@ -10,10 +10,16 @@ the server's tools the way ``Home.gmail`` receives them:
 - ``gmail_get``: ``minimal`` and ``raw`` are Gmail's own object (``labelIds``, ``sizeEstimate``,
   ``internalDate``; ``raw`` base64url); ``metadata`` and ``full`` are the server's own shape, which
   carries no ``labelIds``, so nothing may rely on them there.
-- ``gmail_batchModify``: label changes.
+- ``gmail_batchModify`` and ``gmail_modify``: label changes (a message in Trash leaves search).
+- ``gmail_createDraft`` (``to``, ``cc``, ``bcc``, ``subject``, ``body``, ``threadId``): a message
+  from ``me`` labelled DRAFT; with ``threadId`` it carries ``In-Reply-To`` and ``References`` of
+  the thread's last message, as the real server sets them. It answers ``{"id", "message": {"id",
+  "threadId"}}``. ``gmail_sendDraft`` (``draftId``) turns the draft's message into a SENT one and
+  answers Gmail's message object.
 
-Any other tool is an ``AssertionError``: a test that expects no other Gmail call gets that.
-Every address is on example.com.
+``fail`` makes a tool answer an error; ``lose`` makes it do its work and lose the answer. Any
+other tool is an ``AssertionError``: a test that expects no other Gmail call gets that. Every
+address is on example.com.
 """
 
 from __future__ import annotations
@@ -97,8 +103,17 @@ class Gmail:
     """``format=raw`` answers without a ``raw`` key (a shape the server may have)."""
     barrier: threading.Barrier | None = None
     """Every ``full`` read waits for the others: only a parallel fetch gets past."""
+    me: str = "Allen <allen@example.com>"
+    """Who a draft is from."""
+    fail: dict[str, str] = field(default_factory=dict)
+    """Tool name -> the error that tool answers with, having done nothing."""
+    lose: set[str] = field(default_factory=set)
+    """Tools that do their work but whose answer is lost: the call answers an error."""
     messages: dict[str, Stored] = field(default_factory=dict)
+    drafts: dict[str, str] = field(default_factory=dict)
+    """Draft id -> the id of its message."""
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    _made: int = field(default=0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # --- building the mailbox ------------------------------------------------------------------
@@ -141,15 +156,25 @@ class Gmail:
             self.calls.append((tool, dict(args)))
         if self.error:
             return {"text": json.dumps({"error": self.error})}
+        if tool in self.fail:
+            return {"text": json.dumps({"error": self.fail[tool]})}
         if tool == "gmail_search":
             body = self._search(args)
         elif tool == "gmail_get":
             body = self._get(args)
         elif tool == "gmail_batchModify":
             body = self._modify(args)
+        elif tool == "gmail_modify":
+            body = self._modify({**args, "messageIds": [args["messageId"]]})
+        elif tool == "gmail_createDraft":
+            body = self._create_draft(args)
+        elif tool == "gmail_sendDraft":
+            body = self._send_draft(args)
         else:
             msg = f"the fake Gmail does not know {tool}"
             raise AssertionError(msg)
+        if tool in self.lose:
+            body = {"error": "connection reset before the answer came"}
         return {"text": json.dumps(body)}
 
     def tool(self, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -338,6 +363,51 @@ class Gmail:
     def labels(self, message: str) -> set[str]:
         """The labels a message holds now."""
         return set(self.messages[message].labels)
+
+    # --- drafts --------------------------------------------------------------------------------
+
+    def _create_draft(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        recipients = str(args.get("to") or "")
+        if not recipients.strip():
+            return {"error": "Invalid argument: to is required."}
+        self._made += 1
+        draft_id, message_id = f"r{self._made}", f"d{self._made}"
+        thread = str(args.get("threadId") or message_id)
+        headers: dict[str, str] = {}
+        if args.get("bcc"):
+            headers["Bcc"] = str(args["bcc"])
+        if args.get("threadId"):
+            last = max(
+                (one for one in self.messages.values() if one.thread == thread),
+                key=lambda one: one.at, default=None,
+            )
+            if last is None:
+                return {"error": "Requested entity was not found."}
+            mid = str(last.message()["Message-ID"] or "")
+            headers |= {"In-Reply-To": mid, "References": mid}
+        self.add(
+            message_id, str(args.get("subject") or ""), sender=self.me, to=recipients,
+            cc=str(args.get("cc") or ""), at=self.now, thread=thread, labels=("DRAFT",),
+            plain=str(args.get("body") or ""), headers=headers,
+        )
+        self.drafts[draft_id] = message_id
+        return {"id": draft_id, "message": {"id": message_id, "threadId": thread}}
+
+    def _send_draft(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        message = self.drafts.get(str(args.get("draftId")))
+        if message is None or "DRAFT" not in self.messages[message].labels:
+            return {"error": "Requested entity was not found."}
+        one = self.messages[message]
+        one.labels = {"SENT"}
+        del self.drafts[str(args["draftId"])]
+        return {"id": one.id, "threadId": one.thread, "labelIds": ["SENT"]}
+
+    def drafted(self) -> list[Stored]:
+        """The messages that are drafts now (not sent, not in Trash)."""
+        return [
+            one for one in self.messages.values()
+            if "DRAFT" in one.labels and "TRASH" not in one.labels
+        ]
 
     def __iter__(self) -> Iterator[Stored]:
         return iter(self.messages.values())

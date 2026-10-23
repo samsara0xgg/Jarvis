@@ -52,10 +52,6 @@ if TYPE_CHECKING:
 
 
 ACTIONS = ("list", "search", "read", "thread", "attachment", "draft", "send", "archive")
-NOT_YET = (
-    "mail: writing and sending a letter is not available yet; tell him you cannot write or send"
-    " mail just now"
-)
 
 
 
@@ -136,19 +132,20 @@ def test_the_description_and_schema_keep_the_tool_standard() -> None:
     props = schema["properties"]
     assert props["action"]["enum"] == list(ACTIONS)
     assert set(props) == {
-        "action", "query", "when", "from", "to", "unread", "waiting", "page", "looking_for",
-        "message", "file", "undo",
+        "action", "query", "when", "from", "to", "cc", "bcc", "subject", "body", "reply_to",
+        "reply_all", "replaces", "draft", "unread", "waiting", "page", "looking_for", "message",
+        "file", "undo",
     }
     assert all(one["description"] for one in props.values())
     assert all(one["type"] in {"string", "integer", "boolean"} for one in props.values())
-    assert len(json.dumps(schema)) < 2200  # the schema is part of every request
+    assert len(json.dumps(schema)) < 3300  # the schema is part of every request
 
 
 def test_each_argument_says_which_actions_take_it_and_the_others_refuse_it(rig: Rig) -> None:
     """The description opens with the actions; asking another action for it is an error."""
     props = rig.tool.input_schema["properties"]
     for name, takers in {
-        "query": "list, search", "waiting": "list", "file": "attachment", "undo": "archive",
+        "query": "list, search", "waiting": "list", "file": "attachment", "undo": "archive, draft",
         "message": "read, thread, attachment, archive", "looking_for": "read, attachment",
     }.items():
         assert props[name]["description"].startswith(f"{takers}: ")
@@ -945,34 +942,6 @@ def test_archive_is_a_change_for_the_receipts_and_the_live_view_and_a_list_is_a_
         )
         assert letter.error == "reads_only_view"
     assert list(iter_events_of_types(rig.world.conn, ["mail.inbox_changed"])) == []
-
-
-# --- draft and send: in the schema, built by ADR 0366 -----------------------------------------
-
-
-@pytest.mark.parametrize("arguments", [{}, {"to": "sam", "subject": "Hi", "body": "Thursday"}])
-def test_a_draft_fails_with_one_sentence_whatever_it_is_given_and_asks_gmail_nothing(
-    rig: Rig, arguments: dict[str, Any],
-) -> None:
-    """Until ADR 0366 builds it: kind impossible, a failed receipt, and no Gmail call."""
-    error = rig.fails(action="draft", **arguments)
-    assert (error["error"], error["code"], error["kind"]) == (NOT_YET, "unavailable", "impossible")
-    assert rig.gmail.calls == []
-
-
-def test_a_send_with_no_lease_is_refused_at_l4_and_cannot_be_completed_so_no_card_is_made(
-    rig: Rig,
-) -> None:
-    """L4 refuses the L3 call before the tool runs; its completion fails, so no card is raised."""
-    refused = rig.fails(action="send", to="sam", subject="Hi", body="Thursday")
-    assert (refused["code"], refused["kind"]) == ("no_lease", "dont_retry")
-    assert rig.gmail.calls == []
-    done = rig.world.registry.complete(
-        "mail", {"action": "send", "to": "sam"}, rig.world.conn, rig.world.paths,
-    )
-    assert (done.arguments, done.error, done.code, done.kind) == (
-        None, NOT_YET, "unavailable", "impossible",
-    )
 
 
 # --- when Gmail is not there -------------------------------------------------------------------
