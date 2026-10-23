@@ -135,7 +135,7 @@ def test_idle_locked_and_asleep_come_from_timesinks_own_marks(
 def test_hands_off_and_hands_on_are_not_marks_of_being_away(
     store: FakeTimeSink, tmp_path: Path, marks: list[tuple[float, str]], expected: str | None
 ) -> None:
-    """ADR 0380: TimeSink's hands-off marks never make him idle, locked or asleep."""
+    """ADR 0381: TimeSink's hands-off marks never make him idle, locked or asleep."""
     store.span(900, 500, CHROME, "Google Chrome", domain="a.example")
     for ago, kind in marks:
         store.event(ago, kind)

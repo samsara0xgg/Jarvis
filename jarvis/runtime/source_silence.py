@@ -1,4 +1,4 @@
-"""The card when a data source stops arriving (ADR 0381): raised once, closed on recovery.
+"""The card when a data source stops arriving (ADR 0382): raised once, closed on recovery.
 
 Every ``poll_s`` the daemon asks :mod:`jarvis.state.source_silence` about the last two days up to
 now. A source that is silent and has no open card gets one job-alert row (the spend card's shape,

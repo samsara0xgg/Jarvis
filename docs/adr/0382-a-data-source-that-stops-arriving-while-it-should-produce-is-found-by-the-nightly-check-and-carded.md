@@ -1,4 +1,4 @@
-# ADR 0381 — A data source that stops arriving while it should produce is found by the nightly check and carded
+# ADR 0382 — A data source that stops arriving while it should produce is found by the nightly check and carded
 
 **Status:** Accepted
 **Date:** 2026-10-22

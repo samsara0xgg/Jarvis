@@ -10,7 +10,7 @@ the source has nothing for the segment:
   mark that ends it is closed where TimeSink itself stopped or restarted, else it runs to the
   segment's end; a hands-off stretch also ends where an idle, lock or sleep one begins. Where
   kinds overlap the one that implies the others (asleep, then locked, then idle, then hands-off)
-  names the time (ADR 0380).
+  names the time (ADR 0381).
 - messages he sent: the messages his phone or tablet logged him sending in each app, from the
   day line's ``messages`` bursts that overlap the segment (ADR 0305), as ``sent 5 messages
   (WeChat)``. A burst that runs over two segments counts in both. What he received is left out:

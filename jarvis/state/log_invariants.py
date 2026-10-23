@@ -551,7 +551,7 @@ def _reminders_fire(scope: _Scope, found: _Found) -> None:
 
 
 def _silence_note(silence: source_silence.Silence) -> str:
-    """Names, times and a gap, nothing a source carried (ADR 0381)."""
+    """Names, times and a gap, nothing a source carried (ADR 0382)."""
     since = (
         "none inside the window" if silence.last_arrival_ms is None
         else source_silence.iso(silence.last_arrival_ms)
@@ -695,7 +695,7 @@ INVARIANTS: Final[tuple[Invariant, ...]] = (
         "pieces) has an arrival within its allowed gap of the time it should be producing: the "
         "gap counts only while the Mac is awake and, for TimeSink, unlocked, not idle and not "
         "paused.",
-        "jarvis/state/source_silence.py SOURCES; docs/adr/0381",
+        "jarvis/state/source_silence.py SOURCES; docs/adr/0382",
         _sources_arrive,
     ),
     Invariant(

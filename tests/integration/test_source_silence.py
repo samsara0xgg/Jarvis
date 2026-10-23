@@ -1,4 +1,4 @@
-"""ADR 0381: a data source that stops arriving while it should be producing is found and carded.
+"""ADR 0382: a data source that stops arriving while it should be producing is found and carded.
 
 Every world here is what a Mac can send: TimeSink's copy goes through the brain's own intake into
 ``imports/shipped.db``, the recording pieces are filed by the archive's own naming, and the event

@@ -1015,7 +1015,7 @@ def test_a_hands_off_stretch_is_told_beside_the_away_ones_and_never_counted_twic
     world: World,
     tmp_path: Path,
 ) -> None:
-    """ADR 0380: the ways a hands-off stretch ends, and what names the time it shares."""
+    """ADR 0381: the ways a hands-off stretch ends, and what names the time it shares."""
     cases = {
         "closed by hands_on": (
             [(doing_at(12, 10), "hands_off"), (doing_at(12, 40), "hands_on")],

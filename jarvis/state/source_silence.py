@@ -1,4 +1,4 @@
-"""L2 — has a data source stopped arriving while it should be producing? (ADR 0381).
+"""L2 — has a data source stopped arriving while it should be producing? (ADR 0382).
 
 Three sources reach the brain from the Mac and two of them failed once without a word: the
 microphone's recording pieces (after a sleep the Mac terminal logged ``output_unavailable`` and

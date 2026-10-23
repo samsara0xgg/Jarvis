@@ -1,4 +1,4 @@
-# ADR 0379 — A Mac attention key holds the whole document or title and only its name is cut
+# ADR 0380 — A Mac attention key holds the whole document or title and only its name is cut
 
 **Status:** Accepted
 **Date:** 2026-10-22

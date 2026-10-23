@@ -1,4 +1,4 @@
-"""ADR 0381: the card a broken data source raises, and clears when it arrives again.
+"""ADR 0382: the card a broken data source raises, and clears when it arrives again.
 
 The worlds are the ones ``test_source_silence`` judges (TimeSink's copy through the brain's own
 intake, recording pieces filed by the archive's naming); the card is the job-alert row the spend

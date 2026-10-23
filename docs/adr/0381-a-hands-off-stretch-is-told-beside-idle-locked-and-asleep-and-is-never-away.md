@@ -1,4 +1,4 @@
-# ADR 0380 — A hands-off stretch is told beside idle, locked and asleep and is never away
+# ADR 0381 — A hands-off stretch is told beside idle, locked and asleep and is never away
 
 **Status:** Accepted
 **Date:** 2026-10-22

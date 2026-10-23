@@ -236,7 +236,7 @@ async def _start_sweep(
 
 
 def _start_source_silence(runtime: JarvisRuntime, watchers: list[asyncio.Task[None]]) -> None:
-    """ADR 0381: a card when a source the Mac sends stops arriving; served with the alert rows."""
+    """ADR 0382: a card when a source the Mac sends stops arriving; served with the alert rows."""
     if runtime.memory is None:
         return
     watch = SourceSilenceWatch(
