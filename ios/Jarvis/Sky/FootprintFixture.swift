@@ -58,7 +58,7 @@ enum FootprintFixture {
         var walkEnd: Int64 { ms(walkAt, walk.count - 1) }
         var homeBack: [String: Any] { stay("stay-6", walkEnd, nil, walk[walk.count - 1], "示例路 12 号", home) }
         let home: [String: Any] = ["id": "p-home", "name": "家", "role": "home"]
-        let school: [String: Any] = ["id": "p-school", "name": "驾校", "role": "school"]
+        let school: [String: Any] = ["id": "p-school", "name": "UVic", "role": "school"]
 
         func ll(_ p: (x: Double, y: Double)) -> (lat: Double, lng: Double) {
             (Plan.origin.lat + p.y / 111_320, Plan.origin.lng + p.x / (111_320 * cos(Plan.origin.lat * .pi / 180)))
@@ -87,7 +87,7 @@ enum FootprintFixture {
             let moving = (seconds - Plan.stopMinutes.reduce(0) { $0 + Int(($1.1 - $1.0) * 60) }) * 1000
             return [
                 "date": date, "tz": clock.cal.timeZone.identifier, "start_ms": clock.ms(minute: 0), "end_ms": clock.ms(minute: 1440), "now_ms": clock.ms(minute: TimelineFixture.now),
-                "stays": [stay("stay-1", clock.ms(minute: -180), driveAt, drive[0], "示例路 12 号", home), stay("stay-5", driveEnd, walkAt, drive[Plan.driveSeconds], "驾校路 3 号", school), homeBack],
+                "stays": [stay("stay-1", clock.ms(minute: -180), driveAt, drive[0], "示例路 12 号", home), stay("stay-5", driveEnd, walkAt, drive[Plan.driveSeconds], "Finnerty Rd 3 号", school), homeBack],
                 "outings": [outing(driveAt, fixes, drive, "stay-1", "stay-5", "automotive", stops, gaps, heart, moving),
                             outing(walkAt, walkFixes, walk, "stay-5", "stay-6", "walking", [], [], NSNull(), (walk.count - 1) * 1000)],
             ]
@@ -111,7 +111,7 @@ enum FootprintFixture {
             items.append(stayItem(long[1]))
             items.append(item("move-5", "move", walkAt, walkEnd, ["activity": "walking"]))
             items.append(stayItem(long[2]))
-            items.append(item("event-1", "event", clock.ms(minute: 13 * 60), clock.ms(minute: 14 * 60 + 30), ["title": "练车"]))
+            items.append(item("event-1", "event", clock.ms(minute: 13 * 60), clock.ms(minute: 14 * 60 + 30), ["title": "上课"]))
             return ["date": date, "tz": clock.cal.timeZone.identifier, "start_ms": clock.ms(minute: 0), "end_ms": clock.ms(minute: 1440), "now_ms": clock.ms(minute: TimelineFixture.now), "items": items, "missing": [String]()]
         }
 
