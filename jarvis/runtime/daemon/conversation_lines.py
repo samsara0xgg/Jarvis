@@ -1,8 +1,7 @@
-"""The fixed lines the daemon says with no model and no turn (ADR 0102, 0155, 0179, 0291)."""
+"""The fixed lines the daemon says with no model and no turn (ADR 0102, 0155, 0179)."""
 
 from __future__ import annotations
 
-import functools
 import logging
 import secrets
 from typing import TYPE_CHECKING
@@ -104,28 +103,18 @@ def say_job_line(runtime: JarvisRuntime) -> None:
 
 
 def plan_hooks(runtime: JarvisRuntime, controls: voice_controls.VoiceControls) -> Hooks:
-    """ADR 0291: how the plan watcher tells him: the quiet level, the speakers, the phone.
+    """ADR 0385: how the plan watcher delivers a line: the quiet level, the Mac, a call, the phone.
 
-    It speaks as a reminder does (speech on, no live conversation, not on a call) and pushes only
-    while he is away from the Mac. All of it runs on the watcher's thread.
+    It says nothing aloud: a line is her record in the conversation, and a silent push while he
+    is away from the Mac. All of it runs on the watcher's thread.
     """
     moment, push, whereabouts = runtime.moment, runtime.push, runtime.whereabouts
     return Hooks(
         quiet=lambda: controls.quiet,
-        may_speak=lambda: (
-            not controls.speech_muted and not controls.conversation
-            and (moment is None or moment.hold() != "call")
-        ),
-        private_output=lambda: bool(runtime.sound_output()["private"]),
         at_mac=lambda: whereabouts is not None and whereabouts.at_mac(),
-        say=functools.partial(_say_plan_line, runtime),
+        on_call=lambda: moment is not None and moment.hold() == "call",
         push=push.send if push is not None and push.enabled else None,
     )
-
-
-def _say_plan_line(runtime: JarvisRuntime, said: str) -> None:
-    """ADR 0291: one line of the plan watcher, said as a conversation line (no model, no turn)."""
-    say_conversation_line(runtime, new_turn_id(), "plan", "", phrase=said)
 
 
 def say_reminder(runtime: JarvisRuntime, said: str) -> None:

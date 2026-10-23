@@ -1,15 +1,15 @@
 """The plan of a day, folded from the event log (ADR 0288).
 
 There is no plan table: a date's plan is its last ``plan.drafted`` or ``plan.revised`` (each
-carries the whole item list), marked settled by a ``plan.settled`` and opened by a
-``plan.opened``. ``plan.draft_failed`` says the nightly draft did not come. The nightly job
-(runtime), her ``plan`` tool, the opening and the phone all read the same fold.
+carries the whole item list). ``plan.draft_failed`` says the nightly draft did not come. The
+nightly job (runtime), her ``plan`` tool, her unprompted lines and the phone all read the same
+fold. The ``plan.settled`` and ``plan.opened`` rows of old logs (ADR 0288, 0291) are not read.
 
-The watcher (ADR 0291) adds two more types beside the fold: ``plan.noticed`` (the program saw the
-day depart from the plan) and ``plan.decided`` (what she made of it: silent, tell or adjust).
-Both are read back per date, never folded into the plan. :func:`apply_changes` is the one place
-that turns a list of add, edit, move and drop ops into items, for her ``plan`` tool and her
-decisions.
+Her unprompted lines (ADR 0385) add three more types beside the fold: ``plan.said`` (a line of
+hers went out, by key), ``plan.closed`` (where each task left undone on a day goes) and
+``plan.muted`` (his switch for a kind of line). They are read back per date, or across dates for
+the switch, never folded into the plan. :func:`apply_changes` is the one place that turns a list
+of add, edit, move and drop ops into items, for her ``plan`` tool.
 
 A plan is an ordered list, not a timetable: the item order is the plan's order. An item with a
 ``start`` (or a window) sits on the clock; one without is a task, to be done in its place in the
@@ -30,18 +30,14 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterable, Mapping, Sequence
 
-TYPES: Final[tuple[str, ...]] = (
-    "plan.drafted",
-    "plan.revised",
-    "plan.settled",
-    "plan.opened",
-    "plan.draft_failed",
-)
-ACTS: Final[tuple[str, ...]] = ("silent", "tell", "adjust")
+TYPES: Final[tuple[str, ...]] = ("plan.drafted", "plan.revised", "plan.draft_failed")
+KINDS: Final[tuple[str, ...]] = ("morning", "new", "leave", "evening")
+"""The four kinds of unprompted line (ADR 0385); a line's key starts with its kind or is it."""
+DESTINATIONS: Final[tuple[str, ...]] = ("tomorrow", "later", "drop")
+"""Where a task left undone goes when the day closes."""
 ACTOR: Final[str] = "jarvis_runtime"
 FIRMNESS: Final[tuple[str, ...]] = ("fixed", "movable", "droppable")
 BY: Final[tuple[str, ...]] = ("him", "her", "program")
-SETTLED_BY: Final[tuple[str, ...]] = ("him", "first_item")
 SOURCE_NAMES: Final[tuple[str, ...]] = ("goal", "his")
 LEGACY_SOURCES: Final[tuple[str, ...]] = ("todo",)
 """Plans drafted before ADR 0299 carry it; a revision writes them again, a draft never names it."""
@@ -123,12 +119,6 @@ class Plan:
 
     day: date
     items: tuple[PlanItem, ...]
-    status: str = "draft"  # draft | settled
-    settled_by: str | None = None
-    opened: bool = False
-    opened_record_id: str | None = None
-    opened_signal: str | None = None
-    opened_at_ms: int | None = None
     source: str = "drafted"  # drafted | revised:<by>
     digest: str = ""
 
@@ -221,27 +211,6 @@ def revise(
     emit_event(conn, type="plan.revised", payload=payload, actor=ACTOR)
 
 
-def settle(
-    conn: sqlite3.Connection, day: date, by: str,
-) -> None:
-    """Append ``plan.settled``: ``him`` said so, or the program did when the first item started."""
-    if by not in SETTLED_BY:
-        msg = f"plan settled by must be one of {SETTLED_BY}, not {by!r}"
-        raise ValueError(msg)
-    emit_event(conn, type="plan.settled", payload={"date": _day(day), "by": by}, actor=ACTOR)
-
-
-def opened(
-    conn: sqlite3.Connection, day: date, record_id: str, signal: str, at_ms: int,
-) -> None:
-    """Append ``plan.opened``: her opening is in the conversation as ``record_id``."""
-    if not record_id.strip() or not signal.strip():
-        msg = "plan.opened needs a record id and the signal that opened it"
-        raise ValueError(msg)
-    payload = {"date": _day(day), "record_id": record_id, "signal": signal, "at_ms": int(at_ms)}
-    emit_event(conn, type="plan.opened", payload=payload, actor=ACTOR)
-
-
 def draft_failed(
     conn: sqlite3.Connection, day: date, error: str,
 ) -> None:
@@ -250,80 +219,100 @@ def draft_failed(
     emit_event(conn, type="plan.draft_failed", payload=payload, actor=ACTOR)
 
 
-def noticed(  # noqa: PLR0913 - one notice is these six fields.
-    conn: sqlite3.Connection, day: date, key: str, kind: str, item_id: str | None,
-    facts: Mapping[str, Any],
+def say(  # noqa: PLR0913 - one line is these seven fields.
+    conn: sqlite3.Connection, day: date, key: str, kind: str, text: str, record_id: str,
+    at_ms: int,
 ) -> None:
-    """Append ``plan.noticed``: the program saw ``kind`` (about ``item_id``, if any) on ``day``."""
-    if not key.strip() or not kind.strip():
-        msg = "plan.noticed needs a key and a kind"
+    """Append ``plan.said`` at ``at_ms``: her line ``key`` of ``kind`` went out on ``day``.
+
+    The line is her record ``record_id`` in the conversation; a ``leave`` line is a ring set on
+    the thing, rung by the ledger, and has no record (``record_id`` empty).
+    """
+    if kind not in KINDS:
+        msg = f"plan line kind must be one of {KINDS}, not {kind!r}"
         raise ValueError(msg)
-    payload = {
-        "date": _day(day), "key": key, "kind": kind, "item_id": item_id, "facts": dict(facts),
-    }
-    emit_event(conn, type="plan.noticed", payload=payload, actor=ACTOR)
+    if not key.strip() or not text.strip() or (kind != "leave") != bool(record_id.strip()):
+        msg = "plan.said needs a key, a text, and a record id unless it is a leave ring"
+        raise ValueError(msg)
+    payload = {"date": _day(day), "key": key, "kind": kind, "text": text, "record_id": record_id}
+    emit_event(conn, type="plan.said", payload=payload, ts_epoch_ms=at_ms, actor=ACTOR)
 
 
-def decided(  # noqa: PLR0913 - one decision is these seven fields.
-    conn: sqlite3.Connection, day: date, key: str, act: str, say: str, why: str, model: str,
+def close_day(
+    conn: sqlite3.Connection, day: date, unfinished: Sequence[Unfinished],
 ) -> None:
-    """Append ``plan.decided``: what she made of the notice ``key``, and the model that did."""
-    if act not in ACTS:
-        msg = f"plan decision act must be one of {ACTS}, not {act!r}"
-        raise ValueError(msg)
+    """Append ``plan.closed``: where each task of ``day`` left undone goes."""
+    for one in unfinished:
+        if not one.item_id.strip() or one.to not in DESTINATIONS:
+            msg = f"plan.closed needs an item id and a destination in {DESTINATIONS}"
+            raise ValueError(msg)
     payload = {
-        "date": _day(day), "key": key, "act": act, "say": say, "why": why[:NOTE_CHARS],
-        "model": model,
+        "date": _day(day),
+        "unfinished": [
+            {"item_id": u.item_id, "title": u.title, "to": u.to} for u in unfinished
+        ],
     }
-    emit_event(conn, type="plan.decided", payload=payload, actor=ACTOR)
+    emit_event(conn, type="plan.closed", payload=payload, actor=ACTOR)
+
+
+def mute(conn: sqlite3.Connection, kind: str, muted: bool) -> None:  # noqa: FBT001 - his switch.
+    """Append ``plan.muted``: he does not want ``kind`` of her lines (or wants it again)."""
+    if kind not in KINDS:
+        msg = f"plan line kind must be one of {KINDS}, not {kind!r}"
+        raise ValueError(msg)
+    emit_event(conn, type="plan.muted", payload={"kind": kind, "muted": muted}, actor=ACTOR)
 
 
 @dataclass(frozen=True)
-class Noticed:
-    """One ``plan.noticed`` as the log holds it."""
+class Said:
+    """One ``plan.said`` as the log holds it."""
 
     key: str
     kind: str
-    item_id: str | None
-    facts: dict[str, Any]
+    text: str
+    record_id: str
     at_ms: int
 
 
 @dataclass(frozen=True)
-class Decided:
-    """One ``plan.decided`` as the log holds it. ``act`` ``tell`` and ``adjust`` were said."""
+class Unfinished:
+    """A task left undone when a day closed: its id and title, and where it goes."""
 
-    key: str
-    act: str
-    say: str
-    why: str
-    model: str
-    at_ms: int
+    item_id: str
+    title: str
+    to: str
 
 
-def notices(conn: sqlite3.Connection, day: date) -> dict[str, Noticed]:
-    """``day``'s notices by key, the first written for each key."""
-    found: dict[str, Noticed] = {}
-    for event in iter_events_of_types(conn, ("plan.noticed",)):
+def said(conn: sqlite3.Connection, day: date) -> dict[str, Said]:
+    """``day``'s lines by key, the first written for each key."""
+    found: dict[str, Said] = {}
+    for event in iter_events_of_types(conn, ("plan.said",)):
         p = event.payload
         if p["date"] == _day(day) and p["key"] not in found:
-            found[str(p["key"])] = Noticed(
-                str(p["key"]), str(p["kind"]), p.get("item_id"), dict(p["facts"]),
+            found[str(p["key"])] = Said(
+                str(p["key"]), str(p["kind"]), str(p["text"]), str(p["record_id"]),
                 event.ts_epoch_ms,
             )
     return found
 
 
-def decisions(conn: sqlite3.Connection, day: date) -> list[Decided]:
-    """``day``'s decisions in the order they were written. Told today: ``act`` tell or adjust."""
-    return [
-        Decided(
-            str(p["key"]), str(p["act"]), str(p["say"]), str(p["why"]), str(p["model"]),
-            event.ts_epoch_ms,
-        )
-        for event in iter_events_of_types(conn, ("plan.decided",))
-        if (p := event.payload)["date"] == _day(day)
-    ]
+def closed(conn: sqlite3.Connection, day: date) -> tuple[Unfinished, ...] | None:
+    """What ``day`` left undone and where it goes, or None when the day was not closed."""
+    for event in iter_events_of_types(conn, ("plan.closed",)):
+        if event.payload["date"] == _day(day):
+            return tuple(
+                Unfinished(str(u["item_id"]), str(u["title"]), str(u["to"]))
+                for u in event.payload["unfinished"]
+            )
+    return None
+
+
+def muted(conn: sqlite3.Connection) -> frozenset[str]:
+    """The kinds of line he switched off: the latest ``plan.muted`` of each kind wins."""
+    latest: dict[str, bool] = {}
+    for event in iter_events_of_types(conn, ("plan.muted",)):
+        latest[str(event.payload["kind"])] = bool(event.payload["muted"])
+    return frozenset(kind for kind, off in latest.items() if off)
 
 
 _FIELDS: Final[frozenset[str]] = frozenset({
@@ -502,15 +491,6 @@ def _walk(conn: sqlite3.Connection) -> _Fold:
                 found.plans[key] = Plan(day, items, source=source, digest=digest)
             else:
                 plan.items, plan.source, plan.digest = items, source, digest
-        elif plan is None:
-            continue  # settled or opened with no plan to hold it: nothing to mark
-        elif event.type == "plan.settled":
-            plan.status, plan.settled_by = "settled", str(payload["by"])
-        else:
-            plan.opened = True
-            plan.opened_record_id = str(payload["record_id"])
-            plan.opened_signal = str(payload["signal"])
-            plan.opened_at_ms = int(payload["at_ms"])
     return found
 
 

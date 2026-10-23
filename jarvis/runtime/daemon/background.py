@@ -441,7 +441,7 @@ def _start_day_schedules(
             ),
         )
         if day_plan.watch:
-            # ADR 0291: notice what changed in the day, let her decide, tell him within limits.
+            # ADR 0385: her four kinds of unprompted line, each due by the log, never followed up.
             watchers.append(
                 asyncio.create_task(
                     build_watch(

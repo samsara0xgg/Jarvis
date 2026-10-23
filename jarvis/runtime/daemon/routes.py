@@ -20,7 +20,7 @@ from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.shared import lang
-from jarvis.state import footprint, phone_track, places, things
+from jarvis.state import footprint, phone_track, places, plan, things
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -227,7 +227,9 @@ def read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked a
     ``shipped`` is the imports directory (ADR 0294): what his Mac copied to it fills in his Mac's
     lane when TimeSink cannot be read live, and gives his Claude Code sessions.
     ``summary`` is the day's steps, resting heart rate and heart rate variability from the phone
-    (``None`` if the log cannot be read); ``weather`` is the day's weather card
+    (``None`` if the log cannot be read); ``plan_said`` is her latest unprompted line of the day
+    (ADR 0385: ``kind``, ``text``, ``at_ms``), ``None`` when she said none, beside the day
+    prose's ``line``; ``weather`` is the day's weather card
     (``Home.day_weather_card``, kept per day), ``None`` when it has none.
     """
     zone_name, zone = resolve_zone(None, configured)
@@ -246,6 +248,10 @@ def read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked a
             LOGGER.exception("day: the day's body numbers could not be read")
             summary = None
         doing = read_day_doing(conn, memory_db, on, line.items, sources, now_ms)
+        spoken = max(
+            (one for one in plan.said(conn, on).values() if one.kind != "leave"),
+            key=lambda one: one.at_ms, default=None,
+        )  # a leave ring is not said until it rings
     told, highlights = day_notes(memory_db, on.isoformat(), line.items, zone)
     served = doing.served({item["id"] for item in line.items})
     spans = sorted([*fact_spans(line.items), *served], key=lambda s: (s["start_ms"], s["id"]))
@@ -260,6 +266,7 @@ def read_day(  # noqa: PLR0913 — the route's stores, its zone, the day asked a
         "missing": line.missing,
         "screen_synced_ms": line.synced,
         "line": told,
+        "plan_said": spoken and {"kind": spoken.kind, "text": spoken.text, "at_ms": spoken.at_ms},
         "highlights": highlights,
         "spans": spans,
         "coverage": doing.own.doing.coverage,

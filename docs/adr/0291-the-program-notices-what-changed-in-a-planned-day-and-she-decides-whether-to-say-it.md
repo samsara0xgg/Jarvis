@@ -1,6 +1,6 @@
 # ADR 0291 — The program notices what changed in a planned day, and she decides whether to say it
 
-**Status:** Accepted
+**Status:** Superseded-by-0385
 **Date:** 2026-10-16
 **Amends:** ADR 0288 (elastic-block reminders, the failure card, the opening's trigger)
 

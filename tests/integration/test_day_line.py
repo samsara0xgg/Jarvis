@@ -1332,6 +1332,7 @@ def test_today_is_where_the_owner_is_not_where_the_server_clock_is(tmp_path: Pat
         "labels",
         "missing",
         "line",
+        "plan_said",
         "highlights",
         "summary",
         "weather",
@@ -1340,6 +1341,7 @@ def test_today_is_where_the_owner_is_not_where_the_server_clock_is(tmp_path: Pat
         "screen_synced_ms",
     }
     assert (body["items"], body["missing"]) == ([], ["mac", "talks"])  # no store was given
+    assert body["plan_said"] is None  # she said nothing unprompted that day
     assert (body["summary"], body["weather"]) == (
         {"steps": None, "resting_hr": None, "hrv": None},
         None,

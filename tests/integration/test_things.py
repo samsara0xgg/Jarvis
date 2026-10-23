@@ -1075,6 +1075,52 @@ def test_writes_join_a_transaction_the_caller_holds(log: _Log) -> None:
         things.get(log.conn, one.thing_id)
 
 
+# --- whose rings: asked, default, leave (ADR 0385) -------------------------------------------
+
+
+def test_rings_are_his_unless_the_writer_says_they_are_the_default(log: _Log) -> None:
+    """A thing written before ``rings_from`` folds as asked; naming rings again makes them his."""
+    old = _put(log, start_at=_THU_7PM, rings=("-30m",))
+    assert old.rings_from == "asked"
+    made = _put(log, "Flight", start_at=TUE_7PM, rings=("-60m",), rings_from="default")
+    assert things.get(log.conn, made.thing_id).rings_from == "default"
+    _do(log, made, "change", fields={"rings": ["-90m"]})
+    assert things.get(log.conn, made.thing_id).rings_from == "asked"
+    with pytest.raises(ValueError, match="rings_from"):
+        _put(log, "Bus", start_at=TUE_7PM, rings_from="mine")
+
+
+def test_a_leave_ring_replaces_a_default_ring_once_and_then_moves(log: _Log) -> None:
+    """``set`` the first time, ``moved`` for a new leave time, nothing when it is the same."""
+    one = _put(log, start_at=_THU_7PM, place="Clinic", rings=("-60m",), rings_from="default")
+    leave: dict[str, Any] = {"by": "plan", "evidence": "the leg leaves at 18:20", "zone": ZONE,
+                             "now": NOW}
+    assert things.leave_ring(log.conn, one.thing_id, 40, **leave) == "set"
+    held = things.get(log.conn, one.thing_id)
+    assert (held.rings, held.rings_from) == (("-40m",), "leave")
+    (ring,) = _rings(log).values()
+    assert ring.due_at_ms == _ms(_at(10, 15, 18, 20))
+    assert ring.text == "Time to leave: 19:00 Dentist · Clinic"
+    assert things.leave_ring(log.conn, one.thing_id, 40, **leave) is None
+    assert things.leave_ring(log.conn, one.thing_id, 25, **leave) == "moved"
+    assert things.get(log.conn, one.thing_id).rings == ("-25m",)
+
+
+def test_a_leave_ring_never_touches_asked_weekly_closed_or_untimed_things(log: _Log) -> None:
+    """His own rings, a series, a closed thing and a thing with no hour keep what they have."""
+    leave: dict[str, Any] = {"by": "plan", "evidence": "the leg", "zone": ZONE, "now": NOW}
+    asked = _put(log, start_at=_THU_7PM, rings=("-30m",))
+    weekly = _put(log, "Pottery", **WEEKLY, rings=("-60m",), rings_from="default")
+    closed = _put(log, "Lunch", start_at=THU_2PM, rings=("-60m",), rings_from="default")
+    _do(log, closed, "close", state="cancelled", why="off")
+    untimed = _put(log, "Passport", on_day="2026-10-16", rings_from="default")
+    errand = _put(log, "Call", "do", start_at=THU_2PM, rings_from="default")
+    for one in (asked, weekly, closed, untimed, errand):
+        before = things.get(log.conn, one.thing_id)
+        assert things.leave_ring(log.conn, one.thing_id, 40, **leave) is None
+        assert things.get(log.conn, one.thing_id) == before
+
+
 # --- carry-in --------------------------------------------------------------------------------
 
 _LONG = "x" * 200 + "\n" + "y" * 300  # 501 characters, first line 200

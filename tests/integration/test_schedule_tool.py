@@ -377,6 +377,19 @@ def test_the_lead_before_a_go_is_the_one_the_runtime_gives(make: Maker) -> None:
     assert world.rings() == ["2026-10-13T15:15:00-07:00"]
 
 
+def test_a_ring_she_chose_is_the_default_and_one_he_named_is_his(make: Maker) -> None:
+    """ADR 0385: only a default ring may become a leave-by ring; a move keeps whose it is."""
+    world = make()
+    plain = world.call(action="add", what="Dentist", kind="go", at="2026-10-13 15:30")["id"]
+    named = world.call(action="add", what="Flight", kind="go", at="2026-10-14 09:00",
+                       remind=[90])["id"]
+    assert (world.thing(plain).rings_from, world.thing(named).rings_from) == ("default", "asked")
+    world.call(action="move", id=plain, at="2026-10-14 10:00")
+    assert world.thing(plain).rings_from == "default"
+    world.call(action="move", id=plain, remind=[20])
+    assert world.thing(plain).rings_from == "asked"
+
+
 @pytest.mark.parametrize(
     ("again", "same"),
     [
