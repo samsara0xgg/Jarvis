@@ -1,0 +1,64 @@
+/* The stage of the V2 pane while nothing is selected (DayStage.tsx): what he is doing now, what waits on him, what comes next. The right column's own look is
+   the list's: black, quiet, ink and muted words, a category's colour on its ring; amber is "waiting on you" and nothing else, the now colour is a warm white. */
+.notch .ds { --now:255 240 220; box-sizing:border-box; display:flex; flex-direction:column; height:100%; min-height:0; padding:2px 4px 8px; overflow-y:auto; overscroll-behavior:contain;
+  scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+.notch .ds > * { flex:none; }
+.notch .ds.more-below { -webkit-mask-image:linear-gradient(#000 calc(100% - 18px),transparent); mask-image:linear-gradient(#000 calc(100% - 18px),transparent); }
+.notch .ds.more-above { -webkit-mask-image:linear-gradient(transparent,#000 16px); mask-image:linear-gradient(transparent,#000 16px); }
+.notch .ds.more-above.more-below { -webkit-mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 18px),transparent); mask-image:linear-gradient(transparent,#000 16px,#000 calc(100% - 18px),transparent); }
+/* what shows fades in over 140 ms; nothing moves, so reduced motion changes nothing */
+.notch .ds-sec,.notch .ds-card,.notch .ds-next,.notch .ds-empty { animation:ds-in var(--motion-fast) var(--ease-out) both; }
+@keyframes ds-in { from { opacity:0; } }
+
+.notch .ds-sec { display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:8px 2px 6px; font-size:11px; font-weight:600; line-height:14px; letter-spacing:.04em; color:var(--p-faint); }
+.notch .ds-sec:first-child { padding-top:4px; }
+.notch .ds-sec em { font:500 10.5px/14px "JetBrains Mono",Menlo,monospace; font-style:normal; letter-spacing:0; font-variant-numeric:tabular-nums; color:var(--p-faint); }
+.notch .ds-sec.is-amber b { color:rgb(255 201 143); }
+.notch .ds-empty { margin:0; padding:4px 2px 8px; font-size:12.5px; line-height:18px; color:var(--p-faint); }
+
+.notch .ds-card { display:flex; flex-direction:column; gap:2px; padding:8px 10px; border-radius:12px; background:rgb(255 255 255 / .035); box-shadow:inset 0 0 0 .5px rgb(157 180 255 / .12); }
+.notch .ds-card + .ds-card { margin-top:6px; }
+.notch .ds-card.is-wait { box-shadow:inset 0 0 0 .5px rgb(255 201 143 / .35); }
+.notch .ds-card[role="button"],.notch .ds-next[role="button"] { cursor:pointer; }
+.notch .ds-card.is-tap { transition:background var(--motion-fast); }
+.notch .ds-card.is-tap:hover { background:rgb(255 255 255 / .06); }
+.notch .ds [role="button"]:focus-visible { outline:1px solid rgb(var(--now) / .5); outline-offset:1px; }
+
+/* the current stretch: its ring in its colour, its words, how long so far */
+.notch .ds-now { display:grid; grid-template-columns:28px minmax(0,1fr) auto; gap:0 9px; align-items:center; }
+.notch .ds-ic { display:grid; place-items:center; box-sizing:border-box; width:28px; height:28px; border:1px solid rgb(var(--c) / .4); border-radius:50%; font-style:normal; color:rgb(var(--c)); background:#0f0f0f; }
+.notch .ds-now.is-unknown .ds-ic { color:var(--p-faint); border-style:dashed; }
+.notch .ds-tx { display:flex; flex-direction:column; min-width:0; }
+.notch .ds-tx b { overflow:hidden; font-size:14px; font-weight:600; line-height:18px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .ds-now.is-unknown .ds-tx b { font-weight:400; color:var(--p-muted); }
+.notch .ds-tx em { overflow:hidden; font-style:normal; font-size:12px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .ds-len { font-size:11.5px; line-height:16px; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-ink); }
+/* what it was made of: a thin strip, each part as long as it lasted (a hollow one where nothing says what it was), and under it the longest parts' names */
+.notch .ds-strip { display:flex; gap:2px; height:6px; margin:11px 0 4px; }
+.notch .ds-strip i { min-width:2px; height:6px; border-radius:2px; background:rgb(var(--k)); }
+.notch .ds-strip i.is-away { background:transparent; box-shadow:inset 0 0 0 1px rgb(var(--ink, 238 240 251) / .3); }
+.notch .ds-strip-l { display:flex; gap:2px; font-size:11px; line-height:14px; color:var(--p-faint); }
+.notch .ds-strip-l > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.notch .ds-note { margin:8px 0 0; font-size:12px; line-height:18px; color:var(--p-muted); }
+
+/* what waits and what comes: a time, a small glyph, two lines and at the right how long until it */
+.notch .ds-mini { display:grid; grid-template-columns:40px 20px minmax(0,1fr) auto; gap:0 8px; align-items:center; min-height:30px; padding:3px 0; font-size:12.5px; line-height:16px; }
+.notch .ds-mini time { font:10.5px/16px "JetBrains Mono",Menlo,monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-faint); }
+.notch .ds-mini > i { display:grid; place-items:center; width:20px; height:20px; border-radius:50%; font-style:normal; color:rgb(214 220 246 / .82); }
+.notch .ds-pip { width:6px; height:6px; border-radius:50%; background:rgb(196 204 238 / .55); }
+.notch .ds-mini > span { display:flex; flex-direction:column; min-width:0; }
+.notch .ds-mini b { overflow:hidden; font-weight:500; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
+.notch .ds-mini small { overflow:hidden; font-size:11.5px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .ds-mini > em { font-style:normal; font-size:11.5px; font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--p-muted); }
+.notch .ds-next { border-radius:10px; opacity:.62; transition:background var(--motion-fast),opacity var(--motion-fast); }
+.notch .ds-next .ds-mini { padding-inline:10px; }
+.notch .ds-next[role="button"]:hover { background:rgb(255 255 255 / .035); opacity:.85; }
+
+/* the buttons of a card that waits: the first is the one that settles it (amber, filled), the rest are quiet */
+.notch .ds-acts { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:6px; }
+.notch .ds-btn { display:inline-flex; align-items:center; gap:4px; height:24px; padding:0 10px; border-radius:12px; background:rgb(255 255 255 / .1); font-size:11.5px; font-weight:600; white-space:nowrap; color:var(--p-ink); transition:background var(--motion-fast),opacity var(--motion-fast); }
+.notch .ds-btn:hover:not(:disabled) { background:rgb(255 255 255 / .18); }
+.notch .ds-btn:disabled { opacity:.5; }
+.notch .ds-btn.is-yes { background:rgb(255 201 143); color:#1a1307; }
+.notch .ds-btn.is-yes:hover:not(:disabled) { background:rgb(255 213 168); }
+.notch .ds-hint { margin:6px 0 0; font-size:12px; line-height:16px; color:var(--p-ink); }
