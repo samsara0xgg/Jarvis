@@ -29,6 +29,7 @@ from zoneinfo import TZPATH, ZoneInfo
 from tzfpy import get_tz
 
 from jarvis.decision.daily_report import brief_of
+from jarvis.execution import mail_lists
 from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.tools import ToolError
 from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
@@ -42,11 +43,12 @@ from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from collections.abc import Set as AbstractSet
     from datetime import tzinfo
 
     from jarvis.decision.mail_reply import MailReply
+    from jarvis.execution.mail_gmail import Head, Hit
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.execution.weather_tool import WeatherRequest
     from jarvis.runtime.config import MailToolsSettings
@@ -73,6 +75,9 @@ _ID_SEP = "|"
 MAIL_SERVER = "gmail"
 """Google's Workspace MCP server with only Gmail switched on (ADR 0055)."""
 _MAIL_LIMIT = 20
+"""How many of the newest unread letters the home lists; its count is of all of them."""
+_PRIMARY_UNREAD: Final = "in:inbox category:primary is:unread"
+"""What the home lists: Gmail's own sort into Primary is the "from people" filter."""
 _INBOX = "INBOX"
 _LETTERS_KEPT = 50
 _MAIL_BODY_CHARS: Final = 4000
@@ -88,7 +93,6 @@ _HTML_LINK_RE: Final = re.compile(
 def _link_text(link: re.Match[str]) -> str:
     url, label = link.group(1), _HTML_TAG_RE.sub("", link.group(2)).strip()
     return url if not label or label == url else f"{label} ({url})"
-_NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
 
 
 def mail_text(body: str, *, links: bool = False) -> str:
@@ -404,7 +408,8 @@ class Home:
 
         ``weather_at`` holds ``latitude`` and ``longitude``; None leaves the weather out, as does
         a missing ``weatherkit`` (no key).
-        ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
+        ``mail_reply`` flags junk letters and rates them (ADR 0124, 0141); None leaves them all
+        unflagged and unrated.
         ``view`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
         archived and trashed, not only the junk offered. ``summarizer`` writes a letter's one-line
         summary (ADR 0148); None leaves :meth:`summary` a 404. ``mail_tools`` bounds how far a
@@ -539,41 +544,62 @@ class Home:
         )
 
     def mail(self) -> dict[str, Any]:
-        """Unread Primary mail in Gmail, newest first, without no-reply and notification senders.
+        """Unread Primary mail in Gmail: its exact count, and the newest 20 letters, newest first.
 
-        Two read-only tools of the ``gmail`` server: a search in Gmail's own terms,
-        then each hit's headers; nothing is marked read. Each letter's ``reply`` is "yes",
-        "fyi" or None (ADR 0123) and its ``junk`` a bool (ADR 0124); a rated letter also
-        carries ``importance`` (expected score 0-3, higher first) and ``category`` (ADR 0141);
-        the junk ids are remembered as the only ones :meth:`archive` accepts.
+        Gmail's search pages ids to ``tools.mail.list_cap``: ``count`` is how many it found and
+        ``more`` says there were more than that (ADR 0364). The headers of the newest letters are
+        read and nothing is marked read. A no-reply or notification sender is a letter like any
+        other. A letter's ``reply`` is "yes" when its conversation waits on him (someone else wrote
+        last, not bulk or automated, to him) and None otherwise; its ``junk`` is a bool (ADR 0124)
+        that a waiting letter never is; a rated letter also carries ``importance`` (expected score
+        0-3, higher first) and ``category`` (ADR 0141). The junk ids are remembered as the only
+        ones :meth:`archive` accepts.
         """
-        servers = self._servers(MAIL_SERVER)
-        # Gmail's own sort into Primary is the "from people" filter.
-        query = {"query": "in:inbox category:primary is:unread", "maxResults": _MAIL_LIMIT}
-        unread = [
-            _letter(_gmail(servers, "gmail_get", {"messageId": hit["id"], "format": "metadata"}))
-            for hit in _gmail(servers, "gmail_search", query).get("messages") or []
+        self._servers(MAIL_SERVER)  # not connected: a LookupError, the route's 404
+        found = self.mailbox.search(_PRIMARY_UNREAD)
+        heads = [
+            one for one in self.mailbox.heads([hit.id for hit in found.hits[:_MAIL_LIMIT]])
+            if one is not None
         ]
-        people = [one for one in unread if not _NOT_A_PERSON.search(one["address"])]
-        marks = {} if self._mail_reply is None else self._mail_reply.marks([
+        waiting = self._waiting(heads, found.hits)
+        unread = [_row(one) for one in heads]
+        flagged = {} if self._mail_reply is None else self._mail_reply.marks([
             # A sender with no display name shows its address; the address is never sent.
             (one["id"], "" if one["from"] == one["address"] else one["from"], one["subject"])
-            for one in people
+            for one in unread
         ])
         letters: list[dict[str, str | bool | float | None]] = []
-        for one in people:
-            reply, junk = marks.get(one["id"], (None, False))
+        for one in unread:
+            yes = one["thread_id"] in waiting
+            junk = flagged.get(one["id"], False) and not yes and one["id"] not in self._kept
             rated = None if self._mail_reply is None else self._mail_reply.rating(one["id"])
             # A letter not rated yet has no importance or category: the UI keeps its order.
             rating = {} if rated is None else {
                 "importance": rated["score"], "category": rated["category"],
             }
-            letters.append({
-                **one, "reply": reply, "junk": junk and one["id"] not in self._kept, **rating,
-            })
+            letters.append({**one, "reply": "yes" if yes else None, "junk": junk, **rating})
         self._listed = frozenset(str(one["id"]) for one in letters)
         self._junk = frozenset(str(one["id"]) for one in letters if one["junk"])
-        return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
+        return {
+            "unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True),
+            "count": len(found.hits),
+            "more": found.more,
+        }
+
+    def _waiting(self, heads: Sequence[Head], hits: Sequence[Hit]) -> set[str]:
+        """The conversations among ``heads`` that wait on him; none when that cannot be told now.
+
+        The rule is the mail tool's (``Last.waiting``, ADR 0364). A failure to read who wrote last
+        leaves every letter without the mark, as a mark that cannot be checked is not given.
+        """
+        try:
+            lasts = mail_lists.last_writers(
+                self.mailbox, heads, mail_lists.newest_by_thread(hits), datetime.now(UTC),
+            )
+        except ToolError as exc:
+            LOGGER.warning("home: who wrote last is unreadable: %s", exc)
+            return set()
+        return {thread for thread, last in lasts.items() if last.waiting}
 
     def gmail(self, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """One call to the ``gmail`` server answered as JSON (ADR 0242: the model's ``mail``).
@@ -733,6 +759,18 @@ def _gmail(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str,
         msg = f"{tool}: {body.get('error') if isinstance(body, dict) else body!r}"
         raise ToolError(msg, code="mcp_tool_error")
     return body
+
+
+def _row(head: Head) -> dict[str, str]:
+    """One unread letter as the home lists it: ids, sender, subject and when it came (UTC)."""
+    return {
+        "id": head.id,
+        "thread_id": head.thread,
+        "from": head.sender.shown,
+        "address": head.sender.address,
+        "subject": head.subject,
+        "received": head.at.astimezone(UTC).isoformat() if head.at else "",  # none: sorted last
+    }
 
 
 def _letter(message: Mapping[str, Any]) -> dict[str, str]:

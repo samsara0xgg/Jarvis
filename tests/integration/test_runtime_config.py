@@ -702,7 +702,7 @@ def test_the_mail_and_record_intakes_ship_off_but_the_code_reader(tmp_path: Path
 
 
 def test_an_enabled_intake_reads_its_block_over_the_shipped_one(tmp_path: Path) -> None:
-    """ADR 0123, 0155, 0274, 0295, 0300: a model or preset is stripped, a bar is a float."""
+    """ADR 0124, 0155, 0274, 0295, 0300: a model or preset is stripped, a bar is a float."""
     config = load_settings(tmp_path, {
         "home": {"mail_reply": {"enabled": True, "model": " m ", "importance": {"enabled": True}}},
         "job_mail": {
@@ -715,7 +715,7 @@ def test_an_enabled_intake_reads_its_block_over_the_shipped_one(tmp_path: Path) 
         "claude_daily": {"enabled": True, "poll_s": 120},
     })
     assert config.mail_reply == MailReplySettings(
-        model="m", timeout_ms=1500, yes_at=0.9, fyi_at=0.1, junk_at=0.9, importance=True,
+        model="m", timeout_ms=1500, junk_at=0.9, importance=True,
     )
     assert config.job_mail is not None
     assert (config.job_mail.model, config.job_mail.timeout_ms) == ("j", 900)
@@ -742,24 +742,38 @@ def test_an_enabled_intake_reads_its_block_over_the_shipped_one(tmp_path: Path) 
 
 
 _MAIL_REPLY = (
-    r"jarvis\.yaml home\.mail_reply needs model \(text\), timeout_ms \(positive int\),"
-    r" fyi_at < yes_at, both in \[0, 1\], and junk_at in \(0, 1\]"
+    r"jarvis\.yaml home\.mail_reply needs model \(text\), timeout_ms \(positive int\)"
+    r" and junk_at in \(0, 1\]"
 )
 
 
 @pytest.mark.parametrize(
     "block",
     [
-        {"model": " "}, {"timeout_ms": 0}, {"timeout_ms": True}, {"fyi_at": 0.95},
-        {"yes_at": 1.5}, {"fyi_at": -0.1}, {"fyi_at": None}, {"junk_at": 0}, {"junk_at": 1.5},
+        {"model": " "}, {"timeout_ms": 0}, {"timeout_ms": True}, {"junk_at": 0},
+        {"junk_at": 1.5}, {"junk_at": None}, {"junk_at": True},
     ],
 )
 def test_an_enabled_mail_reply_with_a_bad_value_stops_the_load(
     tmp_path: Path, block: dict[str, object],
 ) -> None:
-    """ADR 0123: the marks need a model, a deadline and bars that leave room between them."""
+    """ADR 0124: the junk mark needs a model, a deadline and a bar in (0, 1]."""
     with pytest.raises(RuntimeBootstrapError, match=_MAIL_REPLY):
         load_settings(tmp_path, _enabled("home", "mail_reply", **block))
+
+
+def test_the_reply_bars_an_older_settings_file_still_holds_are_not_read(tmp_path: Path) -> None:
+    """ADR 0364: Jev is no longer asked whether a letter needs a reply, so its bars are ignored.
+
+    A ``yes_at`` or ``fyi_at`` left in ``settings.yaml`` from before, even one that was never a
+    valid bar, neither stops the load nor reaches the settings.
+    """
+    config = load_settings(
+        tmp_path, _enabled("home", "mail_reply", yes_at=1.5, fyi_at=0.95, junk_at=0.8),
+    )
+    assert config.mail_reply == MailReplySettings(
+        model="typesafe/jev-1.13", timeout_ms=1500, junk_at=0.8, importance=False,
+    )
 
 
 def _top(name: str, **block: object) -> dict[str, object]:
