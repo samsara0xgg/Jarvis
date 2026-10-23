@@ -121,6 +121,12 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     # A mail is read for the words mail programs write into it in Chinese: a forward's header and
     # subject prefix, and the line that says who wrote the lines quoted below it (ADR 0363).
     "jarvis/state/mail_text.py": frozenset({"_FORWARD_WORDS", "_FORWARD_SUBJECT", "_ATTRIBUTION"}),
+    # A bill or a receipt is read by the words Chinese services write around its figures: the
+    # amount and its currency, the number, the dates and the status (ADR 0365).
+    "jarvis/state/mail_bill.py": frozenset(
+        {"_AFTER", "_ASKS", "_BEFORE", "_BODY_CUES", "_DATES", "_DUE_WORDS", "_NEUTRAL",
+         "_NUMBER_WORDS", "_PAID", "_REFUND", "_SUBJECT_CUES", "_SYMBOLS", "_WEAK_ASKS", "_rank"}
+    ),
     # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).
     "jarvis/state/timesink_moment.py": frozenset({"call_app"}),
     "jarvis/surface/sentence_splitter.py": frozenset({"_DELIMITERS"}),
