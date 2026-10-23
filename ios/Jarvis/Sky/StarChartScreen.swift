@@ -14,8 +14,7 @@ private func serif(_ size: CGFloat) -> Font {
     UIFont(name: "Instrument Serif", size: size) != nil ? .custom("Instrument Serif", size: size) : .system(size: size, design: .serif)
 }
 private func monoF(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font {
-    let face = w == .regular ? "IBMPlexMono-Regular" : "IBMPlexMono-Medium"
-    return UIFont(name: face, size: size) != nil ? .custom(face, size: size) : .system(size: size, weight: w, design: .monospaced)
+    Look.figures(size, weight: w)
 }
 
 struct StarChartScreen: View {

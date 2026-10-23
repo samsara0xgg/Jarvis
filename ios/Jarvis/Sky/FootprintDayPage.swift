@@ -16,6 +16,8 @@ final class FootprintDayState {
     var moment: FootprintMoment?        // under a finger on the bar or played by the replay: where the camera goes
     var holding = false                 // `moment` is set: the bar is in its trips
     let player = FootprintPlayer()      // the ▶ replay
+    var summary: String?                // her line about the day ("今天出门 2 趟…现在在家。"), for the strip at the top to say under her
+    var locateTick = 0                  // bumped by the strip's 回到我在哪: the map goes back to where he is
     @ObservationIgnored var lastStretch: String?        // the stretch of the bar the finger was last in, for its tick
     @ObservationIgnored var last = (x: 0.0, text: "")   // the playhead's place and capsule, kept while the bar turns back
 

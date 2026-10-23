@@ -16,6 +16,16 @@ private let hair = Color(red: 157 / 255, green: 180 / 255, blue: 1).opacity(0.12
 private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
 
 enum TLLayout {
+    /// The phone's 今天 page (跨端UI标准 §1–4): her at the top in the middle, the date under her, her words under that while she talks; the hours, a 44 pt bar, the place line and the
+    /// sideways row of the day's numbers, pinned; the list under them. The footprint page and the iPad keep the bar of `barY` / `barW` / `barH` below.
+    enum Today {
+        static let side = 20.0                          // in from each side: the bar, the place line, the chips and the list
+        static let dateY = 116.0, captionY = 140.0      // the date under her (13 pt), her words while she talks
+        static let hoursY = 146.0, barY = 164.0, barW = 400.0, barH = 44.0, barRadius = 8.0
+        static let placeY = 214.0                       // the place line: 4 pt, its names 9 pt under it
+        static let chipsY = 246.0, chipsH = 28.0
+        static let listTop = 286.0
+    }
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for the time under a finger, in its chip; 12 pt under it for the hours
     static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch

@@ -7,18 +7,18 @@ enum SetColor {
     private static func rgb(_ r: Double, _ g: Double, _ b: Double, _ a: Double = 1) -> Color {
         Color(red: r / 255, green: g / 255, blue: b / 255, opacity: a)
     }
-    static let ink = rgb(238, 240, 251)
-    static let muted = rgb(196, 204, 238, 0.62)
-    static let faint = rgb(196, 204, 238, 0.34)
-    static let line = rgb(157, 180, 255, 0.14)
+    static let ink = Look.ink
+    static let muted = Look.ink2
+    static let faint = Look.ink3
+    static let line = Look.line
     static let bg = rgb(14, 15, 30)
     static let cell = rgb(28, 30, 50)
     static let hi = Color.white.opacity(0.07)
     static let link = rgb(201, 214, 255)
-    static let red = rgb(255, 107, 107)
+    static let red = Look.red
     static let on = rgb(48, 209, 88)
     static let mint = rgb(139, 230, 194)
-    static let glow = rgb(157, 180, 255)
+    static let glow = Look.glow
     static func color(_ r: Double, _ g: Double, _ b: Double, _ a: Double = 1) -> Color { rgb(r, g, b, a) }
 }
 
