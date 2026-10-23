@@ -117,3 +117,5 @@
 .notch .dt[data-door="more"] .dt-tx > em { display:none; }
 /* ...and it has nothing to say on the day's bar (no times, no marks): the menu and its page take the room (the board draws no bar on this door) */
 .notch .dt[data-door="more"] .dt-bar,.notch .dt[data-door="more"] .dt-numbers { display:none; }
+/* 信 and 待办 draw no day either (Elements: only 今天 draws a day); 待办's week strip waits for a by-week route (Gaps) */
+.notch .dt[data-door="mail"] .dt-bar,.notch .dt[data-door="mail"] .dt-numbers,.notch .dt[data-door="todo"] .dt-bar,.notch .dt[data-door="todo"] .dt-numbers { display:none; }

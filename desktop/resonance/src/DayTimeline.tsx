@@ -663,6 +663,14 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   useEffect(() => { if (selected && model && door === 'today' && !model.rows.has(selected) && !model.heads.has(selected)) drop(); }, [model]);
   // A row of a door page that is gone from the page (a letter he has just archived) takes its detail with it.
   useEffect(() => { if (selected && page && !page.rows.some(r => r.key === selected)) drop(); }, [page]);
+  // V2: a door opens on the row its page says is most worth reading (`page.rest`), once per visit: Esc then leaves the right column empty, as on today.
+  const restFor = useRef<DoorKey | null>(null);
+  useEffect(() => {
+    if (door === 'today') { restFor.current = null; return; }
+    if (restFor.current === door || !page?.rest || page.loading || !page.rows.some(r => r.key === page.rest)) return;
+    restFor.current = door;
+    if (!selected) { setSelected(page.rest); show(page.rest); }
+  }, [door, page]);
   useEffect(() => { if (rename && selected !== rename.key) setRename(null); }, [selected]);
   useEffect(() => { if (naming && selected !== naming.key) setNaming(null); }, [selected]);
   useEffect(() => { if (!open) { release(); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); setTyping(false); } }, [open]);
@@ -732,6 +740,8 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
     else if (naming) setNaming(null);
+    // A line he is typing in on the right (a door's 问她, a reply) lets go of the keys first; the item stays open.
+    else if (document.activeElement instanceof HTMLElement && document.activeElement.matches('.dt-side input, .dt-side textarea')) document.activeElement.blur();
     else if (selected) { if (tooled) toolBack(); else drop(); }
     else if (uiRef.current.escape()) { /* one thing of the bar's let go */ }
     else if (door !== 'today') pickDoor('today');
