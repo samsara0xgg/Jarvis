@@ -1,0 +1,17 @@
+{
+  "id": "weather-next-hour-summary-says-952",
+  "tool": "weather",
+  "said": "when does the rain start",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-next-hour-summary-says-952.recording.json",
+  "expect": {
+    "result": [
+      {"path": "next_hour.now", "op": "eq", "value": "dry"},
+      {"path": "next_hour.starts_at", "op": "eq", "value": "09:52"},
+      {"path": "next_hour.kind", "op": "eq", "value": "rain"}
+    ]
+  }
+}

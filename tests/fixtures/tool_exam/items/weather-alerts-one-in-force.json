@@ -1,0 +1,21 @@
+{
+  "id": "weather-alerts-one-in-force",
+  "tool": "weather",
+  "said": "any storm warnings today",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-alerts-one-in-force.recording.json",
+  "expect": {
+    "summary_must": ["official warning in force: Rainfall Warning"],
+    "result": [
+      {"path": "alerts", "op": "len", "value": 1},
+      {"path": "alerts.0.headline", "op": "eq", "value": "Rainfall Warning"},
+      {"path": "alerts.0.text", "op": "contains", "value": "Rainfall amounts of 50 to 70 mm"},
+      {"path": "alerts.0.starts", "op": "exists"},
+      {"path": "alerts.0.ends", "op": "exists"},
+      {"path": "alerts.0.details_url", "op": "absent"}
+    ]
+  }
+}

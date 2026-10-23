@@ -1,0 +1,19 @@
+{
+  "id": "weather-held-answer-after-a-failed-read",
+  "tool": "weather",
+  "said": "what's the weather",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [{"tool": "weather", "args": {}, "after_s": 7200}],
+  "args": {},
+  "recording": "weather-held-answer-after-a-failed-read.recording.json",
+  "expect": {
+    "summary_must": ["^As of today 09:30", "last good reading"],
+    "result": [
+      {"path": "held.read_at", "op": "eq", "value": "today 09:30"},
+      {"path": "held.age_min", "op": "eq", "value": 120},
+      {"path": "place", "op": "eq", "value": "Victoria"}
+    ]
+  }
+}
