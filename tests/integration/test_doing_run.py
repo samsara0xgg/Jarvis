@@ -56,7 +56,7 @@ from jarvis.decision.doing_run import (
     read_run,
     times,
 )
-from jarvis.decision.screen_reads import MAX_ROUNDS
+from jarvis.decision.screen_reads import MAX_READ_CHARS, MAX_ROUNDS, PAGE_CHARS, SPENT
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.runtime import doing_run as runtime
 from jarvis.runtime.daemon.routes import read_day
@@ -1583,6 +1583,29 @@ def test_a_writer_that_keeps_reading_is_told_to_answer_and_may_read_no_more(
     with closing(cost_log):
         compose_run(brief, SETTINGS, client(plain), recorder)
     assert plain.tool_choices == [None]  # no reader, no tool
+
+
+def test_once_an_answers_reads_hold_the_most_screen_text_the_next_read_is_told_they_are_spent(
+    brief: Brief, tmp_path: Path,
+) -> None:
+    """Pages of a full window are read until the budget; the read after it is answered SPENT."""
+    line = "x" * 99
+
+    def full(start_ms: int, _end_ms: int, _key: str | None) -> list[Window]:
+        return [Window("Ghostty", "jarvis", "mac|Ghostty|jarvis", start_ms, start_ms, [
+            (start_ms, f"{n} {line}") for n in range(PAGE_CHARS // 100)
+        ])]
+
+    pages_given = -(-MAX_READ_CHARS // PAGE_CHARS)
+    writer = Writer(_good_text)
+    writer.reads = [[{"from": "t0", "to": "t1"}] * (pages_given + 2)]
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        composed = compose_run(brief, SETTINGS, client(writer), recorder, full)
+    assert composed.spans is not None
+    replies = [m for m in writer.asked[1] if m["role"] == "tool"]
+    assert [m.get("is_error", False) for m in replies] == [False] * pages_given + [True] * 2
+    assert replies[-1]["content"] == SPENT
 
 
 def test_a_rejected_answer_is_asked_again_once_and_a_second_failure_stores_nothing(

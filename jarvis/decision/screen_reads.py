@@ -27,6 +27,10 @@ PAGE_CHARS: Final = 12_000
 """The most characters of screen text one answer holds; the rest is on the pages after it."""
 MAX_ROUNDS: Final = 8
 """The most rounds of reads one answer may take before it is asked to answer."""
+MAX_READ_CHARS: Final = 120_000
+"""The most characters of screen text one answer may read, over all its rounds; past them a read
+is told the screen is read enough."""
+SPENT: Final = "the screen reads for this answer are spent; write it from what you have read"
 SCREEN_TOOL: Final[dict[str, Any]] = {
     "name": SCREEN_TOOL_NAME,
     "description": (
@@ -150,10 +154,12 @@ def answer(  # noqa: PLR0913 — the call, the labels it may name, the reader an
 
 
 __all__ = [
+    "MAX_READ_CHARS",
     "MAX_ROUNDS",
     "PAGE_CHARS",
     "SCREEN_TOOL",
     "SCREEN_TOOL_NAME",
+    "SPENT",
     "Line",
     "Reader",
     "answer",

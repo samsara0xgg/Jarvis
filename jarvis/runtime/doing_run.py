@@ -51,7 +51,14 @@ from jarvis.decision.doing_run import (
     times,
     varies_of,
 )
-from jarvis.decision.screen_reads import MAX_ROUNDS, SCREEN_TOOL, answer, requested
+from jarvis.decision.screen_reads import (
+    MAX_READ_CHARS,
+    MAX_ROUNDS,
+    SCREEN_TOOL,
+    SPENT,
+    answer,
+    requested,
+)
 from jarvis.runtime.doing_day import lane_line, reach_past_start
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
@@ -266,13 +273,14 @@ def _ask(  # noqa: PLR0913 — the conversation, the knobs, the model and its tw
     """One answer, after the screen reads it asks for, at most :data:`MAX_ROUNDS` rounds of them.
 
     Each read is answered and the model asked again; past the last round it is told to answer
-    and may read no more. Without ``read`` the model is given no tool.
+    and may read no more. Once its reads hold :data:`MAX_READ_CHARS` characters, a further read is
+    told they are spent. Without ``read`` the model is given no tool.
     """
     tools = None if read is None else [SCREEN_TOOL]
     at = {f"t{n}": ms for n, ms in enumerate(times(brief))}
     keys = labels(brief.asked, brief.varies)
     names = {one.key: one.name for one in (*brief.asked, *brief.varies)}
-    spent_in = spent_out = reads = 0
+    spent_in = spent_out = reads = read_chars = 0
     for rounds in range(MAX_ROUNDS + 1):
         last = rounds == MAX_ROUNDS
         result = cost_recorder.chat(
@@ -287,7 +295,11 @@ def _ask(  # noqa: PLR0913 — the conversation, the knobs, the model and its tw
         assert read is not None  # noqa: S101 — calls are read only with a reader
         replies = []
         for call_id, arguments in calls:
-            text, error = answer(arguments, at, keys, names, read, brief.zone)
+            if read_chars >= MAX_READ_CHARS:
+                text, error = SPENT, True
+            else:
+                text, error = answer(arguments, at, keys, names, read, brief.zone)
+                read_chars += 0 if error else len(text)
             replies.append({
                 "role": "tool", "tool_call_id": call_id, "content": text,
                 **({"is_error": True} if error else {}),
