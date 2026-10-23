@@ -69,20 +69,34 @@ struct FootprintOutingPage: View {
 
     // MARK: held and played
 
-    /// a finger on a curve holds a time of the outing, or lifts: the cursor, the dot and the camera follow it on the line, a replay stands paused where the finger leaves it
+    /// A finger on a curve holds a time of the outing, or lifts: the cursor, the dot and the camera follow it on the line through the replay's schedule, eased, so that a little of the
+    /// finger that is a long way on the ground glides there; a replay stands paused where the finger leaves it.
     private func held(_ ms: Int64?) {
-        guard let ms else { if player.phase == .rest { moment = nil }; return }
+        guard let ms else {
+            let rest = player.phase == .rest
+            player.lift()
+            if rest { moment = nil }
+            return
+        }
         player.touch()          // a finger on a curve pauses the replay
-        guard let track, let m = FootprintMoment.on(outing, track: track, atMs: ms) else { return }
-        moment = m
-        if player.phase == .paused, let r = player.replay { player.seek(r.seconds(atMs: ms)) }          // ▶ goes on from here
+        if let replay = model.replay(.outing(outing.id)) {
+            connect()
+            player.point(at: replay.seconds(atMs: ms), of: replay)
+        } else if let track, let m = FootprintMoment.on(outing, track: track, atMs: ms) {
+            moment = m
+        }
     }
 
     private func play() {
         guard let replay = model.replay(.outing(outing.id)) else { return }
-        player.emit = { f, r in moment = FootprintMoment(f, height: r.height) }
-        player.ended = { moment = nil }
+        connect()
         player.play(replay)
+    }
+
+    private func connect() {
+        let model = model
+        player.emit = { f, r, playing in moment = playing ? FootprintMoment(f, height: r.height) : FootprintMoment(finger: f, model: model) }
+        player.ended = { moment = nil }
     }
 
     // MARK: head

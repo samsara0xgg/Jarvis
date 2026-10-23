@@ -1,8 +1,9 @@
 import CoreLocation
 import Foundation
 
-// What a finger on the held bar, a finger on an outing's curve or the replay holds: a moment with where the camera goes for it. The finger's moment is read by distance along the line
-// (replay brief, sections 1 and 2): the dot glides along what the map draws even where the line takes no time (the join into the next stay), and the readouts use the time that goes with it.
+// What a finger on the held bar, a finger on an outing's curve or the replay holds: a moment with where the camera goes for it. A finger's moment is a frame of the replay's schedule, so it is
+// read by distance along the line (replay brief, sections 1 and 2): the dot glides along what the map draws even where the line takes no time (the join into the next stay), and the readouts use
+// the time that goes with it.
 
 struct FootprintMoment {
     var ms: Int64
@@ -24,6 +25,13 @@ struct FootprintMoment {
     /// a frame of the replay
     init(_ f: FootprintReplay.Frame, height: Double) {
         ms = f.ms; coord = f.coord; heading = f.heading; self.height = height; response = TLMotion.replayResponse; outingId = f.outingId; x = f.x; beat = f.beat; flying = f.flying
+    }
+
+    /// A frame of the replay under a finger: no caption, at the height of the outing it is on or, in a long stay, of the next one. Its heading is the frame's, which stands through a stop
+    /// and turns across a long stay to the next outing's way, so that the camera never has to swing round where the next one starts.
+    init(finger f: FootprintReplay.Frame, model: FootprintModel) {
+        let o = (f.outingId ?? f.near).flatMap { id in model.reply.outings.first { $0.id == id } }
+        ms = f.ms; coord = f.coord; heading = f.heading; height = o.map(FootprintReplay.scrubHeight) ?? 500; outingId = f.outingId; x = f.x; flying = f.flying
     }
 
     init(ms: Int64, coord: CLLocationCoordinate2D, heading: Double?, height: Double, outingId: String?, x: Double?) {
@@ -48,34 +56,6 @@ extension FootprintBarLayout {
         switch it.kind {
         case let .bead(id): return id
         case let .segment(id): return "\(id)/\(it.pieces.partitionPoint { $0.x0 > at } - 1)"
-        }
-    }
-
-    /// The moment under a finger at `x` on the held bar: in a segment the place on the line by distance (the heading from the line a little ahead, none in a notch), in a bead the stay's own place;
-    /// the height is that of the outing the finger is on, or in a bead the nearer one. Nil when the day has no line.
-    func moment(atX x: Double, model: FootprintModel) -> FootprintMoment? {
-        guard !items.isEmpty else { return nil }
-        let it = item(atX: x), at = min(max(x, it.x0), it.x1), ms = self.ms(atX: at)
-        func outing(_ item: Item) -> FootprintOuting? {
-            if case let .segment(id) = item.kind { model.reply.outings.first { $0.id == id } } else { nil }
-        }
-        switch it.kind {
-        case let .bead(id):
-            let i = items.firstIndex { $0.x0 == it.x0 } ?? 0
-            let before = items[..<i].last { outing($0) != nil }, after = items[(i + 1)...].first { outing($0) != nil }
-            let near = [before, after].compactMap { $0 }.min { abs($0.x1 - at) + abs($0.x0 - at) < abs($1.x1 - at) + abs($1.x0 - at) }
-            guard let coord = model.reply.stays.first(where: { $0.id == id })?.coord ?? model.position(atMs: ms) else { return nil }
-            return FootprintMoment(ms: ms, coord: coord, heading: nil, height: near.flatMap(outing).map(FootprintReplay.scrubHeight) ?? 500, outingId: nil, x: at)
-        case .segment:
-            guard let o = outing(it), let track = it.track, !it.pieces.isEmpty else { return nil }
-            let p = it.pieces[max(it.pieces.partitionPoint { $0.x0 > at } - 1, 0)]
-            var d: Double, still = false
-            switch p.kind {
-            case let .run(d0, d1): d = d0 + (d1 - d0) * (p.x1 > p.x0 ? min(max((at - p.x0) / (p.x1 - p.x0), 0), 1) : 0)
-            case .notch: d = track.distance(atMs: p.ms0); still = true
-            }
-            guard let coord = track.coord(atDistance: d) else { return nil }
-            return FootprintMoment(ms: ms, coord: coord, heading: still ? nil : track.heading(atDistance: d, ahead: FootprintReplay.lookAhead(o)), height: FootprintReplay.scrubHeight(o), outingId: o.id, x: at)
         }
     }
 }
