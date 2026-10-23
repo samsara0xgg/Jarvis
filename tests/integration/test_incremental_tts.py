@@ -517,7 +517,7 @@ def test_cancel_mid_stream_interrupts_playback_through_the_real_watcher(
             assert pipeline.wait_until_idle(timeout_s=2.0)
             late = append_chunk(conn, "RC", 1, _SEGMENTS[1])
             assert asyncio.run(submit_response(pipeline, [late]))[0].status == "terminal"
-            assert not pipeline._after_drain  # noqa: SLF001
+            assert not pipeline._lane.queued_after_drain  # noqa: SLF001
     finally:
         assert pipeline.close()
         watcher_conn.close()
@@ -552,10 +552,10 @@ def test_cancel_of_the_active_response_drains_the_queued_lane(tmp_path: Path) ->
             )
             statuses = [o.status for o in asyncio.run(submit_response(pipeline, queued))]
             assert statuses == ["accepted"] * 3
-            assert len(pipeline._after_drain) == 1  # noqa: SLF001
+            assert pipeline._lane.queued_after_drain == 1  # noqa: SLF001
             cancelled = asyncio.run(submit_response(pipeline, [append_cancel(conn, "RA")]))
             assert cancelled[0].status == "accepted"
-            assert not pipeline._after_drain  # noqa: SLF001
+            assert not pipeline._lane.queued_after_drain  # noqa: SLF001
             assert pipeline.wait_until_idle(timeout_s=2.0)
     finally:
         assert pipeline.close()
