@@ -43,9 +43,10 @@ struct FootprintMapNow: Equatable {
 }
 
 /// The scrub dot: where he was at the held minute. One that is not held (the outing page's, at its fastest fix, while no finger is on a curve) only marks the place: the route stays lit, and the stops.
+/// `still`: he stands at a long stay; the words of the marks there give way to the dot's own.
 struct FootprintMapDot: Equatable {
-    var coord: CLLocationCoordinate2D, ms: Int64, rgb: RGB, label: String, held = true
-    static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.ms == b.ms && a.rgb == b.rgb && a.label == b.label && a.held == b.held }
+    var coord: CLLocationCoordinate2D, ms: Int64, rgb: RGB, label: String?, held = true, still = false
+    static func == (a: Self, b: Self) -> Bool { a.coord.same(b.coord) && a.ms == b.ms && a.rgb == b.rgb && a.label == b.label && a.held == b.held && a.still == b.still }
 }
 
 /// The first-person camera while a finger holds a time: where he was (the scrub dot, kept at the map's centre), the way he was going in degrees clockwise from north (nil while still: the
@@ -59,11 +60,19 @@ struct FootprintMapFollow: Equatable {
 
     /// tilted forward as turn-by-turn navigation is
     static let pitch = 60.0
+
+    /// the most the camera tilts at a height: all of `pitch` up to 4 km, none from 15 km, between by the log of the height. Going up to the day's whole, it is flat before the ground it would show to
+    /// the horizon gets wide (a tilted view from high up asks for so many tiles that the map stops drawing for seconds); coming down, it tilts as it nears him.
+    static func pitch(at height: Double) -> Double {
+        pitch * min(max((log(15_000) - log(height)) / (log(15_000) - log(4_000)), 0), 1)
+    }
 }
 
 extension TLMotion {
-    /// following him, and letting go (the camera goes back to the day's whole): the camera's one spring, the period in seconds of its undamped swing, while a finger scrubs
+    /// following him: the camera's spring for heading and height, the period in seconds of its undamped swing, while a finger scrubs
     static let mapResponse = 0.25
+    /// the camera going down to him when a finger lands or ▶ starts, and back up to the day's whole after: every part of it on this spring (most of the way in about 0.7 s)
+    static let mapFlight = 0.9
     /// the camera while the ▶ replay plays: the replay gives the exact place a frame at a time, so the spring only has to smooth the turns and the beats' flights
     static let replayResponse = 0.2
     /// the held bar turning into its trips when a finger lands, and back when it lifts
@@ -171,6 +180,9 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
     private var dotNote: FootprintMark.Note?
     private var renderers: [FootprintRouteRenderer] = []
     private weak var map: FootprintMKMapView?
+    #if DEBUG
+    fileprivate var probeView: FootprintCameraProbe?
+    #endif
 
     @objc func touch(_ g: UILongPressGestureRecognizer) { if g.state == .began { view?.touched?() } }
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
@@ -181,6 +193,7 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
         map = m
         if old?.routes != v.routes {
             m.removeOverlays(m.overlays)
+            renderers.removeAll()
             m.addOverlays(v.routes.map(FootprintRoute.init))
         } else if old?.lineWidth != v.lineWidth {
             renderers.forEach { $0.width = v.lineWidth; $0.setNeedsDisplay() }
@@ -209,9 +222,11 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
             }
         } else if let n = dotNote { m.removeAnnotation(n); dotNote = nil; pendingDot = nil }
         if old?.heldMs != v.heldMs {
-            renderers.forEach { $0.litMs = v.heldMs; $0.setNeedsDisplay() }
+            let pad = max(150, m.camera.centerCoordinateDistance * 0.1)          // metres round what changed: the line's width and casing at this zoom
+            renderers.forEach { $0.light(v.heldMs, padMetres: pad) }
             for n in staticMarks { (m.view(for: n) as? FootprintMark)?.alpha = alpha(n) }
         }
+        for n in staticMarks + [nowNote].compactMap({ $0 }) { (m.view(for: n) as? FootprintMark)?.mute = muted(n) }
         if fitKey != v.fitKey {
             let first = fitKey == nil
             fitKey = v.fitKey
@@ -220,6 +235,15 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
         }
         if let f = v.follow { track(f, on: m) } else if cam != nil, !returning { release(m) }
         if link == nil { flushDot() }
+        #if DEBUG
+        probe(m)
+        #endif
+    }
+
+    /// a mark's words give way to the dot's while he stands at its place
+    private func muted(_ n: FootprintMark.Note) -> Bool {
+        guard n !== dotNote, n.label != nil, let d = view?.dot, d.still else { return false }
+        return FootprintTrack.metres(n.coordinate, d.coord).distance < 60
     }
 
     /// The dot moves with the camera, in the same step of the display link, so that the two never show different frames of a quick drag (the camera follows a frame behind, and the dot is where it is).
@@ -235,10 +259,11 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
 
     // MARK: first person
 
-    /// Where the camera is while it follows him, and on its way back to the day's whole after: one spring for all of it (`FootprintCamera`), stepped by a display link that runs only while
-    /// something moves. `cam` is nil while the map is his own.
+    /// Where the camera is while it follows him, and on its way back to the day's whole after (`FootprintCamera`), stepped by a display link that runs while it follows and while it lands.
+    /// `cam` is nil while the map is his own; `moved`: an aim has come since the camera was last put.
     private var cam: FootprintCamera?
     private var returning = false
+    private var moved = false
     private var link: CADisplayLink?
     private var lastTick = 0.0
 
@@ -250,42 +275,55 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
             }
             return
         }
+        var jump = returning          // a hold again while it goes back: from where it stands
         if cam == nil {
             let c = m.camera, p = MKMapPoint(c.centerCoordinate)
             cam = FootprintCamera(x: p.x, y: p.y, heading: c.heading, pitch: c.pitch, height: c.centerCoordinateDistance)
             cam?.top = FootprintCamera.Spring(Double(m.layoutMargins.top))
+            jump = true
         }
         let p = MKMapPoint(f.coord)
         returning = false
-        cam?.aim(x: p.x, y: p.y, heading: f.heading, pitch: FootprintMapFollow.pitch, height: f.height, response: f.response, top: view?.fitPadding.top ?? 0)          // the camera's centre is the middle of what the margins leave: he stands in the clear of the fade
+        cam?.aim(x: p.x, y: p.y, heading: f.heading, pitch: FootprintMapFollow.pitch, height: f.height, response: f.response, top: view?.fitPadding.top ?? 0, jump: jump)          // the camera's centre is the middle of what the margins leave: he stands in the clear of the fade
+        moved = true
         move(m, cut: f.cut)
     }
 
     /// the aims are in: taken at once, or the display link carries the camera there
     private func move(_ m: MKMapView, cut: Bool) {
-        if cut || TLMotion.reduced { cam?.cut(); place(m); if returning { cam = nil; returning = false }; stop() }
-        else if cam?.settled == false, link == nil {
+        if cut || TLMotion.reduced { cam?.cut(); flushDot(); place(m); moved = false; if returning { cam = nil; returning = false }; stop() }
+        else if link == nil {
             lastTick = 0
             link = CADisplayLink(target: self, selector: #selector(step))
             link?.add(to: .main, forMode: .common)
         }
     }
 
+    /// a frame: the camera steps and is put, with the dot in the same frame (he is at the camera's centre, so the two never show different frames of a quick drag); the link stops once a
+    /// let-go has landed, or when nothing moves and no follow is held
     @objc private func step(_ l: CADisplayLink) {
         guard let m = map, cam != nil else { return stop() }
-        cam?.step(dt: lastTick == 0 ? l.targetTimestamp - l.timestamp : min(l.timestamp - lastTick, 0.05))
+        let dt = lastTick == 0 ? l.targetTimestamp - l.timestamp : min(l.timestamp - lastTick, 0.05)
         lastTick = l.timestamp
-        let done = cam?.settled ?? true
-        if done { cam?.cut() }
-        flushDot()
-        place(m)
-        if done { stop(); if returning { cam = nil; returning = false } }
+        let still = cam?.settled ?? true
+        if !still || moved {
+            cam?.step(dt: dt)
+            if cam?.settled == true { cam?.cut() }
+            flushDot()
+            place(m)
+            moved = false
+        }
+        #if DEBUG
+        probe(m, dt: dt)
+        #endif
+        guard cam?.settled ?? true else { return }
+        if returning { cam = nil; returning = false; stop() } else if view?.follow == nil { stop() }
     }
 
     private func place(_ m: MKMapView) {
         guard let c = cam else { return }
         m.layoutMargins.top = CGFloat(c.top.value)
-        m.camera = MKMapCamera(lookingAtCenter: MKMapPoint(x: c.x.value, y: c.y.value).coordinate, fromDistance: c.height, pitch: c.pitch.value, heading: c.headingDegrees)
+        m.camera = MKMapCamera(lookingAtCenter: MKMapPoint(x: c.x, y: c.y).coordinate, fromDistance: c.height, pitch: min(c.pitch.value, FootprintMapFollow.pitch(at: c.height)), heading: c.headingDegrees)
     }
 
     func stop() { link?.invalidate(); link = nil }
@@ -298,7 +336,8 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
         fit(m, animated: false)
         let to = m.camera, p = MKMapPoint(to.centerCoordinate)
         returning = true
-        cam?.aim(x: p.x, y: p.y, heading: 0, pitch: 0, height: to.centerCoordinateDistance, response: TLMotion.mapResponse, top: 0)
+        cam?.aim(x: p.x, y: p.y, heading: 0, pitch: 0, height: to.centerCoordinateDistance, response: TLMotion.mapResponse, top: 0, jump: true)
+        moved = true
         if TLMotion.reduced { move(m, cut: true) } else { place(m); move(m, cut: false) }
     }
 
@@ -316,8 +355,7 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
 
     func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
         guard let o = overlay as? FootprintRoute else { return MKOverlayRenderer(overlay: overlay) }
-        let r = FootprintRouteRenderer(o, width: view?.lineWidth ?? 4.2)
-        r.litMs = view?.heldMs
+        let r = FootprintRouteRenderer(o, width: view?.lineWidth ?? 4.2, litMs: view?.heldMs)
         renderers.append(r)
         return r
     }
@@ -328,6 +366,63 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
         v.annotation = n
         v.configure(n)
         v.alpha = alpha(n)
+        v.mute = muted(n)
         return v
     }
 }
+
+#if DEBUG
+// MARK: the probe
+
+/// `-footprintDebug`, for the recordings: over the map a cross at the camera's centre and a ring where the dot is, and the camera's numbers as they are and as they are aimed, so that a
+/// heading's jump or a height's pumping can be read off a frame by number.
+final class FootprintCameraProbe {
+    static let on = ProcessInfo.processInfo.arguments.contains("-footprintDebug")
+    private let label = UILabel(), cross = CAShapeLayer(), ring = CAShapeLayer()
+
+    init(on m: UIView) {
+        label.numberOfLines = 0
+        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        label.textColor = .yellow
+        label.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        label.frame = CGRect(x: 8, y: 74, width: 300, height: 58)
+        let plus = UIBezierPath()
+        plus.move(to: CGPoint(x: -12, y: 0)); plus.addLine(to: CGPoint(x: 12, y: 0)); plus.move(to: CGPoint(x: 0, y: -12)); plus.addLine(to: CGPoint(x: 0, y: 12))
+        cross.path = plus.cgPath; cross.strokeColor = UIColor.yellow.cgColor; cross.lineWidth = 1.5
+        ring.path = UIBezierPath(ovalIn: CGRect(x: -9, y: -9, width: 18, height: 18)).cgPath; ring.strokeColor = UIColor.cyan.cgColor; ring.fillColor = nil; ring.lineWidth = 1.5
+        m.layer.addSublayer(cross); m.layer.addSublayer(ring); m.addSubview(label)
+    }
+
+    func show(_ c: FootprintCamera?, map m: MKMapView, dot: CLLocationCoordinate2D?, dt: Double?) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let centre = m.convert(m.camera.centerCoordinate, toPointTo: m)
+        cross.position = centre
+        if let dot { ring.isHidden = false; ring.position = m.convert(dot, toPointTo: m) } else { ring.isHidden = true }
+        CATransaction.commit()
+        let dp = dot.map { m.convert($0, toPointTo: m) }, d = dp.map { String(format: "dot %+6.1f %+6.1f pt", $0.x - centre.x, $0.y - centre.y) } ?? "dot -"
+        if let dt { lastDt = dt }
+        let draw = FootprintRouteRenderer.drawClock.take()
+        if let c {
+            let off = hypot(c.x - c.aimX, c.y - c.aimY) / MKMapPointsPerMeterAtLatitude(m.camera.centerCoordinate.latitude)
+            if dt != nil {          // a line a frame, for reading the recordings by number (`log stream`, FPCAM)
+                NSLog("FPCAM %.4f hdg %.3f %.3f dist %.1f %.1f pitch %.2f dot %.2f %.2f cx %.1f cy %.1f fly %d", CACurrentMediaTime(), c.headingDegrees, m.camera.heading, m.camera.centerCoordinateDistance, exp(c.logHeight.target),
+                      m.camera.pitch, (dp?.x ?? .nan) - centre.x, (dp?.y ?? .nan) - centre.y, centre.x, centre.y, c.flying ? 1 : 0)
+            }
+            label.text = String(format: " hdg %6.1f -> %6.1f%@\n dist %6.0f -> %6.0f m  pitch %4.1f\n %@  off %5.0f m\n dt %4.1f ms  route draw max %4.1f ms",
+                                c.headingDegrees, (c.heading.target.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360), c.flying ? "  fly" : "",
+                                m.camera.centerCoordinateDistance, exp(c.logHeight.target), m.camera.pitch, d, off, lastDt * 1000, draw)
+        } else {
+            label.text = String(format: " free  hdg %6.1f\n dist %6.0f m  pitch %4.1f\n %@\n dt %4.1f ms  route draw max %4.1f ms", m.camera.heading, m.camera.centerCoordinateDistance, m.camera.pitch, d, lastDt * 1000, draw)
+        }
+    }
+    private var lastDt = 0.0
+}
+
+extension FootprintMapCoordinator {
+    fileprivate func probe(_ m: MKMapView, dt: Double? = nil) {
+        guard FootprintCameraProbe.on else { return }
+        if probeView == nil { probeView = FootprintCameraProbe(on: m) }
+        probeView?.show(cam, map: m, dot: dotNote?.coordinate, dt: dt)
+    }
+}
+#endif
