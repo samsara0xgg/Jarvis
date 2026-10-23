@@ -1,0 +1,17 @@
+{
+  "id": "weather-place-richmond-near-home",
+  "tool": "weather",
+  "said": "what's the weather in Richmond",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {"place": "Richmond"},
+  "recording": "weather-place-richmond-near-home.recording.json",
+  "expect": {
+    "result": [
+      {"path": "place", "op": "eq", "value": "Richmond, British Columbia, Canada"},
+      {"path": "same_name_elsewhere", "op": "mentions", "value": "Virginia"},
+      {"path": "same_name_elsewhere", "op": "not_mentions", "value": "British Columbia"}
+    ]
+  }
+}

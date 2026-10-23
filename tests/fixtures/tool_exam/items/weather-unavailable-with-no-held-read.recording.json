@@ -1,0 +1,25 @@
+{
+ "version": 1,
+ "settings": {
+  "home": {
+   "weather": {
+    "latitude": 48.48,
+    "longitude": -123.38,
+    "country_code": "CA",
+    "name": "Victoria"
+   }
+  }
+ },
+ "env": [],
+ "http": [
+  {
+   "method": "GET",
+   "url": "https://weatherkit.apple.com/api/v1/weather/en/48.48/-123.38?timezone=America/Vancouver&dailyStart=2026-10-21T07:00:00Z&dailyEnd=2026-10-23T07:00:00Z&dataSets=currentWeather,forecastHourly,forecastDaily,forecastNextHour,weatherAlerts&hourlyStart=2026-10-21T07:00:00Z&hourlyEnd=2026-10-23T07:00:00Z&countryCode=CA&country=CA",
+   "body_sha": "e3b0c44298fc1c14",
+   "status": 503,
+   "content_type": "",
+   "body": "{\"reason\": \"SERVICE_UNAVAILABLE\"}"
+  }
+ ],
+ "mcp": []
+}
