@@ -2476,7 +2476,7 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
     assert actions.index("spawn-return:old") < actions.index("kill:old")
     assert actions.index("kill:old") < actions.index("reaped:old")
     assert actions.index("reaped:old") < actions.index("spawn:new")
-    assert not pipeline._fallback_janitors  # noqa: SLF001
+    assert not pipeline._say_fallback.janitors_pending()  # noqa: SLF001
 
 
 def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915

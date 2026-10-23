@@ -6,24 +6,17 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import math
-import tempfile
 import threading
 import time
-import wave
 from collections import deque
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
-from jarvis.surface.tts_silence import SilenceTrimConfig, SilenceTrimmer
 from jarvis.surface.voice_ledger import (
-    AcceptedSamples,
     ForegroundBusy,
     OutputTimelineSnapshot,
     StalePlaybackGeneration,
-    settle_boundaries,
 )
 from jarvis.surface.voice_media.config import StreamingMediaConfig
 from jarvis.surface.voice_media.contract import (
@@ -45,6 +38,8 @@ from jarvis.surface.voice_media.response import (
     ResponseBuffer,
     ResponseChunk,
 )
+from jarvis.surface.voice_media.ring_sink import RingSink
+from jarvis.surface.voice_media.say_fallback import SayFallback
 from jarvis.surface.voice_media.shutdown_clock import ShutdownClock
 from jarvis.surface.voice_media.spare import SpareSessions
 from jarvis.surface.voice_tts import (
@@ -66,8 +61,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# The rate the say fallback renders at; the player resamples it like provider PCM.
-_SAY_RATE_HZ = 24_000
 _RESPONSE_TERMINAL_TYPES = frozenset({"response.cancelled", "response.failed"})
 _RESPONSE_EVENT_TYPES = frozenset(
     {"surface.response_open", "surface.response_chunk", "surface.response_emitted"}
@@ -164,7 +157,6 @@ class StreamingTTSPipeline:
         )
         self._lane_isolated = False
         self._terminal_debt: ActiveResponse | None = None
-        self._fallback_janitors: set[asyncio.Task[bool]] = set()
         self._event_cursor = boot_high_water_id
         self._responses: dict[str, ResponseBuffer] = {}
         self._after_drain: deque[ResponseBuffer] = deque()
@@ -198,6 +190,20 @@ class StreamingTTSPipeline:
             clock=self._clock,
             journal=self._journal,
             admitting=self._admitting,
+        )
+        self._ring = RingSink(
+            player=player,
+            config=self._config,
+            journal=self._journal,
+            current=lambda: self._active,
+        )
+        self._say_fallback = SayFallback(
+            player=player,
+            config=self._config,
+            clock=self._clock,
+            ring=self._ring,
+            current=lambda: self._active,
+            isolate=self._isolate_fallback_cleanup,
         )
         self._thread = threading.Thread(
             target=self._thread_main,
@@ -1832,7 +1838,7 @@ class StreamingTTSPipeline:
             # Every exit path retains and drains fallback process ownership;
             # an exceptional ``wait()`` must not let a still-live ``say``
             # overlap the next generation.
-            await self._cancel_fallback(active)
+            await self._say_fallback.cancel(active)
             if active.output_lease and self._ducker is not None:
                 active.output_lease = False
                 with contextlib.suppress(Exception):
@@ -1875,7 +1881,7 @@ class StreamingTTSPipeline:
         """Walk ``segments``; while ``live`` the list grows until the buffer is emitted."""
         lease = active.lease
         accepted_total = 0
-        trimmer = self._new_silence_trimmer()
+        trimmer = self._ring.new_silence_trimmer()
         last_error: BaseException | None = None
         endpoint_index = 0
         session: TTSSession | None = None
@@ -1884,7 +1890,7 @@ class StreamingTTSPipeline:
         segment_index = 0
         while True:
             if segment_index >= len(segments) and not (
-                live and await self._await_segments(active, segments)
+                live and await self._ring.await_segments(active, segments)
             ):
                 break
             if live and active.response.tagged:
@@ -1898,7 +1904,7 @@ class StreamingTTSPipeline:
             budget.reschedule(
                 asyncio.get_running_loop().time() + self._config.response_timeout_s,
             )
-            self._prepare_segment(active, sequence, text, segment_hash)
+            self._ring.prepare_segment(active, sequence, text, segment_hash)
             opened = self._player.begin_generation_segment(
                 expected_playback_generation_id=lease.playback_generation_id,
                 sequence=sequence,
@@ -1978,7 +1984,7 @@ class StreamingTTSPipeline:
                             canonical = resampler.feed(event.pcm)
                             if trimmer is not None:
                                 canonical = trimmer.feed(canonical)
-                            written = await self._write_all(
+                            written = await self._ring.write_all(
                                 active,
                                 canonical,
                                 sequence=sequence,
@@ -1990,11 +1996,11 @@ class StreamingTTSPipeline:
                         if trimmer is not None:
                             tail = trimmer.feed(tail) + trimmer.end_segment()
                         if tail:
-                            written = await self._write_all(active, tail, sequence=sequence)
+                            written = await self._ring.write_all(active, tail, sequence=sequence)
                             accepted_segment += written
                             accepted_total += written
                         if accepted_segment and pending_alignment:
-                            self._record_alignment(
+                            self._ring.record_alignment(
                                 active, pending_alignment, segment_start=segment_start,
                                 segment_samples=accepted_segment, trimmed=head_dropped(trimmer),
                             )
@@ -2068,7 +2074,7 @@ class StreamingTTSPipeline:
                     )
                     return False
                 if self._config.enable_macos_say_fallback:
-                    while live and await self._await_segments(active, segments):
+                    while live and await self._ring.await_segments(active, segments):
                         if active.response.tagged:
                             break
                         budget.reschedule(
@@ -2083,7 +2089,7 @@ class StreamingTTSPipeline:
                         )
                         return False
                     remaining = segments[segment_index:]
-                    return await self._run_macos_say(active, remaining, budget=budget)
+                    return await self._say_fallback.run(active, remaining, budget=budget)
                 if last_error is not None:
                     raise last_error
                 return False
@@ -2107,7 +2113,7 @@ class StreamingTTSPipeline:
         """Play what was accepted to its end, then her spoken line or tones, before the terminal."""
         line = self._network_lost.line(lang.language())
         cue = line or cut_off_cue(self._config.canonical_sample_rate_hz)
-        await self._write_all(active, cue, sequence=sequence)
+        await self._ring.write_all(active, cue, sequence=sequence)
         record_realtime_trace(
             "tts_cut_off_cue",
             response_id=active.response.response_id,
@@ -2123,375 +2129,6 @@ class StreamingTTSPipeline:
             if snapshot.estimated_audible_samples >= snapshot.accepted_samples:
                 return
             await asyncio.sleep(self._config.presentation_poll_s)
-
-    def _prepare_segment(
-        self, active: ActiveResponse, sequence: int, text: str, segment_hash: str,
-    ) -> None:
-        """Record the segment about to be synthesized; the cursor maps onto these rows."""
-        self._journal.segment_prepared(
-            payload={
-                "session_id": active.lease.session_id,
-                "response_id": active.response.response_id,
-                "turn_id": active.response.turn_id,
-                "playback_generation_id": active.lease.playback_generation_id,
-                "sequence": sequence,
-                "speech_text": text,
-                "speech_text_hash": hashlib.sha256(text.encode()).hexdigest(),
-                "segment_hash": segment_hash,
-                "source_chunk_event_uid": active.response.chunks[sequence].source_event_uid,
-            },
-            source_event_id=active.activation_event_uid,
-            correlation={"turn_id": active.response.turn_id},
-        )
-        active.prepared_text += text
-
-    def _new_silence_trimmer(self) -> SilenceTrimmer | None:
-        """ADR 0165: one trimmer per playback generation, or none when switched off."""
-        config = self._config
-        if not config.trim_silence:
-            return None
-        return SilenceTrimmer(
-            sample_rate_hz=config.canonical_sample_rate_hz,
-            config=SilenceTrimConfig(
-                threshold_db=config.trim_threshold_db,
-                window_ms=config.trim_window_ms,
-                preroll_ms=config.trim_preroll_ms,
-                fade_ms=config.trim_fade_ms,
-                max_cut_ms=config.trim_max_cut_ms,
-                clause_pause_ms=config.trim_clause_pause_ms,
-                sentence_pause_ms=config.trim_sentence_pause_ms,
-            ),
-        )
-
-    def _record_alignment(
-        self, active: ActiveResponse, events: list[TTSAudioChunk], *, segment_start: int,
-        segment_samples: int, trimmed: int = 0,
-    ) -> None:
-        """Persist exact text/sample mappings before allowing a word checkpoint.
-
-        Provider times count from the start of the provider's audio; the written
-        segment starts ``trimmed`` samples later (its leading silence dropped).
-        Called once the segment's audio is complete: whether the provider's
-        timing is plausible can only be told against the audio it came with
-        (``settle_boundaries``).
-        """
-        rate = self._config.canonical_sample_rate_hz
-        boundaries = settle_boundaries(
-            tuple(
-                (end, segment_start + max(0, math.ceil(ms * rate / 1000) - trimmed))
-                for event in events for end, ms in event.word_boundaries
-            ),
-            segment_start=segment_start, segment_end=segment_start + segment_samples,
-        )
-        if not boundaries:
-            return
-        self._journal.playback_alignment(
-            payload={
-                "session_id": active.lease.session_id,
-                "response_id": active.response.response_id,
-                "turn_id": active.response.turn_id,
-                "playback_generation_id": active.lease.playback_generation_id,
-                "sequence": events[0].sequence,
-                "speech_text_hash": hashlib.sha256(
-                    (events[0].timing_text or "").encode(),
-                ).hexdigest(),
-                "word_boundaries": [list(boundary) for boundary in boundaries],
-            },
-            source_event_id=active.activation_event_uid,
-            correlation={"turn_id": active.response.turn_id},
-        )
-        self._player.align_generation_segment(
-            expected_playback_generation_id=active.lease.playback_generation_id,
-            sequence=events[0].sequence, boundaries=boundaries,
-        )
-
-    async def _await_segments(
-        self,
-        active: ActiveResponse,
-        segments: list[tuple[int, str, str]],
-    ) -> bool:
-        """Extend ``segments`` with newly durable ones; False once the buffer is complete."""
-        response = active.response
-        last = segments[-1][0] if segments else -1
-        while self._active is active:
-            if response.tagged:
-                return True
-            response.updated.clear()
-            fresh = [item for item in response.speech_segments() if item[0] > last]
-            if fresh:
-                segments.extend(fresh)
-                return True
-            if response.emitted:
-                return False
-            await response.updated.wait()
-        return False
-
-    async def _write_all(
-        self,
-        active: ActiveResponse,
-        pcm: bytes,
-        *,
-        sequence: int,
-    ) -> int:
-        offset_samples = 0
-        samples = memoryview(pcm)
-        total_samples = len(samples) // 4
-        while offset_samples < total_samples:
-            if self._active is not active:
-                return offset_samples
-            result = self._player.write_generation(
-                samples[offset_samples * 4 :].tobytes(),
-                expected_playback_generation_id=(active.lease.playback_generation_id),
-                segment_sequence=sequence,
-            )
-            if isinstance(result, StalePlaybackGeneration):
-                return offset_samples
-            if isinstance(result, AcceptedSamples):
-                offset_samples += result.sample_count
-                continue
-            self._player.poll_presentation()
-            await asyncio.sleep(self._config.ring_retry_s)
-        return offset_samples
-
-    async def _run_macos_say(
-        self,
-        active: ActiveResponse,
-        segments: list[tuple[int, str, str]],
-        *,
-        budget: asyncio.Timeout,
-    ) -> bool:
-        """Say ``segments`` with macOS ``say``, through the player where it can.
-
-        Each segment is rendered to a file and played like provider audio, so
-        the echo canceller hears it, the soft barge-in can lower it and the
-        cursor knows what was heard. Played straight to the speakers, as
-        before, when rendering fails. The first segment is already open.
-        """
-        active.provider_label = "macos_say"
-        record_realtime_trace(
-            "tts_macos_say_started",
-            response_id=active.response.response_id,
-            playback_generation_id=active.lease.playback_generation_id,
-            cursor_quality="rendered",
-        )
-        for index, (sequence, text, segment_hash) in enumerate(segments):
-            budget.reschedule(
-                asyncio.get_running_loop().time() + self._config.response_timeout_s,
-            )
-            if index > 0:
-                self._prepare_segment(active, sequence, text, segment_hash)
-                opened = self._player.begin_generation_segment(
-                    expected_playback_generation_id=active.lease.playback_generation_id,
-                    sequence=sequence,
-                    text=text,
-                    segment_hash=segment_hash,
-                )
-                if isinstance(opened, StalePlaybackGeneration):
-                    return False
-            rendered = await self._render_macos_say(active, text)
-            if self._active is not active:
-                return False
-            if rendered is None:
-                LOGGER.warning("say could not render to a file; saying the rest aloud directly")
-                return await self._run_macos_say_aloud(active, segments[index:])
-            pcm, rate_hz = rendered
-            resampler = SegmentResampler(
-                input_rate_hz=rate_hz, output_rate_hz=self._config.canonical_sample_rate_hz,
-            )
-            await self._write_all(
-                active, resampler.feed(pcm) + resampler.finish(), sequence=sequence,
-            )
-            finished = self._player.finish_generation_segment(
-                expected_playback_generation_id=active.lease.playback_generation_id,
-                sequence=sequence,
-            )
-            if isinstance(finished, StalePlaybackGeneration):
-                return False
-        return True
-
-    async def _say_process(
-        self, active: ActiveResponse, *args: str,
-    ) -> int | None:
-        """Run ``say *args`` under the fallback's cancel ownership; its exit code."""
-        spawn_task = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                "say",
-                "-v",
-                lang.say_voice(),
-                *args,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            ),
-            name=f"media-say-spawn-{active.response.response_id}",
-        )
-        active.fallback_spawn_task = spawn_task
-        try:
-            process = await asyncio.shield(spawn_task)
-        except asyncio.CancelledError:
-            raise
-        except OSError:
-            active.fallback_spawn_task = None
-            return None
-        active.fallback_spawn_task = None
-        active.fallback_process = process
-        return_code = await process.wait()
-        if active.fallback_process is process:
-            active.fallback_process = None
-        return return_code
-
-    async def _render_macos_say(
-        self, active: ActiveResponse, text: str,
-    ) -> tuple[bytes, int] | None:
-        """``text`` as ``say``'s mono int16 samples and their rate, or None."""
-        with tempfile.TemporaryDirectory(prefix="jarvis-say-") as folder:
-            path = Path(folder) / "say.wav"
-            return_code = await self._say_process(
-                active,
-                "-o",
-                str(path),
-                "--file-format=WAVE",
-                f"--data-format=LEI16@{_SAY_RATE_HZ}",
-                text,
-            )
-            if return_code != 0:
-                return None
-            try:
-                with wave.open(str(path), "rb") as reader:
-                    if reader.getsampwidth() != 2 or reader.getnchannels() != 1:  # noqa: PLR2004
-                        return None
-                    return reader.readframes(reader.getnframes()), reader.getframerate()
-            except (OSError, EOFError, wave.Error):
-                return None
-
-    async def _run_macos_say_aloud(
-        self,
-        active: ActiveResponse,
-        segments: list[tuple[int, str, str]],
-    ) -> bool:
-        """Say ``segments`` straight to the speakers; the cursor stays unknown."""
-        speech = "".join(text for _sequence, text, _hash in segments)
-        return_code = await self._say_process(active, speech)
-        if return_code != 0 or self._active is not active:
-            return False
-        for index, (sequence, text, segment_hash) in enumerate(segments):
-            if index > 0:
-                opened = self._player.begin_generation_segment(
-                    expected_playback_generation_id=active.lease.playback_generation_id,
-                    sequence=sequence,
-                    text=text,
-                    segment_hash=segment_hash,
-                )
-                if isinstance(opened, StalePlaybackGeneration):
-                    return False
-            finished = self._player.finish_generation_segment(
-                expected_playback_generation_id=active.lease.playback_generation_id,
-                sequence=sequence,
-            )
-            if isinstance(finished, StalePlaybackGeneration):
-                return False
-        return True
-
-    async def _cancel_fallback(
-        self,
-        active: ActiveResponse,
-    ) -> None:
-        existing_janitor = active.fallback_janitor_task
-        if existing_janitor is not None:
-            quiescent = await asyncio.shield(existing_janitor)
-            if active.fallback_janitor_task is existing_janitor:
-                active.fallback_janitor_task = None
-            if not quiescent:
-                self._isolate_fallback_cleanup(active)
-            return
-        spawn_task = active.fallback_spawn_task
-        owned_process = active.fallback_process
-        if spawn_task is None and owned_process is None:
-            return
-        # Claim every handle and publish the janitor before the first await.
-        # The response task and foreground interrupt can enter cleanup
-        # concurrently, but the second caller will now join the same debt.
-        active.fallback_spawn_task = None
-        active.fallback_process = None
-        janitor = asyncio.create_task(
-            self._cleanup_fallback_handles(spawn_task, owned_process),
-            name=f"media-say-janitor-{active.response.response_id}",
-        )
-        active.fallback_janitor_task = janitor
-        self._fallback_janitors.add(janitor)
-        janitor.add_done_callback(self._fallback_janitors.discard)
-        quiescent = await asyncio.shield(janitor)
-        if active.fallback_janitor_task is janitor:
-            active.fallback_janitor_task = None
-        if not quiescent:
-            self._isolate_fallback_cleanup(active)
-
-    async def _cleanup_fallback_handles(
-        self,
-        spawn_task: asyncio.Task[asyncio.subprocess.Process] | None,
-        owned_process: asyncio.subprocess.Process | None,
-    ) -> bool:
-        """Own claimed spawn/process handles through terminate/kill/reap."""
-        spawned_process: asyncio.subprocess.Process | None = None
-        if spawn_task is not None:
-            spawn_task.cancel()
-            _done, pending = await asyncio.wait(
-                {spawn_task},
-                timeout=self._clock.remaining_s(0.25),
-            )
-            if pending:
-                try:
-                    spawned_process = await spawn_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    LOGGER.exception("late macOS say spawn failed")
-            elif not spawn_task.cancelled() and spawn_task.exception() is None:
-                spawned_process = spawn_task.result()
-        processes = [
-            process
-            for process in (spawned_process, owned_process)
-            if process is not None
-        ]
-        for index, process in enumerate(processes):
-            if index > 0 and process is processes[0]:
-                continue
-            if not await self._terminate_process(process):
-                return False
-        return True
-
-    async def _terminate_process(self, process: asyncio.subprocess.Process) -> bool:
-        """Terminate, kill if needed, and never report quiescent before reap."""
-        if process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                process.terminate()
-        wait_task = asyncio.create_task(process.wait())
-        done, _pending = await asyncio.wait(
-            {wait_task},
-            timeout=self._clock.remaining_s(0.25),
-        )
-        if done:
-            try:
-                wait_task.result()
-            except asyncio.CancelledError:
-                LOGGER.warning("macOS say wait was cancelled after terminate; forcing kill")
-            except Exception as exc:  # noqa: BLE001 - cleanup must still force kill
-                LOGGER.warning("macOS say wait failed after terminate; forcing kill: %r", exc)
-            else:
-                return True
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
-        reap_task = wait_task if not wait_task.done() else asyncio.create_task(process.wait())
-        try:
-            # Reap completion is presentation ownership debt. A pathological
-            # child may make close() return degraded, but cannot overlap a
-            # successor or pin process exit because the actor is daemon-backed.
-            await asyncio.shield(reap_task)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            LOGGER.exception("macOS say could not be reaped after kill")
-            return False
-        return True
 
     def _isolate_fallback_cleanup(self, active: ActiveResponse) -> None:
         """Fail closed when exact subprocess quiescence cannot be established."""
@@ -2660,7 +2297,7 @@ class StreamingTTSPipeline:
         if session is not None:
             abort_task = asyncio.create_task(session.abort(reason))
             await self._clock.wait_task_bounded(abort_task, timeout_s=0.5)
-        await self._cancel_fallback(active)
+        await self._say_fallback.cancel(active)
         if task is not None and task is not asyncio.current_task():
             await self._clock.wait_task_bounded(task, timeout_s=0.5)
 
@@ -3016,14 +2653,7 @@ class StreamingTTSPipeline:
         await self._network_lost.close()
         if self._active is not None:
             await self._interrupt_active(reason="media_owner_shutdown")
-        while self._fallback_janitors:
-            # Shutdown owns late-spawn debt too. Waiting here may make the
-            # caller observe degraded bounded close, but the daemon actor
-            # remains the sole janitor and will finish once the spawn returns.
-            await asyncio.gather(
-                *(asyncio.shield(task) for task in tuple(self._fallback_janitors)),
-                return_exceptions=True,
-            )
+        await self._say_fallback.drain()
         while self._after_drain:
             response = self._after_drain.popleft()
             self._registry.terminalize(response.response_id)
