@@ -201,6 +201,7 @@ class Reply:
     message: ``{"content": [blocks], "stop_reason": ..., "usage": {"server_tool_use": ...}}``.
     ``quiet`` makes that stream stop after its blocks without ending the message: the event is set
     once every block has been taken by the reader, and the stream then waits until it is cancelled.
+    ``fails`` makes that stream break with the error after its blocks instead.
     """
 
     text: str | None = None
@@ -209,6 +210,7 @@ class Reply:
     chunk: int | None = None  # a stream delivers the text in pieces of this many characters
     raw: Mapping[str, Any] = field(default_factory=dict)  # the provider's body, for a reader of it
     quiet: threading.Event | None = None  # a message stream that goes silent after its blocks
+    fails: BaseException | None = None  # a message stream that breaks after its blocks
 
     @property
     def finish_reason(self) -> str:
@@ -686,7 +688,8 @@ async def _message_events(step: Reply | Failure) -> AsyncIterator[Mapping[str, A
 
     A text block streams its text and its citations, a tool call its input as JSON pieces, a
     thinking block its text and signature, and any other block (a search result) whole in its
-    start event, as the API sends them. A step with ``quiet`` ends after its blocks.
+    start event, as the API sends them. A step with ``quiet`` or ``fails`` ends after its blocks,
+    silent or broken.
     """
     if isinstance(step, Failure):
         raise step.error
@@ -709,6 +712,8 @@ async def _message_events(step: Reply | Failure) -> AsyncIterator[Mapping[str, A
     if step.quiet is not None:
         step.quiet.set()  # every block above has been taken by the reader
         await asyncio.Event().wait()  # until the reader is cancelled
+    if step.fails is not None:
+        raise step.fails
     delta_usage: dict[str, Any] = {"output_tokens": usage.output_tokens if usage else 0}
     if (searches := (step.raw.get("usage") or {}).get("server_tool_use")) is not None:
         delta_usage["server_tool_use"] = searches

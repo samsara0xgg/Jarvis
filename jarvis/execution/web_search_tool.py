@@ -17,19 +17,18 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
-from jarvis.execution import speakable
+from jarvis.execution import paragraphs, speakable
 from jarvis.execution.tools import (
     DEFAULT_WEB_SEARCH_PROVIDER,
     Receipted,
     Tool,
     ToolContext,
     ToolError,
-    _cap_rows_total_bytes,
 )
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.receipts import Covered, Receipt
@@ -37,6 +36,9 @@ from jarvis.shared.receipts import Covered, Receipt
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from datetime import tzinfo
+
+    from jarvis.shared.clock import Clock
+    from jarvis.shared.here import Coarse
 
 LOGGER = logging.getLogger(__name__)
 
@@ -109,19 +111,54 @@ _SCHEMA: Final[Mapping[str, Any]] = {
     "required": ["query", "depth"],
 }
 
-_WEB_DEEP_SUMMARY_MAX_BYTES: Final[int] = 8192
-"""Cap on a deep search's researched summary — the same 8 KiB order as the quick rows, so a long
-brief cannot dwarf the decision packet."""
+_SOURCE_TITLE_CHARS: Final[int] = 70
+_PAGES_CHARS: Final[int] = 3_000
+"""The pages an unfinished deep search lists, in JSON characters; rows go whole to fit it."""
+_SUMMARY_ROOM: Final[int] = 420
+"""What a deep result keeps free of :data:`_RESULT_CHARS` for its first line, written last."""
+_BRIEF_MIN_CHARS: Final[int] = 600
+"""The brief gets at least this much, whatever the sources take."""
+
+
+@dataclass(frozen=True)
+class Source:
+    """A page a deep search found or rests on: title, site, the page's date if the search gave one.
+
+    ``site`` is the host without ``www.``. ``date`` is the day as ``YYYY-MM-DD`` when the search's
+    page age names one, else the age as the search wrote it, ``None`` when it gave none. ``url`` is
+    whole: it is the link a device shows.
+    """
+
+    title: str
+    site: str
+    date: str | None
+    url: str
+
+    def row(self) -> dict[str, str]:
+        """The row the model reads and the answer's list of sources is written from."""
+        row = {"title": speakable.cut(self.title, _SOURCE_TITLE_CHARS) or self.site}
+        row["site"] = self.site
+        if self.date:
+            row["date"] = self.date
+        row["url"] = self.url
+        return row
 
 
 @dataclass(frozen=True)
 class DeepFindings:
-    """What one deep web search found: a researched summary and where it came from."""
+    """What one deep web search found: its brief, the pages it rests on, the pages it saw.
 
-    summary: str
-    sources: tuple[tuple[str, str], ...]  # (title, url)
+    ``brief`` is what the nested model wrote after its last search, empty when it stopped before
+    writing one. ``sources`` are the pages the brief rests on; ``pages`` is every page its
+    searches returned, in order. ``stopped``: ``minute`` it ran out of its minute, ``failed`` the
+    request broke, ``length`` the brief hit the model's length limit; ``None`` it finished.
+    """
+
+    brief: str
+    sources: tuple[Source, ...]
+    pages: tuple[Source, ...]
     searches: int
-    complete: bool  # False: the provider stopped before it finished its brief
+    stopped: Literal["minute", "failed", "length"] | None = None
 
 
 @dataclass(frozen=True)
@@ -489,19 +526,141 @@ class DeepSearch(Protocol):
     L4 cannot import `jarvis.decision.llm.LLMClient` — sibling layers under `.importlinter` — the
     same seam `VisionClient` is. `jarvis.runtime` builds the real implementation around
     Anthropic's own web search server tool and binds it into `build_default_registry`. One
-    question in, findings out; any failure is raised, and the handler turns it into an error
-    observation.
+    question in, findings out, inside one minute of ``clock`` (ADR 0359): ``where`` is roughly
+    where he is, taken from the call's Here. A search that fails with no page found is raised, and
+    the handler turns it into an error observation.
     """
 
-    def research(self, query: str) -> DeepFindings:
+    def research(self, query: str, *, where: Coarse | None, clock: Clock) -> DeepFindings:
         """Search widely, cross-check, and return the brief with its sources."""
         ...
 
 
-def _deep_web_search(deep_search: DeepSearch, query: str) -> dict[str, Any]:
-    """One deep search as the tool's result payload."""
+def _newest(sources: tuple[Source, ...]) -> date | None:
+    """The latest day any source's date names; a date that is not a day is no date."""
+    days: list[date] = []
+    for source in sources:
+        try:
+            days.append(date.fromisoformat(source.date or ""))
+        except ValueError:
+            continue
+    return max(days, default=None)
+
+
+def _plural(count: int, noun: str) -> str:
+    """``1 page``, ``2 pages``, ``2 searches``."""
+    ending = "es" if noun.endswith("ch") else "s"
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}{ending}"
+
+
+def _brief_line(findings: DeepFindings, said: str, today: date, *, cut: tuple[int, int]) -> str:
+    """The first line of a deep result with its brief: how it was made, how fresh, what is cut."""
+    line = f"Deep search for '{said}': brief below"
+    if findings.sources:
+        newest = _newest(findings.sources)
+        when = f"newest {speakable.day_name(newest, today)}" if newest else "dates unknown"
+        line += f", from {_plural(len(findings.sources), 'source')}, {when}"
+    else:
+        line += ", no source named"
+    line += f"; {_plural(findings.searches, 'search')}."
+    if findings.sources:
+        line += " The sources are listed under your answer."
+    if findings.stopped == "length":
+        line += " The brief hit the model's length limit and may be unfinished."
+    if cut[1]:
+        line += f" The brief is cut after {cut[0]:,} characters; {cut[1]} more parts left out."
+    return line
+
+
+def _pages_line(findings: DeepFindings, said: str, *, shown: int) -> str:
+    """The first line of a deep result that stopped before its brief: why, and what there is."""
+    why = "failed" if findings.stopped == "failed" else "stopped at a minute"
+    line = (
+        f"Deep search for '{said}' {why} before writing its brief; "
+        f"{_plural(len(findings.pages), 'page')} found, listed below with site and date. "
+        "Read one with web_fetch, or search again with depth quick."
+    )
+    if shown < len(findings.pages):
+        line += f" Showing {shown}; {len(findings.pages) - shown} more left out to keep this short."
+    return line
+
+
+def _deep_result(findings: DeepFindings, query: str, *, today: date) -> Receipted:
+    """A deep search as the tool's result: its brief and sources, else the pages it found.
+
+    The brief is cut at a paragraph to what the sources leave of :data:`_RESULT_CHARS`, and the
+    line says how much. A search that stopped before its brief hands over the pages it found,
+    marked unfinished (not an error); one that found none is an error that points at a quick
+    search.
+    """
+    said = _said(query)
+    window = f"'{said}', deep"
+    if findings.brief:
+        rows = [one.row() for one in findings.sources]
+        fixed = {
+            "summary": "", "brief": "", "sources": rows, "provider": "anthropic", "depth": "deep",
+            "searches": findings.searches, "unfinished": True,
+        }
+        room = _RESULT_CHARS - len(json.dumps(fixed, ensure_ascii=False)) - _SUMMARY_ROOM
+        parts = paragraphs.parts(findings.brief, max(room, _BRIEF_MIN_CHARS))
+        shown = parts[0] if parts else ""
+        payload: dict[str, Any] = {
+            "summary": _brief_line(
+                findings, said, today, cut=(len(shown), max(0, len(parts) - 1)),
+            ),
+            "brief": shown,
+            "sources": rows,
+            "provider": "anthropic",
+            "depth": "deep",
+            "searches": findings.searches,
+        }
+        if findings.stopped:
+            payload["unfinished"] = True
+        return Receipted(
+            payload,
+            Receipt(
+                "done", reads_only=True,
+                line=f"searched the web, deep: {_plural(len(findings.sources), 'source')}",
+                covered=Covered(("anthropic",), window, len(findings.sources), 0),
+            ),
+        )
+    if not findings.pages:
+        msg = (
+            "web_search: the deep search ran out of its minute before it found any page; "
+            "try a quick search for it, or tell him the search did not finish"
+        )
+        raise ToolError(msg, code="web_search_timeout", kind="dont_retry")
+    shown_pages = len(findings.pages)
+    while True:
+        payload = {
+            "summary": _pages_line(findings, said, shown=shown_pages),
+            "unfinished": True,
+            "pages": [one.row() for one in findings.pages[:shown_pages]],
+            "provider": "anthropic",
+            "depth": "deep",
+            "searches": findings.searches,
+        }
+        if shown_pages == 1 or len(json.dumps(payload, ensure_ascii=False)) <= _PAGES_CHARS:
+            break
+        shown_pages -= 1
+    left_out = len(findings.pages) - shown_pages
+    return Receipted(
+        payload,
+        Receipt(
+            "done", reads_only=True,
+            line="searched the web, deep: stopped before its brief; "
+            f"{_plural(shown_pages, 'page')}",
+            covered=Covered(("anthropic",), window, shown_pages, left_out),
+        ),
+    )
+
+
+def _deep_web_search(
+    deep_search: DeepSearch, query: str, *, where: Coarse | None, ctx: ToolContext,
+) -> Receipted:
+    """One deep search as the tool's result."""
     try:
-        findings = deep_search.research(query)
+        findings = deep_search.research(query, where=where, clock=ctx.clock)
     except Exception as exc:
         # The type only in the message: a provider error can carry request headers or a key.
         msg = (
@@ -509,19 +668,7 @@ def _deep_web_search(deep_search: DeepSearch, query: str) -> dict[str, Any]:
             "search, or tell him the search failed"
         )
         raise ToolError(msg, code="web_search_backend_error") from exc
-    summary = "".join(_cap_rows_total_bytes([findings.summary], _WEB_DEEP_SUMMARY_MAX_BYTES))
-    payload: dict[str, Any] = {
-        "summary": summary,
-        "sources": [
-            f"{i}. {title} — {url}" for i, (title, url) in enumerate(findings.sources, start=1)
-        ],
-        "provider": "anthropic",
-        "depth": "deep",
-        "searches": findings.searches,
-    }
-    if not findings.complete:
-        payload["incomplete"] = True
-    return payload
+    return _deep_result(findings, query, today=ctx.clock.now().date())
 
 
 def _within(value: object) -> str | None:
@@ -578,7 +725,8 @@ def make_web_search(
         within, news = _within(args.get("within")), _news(args.get("news"))
         deep = args.get("depth") == "deep"
         if deep and deep_search is not None:
-            return _deep_web_search(deep_search, query)
+            where = None if ctx.here is None else ctx.here.coarse()
+            return _deep_web_search(deep_search, query, where=where, ctx=ctx)
         # No deep backend on this build: the widest quick search is the nearest thing.
         count = _MAX_RESULTS_CAP if deep else _count(args.get("max_results"), default_max_results)
         now = ctx.clock.now()
@@ -611,4 +759,4 @@ def make_web_search(
     )
 
 
-__all__ = ["DeepFindings", "DeepSearch", "Hit", "make_web_search"]
+__all__ = ["DeepFindings", "DeepSearch", "Hit", "Source", "make_web_search"]

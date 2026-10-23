@@ -28,6 +28,7 @@ from jarvis.runtime.moment import Moment
 from jarvis.runtime.night_run import NightRun
 from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.rides import Rides
+from jarvis.runtime.search_location import HomePlace
 from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.state import places as place_state
@@ -187,6 +188,9 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         event_log_path=paths.event_log,
         pricing_path=config.pricing_path,
         account_cost=True,
+        home=None if config.home_weather is None else HomePlace.from_weather(
+            config.home_weather, config.zone_name,
+        ),
     )
     rides = Rides(paths.event_log, bus_live, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
