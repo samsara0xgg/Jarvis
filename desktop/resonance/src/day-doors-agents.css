@@ -8,12 +8,19 @@
 .notch .dt-ask.is-yes { background:rgb(255 201 143); color:#1a1307; }
 .notch .dt-ask.is-yes:hover { background:rgb(255 213 168); }
 
-/* a session's page: where it runs with the way there, the conversation (the island's lines: .m-list is the notch's), what it asks, a box for a reply; the pane's page scrolls, not the list in it */
-.notch .dt-ag { display:flex; flex-direction:column; gap:12px; align-self:stretch; min-height:100%; }
-.notch .dt-ag-top { display:flex; align-items:center; gap:8px; }
-.notch .dt-ag-top p { flex:1; min-width:0; margin:0; overflow:hidden; font-size:12px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
-.notch .dt-ag-top .dt-ask { flex:none; }
-.notch .dt-ag .m-list { max-height:none; overflow:visible; }
-.notch .dt-ag-ask { margin:0; font-size:var(--text-detail); line-height:1.5; color:var(--p-ink); overflow-wrap:anywhere; }
+/* a session's page: where it runs with the way there, the conversation (the island's lines: .m-list is the notch's), what it asks, a box for a reply; the pane's page scrolls, not the list in it.
+   In the right column (~340 px): the project bold before the way there, his words a grey bubble, what it asks a warm card, the box for a reply at the foot */
+.notch .dt-ag { display:flex; flex-direction:column; gap:10px; align-self:stretch; min-height:100%; }
+.notch .dt-ag-top { display:flex; align-items:center; gap:8px; min-height:24px; }
+.notch .dt-ag-top p { flex:1; min-width:0; margin:0; overflow:hidden; font-size:11.5px; line-height:16px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-faint); }
+.notch .dt-ag-top p b { margin-right:6px; font-weight:600; color:var(--p-muted); }
+.notch .dt-ag-top .dt-ask { flex:none; background:none; padding:0; height:auto; font-size:11.5px; font-weight:400; line-height:16px; color:var(--p-muted); }
+.notch .dt-ag-top .dt-ask:hover { background:none; color:var(--p-ink); }
+.notch .dt-ag .m-list { gap:8px; max-height:none; overflow:visible; }
+.notch .dt-ag .m-you { max-width:82%; padding:6px 11px; border-radius:14px 14px 4px 14px; background:rgb(255 255 255 / .1); font-size:12.5px; line-height:18px; }
+.notch .dt-ag .m-it { max-width:96%; font-size:12.5px; line-height:19px; color:rgb(var(--ink) / .86); }
+.notch .dt-ag .m-req { gap:6px; padding:9px 11px; border-radius:12px; background:rgb(255 201 143 / .06); box-shadow:inset 0 0 0 .5px rgb(255 201 143 / .4); }
+.notch .dt-ag-ask { margin:0; font-size:12.5px; font-weight:600; line-height:18px; color:var(--p-ink); overflow-wrap:anywhere; }
 .notch .dt-ag-acts { display:flex; gap:6px; }
-.notch .dt-ag .pg-input { position:sticky; bottom:0; flex:none; margin-top:auto; }
+.notch .dt-ag .pg-input { position:sticky; bottom:0; flex:none; height:30px; margin-top:auto; border-radius:15px; background:#000; box-shadow:inset 0 0 0 .5px rgb(255 255 255 / .16); }
+.notch .dt-ag .pg-input input { font-size:12.5px; }

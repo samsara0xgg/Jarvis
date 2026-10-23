@@ -33,7 +33,10 @@ export function useMoreDoor(ctx: DoorCtx): DoorPage | null {
     return {
       count: null, line: t(['Your conversation, memory, projects, plugins and settings live here.', '聊天记录、记忆、项目、插件和设置都在这里。']),
       chips: [], marks: [], nowAt: null,
-      rows: TOOLS.map(({ page, icon: Glyph, title }): DoorRow => ({ key: page, at: null, icon: <Glyph size={13} aria-hidden="true"/>, title: t(title), sub: sub[page], opens: !!tool })),
+      // V2: a narrow menu at the left (day-doors.css), one line each: the words under a title are the page's own to say, so they show only as a number at the title (memory: how many are new).
+      rows: TOOLS.map(({ page, icon: Glyph, title }): DoorRow => ({ key: page, at: null, icon: <Glyph size={13} aria-hidden="true"/>, title: t(title), sub: sub[page], tag: page === 'memory' && fresh > 0 ? { text: t([`${fresh} new`, `${fresh} 新`]) } : null, opens: !!tool })),
+      // The right column opens on 记忆: the one that has something new most days.
+      rest: tool ? 'memory' : null,
       detail: (key, back) => {
         const one = TOOLS.find(x => x.page === key);
         return one && render.current ? { title: t(one.title), body: render.current(one.page, back), bare: true } : null;

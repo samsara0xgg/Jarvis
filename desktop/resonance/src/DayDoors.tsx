@@ -1,5 +1,5 @@
 import type { CSSProperties, MouseEvent, ReactNode } from 'react';
-import { ArrowUpRight, CaretDown, CaretLeft, CaretUp } from '@phosphor-icons/react';
+import { ArrowUpRight } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
 import { fOf } from './barView';
 import { clock } from './dayView';
@@ -50,19 +50,10 @@ export function DoorRowView({ row, tz, hot, pick, off, onHot, onClick }: { row: 
   </div>;
 }
 
-// A row's detail page: the same head as a day row's (a back control, the title, the row before and after), then what the page's hook made of the row.
-export function DoorDetail({ title, body, back, prev, next, t }: { title: string; body: ReactNode; back: () => void; prev: (() => void) | null; next: (() => void) | null; t: (l: L) => string }) {
-  return <div className="dt-pin is-door">
-    <header className="dt-ph">
-      <button type="button" className="dt-pb" aria-label={t(['Back', '返回'])} onClick={back}><CaretLeft size={14} weight="bold" aria-hidden="true"/></button>
-      <b>{title}</b>
-      <span className="dt-pn">
-        <button type="button" aria-label={t(['Previous', '上一个'])} disabled={!prev} onClick={prev ?? undefined}><CaretUp size={14} weight="bold" aria-hidden="true"/></button>
-        <button type="button" aria-label={t(['Next', '下一个'])} disabled={!next} onClick={next ?? undefined}><CaretDown size={14} weight="bold" aria-hidden="true"/></button>
-      </span>
-    </header>
-    <div className="dt-body">{body}</div>
-  </div>;
+// A row's detail page, in the right column (V2): what the page's hook made of the row, which brings its own head (a letter, a to-do, a session, a window: src/doors/parts.tsx). The frame's old back control and
+// the arrows to the row before and after are gone with the slide-over page: ↑ ↓ and Esc do that now (DayTimeline.tsx). The props stay so the frame's call does not change.
+export function DoorDetail({ title, body }: { title: string; body: ReactNode; back?: () => void; prev?: (() => void) | null; next?: (() => void) | null; t?: (l: L) => string }) {
+  return <div className="dt-pin is-door" role="region" aria-label={title}><div className="dt-body">{body}</div></div>;
 }
 
 // ---- the marks, on the bar ----
