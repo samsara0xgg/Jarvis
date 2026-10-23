@@ -36,8 +36,8 @@ export function DoorNumbers({ page, pinned, preview, pin, t }: { page: DoorPage;
   </div>;
 }
 
-// A row of a page, with the day's row classes: the time, the circle, the words (a tag after the title, a second line), the buttons a rest on it offers, and the right column. `off`: a chip
-// is lit that this row is not one of. A button marked `data-opens` in `quick` or `side` opens the row like a click on the row does; any other button is its own.
+// A row of a page, with the day's row classes: the time, the circle, the words (a tag after the title, a second line) and the right column. `off`: a chip is lit that this row is not one of.
+// The row has no buttons of its own (V2: its acts are in its detail, in the right column); a button in `side` opens the row like a click on the row does only if it is marked `data-opens`.
 export function DoorRowView({ row, tz, hot, pick, off, onHot, onClick }: { row: DoorRow; tz: string; hot: boolean; pick: boolean; off: boolean; onHot: (key: string | null) => void; onClick: (e: MouseEvent, key: string) => void }) {
   const time = row.time ?? (row.at === null ? '' : clock(row.at, tz));
   return <div className={`dt-row has-detail${row.tone === 'read' || row.tone === 'future' ? ` is-${row.tone}` : ''}${off ? ' is-off' : ''}${hot ? ' is-hot' : ''}${pick ? ' is-pick' : ''}${row.opens ? '' : ' is-still'}`} data-key={row.key} aria-current={pick ? 'true' : undefined}
@@ -45,7 +45,6 @@ export function DoorRowView({ row, tz, hot, pick, off, onHot, onClick }: { row: 
     <time className="dt-at">{time}</time>
     <i className={`dt-ic${row.who ? ' is-who' : ''}${row.tone === 'live' ? ' is-on' : ''}`}>{row.icon}</i>
     <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{row.tag && <i className={row.tag.amber ? 'dt-wait' : 'dt-tag'}>{row.tag.text}</i>}</span>{row.sub && <em>{row.sub}</em>}</span>
-    {row.quick && <span className="dt-quick">{row.quick}</span>}
     <span className="dt-tm">{row.side}</span>
   </div>;
 }

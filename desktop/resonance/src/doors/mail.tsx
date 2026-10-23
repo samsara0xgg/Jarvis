@@ -55,8 +55,6 @@ export function useMailDoor(ctx: DoorCtx): DoorPage | null {
       return {
         ...base, tag: ask(m) ? { text: t(['Reply', '要回']), amber: true } : null, opens: true, tone: m.junk ? 'read' : undefined,
         sub: m.junk ? `${t(['Looks like an ad', '像广告'])} · ${m.subject}` : m.subject,
-        quick: m.junk ? <button type="button" className="dt-ask" tabIndex={-1} onClick={ev => { ev.stopPropagation(); void acts.archiveJunk([m.id]); }}>{t(['Archive', '归档'])}</button>
-          : <button type="button" className="dt-ask" tabIndex={-1} data-opens="">{t(['Open', '打开'])}</button>,
       };
     };
 

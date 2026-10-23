@@ -87,13 +87,8 @@
 .notch .dt-row.is-leaving { pointer-events:none; }
 /* what the keys chose: a little more than the pointer's, and a ring, so it reads with the pointer far away */
 .notch .dt-row.is-pick,.notch .dt-sh.is-pick { background:rgb(255 255 255 / .08); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .22); }
-/* what the hover offers, the star and 问她: they fade in over the length when the row is lit */
-.notch .dt-quick { position:absolute; right:22px; top:calc(var(--head) / 2); z-index:2; display:flex; align-items:center; gap:4px; height:24px; margin-top:-12px; opacity:0; pointer-events:none; transition:opacity 120ms; }
 .notch .dt-ask { height:24px; padding:0 10px; border-radius:12px; background:rgb(255 255 255 / .12); font-size:11.5px; font-weight:600; line-height:24px; color:var(--p-ink); transition:background var(--motion-fast); }
 .notch .dt-ask:hover { background:rgb(255 255 255 / .2); }
-.notch .dt-quick + .dt-tm { transition:opacity 120ms; }
-.notch .dt-row.is-hot .dt-quick,.notch .dt-row.is-pick .dt-quick { opacity:1; pointer-events:auto; }
-.notch .dt-row.is-hot .dt-quick + .dt-tm,.notch .dt-row.is-pick .dt-quick + .dt-tm { opacity:0; }
 .notch .dt-at { font:11.5px/16px "JetBrains Mono", Menlo, monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-muted); }
 .notch .dt-at small { margin-right:4px; font:8.5px/1 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif; vertical-align:2px; color:var(--p-faint); }
 .notch .dt-ic { position:relative; z-index:1; display:grid; place-items:center; box-sizing:border-box; width:28px; height:28px; border:1px solid transparent; border-radius:50%; font-style:normal; color:rgb(var(--ink) / .82); background:#0f0f0f; }

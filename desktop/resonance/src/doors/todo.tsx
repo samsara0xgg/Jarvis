@@ -7,7 +7,7 @@ import { useAsk, DoorActs, DoorBtn, DoorHead } from './parts';
 
 // 待办: today's calendar and his open to-dos (the Dashboard's Today block reads the same route), as a page under the bar. Events and to-dos that have a time are rows in time order, each a point
 // on the bar (a to-do amber once it is past due and still open, an event dim); the ones with no time (all-day events, to-dos with a date only or none) come after a heading. The route has no other
-// day, so another day only says so. The quick button ticks a to-do (as the Dashboard does: at once, and put back if To Do cannot be reached); a ticked one stays faded, with the way back, until the next
+// day, so another day only says so. The button on a to-do's page ticks a to-do (as the Dashboard does: at once, and put back if To Do cannot be reached); a ticked one stays faded, with the way back, until the next
 // read leaves it out. A row opens in the right column: the to-do or the event, with the button that ticks it.
 // Not here yet (Gaps.png): the week strip of the board (a cell a day, a dot a to-do) needs the to-dos of the other days and the route (`/inherent/today`) gives today's only; when a route has them, the days go
 // in `marks`' place on the bar (DoorPage has no strip yet), and a day's to-dos become rows here.
@@ -53,7 +53,6 @@ export function useTodoDoor(ctx: DoorCtx): DoorPage | null {
       return { x, due: has ? due : null, timed: has && inDay(due) && clock(due, day.tz) !== END_OF_DAY, late: has && due < day.now && !done, done };
     });
     const allDay = (v: Ev) => v.e.all_day === true, timedEvs = evs.filter(v => !allDay(v)), key = { ev: (v: Ev) => `ev:${v.e.id}`, td: (d: Td) => `td:${d.x.id}` };
-    const btn = (label: string, onClick: () => void) => <button type="button" className="dt-ask" tabIndex={-1} onClick={onClick}>{label}</button>;
 
     const evRow = (v: Ev): DoorRow => {
       const all = allDay(v), future = !all && v.from > day.now, over = !all && (v.to ?? v.from) <= day.now;
@@ -66,7 +65,7 @@ export function useTodoDoor(ctx: DoorCtx): DoorPage | null {
     const tdRow = (d: Td): DoorRow => ({
       key: key.td(d), at: d.timed ? d.due : null, time: d.timed || d.due === null ? undefined : inDay(d.due) ? t(['Today', '今天']) : dateOf(d.due, day.tz),
       icon: d.done ? <CheckCircle size={14} weight="fill" aria-hidden="true"/> : <Circle size={14} aria-hidden="true"/>, title: d.x.title, tag: d.late ? { text: t(['Overdue', '过期']), amber: true } : null,
-      sub: t(['To-do', '待办']), quick: d.done ? btn(t(['Undo', '撤销']), () => void tick(d.x.id, false)) : btn(t(['Done', '完成']), () => void tick(d.x.id, true)), tone: d.done ? 'read' : undefined, opens: true,
+      sub: t(['To-do', '待办']), tone: d.done ? 'read' : undefined, opens: true,
     });
     const byTime = (a: DoorRow, b: DoorRow) => a.at! - b.at! || (a.key < b.key ? -1 : 1), byDue = (a: Td, b: Td) => (a.due ?? Infinity) - (b.due ?? Infinity) || (a.x.id < b.x.id ? -1 : 1);
     const timed = [...timedEvs.map(evRow), ...tds.filter(d => d.timed).map(tdRow)].sort(byTime);

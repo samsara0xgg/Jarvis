@@ -40,8 +40,8 @@
 .notch .dt-side > .ad.is-only { display:flex; flex:1 1 auto; flex-direction:column; min-height:0; padding:0; }
 .notch .dt-side > .ad.is-only .view { flex:1 1 0; height:auto; min-height:0; }
 
-/* page mode of the bar: what he was doing steps back to .25 (as under a lens), and the page's own moments are lit over it */
-.notch .dt-bar.is-page .dt-seg,.notch .dt-bar.is-page .dt-ground,.notch .dt-bar.is-page .dt-sched,.notch .dt-bar.is-page .dt-bdot { opacity:.25; }
+/* page mode of the bar: the day is not drawn (only 今天 draws it), the track steps back to .25 and the page's own marks are drawn on it */
+.notch .dt-bar.is-page .dt-ground { opacity:.25; }
 .notch .dt-mk { position:absolute; pointer-events:none; transition:opacity 150ms; }
 .notch .dt-mk.is-point { top:0; bottom:0; width:3px; margin-left:-1.5px; border-radius:1px; }
 .notch .dt-mk.is-span { height:6px; border-radius:3px; }
@@ -117,5 +117,5 @@
 .notch .dt[data-door="more"] .dt-tx > em { display:none; }
 /* ...and it has nothing to say on the day's bar (no times, no marks): the menu and its page take the room (the board draws no bar on this door) */
 .notch .dt[data-door="more"] .dt-bar,.notch .dt[data-door="more"] .dt-numbers { display:none; }
-/* 信 and 待办 draw no day either (Elements: only 今天 draws a day); 待办's week strip waits for a by-week route (Gaps) */
-.notch .dt[data-door="mail"] .dt-bar,.notch .dt[data-door="mail"] .dt-numbers,.notch .dt[data-door="todo"] .dt-bar,.notch .dt[data-door="todo"] .dt-numbers { display:none; }
+/* 信 and 待办 draw no day either (Elements: only 今天 draws a day), but keep their numbers row (the boards show it, its chips filter the page); 待办's week strip waits for a by-week route (Gaps) */
+.notch .dt[data-door="mail"] .dt-bar,.notch .dt[data-door="todo"] .dt-bar { display:none; }

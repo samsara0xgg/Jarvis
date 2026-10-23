@@ -30,7 +30,6 @@ export type DoorRow = {
   tag?: { text: string; amber?: boolean } | null;   // the small tag after the title (dt-wait look when amber)
   sub?: ReactNode;
   side?: ReactNode;             // the right column (dt-tm)
-  quick?: ReactNode;            // buttons shown while the row is under the pointer, in place of `side` (dt-quick); a button with `data-opens` opens the row like a click on it
   tone?: 'read' | 'future' | 'live';  // read: opacity .55; future: the day's future look; live: icon ring ink .55
   opens?: boolean;              // a click opens its detail
 };

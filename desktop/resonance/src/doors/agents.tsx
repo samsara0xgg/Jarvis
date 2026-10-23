@@ -81,7 +81,6 @@ export function useAgentsDoor(ctx: DoorCtx): DoorPage | null {
   return useMemo((): DoorPage => {
     const acts: Acts = { jump: a => act.current?.jump(a), park: id => { say(null); act.current?.park([id]); }, unpark: id => { say(null); act.current?.unpark([id]); }, allow: a => void allow(a) };
     const link = window.jarvis?.openAgents ? { label: t(['Agents window', 'Agents 窗口']), open: () => window.jarvis?.openAgents?.() } : null;
-    const btn = (label: string, onClick: () => void, cls = '') => <button type="button" className={`dt-ask${cls}`} tabIndex={-1} onClick={onClick}>{label}</button>;
     const inDay = (ms: number) => ms >= day.start && ms < day.end;
 
     // The sessions of the list that are shown (what he archived is gone from the notch, so from here), each with what it is to him now.
@@ -116,16 +115,13 @@ export function useAgentsDoor(ctx: DoorCtx): DoorPage | null {
       ? { kind: 'span', from: Math.max(s.from, day.start), to: Math.min(s.to, day.end), lane: lane.get(r.a.id) ?? 2, tone: s.tone, key: r.a.id } : { kind: 'point', at: s.from, tone: s.tone, key: r.a.id }));
 
     const rowOf = (r: Run): DoorRow => {
-      const { a } = r, at = r.from ?? a.at!, allowed = !!a.request && sent.has(a.request.id), can = !!openTip(a, t);
-      const go = can && btn(t(['Open', '打开']), () => acts.jump(a));
-      const quick = r.kind === 'parked' ? <>{btn(t(['Take back', '拿回来']), () => acts.unpark(a.id))}{go}</>
-        : r.kind === 'asking' ? <>{btn(t(['Park', '先放着']), () => acts.park(a.id))}{plain(a) ? btn(t(['Allow', '同意']), () => acts.allow(a), ' is-yes') : go}</> : go || undefined;
+      const { a } = r, at = r.from ?? a.at!, allowed = !!a.request && sent.has(a.request.id);
       // How long it ran, to its last change (a live one: to now, with a dot while it works); one that does not say when it began does not say how long.
       const len = r.from === null ? '' : dur(Math.max(1, (r.to - r.from) / 60_000), t), works = a.state === 'work' || a.state === 'pack';
       const side: ReactNode = works ? <span className="dt-live"><i/>{len}</span> : len || undefined;
       return {
         key: a.id, at, time: at < day.start ? dateOf(at, day.tz) : undefined, icon: logo(a.agent), title: a.title, tag: r.kind === 'asking' ? { text: t(['Waiting', '等你']), amber: true } : r.kind === 'parked' ? { text: t(['Parked', '先放着']) } : null,
-        sub: subOf(r, t, allowed), side, quick, tone: r.kind === 'parked' ? 'read' : live(r.kind) ? 'live' : undefined, opens: true,
+        sub: subOf(r, t, allowed), side, tone: r.kind === 'parked' ? 'read' : live(r.kind) ? 'live' : undefined, opens: true,
       };
     };
     const asking = runs.filter(r => r.kind === 'asking'), running = runs.filter(r => r.kind === 'running'), parked = runs.filter(r => r.kind === 'parked'), done = runs.filter(r => r.kind === 'done'), stopped = runs.filter(r => r.kind === 'stopped');
@@ -193,6 +189,7 @@ function Talk({ a, kind, port, t, acts }: { a: Agent; kind: Kind; port: string |
     </div>
     {kind === 'asking' && a.request && <div className="m-req"><p className="dt-ag-ask">{t(requestWords(a.request))}</p>
       <div className="dt-ag-acts"><button type="button" className="dt-ask" onClick={() => acts.park(a.id)}>{t(['Park', '先放着'])}</button>{plain(a) && <button type="button" className="dt-ask is-yes" onClick={() => acts.allow(a)}>{t(['Allow', '同意'])}</button>}</div></div>}
+    {kind === 'parked' && <div className="m-req"><div className="dt-ag-acts"><button type="button" className="dt-ask" onClick={() => acts.unpark(a.id)}>{t(['Take back', '拿回来'])}</button></div></div>}
     {why && <p className="r-why">{why}</p>}
     {a.replyable && port && <form className="pg-input c-reply" onSubmit={send}>
       <input value={draft} onChange={e => setDraft(e.target.value)} disabled={busy} aria-label={t(['Reply', '回复'])} placeholder={sending ? t(['Sending…', '发送中…']) : t(['Reply to it…', '回它一句…'])}/>

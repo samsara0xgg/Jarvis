@@ -100,8 +100,6 @@
 .notch .dt-role.is-on { background:rgb(var(--ink) / .22); color:var(--p-ink); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .5); }
 
 /* the hover's actions on a stay's header too */
-.notch .dt-sh.is-hot .dt-quick,.notch .dt-sh.is-pick .dt-quick { opacity:1; pointer-events:auto; }
-.notch .dt-sh.is-hot .dt-quick + .dt-tm,.notch .dt-sh.is-pick .dt-quick + .dt-tm { opacity:0; }
 
 /* the star that marks what mattered: his mark filled warm white, her pick the same outlined, nothing a dim outline; sparks fly from it when it is set */
 .notch .dt-starbtn { position:relative; display:grid; place-items:center; flex:none; width:24px; height:24px; border-radius:50%; background:rgb(255 255 255 / .12); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast); }

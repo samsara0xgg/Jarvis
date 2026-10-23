@@ -96,8 +96,8 @@ function Sweep({ on }: { on: boolean }) {
   return here && !reduced.matches ? <i className="dt-sweep" aria-hidden="true" onAnimationIteration={() => { if (!on) setHere(false); }}/> : null;
 }
 
-// A door's page on the bar (doors.ts): the day steps back to .25 and the page's marks are lit over it (`mute`: the keys of the rows a lit chip keeps, the marks of the others are
-// drawn at .25); the page's numbers row goes under the bar in place of the day's. What the pointer and a click find is then the page's marks, not the day's pieces.
+// A door's page on the bar (doors.ts): only 今天 draws the day, so the bar keeps its track, the hours and now, and the page's marks are drawn on it (`mute`: the keys of the rows a lit chip keeps,
+// the marks of the others are drawn at .25); the page's numbers row goes under the bar in place of the day's. What the pointer and a click find is then the page's marks, not the day's pieces.
 export type PageBar = { marks: BarMark[]; mute: ReadonlySet<string> | null; numbers: ReactNode };
 // `open`: the row that is selected (its detail is up); a frame sits round its span and glides when it changes, and a click on the bar goes to `onPage` (the piece it is on, or null) instead of `onJump`.
 // `sweep`: the day is being tidied. `door`: a door's page is under the bar.
@@ -259,15 +259,15 @@ export function DayBar({ model, port, ui, cut, sweep, hot, open, door, onHot, on
         <div ref={track} className="dt-track" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={release} onLostPointerCapture={release} onPointerLeave={leave}>
           <i className="dt-ground" style={{ width: bar.nowF === null ? '100%' : bx(bar.nowF) }}/>
           {bar.nowF !== null && <i className="dt-ground is-future" style={{ left: bx(bar.nowF) }}/>}
-          {laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${s.hole ? ' is-hole' : ''}${lights(s) ? ' is-hot' : ''}${pulses(s) ? ' is-pulse' : ''}`}
+          {!door && laid.map(({ s, w, how }) => <i key={s.key} className={`dt-seg is-${s.kind} is-${s.tone}${s.hole ? ' is-hole' : ''}${lights(s) ? ' is-hot' : ''}${pulses(s) ? ' is-pulse' : ''}`}
             style={{ left: `calc(${s.f0 * 100}% + .5px)`, width: `max(1px, calc(${(s.f1 - s.f0) * 100}% - 1px))`, '--c': rgb(s.rgb), '--a': s.a } as CSSProperties}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}><Ic icon={s.hole ? 'unknown' : s.icon} size={12}/>{how === 'both' && <b className={s.mono ? 'is-mono' : ''}>{s.short}</b>}</span>}
           </i>)}
-          {showVoid && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
-          {boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${hot === x.key && !door && cursor === null || underEvent === x.key ? ' is-hot' : ''}${flash === x.key ? ' is-pulse' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
+          {showVoid && !door && <i className="dt-void" style={{ width: bx(bar.nowF ?? 1) }}>{voidText}</i>}
+          {!door && boxes.map(({ x, how }) => <i key={x.key} data-sched={x.key} className={`dt-sched is-event${hot === x.key && !door && cursor === null || underEvent === x.key ? ' is-hot' : ''}${flash === x.key ? ' is-pulse' : ''}${x.leaving ? ' is-leaving' : ''}`} style={{ left: `${x.f0 * 100}%`, width: `${(x.f1 - x.f0) * 100}%` }}>
             {how !== 'none' && <span className={`dt-sl${how === 'icon' ? ' is-icon' : ''}`}><Ic icon="event" size={12}/>{how === 'both' && <b>{x.short}</b>}</span>}
           </i>)}
-          {bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
+          {!door && bar.sched.filter(x => x.kind !== 'event').map(x => <i key={x.key} className="dt-sched is-tick" style={{ left: `${x.f0 * 100}%` }}><u/></i>)}
           <Sweep on={sweep}/>
           {lens && (bar.lens[lens] ?? []).map((m, i) => <i key={i} className={`dt-lm${m.f1 - m.f0 < .004 ? ' is-point' : ''}`} style={{ left: `${m.f0 * 100}%`, width: `${Math.max(0, m.f1 - m.f0) * 100}%` }}/>)}
           {door && <DoorMarks marks={door.marks} bar={bar} mute={door.mute}/>}
