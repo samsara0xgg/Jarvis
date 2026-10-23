@@ -42,6 +42,7 @@ from jarvis.decision.llm_anthropic import (
     request_fields,
 )
 from jarvis.decision.llm_io import stream_openai, warm_openai
+from jarvis.decision.llm_message import MessageStream
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 from jarvis.shared import llm_io_log
 from jarvis.shared.realtime import LLMUsageStatus
@@ -49,7 +50,7 @@ from jarvis.shared.realtime_trace import record_realtime_trace
 from jarvis.shared.system_prompt import SplitSystem
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping, Sequence
     from pathlib import Path
 
     from jarvis.decision.llm_stream import StreamDisposition
@@ -722,6 +723,48 @@ class LLMClient:
             on_settled=on_settled if record is None else _logged_settle(record, on_settled),
             tap=None if record is None else record.tap,
         )
+
+    def message_events(
+        self, *, messages: list[dict[str, Any]], system: str,
+        tools: list[dict[str, Any]] | None = None, max_output_tokens: int | None = None,
+        paused: Sequence[Mapping[str, Any]] = (),
+    ) -> MessageStream:
+        """One Anthropic request as its raw stream events, for a :class:`MessageReader` (ADR 0359).
+
+        The typed stream refuses the blocks a server tool returns (a search, its results, text
+        citing them); a caller that needs them reads the events itself. ``paused`` is the
+        assistant's blocks so far when the API stopped a turn with ``pause_turn``: they follow
+        ``messages`` as they came, with no user message between, which is how the API resumes it.
+        The request carries its identity from here on, before any I/O.
+        """
+        if self._provider != "anthropic":
+            msg = "message_events is Anthropic's: only its server tools return blocks like these"
+            raise ValueError(msg)
+        body: dict[str, Any] = {"model": self._model, "stream": True}
+        body.update(request_fields(
+            model=self._model, messages=messages, system=_with_note(system, self._system_note),
+            tools=tools,
+            max_tokens=self._max_tokens if max_output_tokens is None else max_output_tokens,
+            reasoning_effort=self._reasoning_effort, fast=self._fast,
+        ))
+        if paused:
+            body["messages"] = [
+                *body["messages"], {"role": "assistant", "content": copy.deepcopy(list(paused))},
+            ]
+        return MessageStream(
+            _new_llm_request_id(), self._message_provider_events(self._stream_options(), body),
+        )
+
+    @staticmethod
+    async def _message_provider_events(
+        options: dict[str, Any], body: dict[str, Any],
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        """Own and close one Anthropic stream, with no retry past the SDK's own settings."""
+        if not options.get("api_key"):
+            message = "provider API key is unset; check the request preset"
+            raise MissingAPIKeyError(message)
+        async for chunk in stream_openai(options, body, responses=False, provider="anthropic"):
+            yield chunk
 
     @staticmethod
     async def _typed_provider_events(
