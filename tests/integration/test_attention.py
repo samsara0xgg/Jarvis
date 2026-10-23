@@ -187,6 +187,45 @@ def test_typing_goes_with_the_time_it_was_typed_in_and_keys_follow_site_document
     assert told["front_ms"] == 20 * MIN + 20_000  # the Finder's 20 s are counted, not listed
 
 
+def test_a_file_document_is_keyed_by_its_whole_path_and_only_its_name_is_cut(
+    tmp_path: Path,
+) -> None:
+    """Paths that share their first 30 characters stay apart: the name keeps the path's end.
+
+    The home is ``~``, a trailing slash is dropped and ``%20`` decoded.
+    """
+    home = "file:///Users/someone/"
+    sources = _ship(tmp_path / "imports", [
+        (_at(10), _at(10, 10), {"appName": "Cursor", "document": home + "Projects/jarvis/"}),
+        (_at(10, 10), _at(10, 20), {"appName": "Cursor", "document": home + "Projects/timesink"}),
+        (_at(10, 20), _at(10, 30), {
+            "appName": "Cursor",
+            "document": home + "Documents/coop/the%20very%20long%20folder/notes/final.md",
+        }),
+        (_at(10, 30), _at(10, 40), {"appName": "Cursor", "document": "Jarvis chat"}),
+    ])
+    keys = {k["key"]: k["name"] for t in _told(sources, _at(10), _at(11))["threads"]
+            for k in t["keys"]}
+    assert keys == {
+        "mac|Cursor|~/Projects/jarvis": "Cursor ~/Projects/jarvis",
+        "mac|Cursor|~/Projects/timesink": "Cursor ~/Projects/timesink",
+        "mac|Cursor|~/Documents/coop/the very long folder/notes/final.md":
+            "Cursor …ry long folder/notes/final.md",
+        "mac|Cursor|Jarvis chat": "Cursor Jarvis chat",
+    }
+    assert all(len(name.removeprefix("Cursor ")) <= attention.TITLE_MAX_CHARS
+               for name in keys.values())
+
+
+def test_a_long_title_is_one_key_and_its_name_is_cut() -> None:
+    """A title is folded for whitespace only: the key is whole, the name ends in an ellipsis."""
+    title = "Release   notes " + "x" * 40
+    key, name = attention.held({"appName": "Safari", "title": title})
+    assert key == ("Safari", " ".join(title.split()))
+    assert name.endswith("…")
+    assert len(name.removeprefix("Safari ")) == attention.TITLE_MAX_CHARS
+
+
 # --- rows ----------------------------------------------------------------------------------------
 
 

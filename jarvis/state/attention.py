@@ -28,11 +28,13 @@ Layer rules: ``jarvis.state`` and ``jarvis.shared`` only (L2).
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
+from urllib.parse import unquote, urlsplit
 
 from jarvis.state import imports, timesink
 from jarvis.state.day_line import app_names, shipped_conn
@@ -54,8 +56,9 @@ ROW_COST_MS: Final = 10 * _MINUTE_MS
 """What one more row costs, in attention minutes put right: a row is cut out only when its lead
 holds more than this that the row around it would leave out."""
 TITLE_MAX_CHARS: Final = 30
-"""The most of a window's title or document a Mac key holds; a longer one is cut with an
-ellipsis."""
+"""The most of a window's title or document a Mac key's name shows (the key itself holds all of
+it); a longer title is cut at its end with an ellipsis, a longer path at its start."""
+_HOME: Final = re.compile(r"^/(?:Users|home)/[^/]+")
 AROUND_MS: Final = 15 * _MINUTE_MS
 """How far around a key that serves what is around it the thread it served is looked for."""
 MAC: Final = "mac"
@@ -104,19 +107,46 @@ def _cut(text: object) -> str:
     return line[: TITLE_MAX_CHARS - 1].rstrip() + "…" if cut else line
 
 
+def _path_of(document: str) -> str | None:
+    """The path a document denotes, as TimeSink's ``DocumentIdentity.path(of:)`` reads it.
+
+    A ``file://`` URL is percent-decoded, a rooted path is taken as it is, anything else (a
+    conversation name) denotes none; the trailing ``/`` is dropped and the home directory, which
+    differs by machine, is shown as ``~``.
+    """
+    if document.startswith("file://"):
+        try:
+            raw = unquote(urlsplit(document).path)
+        except ValueError:
+            return None
+    elif document.startswith("/"):
+        raw = document
+    else:
+        return None
+    return _HOME.sub("~", raw.rstrip("/") or "/") if raw else None
+
+
 def held(fields: Mapping[str, Any]) -> tuple[tuple[str, str], str]:
     """What a TimeSink span had in front, as (the key it is summed by, how it is named).
 
     A site is summed by its domain, named with the first title seen; anything else by its
-    document, else its window title.
+    document (a path as ``~/Projects/jarvis``), else its window title, whole: only the name is
+    cut, a title at its end and a path at its start so that the end of the path shows.
     """
     app = str(fields.get("appName") or "unknown app")
     domain = str(fields.get("domain") or "")
     if domain:
         title = _cut(fields.get("title"))
         return (app, domain), f"{app} {domain}" + (f" ({title})" if title else "")
-    what = _cut(fields.get("document") or fields.get("title"))
-    return (app, what), f"{app} {what}" if what and what != app else app
+    document = fields.get("document")
+    path = _path_of(str(document)) if document else None
+    if path is not None:
+        what = path
+        shown = path if len(path) <= TITLE_MAX_CHARS else "…" + path[1 - TITLE_MAX_CHARS :]
+    else:
+        what = " ".join(str(document or fields.get("title") or "").split())
+        shown = _cut(what)
+    return (app, what), f"{app} {shown}" if what and what != app else app
 
 
 def mac_spans(
