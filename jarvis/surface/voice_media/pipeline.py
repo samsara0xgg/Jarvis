@@ -28,7 +28,6 @@ from jarvis.surface.voice_media.contract import (
 from jarvis.surface.voice_media.gain import OutputGain
 from jarvis.surface.voice_media.journal import PlaybackJournal
 from jarvis.surface.voice_media.network_lost import NetworkLostCue
-from jarvis.surface.voice_media.pcm import SegmentResampler, cut_off_cue, head_dropped
 from jarvis.surface.voice_media.player_stop import PlayerStopper
 from jarvis.surface.voice_media.power import ActorPort, PowerController
 from jarvis.surface.voice_media.registry import ActivePlaybackRegistry
@@ -43,18 +42,12 @@ from jarvis.surface.voice_media.ring_sink import RingSink
 from jarvis.surface.voice_media.say_fallback import SayFallback
 from jarvis.surface.voice_media.shutdown_clock import ShutdownClock
 from jarvis.surface.voice_media.spare import SpareSessions
-from jarvis.surface.voice_tts import (
-    AudioStreamPlayer,
-    PlayerStartResult,
-    TTSAudioChunk,
-    TTSResponseSegment,
-    TTSSegmentFinished,
-    TTSSession,
-)
+from jarvis.surface.voice_media.streamer import ResponseStreamer
+from jarvis.surface.voice_tts import AudioStreamPlayer, PlayerStartResult
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import Callable
 
     from jarvis.surface.voice_ducking import SystemAudioDucker
 
@@ -201,6 +194,20 @@ class StreamingTTSPipeline:
             ring=self._ring,
             current=lambda: self._active,
             isolate=self._isolate_fallback_cleanup,
+        )
+        self._streamer = ResponseStreamer(
+            provider=provider,
+            player=player,
+            config=self._config,
+            clock=self._clock,
+            journal=self._journal,
+            ring=self._ring,
+            say_fallback=self._say_fallback,
+            spare=self._spare,
+            network_lost=self._network_lost,
+            current=lambda: self._active,
+            set_answer_language=self._remember_answer_language,
+            checkpoint=self._checkpoint_if_advanced,
         )
         self._thread = threading.Thread(
             target=self._thread_main,
@@ -1209,7 +1216,7 @@ class StreamingTTSPipeline:
             measurement_semantics="media_owner_started_provider_request",
         )
 
-    async def _play_response(  # noqa: C901 - bounded lifecycle cleanup FSM
+    async def _play_response(  # noqa: C901, PLR0912 - bounded lifecycle cleanup FSM
         self,
         active: ActiveResponse,
     ) -> None:
@@ -1241,15 +1248,21 @@ class StreamingTTSPipeline:
             )
             active.activation_event_uid = activation.event_uid
             async with asyncio.timeout(self._config.response_timeout_s) as budget:
-                completed = await self._stream_with_prefix_fallback(
+                outcome = await self._streamer.stream_with_prefix_fallback(
                     active,
                     segments,
                     budget=budget,
                     live=live,
                 )
+                if outcome.fail_reason is not None:
+                    await self._fail_active(
+                        active,
+                        reason=outcome.fail_reason,
+                        retryable=outcome.fail_retryable,
+                    )
                 if active.advance_after_cleanup or self._active is not active:
                     return
-                if not completed:
+                if not outcome.completed:
                     await self._fail_active(
                         active,
                         reason="tts_fallback_unavailable",
@@ -1316,265 +1329,9 @@ class StreamingTTSPipeline:
                 active.lease.playback_generation_id,
             )
 
-    async def _stream_with_prefix_fallback(  # noqa: C901, PLR0911, PLR0912, PLR0915 - bounded endpoint FSM
-        self,
-        active: ActiveResponse,
-        segments: list[tuple[int, str, str]],
-        *,
-        budget: asyncio.Timeout,
-        live: bool,
-    ) -> bool:
-        """Walk ``segments``; while ``live`` the list grows until the buffer is emitted."""
-        lease = active.lease
-        accepted_total = 0
-        trimmer = self._ring.new_silence_trimmer()
-        last_error: BaseException | None = None
-        endpoint_index = 0
-        session: TTSSession | None = None
-        iterator: AsyncIterator[TTSAudioChunk | TTSSegmentFinished] | None = None
-        provider_first = False
-        segment_index = 0
-        while True:
-            if segment_index >= len(segments) and not (
-                live and await self._ring.await_segments(active, segments)
-            ):
-                break
-            if live and active.response.tagged:
-                await self._fail_active(active, reason="stream_chunk_tagged", retryable=False)
-                return False
-            sequence, text, segment_hash = segments[segment_index]
-            # Opened after this segment's wait and closed at the next segment's
-            # reschedule, so the bound covers one segment's provider I/O plus its
-            # backpressured playback - plus the drain, for the final segment -
-            # never the whole generation, whose length is deliberately unbounded.
-            budget.reschedule(
-                asyncio.get_running_loop().time() + self._config.response_timeout_s,
-            )
-            self._ring.prepare_segment(active, sequence, text, segment_hash)
-            opened = self._player.begin_generation_segment(
-                expected_playback_generation_id=lease.playback_generation_id,
-                sequence=sequence,
-                text=text,
-                segment_hash=segment_hash,
-            )
-            if isinstance(opened, StalePlaybackGeneration):
-                return False
-            segment_start = accepted_total
-            accepted_segment = 0
-            while endpoint_index < self._provider.streaming_candidate_count:
-                if self._active is not active:
-                    return False
-                try:
-                    if session is None:
-                        language = self._last_answer_language = lang.text_language(text)
-                        session = (
-                            await self._spare.take(language) if endpoint_index == 0 else None
-                        ) or self._provider.create_tts_session(
-                            endpoint_index=endpoint_index,
-                            language=language,
-                            idle_close_s=self._config.session_idle_close_s,
-                            command_queue_capacity=self._config.session_command_capacity,
-                            audio_queue_capacity=self._config.session_audio_capacity,
-                        )
-                        active.session = session
-                        await session.open(
-                            active.response.response_id,
-                            lease.playback_generation_id,
-                        )
-                        iterator = session.audio_events().__aiter__()
-                    await session.send(
-                        TTSResponseSegment(
-                            response_id=active.response.response_id,
-                            playback_generation_id=lease.playback_generation_id,
-                            sequence=sequence,
-                            text=text,
-                        ),
-                    )
-                    resampler: SegmentResampler | None = None
-                    pending_alignment: list[TTSAudioChunk] = []
-                    if trimmer is not None:
-                        trimmer.begin_segment(text)
-                    while True:
-                        if iterator is None:  # pragma: no cover - session invariant
-                            msg = "opened TTS session has no audio iterator"
-                            raise RuntimeError(msg)  # noqa: TRY301 - provider failure lane
-                        event = await iterator.__anext__()
-                        if event.sequence != sequence:
-                            msg = (
-                                f"provider segment sequence {event.sequence} does not "
-                                f"match active sequence {sequence}"
-                            )
-                            raise RuntimeError(msg)  # noqa: TRY301 - provider failure lane
-                        if isinstance(event, TTSAudioChunk):
-                            if event.word_boundaries and event.timing_text == text:
-                                pending_alignment.append(event)
-                            if not event.pcm:
-                                continue
-                            if resampler is None:
-                                resampler = SegmentResampler(
-                                    input_rate_hz=event.sample_rate_hz,
-                                    output_rate_hz=self._config.canonical_sample_rate_hz,
-                                )
-                            if not provider_first:
-                                provider_first = True
-                                record_realtime_trace(
-                                    "tts_provider_first_pcm_received",
-                                    response_id=active.response.response_id,
-                                    playback_generation_id=lease.playback_generation_id,
-                                    endpoint_index=endpoint_index,
-                                    pcm_bytes=len(event.pcm),
-                                    measurement_semantics=(
-                                        "first_nonempty_provider_pcm_event_received_by_media_owner"
-                                    ),
-                                )
-                            canonical = resampler.feed(event.pcm)
-                            if trimmer is not None:
-                                canonical = trimmer.feed(canonical)
-                            written = await self._ring.write_all(
-                                active,
-                                canonical,
-                                sequence=sequence,
-                            )
-                            accepted_segment += written
-                            accepted_total += written
-                            continue
-                        tail = resampler.finish() if resampler is not None else b""
-                        if trimmer is not None:
-                            tail = trimmer.feed(tail) + trimmer.end_segment()
-                        if tail:
-                            written = await self._ring.write_all(active, tail, sequence=sequence)
-                            accepted_segment += written
-                            accepted_total += written
-                        if accepted_segment and pending_alignment:
-                            self._ring.record_alignment(
-                                active, pending_alignment, segment_start=segment_start,
-                                segment_samples=accepted_segment, trimmed=head_dropped(trimmer),
-                            )
-                        finished = self._player.finish_generation_segment(
-                            expected_playback_generation_id=lease.playback_generation_id,
-                            sequence=sequence,
-                        )
-                        if isinstance(finished, StalePlaybackGeneration):
-                            return False
-                        record_realtime_trace(
-                            "tts_provider_segment_final",
-                            response_id=active.response.response_id,
-                            playback_generation_id=lease.playback_generation_id,
-                            segment_sequence=sequence,
-                            accepted_segment_samples=accepted_segment,
-                            usage_present=event.usage is not None,
-                            measurement_semantics=(
-                                "provider_segment_final_received_not_playback_complete"
-                            ),
-                        )
-                        self._journal.tts_usage(
-                            event.usage,
-                            response_id=active.response.response_id,
-                            sequence=sequence,
-                        )
-                        self._network_lost.prefetch()
-                        break
-                    break
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - provider transport boundary
-                    last_error = exc
-                    if session is not None:
-                        close_task = asyncio.create_task(session.close())
-                        await self._clock.wait_task_bounded(close_task, timeout_s=0.5)
-                    session = None
-                    iterator = None
-                    active.session = None
-                    if accepted_segment > 0:
-                        # ADR-0006 D5: a segment heard in part is never said
-                        # again. What she said plays out, and a cue tells Allen
-                        # her voice broke rather than leaving him in silence.
-                        await self._play_cut_off_cue(active, sequence=sequence)
-                        await self._fail_active(
-                            active,
-                            reason="partial_tts_provider_failure",
-                            retryable=False,
-                        )
-                        return False
-                    record_realtime_trace(
-                        "tts_prefix_safe_endpoint_fallback",
-                        response_id=active.response.response_id,
-                        playback_generation_id=lease.playback_generation_id,
-                        segment_sequence=sequence,
-                        failed_endpoint_index=endpoint_index,
-                        accepted_samples=0,
-                        error_type=type(exc).__name__,
-                    )
-                    endpoint_index += 1
-            else:
-                if accepted_total > 0:
-                    # The same break between two sentences: no endpoint can say
-                    # the next one, and waiting for the whole text to hand it to
-                    # `say` waits on a model that is offline too (Wi-Fi off,
-                    # 2026-10-01: silence until Allen spoke).
-                    await self._play_cut_off_cue(active, sequence=sequence)
-                    await self._fail_active(
-                        active,
-                        reason="partial_tts_provider_failure",
-                        retryable=False,
-                    )
-                    return False
-                if self._config.enable_macos_say_fallback:
-                    while live and await self._ring.await_segments(active, segments):
-                        if active.response.tagged:
-                            break
-                        budget.reschedule(
-                            asyncio.get_running_loop().time()
-                            + self._config.response_timeout_s,
-                        )
-                    if live and active.response.tagged:
-                        await self._fail_active(
-                            active,
-                            reason="stream_chunk_tagged",
-                            retryable=False,
-                        )
-                        return False
-                    remaining = segments[segment_index:]
-                    return await self._say_fallback.run(active, remaining, budget=budget)
-                if last_error is not None:
-                    raise last_error
-                return False
-            segment_index += 1
-        if not segments:
-            return False
-        record_realtime_trace(
-            "tts_provider_final",
-            response_id=active.response.response_id,
-            playback_generation_id=lease.playback_generation_id,
-            accepted_samples=accepted_total,
-            measurement_semantics="final_provider_segment_received_not_playback_complete",
-        )
-        if session is not None:
-            with contextlib.suppress(Exception):
-                await session.finish()
-            active.session = None
-        return True
-
-    async def _play_cut_off_cue(self, active: ActiveResponse, *, sequence: int) -> None:
-        """Play what was accepted to its end, then her spoken line or tones, before the terminal."""
-        line = self._network_lost.line(lang.language())
-        cue = line or cut_off_cue(self._config.canonical_sample_rate_hz)
-        await self._ring.write_all(active, cue, sequence=sequence)
-        record_realtime_trace(
-            "tts_cut_off_cue",
-            response_id=active.response.response_id,
-            playback_generation_id=active.lease.playback_generation_id,
-            segment_sequence=sequence,
-            cue="spoken_line" if line else "tones",
-        )
-        while self._active is active:
-            snapshot = self._player.poll_generation(active.lease.playback_generation_id)
-            if isinstance(snapshot, StalePlaybackGeneration):
-                return
-            await self._checkpoint_if_advanced(active, snapshot)
-            if snapshot.estimated_audible_samples >= snapshot.accepted_samples:
-                return
-            await asyncio.sleep(self._config.presentation_poll_s)
+    def _remember_answer_language(self, language: lang.Language) -> None:
+        """Remember the language of the answer's first segment: what the next spare reads."""
+        self._last_answer_language = language
 
     def _isolate_fallback_cleanup(self, active: ActiveResponse) -> None:
         """Fail closed when exact subprocess quiescence cannot be established."""

@@ -1,6 +1,6 @@
 """Canary: the playback budget and stream liveness stay separate parameters.
 
-``_stream_with_prefix_fallback`` once derived ``live = budget is not None``,
+``ResponseStreamer.stream_with_prefix_fallback`` once derived ``live = budget is not None``,
 which conflated "a per-segment deadline exists" with "the segment list may
 still grow". The caller then withheld the budget on the non-live path, so the
 per-segment reschedule never ran there and one deadline bounded the whole
@@ -16,20 +16,20 @@ import ast
 
 from tests.canary._helpers import repo_root
 
-_TARGET = "_stream_with_prefix_fallback"
+_TARGET = "stream_with_prefix_fallback"
 
 
 def _find(tree: ast.Module) -> ast.AsyncFunctionDef:
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == _TARGET:
             return node
-    msg = f"{_TARGET} not found in jarvis/surface/voice_media/pipeline.py"
+    msg = f"{_TARGET} not found in jarvis/surface/voice_media/streamer.py"
     raise AssertionError(msg)
 
 
 def test_canary_playback_budget_not_liveness() -> None:
     """Assert a non-optional budget, a separate liveness flag, and no None compare."""
-    path = repo_root() / "jarvis" / "surface" / "voice_media" / "pipeline.py"
+    path = repo_root() / "jarvis" / "surface" / "voice_media" / "streamer.py"
     fn = _find(ast.parse(path.read_text(encoding="utf-8")))
     names = [arg.arg for arg in fn.args.kwonlyargs]
     assert "budget" in names, f"{_TARGET} lost its keyword-only budget parameter"
