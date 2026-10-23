@@ -21,19 +21,20 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution import mail_lists, mail_reads, speakable
+from jarvis.execution import mail_bills, mail_lists, mail_reads, speakable
 from jarvis.execution.mail_gmail import Hit
 from jarvis.execution.paragraphs import PART_CHARS
 from jarvis.execution.tools import Receipted, Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.receipts import Covered, Receipt
 from jarvis.state.event_log import emit_event, iter_events_of_types
+from jarvis.state.mail_bill import Seen, mail_facts
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
-    from datetime import datetime
+    from datetime import datetime, tzinfo
 
-    from jarvis.execution.mail_gmail import Mailbox
+    from jarvis.execution.mail_gmail import Mailbox, Read
     from jarvis.execution.mail_lists import Ask, Waiting
     from jarvis.execution.mail_reads import Thread
     from jarvis.execution.tools import ToolContext
@@ -552,10 +553,11 @@ class _Mail:
             if read is None:
                 msg = f"No mail with id {message}; list or search first to get one"
                 raise ToolError(msg, code="not_found")
+            extras, _ = self._bill(read, zone, look=False)
             mails.append(mail_reads.mail_json(
                 read, page=given.get("page", 1), looking_for=given.get("looking_for", ""),
                 limit=PART_CHARS // len(ids), raw_max_bytes=self._box.raw_max_bytes,
-                now=now, zone=zone,
+                now=now, zone=zone, extras=extras,
             ))
             summaries.append(mail_reads.summary_of(read, now, zone))
         said = f"Read {len(ids)} mails: {' '.join(summaries)}"
@@ -572,19 +574,49 @@ class _Mail:
         """One mail read whole or in parts; ``lead`` opens the summary (a search's one match)."""
         now, zone = ctx.clock.now(), ctx.clock.zone
         read = self._box.read(message)
+        extras, verdict = self._bill(read, zone, look=True)
         out = mail_reads.mail_json(
             read, page=given.get("page", 1), looking_for=given.get("looking_for", ""),
             limit=PART_CHARS, raw_max_bytes=self._box.raw_max_bytes, now=now, zone=zone,
+            extras=extras,
         )
         got = _part_of(out)
         said, left, how = _more_parts(got)
         who = read.mail.sender.shown or "an unknown sender"
         subject = speakable.cut(read.mail.subject, _SUBJECT_CHARS) or "(no subject)"
         line = f'read {who}\'s mail "{subject}"' + (f", part {got[0]} of {got[1]}" if got else "")
+        summary = lead + mail_reads.summary_of(read, now, zone)
+        window, shown = f"one mail, {read.id}", 1
+        if verdict is not None:
+            summary += " " + mail_bills.line(verdict, now, zone)
+            line += ", receipt found" if verdict.receipt else ", no receipt found"
+            window += f"; {mail_bills.window_text(verdict)}"
+            shown += verdict.looked
+            left += verdict.unread
         return Receipted(
-            {"summary": lead + mail_reads.summary_of(read, now, zone) + said, **out},
-            _reads(line, f"one mail, {read.id}", 1, left, how),
+            {"summary": summary + said, **out}, _reads(line, window, shown, left, how),
         )
+
+    def _bill(
+        self, read: Read, zone: tzinfo, *, look: bool,
+    ) -> tuple[dict[str, str], mail_bills.Verdict | None]:
+        """What the mail states of a bill or a payment, and for a bill the receipt that paid it.
+
+        ``look``: search its sender's mail for the receipt (ADR 0365); a read of several mails
+        does not, and says so.
+        """
+        facts = mail_facts(read.mail)
+        if facts is None:
+            return {}, None
+        mail = read.mail
+        if facts.kind != "asks":
+            return {"bill": facts.line}, None
+        if not look:
+            return {"bill": f"{facts.line}; read this mail alone to look for its receipt"}, None
+        if mail.at is None or not mail.sender.address:
+            return {"bill": f"{facts.line}; no sender or date, so no receipt was looked for"}, None
+        seen = Seen(facts, mail.sender.address, mail.at)
+        return {"bill": facts.line}, mail_bills.find_receipt(self._box, read.id, seen, zone)
 
     # --- thread --------------------------------------------------------------------------------
 
