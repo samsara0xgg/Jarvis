@@ -165,6 +165,8 @@ try {
   const shot = async name => { const g = await rect('.notch-drop'); await page.screenshot({ path: path.join(out, `${name}.png`), clip: { x: 0, y: 0, width: STAGE, height: Math.ceil(g.bottom) + 12 } }); };
   const side = () => page.evaluate(() => { const s = document.querySelector('.notch .dt-side'); return { n: s?.children.length ?? -1, text: (s?.innerText ?? '').replace(/\s+/g, ' ').trim() }; });
   const stageVar = () => page.evaluate(() => { const l = document.querySelector('.notch .dt-list')?.getBoundingClientRect(), s = document.querySelector('.notch .dt-side')?.getBoundingClientRect(); return { l: l?.width, r: s?.width }; });
+  // under load the door's data comes a little later than the fixed settle: the rest row is waited for
+  const rested = () => page.waitForFunction(() => document.querySelector('.notch .dt-list [aria-current="true"]'), undefined, { timeout: 5000 }).catch(() => {});
   const go = async (n, key) => { await page.keyboard.press(`Control+${n}`); await settle(800); check(`⌘${n} is the door ${key}`, await doorOn() === key); await park(); await settle(300); };
 
   await page.waitForFunction(() => document.querySelector('.notch')?.dataset.line, undefined, { timeout: 8000 });
@@ -179,6 +181,7 @@ try {
   await go(2, 'mail');
   const mailRows = await page.locator('.notch .dt-list .dt-row').count();
   check('信: the letters are the list on the left', mailRows >= 8, String(mailRows));
+  if (REST) { await rested(); await settle(300); }
   if (REST) check('信: nothing selected shows the letter that most wants a reply in the right column (the newest 要回)', await sel() === 'm-st4' && (await side()).text.includes('今晚的陶艺课'), `${await sel()} ${(await side()).text}`);
   else skip('信 rest');
   await shot('mail-rest');
@@ -189,6 +192,7 @@ try {
 
   // ---- 待办 ----
   await go(3, 'todo');
+  if (REST) { await rested(); await settle(300); }
   if (REST) check('待办: nothing selected shows the first overdue to-do', await sel() === 'td:td-lib' && (await side()).text.includes('续借图书证'), `${await sel()} ${(await side()).text}`);
   else skip('待办 rest');
   await shot('todo-rest');
@@ -198,11 +202,14 @@ try {
   await pressOn('.notch .dt-side .dd-head .dt-ask'); await settle(300);
   check('待办: 问她 in the head opens one line to type into', await page.locator('.notch .dt-side .dd-ask input').count() === 1 && await page.evaluate(() => document.activeElement?.closest('.dd-ask') !== null));
   await page.keyboard.press('Escape'); await settle(300);
-  check('...and Esc leaves it (the frame lets go of the selection with it)', await page.locator('.notch .dt-side .dd-ask').count() === 0);
+  check('...and the first Esc only lets go of the field (the line and the selection stay)', await page.locator('.notch .dt-side .dd-ask input').count() === 1 && await page.evaluate(() => !document.activeElement?.closest('.dd-ask')) && await sel() === 'td:td-pill');
+  await page.keyboard.press('Escape'); await settle(300);
+  check('...and the next lets go of the selection, line and all', await page.locator('.notch .dt-side .dd-ask').count() === 0 && await sel() === null);
   await park();
 
   // ---- Agents ----
   await go(4, 'agents');
+  if (REST) { await rested(); await settle(300); }
   if (REST) check('Agents: nothing selected shows the session that waits on him', await sel() === 'c-line', String(await sel()));
   else skip('Agents rest');
   await shot('agents-rest');
@@ -212,6 +219,7 @@ try {
 
   // ---- 额度 ----
   await go(5, 'quota');
+  if (REST) { await rested(); await settle(300); }
   if (REST) check('额度: nothing selected shows the current 5-hour window', (await side()).text.includes('38%'), (await side()).text);
   else skip('额度 rest');
   await shot('quota-rest');
@@ -224,6 +232,7 @@ try {
   await go(6, 'more');
   const w = await stageVar();
   check('更多: the left column is the narrow menu (184 px)', Math.abs(w.l - 184) < 3 && w.r > 560, JSON.stringify(w));
+  if (REST) { await rested(); await settle(300); }
   if (REST) check('更多: nothing selected shows the memory page', (await side()).text.includes('记着'), (await side()).text);
   else skip('更多 rest');
   await shot('more-rest');

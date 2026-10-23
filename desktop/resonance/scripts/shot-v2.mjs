@@ -146,7 +146,8 @@ try {
   // ---- 信, a letter selected ----
   await page.keyboard.press('Control+2'); await settle(700);
   check('⌘2 is the second door, 信', await page.evaluate(() => document.querySelector('.notch .dt')?.dataset.door) === 'mail');
-  check('on 信 the letters are on the left and nothing is selected: an empty right column', await page.locator('.notch .dt-list .dt-row').count() >= 4 && await page.locator('.notch .dt-side').evaluate(e => e.children.length) === 0);
+  await page.waitForFunction(() => document.querySelector('.notch .dt-list [aria-current="true"]'), undefined, { timeout: 5000 }).catch(() => {});
+  check('on 信 the letters are on the left and the door opens on its rest row (the newest letter that wants a reply): its page is in the right column', await page.locator('.notch .dt-list .dt-row').count() >= 4 && await sel() === 'm-mom' && await page.locator('.notch .dt-side .dt-pin').count() === 1, String(await sel()));
   await pressOn('.notch .dt-list .dt-row[data-key="m-nw"]'); await settle(900);
   check('a letter selected: its page is in the right column', await sel() === 'm-nw' && await page.locator('.notch .dt-side .dt-pin').count() === 1);
   await park(); await settle(200);
