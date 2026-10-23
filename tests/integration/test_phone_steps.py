@@ -516,6 +516,18 @@ def test_an_archive_is_its_own_step_and_every_other_call_of_the_mail_tool_checks
     assert steps.phrase("mail", archive) == "归档了邮件"
 
 
+def test_writing_or_sending_a_letter_is_the_write_mail_step_whatever_the_tool_was() -> None:
+    """ADR 0366: a draft or a send of the ``mail`` tool says what the old draft tool said."""
+    for action in ("draft", "send"):
+        call = {"action": action, "to": "Sam", "body": "Yes"}
+        assert steps.kind("mail", call) == steps.kind("mail", json.dumps(call)) == "mail_write"
+        assert steps.label("mail", call) == "Writing mail"
+        assert steps.phrase("mail", call) == "wrote mail"
+    assert steps.kind("write_mail_draft") == "generic"  # the old tool is gone
+    lang.set_language("zh")
+    assert steps.label("mail", {"action": "send"}) == "写邮件"
+
+
 def test_the_history_follows_an_answer_whose_turn_ran_tools_with_its_receipts(
     tmp_path: Path,
 ) -> None:

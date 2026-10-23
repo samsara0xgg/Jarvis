@@ -131,7 +131,6 @@ SLOW_TOOLS: Final[dict[str, str]] = {
     "screen_look": "tool_status.screen",
     "refresh_work_state": "tool_status.work_state",
     "daily_work_report": "tool_status.report",
-    "write_mail_draft": "tool_status.draft",
 }
 
 
@@ -139,8 +138,6 @@ SLOW_TOOLS: Final[dict[str, str]] = {
 
 # (what the card and the ask call it, the line once it ran) per tool.
 _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
-    "mcp__gmail__gmail_send": {"zh": ("发这封邮件", "已发送"), "en": ("send this email", "Sent")},
-    "mcp__gmail__gmail_sendDraft": {"zh": ("发出这封草稿", "已发送"), "en": ("send this draft", "Sent")},
     "mcp__gmail__gmail_modify": {
         "zh": ("改这封邮件的标签", "标签已改"),
         "en": ("change this email's labels", "Labels changed"),
@@ -1024,7 +1021,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "tool_status.screen": {"zh": "正在看你的屏幕…", "en": "Looking at your screen..."},
     "tool_status.work_state": {"zh": "正在更新你的工作状态…", "en": "Updating your work state..."},
     "tool_status.report": {"zh": "正在写今天的工作报告…", "en": "Writing your daily report..."},
-    "tool_status.draft": {"zh": "正在写回信草稿…", "en": "Writing the draft..."},
     "tool_status.calendar": {"zh": "正在查看你的日程…", "en": "Checking your calendar..."},
     "tool_status.mail": {"zh": "正在查看你的邮件…", "en": "Checking your mail..."},
     "tool_status.notion": {"zh": "正在搜索 Notion…", "en": "Searching Notion..."},

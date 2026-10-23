@@ -86,7 +86,6 @@ _KIND: Final[dict[str, str]] = {
     "open_path": "file",
     "open_url": "url",
     "mail": "mail",
-    "write_mail_draft": "mail_write",
     "refresh_work_state": "work_state",
     "daily_work_report": "report",
     "jobs": "jobs",
@@ -96,6 +95,7 @@ _KIND: Final[dict[str, str]] = {
     "show_on_dashboard": "dashboard",
 }
 _RIDE_ARGUMENTS: Final = frozenset({"pin", "ride"})
+_MAIL_WRITES: Final = frozenset({"draft", "send"})
 _HIDDEN: Final = frozenset(
     {"tool_search", "get_current_time", "ask_user", "dismiss_card"},
 )
@@ -111,6 +111,8 @@ def _by_arguments(tool: str, arguments: object) -> str | None:
         return "calendar_edit"
     if tool == "mail" and given.get("action") == "archive":
         return "mail_archive"
+    if tool == "mail" and given.get("action") in _MAIL_WRITES:
+        return "mail_write"
     return None
 
 
@@ -119,7 +121,7 @@ def kind(tool: str, arguments: object = None) -> str:
 
     ``bus`` is a ride when the call pins, rides or sets a stop, else a transit look (ADR 0246).
     ``schedule`` changes the calendar when its action is not a read (ADR 0299). ``mail`` archives
-    when its action says so (ADR 0362), else it checks his mail.
+    or writes a letter when its action says so (ADR 0362, 0366), else it checks his mail.
     """
     if decided := _by_arguments(tool, arguments):
         return decided
