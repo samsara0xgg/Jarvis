@@ -1,0 +1,11 @@
+{
+  "id": "schedule-read-tomorrow-is-unchanged",
+  "tool": "schedule",
+  "said": "what do I have tomorrow",
+  "at": "2026-10-20T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {"at": "tomorrow"},
+  "recording": null,
+  "expect": {"summary_must": ["tomorrow \\(Wed Oct 21\\)"]}
+}
