@@ -23,10 +23,10 @@ if TYPE_CHECKING:
 
 REPO = Path(__file__).resolve().parents[2]
 GMAIL = (
-    "search", "get", "downloadAttachment", "listLabels", "createDraft", "send", "modify",
-    "batchModify", "modifyThread",
+    "search", "get", "downloadAttachment", "listLabels", "createLabel", "createDraft", "sendDraft",
+    "send", "modify", "batchModify", "modifyThread",
 )
-REPLACED = ("search", "get", "downloadAttachment", "modify", "batchModify", "modifyThread")
+REPLACED = tuple(one for one in GMAIL if one != "createLabel")
 
 
 def _recorded(tmp_path: Path) -> Path:
@@ -62,18 +62,19 @@ def test_the_mail_entry_is_short_and_one_flat_object(tmp_path: Path) -> None:
     (entry,) = (one for one in menu if one["name"] == "mail")
     assert len(entry["description"]) <= 600
     assert entry["input_schema"]["properties"]["action"]["enum"] == [
-        "list", "search", "read", "thread", "attachment", "archive",
+        "list", "search", "read", "thread", "attachment", "draft", "send", "archive",
     ]
 
 
 def test_tool_search_in_the_shipped_registry_sends_gmail_work_to_mail(tmp_path: Path) -> None:
-    """ADR 0242: tool_search finds the Gmail reads, loads only the write tools, names `mail`."""
+    """ADR 0242: tool_search finds the Gmail tools, loads none but createLabel, names `mail`."""
     registry = tool_exam._exam_registry(_config(), _recorded(tmp_path))  # noqa: SLF001
     search = next(one for one in registry.get_definitions() if one.name == "tool_search")
     out = dict(search.handler({"query": "gmail_search"}, cast("ToolContext", None)))
     loaded = set(out["loaded_tools"])
-    assert "mcp__gmail__gmail_send" in loaded  # the write tool loads, with the server's own
     assert not loaded & {f"mcp__gmail__gmail_{one}" for one in REPLACED}
+    labels = dict(search.handler({"query": "createLabel"}, cast("ToolContext", None)))
+    assert labels["loaded_tools"] == ["mcp__gmail__gmail_createLabel"]  # `mail` makes no labels
     tail = "is replaced by mail, which is already in your tools: call"
     assert f'gmail_search {tail} mail(action="search", query=...).' in out["note"]
     assert f'gmail_get {tail} mail(action="read", message=<id>).' in out["note"]

@@ -1,7 +1,7 @@
 """ADR 0176, 0148: what the Dashboard shows, and the reply draft under an open letter.
 
-Both are in memory only: a restart forgets them; the event log keeps what Jarvis wrote as
-the ``write_mail_draft`` rows.
+Both are in memory only: a restart forgets them. The ``mail`` tool's draft does not write here
+yet (ADR 0366 decides what a draft under the letter becomes).
 """
 
 from __future__ import annotations

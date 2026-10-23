@@ -1,27 +1,34 @@
-"""ADR 0147 — the open letter, the live-context lines and the draft tool."""
+"""ADR 0147 — the open letter, the live-context lines and the page's drafts."""
 
 from __future__ import annotations
 
 import functools
 import json
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from contextlib import closing
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.decision import CompletionRefused
 from jarvis.decision.llm import ChatResult
-from jarvis.execution.tools import ToolContext, ToolError, build_default_registry
-from jarvis.runtime.daemon.routes import mail_letter, mail_summary
+from jarvis.execution.mail_gmail import Mailbox
+from jarvis.execution.mail_tool import build_mail_tool
+from jarvis.execution.tools import build_default_registry
+from jarvis.runtime.daemon.routes import _send_draft, mail_letter, mail_summary
 from jarvis.runtime.dashboard import DRAFT_CHARS, DRAFT_LINE_CHARS, MailDrafts, ViewState
 from jarvis.runtime.home import Home, mail_layout, mail_summarizer
 from jarvis.runtime.turn.context import live_lines
-from jarvis.shared import CallerPrincipal, lang
-from jarvis.state.event_log import open_event_log
+from jarvis.shared import lang
+from jarvis.state.event_log import iter_events_of_types, open_event_log
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
 from jarvis.surface.inherent_server.deps import InherentDeps
+from tests.support.gmail_fake import Gmail
 from tests.support.runtime_config import runtime_config
 
 if TYPE_CHECKING:
@@ -82,42 +89,22 @@ def test_the_switch_is_off_unless_dashboard_mail_enabled_is_true() -> None:
     assert runtime_config({"dashboard": {"mail": {"enabled": True}}}).dashboard.mail
 
 
-def _tool(drafts: MailDrafts | None) -> Any:  # noqa: ANN401
-    registry = build_default_registry(mail_drafts=drafts)
-    return next(
-        (one for one in registry.get_definitions() if one.name == "write_mail_draft"), None,
-    )
+def test_no_tool_writes_a_draft_under_the_open_letter_any_more() -> None:
+    """``write_mail_draft`` is gone; the ``mail`` tool is the one way to write a letter."""
+    names = {one.name for one in build_default_registry().get_definitions()}
+    assert "write_mail_draft" not in names
 
 
-def test_write_mail_draft_is_l1_for_the_model_only_registered_with_the_page_on() -> None:
-    """Off: no tool. On: exact description, L1, JARVIS_LLM only."""
-    assert _tool(None) is None
-    tool = _tool(MailDrafts(ViewState()))
-    assert tool.description == (
-        "Write or replace the draft reply under the open letter on Allen's Dashboard. Pass the "
-        "whole reply text each time; the screen shows it as the draft. Nothing is sent."
-    )
-    assert tool.risk_level == "L1"
-    assert tool.allowed_callers == frozenset({CallerPrincipal.JARVIS_LLM})
-    assert not tool.read_only
-
-
-def test_write_mail_draft_rewrites_whole_and_refuses_closed_letters_and_oversize() -> None:
-    """Revisions climb, the last text wins, the draft line follows; refusals are tool errors."""
+def test_the_pages_drafts_rewrite_whole_and_refuse_closed_letters_and_oversize() -> None:
+    """Revisions climb, the last text wins, the draft line follows; refusals are ValueErrors."""
     view = ViewState()
     drafts = MailDrafts(view)
-    tool = _tool(drafts)
-    ctx = cast("ToolContext", None)
-
-    def write(letter: str, text: str) -> Mapping[str, Any]:
-        return tool.handler({"letter_id": letter, "text": text}, ctx)  # type: ignore[no-any-return]
-
-    with pytest.raises(ToolError, match="not open"):
-        write(LETTER, "Hi")
+    with pytest.raises(ValueError, match="not open"):
+        drafts.write(LETTER, "Hi")
     view.set("mail", item=("mail", LETTER, "Sam — Lunch"))
     assert drafts.line() is None
-    first = write(LETTER, "Sure, Friday.")["revision"]
-    assert write(LETTER, "Sure, Friday works, thank you.")["revision"] == first + 1
+    first = drafts.write(LETTER, "Sure, Friday.")
+    assert drafts.write(LETTER, "Sure, Friday works, thank you.") == first + 1
     assert drafts.get(LETTER) is not None
     assert drafts.get(LETTER).body == "Sure, Friday works, thank you."  # type: ignore[union-attr]
     assert drafts.line() == (
@@ -125,10 +112,10 @@ def test_write_mail_draft_rewrites_whole_and_refuses_closed_letters_and_oversize
         "Sure, Friday works, thank you."
     )
     for bad in ("", "  ", "x" * (DRAFT_CHARS + 1)):
-        with pytest.raises(ToolError):
-            write(LETTER, bad)
-    with pytest.raises(ToolError, match="not open"):
-        write("another-letter", "Hi")
+        with pytest.raises(ValueError, match="1 to"):
+            drafts.write(LETTER, bad)
+    with pytest.raises(ValueError, match="not open"):
+        drafts.write("another-letter", "Hi")
     assert drafts.get(LETTER).revision == first + 1  # type: ignore[union-attr]
 
 
@@ -237,6 +224,31 @@ def _page(
         **routes,
     ))
     return TestClient(app), model
+
+
+def test_the_pages_send_asks_the_mail_tool_and_says_why_it_cannot_yet(tmp_path: Path) -> None:
+    """The page's send is a ``mail`` send for the card; until ADR 0366 it is refused, no card."""
+    log = tmp_path / "events.db"
+    open_event_log(log).close()
+    view = ViewState()
+    drafts = MailDrafts(view)
+    home = Home(
+        _Connections(),  # type: ignore[arg-type]
+        ("America/Vancouver", ZoneInfo("America/Vancouver")), None, None, view, None,
+    )
+    registry = build_default_registry()
+    registry.register(*build_mail_tool(Mailbox(Gmail(now=datetime.now(UTC)).tool)))
+    runtime = SimpleNamespace(
+        runtime_paths=SimpleNamespace(event_log=log, artifacts_root=tmp_path),
+        tool_registry=registry,
+        config=SimpleNamespace(confirmation=SimpleNamespace(ttl_ms=600_000)),
+    )
+    with pytest.raises(CompletionRefused, match="not available yet") as refused:
+        _send_draft(runtime, home, drafts, "plain", "Re: Lunch", "Thursday works.")  # type: ignore[arg-type]
+    assert (refused.value.code, refused.value.kind) == ("unavailable", "impossible")
+    assert drafts.get("plain") is not None  # his edit is kept
+    with closing(open_event_log(log)) as conn:
+        assert list(iter_events_of_types(conn, ["confirmation.requested"])) == []
 
 
 @pytest.mark.parametrize(("name", "layout"), [("plain", "text"), ("table", "html")])

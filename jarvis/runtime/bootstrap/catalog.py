@@ -362,7 +362,6 @@ def serve_tools(
 
     build_registry = partial(
         build_default_registry,
-        mail_drafts=features.mail_drafts,
         memory_db_path=memory.db_path,
         observed_repos=config.observer.repos,
         timesink_db_path=config.observer.timesink_db_path,

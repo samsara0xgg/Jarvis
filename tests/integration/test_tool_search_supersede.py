@@ -21,13 +21,16 @@ GMAIL = {  # the Workspace server's tools, described as it describes them
     "get": "Get the full content of a specific email message.",
     "downloadAttachment": "Download one attachment of an email message.",
     "listLabels": "List all labels in the Gmail account.",
+    "createLabel": "Create a new label in the Gmail account.",
     "createDraft": "Create a draft email.",
+    "sendDraft": "Send a draft that was created before.",
     "send": "Send an email message.",
     "modify": "Add or remove labels on one message.",
     "batchModify": "Add or remove labels on many messages at once.",
     "modifyThread": "Add or remove labels on every message of a conversation.",
 }
 READS = {"search", "get", "downloadAttachment", "listLabels"}
+WRITE_HOW = 'mail(action="draft" or "send", ...)'
 SEARCH_HOW = 'mail(action="search", query=...)'
 READ_HOW = 'mail(action="read", message=<id>)'
 FILE_HOW = 'mail(action="attachment", message=<id>, file=...)'
@@ -75,6 +78,10 @@ def test_the_registry_reports_what_the_menu_tools_supersede() -> None:
         "mcp__gmail__gmail_modify": ("mail", ARCHIVE_HOW),
         "mcp__gmail__gmail_batchModify": ("mail", ARCHIVE_HOW),
         "mcp__gmail__gmail_modifyThread": ("mail", ARCHIVE_HOW),
+        "mcp__gmail__gmail_listLabels": ("mail", SEARCH_HOW),
+        "mcp__gmail__gmail_createDraft": ("mail", WRITE_HOW),
+        "mcp__gmail__gmail_send": ("mail", WRITE_HOW),
+        "mcp__gmail__gmail_sendDraft": ("mail", WRITE_HOW),
     }
     later = ToolRegistry()
     later.register(replace(_mail(), deferred=True))
@@ -105,17 +112,18 @@ def test_the_batch_and_thread_changes_are_replaced_by_the_archive_as_well() -> N
     assert thread == {"loaded_tools": [], "note": f"gmail_modifyThread {TAIL} {ARCHIVE_HOW}."}
 
 
-def test_the_draft_send_and_label_tools_of_the_same_server_still_load() -> None:
-    """What `mail` does not do stays the plugin's; the server's reads left over come along."""
+def test_the_draft_and_send_tools_are_replaced_too_and_only_creating_a_label_still_loads() -> None:
+    """Every Gmail tool but createLabel is `mail`'s; `mail` makes no labels, so that one loads."""
     registry, tools = ToolRegistry(), _gmail()
     registry.register(_mail())
-    assert _search(registry, tools, "send") == {
-        "loaded_tools": ["mcp__gmail__gmail_send", "mcp__gmail__gmail_listLabels"],
-    }
-    assert _search(registry, tools, "draft") == {
-        "loaded_tools": ["mcp__gmail__gmail_createDraft", "mcp__gmail__gmail_listLabels"],
-    }
-    assert _search(registry, tools, "list") == {"loaded_tools": ["mcp__gmail__gmail_listLabels"]}
+    for word, old in (("send", "gmail_send"), ("draft", "gmail_createDraft")):
+        out = _search(registry, tools, word)
+        assert out["loaded_tools"] == []
+        assert f"{old} {TAIL} {WRITE_HOW}." in out["note"]
+    assert _search(registry, tools, "sendDraft")["loaded_tools"] == []
+    labels = _search(registry, tools, "label")
+    assert labels["loaded_tools"] == ["mcp__gmail__gmail_createLabel"]
+    assert f"gmail_listLabels {TAIL} {SEARCH_HOW}." in labels["note"]
 
 
 def test_without_the_menu_tool_nothing_is_replaced() -> None:
@@ -147,14 +155,14 @@ def test_any_menu_tool_can_supersede_deferred_names() -> None:
 
 
 def test_the_description_names_the_menu_tool_on_its_source_line_once_per_call() -> None:
-    """The gmail line says mail is already in the tools; three changes are one hint, not three."""
+    """The gmail line says mail is already in the tools; many changes are one hint, not many."""
     registry = ToolRegistry()
     registry.register(_mail())
     (search,) = build_tool_search(_gmail(), {"gmail": "Gmail."}, registry.superseded)
     line = next(one for one in search.description.splitlines() if one.startswith("- gmail:"))
     assert line == (
         f"- gmail: Gmail. Already in your tools for it: {SEARCH_HOW}, {READ_HOW}, {FILE_HOW}, "
-        f"{ARCHIVE_HOW}."
+        f"{ARCHIVE_HOW}, {WRITE_HOW}."
     )
     (bare,) = build_tool_search(_gmail(), {"gmail": "Gmail."}, ToolRegistry().superseded)
     assert "- gmail: Gmail.\n" in bare.description

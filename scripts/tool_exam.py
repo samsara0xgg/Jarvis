@@ -187,7 +187,7 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
                 web_deep_search=stub, vision_client=stub, memory_db_path=base / "memory.db",
                 timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
-                voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
+                voice_settings=stub, weather_lookup=lambda _request: {},
                 transit_api_key="x", transit_places=lambda: {"home": "home"},
                 transit_offers=stub, here=stub,
                 bus_live=stub, ride_control=stub, highlight_marker=stub,
