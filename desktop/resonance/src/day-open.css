@@ -205,3 +205,10 @@
 /* how she knows: a hairline over it, the label in faint ink */
 .notch .dt-body p.dt-how { margin:6px 0 0; padding-top:8px; border-top:1px solid rgb(255 255 255 / .06); font-size:12px; line-height:18px; color:var(--p-muted); }
 .notch .dt-how b { margin-right:6px; font-weight:600; color:var(--p-faint); }
+/* a stretch's parts as a thin strip under its words, the longest named under it (the stage's own look) */
+.notch .dt-sp { margin:2px 0 4px; }
+.notch .dt-sp-b { display:flex; gap:2px; height:6px; }
+.notch .dt-sp-b i { min-width:2px; height:6px; border-radius:2px; background:rgb(var(--k)); }
+.notch .dt-sp-b i.is-away { background:transparent; box-shadow:inset 0 0 0 1px rgb(var(--ink, 238 240 251) / .3); }
+.notch .dt-sp-l { display:flex; gap:2px; margin-top:4px; font-size:11px; line-height:14px; color:var(--p-faint); }
+.notch .dt-sp-l > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }

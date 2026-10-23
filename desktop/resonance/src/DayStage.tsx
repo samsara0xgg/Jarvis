@@ -59,7 +59,7 @@ function nowOf(m: DayModel, now: number): Look | null {
 
 // The stretch cut into the parts that were in it, in time order, each as long as it lasted; what no part covers (five minutes or more) is a hollow one.
 type Part = { key: string; ms: number; rgb: Rgb | null; label: string };
-function partsOf(m: DayModel, seg: Segment, now: number): Part[] {
+export function partsOf(m: DayModel, seg: Segment, now: number): Part[] {
   const byId = new Map(m.items.map(it => [it.id, it])), found: { key: string; s: number; e: number; kind: string; label: string }[] = [];
   for (const x of seg.inside) {
     const it = byId.get(x.key);

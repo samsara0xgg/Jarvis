@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { CaretLeft, CaretRight, Check, PencilSimpleLine } from '@phosphor-icons/react';
 import type { L } from './companionSettings';
@@ -217,12 +217,24 @@ function Buttons({ acts, say }: { acts: Acts; say: string }) {
   </>;
 }
 
-function OpenBody({ open, acts }: { open: Open; acts: Acts }) {
+// The stretch cut into the parts that were in it (DayStage.tsx partsOf), a thin strip as long as it lasted with the three longest, wide enough to hold a word, named under it.
+export type Strip = { key: string; ms: number; rgb: readonly number[] | null; label: string }[];
+function StripView({ strip }: { strip: Strip }) {
+  const total = strip.reduce((n, p) => n + p.ms, 0), min = (p: Strip[number]) => Math.round(p.ms / 60_000);
+  const named = new Set([...strip].filter(p => p.label && p.ms / total > .12).sort((a, b) => b.ms - a.ms).slice(0, 3).map(p => p.key));
+  return <div className="dt-sp">
+    <div className="dt-sp-b" role="img" aria-label={strip.filter(p => named.has(p.key)).map(p => `${p.label} ${min(p)}`).join(', ')}>{strip.map(p => <i key={p.key} className={p.rgb ? undefined : 'is-away'} style={{ flex: `${p.ms} 1 0`, '--k': p.rgb?.join(' ') } as CSSProperties}/>)}</div>
+    <div className="dt-sp-l" aria-hidden="true">{strip.map(p => <span key={p.key} style={{ flex: `${p.ms} 1 0` }}>{named.has(p.key) ? `${p.label} ${min(p)}` : ''}</span>)}</div>
+  </div>;
+}
+
+function OpenBody({ open, acts, strip }: { open: Open; acts: Acts; strip: Strip }) {
   const { t } = acts;
   const say = acts.rename?.state === 'editing' || acts.name?.state === 'editing' ? t(['Enter saves · Esc cancels', '回车保存 · Esc 取消']) : acts.name?.state === 'failed' ? t(["Couldn't keep it. Try again.", '没记下，再试一次']) : acts.rename?.state === 'failed' ? t(["Couldn't rename it. Try again.", '没改成，再试一次']) : acts.ack?.state === 'failed' || acts.commit?.state === 'failed' ? t(["That didn't go through. Try again.", '没成功，再试一次']) : acts.line;
   const knows = open.parts.find((p): p is Extract<Part, { type: 'knows' }> => p.type === 'knows');
   return <>
-    {open.parts.map((p, i) => <PartView key={`${p.type}${i}`} part={p} acts={acts}/>)}
+    {open.parts.map((p, i) => <Fragment key={`${p.type}${i}`}><PartView part={p} acts={acts}/>{i === (open.parts[0]?.type === 'lines' ? 0 : -1) && strip.length > 0 && <StripView strip={strip}/>}</Fragment>)}
+    {open.parts[0]?.type !== 'lines' && strip.length > 0 && <StripView strip={strip}/>}
     <Buttons acts={acts} say={say}/>
     {knows && <p className="dt-how"><b>{t(['Based on', '依据'])}</b>{knows.text}</p>}
   </>;
@@ -254,7 +266,7 @@ function useEdges(box: RefObject<HTMLDivElement | null>, inner: RefObject<HTMLDi
 // A row's detail in the right column (the V2 pane: DayTimeline.tsx): a small way back to what the column shows with nothing selected (`home` says what that is; Esc is the same),
 // the head (the row's glyph in its own colour, its title, when it was and how long, and 问她 at its right), then what the row holds and the buttons that work for it, and last how
 // she knows. The title is the field while a kept place is being renamed. The column scrolls on its own, its edges fading.
-export function DetailPage({ head, open, acts, rename, back, home }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void; home: string }) {
+export function DetailPage({ head, open, acts, rename, back, home, strip }: { head: Head; open: Open; acts: Acts; rename: Rename | null; back: () => void; home: string; strip: Strip }) {
   const { t } = acts, box = useRef<HTMLDivElement>(null), inner = useRef<HTMLDivElement>(null);
   useEdges(box, inner);
   return <div ref={box} className="dt-pin is-day">
@@ -265,7 +277,7 @@ export function DetailPage({ head, open, acts, rename, back, home }: { head: Hea
         <span className="dt-dt">{rename ? <RenameField {...rename} t={t}/> : <b>{head.title}</b>}{head.meta && <em>{head.meta}</em>}</span>
         {acts.ask && <button type="button" className="dt-btn" onClick={acts.ask}>{t(['Ask her', '问她'])}</button>}
       </header>
-      <div className="dt-body"><OpenBody open={open} acts={acts}/></div>
+      <div className="dt-body"><OpenBody open={open} acts={acts} strip={strip}/></div>
     </div>
   </div>;
 }

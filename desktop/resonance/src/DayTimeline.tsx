@@ -10,7 +10,7 @@ import { DoorDetail, DoorNumbers, DoorRowView, Doors, inRange } from './DayDoors
 import { DOORS, useDoors, type DoorCtx, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
-import { DayStage } from './DayStage';
+import { DayStage, partsOf } from './DayStage';
 import { MOTION } from './motion';
 import { DetailPage, EASE, reduced, Unfold, Viewer, type Acts } from './RowOpen';
 import { StarToggle, type StarMark } from './StarToggle';
@@ -686,7 +686,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
       line: line.on && line.key === key ? line.text : '',
     };
     const renaming = rename?.key === key ? { draft: rename.draft, busy: rename.state === 'busy', set: (text: string) => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: (on: boolean) => setLeft(!on) } : null;
-    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={drop} home={model?.today ? t(['Now', '现在']) : t(['The day', '这一天'])}/>;
+    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={drop} home={model?.today ? t(['Now', '现在']) : t(['The day', '这一天'])} strip={model && model.segs.has(key) ? partsOf(model, model.segs.get(key)!, model.now) : []}/>;
   };
   // The rows and their order come before the door's detail, which asks `aside` for its neighbours as this is drawn.
   const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];

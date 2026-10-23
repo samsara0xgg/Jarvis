@@ -126,6 +126,7 @@ try {
   }, side));
   await shot('detail-stretch');
   check('its lines are dense: a time, a glyph and words each', await page.evaluate(sel => { const l = [...document.querySelectorAll(`${sel} .dt-il`)]; return l.length >= 2 && l.every(x => x.querySelector('time')?.textContent && x.getBoundingClientRect().height < 48); }, side));
+  check('the stretch\'s parts are a strip under its words, before its lines', await page.evaluate(sel => { const b = document.querySelector(sel + ' .dt-body'), k = [...b.children].map(c => c.className); return b.querySelectorAll('.dt-sp-b i').length >= 2 && k.indexOf('dt-sp') > k.indexOf('dt-lines') && k.indexOf('dt-sp') < k.indexOf('dt-ins'); }, side));
   check('how she knows is the last line, and is there only because the data is', await page.evaluate(sel => { const d = document.querySelector(sel + ' .dt-body'); return d.lastElementChild?.classList.contains('dt-how') && d.lastElementChild.textContent.includes('Xcode'); }, side));
   check('the list row has no inline buttons (the star and 问她 are in the right column now)', await count('.notch .dt-list .dt-quick') === 0 && await count('.notch .dt-list .dt-ask') === 0);
   const ring = await page.evaluate(() => { const r = document.querySelector('.notch .dt-list [aria-current="true"]'); const c = getComputedStyle(r); return { shadow: c.boxShadow, bg: c.backgroundColor, h: r.getBoundingClientRect().height }; });
