@@ -1,0 +1,28 @@
+{
+  "id": "mail-an-invoice-and-its-receipt-in-the-same-minute-reads-as-paid",
+  "tool": "mail",
+  "said": "did I pay the Example Cloud invoice",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "inv1"
+  },
+  "recording": "mail-an-invoice-and-its-receipt-in-the-same-minute-reads-as-paid.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "bill",
+        "op": "exists"
+      }
+    ],
+    "summary_must": [
+      "Paid: the receipt \"Receipt from Example Cloud\""
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "inv1",
+    "subject": "Your Example Cloud invoice IN-4821",
+    "plain": "Invoice IN-4821\nTotal | $5.00 USD\nAmount due | $5.00 USD\nDue date | Oct 20, 2026\n",
+    "sender": "Example Cloud <billing@example.com>",
+    "at": "2026-10-12T08:00:10-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_UPDATES"
+    ]
+   },
+   {
+    "id": "rcpt1",
+    "subject": "Receipt from Example Cloud",
+    "plain": "Thank you for your payment.\nAmount paid | $5.00 USD\nInvoice IN-4821\nReceipt R-5521\n",
+    "sender": "Example Cloud <no-reply@billing.example.com>",
+    "at": "2026-10-12T08:00:40-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_UPDATES"
+    ]
+   }
+  ]
+ }
+}

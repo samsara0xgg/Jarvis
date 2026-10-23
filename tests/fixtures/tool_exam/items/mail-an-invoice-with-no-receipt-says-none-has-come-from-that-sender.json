@@ -1,0 +1,25 @@
+{
+  "id": "mail-an-invoice-with-no-receipt-says-none-has-come-from-that-sender",
+  "tool": "mail",
+  "said": "did I pay the Example Cloud invoice",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "inv1"
+  },
+  "recording": "mail-an-invoice-with-no-receipt-says-none-has-come-from-that-sender.recording.json",
+  "expect": {
+    "summary_must": [
+      "No receipt from example.com since"
+    ],
+    "result_must_not_mention": [
+      "Paid:"
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}
