@@ -7,9 +7,11 @@ import { answerOf, askOf, hasBody, headOf, openOf, sayOf, type About, type Ask, 
 import { AskDock, type DockState } from './AskDock';
 import { DayBar, useBarState, type PageBar } from './DayBar';
 import { DoorDetail, DoorNumbers, DoorRowView, Doors, inRange } from './DayDoors';
-import { useDoors, type DoorCtx, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
+import { DOORS, useDoors, type DoorCtx, type DoorKey, type DoorPage, type DoorRow, type ToolRenderer } from './doors';
 import { numbers } from './barView';
 import { Ic, SKIES } from './dayIcons';
+import { DayStage } from './DayStage';
+import { MOTION } from './motion';
 import { DetailPage, EASE, reduced, Unfold, Viewer, type Acts } from './RowOpen';
 import { StarToggle, type StarMark } from './StarToggle';
 import { TimelineGuard } from './TimelineGuard';
@@ -18,8 +20,9 @@ import './day-open.css';
 
 // The timeline pane (ADR 0308): the drop pane's other content, grown from the notch's right side. One story top to bottom: the date,
 // her sentence about the day, one bar for the whole day (DayBar.tsx) with the day's numbers under it, and the day itself as a list; on
-// today a now line, with what is still to come below it. A click on a row slides the list away to that row's detail page (RowOpen.tsx), which can be
-// asked about (AskDock.tsx); going back slides the list in again, where it was. The pane is one size, whatever is in it; on its bottom edge a row of doors (doors.ts,
+// today a now line, with what is still to come below it. V2 (820 px) is two columns under the bar: the list on the left, never moving, and on the right the
+// stage (`.dt-side`): what is selected in the list (its detail page, RowOpen.tsx, which can be asked about: AskDock.tsx), or with nothing selected on today the day's
+// now (DayStage.tsx). The pane is one size, whatever is in it; on its bottom edge a row of doors (doors.ts,
 // DayDoors.tsx) swaps what is under the bar (the line, the numbers, the rows) for another page of the same day, the bar lighting that page's own moments.
 // `feed` is today as the wing already reads it; other days are read here.
 const rgb = (c: readonly number[]) => c.join(' ');
@@ -44,8 +47,6 @@ function rise(list: HTMLElement) {
   watch.observe(pane, { attributes: true, attributeFilter: ['class'] });
   return () => watch.disconnect();
 }
-// The list and a row's detail page slide for 240 ms (the same ease).
-const SLIDE = 240;
 // An item that arrives while the day is open grows out of nothing: its height from 0 and a fade, 240 ms.
 function grow(el: HTMLElement) {
   const style = getComputedStyle(el), full = { height: `${el.offsetHeight}px`, marginTop: style.marginTop, opacity: style.opacity };
@@ -74,7 +75,7 @@ type Cx = {
   star: { can: ReadonlySet<string>; marks: ReadonlyMap<string, StarMark>; refused: Readonly<Record<string, number>>; press: (key: string) => void };
   line: { key: string; text: string; on: boolean };
 };
-// hot: what the pointer is on; pick: what the keys chose. Both are bracketed on the bar; the pointer's wins while it is on something.
+// hot: what the pointer is on; pick: the selected row (what a click, the bar or the keys chose). Both are bracketed on the bar; the pointer's wins while it is on something.
 type Hover = { hot: string | null; onHot: (key: string | null) => void; pick: string | null; t: (l: L) => string; cx: Cx };
 
 // Something that goes stays long enough to fade: `on` turns false and it is gone 200 ms later (at once under reduced motion).
@@ -107,6 +108,8 @@ function Quick({ keyed, cx, t }: { keyed: string; cx: Cx; t: (l: L) => string })
     {ask && <button type="button" className="dt-ask" tabIndex={-1} onClick={e => { e.stopPropagation(); cx.ask!(keyed); }}>{t(['Ask her', '问她'])}</button>}
   </span> : null;
 }
+// A right click on a row asks her about it (when it can be asked about); anywhere else the click is the system's.
+const menu = (cx: Cx, key: string) => (e: MouseEvent) => { if (cx.ask && cx.asks.has(key)) { e.preventDefault(); cx.ask(key); } };
 // The lit star on a row's glyph or beside a stay's name: his filled, hers outlined; it fades in when the item is marked and out when it is not.
 function Lit({ on, hers, className }: { on: boolean; hers: boolean; className: string }) {
   const here = useFade(on);
@@ -118,13 +121,13 @@ function Under({ keyed, cx }: { keyed: string; cx: Cx }) {
 }
 
 // A row: the time it began, its glyph (a lit star on it when it mattered), its words (an amber badge when it waits on him), and at the
-// right its length, how long until it, or its value. The glyphs of one stay or one trip hang on a rail. A click opens its detail page.
+// right its length, how long until it, or its value, then a › when it has a detail. The glyphs of one stay or one trip hang on a rail. A click selects it: its detail is the right column's.
 // The pointer lights a row by moving on it, not by arriving: a list that scrolls under a resting pointer (the keys, the wheel) leaves what the keys chose alone.
 function RowView({ row, hot, onHot, pick, t, how, cx }: { row: Row; how: string } & Hover) {
   const badge = useFade(row.wait), plain = !cx.opens.has(row.key), box = useRef<HTMLDivElement>(null), seg = row.seg, sub = !!row.detail || !!seg?.counts.length;
   useLayoutEffect(() => { if (row.leaving && box.current) away(box.current); }, [row.leaving]);
   return <div ref={box} className={`dt-row${sub ? ' has-detail' : ''}${seg ? ` is-seg${seg.unknown ? ' is-unknown' : ''}` : ''}${row.future ? ' is-future' : ''}${row.connector ? ' is-leg' : ''}${how}${hot === row.key ? ' is-hot' : ''}${pick === row.key ? ' is-pick' : ''}${plain ? ' is-still' : ''}${row.leaving ? ' is-leaving' : ''}`} data-key={row.key} data-kind={row.kind} data-lk={seg ? seg.lenses.join(' ') || undefined : row.lens ?? undefined} style={seg?.rgb ? { '--c': rgb(seg.rgb) } as CSSProperties : undefined}
-    aria-current={pick === row.key ? 'true' : undefined} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)}>
+    aria-current={pick === row.key ? 'true' : undefined} onPointerMove={() => onHot(row.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, row.key)} onContextMenu={menu(cx, row.key)}>
     <time className="dt-at">{row.ago && <small>{row.ago}</small>}{row.at}</time>
     <i className="dt-ic">{row.icon === 'dot' ? <span className="dt-pip"/> : <Ic icon={row.icon}/>}<Lit on={row.star} hers={row.hers} className="dt-badge"/></i>
     <span className="dt-tx"><span className="dt-ttl"><b>{row.title}</b>{badge && <i className={`dt-wait${row.wait ? '' : ' is-gone'}`}>{t(['Waiting', '等你'])}</i>}</span>
@@ -168,11 +171,12 @@ function StayView({ b, gap, hot, onHot, pick, t, cx }: { b: Extract<Block, { typ
   const plain = !cx.opens.has(b.key);
   return <section className={`dt-stay${gap}`} style={{ '--c': rgb(b.head.rgb) } as CSSProperties}>
     <header className={`dt-sh${b.head.unnamed ? ' is-plain' : ''}${b.items.length ? ' has-rows' : ''}${hot === b.key ? ' is-hot' : ''}${pick === b.key ? ' is-pick' : ''}${plain ? ' is-still' : ''}`} data-key={b.key} aria-current={pick === b.key ? 'true' : undefined}
-      onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, b.key)}>
+      onPointerMove={() => onHot(b.key)} onPointerLeave={() => onHot(null)} onClick={e => cx.click(e, b.key)} onContextMenu={menu(cx, b.key)}>
       <span className="dt-at"/><i className="dt-dot"/>
       <span className="dt-tx"><span className="dt-ttl"><b>{b.head.name}</b><Lit on={b.head.star !== null} hers={b.head.hers} className="dt-star"/></span>{b.head.star && <em>{b.head.star}</em>}</span>
       <Quick keyed={b.key} cx={cx} t={t}/>
       <span className="dt-tm">{b.head.when}<small> · {b.head.dur}</small></span>
+      {!plain && <i className="dt-chev" aria-hidden="true"/>}
       <Under keyed={b.key} cx={cx}/>
     </header>
     {b.items.length > 0 && <div className="dt-in"><Blocks blocks={b.items} hot={hot} onHot={onHot} pick={pick} t={t} cx={cx} inside/></div>}
@@ -325,7 +329,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   const [slow, setSlow] = useState(false);
   useEffect(() => { setSlow(false); if (reply) return; const timer = setTimeout(() => setSlow(true), 6000); return () => clearTimeout(timer); }, [!!reply, date]);
 
-  const [hot, setHot] = useState<string | null>(null), [pick, setPick] = useState<string | null>(null), [opened, setOpened] = useState<string | null>(null), [parting, setParting] = useState<string | null>(null), stage = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
+  const [hot, setHot] = useState<string | null>(null), [selected, setSelected] = useState<string | null>(null), sideBox = useRef<HTMLDivElement>(null), list = useRef<HTMLDivElement>(null), placed = useRef(''), ui = useBarState(), uiRef = useRef(ui);
   uiRef.current = ui;
   // The range the list is cut to as it is drawn: it follows `ui.filter` once the list has faded out (the bar answers at once; the list and the chip that
   // says so change together), and the list comes in cut, or whole, as a day does. `wanted` is a row to go to when the whole day is back.
@@ -388,13 +392,26 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   // The row's class is rewritten when a render changes it (the pointer leaving what it was on), so a flash in progress is put back.
   const flashed = useRef<HTMLElement | null>(null), flashEnd = useRef(0);
   useLayoutEffect(() => { const el = flashed.current; if (el && !el.classList.contains('is-flash')) el.classList.add('is-flash'); });
-  // A click on the bar, or on a piece of it, takes the row there to the top of the list in 300 ms, and the row flashes.
-  const jump = (key: string) => {
-    const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
-    if (!l || !el) return;
+  // A tap on a row that has no detail flashes it (600 ms).
+  const flash = (key: string) => {
+    const el = list.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
+    if (!el) return null;
     el.classList.remove('is-flash'); void el.offsetWidth; el.classList.add('is-flash');
     flashed.current = el; clearTimeout(flashEnd.current); flashEnd.current = window.setTimeout(() => { flashed.current = null; }, 600);
-    slide(offsetIn(el, l) - 12, 300);
+    return el;
+  };
+  // A click on the bar, or on a piece of it, takes the row there to the top of the list in 300 ms, and the row flashes.
+  const jump = (key: string) => {
+    const l = list.current, el = flash(key);
+    if (l && el) slide(offsetIn(el, l) - 12, 300);
+  };
+  // The row is scrolled into view, 24 px clear of the list's edges, in `ms`.
+  const show = (key: string, ms = 180) => {
+    const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
+    if (!l || !el) return;
+    const top = offsetIn(el, l), margin = 24;
+    if (top < l.scrollTop + margin) slide(top - margin, ms);
+    else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, ms);
   };
   // A quiet line that opens under a row (what did not go through) is brought up to 24 px clear of the list's foot. Where the list has no scroll left to give at
   // its foot it is given room below its last row, which stays only while it is in view (trim), and never more than a third of the list.
@@ -419,7 +436,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   // A tap on the bar goes to its row; a row the cut has left out is not there to go to, so the whole day comes back first.
   const reveal = (key: string) => { if (cut && !list.current?.querySelector(`[data-key="${CSS.escape(key)}"]`)) { wanted.current = key; ui.setFilter(null); } else jump(key); };
   // What shows the rows (the list, or the line that says the cut has none) fades out, is swapped for the new cut, and comes in; a row asked for is gone to once it is there.
-  const rowsEl = () => root.current?.querySelector<HTMLElement>(':scope > .dt-stage, :scope > .dt-say') ?? null;
+  const rowsEl = () => root.current?.querySelector<HTMLElement>(':scope > .dt-stage > .dt-list, :scope > .dt-say') ?? null;
   useEffect(() => {
     if (ui.filter === cut) return;
     const el = rowsEl();
@@ -451,89 +468,29 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   // On a door page the rows that open are the ones its hook says do; `opensNow` is those of the page that is drawn.
   const pageOpens = useMemo<ReadonlySet<string>>(() => new Set(pageRows.filter(r => r.opens).map(r => r.key)), [pageRows]);
   const opensNow = door === 'today' ? opens : pageOpens;
-  // A row opens to its detail page: the list slides away and the page comes in over it, and going back slides the list in again where it was. `parting` keeps the
-  // page there while it slides out; `drop` takes it away at once (another day, a cut list, a row the day no longer has).
-  const openRow = (key: string) => { setParting(null); setOpened(key); };
-  // Going back brings the row the page was for into view, if the pages before and after it took the page to a row the list had out of view. (The list waits at the
-  // height of the page while it is hidden, so what it will have again is what the stage had last time it showed the list: `listH`.)
-  const listH = useRef(0);
-  const closeRow = () => {
-    if (!opened) return;
-    const l = list.current, el = l?.querySelector<HTMLElement>(`[data-key="${CSS.escape(opened)}"]`), view = listH.current || l?.clientHeight || 0;
-    if (l && el) { const top = offsetIn(el, l), margin = 24; if (top < l.scrollTop + margin) slide(top - margin, 240); else if (top + el.offsetHeight > l.scrollTop + view - margin) slide(top + el.offsetHeight - view + margin, 240); }
-    setParting(opened); setOpened(null);
-  };
+  // A row with a detail is selected: its detail is the right column's, and the list, the bar and the keys stay where they are. A row without one only flashes.
   // The page's row before (-1) or after (1) it among the rows that open, in the list's order; null at either end.
-  const aside = (dir: 1 | -1) => { const i = opened ? order.indexOf(opened) : -1; return i < 0 ? null : order[i + dir] ?? null; };
-  // A turn to the row before or after: the page that is up is copied (as it is now, where its own push had got to) to go out while the new one comes in (the effect below).
-  const ghost = useRef<{ el: HTMLElement; dir: 1 | -1; y: number; top: number; from: number } | null>(null);
-  const turn = (dir: 1 | -1) => {
-    const to = aside(dir), s = stage.current, pg = s?.querySelector<HTMLElement>(':scope > .dt-page[data-page]');
-    if (!to || !s || !pg) return;
-    s.querySelectorAll(':scope > .is-ghost').forEach(x => x.remove());
-    const el = pg.cloneNode(true) as HTMLElement;
-    el.classList.add('is-ghost'); el.removeAttribute('data-page'); el.setAttribute('aria-hidden', 'true'); el.setAttribute('inert', '');
-    ghost.current = { el, dir, y: pg.getAnimations().length ? new DOMMatrixReadOnly(getComputedStyle(pg).transform).m42 : 0, top: pg.scrollTop, from: s.getBoundingClientRect().height };
-    setPick(to); setOpened(to);
-  };
-  const drop = () => { setOpened(null); setParting(null); };
-  const toggle = (key: string) => { if (opened === key) closeRow(); else if (opensNow.has(key)) openRow(key); };
+  const aside = (dir: 1 | -1) => { const i = selected ? order.indexOf(selected) : -1; return i < 0 ? null : order[i + dir] ?? null; };
+  const turn = (dir: 1 | -1) => { const to = aside(dir); if (to) { setSelected(to); show(to); } };
+  const drop = () => setSelected(null);
   // A button of a door page's row that is marked `data-opens` is a click on the row (doors.ts).
   const click = (e: MouseEvent, key: string) => {
     if ((e.target as Element).closest('.dt-fold, button:not([data-opens]), input, a')) return;
-    setPick(key); if (opensNow.has(key)) openRow(key);
+    if (opensNow.has(key)) setSelected(key); else flash(key);
   };
-  // A click on the bar while a page is open: on another piece that opens, the page changes to its row; anywhere else outside the open one, it goes back.
+  // A click on the bar (a range is not one): on a piece that opens, that row is selected and taken into view; on one that does not, it flashes; anywhere else the selection goes.
   const onPage = (piece: string | null) => {
-    if (piece === opened) return;
-    if (piece && opensNow.has(piece)) { setPick(piece); setOpened(piece); } else closeRow();
+    if (piece === selected) return;
+    if (piece && opensNow.has(piece)) { setSelected(piece); show(piece, 300); } else if (piece) jump(piece); else setSelected(null);
   };
-  useEffect(() => {
-    if (!parting) return;
-    const timer = setTimeout(() => setParting(null), reduced.matches ? 120 : SLIDE + 20);
-    return () => clearTimeout(timer);
-  }, [parting]);
-  // The list and the page are two sides of one stage; the side not shown waits out of the flow, hidden, its scroll place kept (day-timeline.css). Between them they slide
-  // (240 ms, the pane's ease-out; under reduced motion a 120 ms cross-fade) and the stage's height goes to the new side's meanwhile, so nothing jumps. A press that comes
-  // mid-slide takes over from the place the slide had got to. A page that changes to another row because the bar was clicked fades in over 160 ms; one
-  // that is turned to (the row before or after, `turn`) pushes in vertically the same 240 ms.
-  const side = useRef({ page: false, key: null as string | null, h: 0 });
+  // The right column's content is swapped in 140 ms: a fade and 6 px of the first part (reduced motion: a fade).
   useLayoutEffect(() => {
-    const s = stage.current, was = side.current, now = { page: !!opened, key: opened, h: was.h };
-    side.current = now;
-    if (!s) return;
-    if (!opened && !s.getAnimations().length) listH.current = s.getBoundingClientRect().height;
-    const running = s.getAnimations().length > 0, quiet = reduced.matches, opt = { duration: quiet ? 120 : SLIDE, easing: quiet ? 'linear' : EASE };
-    if (was.page === now.page) {
-      const g = ghost.current, pg = s.querySelector<HTMLElement>(':scope > .dt-page'), turned = !!(now.page && was.key && opened && was.key !== opened);
-      ghost.current = null;
-      if (turned && pg) pg.scrollTop = 0;
-      if (turned && g && pg) {
-        // the next page comes up from below while the old goes up (the page before, the other way); one that was still on its way carries on from where it was
-        for (const el of [s, pg]) el.getAnimations().forEach(x => x.cancel());
-        const to = now.h = s.getBoundingClientRect().height, d = Math.max(g.from, to);
-        s.querySelectorAll(':scope > .is-ghost').forEach(x => x.remove());
-        s.append(g.el); g.el.scrollTop = g.top;
-        const out = g.el.animate(quiet ? [{ opacity: 1 }, { opacity: 0 }] : [{ transform: `translateY(${g.y}px)` }, { transform: `translateY(${g.y - g.dir * d}px)` }], { ...opt, fill: 'forwards' });
-        out.finished.then(() => g.el.remove(), () => g.el.remove());
-        pg.animate(quiet ? [{ opacity: 0 }, { opacity: 1 }] : [{ transform: `translateY(${g.y + g.dir * d}px)` }, { transform: 'none' }], opt);
-        if (!quiet && g.from > 0 && Math.abs(g.from - to) >= 1) s.animate([{ height: `${g.from}px` }, { height: `${to}px` }], opt);
-        return;
-      }
-      if (!running) now.h = s.getBoundingClientRect().height;
-      if (turned) s.querySelector('.dt-pin')?.animate(quiet ? [{ opacity: 0 }, {}] : [{ opacity: 0, transform: 'translateY(4px)' }, {}], { duration: quiet ? 120 : 160, easing: EASE });
-      return;
-    }
-    const from = running ? s.getBoundingClientRect().height : was.h, ls = s.querySelector<HTMLElement>(':scope > .dt-list'), pg = s.querySelector<HTMLElement>(':scope > .dt-page');
-    const where = (el: HTMLElement | null, rest: string) => el?.getAnimations().length ? `${new DOMMatrixReadOnly(getComputedStyle(el).transform).m41}px` : rest;
-    const a = where(ls, now.page ? '0px' : '-100%'), b = where(pg, now.page ? '100%' : '0px');
-    for (const el of [s, ls, pg]) el?.getAnimations().forEach(x => x.cancel());
-    const to = now.h = s.getBoundingClientRect().height;
-    const go = (el: HTMLElement | null, x: string, y: string, fade: [number, number]) => el?.animate(quiet ? [{ opacity: fade[0], transform: 'none', visibility: 'visible' }, { opacity: fade[1], transform: 'none', visibility: 'visible' }]
-      : [{ transform: `translateX(${x})`, visibility: 'visible' }, { transform: `translateX(${y})`, visibility: 'visible' }], opt);
-    if (now.page) { go(ls, a, '-100%', [1, 0]); go(pg, b, '0px', [0, 1]); } else { go(ls, a, '0px', [0, 1]); go(pg, b, '100%', [1, 0]); }
-    if (!quiet && from > 0 && Math.abs(from - to) >= 1) s.animate([{ height: `${from}px` }, { height: `${to}px` }], opt);
-  });
+    const el = sideBox.current;
+    if (!el || !open) return;
+    const q = reduced.matches, opt = { duration: q ? 120 : MOTION.fast, easing: q ? 'linear' : EASE };
+    el.animate([{ opacity: 0 }, {}], opt);
+    if (!q) el.firstElementChild?.animate([{ transform: 'translateX(6px)' }, {}], opt);
+  }, [selected, door, open]);
   // After a change the day is read again at once (today's too when it is another day that is open, for the wing's line).
   const again = () => { route.reload(); if (route !== feed) feed.reload(); };
   // 理一下 (ADR 0310): today's newest part of the day is written now, which takes the brain up to a minute. `running` for as long as it does (a press in the meantime does
@@ -588,9 +545,8 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
     if (!mine && !out) { put('commit', key, 'failed'); return; }
     put('commit', key, '');
     if (mine) { setSure(s => new Set(s).add(key)); again(); return; }
-    if (opened === key) closeRow();
     setDropping(s => new Set(s).add(key));
-    setTimeout(() => { setGone(s => new Set(s).add(key)); setPick(p => p === key ? null : p); again(); }, reduced.matches ? 120 : 240);
+    setTimeout(() => { setGone(s => new Set(s).add(key)); setSelected(p => p === key ? null : p); again(); }, reduced.matches ? 120 : 240);
   };
   // A quiet line under a row for 4 s: what did not go through, or why (`on` goes false when it is time; the words stay while it closes).
   const [line, setLine] = useState({ key: '', text: '', on: false });
@@ -710,17 +666,17 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   const [left, setLeft] = useState(false), [typing, setTyping] = useState(false);
   const holding = !!viewer || (!!dock || !!rename || !!naming) && !left || typing;
   useEffect(() => { hold?.(holding); return () => hold?.(false); }, [holding]);
-  // The open page, the field, the input and the picture are the day's: they go with it. The field, the input and the picture go with the pane
-  // too; the open page stays through a fold, for the pane that comes back as it was (one that comes back later is made afresh, with nothing open).
-  useEffect(() => { setPick(null); setHot(null); drop(); }, [date, shown?.date, cut]);
+  // The selection, the field, the input and the picture are the day's: they go with it. The field, the input and the picture go with the pane
+  // too; the selection stays through a fold, for the pane that comes back as it was (one that comes back later is made afresh, with nothing selected).
+  useEffect(() => { setHot(null); drop(); }, [date, shown?.date, cut]);
   useEffect(() => { if (dock?.say) { setDock(null); setDraft(''); } }, [date, shown?.date]);
-  useEffect(() => { if (opened && model && door === 'today' && !model.rows.has(opened) && !model.heads.has(opened)) drop(); }, [model]);
-  // A row of a door page that is gone from the page (a letter he has just archived) takes its detail page with it; the page slides out as it was.
-  useEffect(() => { if (opened && page && !page.rows.some(r => r.key === opened)) closeRow(); }, [page]);
-  useEffect(() => { if (rename && opened !== rename.key) setRename(null); }, [opened]);
-  useEffect(() => { if (naming && opened !== naming.key) setNaming(null); }, [opened]);
+  useEffect(() => { if (selected && model && door === 'today' && !model.rows.has(selected) && !model.heads.has(selected)) drop(); }, [model]);
+  // A row of a door page that is gone from the page (a letter he has just archived) takes its detail with it.
+  useEffect(() => { if (selected && page && !page.rows.some(r => r.key === selected)) drop(); }, [page]);
+  useEffect(() => { if (rename && selected !== rename.key) setRename(null); }, [selected]);
+  useEffect(() => { if (naming && selected !== naming.key) setNaming(null); }, [selected]);
   useEffect(() => { if (!open) { release(); setRename(null); setNaming(null); setDock(null); setDraft(''); setViewer(null); setNote(null); setTyping(false); } }, [open]);
-  useEffect(() => { if (!opened) setTyping(false); }, [opened]);
+  useEffect(() => { if (!selected) setTyping(false); }, [selected]);
   // The detail page of a row: its title and when, what dayOpen made of it, and the buttons that work for it, each with what it is doing.
   const detail = (key: string): ReactNode => {
     const o = model && openOf(model, key, t), head = model && headOf(model, key, t);
@@ -740,28 +696,24 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
       line: line.on && line.key === key ? line.text : '',
     };
     const renaming = rename?.key === key ? { draft: rename.draft, busy: rename.state === 'busy', set: (text: string) => setRename(r => r && { ...r, draft: text, state: r.state === 'failed' ? 'edit' : r.state }), save: () => void saveRename(), field: (on: boolean) => setLeft(!on) } : null;
-    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={closeRow} prev={key === opened && aside(-1) ? () => turn(-1) : null} next={key === opened && aside(1) ? () => turn(1) : null}/>;
+    return <DetailPage key={key} head={head} open={o} acts={acts} rename={renaming} back={drop} prev={aside(-1) ? () => turn(-1) : null} next={aside(1) ? () => turn(1) : null}/>;
   };
   // The rows and their order come before the door's detail, which asks `aside` for its neighbours as this is drawn.
   const rows = model && cut ? within(model.blocks, model.span, Math.min(cut.a, cut.b), Math.max(cut.a, cut.b)) : model?.blocks ?? [];
   const order = door === 'today' ? listed(rows).filter(k => opens.has(k)) : pageRows.filter(r => r.opens).map(r => r.key);
-  // The detail page of a door page's row (its hook makes the title and the body; a `bare` one is the body alone, a page with a head of its own). One that goes while it is up (a letter he has just
-  // archived) is kept as it was, to slide out.
-  const last = useRef<{ key: string; node: ReactNode; bare: boolean } | null>(null);
+  // The detail of a door page's row (its hook makes the title and the body; a `bare` one is the body alone, a page with a head of its own).
   const doorDetail = (key: string) => {
-    const d = page?.detail?.(key, closeRow);
-    if (d) last.current = { key, bare: !!d.bare, node: d.bare ? <Fragment key={key}>{d.body}</Fragment>
-      : <DoorDetail key={key} title={d.title} body={d.body} back={closeRow} prev={key === opened && aside(-1) ? () => turn(-1) : null} next={key === opened && aside(1) ? () => turn(1) : null} t={t}/> };
-    return last.current?.key === key ? last.current : null;
+    const d = page?.detail?.(key, drop);
+    return d ? { bare: !!d.bare, node: d.bare ? <Fragment key={key}>{d.body}</Fragment>
+      : <DoorDetail key={key} title={d.title} body={d.body} back={drop} prev={aside(-1) ? () => turn(-1) : null} next={aside(1) ? () => turn(1) : null} t={t}/> } : null;
   };
-  // A bare page up: it takes the whole stage, goes back by its own ‹ (below), and the frame's keys are not for it.
-  const shownDoor = page && (opened ?? parting) ? doorDetail((opened ?? parting)!) : null, tooled = !!opened && !!shownDoor?.bare;
-  // A door: what was on goes at once (an open page does not slide away, the row the pointer or the keys had, the chip, the day's lens, the range being chosen), and the new page fades in
+  // A bare page up: it takes the whole right column, goes back by its own ‹ (below), and the frame's keys are not for it.
+  const shownDoor = page && selected ? doorDetail(selected) : null, tooled = !!selected && !!shownDoor?.bare;
+  // A door: what was on goes at once (the selection, the row the pointer had, the chip, the day's lens, the range being chosen), and the new page fades in
   // (the effect below). The range the list is cut to stays: the bar is the same day on every door.
   const pickDoor = (next: DoorKey) => {
     if (next === door) return;
-    side.current = { ...side.current, page: false, key: null };
-    setDoor(next); setPick(null); setHot(null); drop();
+    setDoor(next); setHot(null); drop();
     ui.setPinned(null); ui.setPreview(null); ui.setChipPinned(null); ui.setChipPreview(null); ui.setSel(null);
   };
   const fadedDoor = useRef(door);
@@ -772,16 +724,16 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
     // back on today from the waiting pill: the row it was for is taken to the top
     if (door === 'today' && wanted.current) { const key = wanted.current; wanted.current = null; reveal(key); }
   }, [door]);
-  // A line under a row waits while a page is open: the page says it itself.
-  const cx: Cx = { click, tick: () => { follow(); edges(); }, asks, opens, ask: ask ? openAsk : null, line: opened ? { ...line, on: false } : line, star: { can: starrables, marks, refused, press: key => void star(key) } };
+  // A line under the selected row waits: its detail says it itself.
+  const cx: Cx = { click, tick: () => { follow(); edges(); }, asks, opens, ask: ask ? openAsk : null, line: selected && line.key === selected ? { ...line, on: false } : line, star: { can: starrables, marks, refused, press: key => void star(key) } };
 
-  // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the open page, the bar's range, lens (or a door's chip) and
+  // Esc lets go of one thing at a time, nearest first: the picture, the input, the name being changed or given, the selection, the bar's range, lens (or a door's chip) and
   // the list's cut to a range, then a door goes back to today, and then the pane itself (the pane's own Esc listener was added after this one, so this one answers
   // first). A folded pane, which stays mounted, answers nothing.
-  // A bare page goes back by itself: a field it has the cursor in lets go first, then its ‹ is pressed (a category, an item, or the page itself, which calls `closeRow`).
+  // A bare page goes back by itself: a field it has the cursor in lets go first, then its ‹ is pressed (a category, an item, or the page itself, which calls `drop`).
   const toolBack = () => {
-    const pg = stage.current?.querySelector<HTMLElement>(':scope > .dt-page[data-page]'), at = document.activeElement, back = pg?.querySelector<HTMLElement>('.pg-back');
-    if (at instanceof HTMLElement && pg?.contains(at) && at.matches('input, select, textarea')) at.blur(); else if (back) back.click(); else closeRow();
+    const pg = sideBox.current, at = document.activeElement, back = pg?.querySelector<HTMLElement>('.pg-back');
+    if (at instanceof HTMLElement && pg?.contains(at) && at.matches('input, select, textarea')) at.blur(); else if (back) back.click(); else drop();
   };
   const back = useRef<() => boolean>(() => false);
   back.current = () => {
@@ -790,7 +742,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
     else if (dock) { setDock(null); setDraft(''); }
     else if (rename) setRename(null);
     else if (naming) setNaming(null);
-    else if (opened) { if (tooled) toolBack(); else closeRow(); }
+    else if (selected) { if (tooled) toolBack(); else drop(); }
     else if (uiRef.current.escape()) { /* one thing of the bar's let go */ }
     else if (door !== 'today') pickDoor('today');
     else return false;
@@ -805,15 +757,15 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   // drawn (a day that rolls over at midnight is a new day with nobody asking), before it is painted so the new day never shows the old cut.
   useLayoutEffect(() => { ui.setSel(null); ui.setFilter(null); ui.setPreview(null); ui.setChipPinned(null); ui.setChipPreview(null); setCut(null); }, [date, shown?.date]);
 
-  // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ← → the day before and after, ↑ ↓ the row
-  // before and after, which the bar brackets and the list keeps in view (with a page open they turn it to the row before or after), Enter or Space opens the one chosen (or goes back), S marks it (or takes the mark off). With nothing
-  // chosen they start from where he is looking: ↓ at the first row under the now line (else the top of the list), ↑ at the last row above it
-  // (else the bottom).
+  // The keys of an open day (the window has key focus only after a click pinned it: Notch.tsx): ⌘1-6 the doors, ↑ ↓ the row before and after among those with a detail, which the right column
+  // follows at once and the bar frames (the list keeps it in view), ← → or ⌘← ⌘→ the day before and after, A asks her about the selected row, S marks it (or takes the mark off), Tab moves
+  // the focus between the two columns. With nothing selected ↑ ↓ start from where he is looking: ↓ at the first row under the now line (else the top of the list), ↑ at the last row
+  // above it (else the bottom).
   const go = (days: number) => { if (at && !(days > 0 && date === null)) step(days); };
   const walk = (dir: 1 | -1) => {
-    const l = list.current, rows = l ? [...l.querySelectorAll<HTMLElement>('[data-key]')] : [];
+    const l = list.current, rows = l ? [...l.querySelectorAll<HTMLElement>('[data-key]')].filter(r => opensNow.has(r.dataset.key!)) : [];
     if (!l || !rows.length) return;
-    let next = pick ? rows.findIndex(r => r.dataset.key === pick) : -1;
+    let next = selected ? rows.findIndex(r => r.dataset.key === selected) : -1;
     if (next >= 0) next = Math.max(0, Math.min(rows.length - 1, next + dir));
     else {
       const view = l.getBoundingClientRect(), line = l.querySelector('.dt-now')?.getBoundingClientRect(), seen = !!line && line.top >= view.top && line.bottom <= view.bottom;
@@ -821,21 +773,32 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
       next = dir > 0 ? rows.findIndex(r => r.getBoundingClientRect().top >= from - 1) : rows.reduce((last, r, i) => r.getBoundingClientRect().bottom <= from + 1 ? i : last, -1);
       if (next < 0) next = dir > 0 ? rows.length - 1 : 0;
     }
-    const el = rows[next], top = offsetIn(el, l), margin = 24;
-    setPick(el.dataset.key!); setHot(null);
-    if (top < l.scrollTop + margin) slide(top - margin, 180);
-    else if (top + el.offsetHeight > l.scrollTop + l.clientHeight - margin) slide(top + el.offsetHeight - l.clientHeight + margin, 180);
+    const key = rows[next].dataset.key!;
+    setSelected(key); setHot(null); show(key);
   };
-  const keys = useRef({ open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn, tooled });
-  keys.current = { open, go, walk, pick, toggle, star, can: starrables, paged: !!opened, turn, tooled };
+  // Tab: out of the right column into the list, or into the right column (its first button, else the column itself).
+  const swapFocus = () => {
+    const side = sideBox.current, l = list.current, at = document.activeElement;
+    if (side && at && side.contains(at)) l?.focus({ preventScroll: true });
+    else (side?.querySelector<HTMLElement>('button, a, input, textarea, select') ?? side)?.focus({ preventScroll: true });
+  };
+  const keys = useRef({ open, go, walk, selected, star, can: starrables, tooled, door: pickDoor, ask: openAsk, canAsk, swapFocus });
+  keys.current = { open, go, walk, selected, star, can: starrables, tooled, door: pickDoor, ask: openAsk, canAsk, swapFocus };
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       const k = keys.current, target = e.target as Element | null;
-      if (!k.open || k.tooled || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target?.closest?.('input,textarea,select,[contenteditable]')) return;
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { if (k.paged) { if (!e.repeat) k.turn(e.key === 'ArrowDown' ? 1 : -1); } else k.walk(e.key === 'ArrowDown' ? 1 : -1); }
-      else if ((e.key === 'Enter' || e.key === ' ') && k.pick && !target?.closest?.('button,a')) { if (!e.repeat) k.toggle(k.pick); }
-      else if (e.key.toLowerCase() === 's' && k.pick && k.can.has(k.pick)) { if (!e.repeat) void k.star(k.pick); }
+      if (!k.open || e.isComposing || e.altKey || target?.closest?.('input,textarea,select,[contenteditable]')) return;
+      const cmd = e.metaKey || e.ctrlKey;
+      // a bare page up (更多, 额度) has keys of its own: only the doors are the frame's then
+      if (cmd && !e.shiftKey && /^[1-6]$/.test(e.key)) { if (!e.repeat) k.door(DOORS[Number(e.key) - 1].key); }
+      else if (k.tooled) return;
+      else if (cmd && !e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
+      else if (e.key === 'Tab' && !cmd) k.swapFocus();
+      else if (cmd || e.shiftKey) return;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { if (!e.repeat) k.go(e.key === 'ArrowLeft' ? -1 : 1); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') k.walk(e.key === 'ArrowDown' ? 1 : -1);
+      else if (e.key.toLowerCase() === 'a' && k.selected && k.canAsk(k.selected)) { if (!e.repeat) k.ask(k.selected); }
+      else if (e.key.toLowerCase() === 's' && k.selected && k.can.has(k.selected)) { if (!e.repeat) void k.star(k.selected); }
       else return;
       e.preventDefault(); e.stopPropagation();
     };
@@ -849,7 +812,8 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   // A door page as the frame draws it: its numbers row (a chip with `only` is a lens), its rows (the now line among the timed ones, the untimed ones after their heading), or the words that say why
   // there are none. A click on the bar goes to its row; on a door page that row is also the one chosen.
   const barPage: PageBar | null = page && { marks: page.marks, mute: keep, numbers: <DoorNumbers page={page} pinned={ui.chipPinned} preview={ui.setChipPreview} pin={ui.setChipPinned} t={t}/> };
-  const barJump = (key: string) => { if (page) setPick(key); reveal(key); };
+  // A tap on the bar: the row that opens is selected (the door's too), and either way it is taken to the top of the list and flashes.
+  const barJump = (key: string) => { if (opensNow.has(key)) setSelected(key); reveal(key); };
   const hasList = page ? pageRows.length > 0 : rows.length > 0;
   // A page whose rows have no time at all (更多) has no time column to keep.
   const timeless = !!page && pageRows.length > 0 && pageRows.every(r => r.at === null && !r.time);
@@ -857,7 +821,7 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
   const doorBlocks = (m: DayModel, p: DoorPage): ReactNode => {
     const timed = pageRows.filter(r => r.at !== null), rest = pageRows.filter(r => r.at === null), lo = cut ? Math.min(cut.a, cut.b) : -Infinity, hi = cut ? Math.max(cut.a, cut.b) : Infinity;
     const nowAt = p.nowAt !== null && p.nowAt >= lo && p.nowAt <= hi ? p.nowAt : null, next = nowAt === null ? -1 : timed.findIndex(r => r.at! > nowAt), split = next < 0 ? timed.length : next;
-    const one = (r: DoorRow) => <DoorRowView key={r.key} row={r} tz={m.tz} hot={hot === r.key} pick={pick === r.key} off={!!keep && !keep.has(r.key)} onHot={setHot} onClick={click}/>;
+    const one = (r: DoorRow) => <DoorRowView key={r.key} row={r} tz={m.tz} hot={hot === r.key} pick={selected === r.key} off={!!keep && !keep.has(r.key)} onHot={setHot} onClick={click}/>;
     return <>{timed.slice(0, split).map(one)}{nowAt !== null && <div className="dt-now"><span>{t([`Now ${clock(nowAt, m.tz)}`, `现在 ${clock(nowAt, m.tz)}`])}</span></div>}{timed.slice(split).map(one)}
       {rest.length > 0 && p.untimed && <p className="dt-uh">{p.untimed}</p>}{rest.map(one)}</>;
   };
@@ -880,12 +844,12 @@ export function DayTimeline({ port, feed, open, ask, hold, swap, tool, sessions 
     {built.failed ? <p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p> : !model || lost ? <p className="dt-say">{say}</p> : <TimelineGuard where="the pane" reset={shown} fallback={<p className="dt-say">{t(["Couldn't draw this day", '这一天没画出来'])}</p>}>
       {page ? <p className="dt-line is-door">{page.line}</p> : model.line && <p className={`dt-line${model.line.draft ? ' is-draft' : ''}`}>{model.line.text}</p>}
       {model.empty && !page ? <p className="dt-say">{t(['Nothing recorded for this day yet', '这一天还没有记下什么'])}</p> : <>
-        <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? pick} open={opened} door={barPage} onHot={setHot} onJump={barJump} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
+        <DayBar model={model} port={port} ui={ui} cut={cut} sweep={tidy === 'running' && onToday} hot={hot ?? selected} open={selected} door={barPage} onHot={setHot} onJump={barJump} onPage={onPage} onPicture={(id, note) => setViewer({ id, note })} onSay={openSay}/>
         {barPage && !model.items.length && !model.segs.size && barPage.numbers}
-        {hasList ? <div ref={stage} className={`dt-stage${opened ? ' is-page' : ''}${tooled ? ' is-tool' : ''}`}>
-          <div ref={list} className={`dt-list${timeless ? ' is-timeless' : ''}`} onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={pick} t={t} cx={cx}/>}</div>
-          {(opened ?? parting) && <div className="dt-page" data-page={opened ?? undefined} onFocus={e => { if (page && (e.target as Element).matches('input, textarea')) setTyping(true); }} onBlur={e => { if ((e.target as Element).matches('input, textarea')) setTyping(false); }}>
-            {page ? shownDoor?.node : detail((opened ?? parting)!)}</div>}
+        {hasList ? <div className={`dt-stage${tooled ? ' is-tool' : ''}`}>
+          <div ref={list} className={`dt-list${timeless ? ' is-timeless' : ''}`} tabIndex={-1} onScroll={() => { trim(); edges(); }} onWheel={() => cancelAnimationFrame(glide.current)}>{page ? doorBlocks(model, page) : <Blocks blocks={rows} hot={hot} onHot={setHot} pick={selected} t={t} cx={cx}/>}</div>
+          <div ref={sideBox} className="dt-side" tabIndex={-1} data-page={selected ?? undefined} onFocus={e => { if (page && (e.target as Element).matches('input, textarea')) setTyping(true); }} onBlur={e => { if ((e.target as Element).matches('input, textarea')) setTyping(false); }}>
+            {selected ? page ? shownDoor?.node : detail(selected) : !page && <DayStage model={model} now={now} t={t} onPick={onPage} sessions={sessions}/>}</div>
         </div>
           : page ? <p className="dt-say">{pageSay}</p> : cut && <p className="dt-say">{t(['Nothing was recorded in this stretch', '这一段没有记下什么'])}</p>}
       </>}

@@ -27,7 +27,8 @@ if (!app.isPackaged) app.setPath('userData', demo && process.env.JARVIS_COMPANIO
   ? path.resolve(process.env.JARVIS_COMPANION_TEST_PROFILE) : path.resolve(here, '../.electron-profile/companion'));
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
-const WIDTH = 640;
+// 836 = the timeline pane (820, Notch.tsx TL_W) plus 8 px of stage on each side; every other pane is narrower and stays centred.
+const WIDTH = 836;
 let win: BrowserWindow;
 // One companion, on the screen you are using: `current` is the display she lives on now. With `follow`
 // off (her Settings › General) she stays on the main screen.

@@ -2,7 +2,7 @@
    a place's colour is its own (home warm, school blue, the rest a fixed hue each), the day's now is a warm white, and amber is
    the turn mark's: here it says "waiting on you" (the pill in the header, the badge on a row) and nothing else. */
 .notch .dt { --now:255 240 220; display:flex; flex-direction:column; gap:9px; height:584px; padding-inline:4px; }
-/* one size: the pane changes size when it opens and when it folds, never for what is in it; the stage (the list or a page) takes what is left, and the doors row (day-doors.css) sits on the bottom edge */
+/* one size: the pane changes size when it opens and when it folds, never for what is in it; the stage (the list and the right column) takes what is left, and the doors row (day-doors.css) sits on the bottom edge */
 .notch .dt > :not(.dt-stage) { flex:none; }
 .notch .dt.is-loading > :not(.dt-head):not(.dt-doors) { opacity:.45; transition:opacity var(--motion-fast); }
 .notch .dt-head { display:flex; align-items:center; gap:8px; min-height:26px; }
@@ -47,14 +47,16 @@
 
 /* the day: stays as groups, the ways between them as trips, the now line, what is still to come muted */
 .notch .dt { --tcol:50px; }
-.notch .dt-list { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
+.notch .dt-list { position:relative; display:flex; flex-direction:column; min-width:0; min-height:0; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain;
   scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
-/* the list and a row's detail page are two sides of one stage (DayTimeline.tsx slides them): the side that is not shown waits out of the flow, hidden, its scroll place kept */
-.notch .dt-stage { position:relative; display:flex; flex:0 1 auto; flex-direction:column; min-height:0; margin-inline:-4px; overflow:hidden; }
-.notch .dt-stage.is-page > .dt-list,.notch .dt-stage:not(.is-page) > .dt-page { position:absolute; inset:0; visibility:hidden; pointer-events:none; }
-.notch .dt-stage.is-page > .dt-list { transform:translateX(-100%); }
-.notch .dt-stage:not(.is-page) > .dt-page { transform:translateX(100%); }
-.notch .dt-page { display:flex; flex:0 1 auto; flex-direction:column; min-height:0; box-sizing:border-box; padding-inline:4px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+/* V2 (820 px): under the header, the line, the bar and the chips the stage is two columns, the list at the left (--l, never moving) and the right column (what is selected, or on today the day's now),
+   a 1 px hairline between them (the rule is the right column's own left edge, the gap on either side is the grid's) */
+.notch .dt-stage { position:relative; display:grid; grid-template-columns:var(--l,428px) 1px minmax(0,1fr); grid-template-rows:minmax(0,1fr); column-gap:12px; flex:1 1 auto; min-height:0; margin-inline:-4px; }
+.notch .dt-stage::before { content:''; grid-column:2; grid-row:1; margin:4px 0 6px; background:rgb(157 180 255 / .1); }
+.notch .dt-list { grid-column:1; grid-row:1; }
+.notch .dt-side { grid-column:3; grid-row:1; display:flex; flex-direction:column; min-width:0; min-height:0; box-sizing:border-box; padding:2px 4px 8px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:var(--p-line) transparent; }
+.notch .dt-list:focus,.notch .dt-side:focus { outline:none; }
+.notch .dt-side > * { flex:none; }
 .notch .dt-pin { flex:none; }
 .notch .dt-ph { display:flex; align-items:center; gap:8px; min-height:32px; }
 .notch .dt-pb,.notch .dt-pn button { display:grid; place-items:center; flex:none; width:28px; height:28px; border-radius:50%; background:rgb(255 255 255 / .08); color:var(--p-muted); transition:background var(--motion-fast),color var(--motion-fast),opacity var(--motion-fast); }
@@ -62,8 +64,6 @@
 /* the row before and after, at the right of the title line; dimmed at either end */
 .notch .dt-pn { display:flex; flex:none; gap:6px; margin-left:auto; }
 .notch .dt-pn button:disabled { opacity:.3; cursor:default; }
-/* the page that is on its way out when the page is turned (a copy, DayTimeline.tsx) */
-.notch .dt-page.is-ghost { position:absolute; inset:0; overflow:hidden; pointer-events:none; }
 .notch .dt-ph b { min-width:0; overflow:hidden; font-size:15px; font-weight:600; line-height:24px; white-space:nowrap; text-overflow:ellipsis; color:var(--p-ink); }
 .notch .dt-ph .dt-rename { margin:0; }
 .notch .dt-pm { margin:0 0 4px 36px; font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; color:var(--p-faint); }
@@ -75,16 +75,20 @@
 .notch .dt-list > *,.notch .dt-stay > * { flex:none; }
 /* a row is 40 px tall (--head), 52 with a second line; a stay's header is 40; a unit (a stay, a trip) starts 12 px under the one before it;
    a row with a quiet line under it is taller by the line (day-open.css), and its head keeps --head */
-.notch .dt-row,.notch .dt-sh { --head:40px; position:relative; display:grid; grid-template-columns:var(--tcol) 28px minmax(0,1fr) auto; gap:0 8px; align-items:center; box-sizing:border-box; height:var(--head); padding:0 6px; border-radius:10px;
+.notch .dt-row,.notch .dt-sh { --head:40px; position:relative; display:grid; grid-template-columns:var(--tcol) 28px minmax(0,1fr) auto; gap:0 8px; align-items:center; box-sizing:border-box; height:var(--head); padding:0 22px 0 6px; border-radius:10px;
   font-size:14px; line-height:18px; transition:background var(--motion-fast),box-shadow var(--motion-fast),opacity 150ms; }
 .notch .dt-row.has-detail { --head:52px; }
 .notch .is-gap { margin-top:12px; }
+/* a row that has a detail ends in a ›, in the room every row keeps for it (so the times line up); a stay's is an element, its ::after being the rail */
+.notch .dt-row:not(.is-still)::after { content:''; }
+.notch .dt-chev,.notch .dt-row:not(.is-still)::after { position:absolute; top:50%; right:9px; width:6px; height:6px; margin-top:-3px; border:solid rgb(var(--ink) / .4); border-width:1.5px 1.5px 0 0; border-radius:1px; transform:rotate(45deg); transition:border-color var(--motion-fast); pointer-events:none; }
+.notch .dt-row.is-hot::after,.notch .dt-row.is-pick::after,.notch .dt-sh.is-hot .dt-chev,.notch .dt-sh.is-pick .dt-chev { border-color:rgb(var(--ink) / .8); }
 .notch .dt-row.is-hot,.notch .dt-sh.is-hot { background:rgb(255 255 255 / .04); }
 .notch .dt-row.is-leaving { pointer-events:none; }
 /* what the keys chose: a little more than the pointer's, and a ring, so it reads with the pointer far away */
 .notch .dt-row.is-pick,.notch .dt-sh.is-pick { background:rgb(255 255 255 / .07); box-shadow:inset 0 0 0 1px rgb(var(--ink) / .24); }
 /* what the hover offers, the star and 问她: they fade in over the length when the row is lit */
-.notch .dt-quick { position:absolute; right:6px; top:calc(var(--head) / 2); z-index:2; display:flex; align-items:center; gap:4px; height:24px; margin-top:-12px; opacity:0; pointer-events:none; transition:opacity 120ms; }
+.notch .dt-quick { position:absolute; right:22px; top:calc(var(--head) / 2); z-index:2; display:flex; align-items:center; gap:4px; height:24px; margin-top:-12px; opacity:0; pointer-events:none; transition:opacity 120ms; }
 .notch .dt-ask { height:24px; padding:0 10px; border-radius:12px; background:rgb(255 255 255 / .12); font-size:11.5px; font-weight:600; line-height:24px; color:var(--p-ink); transition:background var(--motion-fast); }
 .notch .dt-ask:hover { background:rgb(255 255 255 / .2); }
 .notch .dt-quick + .dt-tm { transition:opacity 120ms; }

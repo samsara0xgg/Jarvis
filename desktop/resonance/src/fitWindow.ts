@@ -1,5 +1,5 @@
 // The companion's window follows what the page shows (ADR-free: a frame size, not a contract). The page is laid out on a
-// fixed stage (640 wide, the notch's top inset plus 690 tall, set in electron/companion.ts); the window is that stage's
+// fixed stage (836 wide, the notch's top inset plus 690 tall, set in electron/companion.ts); the window is that stage's
 // top-left corner and only its right and bottom edges move, so nothing on screen ever shifts when it resizes.
 // Grow at once and ahead of the content; shrink only after the content has held still for SETTLE_MS.
 type Box = { w: number; h: number };
