@@ -1,13 +1,15 @@
 """L3 doing run — the input of the doing lane's writer and the gates on its answer (ADR 0302).
 
 One day's facts go in: the waking window, the program's cut of it with the facts that cover each
-segment, the clues, and the day's keys of his attention nobody told yet; the day's spans come out
-in the shape a stored run holds, or the reason to store nothing, and what each new key served
-(:mod:`jarvis.decision.attention_threads`, ADR 0331). The model names times, clues and keys by
-short labels (``t3``, ``c12``, ``k4``) that the program gave it, never by milliseconds or text of
-its own, so a time that is not a boundary of the facts, a clue that does not exist and a key that
-was not asked about cannot get through. The runtime owns when it runs and the client; L2 owns the
-facts, the clues and the write.
+segment, the clues, and the day's keys of his attention nobody told yet or told to vary; the day's
+spans come out in the shape a stored run holds, each with what the keys that vary served in it, or
+the reason to store nothing, and what each new key served
+(:mod:`jarvis.decision.attention_threads`, ADR 0331, ADR 9902). The model names times, clues and
+keys by short labels (``t3``, ``c12``, ``k4``, ``v2``) that the program gave it, never by
+milliseconds or text of its own, so a time that is not a boundary of the facts, a clue that does
+not exist and a key that was not asked about cannot get through. While it writes it may read the
+screen (:mod:`jarvis.decision.screen_reads`, ADR 9901). The runtime owns when it runs and the
+client; L2 owns the facts, the clues and the write.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.decision.attention_threads import brief_lines
+from jarvis.decision.attention_threads import brief_lines, held_in, read_serves
 from jarvis.decision.day_prose import read_object
 from jarvis.state import places
 from jarvis.state.doing import (
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
     from datetime import tzinfo
 
     from jarvis.decision.attention_threads import Asked, Known
+    from jarvis.state.attention import Piece
     from jarvis.state.doing import Segment, Span
     from jarvis.state.doing_clues import Clue
 
@@ -74,8 +77,10 @@ class Brief:
     each device whose records stop before the window does, with where they stop. ``kept`` are the
     spans before the window that a short run keeps as written (ADR 0310, :func:`narrow`).
     ``foreground`` is what was in front of him at his Mac in each quarter hour of the window, as
-    (start, end, text). ``asked`` are the day's keys of his attention nobody told yet, and
-    ``known`` the threads told so far (ADR 0331).
+    (start, end, text). ``asked`` are the day's keys of his attention nobody told yet,
+    ``varies`` those told to serve different things at different times that held him (ADR 9902),
+    ``known`` the threads told so far (ADR 0331), and ``pieces`` where the keys of ``asked`` and
+    ``varies`` held him, which says what each span must tell.
     """
 
     day: str
@@ -95,6 +100,8 @@ class Brief:
     foreground: Sequence[tuple[int, int, str]] = ()
     asked: Sequence[Asked] = ()
     known: Sequence[Known] = ()
+    varies: Sequence[Asked] = ()
+    pieces: Sequence[Piece] = ()
 
 
 def _reach(span: Mapping[str, Any], brief: Brief) -> int:
@@ -312,7 +319,7 @@ def build_messages(brief: Brief) -> list[dict[str, Any]]:
         *_foreground_lines(brief),
         f"PHONE AND TABLET APP USE: {_screen_line(brief)}",
         "CLUES (id | local time | kind | text):\n" + ("\n".join(clue_lines) or "(none)"),
-        *brief_lines(brief.asked, brief.known, brief.zone),
+        *brief_lines(brief.asked, brief.varies, brief.known, brief.zone),
     ))
     return [{"role": "user", "content": content}]
 
@@ -453,7 +460,7 @@ def _check_words(
 
 def _span(  # noqa: PLR0913 — the span, the day, the labels given and what the facts say of it.
     raw: object, brief: Brief, labels: Mapping[str, int], clues: Mapping[str, Clue],
-    bare: frozenset[str], held: Doing,
+    bare: frozenset[str], held: Doing, varies: Mapping[str, str],
 ) -> dict[str, Any]:
     """One span of the answer in the shape a run stores; ``_Rejected`` when it fails a gate."""
     if not isinstance(raw, dict):
@@ -472,6 +479,10 @@ def _span(  # noqa: PLR0913 — the span, the day, the labels given and what the
     ):
         msg = "an observed span has no fact under it"
         raise _Rejected(msg)
+    where = f"the span from {raw.get('from')} to {raw.get('to')}: "
+    serves = read_serves(raw.get("serves"), varies, held_in(brief.pieces, start, end), where)
+    if isinstance(serves, str):
+        raise _Rejected(serves)
     span_id = f"doing-{start}"
     place = primary_place(held, {"start_ms": start, "end_ms": end})
     return {
@@ -479,7 +490,24 @@ def _span(  # noqa: PLR0913 — the span, the day, the labels given and what the
         "detail": _text(raw.get("detail"), DETAIL_MAX_CHARS, "a detail"),
         "category": raw["category"], "basis": raw["basis"], "confidence": raw["confidence"],
         "clues": cited, "question": _question(raw.get("question"), span_id),
-        "place_id": None if place is None else place["place_id"],
+        "place_id": None if place is None else place["place_id"], "serves": serves,
+    }
+
+
+def varies_of(
+    brief: Brief, told: Mapping[str, tuple[str | None, str | None]] | str,
+) -> dict[str, str]:
+    """The keys a span of ``brief`` may tell, by label.
+
+    Those that vary, and the new keys ``told`` to vary in the same answer (none of these when that
+    part was refused).
+    """
+    found = {f"v{n}": one.key for n, one in enumerate(brief.varies, 1)}
+    if isinstance(told, str):
+        return found
+    return found | {
+        f"k{n}": one.key for n, one in enumerate(brief.asked, 1)
+        if told.get(one.key, ("",))[0] is None
     }
 
 
@@ -524,6 +552,7 @@ def _tiled(spans: Sequence[Mapping[str, Any]], brief: Brief) -> str | None:
 
 def read_run(
     text: str | None, finish_reason: str | None, brief: Brief,
+    varies: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]] | str:
     """The answer's spans in the shape a stored run holds, or why none of it may be stored.
 
@@ -532,7 +561,9 @@ def read_run(
     vocabularies hold; the title is at most :data:`TITLE_MAX_CHARS` characters, is there for
     something he did, is absent for a stretch unknown, and does not merely say where; the clues it
     cites exist; ``stated`` rests on his words or an answer and ``observed`` on a fact under it;
-    a question has text and at most :data:`MAX_OPTIONS` options. Then together: they tile the
+    a question has text and at most :data:`MAX_OPTIONS` options; its ``serves`` tells each key of
+    ``varies`` (by label; else :func:`varies_of` with no new key told) that held him there
+    (:func:`jarvis.decision.attention_threads.read_serves`). Then together: they tile the
     waking window with no gap and no overlap, none but a stated one joins a segment where his Mac
     shows him working with one where it does not, and at most :data:`MAX_QUESTIONS` have a
     question.
@@ -549,8 +580,9 @@ def read_run(
     clues = {f"c{n}": c for n, c in enumerate(brief.clues, 1)}
     bare = _bare_words(brief)
     held = Doing(list(brief.facts), [], coverage([], brief.waking))
+    may = varies_of(brief, "") if varies is None else varies
     try:
-        spans = [_span(one, brief, labels, clues, bare, held) for one in raw]
+        spans = [_span(one, brief, labels, clues, bare, held, may) for one in raw]
     except _Rejected as rejected:
         return str(rejected)
     # every join is named at once, so the one retry can split them all
@@ -578,4 +610,5 @@ __all__ = [
     "narrow",
     "read_run",
     "times",
+    "varies_of",
 ]

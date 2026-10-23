@@ -6,10 +6,12 @@ r"""Replay the writer of the doing lane (ADR 0302) for past days, against given 
         [--config config/jarvis.yaml] [--zone America/Vancouver]
 
 For each day it folds the day line from the event log and memory.db, cuts the waking window,
-gathers the clues and the keys of his attention nobody told yet, asks the ``doing.preset`` model
-once (twice when its first answer fails a gate; the key comes from the environment, filled from
-the runtime root's saved keys as the brain fills it) and prints the gated spans, one per line,
-then what it told of the new keys (ADR 0331) and where his attention went in each span by them.
+gathers the clues and the keys of his attention nobody told yet or told to vary, asks the
+``doing.preset`` model once (twice when its first answer fails a gate; the key comes from the
+environment, filled from the runtime root's saved keys as the brain fills it), letting it read
+the shipped screen text as the brain does (ADR 9901), and prints the gated spans, one per line,
+with what the keys that vary served in each (ADR 9902), then what it told of the new keys (ADR
+0331), where his attention went in each span by them, and what the calls cost.
 Without ``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a
 final run when the day is over as of ``--now``, else a draft), and what it told with them, exactly
 as the daemon's schedule would; with it nothing is stored. The event log is only read: the
@@ -40,6 +42,7 @@ from jarvis.runtime.doing_run import (
     DoingSettings,
     compose_run,
     read_brief,
+    screen_reader,
     store_run,
     store_told,
 )
@@ -51,6 +54,7 @@ from jarvis.state.event_log import open_event_log
 from scripts.attention_replay import attention_lines, threads_of, told_lines
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Mapping, Sequence
     from datetime import tzinfo
 
@@ -59,8 +63,25 @@ if TYPE_CHECKING:
 REPO = Path(__file__).resolve().parents[1]
 
 
+def spent(cost_log: sqlite3.Connection) -> dict[str, float]:
+    """What the calls accounted in ``cost_log`` cost, in dollars, and their tokens by kind."""
+    totals = {"usd": 0.0, "in": 0.0, "cache_read": 0.0, "cache_write": 0.0, "out": 0.0}
+    try:
+        rows = cost_log.execute("SELECT disposition_json FROM cost_accounting_dispositions")
+    except Exception:  # noqa: BLE001 — no call made, no table
+        return totals
+    for (raw,) in rows:
+        one = json.loads(raw)
+        totals["usd"] += float(one.get("cost_usd") or 0.0)
+        totals["in"] += float(one.get("input_tokens") or 0)
+        totals["cache_read"] += float(one.get("cache_read_tokens") or 0)
+        totals["cache_write"] += float(one.get("cache_write_tokens") or 0)
+        totals["out"] += float(one.get("output_tokens") or 0)
+    return totals
+
+
 def readable(spans: Sequence[Mapping[str, Any]], zone: tzinfo) -> list[str]:
-    """One line per span: its times, title, how sure, and the question it asks."""
+    """One line per span: its times, title, how sure, the question it asks, what keys served."""
 
     def clock(ms: int) -> str:
         return f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
@@ -74,6 +95,8 @@ def readable(spans: Sequence[Mapping[str, Any]], zone: tzinfo) -> list[str]:
         )
         if span["question"] is not None:
             line += f" ? {span['question']['text']} {span['question']['options']}"
+        for one in span.get("serves") or []:
+            line += f"\n      {one['key']} -> {one['thread'] or '(cannot tell)'}"
         lines.append(line)
     return lines
 
@@ -104,15 +127,20 @@ def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and 
                 done.append(line | {
                     "outcome": "brief only", "segments": len(brief.segments),
                     "clues": len(brief.clues), "new_keys": len(brief.asked),
+                    "varying_keys": len(brief.varies),
                     "brief_chars": len(content), "digest": inputs_digest(brief), "brief": content,
                 })
                 continue
-            composed = compose_run(brief, settings, client, recorder)
+            before = spent(cost_log)
+            composed = compose_run(brief, settings, client, recorder, screen_reader(sources))
+            after = spent(cost_log)
             line |= {
                 "final": brief.final, "segments": len(brief.segments),
                 "clues": len(brief.clues), "new_keys": len(brief.asked),
+                "varying_keys": len(brief.varies), "screen_reads": composed.reads,
                 "digest": inputs_digest(brief), "model": composed.model,
                 "tokens_in": composed.tokens_in, "tokens_out": composed.tokens_out,
+                **{f"cost_{k}": round(after[k] - before[k], 4) for k in after},
             }
             told = composed.threads or {}
             names = {one.key: one.name for one in brief.asked}

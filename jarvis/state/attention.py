@@ -60,8 +60,6 @@ TITLE_MAX_CHARS: Final = 30
 it); a longer title is cut at its end with an ellipsis, a longer path at its start."""
 _HOME: Final = re.compile(r"^/(?:Users/(?!Shared(?:/|$))|home/)[^/]+")
 """A real home: ``/Users/<name>`` (not the shared folder) or ``/home/<name>``."""
-AROUND_MS: Final = 15 * _MINUTE_MS
-"""How far around a key that serves what is around it the thread it served is looked for."""
 MAC: Final = "mac"
 """Where a piece was when it was at his Mac; else the device's name, ``iPhone`` or ``iPad``."""
 
@@ -88,11 +86,24 @@ class Piece(NamedTuple):
 class Thread(NamedTuple):
     """What a key served: a thread's name and category.
 
-    No name: the key serves what is around it (an untitled window, a login page).
+    No name: the key serves different things at different times (a chat app, an untitled
+    window), told stretch by stretch (:class:`Told`).
     """
 
     name: str | None
     category: str | None
+
+
+class Told(NamedTuple):
+    """What a key that varies served from ``start_ms`` to ``end_ms``, as a run of the writer said.
+
+    ``thread`` has no name when the writer could not tell (ADR 9902).
+    """
+
+    start_ms: int
+    end_ms: int
+    key: str
+    thread: Thread
 
 
 type _Stretch = tuple[int, int, str, str, str, float]
@@ -366,29 +377,39 @@ def _switches(front: Sequence[tuple[Piece, str]], lead: str) -> int:
 
 
 def _threaded(
-    group: Sequence[Piece], threads: Mapping[str, Thread],
+    group: Sequence[Piece], threads: Mapping[str, Thread], told: Sequence[Told],
 ) -> list[tuple[Piece, str]]:
-    """Each piece with the id of the thread it served.
+    """Each piece with the id of the thread it served, a piece of a key that varies cut where told.
 
-    A key told to serve a thread goes to that thread; a key told to serve what is around it goes
-    to the thread that held most of the rest within :data:`AROUND_MS` of it, and stays itself
-    when there is none; a key nobody told stays itself.
+    A key told to serve a thread goes to that thread. A key told to vary goes, inside a stretch
+    ``told`` names a thread for it, to that thread, and elsewhere stays itself; a key nobody told
+    stays itself. Nothing is guessed from what was around it.
     """
-    def follows(p: Piece) -> bool:
-        return p.key in threads and threads[p.key].name is None
-
-    own = [(p, p.key if p.key not in threads or follows(p) else thread_id(threads[p.key]))
-           for p in group]
+    by_key: dict[str, list[Told]] = defaultdict(list)
+    for one in told:
+        by_key[one.key].append(one)
     found = []
-    for p, thread in own:
-        near: dict[str, float] = defaultdict(float)
-        if follows(p):
-            for q, other in own:
-                lo = max(q.start_ms, p.start_ms - AROUND_MS)
-                hi = min(q.end_ms, p.end_ms + AROUND_MS)
-                if hi > lo and not follows(q):
-                    near[other] += (hi - lo) * q.share
-        found.append((p, max(near, key=lambda t: (near[t], t)) if near else thread))
+    for p in group:
+        thread = threads.get(p.key)
+        if thread is not None and thread.name is not None:
+            found.append((p, thread_id(thread)))
+            continue
+        at = p.start_ms
+        tellings = sorted(
+            by_key.get(p.key, []) if thread is not None else [],
+            key=lambda one: (one.start_ms, one.end_ms),
+        )
+        for one in tellings:
+            part = _clip(p, max(at, one.start_ms), one.end_ms)
+            if part is None:
+                continue
+            if part.start_ms > at and (gap := _clip(p, at, part.start_ms)) is not None:
+                found.append((gap, p.key))
+            found.append((part, thread_id(one.thread) if one.thread.name else p.key))
+            at = part.end_ms
+        rest = _clip(p, at, p.end_ms) if at < p.end_ms else None
+        if rest is not None:
+            found.append((rest, p.key))
     return found
 
 
@@ -398,10 +419,13 @@ def thread_id(thread: Thread) -> str:
 
 
 def _tally(
-    group: Sequence[tuple[Piece, str]], threads: Mapping[str, Thread],
+    group: Sequence[tuple[Piece, str]], named: Mapping[str, Thread],
 ) -> list[dict[str, Any]]:
-    """The threads of ``group``, most first, each with its keys, most first."""
-    told = {thread_id(t): t for t in threads.values() if t.name}
+    """The threads of ``group``, most first, each with its keys, most first.
+
+    ``named`` are the told threads by id; any other id is a key's own.
+    """
+    told = named
     ms: dict[str, float] = defaultdict(float)
     typed: dict[str, float] = defaultdict(float)
     where: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
@@ -433,10 +457,12 @@ def _tally(
 
 def within(
     found: Sequence[Piece], start_ms: int, end_ms: int, threads: Mapping[str, Thread],
+    told: Sequence[Told] = (),
 ) -> dict[str, Any]:
     """Where his attention went in ``[start_ms, end_ms)``, in the served shape (ADR 0330).
 
-    ``threads`` says what keys served (a key not in it is its own thread). ``front_ms`` is the
+    ``threads`` says what keys served (a key not in it is its own thread), and ``told`` what a key
+    that varies served in a stretch (ADR 9902). ``front_ms`` is the
     time a screen had him; ``threads`` what held it, most first, each ``{"id", "name",
     "category", "where", "ms", "typed_ms", "keys"}`` (``where`` is ``mac``, ``iPhone`` or
     ``iPad``, the one it held most on; ``category`` is null for a key nobody told; ``keys`` each
@@ -448,7 +474,8 @@ def within(
     out of the lists, never out of the sums.
     """
     inside = [q for p in found if (q := _clip(p, start_ms, end_ms)) is not None]
-    front = _threaded([p for p in inside if not p.alongside], threads)
+    named = {thread_id(t): t for t in (*threads.values(), *(o.thread for o in told)) if t.name}
+    front = _threaded([p for p in inside if not p.alongside], threads, told)
     totals: dict[str, float] = defaultdict(float)
     for p, thread in front:
         totals[thread] += p.ms
@@ -468,18 +495,17 @@ def within(
         })
     alongside = [
         {k: v for k, v in one.items() if k != "typed_ms"}
-        for one in _tally(_threaded([p for p in inside if p.alongside], threads), threads)
+        for one in _tally(_threaded([p for p in inside if p.alongside], threads, told), named)
     ]
     return {
         "front_ms": round(sum(p.ms for p, _ in front)),
-        "threads": _tally(front, threads),
+        "threads": _tally(front, named),
         "rows": rows,
         "alongside": alongside,
     }
 
 
 __all__ = [
-    "AROUND_MS",
     "MAC",
     "REACH_MS",
     "ROW_COST_MS",
@@ -487,6 +513,7 @@ __all__ = [
     "UNIT_MS",
     "Piece",
     "Thread",
+    "Told",
     "held",
     "key_name",
     "mac_spans",

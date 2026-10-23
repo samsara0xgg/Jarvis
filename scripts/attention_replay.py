@@ -37,10 +37,10 @@ _MIN = 60_000
 def told_lines(
     told: Mapping[str, tuple[str | None, str | None]], names: Mapping[str, str],
 ) -> list[str]:
-    """One line per key told: its name, and its thread or that it goes with what is around it."""
+    """One line per key told: its name, and its thread or that it varies."""
     return [
         f"  {names.get(key, key)} -> "
-        + ("(what is around it)" if thread is None else f"{thread} [{category}]")
+        + ("(varies, told per span)" if thread is None else f"{thread} [{category}]")
         for key, (thread, category) in sorted(told.items(), key=lambda kv: (kv[1][0] or "", kv[0]))
     ]
 
@@ -83,17 +83,36 @@ def threads_of(
         return {k: attention.Thread(*v) for k, v in {**attention_threads(conn), **told}.items()}
 
 
+def tellings(spans: Iterable[Mapping[str, Any]]) -> list[attention.Told]:
+    """What each span of a run says the keys that vary served in it (ADR 9902)."""
+    return [
+        attention.Told(
+            span["start_ms"], span["end_ms"], str(one["key"]),
+            attention.Thread(one.get("thread"), one.get("category")),
+        )
+        for span in spans for one in span.get("serves") or []
+    ]
+
+
 def attention_lines(
     spans: Iterable[Mapping[str, Any]], sources: DaySources,
     threads: Mapping[str, attention.Thread],
 ) -> list[str]:
-    """Each doing stretch of ``spans`` with where his attention went in it, by ``threads``."""
+    """Each doing stretch of ``spans`` with where his attention went in it, by ``threads``.
+
+    A span the page served brings its own attention; a run's span is told here, with what the
+    run's spans say the keys that vary served.
+    """
+    spans = list(spans)
+    told = tellings(spans)
     lines = []
     for span in spans:
         if span.get("lane", "doing") != "doing" or span["kind"] == "planned":
             continue
-        found = attention.read(sources, span["start_ms"], span["end_ms"])
-        within = attention.within(found, span["start_ms"], span["end_ms"], threads)
+        within = span.get("attention")
+        if within is None:
+            found = attention.read(sources, span["start_ms"], span["end_ms"])
+            within = attention.within(found, span["start_ms"], span["end_ms"], threads, told)
         lines += stretch_lines(span, within, sources.zone)
     return lines
 

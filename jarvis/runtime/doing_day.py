@@ -8,8 +8,9 @@ ids, as a sleep across midnight shows on both days. An answer about one of them 
 day it belongs to.
 
 Each stretch the page shows also tells where his attention went in it (ADR 0330,
-:func:`jarvis.state.attention.within`), by the threads its keys were told to serve (ADR 0331);
-a planned one, which has not happened, tells nothing.
+:func:`jarvis.state.attention.within`), by the threads its keys were told to serve (ADR 0331),
+and a key that varies by what the day's run said it served in each of its spans (ADR 9902); a
+planned one, which has not happened, tells nothing.
 
 Layer rules: runtime may wire across layers.
 """
@@ -22,7 +23,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from jarvis.state import attention
-from jarvis.state.attention import Thread
+from jarvis.state.attention import Thread, Told
 from jarvis.state.day_line import day_window, fold_day
 from jarvis.state.doing import (
     DOING_KINDS,
@@ -34,7 +35,7 @@ from jarvis.state.doing import (
     read_doing,
     waking_window,
 )
-from jarvis.state.memory_db import attention_threads, open_memory_db
+from jarvis.state.memory_db import attention_threads, latest_doing_run, open_memory_db
 
 if TYPE_CHECKING:
     import sqlite3
@@ -100,6 +101,8 @@ class DayDoing(NamedTuple):
     """Where his attention was through the stretches the page shows."""
     threads: dict[str, Thread]
     """What the keys told so far served (ADR 0331)."""
+    told: Sequence[Told] = ()
+    """What keys that vary served in the spans of the two days' runs (ADR 9902)."""
 
     def before(self) -> list[dict[str, Any]]:
         """The day before's doing spans that run past this day's start, by start."""
@@ -118,7 +121,9 @@ class DayDoing(NamedTuple):
             {
                 **s, "item_ids": [i for i in s["item_ids"] if i in ids],
                 "attention": None if s["kind"] == PLANNED_KIND
-                else attention.within(self.pieces, s["start_ms"], s["end_ms"], self.threads),
+                else attention.within(
+                    self.pieces, s["start_ms"], s["end_ms"], self.threads, self.told,
+                ),
             }
             for s in (*self.before(), *self.own.doing.served)
         ]
@@ -155,7 +160,8 @@ def read_day_doing(  # noqa: PLR0913 — the stores, the day, its line and the c
         prior = Lane(before, before_items, read_doing(
             memory_db, before.isoformat(), before_items, before_start, before_end, now_ms,
         ))
-    told = DayDoing(own, prior, start_ms, [], _threads(memory_db))
+    days = [day.isoformat()] + ([] if prior is None else [prior.day.isoformat()])
+    told = DayDoing(own, prior, start_ms, [], _threads(memory_db), _told(memory_db, days))
     shown = [s for s in (*told.before(), *own.doing.served) if s["kind"] != PLANNED_KIND]
     if not shown:
         return told
@@ -174,6 +180,32 @@ def _threads(memory_db: Path | None) -> dict[str, Thread]:
     except Exception:
         LOGGER.exception("doing: what the keys of his attention served could not be read")
         return {}
+
+
+def _told(memory_db: Path | None, days: Sequence[str]) -> list[Told]:
+    """What keys that vary served in each span of ``days``' latest runs, up to where each speaks.
+
+    None when the store cannot be read, logged.
+    """
+    if memory_db is None or not memory_db.is_file():
+        return []
+    found: list[Told] = []
+    try:
+        with closing(open_memory_db(memory_db)) as conn:
+            runs = [run for day in days if (run := latest_doing_run(conn, day)) is not None]
+    except Exception:
+        LOGGER.exception("doing: what keys that vary served could not be read")
+        return []
+    for run in runs:
+        for span in run.spans:
+            end = min(int(span["end_ms"]), run.covers_until_ms)
+            found.extend(
+                Told(int(span["start_ms"]), end, str(one["key"]),
+                     Thread(one.get("thread"), one.get("category")))
+                for one in span.get("serves") or []
+                if end > int(span["start_ms"])
+            )
+    return found
 
 
 __all__ = ["DayDoing", "Lane", "lane_line", "page_reach", "reach_past_start", "read_day_doing"]

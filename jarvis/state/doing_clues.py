@@ -13,14 +13,14 @@ did. :func:`gather` reads them, each tagged with one of :data:`jarvis.state.doin
 - ``chat``: a conversation with Claude, or the night's letter on them (ADR 0295);
 - ``code``: a Claude Code session, and the recap Claude Code wrote of it (ADR 0294);
 - ``away_note``: what he wrote in TimeSink for a stretch away from his Mac (ADR 0302);
-- ``screen``: what the work state said he was doing lately (ADR 0180), at each revision where
-  that changed; its list of the day's activities is a recap, not dated, so it is not a clue;
 - ``answer``: what he answered about a stretch of this day, and about earlier stretches within
   the stay radius of a place he stayed at (ADR 0302).
 
 A source that cannot be read leaves its clues out, logged. Nothing is stored and nothing is
 guessed: a clue is what the source holds, cut short, except what he and she said, which is whole
-(ADR 0332). ``photo`` has no source yet, so none is read.
+(ADR 0332). ``photo`` has no source yet, so none is read. ``screen`` is no longer read: the work
+state's summary of his screen is another model's conclusion, and the writer reads the screen text
+itself when it needs to (ADR 9901); runs written before keep the ones they cited.
 
 Layer rules: ``jarvis.state`` and ``jarvis.shared`` only (L2).
 """
@@ -35,8 +35,6 @@ from functools import partial
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
-from jarvis.state import work_state
-from jarvis.state.event_log import iter_events_of_types
 from jarvis.state.memory_db import (
     doing_answers,
     doing_answers_near,
@@ -61,7 +59,6 @@ MAX_CLUES_PER_KIND: Final = 40
 NEAR_ANSWERS_PER_PLACE: Final = 3
 """The newest earlier answers kept for each place he stayed at."""
 
-_SCREEN_EVENT_TYPE: Final = work_state.EVENT_TYPE
 HIS_WORDS: Final = "he: "
 """How a clue of what he said begins; hers begins with `she: `."""
 _SPEAKER: Final = {"allen": HIS_WORDS, "jarvis": "she: ", "jarvis_live": "she: "}
@@ -178,22 +175,6 @@ def _words(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[Clue]:
     ]
 
 
-def _screen(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[Clue]:
-    """What the work state said he was doing lately, at each revision in the window changing it."""
-    found: list[Clue] = []
-    last: str | None = None
-    for event in iter_events_of_types(conn, (_SCREEN_EVENT_TYPE,), since_epoch_ms=start_ms):
-        item = event.payload.get("item")
-        if event.ts_epoch_ms >= end_ms or not isinstance(item, dict):
-            continue
-        now = item.get("now")
-        text = _short(now.get("text") or "") if isinstance(now, dict) else ""
-        if text and text != last:
-            found.append(Clue("screen", event.ts_epoch_ms, text))
-        last = text or None
-    return found
-
-
 def _interviews(
     conn: sqlite3.Connection, start_ms: int, end_ms: int, zone: tzinfo,
 ) -> list[Clue]:
@@ -267,15 +248,15 @@ def _guarded(name: str, read: Callable[[], list[Clue]]) -> list[Clue]:
         return []
 
 
-def gather(  # noqa: PLR0913 — the stores, the day, its items, its window and its zone.
-    event_log: sqlite3.Connection, memory_db: Path | None, day: date,
-    items: Sequence[Mapping[str, Any]], window: tuple[int, int], zone: tzinfo,
+def gather(
+    memory_db: Path | None, day: date, items: Sequence[Mapping[str, Any]],
+    window: tuple[int, int], zone: tzinfo,
 ) -> list[Clue]:
     """The clues of ``day`` inside ``window`` (ms), oldest first.
 
     ``items`` are the day line's items, which already hold what he sent, what he has to go to,
-    the plan, his payments, his Claude chats and sessions; the rest is read from ``event_log``
-    (the work state's screen) and ``memory_db`` (what was said, interview mail, his answers).
+    the plan, his payments, his Claude chats and sessions; the rest is read from ``memory_db``
+    (what was said, interview mail, his answers).
     Every word he and she said is a clue, whole. Each other clue's text is cut to
     :data:`CLUE_TEXT_MAX_CHARS`, and each other kind is thinned to :data:`MAX_CLUES_PER_KIND`.
     """
@@ -284,7 +265,6 @@ def gather(  # noqa: PLR0913 — the stores, the day, its items, its window and 
     for item in items:
         if start <= int(item["start_ms"]) < end:
             found += _guarded("day line", partial(_from_item, item, zone))
-    found += _guarded("screen", partial(_screen, event_log, start, end))
     if memory_db is not None and memory_db.is_file():
         with closing(open_memory_db(memory_db)) as conn:
             found += _guarded("words", partial(_words, conn, start, end))

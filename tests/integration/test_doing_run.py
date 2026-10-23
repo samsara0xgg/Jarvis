@@ -6,9 +6,11 @@ The checks, as tables of input to expected output:
 
 - the Mac's foreground: the minutes each app, site or document was in front in each quarter hour,
   the seconds typed in it, another device's spans left out;
-- the clues: each kind of day-line item that holds one, his words and hers, the work state's
-  screen, interview mail and his answers (this day's, and earlier ones near a place he stayed at),
-  bounded in count and in length, and a source that fails leaving the rest;
+- the clues: each kind of day-line item that holds one, his words and hers, interview mail and
+  his answers (this day's, and earlier ones near a place he stayed at), bounded in count and in
+  length, and a source that fails leaving the rest; the work state's screen is none (ADR 9901);
+- the screen reads (ADR 9901): each read the writer asks for answered before it is asked again,
+  at most :data:`MAX_ROUNDS` rounds, then told to answer with no tool;
 - what the writer is shown: the times it may name, the segments with their facts, the clues
   with ids and local times, the language of the titles;
 - the gates, one rejection each, and what an accepted answer is stored as;
@@ -20,7 +22,9 @@ The checks, as tables of input to expected output:
   from where the last one starts, the questions counted over the day;
 - the schedule, on a fake clock: a run at most every two hours and only when the inputs changed,
   after the first one only the newest part, at once when he asks (her tool and the timeline's
-  route), a final run once the day is over, a rewrite when late rows change a past day;
+  route), one final run once the day is over and his late phone and tablet use is in or twelve
+  hours have passed (ADR 9903), a refused one asked again only when its inputs change, a final
+  kept unless he asks;
 - the replay script, with and without ``--dry-run``.
 """
 
@@ -52,17 +56,20 @@ from jarvis.decision.doing_run import (
     read_run,
     times,
 )
+from jarvis.decision.screen_reads import MAX_ROUNDS
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.runtime import doing_run as runtime
 from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.doing_answers import DoingAnswers
 from jarvis.runtime.doing_run import (
     CHECK_EVERY,
+    FINAL_WAIT,
     SHORT_EVERY,
     DoingSchedule,
     DoingSettings,
     compose_run,
     read_brief,
+    settled,
     store_run,
 )
 from jarvis.state.day_line import DaySources, day_window
@@ -84,6 +91,7 @@ from jarvis.state.memory_db import (
     open_memory_db,
 )
 from jarvis.state.phone_day import HEALTH_EVENT
+from jarvis.state.screen_text import Window
 from jarvis.state.shipments import Shipments
 from scripts import doing_replay
 from tests.support import doing as doing_support
@@ -343,15 +351,10 @@ ITEM_CASES = {
 
 
 @pytest.mark.parametrize("name", ITEM_CASES)
-def test_an_item_that_holds_a_clue_gives_it_and_a_fact_gives_none(
-    name: str,
-    tmp_path: Path,
-) -> None:
+def test_an_item_that_holds_a_clue_gives_it_and_a_fact_gives_none(name: str) -> None:
     """An item that holds a clue gives it and a fact gives none."""
     item, expected = ITEM_CASES[name]
-    with closing(open_event_log(tmp_path / "e.db")) as conn:
-        found = gather(conn, None, DAY, [item], WINDOW, VANCOUVER)
-    assert found == expected
+    assert gather(None, DAY, [item], WINDOW, VANCOUVER) == expected
 
 
 def test_the_clue_kinds_are_the_closed_ones() -> None:
@@ -360,8 +363,7 @@ def test_the_clue_kinds_are_the_closed_ones() -> None:
 
 
 def _clues(world: World, items: list[dict[str, Any]] | None = None) -> list[Clue]:
-    with closing(open_event_log(world.log)) as conn:
-        return gather(conn, world.memory, DAY, items or [], WINDOW, VANCOUVER)
+    return gather(world.memory, DAY, items or [], WINDOW, VANCOUVER)
 
 
 def test_what_was_said_is_a_clue_of_his_and_of_hers_without_markup_or_notes(world: World) -> None:
@@ -388,19 +390,11 @@ def test_what_was_said_is_a_clue_of_his_and_of_hers_without_markup_or_notes(worl
     assert len(said[2].text) > CLUE_TEXT_MAX_CHARS
 
 
-def test_what_the_work_state_says_he_is_doing_is_a_clue_where_it_changes(world: World) -> None:
-    """Each revision that changes what he is doing lately is a clue; the day's recap is not."""
-    screen_row(world.log, doing_at(5, 30), "Before the window")
+def test_what_the_work_state_says_he_is_doing_is_no_clue(world: World) -> None:
+    """ADR 9901: the work state's summary of his screen is another model's word, never a clue."""
     screen_row(world.log, doing_at(11), "Writing the thesis in Overleaf", "Earlier: Slack")
-    screen_row(world.log, doing_at(11, 30), None)
-    screen_row(world.log, doing_at(12), "Writing the thesis in Overleaf")
-    screen_row(world.log, doing_at(12, 30), "Writing the thesis in Overleaf", "Slack")
-    screen_row(world.log, doing_at(15, 30), "After the window")
-    screen = [(c.at_ms, c.text) for c in _clues(world) if c.kind == "screen"]
-    assert screen == [
-        (doing_ms(doing_at(10)), "Writing the thesis in Overleaf"),
-        (doing_ms(doing_at(12)), "Writing the thesis in Overleaf"),
-    ]
+    screen_row(world.log, doing_at(12), "Watching a film together")
+    assert [c for c in _clues(world) if c.kind == "screen"] == []
 
 
 def test_interview_mail_is_a_clue_at_the_time_it_names(world: World) -> None:
@@ -522,11 +516,9 @@ def test_a_source_that_fails_leaves_the_rest(
     assert "could not be read" in caplog.text
 
 
-def test_without_a_memory_store_only_the_day_line_and_the_screen_speak(world: World) -> None:
-    """Without a memory store only the day line and the screen speak."""
-    with closing(open_event_log(world.log)) as conn:
-        found = gather(conn, None, DAY, [], WINDOW, VANCOUVER)
-    assert {c.kind for c in found} == {"screen"}
+def test_without_a_memory_store_only_the_day_line_speaks() -> None:
+    """Without a memory store only the day line speaks: with no items, nothing does."""
+    assert gather(None, DAY, [], WINDOW, VANCOUVER) == []
 
 
 def test_the_brief_holds_the_days_facts_clues_and_the_language_of_his_words(
@@ -551,7 +543,7 @@ def test_the_brief_holds_the_days_facts_clues_and_the_language_of_his_words(
     assert [(c.kind, c.text) for c in brief.clues] == [
         ("words", "he: 我在图书馆写论文"),
         ("words", "she: 好的，加油"),
-        ("screen", "Writing the thesis in Overleaf"),
+        ("words", "he: 在 Overleaf 上改第三章"),
         ("picture", "A bowl of noodles on a wooden table"),
     ]
     assert brief.language == "Simplified Chinese"
@@ -587,7 +579,7 @@ def test_the_times_are_the_edges_of_the_window_the_segments_the_facts_and_what_d
         "13:30",
         "14:45",
         "15:00",
-    ]  # 09:05 his words, 10:00 the screen, 12:20 his picture; her 09:06 reply is not one
+    ]  # 09:05 and 10:00 his words, 12:20 his picture; her 09:06 reply is not one
 
 
 def test_the_prompt_gives_the_times_the_segments_with_their_facts_and_the_clues(
@@ -618,7 +610,8 @@ def test_the_prompt_gives_the_times_the_segments_with_their_facts_and_the_clues(
     assert "t0-t1 | 06:00-08:00 | place: none known | facts: none" in lines
     assert (
         "t1-t4 | 08:00-11:30 | place: UVic Library [study] | "
-        "facts: stay UVic Library 08:00-11:30; talk 09:05-09:05 | inner times: t2 t3"
+        "facts: stay UVic Library 08:00-11:30; talk 09:05-09:05; talk 10:00-10:00 | "
+        "inner times: t2 t3"
     ) in lines
     assert (
         "t5-t7 | 12:00-13:00 | place: Corner Cafe [unknown] | "
@@ -1209,11 +1202,7 @@ def test_a_good_answer_is_stored_as_the_spans_a_run_holds(brief: Brief) -> None:
     )
     assert studied["clues"] == [
         {"kind": "words", "at_ms": doing_ms(doing_at(9, 5)), "text": "he: 我在图书馆写论文"},
-        {
-            "kind": "screen",
-            "at_ms": doing_ms(doing_at(10)),
-            "text": "Writing the thesis in Overleaf",
-        },
+        {"kind": "words", "at_ms": doing_ms(doing_at(10)), "text": "he: 在 Overleaf 上改第三章"},
     ]
     assert studied["place_id"] is not None  # the kept place the library stays are in
     assert got[3]["place_id"] is None  # a cafe he keeps no place for
@@ -1527,6 +1516,73 @@ def test_a_run_is_asked_gated_and_appended_with_what_it_rests_on(
     assert (day, draft, covers, model) == (KEY, 1, doing_ms(NOW), "fake-haiku")
     assert digest == inputs_digest(brief)
     assert json.loads(spans) == composed.spans
+
+
+def _screen(asked: list[tuple[int, int, str | None]]) -> runtime.ScreenReader:
+    """A screen with one WeChat window on it, whatever is asked; records what was."""
+
+    def read(start_ms: int, end_ms: int, key: str | None) -> list[Window]:
+        asked.append((start_ms, end_ms, key))
+        return [Window("WeChat", "妈妈", "mac|WeChat|", start_ms, start_ms, [(start_ms, "早")])]
+
+    return read
+
+
+def test_the_writer_reads_the_screen_it_asks_for_before_it_answers(
+    brief: Brief, tmp_path: Path,
+) -> None:
+    """Two rounds of reads, each answered after the call that asked; then the answer is gated."""
+    writer = Writer(_good_text)
+    writer.reads = [
+        [{"from": "t0", "to": "t1"}, {"from": "t1", "to": "t0"}],
+        [{"from": "t1", "to": "t2", "page": 1}],
+    ]
+    at = times(brief)
+    seen: list[tuple[int, int, str | None]] = []
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        composed = compose_run(brief, SETTINGS, client(writer), recorder, _screen(seen))
+    assert composed.spans is not None
+    assert (composed.reads, composed.tokens_in) == (3, 300)
+    assert writer.tool_choices == ["auto", "auto", "auto"]
+    assert seen == [(at[0], at[1], None), (at[1], at[2], None)]  # the backwards one is not read
+    last = writer.asked[2]
+    assert [m["role"] for m in last] == ["user", "assistant", "tool", "tool", "assistant", "tool"]
+    assert last[1]["tool_calls"][1]["function"]["arguments"] == '{"from": "t1", "to": "t0"}'
+    assert [m["tool_call_id"] for m in last if m["role"] == "tool"] == [
+        "call-1-0", "call-1-1", "call-2-0",
+    ]
+    assert last[2]["content"] == (
+        "SCREEN 06:00-08:00, every window, page 1 of 1:\n"
+        "== 06:00-06:00 | WeChat | 妈妈\n@06:00:00\n早"
+    )
+    assert last[3] == {
+        "role": "tool", "tool_call_id": "call-1-1", "is_error": True,
+        "content": "from and to must be two listed times, the first earlier",
+    }
+
+
+def test_a_writer_that_keeps_reading_is_told_to_answer_and_may_read_no_more(
+    brief: Brief, tmp_path: Path,
+) -> None:
+    """After the last round of reads it is told so, and the next call gives it no reads."""
+    writer = Writer(_good_text)
+    writer.reads = [[{"from": "t0", "to": "t1"}]] * (MAX_ROUNDS + 3)
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        composed = compose_run(brief, SETTINGS, client(writer), recorder, _screen([]))
+    assert composed.spans is not None
+    assert composed.reads == MAX_ROUNDS
+    assert writer.tool_choices == ["auto"] * MAX_ROUNDS + ["none"]
+    told = writer.asked[-1][-1]
+    assert told["role"] == "user"
+    assert "No more screen reads for this answer" in told["content"]
+    assert "No more screen reads" not in str(writer.asked[-2])
+    plain = Writer(_good_text)
+    recorder, cost_log = _recorder(tmp_path)
+    with closing(cost_log):
+        compose_run(brief, SETTINGS, client(plain), recorder)
+    assert plain.tool_choices == [None]  # no reader, no tool
 
 
 def test_a_rejected_answer_is_asked_again_once_and_a_second_failure_stores_nothing(
@@ -1962,37 +2018,49 @@ def test_a_day_that_is_over_gets_a_final_run_even_when_nothing_changed(
     assert len(writer.prompts) == 2
 
 
-def test_late_rows_rewrite_a_past_day_and_a_failed_call_waits_two_hours(
+def test_a_finished_day_has_one_final_and_a_refused_one_waits_for_new_inputs(
     world: World,
     clock: Clock,
 ) -> None:
-    """Late rows rewrite a past day, whole, and a failed call waits as long as a short run."""
-    writer = Writer(tile)
+    """ADR 9903: one final per finished day, never rewritten by late rows.
+
+    A failed call waits two hours, a refused one for its inputs to change.
+    """
+    writer = Writer(_down)
     schedule = _schedule(world, writer)
     morning = doing_at(8, day=DAY + timedelta(days=1))
     clock.now = morning
-    assert schedule.tick(morning) == {KEY: "landed (final, 7 spans, 0 questions)"}
-    say_words(world.memory, "late", doing_at(20), "allen", "a row that arrived late")
-    clock.now = morning + timedelta(hours=2)
-    assert schedule.tick(clock.now) == {KEY: "landed (final, 7 spans, 0 questions)"}
-    assert len(_rows(world.memory)) == 2
-    say_words(world.memory, "later", doing_at(21), "allen", "and another")
-    writer.reply = _down
-    clock.now = morning + timedelta(hours=4)
     assert schedule.tick(clock.now) == {KEY: "failed"}
-    assert len(_rows(world.memory)) == 2  # nothing stored; the run before stands
     clock.now += CHECK_EVERY
     assert schedule.tick(clock.now) == {}  # not tried again for two hours
     writer.reply = lambda _p: "not json"
-    clock.now = morning + timedelta(hours=6, minutes=1)
-    outcome = schedule.tick(clock.now)
-    assert outcome == {KEY: "rejected (not valid JSON)"}
-    assert len(_rows(world.memory)) == 2
+    clock.now = morning + timedelta(hours=2, minutes=1)
+    assert schedule.tick(clock.now) == {KEY: "rejected (not valid JSON)"}
     writer.reply = tile
-    clock.now = morning + timedelta(hours=8, minutes=2)
+    clock.now = morning + timedelta(hours=4, minutes=2)
+    assert schedule.tick(clock.now) == {}  # the same inputs would be refused the same way
+    assert _rows(world.memory) == []
+    say_words(world.memory, "late", doing_at(14, 50), "allen", "a row that arrived late")
+    clock.now += CHECK_EVERY
     assert schedule.tick(clock.now) == {KEY: "landed (final, 7 spans, 0 questions)"}
     assert "WRITTEN ALREADY" not in writer.prompts[-1]  # a final run writes the whole day
-    assert len(_rows(world.memory)) == 3
+    say_words(world.memory, "later", doing_at(14, 55), "allen", "and another")
+    clock.now += SHORT_EVERY
+    assert schedule.tick(clock.now) == {}  # the final stands
+    assert len(_rows(world.memory)) == 1
+
+
+def test_a_final_waits_for_his_late_phone_and_tablet_use_at_most_twelve_hours(
+    brief: Brief,
+) -> None:
+    """ADR 9903: a final waits while a device is known only up to before the window's end."""
+    over = replace(brief, final=True)
+    ended = datetime.fromtimestamp(over.waking.end_ms / 1000, VANCOUVER)
+    behind = replace(over, screen={"iPhone": over.waking.end_ms - 3_600_000})
+    assert settled(replace(over, screen=None), ended)  # none of it reaches the brain
+    assert settled(replace(over, screen={}), ended)  # known through the window
+    assert not settled(behind, ended + FINAL_WAIT - timedelta(minutes=1))
+    assert settled(behind, ended + FINAL_WAIT)
 
 
 def test_only_the_last_days_are_looked_at_and_a_day_with_nothing_is_not_asked(
