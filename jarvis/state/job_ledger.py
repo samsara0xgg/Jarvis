@@ -909,6 +909,15 @@ def list_applications(
     )
 
 
+def hidden_applications(path: Path, now: datetime) -> list[dict[str, str]]:
+    """The applications he hid, as ``{id, company, role}``: an update by id can put one back."""
+    return [
+        {"id": app["id"], "company": app["company"], "role": app["role"]}
+        for app in _applications(path, now)
+        if app["hidden"]
+    ]
+
+
 def _check_application(status: str | None, applied_at: str | None) -> None:
     if status is not None and status not in APPLICATION_STATUSES:
         msg = f"not a status: {status!r}"

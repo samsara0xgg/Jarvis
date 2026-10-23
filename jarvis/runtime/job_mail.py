@@ -167,6 +167,11 @@ class JobMail:
             )
         self._failures = 0
         self._last_ok = self.now()
+        # What the jobs tool says of how fresh its rows are (ADR 0367): when the mailbox was last
+        # listed, and when reading first failed since.
+        self._started = self._last_ok
+        self._read_at: datetime | None = None
+        self._failing_since: datetime | None = None
         # Wired by the daemon: the quiet level now, whether speaking is allowed (speech not
         # muted, no live conversation) and the one fixed line. Until then she never speaks.
         self.quiet: Callable[[], str] = lambda: "dnd"
@@ -311,6 +316,7 @@ class JobMail:
             self._failed(exc)
             raise
         self._failures, self._last_ok = 0, now
+        self._read_at, self._failing_since = now, None
         ledger.resolve_health(self._db)  # a recovery is silent and clears the old down card
         if not fresh:
             return 0
@@ -627,6 +633,8 @@ class JobMail:
         """Count a failed cycle; raise the one health alert when the channel is down."""
         now = self.now()
         self._failures += 1
+        if self._failing_since is None:
+            self._failing_since = now
         if self._failures < _HEALTH_FAILURES and now - self._last_ok < _HEALTH_AFTER:
             return
         last = ledger.last_health_alert(self._db)
@@ -685,13 +693,14 @@ class JobMail:
         """``POST /inherent/notices/{id}``: see :func:`settle_notice`."""
         settle_notice(self._db, self.quiet(), self.now(), notice_id, action, reaction)
 
-    def ledger(self) -> dict[str, Any]:
-        """``GET /inherent/jobs``: the ledger by company, the applications, held-back mail, rules.
+    def _applications_view(
+        self, now: datetime,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str | None]:
+        """The Jobs page's applications, the time on job sites and why that is missing, if it is.
 
-        ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
+        The time is None when no TimeSink could be read, and then ``note`` says why when the
+        terminal could not be reached (ADR 0170).
         """
-        now = self.now()
-        groups = ledger.list_ledger(self._db, now)
         known = job_time.companies(ledger.company_sites(self._db))
         note = None
         try:
@@ -702,6 +711,16 @@ class JobMail:
         applications = ledger.list_applications(self._db, now, triage.mail_details)
         for app in applications:  # what is armed for the interview ahead (ADR 0186)
             app["reminders"] = armed.get(app["id"])
+        return applications, found, note
+
+    def ledger(self) -> dict[str, Any]:
+        """``GET /inherent/jobs``: the ledger by company, the applications, held-back mail, rules.
+
+        ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
+        """
+        now = self.now()
+        groups = ledger.list_ledger(self._db, now)
+        applications, found, note = self._applications_view(now)
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
             "applications": applications,
@@ -716,6 +735,34 @@ class JobMail:
                     else []
                 ),
             ],
+        }
+
+    def jobs_view(self) -> dict[str, Any]:
+        """What the ``jobs`` tool reads (ADR 0367): the page's applications and how fresh they are.
+
+        ``applications`` are the ones ``GET /inherent/jobs`` serves, each with ``site_s``, its
+        seconds on the company's site over :data:`job_time.WINDOW_DAYS` days, or None when no
+        TimeSink answered (``time_note`` then says why, when it is known): unknown, never 0.
+        ``hidden`` are the ones he hid, so an update can put one back. ``mail`` says when this
+        process started, when the mailbox was last listed and, if reading has failed since, when
+        it first did; the times are ISO text in UTC.
+        """
+        now = self.now()
+        applications, found, note = self._applications_view(now)
+        for app in applications:
+            spent = None if found is None else job_time.spent_view(found, app["company"])
+            app["site_s"] = None if spent is None else spent["time_total_s"]
+        return {
+            "applications": applications,
+            "hidden": ledger.hidden_applications(self._db, now),
+            "time_note": note,
+            "mail": {
+                "started": self._started.isoformat(),
+                "read": None if self._read_at is None else self._read_at.isoformat(),
+                "failing_since": (
+                    None if self._failing_since is None else self._failing_since.isoformat()
+                ),
+            },
         }
 
     def add_application(self, fields: Mapping[str, Any]) -> str:

@@ -1343,6 +1343,11 @@ class _Submitted(NamedTuple):
     def every(self) -> list[_Sub]:
         return [*self.mail, *self.screen, *self.told]
 
+    @property
+    def total(self) -> int:
+        """The number block D and the jobs tool both state as "at least N" submitted."""
+        return len(self.every)
+
 
 def _submitted(data: _Data) -> _Submitted:
     """Applications submitted, from the three sources, a submission counted once."""
@@ -1391,7 +1396,7 @@ def _submitted_line(data: _Data) -> str:
         f"{day:%a %m-%d} {days[day]}" for day in (today - timedelta(days=i) for i in range(_BY_DAY))
     )
     line = (
-        f"  Applications submitted: at least {len(found.every)} ({len(found.mail)} by confirmation "
+        f"  Applications submitted: at least {found.total} ({len(found.mail)} by confirmation "
         f"mail, {len(found.screen)} by a submission page seen on screen with no confirmation "
         f"mail, {len(found.told)} you told me or added). By day, last {_BY_DAY} days: {by_day}."
     )
@@ -1498,6 +1503,14 @@ def standing_text(  # noqa: PLR0913 — the window, the day counts and two cut-o
             _weeks(data),
         ),
     )
+
+
+def submitted_count(src: LedgerSources, as_of: datetime) -> int:
+    """How many applications he has submitted, at least, as of ``as_of`` (ADR 0213, 0367).
+
+    The number block D states in its submitted line, counted the same way.
+    """
+    return _submitted(_Data(src, as_of, as_of - timedelta(days=1), screen=False)).total
 
 
 def job_hunt_text(src: LedgerSources, now: datetime) -> str:
