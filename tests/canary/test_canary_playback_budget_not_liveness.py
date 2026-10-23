@@ -5,7 +5,7 @@ which conflated "a per-segment deadline exists" with "the segment list may
 still grow". The caller then withheld the budget on the non-live path, so the
 per-segment reschedule never ran there and one deadline bounded the whole
 answer. A leaked ``live=True`` on the non-live path has no observable
-consequence today (``_await_segments`` returns False at once once the response
+consequence today (``RingSink.await_segments`` returns False at once once the response
 is emitted, and only the active response is ever tagged), so the split is
 pinned statically rather than behaviourally.
 """
