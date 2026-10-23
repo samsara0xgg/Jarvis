@@ -172,6 +172,13 @@ def test_the_new_step_expectations_judge_calls_cards_and_claims(
     assert ok is passes, label
 
 
+def _job_mail_off(directory: Path) -> Path:
+    """A brain's settings file that has job mail off, as a turn would have it."""
+    path = directory / "settings.brain.yaml"
+    path.write_text("runtime:\n  role: brain\njob_mail:\n  enabled: false\n", encoding="utf-8")
+    return path
+
+
 def _brain_settings(directory: Path) -> Path:
     """A brain's settings file with nothing of his in it."""
     path = directory / "settings.brain.yaml"
@@ -238,6 +245,48 @@ def test_a_built_case_has_the_weather_on_though_his_key_file_is_out_of_reach(
     assert line["error"] is None, line["error"]
     assert NOT_SET_UP not in line["steps"][0]["calls"][0]["result"]
     assert any(ENDPOINT in miss for miss in line["built"]["stubbed_providers"])
+
+
+def test_a_built_case_can_turn_job_mail_on_and_say_the_hunt_it_is_said_in(
+    tmp_path: Path,
+) -> None:
+    """A turn leaves job mail out of his settings; the case's own settings put it back."""
+    case = {
+        "id": "built-jobs", "said": "我投了几个", "at": "2026-10-20T11:00:00-07:00",
+        "zone": "America/Vancouver", "settings": {"job_mail": {"enabled": True}},
+        "job_mail": {"applications": [
+            {"company": "Garnet Co", "role": "Data Co-op", "applied_at": "2026-10-16"},
+        ]},
+    }
+    model = ScriptedModel(Reply(calls=(Call("jobs", {}),)), Reply(text="一个。"))
+
+    line = turns.run_one(
+        case, model, "fake", 0, tmp_path, TABLE, Meter(None, TABLE), None,
+        _job_mail_off(tmp_path),
+    )
+
+    assert line["error"] is None, line["error"]
+    call = line["steps"][0]["calls"][0]
+    assert call["name"] == "jobs"
+    assert "1 application: 1 applied. At least 1 submitted in all." in call["result"]
+
+
+def test_a_case_that_seats_a_hunt_without_job_mail_says_so(tmp_path: Path) -> None:
+    """His settings turn job mail on, and a turn leaves it out: the hunt has nowhere to go."""
+    case = {
+        "id": "built-no-jobs", "said": "x", "at": "2026-10-20T11:00:00-07:00", "zone": "UTC",
+        "job_mail": {"applications": [{"company": "Garnet Co", "applied_at": "2026-10-16"}]},
+    }
+    settings = tmp_path / "settings.brain.yaml"
+    settings.write_text("runtime:\n  role: brain\njob_mail:\n  enabled: true\n", encoding="utf-8")
+
+    line = turns.run_one(
+        case, ScriptedModel(Reply(text="x")), "fake", 0, tmp_path, TABLE, Meter(None, TABLE),
+        None, settings,
+    )
+
+    assert line["error"] is not None
+    assert line["error"].startswith("LookupError: the item seats job mail")
 
 
 _HUE_LISTING = {
