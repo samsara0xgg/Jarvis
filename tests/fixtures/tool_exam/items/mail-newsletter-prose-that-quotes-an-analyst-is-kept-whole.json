@@ -1,0 +1,39 @@
+{
+  "id": "mail-newsletter-prose-that-quotes-an-analyst-is-kept-whole",
+  "tool": "mail",
+  "said": "what does the market newsletter say",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "news1"
+  },
+  "recording": "mail-newsletter-prose-that-quotes-an-analyst-is-kept-whole.recording.json",
+  "expect": {
+    "summary_must": [
+      "Weekly rates note"
+    ],
+    "result": [
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "On Wednesday, an analyst wrote:"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Rates will hold through the spring"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Thanks for reading."
+      },
+      {
+        "path": "left_out",
+        "op": "absent"
+      }
+    ]
+  }
+}

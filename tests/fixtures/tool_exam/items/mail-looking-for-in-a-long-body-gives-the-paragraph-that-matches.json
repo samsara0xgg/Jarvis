@@ -1,0 +1,32 @@
+{
+  "id": "mail-looking-for-in-a-long-body-gives-the-paragraph-that-matches",
+  "tool": "mail",
+  "said": "when does the warehouse lease renew",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "long1",
+    "looking_for": "warehouse lease renew"
+  },
+  "recording": "mail-looking-for-in-a-long-body-gives-the-paragraph-that-matches.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "warehouse lease renews on 3 March"
+      },
+      {
+        "path": "text",
+        "op": "not_contains",
+        "value": "Section 24."
+      },
+      {
+        "path": "showing",
+        "op": "exists"
+      }
+    ]
+  }
+}

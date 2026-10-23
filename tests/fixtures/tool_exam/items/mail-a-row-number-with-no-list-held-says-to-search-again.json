@@ -1,0 +1,26 @@
+{
+  "id": "mail-a-row-number-with-no-list-held-says-to-search-again",
+  "tool": "mail",
+  "said": "open the second one",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "2"
+  },
+  "recording": "mail-a-row-number-with-no-list-held-says-to-search-again.recording.json",
+  "expect": {
+    "error_kind": "retry_other_args",
+    "result": [
+      {
+        "path": "code",
+        "op": "eq",
+        "value": "no_rows"
+      }
+    ],
+    "summary_must": [
+      "list or search again"
+    ]
+  }
+}

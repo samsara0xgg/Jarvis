@@ -1,0 +1,57 @@
+{
+  "id": "mail-archive-two-rows-is-one-label-change-with-an-undo",
+  "tool": "mail",
+  "said": "archive the first two",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [
+    {
+      "tool": "mail",
+      "args": {}
+    }
+  ],
+  "args": {
+    "action": "archive",
+    "message": "1,2"
+  },
+  "recording": "mail-archive-two-rows-is-one-label-change-with-an-undo.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "archived",
+        "op": "len",
+        "value": 2
+      },
+      {
+        "path": "undo",
+        "op": "exists"
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": false
+    },
+    "events_after": {
+      "must": [
+        "mail.inbox_changed"
+      ],
+      "must_not": []
+    },
+    "gmail": [
+      {
+        "tool": "gmail_batchModify",
+        "args": {
+          "messageIds": [
+            "m1",
+            "m2"
+          ],
+          "removeLabelIds": [
+            "INBOX"
+          ]
+        },
+        "count": 1
+      }
+    ]
+  }
+}

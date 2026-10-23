@@ -1,0 +1,29 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "pre1",
+    "subject": "Autumn catalogue",
+    "sender": "Shop <deals@example.com>",
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    },
+    "ago": 10,
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PROMOTIONS"
+    ],
+    "html": "<div style=\"display:none;max-height:0;overflow:hidden\">͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­͏​‌‍⁠﻿­</div><div>Our autumn catalogue is out. Coats are 20% off this week.</div>"
+   },
+   {
+    "id": "pre2",
+    "subject": "Gym schedule",
+    "plain": "Classes move to 6 pm on Monday.",
+    "sender": "Sam Lee <sam@example.com>",
+    "ago": 25
+   }
+  ]
+ }
+}

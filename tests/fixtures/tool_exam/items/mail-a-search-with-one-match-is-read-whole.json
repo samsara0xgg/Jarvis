@@ -1,0 +1,31 @@
+{
+  "id": "mail-a-search-with-one-match-is-read-whole",
+  "tool": "mail",
+  "said": "find the mail about the passport photo",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "search",
+    "query": "passport"
+  },
+  "recording": "mail-a-search-with-one-match-is-read-whole.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "message",
+        "op": "eq",
+        "value": "pp1"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Bring it Friday."
+      },
+      {
+        "path": "rows",
+        "op": "absent"
+      }
+    ]
+  }
+}

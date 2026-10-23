@@ -1,0 +1,115 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "sent0",
+    "subject": "Hello",
+    "plain": "Hi.",
+    "sender": "Allen <allen@example.com>",
+    "to": "Sam Lee <sam@example.com>",
+    "labels": [
+     "SENT"
+    ],
+    "at": "2026-09-11T11:00:00-07:00"
+   },
+   {
+    "id": "w1",
+    "subject": "Can you review this",
+    "plain": "Could you review the draft?",
+    "sender": "Sam Lee <sam@example.com>",
+    "thread": "W1",
+    "at": "2026-10-19T11:00:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   },
+   {
+    "id": "w2",
+    "subject": "Passport photo",
+    "plain": "Do you have the photo?",
+    "sender": "Kim Ray <kim@example.com>",
+    "thread": "W2",
+    "at": "2026-10-20T11:00:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   },
+   {
+    "id": "n1",
+    "subject": "Weekly digest",
+    "plain": "Top stories.",
+    "sender": "Digest <digest@example.com>",
+    "thread": "N1",
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    },
+    "ago": 300,
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   },
+   {
+    "id": "b1",
+    "subject": "Your code is 4821",
+    "plain": "Code 4821.",
+    "sender": "Bank <alerts@example.com>",
+    "thread": "B1",
+    "headers": {
+     "Auto-Submitted": "auto-generated"
+    },
+    "ago": 200,
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   },
+   {
+    "id": "a1",
+    "subject": "Dinner plans",
+    "plain": "Are we on for dinner?",
+    "sender": "Sam Lee <sam@example.com>",
+    "thread": "A1",
+    "at": "2026-10-18T11:00:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   },
+   {
+    "id": "a2",
+    "subject": "Re: Dinner plans",
+    "plain": "Yes, see you at 7.",
+    "sender": "Allen <allen@example.com>",
+    "to": "Sam Lee <sam@example.com>",
+    "thread": "A1",
+    "labels": [
+     "SENT"
+    ],
+    "at": "2026-10-19T16:00:00-07:00"
+   },
+   {
+    "id": "c1",
+    "subject": "Team lunch",
+    "plain": "Lunch on Friday?",
+    "sender": "Kim Ray <kim@example.com>",
+    "to": "Team <team@example.com>",
+    "thread": "C1",
+    "at": "2026-10-20T06:00:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   }
+  ]
+ }
+}

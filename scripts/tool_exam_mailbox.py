@@ -98,23 +98,30 @@ def _file(spec: Mapping[str, Any]) -> tuple[str, str, bytes]:
     return str(spec["name"]), str(spec["type"]), str(spec["text"]).encode()
 
 
+def expanded(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every message ``spec`` describes, each ``repeat`` written out as its numbered copies."""
+    return [one for entry in spec["messages"] for one in _copies(entry)]
+
+
+def arrived(one: Mapping[str, Any], now: datetime) -> datetime:
+    """When a message of :func:`expanded` arrived, as of ``now``."""
+    if "at" in one:
+        return datetime.fromisoformat(one["at"])
+    return now - timedelta(minutes=float(one.get("ago", 10)))
+
+
 def build(spec: Mapping[str, Any], now: datetime) -> Gmail:
     """The fake server holding the messages ``spec`` describes, as of ``now``."""
     gmail = Gmail(now=now)
-    for entry in spec["messages"]:
-        for one in _copies(entry):
-            when = (
-                datetime.fromisoformat(one["at"]) if "at" in one
-                else now - timedelta(minutes=float(one.get("ago", 10)))
-            )
-            gmail.add(
-                one["id"], one["subject"], sender=one.get("sender", SAM), to=one.get("to", ME),
-                cc=one.get("cc", ""), at=when, thread=one.get("thread"),
-                labels=one.get("labels", PRIMARY), plain=_text(one.get("plain")),
-                html=one.get("html"), headers=one.get("headers"),
-                attachments=[_file(f) for f in one.get("attachments", ())],
-                size=one.get("size"),
-            )
+    for one in expanded(spec):
+        gmail.add(
+            one["id"], one["subject"], sender=one.get("sender", SAM), to=one.get("to", ME),
+            cc=one.get("cc", ""), at=arrived(one, now), thread=one.get("thread"),
+            labels=one.get("labels", PRIMARY), plain=_text(one.get("plain")),
+            html=one.get("html"), headers=one.get("headers"),
+            attachments=[_file(f) for f in one.get("attachments", ())],
+            size=one.get("size"),
+        )
     return gmail
 
 

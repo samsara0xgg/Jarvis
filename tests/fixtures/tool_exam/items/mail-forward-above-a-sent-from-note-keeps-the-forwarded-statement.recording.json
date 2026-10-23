@@ -1,0 +1,16 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "fwd1",
+    "subject": "Fwd: Account statement",
+    "plain": [
+     "Allen, FYI, please look at the balance below.\n\nSent from my iPhone\n\n---------- Forwarded message ---------\nFrom: Bank <alerts@example.com>\nDate: Mon, Oct 19, 2026\nSubject: Account statement\n\nYour statement balance is $412.30, due on Nov 3, 2026."
+    ],
+    "sender": "Kim Ray <kim@example.com>",
+    "ago": 45
+   }
+  ]
+ }
+}

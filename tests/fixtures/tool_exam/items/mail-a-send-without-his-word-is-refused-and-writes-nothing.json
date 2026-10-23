@@ -1,0 +1,39 @@
+{
+  "id": "mail-a-send-without-his-word-is-refused-and-writes-nothing",
+  "tool": "mail",
+  "said": "tell Sam yes",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "send",
+    "to": "sam@example.com",
+    "subject": "Re: Plan",
+    "body": "Yes."
+  },
+  "recording": "mail-a-send-without-his-word-is-refused-and-writes-nothing.recording.json",
+  "expect": {
+    "error_kind": "dont_retry",
+    "result": [
+      {
+        "path": "code",
+        "op": "eq",
+        "value": "no_lease"
+      }
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_send",
+        "count": 0
+      },
+      {
+        "tool": "gmail_sendDraft",
+        "count": 0
+      },
+      {
+        "tool": "gmail_createDraft",
+        "count": 0
+      }
+    ]
+  }
+}

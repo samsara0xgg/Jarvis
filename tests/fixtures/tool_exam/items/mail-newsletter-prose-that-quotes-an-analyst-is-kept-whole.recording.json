@@ -1,0 +1,23 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "news1",
+    "subject": "Weekly rates note",
+    "plain": [
+     "Rates held steady this week and the desk expects the same into spring.",
+     "On Wednesday, an analyst wrote:",
+     "Rates will hold through the spring, because the labour data is mixed.",
+     "Our own view is the same, and we explain why in the next section.",
+     "Thanks for reading."
+    ],
+    "sender": "Market Notes <notes@example.com>",
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    },
+    "ago": 120
+   }
+  ]
+ }
+}

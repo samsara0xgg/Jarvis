@@ -1,0 +1,27 @@
+{
+  "id": "mail-a-scanned-pdf-says-it-is-a-scan",
+  "tool": "mail",
+  "said": "read the scanned bill",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "attachment",
+    "message": "scan1",
+    "file": "1"
+  },
+  "recording": "mail-a-scanned-pdf-says-it-is-a-scan.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "text",
+        "op": "absent"
+      },
+      {
+        "path": "notice",
+        "op": "matches",
+        "value": "(?i)is a scan"
+      }
+    ]
+  }
+}
