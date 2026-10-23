@@ -2,9 +2,9 @@
 
 An item's ``expect.checker`` names one. It reads what the providers answered (the recording) at the
 item's moment and says what the tool's result must hold, without the tool's own code: the rest of
-today's rain chance, the departures still catchable, the calendar and to-do rows of a day. Each
-takes
-the item, its recording and the decoded result, and returns what is wrong (empty = right).
+today's rain chance, today in parts, the names of the days, the departures still catchable, the
+calendar and to-do rows of a day. Each takes the item, its recording and the decoded result, and
+returns what is wrong (empty = right).
 """
 
 from __future__ import annotations
@@ -16,18 +16,22 @@ import json
 import math
 import re
 import zipfile
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 from zoneinfo import ZoneInfo
 
 from google.transit import gtfs_realtime_pb2
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     from scripts.tool_exam_tools import Recording
 
 HTTP_ERROR = 400
+ROUNDING = 0.05
+"""How far a figure a result states may be from the one derived: half a rounding step."""
+NIGHT_BEGINS, NIGHT_ENDS = 19, 7
+"""Apple's own split of a day: the daytime part is 07:00 to 19:00, the overnight part the rest."""
 
 
 def _bodies(recording: Recording | None, host: str, needle: str = "") -> list[dict[str, Any]]:
@@ -615,6 +619,151 @@ def weather_rest_of_today(
     return problems
 
 
+def _hourly_rows(
+    recording: Recording | None, zone: ZoneInfo
+) -> list[tuple[datetime, dict[str, Any]]]:
+    """The recorded hourly rows of every WeatherKit answer with their local starts, oldest first."""
+    found = {
+        datetime.fromisoformat(row["forecastStart"]).astimezone(zone): row
+        for body in _bodies(recording, "weatherkit.apple.com")
+        for row in body.get("forecastHourly", {}).get("hours", ())
+    }
+    return sorted(found.items(), key=lambda one: one[0])
+
+
+def _daily_rows(recording: Recording | None, zone: ZoneInfo) -> dict[date, dict[str, Any]]:
+    """The recorded daily rows by their local day."""
+    return {
+        datetime.fromisoformat(row["forecastStart"]).astimezone(zone).date(): row
+        for body in _bodies(recording, "weatherkit.apple.com")
+        for row in body.get("forecastDaily", {}).get("days", ())
+    }
+
+
+def _percent(chance: float) -> int:
+    return math.floor(chance * 100 + 0.5)
+
+
+def _fell(rows: Iterable[Mapping[str, Any]]) -> float:
+    """What fell in these hours as a result states it: a trace is 0.1 mm, not nothing."""
+    total = sum(row.get("precipitationAmount") or 0 for row in rows)
+    return max(round(total, 1), 0.1) if total > 0 else 0.0
+
+
+def _differs(want: float, got: object) -> bool:
+    """Whether a figure a result states is not the one derived, a rounding step aside."""
+    return not isinstance(got, int | float) or abs(got - want) > ROUNDING
+
+
+def _hour_said(at: datetime) -> str:
+    """``3:00``: an hour as the result words it."""
+    return f"{at.hour}:{at.minute:02d}"
+
+
+def _night(now: datetime) -> tuple[datetime, datetime]:
+    """19:00 to 07:00 (from this hour once it has begun, or before 07:00): the night he is in."""
+    hour = now.replace(minute=0, second=0, microsecond=0)
+    day = hour.replace(hour=0)
+    if now.hour < NIGHT_ENDS:
+        return hour, day.replace(hour=NIGHT_ENDS)
+    return (
+        max(hour, day.replace(hour=NIGHT_BEGINS)),
+        (day + timedelta(days=1)).replace(hour=NIGHT_ENDS),
+    )
+
+
+def weather_today_in_parts(
+    item: Mapping[str, Any],
+    recording: Recording | None,
+    out: Mapping[str, Any],
+) -> list[str]:
+    """Today comes in parts that add up from the recorded hours, not from the day's own row.
+
+    ``earlier_today`` is the rain from midnight to this hour (absent when no hour has ended);
+    ``rest_of_today`` the highest chance and the amount from this hour to midnight; ``tonight`` the
+    lowest temperature of the night (19:00 to 07:00, from now once it has begun) with its hour.
+    ``whole_day`` is the daily row, named as the whole day's: the morning that has passed is in
+    its chance, so it is no answer to what is left.
+    """
+    zone, now = ZoneInfo(item.get("zone") or "UTC"), _now(item)
+    this_hour = now.replace(minute=0, second=0, microsecond=0)
+    today = this_hour.replace(hour=0)
+    hours = _hourly_rows(recording, zone)
+    before = [row for at, row in hours if today <= at < this_hour]
+    left = [row for at, row in hours if this_hour <= at < today + timedelta(days=1)]
+    if not left:
+        return ["the recording holds no hour left today"]
+    problems: list[str] = []
+    earlier = out.get("earlier_today")
+    if not before:
+        problems += ["no hour of today has ended and earlier_today is there"] if earlier else []
+    elif _differs(_fell(before), (earlier or {}).get("rain_mm")):
+        problems.append(f"{_fell(before)} mm fell before now, earlier_today: {earlier}")
+    rest = out.get("rest_of_today") or {}
+    peak = max(_percent(row["precipitationChance"]) for row in left)
+    if _differs(peak, rest.get("max_chance_pct")):
+        problems.append(f"the highest chance left today is {peak}, rest_of_today: {rest}")
+    if _differs(_fell(left), rest.get("rain_mm")):
+        problems.append(
+            f"{_fell(left)} mm are forecast for the rest of today, rest_of_today: {rest}"
+        )
+    begin, end = _night(now)
+    cold = [
+        (at, row["temperature"]) for at, row in hours if begin <= at < end and "temperature" in row
+    ]
+    night = out.get("tonight") or {}
+    if not cold:
+        problems += ["the recording holds no hour of tonight"] if night else []
+    else:
+        low_at, low = min(cold, key=lambda one: one[1])
+        if _differs(low, night.get("low_c")) or night.get("low_at") != _hour_said(low_at):
+            problems.append(f"the night's low is {low:g} at {_hour_said(low_at)}, tonight: {night}")
+    day = _daily_rows(recording, zone).get(today.date())
+    whole = out.get("whole_day") or {}
+    if day is not None and _differs(
+        _percent(day["precipitationChance"]), whole.get("rain_chance_pct")
+    ):
+        problems.append(
+            f"the day's row says {_percent(day['precipitationChance'])}%, whole_day: {whole}"
+        )
+    return problems
+
+
+def weather_days_labelled(
+    item: Mapping[str, Any],
+    recording: Recording | None,
+    out: Mapping[str, Any],
+) -> list[str]:
+    """Every day row of the result names its own day and holds that day's recorded figures.
+
+    The name is ``today (Wed)``, ``tomorrow (Thu)`` or ``yesterday (Tue)`` for those days and
+    ``Sat Oct 24`` (with the year when it is not this one) for any other; the high and the low are
+    the recorded daily row's of that date, so a day is never given another's figures.
+    """
+    zone, today = ZoneInfo(item.get("zone") or "UTC"), _now(item).date()
+    recorded = _daily_rows(recording, zone)
+    rows = [*(out.get("days") or ()), *(out[k] for k in ("whole_day", "tomorrow") if k in out)]
+    if not rows:
+        return ["the result holds no day row"]
+    problems: list[str] = []
+    for row in rows:
+        day = date.fromisoformat(row["date"])
+        near = {-1: "yesterday", 0: "today", 1: "tomorrow"}.get((day - today).days)
+        year = f" {day.year}" if day.year != today.year else ""
+        want = f"{near} ({day:%a})" if near else f"{day:%a %b} {day.day}{year}"
+        if row.get("day") != want:
+            problems.append(f"{row['date']} is named {row.get('day')!r}, not {want!r}")
+        if (figures := recorded.get(day)) is None:
+            problems.append(f"the recording holds no daily row for {row['date']}")
+            continue
+        problems += [
+            f"{row['date']} {key} is {row.get(key)}, recorded {figures[field]}"
+            for key, field in (("high_c", "temperatureMax"), ("low_c", "temperatureMin"))
+            if _differs(figures[field], row.get(key))
+        ]
+    return problems
+
+
 def schedule_day_complete(
     _item: Mapping[str, Any],
     recording: Recording | None,
@@ -875,6 +1024,8 @@ CHECKERS: dict[
     "ride_moved_to_the_bus_near_him": ride_moved_to_the_bus_near_him,
     "ride_passed_stop_refused": ride_passed_stop_refused,
     "weather_rest_of_today": weather_rest_of_today,
+    "weather_today_in_parts": weather_today_in_parts,
+    "weather_days_labelled": weather_days_labelled,
     "schedule_day_complete": schedule_day_complete,
     "map_search_inside_radius": map_search_inside_radius,
     "map_search_nearest_outside": map_search_nearest_outside,
