@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
+from jarvis.state import source_silence
 from jarvis.state.event_log import EventTypeRegistry
 
 if TYPE_CHECKING:
@@ -277,9 +278,13 @@ class LogCheckError(Exception):
 
 @dataclass(frozen=True)
 class Example:
-    """One violating row: its id, its time, and a note from a fixed vocabulary (no payload)."""
+    """One violating row: its id, its time, and a note from a fixed vocabulary (no payload).
 
-    event_id: int
+    A violation that is the absence of rows (a source that stopped arriving) has no row to name:
+    its ``event_id`` is ``None`` and the note says what and when.
+    """
+
+    event_id: int | None
     ts_epoch_ms: int
     note: str | None = None
 
@@ -379,10 +384,11 @@ class _Found:
     skipped: str | None = None
     detail: str | None = None
 
-    def add(self, event_id: int, ts_epoch_ms: int, note: str | None = None) -> None:
+    def add(self, event_id: int | None, ts_epoch_ms: int, note: str | None = None) -> None:
         self.count += 1
         if len(self.examples) < self.limit:
-            self.examples.append(Example(int(event_id), int(ts_epoch_ms), note))
+            row = None if event_id is None else int(event_id)
+            self.examples.append(Example(row, int(ts_epoch_ms), note))
 
 
 @dataclass(frozen=True)
@@ -544,6 +550,48 @@ def _reminders_fire(scope: _Scope, found: _Found) -> None:
         found.add(_as_int(event_id), _as_int(ts))
 
 
+def _silence_note(silence: source_silence.Silence) -> str:
+    """Names, times and a gap, nothing a source carried (ADR 0381)."""
+    since = (
+        "none inside the window" if silence.last_arrival_ms is None
+        else source_silence.iso(silence.last_arrival_ms)
+    )
+    end = "still silent" if silence.ended_ms is None else (
+        f"arrived again {source_silence.iso(silence.ended_ms)}"
+    )
+    failed = f", {silence.failed} failed runs" if silence.failed else ""
+    return (
+        f"{silence.source}: {silence.eligible_ms // source_silence.MINUTE_MS} min of eligible "
+        f"time without an arrival, last at {since}, {end}{failed}"
+    )
+
+
+def _sources_arrive(scope: _Scope, found: _Found) -> None:
+    shipped = source_silence.shipped_path(scope.runtime_root)
+    if not shipped.is_file():
+        found.detail = found.skipped = (
+            f"no {'/'.join(source_silence.SHIPPED_PARTS)} under the root "
+            "(a copy of the log only?): the Mac's sources were not judged"
+        )
+        return
+    try:
+        conn = open_read_only(shipped, probe=source_silence.SHIPPED_PROBE)
+    except LogCheckError as exc:
+        found.detail = found.skipped = str(exc)
+        return
+    with contextlib.closing(conn):
+        judged = source_silence.check(
+            conn, scope.runtime_root / source_silence.LIFELOG_DIRNAME,
+            since_ms=scope.since_ms, ref_ms=scope.ref_ms,
+        )
+    for silence in judged.silences:
+        found.add(None, silence.tripped_ms, _silence_note(silence))
+    if judged.skipped:
+        found.detail = "; ".join(f"{name} not judged: {why}" for name, why in judged.skipped)
+        if len(judged.skipped) == len(source_silence.SOURCES) and not found.count:
+            found.skipped = found.detail
+
+
 def _no_secret_shapes(scope: _Scope, found: _Found) -> None:
     if scope.start_id is None:
         return
@@ -642,6 +690,15 @@ INVARIANTS: Final[tuple[Invariant, ...]] = (
         _reminders_fire,
     ),
     Invariant(
+        "sources.keep_arriving",
+        "Each data source the Mac sends (TimeSink spans, TimeSink screen text, the recording "
+        "pieces) has an arrival within its allowed gap of the time it should be producing: the "
+        "gap counts only while the Mac is awake and, for TimeSink, unlocked, not idle and not "
+        "paused.",
+        "jarvis/state/source_silence.py SOURCES; docs/adr/0381",
+        _sources_arrive,
+    ),
+    Invariant(
         "payload.no_secret_shapes",
         "No payload holds the shape of a key, token or private key (reported by shape name only).",
         "docs/spec.html#threat-table (credential leaks); docs/spec.html#key-storage",
@@ -652,12 +709,17 @@ INVARIANTS: Final[tuple[Invariant, ...]] = (
 # --- Opening and running -----------------------------------------------------
 
 
-def open_read_only(event_log: Path) -> sqlite3.Connection:
+def open_read_only(
+    event_log: Path, *, probe: str = "SELECT 1 FROM events LIMIT 1",
+) -> sqlite3.Connection:
     """Open ``event_log`` without writing to it or its directory.
 
     ``mode=ro`` reads a WAL log a daemon is writing (its ``-wal`` and ``-shm`` already exist).
     With no ``-wal`` beside the file nothing is writing, and a plain read-only open of a WAL
     file would create the ``-shm`` and ``-wal`` files; ``immutable=1`` does not.
+
+    ``probe`` is a statement that fails unless the file is the database expected (the Mac copy of
+    ADR 0294 is opened the same way).
 
     Raises:
         LogCheckError: There is no such file, or it is not an event log.
@@ -675,7 +737,7 @@ def open_read_only(event_log: Path) -> sqlite3.Connection:
     try:
         conn.execute("PRAGMA query_only = ON")
         conn.execute("PRAGMA cache_size = -65536")
-        conn.execute("SELECT 1 FROM events LIMIT 1").fetchall()
+        conn.execute(probe).fetchall()
     except sqlite3.Error as exc:
         conn.close()
         message = f"{event_log} is not an event log: {exc}"
