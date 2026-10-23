@@ -37,6 +37,7 @@ from jarvis.surface.voice_media.contract import (
 )
 from jarvis.surface.voice_media.gain import OutputGain
 from jarvis.surface.voice_media.pcm import SegmentResampler, cut_off_cue, head_dropped
+from jarvis.surface.voice_media.player_stop import PlayerStopper
 from jarvis.surface.voice_media.registry import ActivePlaybackRegistry
 from jarvis.surface.voice_media.response import (
     CHANNEL_TAG_RE,
@@ -168,16 +169,13 @@ class StreamingTTSPipeline:
         ] = "not_attempted"
         self._shutdown_requested = threading.Event()
         self._clock = ShutdownClock()
-        self._cleanup_lock = threading.Lock()
-        self._cleanup_errors: list[str] = []
-        self._player_stop_started = False
-        self._player_stop_done = threading.Event()
-        self._player_stop_definitive = False
-        self._player_stop_lock = threading.Lock()
-        self._player_stop_thread: threading.Thread | None = None
-        self._provider_stop_started = False
-        self._provider_stop_done = threading.Event()
-        self._provider_stop_thread: threading.Thread | None = None
+        self._stopper = PlayerStopper(
+            player=player,
+            provider=provider,
+            shutdown_timeout_s=self._config.shutdown_timeout_s,
+            clock=self._clock,
+            power=self._power_snapshot,
+        )
         self._lane_isolated = False
         self._terminal_debt: ActiveResponse | None = None
         self._fallback_janitors: set[asyncio.Task[bool]] = set()
@@ -415,18 +413,18 @@ class StreamingTTSPipeline:
         if (
             not self._thread.is_alive()
             and self._closed.is_set()
-            and self._provider_stop_done.is_set()
-            and self._player_stop_done.is_set()
-            and not self._player_stop_definitive
+            and self._stopper.provider_stopped
+            and self._stopper.player_stopped
+            and not self._stopper.player_definitive
         ):
-            self._stop_player_bounded()
+            self._stopper.stop_player_bounded()
         complete = self.cleanup_complete
         if not complete:
             record_realtime_trace(
                 "media_owner_cleanup_degraded",
                 actor_stopped=not self._thread.is_alive(),
-                provider_stopped=self._provider_stop_done.is_set(),
-                player_stopped=self._player_stop_done.is_set(),
+                provider_stopped=self._stopper.provider_stopped,
+                player_stopped=self._stopper.player_stopped,
                 startup_phase=self._get_startup_phase(),
             )
         return complete
@@ -434,14 +432,13 @@ class StreamingTTSPipeline:
     @property
     def cleanup_complete(self) -> bool:
         """Report confirmed teardown, including late daemon-janitor completion."""
-        with self._cleanup_lock:
-            clean = not self._cleanup_errors
+        clean = self._stopper.clean
         return (
             not self._thread.is_alive()
             and self._closed.is_set()
-            and self._provider_stop_done.is_set()
-            and self._player_stop_done.is_set()
-            and self._player_stop_definitive
+            and self._stopper.provider_stopped
+            and self._stopper.player_stopped
+            and self._stopper.player_definitive
             and clean
         )
 
@@ -589,7 +586,7 @@ class StreamingTTSPipeline:
                             reason = "actor_terminalization_debt"
                             error = RuntimeError(reason)
                         else:
-                            result = self._stop_player_with_bound(
+                            result = self._stopper.stop_player_with_bound(
                                 self._config.shutdown_timeout_s,
                             )
                             if (
@@ -907,7 +904,7 @@ class StreamingTTSPipeline:
                     try:
                         if action == "stop":
                             remaining = max(0.0, deadline - time.monotonic())
-                            self._stop_player_until_definitive(remaining)
+                            self._stopper.stop_player_until_definitive(remaining)
                         else:
                             with self._power_lock:
                                 revoked_before_start = (
@@ -943,7 +940,7 @@ class StreamingTTSPipeline:
                                         shutdown_cleanup = True
                                     else:
                                         try:
-                                            stopped = self._stop_player_with_bound(
+                                            stopped = self._stopper.stop_player_with_bound(
                                                 self._config.shutdown_timeout_s,
                                             )
                                             if isinstance(stopped, PlayerStopResult):
@@ -951,7 +948,7 @@ class StreamingTTSPipeline:
                                                 if not shutdown_cleanup:
                                                     reason = stopped.reason
                                                     if not self._power_shutdown:
-                                                        self._stop_player_until_definitive(
+                                                        self._stopper.stop_player_until_definitive(
                                                             self._config.shutdown_timeout_s,
                                                         )
                                                         shutdown_cleanup = True
@@ -978,7 +975,7 @@ class StreamingTTSPipeline:
                                 )
                             if revoked_after_error:
                                 try:
-                                    stopped = self._stop_player_with_bound(
+                                    stopped = self._stopper.stop_player_with_bound(
                                         self._config.shutdown_timeout_s,
                                     )
                                     shutdown_cleanup = (
@@ -1009,7 +1006,7 @@ class StreamingTTSPipeline:
                                         self._power_abort_attempt_id = None
                         if action == "start" and shutdown_cleanup is not None:
                             if self._power_shutdown:
-                                self._record_shutdown_player_cleanup(
+                                self._stopper.record_shutdown_player_cleanup(
                                     definitive=shutdown_cleanup,
                                 )
                             record_realtime_trace(
@@ -1019,7 +1016,7 @@ class StreamingTTSPipeline:
                                 reason=reason or "shutdown_revoked_late_start",
                             )
                         elif action == "stop" and self._power_shutdown:
-                            self._record_shutdown_player_cleanup(
+                            self._stopper.record_shutdown_player_cleanup(
                                 definitive=error is None,
                             )
                         done.set()
@@ -1451,8 +1448,8 @@ class StreamingTTSPipeline:
                         "media owner tasks ignored bounded cancellation: %s",
                         ", ".join(task.get_name() for task in still_pending),
                     )
-            self._stop_provider_bounded()
-            self._stop_player_bounded()
+            self._stopper.stop_provider_bounded()
+            self._stopper.stop_player_bounded()
             if self._conn is not None:
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.close()
@@ -1461,215 +1458,16 @@ class StreamingTTSPipeline:
             self._set_startup_phase("closed")
             self._closed.set()
 
+    def _power_snapshot(self) -> tuple[str, threading.Event]:
+        """The power state and the event its helper sets, read together under the power lock."""
+        with self._power_lock:
+            return self._power_state, self._power_helper_done
+
     @staticmethod
     def _raise_player_start_debt(started: PlayerStartResult) -> None:
         """Convert a typed player debt into the actor startup exception path."""
         msg = f"player startup ownership not proven: {started.reason}"
         raise RuntimeError(msg)
-
-    def _record_shutdown_player_cleanup(self, *, definitive: bool) -> None:
-        """Publish late start compensation into the pipeline cleanup ledger."""
-        with self._player_stop_lock:
-            self._player_stop_started = True
-            self._player_stop_definitive = definitive
-            if definitive:
-                self._player_stop_done.set()
-                return
-            self._player_stop_done.clear()
-            existing = self._player_stop_thread
-            if existing is not None and existing.is_alive():
-                return
-
-            def _join_exact_close_debt() -> None:
-                retries = 0
-                while True:
-                    try:
-                        result = self._stop_player_with_bound(
-                            self._config.shutdown_timeout_s,
-                        )
-                        closed = (
-                            result.definitively_closed
-                            if isinstance(result, PlayerStopResult)
-                            else True
-                        )
-                    except BaseException as exc:  # noqa: BLE001 - retained typed debt
-                        retries += 1
-                        record_realtime_trace(
-                            "media_shutdown_player_cleanup_retry",
-                            retry=retries,
-                            reason=f"{type(exc).__name__}:{exc}",
-                        )
-                        time.sleep(min(0.1, 0.005 * (2 ** min(retries, 4))))
-                        continue
-                    if not closed:
-                        retries += 1
-                        record_realtime_trace(
-                            "media_shutdown_player_cleanup_retry",
-                            retry=retries,
-                            reason=(
-                                result.reason
-                                if isinstance(result, PlayerStopResult)
-                                else "untyped_close_debt"
-                            ),
-                        )
-                        time.sleep(min(0.1, 0.005 * (2 ** min(retries, 4))))
-                        continue
-                    with self._player_stop_lock:
-                        self._player_stop_definitive = True
-                        self._player_stop_done.set()
-                    record_realtime_trace(
-                        "media_shutdown_player_cleanup_complete",
-                        retries=retries,
-                    )
-                    return
-
-            thread = threading.Thread(
-                target=_join_exact_close_debt,
-                name="jarvis-media-shutdown-player-debt",
-                daemon=True,
-            )
-            self._player_stop_thread = thread
-        try:
-            thread.start()
-        except RuntimeError:
-            with self._player_stop_lock:
-                if self._player_stop_thread is thread:
-                    self._player_stop_thread = None
-                    self._player_stop_started = False
-                    self._player_stop_done.set()
-            LOGGER.exception("late player cleanup janitor failed to start")
-
-    def _stop_player_bounded(self) -> bool:
-        """Move potentially stuck device teardown to one controlled daemon helper."""
-        with self._power_lock:
-            power_state = self._power_state
-            power_done = self._power_helper_done
-        if power_state in {"stopping", "starting"}:
-            if not power_done.wait(
-                timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
-            ):
-                LOGGER.error(
-                    "power player transition still owns device at media shutdown",
-                )
-                return False
-            with self._power_lock:
-                power_state = self._power_state
-        if power_state == "suspended":
-            self._player_stop_started = True
-            self._player_stop_definitive = True
-            self._player_stop_done.set()
-            return True
-        with self._player_stop_lock:
-            if (
-                self._player_stop_started
-                and self._player_stop_done.is_set()
-                and not self._player_stop_definitive
-            ):
-                self._player_stop_started = False
-                self._player_stop_done = threading.Event()
-            launch_stop = not self._player_stop_started
-            if launch_stop:
-                self._player_stop_started = True
-
-        if launch_stop:
-
-            def _stop() -> None:
-                try:
-                    self._stop_player_until_definitive(
-                        self._clock.remaining_s(self._config.shutdown_timeout_s),
-                    )
-                    self._player_stop_definitive = True
-                except Exception as exc:
-                    with self._cleanup_lock:
-                        self._cleanup_errors.append(f"player:{type(exc).__name__}")
-                    LOGGER.exception("streaming media player stop failed")
-                finally:
-                    self._player_stop_done.set()
-
-            self._player_stop_thread = threading.Thread(
-                target=_stop,
-                name="jarvis-media-device-stop",
-                daemon=True,
-            )
-            self._player_stop_thread.start()
-        stopped = self._player_stop_done.wait(
-            timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
-        )
-        if not stopped:
-            LOGGER.error(
-                "player.stop exceeded media shutdown deadline; isolated daemon helper remains",
-            )
-        return stopped and self._player_stop_definitive
-
-    def _stop_player_with_bound(self, timeout_s: float) -> object:
-        """Call the typed player API while retaining legacy test-port support."""
-        try:
-            return self._player.stop(timeout_s=max(0.0, timeout_s))
-        except TypeError as exc:
-            if "timeout_s" not in str(exc):
-                raise
-            return self._player.stop()
-
-    def _stop_player_until_definitive(self, first_timeout_s: float) -> object:
-        """Join/retry one typed player debt on the current helper thread."""
-        timeout_s = max(0.0, first_timeout_s)
-        retries = 0
-        while True:
-            try:
-                result = self._stop_player_with_bound(timeout_s)
-            except BaseException as exc:  # noqa: BLE001 - retained exact debt
-                retries += 1
-                record_realtime_trace(
-                    "media_player_stop_debt_retry",
-                    retry=retries,
-                    reason=f"{type(exc).__name__}:{exc}",
-                )
-            else:
-                if not isinstance(result, PlayerStopResult) or result.definitively_closed:
-                    return result
-                retries += 1
-                record_realtime_trace(
-                    "media_player_stop_debt_retry",
-                    retry=retries,
-                    reason=result.reason,
-                    helper_thread_alive=result.helper_thread_alive,
-                )
-            time.sleep(min(0.1, 0.005 * (2 ** min(retries, 4))))
-            timeout_s = self._config.shutdown_timeout_s
-
-    def _stop_provider_bounded(self) -> bool:
-        """Close the actor's provider exactly once on an isolated daemon helper."""
-        request_close = getattr(self._provider, "request_close", None)
-        if not callable(request_close):
-            self._provider_stop_done.set()
-            return True
-        if not self._provider_stop_started:
-            self._provider_stop_started = True
-
-            def _stop() -> None:
-                try:
-                    request_close()
-                except Exception as exc:
-                    with self._cleanup_lock:
-                        self._cleanup_errors.append(f"provider:{type(exc).__name__}")
-                    LOGGER.exception("streaming media provider stop failed")
-                finally:
-                    self._provider_stop_done.set()
-
-            self._provider_stop_thread = threading.Thread(
-                target=_stop,
-                name="jarvis-media-provider-stop",
-                daemon=True,
-            )
-            self._provider_stop_thread.start()
-        stopped = self._provider_stop_done.wait(
-            timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
-        )
-        if not stopped:
-            LOGGER.error(
-                "provider stop exceeded media shutdown deadline; isolated daemon helper remains",
-            )
-        return stopped
 
     async def _run_owned(self) -> None:
         record_realtime_trace(
@@ -3475,8 +3273,8 @@ class StreamingTTSPipeline:
             response = self._after_drain.popleft()
             self._registry.terminalize(response.response_id)
             self._responses.pop(response.response_id, None)
-        self._stop_provider_bounded()
-        self._stop_player_bounded()
+        self._stopper.stop_provider_bounded()
+        self._stopper.stop_player_bounded()
         self._reject_queued_commands()
         # Rejected submitters are bridge coroutines on this loop. Let their
         # acknowledgement futures resume before loop teardown so a full normal
