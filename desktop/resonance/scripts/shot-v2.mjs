@@ -21,6 +21,9 @@ const T = (h, m = 0, day = 19) => Date.UTC(2026, 9, day, h + 7, m);
 const NOW = T(21, 50), iso = (h, m) => `2026-10-19T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00-07:00`;
 const it = (id, kind, start, end, extra = {}, lane = 'you') => ({ id, lane, kind, start_ms: start, end_ms: end, state: end === null ? (start > NOW ? 'next' : 'now') : end <= NOW ? 'done' : start > NOW ? 'next' : 'now', ...extra });
 const home = { id: 'p-home', name: '家', role: 'home' }, uvic = { id: 'p-uvic', name: 'UVic', role: 'school' };
+// what he was doing, as the brain serves the doing lane (set for the chips pass at the end; the first pass runs on stays alone): a stretch with no words is the bar's dashed "?"
+let SPANS = [];
+const span = (id, from, to, over = {}) => ({ id, lane: 'doing', kind: 'doing', start_ms: from, end_ms: to, title: null, detail: null, category: 'unknown', basis: 'observed', confidence: 'high', confirmed: false, clues: [], question: null, place_id: null, item_ids: [], ...over });
 const day = () => ({
   date: DATE, tz: TZ, start_ms: T(0), end_ms: T(24), now_ms: NOW,
   items: [
@@ -39,6 +42,7 @@ const day = () => ({
     it('reminder-1', 'reminder', T(22, 0), null, { text: '把垃圾拿出去', fired: false, acknowledged: false }, 'her'),
     it('event-1', 'event', T(22, 30), T(23, 30), { title: '小组讨论', place: 'Library', private: false, source: 'mail', confirmed: false }),
   ],
+  spans: SPANS,
   labels: [], missing: [], line: { text: '今天一半在路上，一半在 UVic。晚上回家后写了会儿代码。', draft: false, written_at: '2026-10-19T21:30:00-07:00' }, highlights: [],
 });
 const mail = (id, from, subject, received, extra = {}) => ({ id, from, address: `${id}@example.com`, thread_id: `th-${id}`, subject, received, reply: null, junk: false, importance: 1, category: null, ...extra });
@@ -149,6 +153,59 @@ try {
   await shot('mail-selected');
   await page.keyboard.press('Control+1'); await settle(600);
   check('⌘1 is back on 今天, the selection gone', await page.evaluate(() => document.querySelector('.notch .dt')?.dataset.door) === 'today' && await sel() === null);
+  // ---- the chips and the stretch nothing recorded: the same day with what he was doing laid over it ----
+  SPANS = [span('d-sleep', T(0, 55), T(9, 5), { title: 'sleep', category: 'sleep' }), span('d-work', T(10, 30), T(11, 20), { title: 'Jarvis', category: 'work', item_ids: ['work-1'] }), span('d-lunch', T(13, 15), T(13, 55), { title: '吃午饭', category: 'meal', basis: 'stated', confirmed: true }), span('d-hole', T(14, 5), T(14, 50))];
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('.notch')?.dataset.line, undefined, { timeout: 8000 });
+  const [b0, b1] = (await page.evaluate(() => document.querySelector('.notch').dataset.lineAt)).split('-').map(Number);
+  await press((b0 + b1) / 2, 14);
+  await page.waitForSelector('.notch-drop.is-open .dt-row', { timeout: 8000 });
+  await settle(1200); await park();
+  // ---- the chips row: one line, each chip a filter ----
+  const chips = () => page.evaluate(() => {
+    const box = document.querySelector('.notch .dt-numbers')?.getBoundingClientRect(), cs = [...document.querySelectorAll('.notch .dt-nums .dt-num:not(.is-cut)')].map(e => e.getBoundingClientRect());
+    const op = sel => [...document.querySelectorAll(sel)].map(e => +getComputedStyle(e).opacity);
+    return { n: cs.length, h: box?.height, tops: new Set(cs.map(r => Math.round(r.top))).size, by: !!document.querySelector('.notch .dt-numbers .dt-by'), card: document.querySelectorAll('.notch .dt-card').length,
+      lens: document.querySelector('.notch .dt')?.dataset.lens ?? null, pressed: document.querySelectorAll('.notch .dt-num[aria-pressed="true"]').length,
+      marks: document.querySelectorAll('.notch .dt-lm').length, rows: op('.notch .dt-list .dt-row[data-lk~="work"]'), others: op('.notch .dt-list .dt-row:not([data-lk~="work"])'), segs: op('.notch .dt-seg') };
+  });
+  const c0 = await chips();
+  check('the chips are one line (24 px, every chip at one height) with the 在干嘛 / 在哪 toggle at the right, and no lens card', c0.n >= 3 && c0.h <= 26 && c0.tops === 1 && c0.by && c0.card === 0 && c0.lens === null, JSON.stringify(c0));
+  const mac = '.notch .dt-numbers .dt-num[data-chip="work"]';
+  await move(...(await rect(mac).then(r => [r.x + r.width / 2, r.y + r.height / 2]))); await settle(300);
+  const c1 = await chips();
+  check('a chip under the pointer previews its filter (nothing pinned)', c1.lens === 'work' && c1.pressed === 0 && c1.marks > 0, JSON.stringify(c1));
+  await pressOn(mac); await park(); await settle(400);
+  const c2 = await chips();
+  check('a click pins it: only the Mac work is lit on the bar, only its rows are lit in the list, the rest step back; no card', c2.lens === 'work' && c2.pressed === 1 && c2.marks > 0 && c2.card === 0 && c2.rows.length > 0 && c2.rows.every(o => o === 1) && c2.others.every(o => o < 1) && c2.segs.every(o => o < .5) && c2.tops === 1, JSON.stringify(c2));
+  await shot('today-chip-filter');
+  await pressOn(mac); await park(); await settle(400);
+  const c3 = await chips();
+  check('a second click on the chip clears the filter: everything is lit again', c3.lens === null && c3.pressed === 0 && c3.marks === 0 && c3.others.join() === c0.others.join() && c3.segs.every(o => o === 1), JSON.stringify(c3));
+  await pressOn(mac); await park(); await settle(300);
+  await page.keyboard.press('Escape'); await settle(400);
+  const c4 = await chips();
+  check('Esc clears a pinned filter and leaves the pane open', c4.lens === null && c4.pressed === 0 && await page.locator('.notch-drop.is-open').count() === 1, JSON.stringify(c4));
+  await shot('today-chip-cleared');
+
+  // too many chips for the line: the last ones are hidden, never wrapped (the strip is squeezed to 300 px here; a full day at 820 does the same with its vitals)
+  await page.addStyleTag({ content: '.notch .dt-nums{max-width:300px!important}' }); await settle(300);
+  const squeezed = await page.evaluate(() => { const all = [...document.querySelectorAll('.notch .dt-nums > *')], cut = all.filter(e => e.classList.contains('is-cut')), strip = document.querySelector('.notch .dt-nums').getBoundingClientRect(); return { all: all.length, cut: cut.length, tops: new Set(all.map(e => Math.round(e.getBoundingClientRect().top))).size, shownInside: all.filter(e => !e.classList.contains('is-cut')).every(e => e.getBoundingClientRect().right <= strip.right + .5) }; });
+  check('chips that do not fit are hidden from the end, on the same line', squeezed.cut > 0 && squeezed.cut < squeezed.all && squeezed.tops === 1 && squeezed.shownInside, JSON.stringify(squeezed));
+  await shot('today-chips-squeezed');
+  await page.addStyleTag({ content: '.notch .dt-nums{max-width:none!important}' }); await settle(300);
+
+  // ---- the stretch nothing recorded: a click on the dashed "?" asks about that span ----
+  const hole = await rect('.notch .dt-seg.is-hole');
+  check('a stretch nothing recorded is a dashed box with a question mark on the bar', !!hole && await page.locator('.notch .dt-seg.is-hole svg').count() > 0);
+  await press(hole.x + hole.width / 2, hole.y + hole.height / 2); await settle(700);
+  const ask = await page.evaluate(() => ({ dock: !!document.querySelector('.notch .dt-dock'), range: document.querySelector('.notch .dt-about.is-range time')?.textContent ?? '' }));
+  check('a click on it opens the 这段在干嘛 input with that span as its chip', ask.dock && /^\d\d:\d\d–\d\d:\d\d$/.test(ask.range), JSON.stringify(ask));
+  await shot('today-hole-ask');
+  await page.keyboard.press('Escape'); await settle(300);
+  await page.keyboard.press('Escape'); await settle(300);
+  await park();
+
   check('no errors on the page', errors.length === 0, errors.join(' | '));
   await ctx.close();
 } finally {
