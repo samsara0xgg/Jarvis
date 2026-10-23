@@ -21,8 +21,6 @@ import openai
 import pytest
 
 from jarvis.decision.day_prose import build_day_prose_messages, check_day_prose
-from jarvis.execution.job_ledger_tool import build_record_application_tool
-from jarvis.execution.tools import ToolError
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings, ProseSettings
 from jarvis.shared import lang
 from jarvis.state import core_memory, reminders, things
@@ -640,17 +638,14 @@ def test_applications_submitted_counts_each_submission_once_across_three_sources
             subject="Thank you for applying to Moment Energy",
         )
     # He told her about Zeta (already seen) and Orbit; he added Hand Made on the Jobs page.
-    (record,) = build_record_application_tool(
-        lambda fields: add_application(memory, NOW, **fields),
-    )
     for fields in (
         {"company": "zeta corp", "applied_at": "2026-10-08"},
         {"company": "Orbit Co", "role": "Data Co-op", "applied_at": "2026-10-08"},
     ):
-        assert record.handler(fields, None)["recorded"] is True  # type: ignore[arg-type]
+        add_application(memory, NOW, source="said", **fields)
     add_application(memory, NOW, company="Hand Made Ltd", applied_at="2026-10-02")
-    with pytest.raises(ToolError):
-        record.handler({"company": "Bad", "applied_at": "yesterday"}, None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        add_application(memory, NOW, company="Bad", applied_at="yesterday")
     assert {"Orbit Co", "zeta corp", "Hand Made Ltd"} <= {
         a["company"] for a in list_applications(memory, NOW)
     }

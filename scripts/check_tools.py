@@ -59,7 +59,6 @@ PRE_STANDARD: dict[str, frozenset[str]] = {
         "disable_plugin": "the-user undescribed",
         "end_night_run": "the-user",
         "get_briefing": "undescribed",
-        "job_ledger": "the-user",
         "list_plugins": "the-user",
         "look_at_picture": "the-user",
         "open_path": "the-user",

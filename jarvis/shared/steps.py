@@ -89,6 +89,8 @@ _KIND: Final[dict[str, str]] = {
     "write_mail_draft": "mail_write",
     "refresh_work_state": "work_state",
     "daily_work_report": "report",
+    "jobs": "jobs",
+    # The two tools `jobs` replaced (ADR 0367): turns already in the log still name them.
     "job_ledger": "jobs",
     "record_application": "jobs",
     "show_on_dashboard": "dashboard",

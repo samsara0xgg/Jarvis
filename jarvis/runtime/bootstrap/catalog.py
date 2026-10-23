@@ -21,7 +21,7 @@ from jarvis.deployment.models import default_meaning_dir
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
-from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
+from jarvis.execution.jobs_tool import JobsSource, build_jobs_tool
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.tidy_tool import build_tidy_tool
@@ -189,15 +189,17 @@ def _register_workers(
     return workers
 
 
-def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> None:
-    """``job_ledger`` reads what ``GET /inherent/jobs`` serves, ``record_application`` adds a row.
+def _register_jobs(
+    registry: ToolRegistry, job_mail: JobMail | None, sources: LedgerSources,
+) -> None:
+    """``jobs`` (ADR 0367): the applications ``GET /inherent/jobs`` serves, read, added, changed.
 
-    Both are absent while job mail is off.
+    Absent while job mail is off.
     """
-    for tool in (
-        *build_job_ledger_tool(None if job_mail is None else job_mail.ledger),
-        *build_record_application_tool(None if job_mail is None else job_mail.add_application),
-    ):
+    source = None if job_mail is None else JobsSource(
+        job_mail.jobs_view, job_mail.add_application, job_mail.edit_application,
+    )
+    for tool in build_jobs_tool(source, sources):
         registry.register(tool)
 
 
@@ -274,7 +276,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     plugins = make_plugins(registry)
     plugins.initialize()
     job_mail, home = make_late(plugins)
-    _register_job_ledger(registry, job_mail)
+    _register_jobs(registry, job_mail, ledger)
     _register_mail(registry, home)
     _register_conversation(registry, memory_db, paths.root)
     _register_archive(registry, memory_db, paths.root)
