@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "TAVILY_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "GET",
+   "url": "https://news.example.com/s/ferries",
+   "request": "",
+   "status": 200,
+   "content_type": "text/html; charset=utf-8",
+   "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Why the late boats pay for themselves</title>\n<script type=\"application/ld+json\">\n{\"@context\": \"https://schema.org\", \"@type\": \"NewsArticle\",\n \"headline\": \"Why the late boats pay for themselves\", \"datePublished\": \"2026-10-18\",\n \"isAccessibleForFree\": \"False\",\n \"hasPart\": {\"@type\": \"WebPageElement\", \"isAccessibleForFree\": \"False\", \"cssSelector\": \".body\"}}\n</script>\n</head>\n<body>\n<main><article>\n<h1>Why the late boats pay for themselves</h1>\n<p>An analysis of the summer trial shows the late sailings covered their crew cost within five\nweekends, and that the margin came almost entirely from evening return trips by workers in the\nhospitality trade, according to ticketing records seen by this newspaper.</p>\n<p>The records, covering twelve weekends, show a median trip of eleven minutes and a clear peak\nbetween midnight and one o'clock, when the Fennel Point bars and kitchens close their doors.</p>\n</article></main>\n<footer>Northwind Press</footer>\n</body>\n</html>\n"
+  }
+ ],
+ "mcp": []
+}

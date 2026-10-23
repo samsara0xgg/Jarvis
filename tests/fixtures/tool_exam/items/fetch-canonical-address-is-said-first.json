@@ -1,0 +1,44 @@
+{
+  "id": "fetch-canonical-address-is-said-first",
+  "tool": "web_fetch",
+  "said": "这篇说了什么 https://news.example.com/s/ferries",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "url": "https://news.example.com/s/ferries"
+  },
+  "recording": "fetch-canonical-address-is-said-first.recording.json",
+  "expect": {
+    "summary_must": [
+      "^The address of this page is news\\.example\\.com/2026/10/ferries-run-later/, not the one you gave \\(news\\.example\\.com/s/ferries\\)\\. Read 'Port Alder ferries to run later on Fridays' on news\\.example\\.com, published Mon Oct 19: "
+    ],
+    "result": [
+      {
+        "path": "address",
+        "op": "eq",
+        "value": "https://www.news.example.com/2026/10/ferries-run-later/"
+      },
+      {
+        "path": "title",
+        "op": "eq",
+        "value": "Port Alder ferries to run later on Fridays"
+      },
+      {
+        "path": "read_by",
+        "op": "eq",
+        "value": "direct"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.tavily.com/extract",
+        "count": 0
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

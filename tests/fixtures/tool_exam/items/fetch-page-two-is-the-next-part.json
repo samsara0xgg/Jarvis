@@ -1,0 +1,45 @@
+{
+  "id": "fetch-page-two-is-the-next-part",
+  "tool": "web_fetch",
+  "said": "接着往下读 https://news.example.com/s/ferries",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "url": "https://news.example.com/s/ferries",
+    "page": 2
+  },
+  "recording": "fetch-page-two-is-the-next-part.recording.json",
+  "expect": {
+    "summary_must": [
+      "part 2 of 3, page=3 reads the next"
+    ],
+    "result": [
+      {
+        "path": "page",
+        "op": "eq",
+        "value": 2
+      },
+      {
+        "path": "parts",
+        "op": "eq",
+        "value": 3
+      },
+      {
+        "path": "content",
+        "op": "not_contains",
+        "value": "Imogen Hale said the trial"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.tavily.com/extract",
+        "count": 0
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

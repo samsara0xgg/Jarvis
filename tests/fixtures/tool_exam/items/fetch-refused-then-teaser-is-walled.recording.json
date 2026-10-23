@@ -1,0 +1,26 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "TAVILY_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "GET",
+   "url": "https://news.example.com/s/ferries",
+   "request": "",
+   "status": 403,
+   "content_type": "text/html; charset=utf-8",
+   "body": "<html><head><title>403 Forbidden</title></head><body><p>Forbidden</p></body></html>"
+  },
+  {
+   "method": "POST",
+   "url": "https://api.tavily.com/extract",
+   "request": "{\"urls\": [\"https://news.example.com/s/ferries\"], \"extract_depth\": \"basic\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"results\": [{\"url\": \"https://news.example.com/s/ferries\", \"raw_content\": \"# Inside the harbour board's closed-door budget talks\\n\\nThe harbour board spent four hours on Tuesday behind closed doors on next year's budget, and people who were in the room say the argument was less about ferries than about who pays for the new dredging programme at Fennel Point.\\n\\n## Subscribe to continue reading\\n\\nThis article is for subscribers only. Already a subscriber? Sign in.\"}], \"failed_results\": []}"
+  }
+ ],
+ "mcp": []
+}

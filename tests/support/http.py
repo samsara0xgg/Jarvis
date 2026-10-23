@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import socket
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -36,6 +37,26 @@ def fake_web(answer: Answer) -> Iterator[list[httpx.Request]]:
 
     with patch.object(httpx.HTTPTransport, "handle_request", handle):
         yield seen
+
+
+PUBLIC_ADDRESS = "93.184.216.34"
+"""A globally routable address, which the egress guard allows."""
+
+
+@contextlib.contextmanager
+def fake_dns(**hosts: str) -> Iterator[None]:
+    """Every host name resolves to a public address, or to the one ``hosts`` gives it.
+
+    ``hosts`` maps a name with its dots written as underscores (``news_example_com``) to an address.
+    """
+    named = {name.replace("_", "."): address for name, address in hosts.items()}
+
+    def resolve(host: str, *_args: object, **_kwargs: object) -> list[tuple[Any, ...]]:
+        address = named.get(host, PUBLIC_ADDRESS)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
+
+    with patch.object(socket, "getaddrinfo", resolve):
+        yield
 
 
 def json_reply(payload: Mapping[str, Any], status: int = 200) -> httpx.Response:
