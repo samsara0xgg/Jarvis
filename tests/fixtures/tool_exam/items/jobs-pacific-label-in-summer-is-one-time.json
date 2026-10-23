@@ -1,0 +1,54 @@
+{
+  "id": "jobs-pacific-label-in-summer-is-one-time",
+  "tool": "jobs",
+  "said": "what time is the Echo Systems interview",
+  "at": "2026-07-08T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "job_mail": {
+    "mails": [
+      {
+        "message_id": "m-echo-1",
+        "received_at": "2026-07-06T09:00:00-07:00",
+        "kind": "receipt",
+        "company": "Echo Systems",
+        "role": "Intern",
+        "sender_name": "Dana Fox",
+        "sender_domain": "echo-systems.example.com",
+        "subject": "Application received"
+      },
+      {
+        "message_id": "m-echo-2",
+        "received_at": "2026-07-07T09:00:00-07:00",
+        "kind": "interview",
+        "company": "Echo Systems",
+        "role": "Intern",
+        "sender_name": "Dana Fox",
+        "sender_domain": "echo-systems.example.com",
+        "subject": "Interview invitation",
+        "event_at": "2026-07-15T10:00:00-07:00",
+        "event_text": "Wednesday, July 15 at 10 am PST"
+      }
+    ]
+  },
+  "args": {
+    "action": "find",
+    "company": "Echo Systems"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "Interview Wed Jul 15, 10:00"
+    ],
+    "summary_must_not": [
+      " or 11:00"
+    ],
+    "result": [
+      {
+        "path": "applications.0.interview",
+        "op": "not_contains",
+        "value": " or "
+      }
+    ]
+  }
+}

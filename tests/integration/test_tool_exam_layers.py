@@ -525,3 +525,36 @@ def test_an_unknown_tool_fails_the_item_instead_of_passing_it(tmp_path: Path) ->
     failed = exam.score(tmp_path)["failed"]["x"]
     assert failed
     assert any("no tool" in m for m in failed)
+
+
+def test_an_item_that_seats_job_mail_fails_when_the_recording_leaves_it_off(
+    tmp_path: Path,
+) -> None:
+    """The mails are written through the ledger, so a runtime without job mail cannot take them."""
+    item = json.loads((ITEMS / "jobs-eastern-time-is-his-clock.json").read_text(encoding="utf-8"))
+    (tmp_path / "x.json").write_text(json.dumps({**item, "id": "x"}), encoding="utf-8")
+    (tmp_path / "jobs.recording.json").write_text(
+        json.dumps({"version": 1, "settings": {}, "env": [], "http": [], "mcp": []}),
+        encoding="utf-8",
+    )
+
+    failed = exam.score(tmp_path)["failed"]["x"]
+
+    assert failed
+    assert any("no tool 'jobs'" in m or "leave job_mail off" in m for m in failed)
+
+
+def test_the_block_d_check_compares_the_results_count_with_block_ds_own_line() -> None:
+    """The same data gives the same number; a result that states another one is named."""
+    item = next(i for i in exam.load_items(ITEMS) if i.id == "jobs-submitted-count-is-block-ds")
+    recording = exam.Recording.load(ITEMS / "jobs.recording.json")
+    with exam._Transport(recording, live=False), exam.sandbox(item, recording) as box:  # noqa: SLF001
+        flag = {"block_d_submitted": True}
+        assert exam._block_d_failures(box, flag, {"summary": "At least 7 submitted in all."}) == []  # noqa: SLF001
+        wrong = exam._block_d_failures(box, flag, {"summary": "At least 9 submitted in all."})  # noqa: SLF001
+        none = exam._block_d_failures(box, flag, {"summary": "Nothing counted."})  # noqa: SLF001
+        off = exam._block_d_failures(box, {}, {"summary": "At least 9 submitted in all."})  # noqa: SLF001
+    assert wrong == ["block D says at least 7 submitted, the result says 9"]
+    assert len(none) == 1
+    assert "None" in none[0]
+    assert off == []

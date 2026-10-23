@@ -1,0 +1,20 @@
+{
+  "id": "jobs-mail-failing-for-three-hours-says-since-when",
+  "tool": "jobs",
+  "said": "is the job mail up to date",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": "jobs-hunt",
+  "job_mail": {
+    "read_at": "2026-10-20T07:40:00-07:00",
+    "failing_since": "2026-10-20T08:00:00-07:00"
+  },
+  "args": {},
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "Job mail was last read today \\(Tue\\) 7:40 am",
+      "reading has failed since today \\(Tue\\) 8:00 am"
+    ]
+  }
+}

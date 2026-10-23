@@ -1,0 +1,26 @@
+{
+  "id": "jobs-time-on-site-is-unknown-when-the-mac-is-away",
+  "tool": "jobs",
+  "said": "how much time did I spend on job sites",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": "jobs-hunt",
+  "args": {},
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "His time on job sites is unknown"
+    ],
+    "result": [
+      {
+        "path": "applications[*].on_site_14d",
+        "op": "eq",
+        "value": "unknown"
+      }
+    ],
+    "result_must_not_mention": [
+      "0m",
+      "0 min"
+    ]
+  }
+}
