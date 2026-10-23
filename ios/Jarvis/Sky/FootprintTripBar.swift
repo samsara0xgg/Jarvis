@@ -19,27 +19,21 @@ final class FootprintTripArt {
     private(set) var beads: [Bead] = [], runs: [Run] = [], notches: [Notch] = [], words: [Word] = []
 
     init(model: FootprintModel, span: ClosedRange<Double>) {
-        let layout = model.barLayout, r = model.reply, dayEnd = min(r.end_ms, r.now_ms)
+        let layout = model.barLayout, r = model.reply
         let axis = TLAxis.linear(span, width: TLLayout.barW)          // the footprint page's bar at rest is linear
         func timeX(_ ms: Int64) -> Double { axis.x(model.clock.minute(ms: ms)) }
-        var taken = -Double.infinity            // the right edge of the last word, so that none stands on another
-        func say(_ text: String, x: Double, timeX: Double, ring: Bool = false) {
-            let w = TLBarLabel.measure(text)
-            guard text != "", x - w / 2 >= taken + 3, x + w / 2 <= TLLayout.barW + 12 else { return }
-            taken = x + w / 2
-            words.append(Word(x: x, timeX: timeX, text: text, ring: ring))
-        }
+        // the words under the bar, in one row: the stops' numbers first, then each stay's length, then each outing's distance, where they fit, each inside the bar and clear of the ones placed before it
+        var rings: [Word] = [], lengths: [Word] = [], distances: [Word] = []
         for it in layout.items {
             switch it.kind {
             case let .bead(id):
                 guard let s = r.stays.first(where: { $0.id == id }) else { continue }
                 let kept = s.kept_place, name = FootprintDayContent.name(s)
                 let symbol = ["home": "house.fill", "school": "graduationcap.fill"][kept?.role ?? ""] ?? (name == nil ? "mappin" : nil)
-                let minutes = max(0, tlInt(Double(min(s.end_ms ?? dayEnd, dayEnd) - max(s.start_ms, r.start_ms)) / 60_000))
                 let bead = Bead(x: it.x0...it.x1, timeX: timeX(it.ms0)...max(timeX(it.ms1), timeX(it.ms0)), fill: kept.map { PlaceTint.line(role: $0.role, id: $0.id) } ?? PlaceTint.lineNeutral,
-                                symbol: symbol, glyph: symbol == nil ? name.flatMap { $0.first.map(String.init) } : nil, length: tlDur(minutes))
+                                symbol: symbol, glyph: symbol == nil ? name.flatMap { $0.first.map(String.init) } : nil, length: tlHM(s.minutes(now: r.now_ms)))
                 beads.append(bead)
-                say(bead.length, x: (it.x0 + it.x1) / 2, timeX: (bead.timeX.lowerBound + bead.timeX.upperBound) / 2)
+                lengths.append(Word(x: (it.x0 + it.x1) / 2, timeX: (bead.timeX.lowerBound + bead.timeX.upperBound) / 2, text: bead.length, ring: false))
             case let .segment(id):
                 guard let track = it.track, let o = r.outings.first(where: { $0.id == id }) else { continue }
                 for p in it.pieces {
@@ -48,13 +42,24 @@ final class FootprintTripArt {
                     case let .run(d0, d1): runs.append(Run(x: p.x0...p.x1, timeX: tx, stops: Self.stops(model, o, track, d0, d1, width: p.x1 - p.x0)))
                     case let .notch(_, number):
                         notches.append(Notch(x: p.x0...p.x1, timeX: tx, number: number))
-                        say("\(number)", x: (p.x0 + p.x1) / 2, timeX: (tx.lowerBound + tx.upperBound) / 2, ring: true)
+                        rings.append(Word(x: (p.x0 + p.x1) / 2, timeX: (tx.lowerBound + tx.upperBound) / 2, text: "\(number)", ring: true))
                     }
                 }
-                if it.x1 - it.x0 >= 48, let d = tlDistance(o.distance_m) { say(d, x: (it.x0 + it.x1) / 2, timeX: (timeX(it.ms0) + timeX(it.ms1)) / 2) }
+                if let d = tlDistance(o.distance_m) { distances.append(Word(x: (it.x0 + it.x1) / 2, timeX: (timeX(it.ms0) + timeX(it.ms1)) / 2, text: d, ring: false)) }
             }
         }
+        var taken: [ClosedRange<Double>] = []
+        for w in rings + lengths + distances {
+            let half = (w.ring ? Self.ring : Self.measure(w.text)) / 2, x = min(max(w.x, half), TLLayout.barW - half), room = (x - half - 3)...(x + half + 3)
+            guard !taken.contains(where: { $0.overlaps(room) }) else { continue }
+            taken.append(room)
+            words.append(Word(x: x, timeX: w.timeX, text: w.text, ring: w.ring))
+        }
     }
+
+    /// the words' type under the bar, and a stop's ring
+    static let font = UIFont(name: "IBMPlexMono-Medium", size: 10) ?? .monospacedSystemFont(ofSize: 10, weight: .medium), ring = 13.0
+    static func measure(_ s: String) -> Double { ceil((s as NSString).size(withAttributes: [.font: font]).width) }
 
     /// the colour of the ramp along a run of the line, a stop every few points of the bar; where no fix says how fast (a gap, the join to a stay) the gap's colour
     private static func stops(_ m: FootprintModel, _ o: FootprintOuting, _ t: FootprintTrack, _ d0: Double, _ d1: Double, width: Double) -> [Gradient.Stop] {
@@ -100,8 +105,8 @@ struct FootprintTripBar: View, Animatable {
                         .frame(width: 13, height: 13).background(Circle().fill(FootprintPaint.token.color)).overlay(Circle().strokeBorder(TLPaint.ink.color(0.8), lineWidth: 1))
                         .offset(x: lerp(w.timeX, w.x) - 6.5, y: bh + 5).opacity(k)
                 } else {
-                    Text(w.text).font(AT.mono(10)).foregroundStyle(SetColor.muted).lineLimit(1).frame(width: 80)
-                        .offset(x: lerp(w.timeX, w.x) - 40, y: bh + 4).opacity(k)
+                    Text(w.text).font(Font(FootprintTripArt.font as CTFont)).foregroundStyle(SetColor.muted).lineLimit(1).fixedSize().frame(width: 120)
+                        .offset(x: lerp(w.timeX, w.x) - 60, y: bh + 4).opacity(k)
                 }
             }
         }

@@ -6,7 +6,7 @@ import Foundation
 
 struct FootprintReplay {
     enum Scope: Hashable { case day, outing(String) }
-    /// what a beat says: a long stay with its length on the day, or a numbered stop with its minutes
+    /// what a beat says: a long stay with its whole length, or a numbered stop with its minutes
     enum Beat: Equatable { case stay(id: String, minutes: Int), stop(id: String, number: Int, minutes: Int) }
 
     struct Frame {
@@ -55,7 +55,7 @@ struct FootprintReplay {
     /// Nil when nothing in the scope has a line to follow.
     init?(model: FootprintModel, scope: Scope) {
         self.scope = scope
-        let layout = model.barLayout, tracks = model.tracks, r = model.reply, dayEnd = min(r.end_ms, r.now_ms)
+        let layout = model.barLayout, tracks = model.tracks, r = model.reply
         func line(_ id: String) -> FootprintTrack? { tracks[id].flatMap { $0.coord(atDistance: 0) == nil ? nil : $0 } }
         let items = layout.items.filter {
             switch ($0.kind, scope) {
@@ -106,8 +106,7 @@ struct FootprintReplay {
                 let to = next.flatMap { $0.track.coord(atDistance: 0) } ?? from
                 guard let from, let to, let stay = r.stays.first(where: { $0.id == id }) else { continue }
                 let fly = prev != nil && metres(from, to) > Self.flyMetres
-                let minutes = max(0, Int((Double(min(stay.end_ms ?? dayEnd, dayEnd) - max(stay.start_ms, r.start_ms)) / 60_000).rounded()))
-                add(Self.beatSeconds, nil, x: it.x0...it.x1, ms: it.ms0...it.ms1, .beat(.stay(id: id, minutes: minutes), ms: it.ms0...it.ms1, from: from, to: to, heading: (fly || prev == nil ? next?.start : prev?.end) ?? 0, fly: fly))
+                add(Self.beatSeconds, nil, x: it.x0...it.x1, ms: it.ms0...it.ms1, .beat(.stay(id: id, minutes: stay.minutes(now: r.now_ms)), ms: it.ms0...it.ms1, from: from, to: to, heading: (fly || prev == nil ? next?.start : prev?.end) ?? 0, fly: fly))
             case let .segment(id):
                 guard let run = runs[id] else { continue }
                 let share = moving.shares[seen], length = run.track.length, runCount = it.pieces.filter { if case .run = $0.kind { true } else { false } }.count

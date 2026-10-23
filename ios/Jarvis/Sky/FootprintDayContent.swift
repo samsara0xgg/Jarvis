@@ -237,11 +237,22 @@ struct FootprintDayContent: Equatable {
         return out
     }
 
-    /// the dot of a held moment: where it is on the drawn line, in the colour of how fast; none while the replay flies from one place to the next
+    /// The dot of a held moment: where it is on the drawn line, in the colour of how fast, with the speed by it. Still, in a long stay or a stop, it says that stay (the one of that time,
+    /// not another at the same place), except in a replay's beat, whose caption says it. None while the replay flies from one place to the next.
     @MainActor static func dot(_ m: FootprintModel, moment: FootprintMoment) -> FootprintMapDot? {
         guard !moment.flying else { return nil }
+        if let s = m.stay(atMs: moment.ms) {
+            return FootprintMapDot(coord: moment.coord, ms: moment.ms, rgb: FootprintPaint.speed(mps: 0), label: moment.beat == nil ? stillText(m, s) : nil, still: m.reply.stays.contains { $0.id == s.id })
+        }
         let v = m.speedMps(atMs: moment.ms) ?? 0
         return FootprintMapDot(coord: moment.coord, ms: moment.ms, rgb: FootprintPaint.speed(mps: v), label: speedText(v))
+    }
+
+    /// a long stay or a stop as the still dot says it: its place and its whole length ("Bankside · 6 分钟"); a stop no place is known for, "停 6 分钟"
+    @MainActor static func stillText(_ m: FootprintModel, _ s: FootprintStay) -> String {
+        let r = m.reply, minutes = tlDur(s.minutes(now: r.now_ms))
+        let place = r.stays.contains { $0.id == s.id } ? name(s) ?? Words.FootprintDay.unnamedPlace : stopName(s)
+        return place.map { Words.Footprint.replayStay(place: $0, duration: minutes) } ?? Words.Footprint.stopFor(minutes)
     }
 
     /// the scrub dot at a minute: where he was, in the colour of how fast; still is the start of the ramp
