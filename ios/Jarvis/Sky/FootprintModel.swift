@@ -194,4 +194,7 @@ extension FootprintOuting {
 
 extension FootprintStay {
     var coord: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+    /// its whole length in minutes, up to now while it goes on: the number the readout and the now mark give it, so the held bar's bead, the replay's caption and the still dot give it too
+    /// (the bar draws only the part of it in the day)
+    func minutes(now: Int64) -> Int { max(0, tlInt(Double((end_ms ?? now) - start_ms) / 60_000)) }
 }

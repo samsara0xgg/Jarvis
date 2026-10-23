@@ -213,7 +213,9 @@ final class FootprintReplayTests: XCTestCase {
         let m = fixture(sparse: false), day = try XCTUnwrap(FootprintReplay(model: m, scope: .day))
         var beats: [FootprintReplay.Beat] = []
         for i in 0...Int(day.duration * 60) { if let b = day.frame(at: Double(i) / 60).beat, beats.last != b { beats.append(b) } }
-        XCTAssertEqual(beats, [.stay(id: "stay-1", minutes: 787), .stop(id: "stay-2", number: 1, minutes: 6), .stop(id: "stay-3", number: 2, minutes: 5), .stay(id: "stay-5", minutes: Int((Double(m.reply.outings[1].start_ms - m.reply.stays[1].start_ms) / 60_000).rounded())),
+        let night = try XCTUnwrap(m.reply.stays[0].end_ms) - m.reply.stays[0].start_ms
+        XCTAssertGreaterThan(night, 787 * 60_000, "the first stay began last night")
+        XCTAssertEqual(beats, [.stay(id: "stay-1", minutes: Int((Double(night) / 60_000).rounded())), .stop(id: "stay-2", number: 1, minutes: 6), .stop(id: "stay-3", number: 2, minutes: 5), .stay(id: "stay-5", minutes: Int((Double(m.reply.outings[1].start_ms - m.reply.stays[1].start_ms) / 60_000).rounded())),
                            .stay(id: "stay-6", minutes: Int((Double(m.reply.now_ms - m.reply.stays[2].start_ms) / 60_000).rounded()))])
         // an outing alone: its stops only
         let o = try XCTUnwrap(FootprintReplay(model: m, scope: .outing(m.reply.outings[0].id)))

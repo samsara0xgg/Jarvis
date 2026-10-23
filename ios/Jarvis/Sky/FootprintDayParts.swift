@@ -96,7 +96,7 @@ struct FootprintDayReplay: View {
             if model.replay(.day) != nil {
                 FootprintReplayButton(player: state.player, play: play).offset(x: W - 30 - 36, y: FootprintDayPage.Y.map + 264)
             }
-            FootprintBeatCaption(beat: state.moment?.beat, model: model).frame(width: W).offset(y: FootprintDayPage.Y.map + 222)
+            FootprintBeatCaption(beat: state.moment?.beat, model: model, day: true).frame(width: W).offset(y: FootprintDayPage.Y.map + 222)
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .onAppear {
@@ -131,17 +131,21 @@ struct FootprintReplayButton: View {
     }
 }
 
-/// What a beat of the replay says, for about a second, in a capsule over the map: a long stay's place and length, a stop's "停 N 分".
+/// What a beat of the replay says, for about a second, in a capsule over the map: a long stay's place and length; a stop's on the day page the same when its place is known
+/// ("Bankside · 6 分钟"), on the outing page (`day` false) "停 N 分".
 struct FootprintBeatCaption: View {
     let beat: FootprintReplay.Beat?
     let model: FootprintModel
+    var day = false
 
     private var text: String? {
         switch beat {
         case let .stay(id, minutes)?:
             let name = model.reply.stays.first { $0.id == id }.flatMap(FootprintDayContent.name) ?? Words.FootprintDay.unnamedPlace
             return Words.Footprint.replayStay(place: name, duration: tlDur(minutes))
-        case let .stop(_, _, minutes)?: return Words.Footprint.stopFor(tlDur(minutes))
+        case let .stop(id, _, minutes)?:
+            let name = day ? model.reply.outings.lazy.flatMap(\.stops).first { $0.id == id }.flatMap(FootprintDayContent.stopName) : nil
+            return name.map { Words.Footprint.replayStay(place: $0, duration: tlDur(minutes)) } ?? Words.Footprint.stopFor(tlDur(minutes))
         case nil: return nil
         }
     }
