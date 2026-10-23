@@ -1,8 +1,10 @@
-"""The phone's recording of his day: ``PUT /inherent/lifelog/{audio,motion}/{id}`` and coverage.
+"""The phone's recording of his day: ``PUT /inherent/lifelog/{kind}/{id}`` and coverage.
 
 - ``PUT /inherent/lifelog/audio/{id}`` — ADR 0238; one piece of the phone's day recording, kept
 - ``PUT /inherent/lifelog/motion/{id}`` — ADR 0312; one piece of the phone's device motion
   while he rode, kept in the same archive
+- ``PUT /inherent/lifelog/accel/{id}`` — ADR 0378; ten minutes of the phone's raw accelerometer,
+  recorded all day, kept in the same archive
 - ``GET /inherent/lifelog/coverage`` — ADR 0292; whether a connected terminal is recording his
   room now, and his saved home, for the phone to decide by
 
@@ -31,15 +33,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def register_lifelog_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: C901 — one closed route table.
-    """ADR 0238, 0312, 0292: the recording pieces a paired phone keeps, and the coverage facts."""
+    """ADR 0238, 0312, 0378, 0292: the pieces a paired phone keeps, and the coverage facts."""
     if deps.lifelog is not None and deps.device_name is not None:
         lifelog_name, lifelog = deps.device_name, deps.lifelog
-        savers = {"audio": lifelog.save_audio, "motion": lifelog.save_motion}
+        savers = {
+            "audio": lifelog.save_audio, "motion": lifelog.save_motion, "accel": lifelog.save_accel,
+        }
 
         async def _keep_piece(
             kind: str, piece_id: str, request: Request, started_ms: int, duration_ms: int,
         ) -> JSONResponse:
-            """ADR 0238, 0312: one closed piece of a paired phone's recording, kept for good.
+            """ADR 0238, 0312, 0378: one closed piece of a paired phone's recording, kept for good.
 
             Only a paired device's own token opens it, as on ``/inherent/device/events``. 201 when
             the piece is new, 200 when it was already kept with the same bytes; the phone deletes
@@ -92,6 +96,16 @@ def register_lifelog_routes(app: FastAPI, deps: InherentDeps) -> None:  # noqa: 
         ) -> JSONResponse:
             """ADR 0312: one closed piece of the phone's device motion while he rode."""
             return await _keep_piece("motion", piece_id, request, started_ms, duration_ms)
+
+        @app.put("/inherent/lifelog/accel/{piece_id}")
+        async def put_lifelog_accel(
+            piece_id: str,
+            request: Request,
+            started_ms: Annotated[int, Query()],
+            duration_ms: Annotated[int, Query()],
+        ) -> JSONResponse:
+            """ADR 0378: ten minutes of the phone's raw accelerometer, recorded all day."""
+            return await _keep_piece("accel", piece_id, request, started_ms, duration_ms)
 
     if deps.lifelog_coverage is not None and deps.device_name is not None:
         coverage_name, coverage_read = deps.device_name, deps.lifelog_coverage
