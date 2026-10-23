@@ -59,6 +59,10 @@ An item (JSON, one per file) holds his words and the moment, place and data they
     checks as ``result``).
   - ``block_d_submitted``: true when the result's "At least N submitted" must be the N block D
     states in its own submitted line, rendered over the sandbox's data at ``at``.
+  - ``gmail[]``: ``{tool, count?, args?, query?}``; the calls the mail tool made to the invented
+    mailbox (a recording's ``mailbox``, ``scripts/tool_exam_mailbox.py``). Those of ``tool`` whose
+    arguments hold every ``args`` entry and whose ``query`` matches the regex must number
+    ``count`` (default: at least one; ``0`` for none).
   - ``checker``: name of a reference checker in ``scripts/tool_exam_checkers.py`` that derives the
     facts from the recording.
 
@@ -139,6 +143,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 
     from jarvis.runtime import JarvisRuntime
+    from tests.support.gmail_fake import Gmail
 
 REPO = Path(__file__).resolve().parent.parent
 ITEMS = Path("~/.jarvis/evals/tool-exam/tool-items").expanduser()
@@ -918,6 +923,8 @@ class Box:
     """The frozen clock; ``clock.shift(n)`` lets ``n`` seconds pass between two calls."""
     uncut: list[str] = field(default_factory=list)
     """The tables of the copied databases the cut at ``at`` could not handle."""
+    gmail: Gmail | None = None
+    """The invented mailbox the recording's ``mailbox`` made, answering as the ``gmail`` server."""
 
 
 @contextmanager
@@ -1078,11 +1085,26 @@ def sandbox(
                 runtime.conn.executescript(script.read_text(encoding="utf-8"))
             _place_him(runtime, item.raw.get("here"), moment)
             _seat_job_mail(runtime, _job_mail_spec(item), moment)
-            yield Box(runtime, root, item, clock, uncut)
+            gmail = _seat_mailbox(runtime, recording, moment)
+            yield Box(runtime, root, item, clock, uncut, gmail)
     finally:
         if runtime is not None:
             runtime.conn.close()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _seat_mailbox(
+    runtime: JarvisRuntime, recording: Recording | None, moment: datetime,
+) -> Gmail | None:
+    """The recording's invented ``mailbox`` as the connected ``gmail`` server (ADR 0362)."""
+    spec = recording.data.get("mailbox") if recording else None
+    if not spec:
+        return None
+    from scripts.tool_exam_mailbox import build, connect  # noqa: PLC0415
+
+    gmail = build(spec, moment)
+    connect(runtime, gmail)
+    return gmail
 
 
 def _seat_ride(runtime: JarvisRuntime, ride: Mapping[str, Any] | None, moment: datetime) -> None:
@@ -1353,6 +1375,29 @@ def state_failures(box: Box, checks: Sequence[Mapping[str, Any]]) -> list[str]:
     return failures
 
 
+def gmail_failures(box: Box, checks: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Where the calls made to the invented mailbox differ from ``expect.gmail``."""
+    if not checks:
+        return []
+    if box.gmail is None:
+        return ["expect.gmail needs a recording with a mailbox"]
+    failures = []
+    for check in checks:
+        given, pattern = check.get("args") or {}, check.get("query")
+        found = [
+            args for args in box.gmail.of(check["tool"])
+            if all(args.get(k) == v for k, v in given.items())
+            and (pattern is None or re.search(pattern, str(args.get("query", ""))))
+        ]
+        want = check.get("count")
+        if (want is None and not found) or (want is not None and len(found) != want):
+            failures.append(
+                f"gmail {check['tool']} {given or ''}{pattern or ''}: expected "
+                f"{'some' if want is None else want} call(s), got {len(found)}"
+            )
+    return failures
+
+
 def _events_since(box: Box, after: int) -> list[tuple[str, str]]:
     rows = box.runtime.conn.execute(
         "SELECT type, payload_json FROM events WHERE id > ? ORDER BY id",
@@ -1526,6 +1571,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
     failures += _receipt_failures(expect.get("receipt"), _events_since(box, after))
     failures += _request_failures(expect.get("requests"), seen)
     failures += state_failures(box, expect.get("state_after", ()))
+    failures += gmail_failures(box, expect.get("gmail", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
     failures += _block_d_failures(box, expect, out)
     if name := expect.get("checker"):

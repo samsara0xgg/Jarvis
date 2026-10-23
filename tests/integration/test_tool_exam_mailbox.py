@@ -7,9 +7,14 @@ and in whatever order; a spec's ``repeat`` makes numbered copies, each older tha
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 from scripts.tool_exam_mailbox import ME, build
+from scripts.tool_exam_tools import gmail_failures
+
+if TYPE_CHECKING:
+    from scripts.tool_exam_tools import Box
 
 NOW = datetime(2026, 10, 21, 18, 0, tzinfo=UTC)
 
@@ -61,3 +66,35 @@ def test_a_read_returns_the_text_the_files_and_the_headers_the_spec_gives() -> N
     assert full["to"] == ME
     assert gmail.messages["digest2"].message()["List-Unsubscribe"] == "<mailto:stop@example.com>"
     assert gmail.labels("old") == {"INBOX"}
+
+
+def test_expect_gmail_counts_the_calls_made_to_the_mailbox_that_hold_the_arguments() -> None:
+    """``expect.gmail``: calls of a tool with the arguments and query given; ``count`` is exact."""
+    gmail = build(_spec(), NOW)
+    gmail.tool("gmail_search", {"query": "in:inbox is:unread", "maxResults": 10})
+    gmail.tool("gmail_batchModify", {"messageIds": ["old"], "removeLabelIds": ["INBOX"]})
+    box = cast("Box", SimpleNamespace(gmail=gmail))
+    archived = {"messageIds": ["old"], "removeLabelIds": ["INBOX"]}
+    assert gmail_failures(box, [
+        {"tool": "gmail_batchModify", "args": archived, "count": 1},
+        {"tool": "gmail_search", "query": "^in:inbox"},
+        {"tool": "gmail_send", "count": 0},
+    ]) == []
+    wrong = gmail_failures(box, [
+        {"tool": "gmail_batchModify", "args": {"messageIds": ["digest1"]}},
+        {"tool": "gmail_search", "query": "^from:", "count": 1},
+        {"tool": "gmail_batchModify", "count": 0},
+    ])
+    assert len(wrong) == 3
+    assert wrong[0].endswith("expected some call(s), got 0")
+    assert wrong[1].endswith("expected 1 call(s), got 0")
+    assert wrong[2].endswith("expected 0 call(s), got 1")
+
+
+def test_expect_gmail_needs_a_recording_with_a_mailbox() -> None:
+    """An item that asks about Gmail calls without a mailbox fails, rather than passing empty."""
+    box = cast("Box", SimpleNamespace(gmail=None))
+    assert gmail_failures(box, [{"tool": "gmail_send", "count": 0}]) == [
+        "expect.gmail needs a recording with a mailbox",
+    ]
+    assert gmail_failures(box, []) == []
