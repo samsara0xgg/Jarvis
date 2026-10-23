@@ -14,7 +14,7 @@ import time
 import wave
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from jarvis.shared import Event, lang
 from jarvis.shared.realtime_trace import record_realtime_trace
@@ -35,6 +35,7 @@ from jarvis.surface.voice_media.contract import (
     StreamingMediaStartupError,
     StreamingTTSProvider,
 )
+from jarvis.surface.voice_media.gain import OutputGain
 from jarvis.surface.voice_media.pcm import SegmentResampler, cut_off_cue, head_dropped
 from jarvis.surface.voice_media.registry import ActivePlaybackRegistry
 from jarvis.surface.voice_media.response import (
@@ -44,6 +45,7 @@ from jarvis.surface.voice_media.response import (
     ResponseBuffer,
     ResponseChunk,
 )
+from jarvis.surface.voice_media.shutdown_clock import ShutdownClock
 from jarvis.surface.voice_tts import (
     AudioStreamPlayer,
     PlayerStartResult,
@@ -62,14 +64,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-# A barge-in yield lowers or restores the speech within one spoken syllable.
-YIELD_RAMP_MS = 30.0
-# A stop or a barge-in hold first fades her out on the real waveform: the cut's
-# own declick (ADR-0006 D11) starts from the last sample played, and from
-# mid-word that truncation was a pop even at the yield's 0.2 (live test
-# 2026-09-29). The wait is bounded for a player whose callback is not running.
-CUT_FADE_MS = 20.0
-_CUT_FADE_WAIT_S = 0.1
 # A session connected while Allen is still talking spares his answer the
 # transport and task handshake (TLS alone took 0.11-0.15 s to api-uw on
 # 2026-09-29). MiniMax closes a started task after 120 s without an event.
@@ -173,8 +167,7 @@ class StreamingTTSPipeline:
             "not_attempted", "failed_closed", "uncertain"
         ] = "not_attempted"
         self._shutdown_requested = threading.Event()
-        self._deadline_lock = threading.Lock()
-        self._shutdown_deadline = float("inf")
+        self._clock = ShutdownClock()
         self._cleanup_lock = threading.Lock()
         self._cleanup_errors: list[str] = []
         self._player_stop_started = False
@@ -205,11 +198,7 @@ class StreamingTTSPipeline:
         # wait line of such a group that has not started is dropped, never played
         # behind the answer. Insertion-ordered so the oldest can be trimmed.
         self._answered_groups: dict[str, None] = {}
-        # The player's gain is the mute's (ADR-0015 D2) times a barge-in
-        # yield's, so a yield never lifts a mute.
-        self._gain_lock = threading.Lock()
-        self._mute_gain = 1.0
-        self._yield_gain = 1.0
+        self._gain = OutputGain(player)
         # Connected for the next answer while Allen talks; actor-owned.
         self._spare: TTSSession | None = None
         self._spare_language: lang.Language = "en"
@@ -332,8 +321,7 @@ class StreamingTTSPipeline:
         if response_id is None:
             # Whatever is speaking fades now, not once the actor gets here: an
             # actor busy on SQLite could let her play on for seconds.
-            with self._gain_lock:
-                self._player.set_gain(0.0, CUT_FADE_MS)
+            self._gain.begin_fade()
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._stop_foreground_output_owned(response_id, reason),
@@ -341,7 +329,7 @@ class StreamingTTSPipeline:
             )
         except RuntimeError:
             if response_id is None:
-                self._restore_gain()
+                self._gain.restore()
             return "stale"
         try:
             return future.result(timeout=self._config.shutdown_timeout_s)
@@ -462,19 +450,11 @@ class StreamingTTSPipeline:
         self._publish_shutdown_deadline(deadline)
 
     def _publish_shutdown_deadline(self, deadline: float) -> None:
-        """Atomically publish an absolute deadline that can only move earlier."""
-        with self._deadline_lock:
-            self._shutdown_deadline = min(self._shutdown_deadline, deadline)
+        """Publish an absolute deadline that can only move earlier, and mark power shut down."""
+        self._clock.lower_to(deadline)
         with self._power_lock:
             self._power_shutdown = True
             self._shutdown_requested.set()
-
-    def _remaining_s(self, cap_s: float) -> float:
-        with self._deadline_lock:
-            deadline = self._shutdown_deadline
-        if deadline == float("inf"):
-            return cap_s
-        return min(cap_s, max(0.0, deadline - time.monotonic()))
 
     def wait_until_idle(self, *, timeout_s: float) -> bool:
         """Wait without borrowing actor-owned mutable state."""
@@ -495,18 +475,14 @@ class StreamingTTSPipeline:
 
     def set_output_gain(self, gain: float, ramp_ms: float = 10.0) -> None:
         """Ramp the player's output gain: 0.0 is the ADR-0015 D2 speech mute, 1.0 restores."""
-        with self._gain_lock:
-            self._mute_gain = gain
-            self._player.set_gain(gain * self._yield_gain, ramp_ms)
+        self._gain.set_mute(gain, ramp_ms)
 
     def set_yield_gain(self, gain: float) -> None:
         """Lower the speech while Allen may be taking the turn; 1.0 gives it back.
 
         Scales, never replaces, the mute: a yield ending during a mute stays silent.
         """
-        with self._gain_lock:
-            self._yield_gain = gain
-            self._player.set_gain(self._mute_gain * gain, YIELD_RAMP_MS)
+        self._gain.set_yield(gain)
 
     def pause_speaking(self, paused: bool) -> None:  # noqa: FBT001 - the capture side's one bit
         """Hold her answer where it is while Allen's words are judged, or let it go on.
@@ -1135,7 +1111,7 @@ class StreamingTTSPipeline:
         ):
             if response_id is None:
                 # The caller faded her out before asking; nothing is cut.
-                self._restore_gain()
+                self._gain.restore()
             record_realtime_trace(
                 "media_stop_foreground_stale",
                 response_id=response_id,
@@ -1144,11 +1120,11 @@ class StreamingTTSPipeline:
             )
             return "stale"
         try:
-            await self._fade_out()
+            await self._gain.fade_out()
             if not await self._interrupt_active(reason=reason):
                 return "uncertain"
         finally:
-            self._restore_gain()
+            self._gain.restore()
         # ADR-0006 D4: a user stop covers the queued speech of that group
         # too, and `_release_active(start_successor=False)` never advances
         # the lane, so an unpurged successor would sit unstartable.
@@ -1157,27 +1133,11 @@ class StreamingTTSPipeline:
 
     async def _pause_owned(self, *, paused: bool) -> None:
         if paused:
-            await self._fade_out()
+            await self._gain.fade_out()
             self._player.pause_generation(paused=True)
             return
         self._player.pause_generation(paused=False)
-        self._restore_gain()
-
-    async def _fade_out(self) -> None:
-        """Ramp her to silence on the real waveform before the player cuts or holds her."""
-        with self._gain_lock:
-            self._player.set_gain(0.0, CUT_FADE_MS)
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _CUT_FADE_WAIT_S
-        while loop.time() < deadline:
-            if self._player.current_gain() == 0.0:
-                return
-            await asyncio.sleep(0.005)
-
-    def _restore_gain(self) -> None:
-        """Give the gain back to the mute and the yield after a fade."""
-        with self._gain_lock:
-            self._player.set_gain(self._mute_gain * self._yield_gain, YIELD_RAMP_MS)
+        self._gain.restore()
 
     async def _hold_output_owned(self, *, held: bool) -> None:
         self._held = held
@@ -1217,12 +1177,12 @@ class StreamingTTSPipeline:
             await session.connect()
         except Exception:  # noqa: BLE001 - a spare that cannot connect is only not used
             LOGGER.debug("spare TTS session did not connect", exc_info=True)
-            await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
+            await self._clock.wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
             return
         finally:
             self._spare_task = None
         if self._power_suspended or not self._accepting.is_set():
-            await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
+            await self._clock.wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
             return
         self._spare, self._spare_ready_at = session, asyncio.get_running_loop().time()
         self._spare_language = language
@@ -1301,7 +1261,9 @@ class StreamingTTSPipeline:
         finally:
             self._network_lost_task = None
             if session is not None:
-                await self._wait_task_bounded(asyncio.create_task(session.close()), timeout_s=0.5)
+                await self._clock.wait_task_bounded(
+                    asyncio.create_task(session.close()), timeout_s=0.5,
+                )
 
     def _network_lost_file(self, code: lang.Language) -> Path | None:
         """The kept audio of the line: named by its text and rate, so an edit starts afresh."""
@@ -1352,12 +1314,12 @@ class StreamingTTSPipeline:
     async def _drop_spare(self) -> None:
         spare, self._spare = self._spare, None
         if spare is not None:
-            await self._wait_task_bounded(asyncio.create_task(spare.close()), timeout_s=0.5)
+            await self._clock.wait_task_bounded(asyncio.create_task(spare.close()), timeout_s=0.5)
 
     async def _close_spare(self) -> None:
         """Shutdown and sleep: no spare survives, including one still connecting."""
         if self._spare_task is not None:
-            await self._wait_task_bounded(self._spare_task, timeout_s=0.5)
+            await self._clock.wait_task_bounded(self._spare_task, timeout_s=0.5)
         await self._drop_spare()
 
     async def _hold_for_devices_owned(self, *, held: bool) -> bool:
@@ -1479,7 +1441,7 @@ class StreamingTTSPipeline:
                 done, still_pending = loop.run_until_complete(
                     asyncio.wait(
                         pending,
-                        timeout=self._remaining_s(self._config.shutdown_timeout_s),
+                        timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
                     ),
                 )
                 if done:
@@ -1584,7 +1546,7 @@ class StreamingTTSPipeline:
             power_done = self._power_helper_done
         if power_state in {"stopping", "starting"}:
             if not power_done.wait(
-                timeout=self._remaining_s(self._config.shutdown_timeout_s),
+                timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
             ):
                 LOGGER.error(
                     "power player transition still owns device at media shutdown",
@@ -1614,7 +1576,7 @@ class StreamingTTSPipeline:
             def _stop() -> None:
                 try:
                     self._stop_player_until_definitive(
-                        self._remaining_s(self._config.shutdown_timeout_s),
+                        self._clock.remaining_s(self._config.shutdown_timeout_s),
                     )
                     self._player_stop_definitive = True
                 except Exception as exc:
@@ -1631,7 +1593,7 @@ class StreamingTTSPipeline:
             )
             self._player_stop_thread.start()
         stopped = self._player_stop_done.wait(
-            timeout=self._remaining_s(self._config.shutdown_timeout_s),
+            timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
         )
         if not stopped:
             LOGGER.error(
@@ -1701,7 +1663,7 @@ class StreamingTTSPipeline:
             )
             self._provider_stop_thread.start()
         stopped = self._provider_stop_done.wait(
-            timeout=self._remaining_s(self._config.shutdown_timeout_s),
+            timeout=self._clock.remaining_s(self._config.shutdown_timeout_s),
         )
         if not stopped:
             LOGGER.error(
@@ -2257,7 +2219,7 @@ class StreamingTTSPipeline:
             active.session = None
             if session is not None:
                 close_task = asyncio.create_task(session.close())
-                await self._wait_task_bounded(close_task, timeout_s=0.5)
+                await self._clock.wait_task_bounded(close_task, timeout_s=0.5)
             # Every exit path retains and drains fallback process ownership;
             # an exceptional ``wait()`` must not let a still-live ``say``
             # overlap the next generation.
@@ -2458,7 +2420,7 @@ class StreamingTTSPipeline:
                     last_error = exc
                     if session is not None:
                         close_task = asyncio.create_task(session.close())
-                        await self._wait_task_bounded(close_task, timeout_s=0.5)
+                        await self._clock.wait_task_bounded(close_task, timeout_s=0.5)
                     session = None
                     iterator = None
                     active.session = None
@@ -2868,7 +2830,7 @@ class StreamingTTSPipeline:
             spawn_task.cancel()
             _done, pending = await asyncio.wait(
                 {spawn_task},
-                timeout=self._remaining_s(0.25),
+                timeout=self._clock.remaining_s(0.25),
             )
             if pending:
                 try:
@@ -2899,7 +2861,7 @@ class StreamingTTSPipeline:
         wait_task = asyncio.create_task(process.wait())
         done, _pending = await asyncio.wait(
             {wait_task},
-            timeout=self._remaining_s(0.25),
+            timeout=self._clock.remaining_s(0.25),
         )
         if done:
             try:
@@ -3091,23 +3053,10 @@ class StreamingTTSPipeline:
         session = active.session
         if session is not None:
             abort_task = asyncio.create_task(session.abort(reason))
-            await self._wait_task_bounded(abort_task, timeout_s=0.5)
+            await self._clock.wait_task_bounded(abort_task, timeout_s=0.5)
         await self._cancel_fallback(active)
         if task is not None and task is not asyncio.current_task():
-            await self._wait_task_bounded(task, timeout_s=0.5)
-
-    async def _wait_task_bounded(self, task: asyncio.Task[Any], *, timeout_s: float) -> bool:
-        done, pending = await asyncio.wait(
-            {task},
-            timeout=self._remaining_s(timeout_s),
-        )
-        if pending:
-            task.cancel()
-            return False
-        if done:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                task.result()
-        return True
+            await self._clock.wait_task_bounded(task, timeout_s=0.5)
 
     async def _checkpoint_if_advanced(
         self,
@@ -3202,7 +3151,7 @@ class StreamingTTSPipeline:
                     attempt,
                 )
                 if attempt < self._config.terminal_retry_attempts:
-                    delay = self._remaining_s(self._config.durability_retry_s)
+                    delay = self._clock.remaining_s(self._config.durability_retry_s)
                     if delay <= 0:
                         break
                     await asyncio.sleep(delay)
@@ -3224,7 +3173,7 @@ class StreamingTTSPipeline:
         self._player.interrupt_generation(
             expected_playback_generation_id=active.lease.playback_generation_id,
         )
-        deadline = asyncio.get_running_loop().time() + self._remaining_s(0.5)
+        deadline = asyncio.get_running_loop().time() + self._clock.remaining_s(0.5)
         while asyncio.get_running_loop().time() < deadline:
             settled = self._player.settle_interrupted_generation(
                 expected_playback_generation_id=active.lease.playback_generation_id,
@@ -3333,7 +3282,7 @@ class StreamingTTSPipeline:
         presentation = active.presentation_task
         if presentation is not None and presentation is not asyncio.current_task():
             presentation.cancel()
-            await self._wait_task_bounded(presentation, timeout_s=0.25)
+            await self._clock.wait_task_bounded(presentation, timeout_s=0.25)
         self._responses.pop(active.response.response_id, None)
         self._player.retire_generation(active.lease.playback_generation_id)
         self._broadcast_spoken(active.response, event_type=event_type)
@@ -3511,7 +3460,7 @@ class StreamingTTSPipeline:
         await self._close_spare()
         if self._network_lost_task is not None:
             self._network_lost_task.cancel()
-            await self._wait_task_bounded(self._network_lost_task, timeout_s=0.5)
+            await self._clock.wait_task_bounded(self._network_lost_task, timeout_s=0.5)
         if self._active is not None:
             await self._interrupt_active(reason="media_owner_shutdown")
         while self._fallback_janitors:

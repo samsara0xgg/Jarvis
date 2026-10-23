@@ -35,7 +35,9 @@ from jarvis.surface.voice_ledger import (
 )
 from jarvis.surface.voice_media import pipeline as media_pipeline
 from jarvis.surface.voice_media.contract import MediaSubmitOutcome, StreamingMediaStartupError
-from jarvis.surface.voice_media.pipeline import CUT_FADE_MS, YIELD_RAMP_MS, StreamingTTSPipeline
+from jarvis.surface.voice_media.gain import CUT_FADE_MS, YIELD_RAMP_MS
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
+from jarvis.surface.voice_media.shutdown_clock import ShutdownClock
 from tests.support.hold import HANG_S, never_waits_for
 from tests.support.media import (
     Behavior,
@@ -2687,7 +2689,7 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
 
 
 def _publish_deadlines_together(
-    pipeline: StreamingTTSPipeline,
+    clock: ShutdownClock,
     *,
     short_s: float,
     long_s: float,
@@ -2701,7 +2703,7 @@ def _publish_deadlines_together(
 
     def _publish(timeout_s: float) -> None:
         publish.wait()
-        pipeline._request_shutdown_deadline(timeout_s)  # noqa: SLF001
+        clock.lower_to(time.monotonic() + timeout_s)
         if timeout_s == short_s:
             short_published_by.append(time.monotonic())
 
@@ -2715,34 +2717,23 @@ def _publish_deadlines_together(
     for thread in threads:
         thread.join(timeout=HANG_S)
         assert not thread.is_alive()
-    with pipeline._deadline_lock:  # noqa: SLF001
-        return pipeline._shutdown_deadline, short_published_by[0]  # noqa: SLF001
+    return clock.deadline, short_published_by[0]
 
 
-def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
+def test_shutdown_deadline_is_concurrent_monotonic_min() -> None:
     """A later long request cannot overwrite an earlier shutdown deadline."""
-    db_path = tmp_path / "deadline-min.db"
     short_s = 2.0
     # Which request lands last is up to the scheduler, and only the long one landing last can
-    # overwrite the short one, so the race is run on a fresh pipeline each round.
+    # overwrite the short one, so the race is run on a fresh clock each round.
     for _ in range(16):
-        pipeline = StreamingTTSPipeline(
-            provider=FakeProvider(candidate_count=1),
-            player=make_player(),
-            conn_factory=lambda: open_event_log(db_path),
-            boot_high_water_id=0,
-            config=replace(media_config(), shutdown_timeout_s=0.5),
-            start_player=False,
-        )
         chosen, short_published_by = _publish_deadlines_together(
-            pipeline,
+            ShutdownClock(),
             short_s=short_s,
             long_s=8.0,
         )
         # The short request computed its deadline before it returned, so the deadline in force
         # is no later than that, whichever of the two was published last.
         assert chosen <= short_published_by + short_s
-        assert pipeline.close(wait_timeout_s=HANG_S)
 
 
 class _FakeOutputStream:
