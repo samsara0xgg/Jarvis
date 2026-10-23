@@ -25,6 +25,7 @@ that handles a provider's stream. Only the network is missing.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import threading
@@ -33,11 +34,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 
 from jarvis.decision.llm import ChatResult, LLMClient, Provider, ToolCall, UsageStatus
+from jarvis.decision.llm_message import MessageStream
 from jarvis.decision.llm_session import LLMPresetSnapshot, LLMRequestClient, LLMSessionFactory
 from jarvis.decision.llm_stream import LLMStreamHandle, StreamNormalizer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 
     from jarvis.decision.llm_stream import StreamDisposition
 
@@ -137,6 +139,33 @@ class DecisionClient(Protocol):
         ...
 
 
+@runtime_checkable
+class MessageClient(Protocol):
+    """What a deep search reads of a model client: who it is and its raw message stream."""
+
+    @property
+    def provider(self) -> Provider:
+        """``anthropic``: only its server tools return the blocks a deep search reads."""
+        ...
+
+    @property
+    def model(self) -> str:
+        """The concrete model id of the active preset."""
+        ...
+
+    def message_events(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str,
+        tools: list[dict[str, Any]] | None = None,
+        max_output_tokens: int | None = None,
+        paused: Sequence[Mapping[str, Any]] = (),
+    ) -> MessageStream:
+        """One request as its raw stream events."""
+        ...
+
+
 @dataclass(frozen=True)
 class Call:
     """A tool call the model makes."""
@@ -167,8 +196,11 @@ class Reply:
     """One response: text, tool calls, or both. ``usage=None`` is a response that reports none.
 
     ``raw`` is the provider's own response body, which ``chat`` returns as ``ChatResult.raw``: a
-    caller that reads more than the text and the calls (deep search reads Anthropic's server-tool
-    transcript) is scripted with the body it reads.
+    caller that reads more than the text and the calls is scripted with the body it reads. A deep
+    search reads Anthropic's message by its raw stream (``message_events``), and ``raw`` is that
+    message: ``{"content": [blocks], "stop_reason": ..., "usage": {"server_tool_use": ...}}``.
+    ``quiet`` makes that stream stop after its blocks without ending the message: the event is set
+    once every block has been taken by the reader, and the stream then waits until it is cancelled.
     """
 
     text: str | None = None
@@ -176,6 +208,7 @@ class Reply:
     usage: Usage | None = field(default_factory=Usage)
     chunk: int | None = None  # a stream delivers the text in pieces of this many characters
     raw: Mapping[str, Any] = field(default_factory=dict)  # the provider's body, for a reader of it
+    quiet: threading.Event | None = None  # a message stream that goes silent after its blocks
 
     @property
     def finish_reason(self) -> str:
@@ -223,7 +256,7 @@ type Step = Reply | Failure | Pause | Responder | str
 class Request:
     """What the model was sent, copied at the moment it was sent."""
 
-    kind: Literal["chat", "stream"]
+    kind: Literal["chat", "stream", "message"]
     messages: list[dict[str, Any]]
     system: str
     tools: list[dict[str, Any]] | None
@@ -474,6 +507,34 @@ class ScriptedModel:
             on_settled=on_settled,
         )
 
+    def message_events(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str,
+        tools: list[dict[str, Any]] | None = None,
+        max_output_tokens: int | None = None,
+        paused: Sequence[Mapping[str, Any]] = (),
+    ) -> MessageStream:
+        """Open one Anthropic message whose raw stream events come from the next step.
+
+        The request is recorded as the API would get it: ``messages``, then the assistant's
+        ``paused`` blocks with no user message between.
+        """
+        sent = [*messages, {"role": "assistant", "content": list(paused)}] if paused else messages
+        step = self._script.answer(
+            Request(
+                "message",
+                copy.deepcopy(sent),
+                system,
+                copy.deepcopy(tools),
+                None,
+                None,
+                {"max_output_tokens": max_output_tokens},
+            )
+        )
+        return MessageStream(f"scripted-{len(self.requests)}", _message_events(step))
+
 
 class ScriptedRun(ScriptedModel):
     """One response run's request client: the script of its model, pinned to a frozen preset.
@@ -620,6 +681,78 @@ async def _response_events(step: Reply | Failure) -> AsyncIterator[Mapping[str, 
     yield {"type": "response.completed", "response": response}
 
 
+async def _message_events(step: Reply | Failure) -> AsyncIterator[Mapping[str, Any]]:
+    """The raw stream events of one scripted Anthropic message, or its failure.
+
+    A text block streams its text and its citations, a tool call its input as JSON pieces, a
+    thinking block its text and signature, and any other block (a search result) whole in its
+    start event, as the API sends them. A step with ``quiet`` ends after its blocks.
+    """
+    if isinstance(step, Failure):
+        raise step.error
+    usage = step.usage
+    yield {
+        "type": "message_start",
+        "message": {
+            "id": "msg-scripted",
+            "usage": {
+                "input_tokens": usage.input_tokens if usage else 0,
+                "cache_read_input_tokens": usage.cache_read_tokens if usage else 0,
+                "cache_creation_input_tokens": usage.cache_write_tokens if usage else 0,
+                "output_tokens": 1,
+            },
+        },
+    }
+    for index, block in enumerate(step.raw.get("content") or ()):
+        for event in _block_events(index, block):
+            yield event
+    if step.quiet is not None:
+        step.quiet.set()  # every block above has been taken by the reader
+        await asyncio.Event().wait()  # until the reader is cancelled
+    delta_usage: dict[str, Any] = {"output_tokens": usage.output_tokens if usage else 0}
+    if (searches := (step.raw.get("usage") or {}).get("server_tool_use")) is not None:
+        delta_usage["server_tool_use"] = searches
+    yield {
+        "type": "message_delta",
+        "delta": {"stop_reason": step.raw.get("stop_reason") or "end_turn"},
+        "usage": delta_usage,
+    }
+    yield {"type": "message_stop"}
+
+
+def _block_events(index: int, block: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The stream events of one content block."""
+    kind = block.get("type")
+
+    def delta(piece: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "content_block_delta", "index": index, "delta": piece}
+
+    events: list[dict[str, Any]]
+    if kind == "text":
+        events = [{
+            "type": "content_block_start", "index": index,
+            "content_block": {"type": "text", "text": ""},
+        }, delta({"type": "text_delta", "text": block.get("text", "")})]
+        events += [
+            delta({"type": "citations_delta", "citation": citation})
+            for citation in block.get("citations") or ()
+        ]
+    elif kind in {"tool_use", "server_tool_use"}:
+        events = [{
+            "type": "content_block_start", "index": index,
+            "content_block": {**block, "input": {}},
+        }, delta({"type": "input_json_delta", "partial_json": json.dumps(block.get("input", {}))})]
+    elif kind == "thinking":
+        events = [{
+            "type": "content_block_start", "index": index,
+            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+        }, delta({"type": "thinking_delta", "thinking": block.get("thinking", "")}),
+            delta({"type": "signature_delta", "signature": block.get("signature", "sig")})]
+    else:
+        events = [{"type": "content_block_start", "index": index, "content_block": dict(block)}]
+    return [*events, {"type": "content_block_stop", "index": index}]
+
+
 @runtime_checkable
 class RunClient(DecisionClient, Protocol):
     """What a response run reads of its own request client, as ``LLMRequestClient`` offers it."""
@@ -649,3 +782,10 @@ if TYPE_CHECKING:
 
     def _scripted_run_is_a_run_client(run: ScriptedRun) -> RunClient:
         return run
+
+    # And both read like the client a deep search streams its message from.
+    def _real_client_is_a_message_client(client: LLMClient) -> MessageClient:
+        return client
+
+    def _scripted_model_is_a_message_client(model: ScriptedModel) -> MessageClient:
+        return model
