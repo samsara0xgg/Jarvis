@@ -67,6 +67,9 @@ enum TimelineFixture {
             b.add("screen", 850, 885, ["id": "screen-demo-1", "device": "iPhone", "active_s": 1500, "apps": [["name": "微信", "bundle": "com.tencent.xin", "minutes": 14, "category": "social"],
                                                                                                       ["name": "小红书", "bundle": "com.xingin.discover", "minutes": 8, "category": "social"], ["name": "Safari", "bundle": "com.apple.mobilesafari", "minutes": 3, "category": "browser"]]])
             b.add("media", 860, 890, ["id": "media-demo-1", "device": "iPhone", "app": "Music", "active_s": 1620, "titles": [["title": "Sunday Morning", "artist": "Maroon 5"]], "route": "AirPods"])
+            // two Claude Code sessions a Remote Control bridge ran for threads on claude.ai: no title the Mac can read
+            b.add("code", 600, 660, ["id": "code-r1", "title": "", "project": "bridge-cse_demo1", "account": "b", "session_id": "r1", "prompts": 3, "remote_session": "cse_demo1"])
+            b.add("code", 625, 670, ["id": "code-r2", "title": "", "project": "bridge-cse_demo2", "account": "b", "session_id": "r2", "prompts": 1, "remote_session": "cse_demo2"])
             b.add("messages", 855, 872, ["id": "messages-demo-1", "device": "iPhone", "app": "WeChat", "conversation": "Mia", "is_group": false, "sent": 4, "received": 6])
             b.add("messages", 858, 860, ["id": "messages-demo-3", "device": "iPhone", "app": "小红书", "conversation": "穿搭", "is_group": true, "sent": 0, "received": 7])          // two bursts that only came in: one line
             b.add("messages", 864, 865, ["id": "messages-demo-4", "device": "iPhone", "app": "小红书", "conversation": "旅行", "is_group": true, "sent": 0, "received": 5])
@@ -77,7 +80,7 @@ enum TimelineFixture {
             // begins in one stretch and ends in the next, a long drive is in the model's words, a lunch he told her, a rest it asks him about, homework it is not sure of, a stretch nobody
             // could say anything of, and the evening's work goes on to now. The two stretches of work and the rest say where his attention went (ADR 0314).
             b.doing(545, 575, "起床吃早饭", "meal", "inferred", detail: "起床后在家吃了早饭，没有别的记录", place: "p-home", items: ["stay-1", "reminder-demo-3", "code-s1"], clues: ["早上九点刚醒", "家里的 Wi-Fi 一直在线"])
-            b.doing(575, 685, "Jarvis", "work", "observed", detail: "一直在改时间线和测试", place: "p-home", items: ["stay-1", "code-s1", "code-s2", "work-demo-1", "talk-1", "code-s3"],
+            b.doing(575, 685, "Jarvis", "work", "observed", detail: "一直在改时间线和测试", place: "p-home", items: ["stay-1", "code-s1", "code-s2", "work-demo-1", "talk-1", "code-s3", "code-r1", "code-r2"],
                     clues: ["Xcode 在前台", "Claude Code 会话：统一时间线的行高", "你对她说过一次话"],
                     attention: b.attention(threads: [("t-tl", "时间线的行高", "work", "mac", 62, ["Xcode", "DayTimelineRows.swift"]), ("t-cc", "Claude Code", "work", "mac", 30, ["统一时间线的行高"]),
                                                      ("t-wx", "微信", "social", "iPhone", 6, []), ("t-yt", "YouTube", "entertainment", "mac", 4, [])],

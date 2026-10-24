@@ -244,6 +244,12 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertEqual(d.lines.map(\.right), ["40 分钟", "", "1 小时 10 分", "20 分钟"])
         XCTAssertEqual(d.lines[1].said, .background(2))
         XCTAssertEqual(d.lines[0].mark, .icon("terminal.fill"))
+        let bridged = [item("r1", "code", 590, 650, #""title": "", "project": "bridge-cse_a", "prompts": 4, "remote_session": "cse_a""#),
+                       item("r2", "code", 640, 700, #""title": "", "project": "bridge-cse_b", "prompts": 0, "remote_session": "cse_b""#)]
+        let withBridges = try entry(DayTimelineModel.build(try reply(items + bridged, spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1", "c2", "c3", "c4", "c5", "r1", "r2"])]), now: 900), "d")
+        XCTAssertEqual(withBridges.lines.map(\.said), [.remote(2), nil, .background(2), nil, nil],
+                       "the sessions a Remote Control bridge ran for claude.ai threads are one line, typed in or not, at the first of them; the others as before")
+        XCTAssertFalse(withBridges.lines.contains { $0.title.contains("bridge-cse") || ($0.detail ?? "").contains("bridge-cse") }, "no worktree's name anywhere")
         let old = try entry(DayTimelineModel.build(try reply([item("c1", "code", 600, 640, #""title": "接上天气", "project": "bridge-cse_01""#)], spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1"])]), now: 900), "d")
         XCTAssertEqual(old.lines.map { [$0.title, $0.detail] }, [["接上天气", nil]], "a brain that does not say `prompts`: each session its own line, as before, without the worktree's name")
     }

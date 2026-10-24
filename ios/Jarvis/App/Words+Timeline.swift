@@ -37,6 +37,8 @@ extension Words {
         static func moreRuns(_ n: Int) -> String { pick(zh: "还有 \(n) 段", en: "\(n) more") }
         /// the Claude Code sessions that ran by themselves, he typed nothing in them, in one line
         static func backgroundSessions(_ n: Int) -> String { pick(zh: "另有 \(n) 个后台会话", en: "\(n) more running on their own") }
+        /// the Claude Code sessions a Remote Control bridge on the Mac ran for his claude.ai threads, in one line
+        static func remoteSessions(_ n: Int) -> String { pick(zh: "云端线程在 Mac 上跑 · \(n) 个", en: "Cloud threads running on the Mac · \(n)") }
         /// messages that only came in, of one app at about the same time, in one line
         static func received(_ app: String, people: Int, count: Int) -> String { pick(zh: "\(app) · \(people) 人 · 收到 \(count) 条", en: "\(app) · \(people) people · \(count) received") }
         /// how she knows what he was doing: shown when he asks

@@ -224,6 +224,7 @@ struct TLOpenView: View {
         case .onDevice(let device, let name): Words.Timeline.onDevice(device, name)
         case .more(let n): Words.Timeline.moreRuns(n)
         case .background(let n): Words.Timeline.backgroundSessions(n)
+        case .remote(let n): Words.Timeline.remoteSessions(n)
         case .received(let app, let people, let count): Words.Timeline.received(app, people: people, count: count)
         case nil: l.title
         }

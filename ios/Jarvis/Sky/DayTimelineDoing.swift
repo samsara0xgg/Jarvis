@@ -43,6 +43,7 @@ struct TLLine: Equatable, Identifiable {
         case onDevice(String, String)           // the device it was on, and what
         case more(Int)                          // the runs past the first few
         case background(Int)                    // Claude Code sessions that ran by themselves
+        case remote(Int)                        // Claude Code sessions a Remote Control bridge ran for claude.ai threads
         case received(String, people: Int, count: Int)          // messages that only came in, of one app at about the same time
     }
     let id: String
@@ -208,13 +209,18 @@ extension DayTimelineModel {
         return out
     }
 
-    /// What a stretch says in fewer lines than its items: the Claude Code sessions he typed in a line each, by its own title, never the repo it ran in; the ones that ran by themselves (the
-    /// brain's `prompts` 0) one line; and
+    /// What a stretch says in fewer lines than its items: the sessions a Remote Control bridge ran for his claude.ai threads (`remote_session`; their names are on claude.ai, not here)
+    /// one line; the other Claude Code sessions he typed in a line each, by its own title, never the repo it ran in; the ones that ran by themselves (the brain's `prompts` 0) one line; and
     /// messages that only came in, of one app within 10 minutes of each other, one line. A session the brain says nothing of `prompts` about is a line of its own, as before.
     private static func folds(_ s: DaySpan, _ st: TLStretch, inside: [(item: DayItem, row: TLEntry)]) -> (ids: Set<String>, lines: [(t: Double, line: TLLine)]) {
         func clamp(_ r: TLEntry) -> (Double, Double) { let a = max(r.t0, st.t0); return (a, max(a, min(r.t1 ?? a, st.t1))) }
         var ids: Set<String> = [], out: [(t: Double, line: TLLine)] = []
-        let codes = inside.filter { $0.row.kind == .code && $0.item.prompts != nil }
+        let remote = inside.filter { $0.row.kind == .code && tlText($0.item.remote_session) != nil }
+        if let first = remote.map({ clamp($0.row).0 }).min() {
+            out.append((first, TLLine(id: "\(s.id)-code-remote", mark: .icon("cloud"), said: .remote(remote.count))))
+        }
+        ids.formUnion(remote.map(\.item.id))
+        let codes = inside.filter { $0.row.kind == .code && $0.item.prompts != nil && tlText($0.item.remote_session) == nil }
         for x in codes where (x.item.prompts ?? 0) > 0 {
             var l = line(x.row, in: st)
             l.detail = nil

@@ -267,6 +267,7 @@ struct DayItem: Decodable {
     @Soft var account: String?
     @Soft var session_id: String?
     @Soft var prompts: Int?                 // what he typed in the session; 0: it ran by itself
+    @Soft var remote_session: String?       // `cse_<id>`: a Remote Control bridge ran it for a thread on claude.ai, whose name the Mac cannot read
     @Soft var detail: String?
     /// what his devices sync to the Mac (ADR 0305): a block of phone or tablet use (`device`, `active_s`, `apps` with their minutes), music or video (`app`, `active_s`, `titles`), his messages in
     /// one conversation (`conversation`, `sent`, `received`) and a call on the phone (`person`, `direction` sent or received, `duration_s`)
