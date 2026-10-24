@@ -19,14 +19,14 @@ struct JarvisApp: App {
         #endif
     }
     var body: some Scene {
-        WindowGroup { HomeRoot().voiceEntry().task { Task { await Words.shared.refresh() }; Waiting.shared.start(); JarvisActivity.shared.start(); RideLiveActivity.shared.showDebug(); LifelogUploader.shared.kick(foreground: true) } }
+        WindowGroup { HomeRoot().voiceEntry().task { Waiting.shared.start(); JarvisActivity.shared.start(); RideLiveActivity.shared.showDebug(); LifelogUploader.shared.kick(foreground: true) } }
             .onChange(of: BrainLink.shared.hasToken) { _, paired in
                 // frames queued before pairing go out now, and the phone asks to be notified (once)
                 if paired { Task { await Reporter.shared.flush() }; Task { await PushRegistry.shared.start() }; JarvisActivity.shared.start() }
                 else { Task { await JarvisActivity.shared.end(); await RideLiveActivity.shared.end() } }
             }
             // a pairing (or a new one over the old) sends what the old token could not
-            .onChange(of: BrainLink.shared.openTick) { _, _ in LifelogUploader.shared.kick(foreground: true); Task { await Words.shared.refresh() } }
+            .onChange(of: BrainLink.shared.openTick) { _, _ in LifelogUploader.shared.kick(foreground: true) }
             .onChange(of: phase) { _, p in
                 // the brain's days are asked for again when the app comes back from the background (not on a timer)
                 StallLog.mark("phase \(p)")

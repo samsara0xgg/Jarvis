@@ -1,7 +1,7 @@
 """Canary — Chinese in the iPhone app's Swift string literals lives only in the words table.
 
 The phone words every fixed string from ``ios/Jarvis/App/Words.swift`` and its
-``Words+<area>.swift`` siblings, in the language the brain's settings name (ADR 0327). Any other
+``Words+<area>.swift`` siblings, in the device's own language (ADR 0405). Any other
 Swift file holding a Chinese literal says why where it is defined, on a line of its own
 (ADR 0325: a canary's rule sits with the thing, not in a list of file names):
 
@@ -186,7 +186,7 @@ def test_cjk_swift_literals_only_in_words_table() -> None:
     held, marks = _holders(), _marks()
     stray = [f"{rel}:{lines[0]}" for rel, lines in held.items() if rel not in marks]
     assert not stray, (
-        "Chinese string literal outside the phone's words table (ADR 0327). Put the words in"
+        "Chinese string literal outside the phone's words table (ADR 0405). Put the words in"
         " ios/Jarvis/App/Words+<area>.swift with zh and en; if the file reads his own words or"
         f" holds DEBUG made-up data, mark it `// words: his|sample — <reason>` ({len(stray)}):\n"
         + "\n".join(stray)
@@ -199,7 +199,7 @@ def test_cjk_swift_literals_only_in_words_table() -> None:
     legacy = sum(kind == "legacy" for kind in marks.values())
     assert legacy <= _LEGACY_FILES, (
         f"{legacy - _LEGACY_FILES} more file(s) marked `// words: legacy` than before; new screen"
-        " words go in the table (ADR 0327)."
+        " words go in the table (ADR 0405)."
     )
     assert legacy == _LEGACY_FILES, (
         f"{_LEGACY_FILES - legacy} file(s) left the legacy mark: lower _LEGACY_FILES to {legacy}"

@@ -1,7 +1,7 @@
 import XCTest
 @testable import Jarvis
 
-/// The phone's words: the language is the stored one, else the phone's; an entry is both languages; the brain's reply names one.
+/// The phone's words: the language is the device's own (ADR 0405); an entry is both languages.
 @MainActor
 final class WordsTests: XCTestCase {
     private func words(stored: Words.Lang? = nil, preferred: [String] = []) -> (Words, UserDefaults) {
@@ -10,23 +10,18 @@ final class WordsTests: XCTestCase {
         return (Words(store: d, preferred: preferred), d)
     }
 
-    func testBeforeAnyAnswerItIsThePhonesFirstLanguage() {
+    func testItIsTheDevicesFirstLanguage() {
         XCTAssertEqual(words(preferred: ["zh-Hans-CN", "en-US"]).0.language, .zh)
+        XCTAssertEqual(words(preferred: ["zh-Hant-TW"]).0.language, .zh)
         XCTAssertEqual(words(preferred: ["en-CA", "zh-Hans-CN"]).0.language, .en)
+        XCTAssertEqual(words(preferred: ["fr-CA"]).0.language, .en, "any other language is English")
         XCTAssertEqual(words(preferred: []).0.language, .en)
     }
 
-    func testTheStoredLanguageWinsAndAChangeIsKept() {
-        let (w, d) = words(stored: .en, preferred: ["zh-Hans"])
-        XCTAssertEqual(w.language, .en)
-        w.set(.zh)
-        XCTAssertEqual(Words(store: d, preferred: ["en"]).language, .zh)
-    }
-
-    func testTheBrainsReplyNamesALanguage() {
-        XCTAssertEqual(Words.Lang(reply: Data(#"{"language":"en"}"#.utf8)), .en)
-        XCTAssertNil(Words.Lang(reply: Data(#"{"language":"fr"}"#.utf8)))
-        XCTAssertNil(Words.Lang(reply: Data("[]".utf8)))
+    /// what a brain's setting once stored for the next launch (ADR 0327) no longer decides it: an iPad set to English starts in English
+    func testAStoredLanguageDoesNotOutweighTheDevices() {
+        XCTAssertEqual(words(stored: .zh, preferred: ["en-US"]).0.language, .en)
+        XCTAssertEqual(words(stored: .en, preferred: ["zh-Hans"]).0.language, .zh)
     }
 
     func testADayIsWrittenOneWayInEachLanguageOnItsCalendarsDays() throws {

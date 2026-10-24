@@ -1,9 +1,9 @@
 import Foundation
 import Observation
 
-/// The phone's fixed words, zh and en side by side (ADR 0327): `Words.swift` and its `Words+<area>.swift` siblings hold every string a screen shows,
+/// The phone's fixed words, zh and en side by side (ADR 0405): `Words.swift` and its `Words+<area>.swift` siblings hold every string a screen shows,
 /// each entry built by `pick(zh:en:)` so a missing language does not compile, a sentence with values a function of them.
-/// The language is the one the brain's settings name (`GET /inherent/language`), kept for the next launch; before the first answer it is the phone's own.
+/// The language is the device's own (ADR 0405): Chinese when its first language is, else English. The watch follows the phone's, which the day it is sent carries.
 /// Screens read it inside `body`, so a change redraws them. Python's canary (`tests/canary/test_canary_cjk_only_in_swift_words_table.py`) keeps Chinese literals out of other files.
 @Observable @MainActor
 final class Words {
@@ -11,22 +11,22 @@ final class Words {
 
     enum Lang: String, Sendable {
         case zh, en
-
-        /// the answer of `GET /inherent/language`: `{"language": "zh" | "en"}`, or nil when it is not one
-        init?(reply data: Data) {
-            guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let s = o["language"] as? String, let l = Lang(rawValue: s) else { return nil }
-            self = l
-        }
     }
 
     private(set) var language: Lang
     @ObservationIgnored private let store: UserDefaults
     private static let key = "words.language"
 
-    /// `preferred` stands in for the phone's languages; a test gives it.
+    /// `preferred` stands in for the device's languages; a test gives it. The watch starts in the phone's language it was last told (`set`), else its own.
     init(store: UserDefaults = .standard, preferred: [String] = Locale.preferredLanguages) {
         self.store = store
-        language = store.string(forKey: Self.key).flatMap(Lang.init(rawValue:)) ?? (preferred.first?.hasPrefix("zh") == true ? .zh : .en)
+        let own: Lang = preferred.first?.hasPrefix("zh") == true ? .zh : .en
+        #if os(watchOS)
+        language = store.string(forKey: Self.key).flatMap(Lang.init(rawValue:)) ?? own
+        #else
+        let argument = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[Self.key] as? String          // `-words.language zh` at launch (the UI tests' shots)
+        language = argument.flatMap(Lang.init(rawValue:)) ?? own
+        #endif
     }
 
     func set(_ l: Lang) {
@@ -34,14 +34,6 @@ final class Words {
         language = l
         store.set(l.rawValue, forKey: Self.key)
     }
-
-    #if os(iOS)
-    /// Ask the brain for its language, when this phone is paired. Any failure keeps the language held. (The watch has no brain of its own: the phone tells it the language.)
-    func refresh() async {
-        guard BrainLink.shared.hasToken else { return }
-        if let l = try? await BrainLink.shared.call({ try await BrainClient.language(bases: $0, token: $1) }) { set(l) }
-    }
-    #endif
 
     /// the one choice between two wordings: both are always written
     static func pick(zh: String, en: String) -> String { shared.language == .zh ? zh : en }

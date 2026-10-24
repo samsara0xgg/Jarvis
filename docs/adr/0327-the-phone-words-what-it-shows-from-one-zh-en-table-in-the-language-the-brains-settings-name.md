@@ -1,6 +1,6 @@
 # ADR 0327 — The phone words what it shows from one zh/en table, in the language the brain's settings name
 
-**Status:** Accepted
+**Status:** Superseded-by-0405
 **Date:** 2026-10-21
 **Supersedes:** none
 
