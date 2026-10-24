@@ -5,7 +5,7 @@ import Foundation
 /// key codes are macOS virtual key codes and `mods` the CGEventFlags bits, both already translated on the iPad.
 ///   {"t": "move", "x", "y"}            {"t": "down" | "up", "x", "y", "b": 0 left | 1 right}
 ///   {"t": "scroll", "dx", "dy"}        pixels, positive dy scrolls the content down toward him
-///   {"t": "key", "code", "down", "mods"}   {"t": "text", "s"}
+///   {"t": "key", "code", "down", "mods"}   {"t": "text", "s"}   {"t": "paste", "s"}
 final class Input {
     private var held: CGMouseButton?
     private var lastDown = (at: Date.distantPast, where: CGPoint.zero, clicks: 0)
@@ -49,6 +49,22 @@ final class Input {
                     e.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
                     e.post(tap: .cghidEventTap)
                 }
+            }
+        case "paste":
+            // His spoken words go in through the clipboard and ⌘V, whatever input method the Mac is in; the clipboard is put back after.
+            let pb = NSPasteboard.general
+            let before = pb.string(forType: .string)
+            pb.clearContents()
+            pb.setString(j["s"] as? String ?? "", forType: .string)
+            for down in [true, false] {
+                guard let e = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: down) else { continue }
+                e.flags = .maskCommand
+                e.post(tap: .cghidEventTap)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard let before else { return }
+                pb.clearContents()
+                pb.setString(before, forType: .string)
             }
         default:
             break
