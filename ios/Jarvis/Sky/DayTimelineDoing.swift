@@ -208,19 +208,17 @@ extension DayTimelineModel {
         return out
     }
 
-    /// What a stretch says in fewer lines than its items: its Claude Code sessions a line a project, with the ones that ran by themselves (the brain's `prompts` 0) one line after them; and
+    /// What a stretch says in fewer lines than its items: the Claude Code sessions he typed in a line each, by its own title, never the repo it ran in; the ones that ran by themselves (the
+    /// brain's `prompts` 0) one line; and
     /// messages that only came in, of one app within 10 minutes of each other, one line. A session the brain says nothing of `prompts` about is a line of its own, as before.
     private static func folds(_ s: DaySpan, _ st: TLStretch, inside: [(item: DayItem, row: TLEntry)]) -> (ids: Set<String>, lines: [(t: Double, line: TLLine)]) {
         func clamp(_ r: TLEntry) -> (Double, Double) { let a = max(r.t0, st.t0); return (a, max(a, min(r.t1 ?? a, st.t1))) }
         var ids: Set<String> = [], out: [(t: Double, line: TLLine)] = []
         let codes = inside.filter { $0.row.kind == .code && $0.item.prompts != nil }
-        let typed = Dictionary(grouping: codes.filter { ($0.item.prompts ?? 0) > 0 }) { tlText($0.item.project) ?? "Claude Code" }
-        for (name, xs) in typed {
-            let spans = xs.map { clamp($0.row) }.sorted { $0.0 < $1.0 }
-            var union = 0.0, edge = -Double.infinity
-            for (a, b) in spans { union += max(0, b - max(a, edge)); edge = max(edge, b) }
-            let t0 = spans[0].0
-            out.append((t0, TLLine(id: "\(s.id)-code-\(name)", time: clock(t0), mark: .icon("terminal.fill"), title: name, right: union >= 1 ? tlDur(tlInt(union)) : "", span: t0...edge)))
+        for x in codes where (x.item.prompts ?? 0) > 0 {
+            var l = line(x.row, in: st)
+            l.detail = nil
+            out.append((clamp(x.row).0, l))
         }
         let alone = codes.filter { ($0.item.prompts ?? 0) <= 0 }
         if let first = alone.map({ clamp($0.row).0 }).min() {

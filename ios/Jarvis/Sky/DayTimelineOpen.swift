@@ -389,7 +389,7 @@ struct TLOpenView: View {
 
     // MARK: Claude Code
 
-    /// one row for the sessions of a place: each as a line (time, title, project and account, how long) that opens to its recap; a session alone opens to its recap
+    /// one row for the sessions of a place: each as a line (time, title and account, how long) that opens to its recap; a session alone opens to its recap
     @ViewBuilder private var code: some View {
         if e.holdsSessions {
             VStack(alignment: .leading, spacing: 0) {
@@ -407,8 +407,7 @@ struct TLOpenView: View {
                 Text(s.time).font(Look.figures(11.5)).foregroundStyle(Look.ink2).frame(width: 40, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(s.name).font(.system(size: 14)).foregroundStyle(Look.ink).lineLimit(1)
-                    let meta = [s.project, s.account].compactMap { $0 }.joined(separator: " · ")
-                    if !meta.isEmpty { Text(meta).font(.system(size: 11.5)).foregroundStyle(Look.ink2).lineLimit(1) }
+                    if let meta = s.account { Text(meta).font(.system(size: 11.5)).foregroundStyle(Look.ink2).lineLimit(1) }
                 }
                 Spacer(minLength: 6)
                 Text(s.right).font(tlFigures(11.5)).foregroundStyle(Look.ink2).lineLimit(1).fixedSize()

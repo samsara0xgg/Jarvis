@@ -230,7 +230,7 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertEqual(by["scr1"]?.mark, .icon("iphone"))
     }
 
-    func testClaudeCodeIsALineAProjectWithTheSessionsThatRanByThemselvesInOne() throws {
+    func testClaudeCodeIsALineASessionHeTypedInByItsTitleWithTheOnesThatRanByThemselvesInOne() throws {
         let items = [
             item("c1", "code", 600, 640, #""title": "接上天气", "project": "Jarvis", "prompts": 6"#),
             item("c2", "code", 630, 700, #""project": "Jarvis", "prompts": 2"#),
@@ -239,12 +239,13 @@ final class DayTimelineDoingRowsTests: XCTestCase {
             item("c5", "code", 620, 625, #""project": "Jarvis", "prompts": 0"#),
         ]
         let d = try entry(DayTimelineModel.build(try reply(items, spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1", "c2", "c3", "c4", "c5"])]), now: 900), "d")
-        XCTAssertEqual(d.lines.map { $0.said == nil ? $0.title : "said" }, ["Jarvis", "said", "论文"], "a project he typed in is one line; the two that ran by themselves are one line, at the first of them")
-        XCTAssertEqual(d.lines.map(\.right), ["1 小时 40 分", "", "20 分钟"], "each project's time with its sessions' overlaps counted once")
+        XCTAssertEqual(d.lines.map { $0.said == nil ? $0.title : "said" }, ["接上天气", "said", "Claude Code", "第三章"], "each session he typed in is a line by its own title (Claude Code where it has none); the two that ran by themselves are one line, at the first of them")
+        XCTAssertEqual(d.lines.map(\.detail), [nil, nil, nil, nil], "no repo, no worktree")
+        XCTAssertEqual(d.lines.map(\.right), ["40 分钟", "", "1 小时 10 分", "20 分钟"])
         XCTAssertEqual(d.lines[1].said, .background(2))
         XCTAssertEqual(d.lines[0].mark, .icon("terminal.fill"))
         let old = try entry(DayTimelineModel.build(try reply([item("c1", "code", 600, 640, #""title": "接上天气", "project": "bridge-cse_01""#)], spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1"])]), now: 900), "d")
-        XCTAssertEqual(old.lines.map { [$0.title, $0.detail] }, [["接上天气", "bridge-cse_01"]], "a brain that does not say `prompts`: each session its own line, as before")
+        XCTAssertEqual(old.lines.map { [$0.title, $0.detail] }, [["接上天气", nil]], "a brain that does not say `prompts`: each session its own line, as before, without the worktree's name")
     }
 
     func testMessagesThatOnlyCameInOfOneAppAtAboutTheSameTimeAreOneLine() throws {

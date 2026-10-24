@@ -343,7 +343,7 @@ final class DayTimelineRowsTests: XCTestCase {
         XCTAssertEqual(g.symbol, "terminal.fill")
         XCTAssertEqual(m.marks(of: .work), [TLMark(t0: 610, t1: 640), TLMark(t0: 630, t1: 660), TLMark(t0: 670, t1: 690), TLMark(t0: 810, t1: 830), TLMark(t0: 950, t1: 970)])
         let one = try entry(m, "code-s4"), alone = try entry(m, "code-s5")
-        XCTAssertEqual([one.title, one.detail, one.right], ["T4", "Jarvis · A", "20 分钟"])
+        XCTAssertEqual([one.title, one.detail, one.right], ["T4", "A", "20 分钟"], "its title and the account; never the repo it ran in")
         XCTAssertFalse(one.holdsSessions)
         XCTAssertEqual([one.group, alone.group], ["s2", nil], "one in a place is that place's row; one in no place stands alone")
         XCTAssertEqual(try entry(m, "code-s4").sessions.count, 1)
@@ -358,7 +358,7 @@ final class DayTimelineRowsTests: XCTestCase {
     }
 
     func testASessionWithNoTitleIsClaudeCodeAloneInItsRowItsGlanceAndTheReadoutAndAGroupDoesNotNameItsLineAfterIt() throws {
-        // the title the brain leaves out, leaves empty or fills with blanks: a session nobody named (the project and the account are still said)
+        // the title the brain leaves out, leaves empty or fills with blanks: a session nobody named (the account is still said)
         func code(_ n: Int, _ from: Double, _ to: Double, _ title: String?) -> String {
             item("code-s\(n)", "code", from, to, #""project": "Jarvis", "account": "b", "session_id": "s\#(n)""# + (title.map { #", "title": "\#($0)""# } ?? ""))
         }
@@ -366,7 +366,7 @@ final class DayTimelineRowsTests: XCTestCase {
         let alone = build(try reply([code(1, 610, 640, ""), code(2, 700, 730, nil), code(3, 800, 830, "  "), code(4, 900, 930, "T4")].joined(separator: ",")), now: nil)
         for id in ["code-s1", "code-s2", "code-s3"] {
             let e = try entry(alone, id)
-            XCTAssertEqual([e.title, e.glance, e.detail], ["Claude Code", "Claude Code", "Jarvis · B"], id)
+            XCTAssertEqual([e.title, e.glance, e.detail], ["Claude Code", "Claude Code", "B"], id)
             XCTAssertEqual(e.sessions.map(\.name), ["Claude Code"], id)
             XCTAssertEqual(e.sessions.map(\.title), [nil], id)
         }
