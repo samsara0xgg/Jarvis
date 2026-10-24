@@ -3,7 +3,7 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-// The bus he is riding, on the lock screen and in the Dynamic Island, in the app's night sky. The content comes from the brain's pushes
+// The bus he is riding, on the lock screen, in the Dynamic Island and in the watch's Smart Stack, in the app's night sky. The content comes from the brain's pushes
 // (RideAttributes); one stop before his, the whole thing turns amber and says to get off.
 
 private typealias Ride = RideAttributes.ContentState
@@ -65,6 +65,38 @@ private struct RideLockScreen: View {
     }
 }
 
+/// the watch's Smart Stack (the `.small` family): the route, the headline and the minutes, in two lines
+private struct RideSmall: View {
+    let state: Ride
+    let attributes: RideAttributes
+
+    var body: some View {
+        let tint = state.isArriving ? Night.amber : Night.ink
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(routeName(state, attributes)).font(mono(13)).foregroundStyle(tint)
+                Spacer(minLength: 4)
+                if !state.isEnded, let minutes = state.minutesText { Text(minutes).font(mono(13)).foregroundStyle(tint).lineLimit(1) }
+            }
+            Text(headline(state)).font(.system(size: 16, weight: .semibold)).foregroundStyle(tint).lineLimit(1).minimumScaleFactor(0.7)
+            if !detail(state).isEmpty { Text(detail(state)).font(.system(size: 12)).foregroundStyle(Night.ink.opacity(0.8)).lineLimit(1) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+    }
+}
+
+/// the lock screen's layout, or the watch's
+private struct RideActivityView: View {
+    let state: Ride
+    let attributes: RideAttributes
+    @Environment(\.activityFamily) private var family
+
+    var body: some View {
+        if family == .small { RideSmall(state: state, attributes: attributes) } else { RideLockScreen(state: state, attributes: attributes) }
+    }
+}
+
 /// what the island's small end says: minutes to his stop, or 「下车」 one stop before
 private func shortMinutes(_ state: Ride) -> String {
     if state.isEnded { return "到了" }
@@ -76,7 +108,7 @@ private func shortMinutes(_ state: Ride) -> String {
 struct RideLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: RideAttributes.self) { context in
-            RideLockScreen(state: context.state, attributes: context.attributes)
+            RideActivityView(state: context.state, attributes: context.attributes)
                 .activityBackgroundTint(context.state.isArriving ? arriveBg : Night.bg)
                 .activitySystemActionForegroundColor(Night.ink)
         } dynamicIsland: { context in
@@ -105,5 +137,6 @@ struct RideLiveActivityWidget: Widget {
             }
             .keylineTint(Night.amber)
         }
+        .supplementalActivityFamilies([.small])
     }
 }
