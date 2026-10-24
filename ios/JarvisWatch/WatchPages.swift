@@ -107,8 +107,6 @@ struct WatchTodayPage: View {
 struct WatchSettingsPage: View {
     var reachable: Bool
     var atEnd = false          // opens scrolled to the bottom (the debug scenes)
-    @AppStorage(WatchSettings.speaks) private var speaks = false
-    @AppStorage(WatchSettings.headphonesOnly) private var headphonesOnly = true
     @AppStorage(WatchSettings.taps) private var taps = true
 
     var body: some View {
@@ -116,8 +114,7 @@ struct WatchSettingsPage: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(Words.Watch.settings).font(.system(size: 17, weight: .bold)).foregroundStyle(WatchTheme.ink).padding(.leading, 2)
                 header(Words.Watch.settingsHer)
-                toggle(Words.Watch.speaks, speaks ? Words.Watch.speaksOn : Words.Watch.speaksOff, $speaks)
-                if speaks { toggle(Words.Watch.headphonesOnly, Words.Watch.headphonesOnlyNote, $headphonesOnly).transition(.opacity) }
+                later(Words.Watch.speaks, Words.Watch.speaksOff)          // 以后: nothing plays her voice on the watch yet
                 toggle(Words.Watch.taps, nil, $taps)
                 header(Words.Watch.link)
                 cell {
@@ -128,19 +125,7 @@ struct WatchSettingsPage: View {
                         Text(reachable ? Words.Watch.linked : Words.Watch.unlinked).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).lineLimit(1)
                     }
                 }
-                cell {          // 以后: phone-free cellular is not in this version
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(Words.Watch.standalone).font(.system(size: 14.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text(Words.Watch.later).font(.system(size: 10.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
-                                .padding(.horizontal, 6).padding(.vertical, 1).background(Color.white.opacity(0.14), in: Capsule())
-                            Text(Words.Watch.standaloneNote).font(.system(size: 11.5)).foregroundStyle(WatchTheme.muted)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .opacity(0.45)
-                .accessibilityAddTraits(.isStaticText)
+                later(Words.Watch.standalone, Words.Watch.standaloneNote)          // 以后: phone-free cellular is not in this version
                 header(Words.Watch.stayTitle)
                 Text(Words.Watch.stayHow).font(.system(size: 12)).foregroundStyle(WatchTheme.muted).padding(.horizontal, 2).fixedSize(horizontal: false, vertical: true)
                 Text(Words.Watch.elsewhere(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
@@ -150,7 +135,6 @@ struct WatchSettingsPage: View {
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 12)
-            .animation(WatchRoot.spring, value: speaks)
         }
         .task {          // after the push has laid it out (an initial anchor lands short of the end here)
             guard atEnd else { return }
@@ -172,6 +156,23 @@ struct WatchSettingsPage: View {
             .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
+    /// a setting not in this version: greyed, tagged 以后, not tappable
+    private func later(_ title: String, _ note: String) -> some View {
+        cell {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 14.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(Words.Watch.later).font(.system(size: 10.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
+                        .padding(.horizontal, 6).padding(.vertical, 1).background(Color.white.opacity(0.14), in: Capsule())
+                    Text(note).font(.system(size: 11.5)).foregroundStyle(WatchTheme.muted)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .opacity(0.45)
+        .accessibilityAddTraits(.isStaticText)
+    }
+
     private func toggle(_ title: String, _ sub: String?, _ on: Binding<Bool>) -> some View {
         cell {
             Toggle(isOn: on) {
@@ -185,8 +186,8 @@ struct WatchSettingsPage: View {
     }
 }
 
-/// The wrist's own settings, kept on the watch (UserDefaults). In v1 nothing sends 她说出声 to the phone and nothing plays her voice on the watch:
-/// the switches store and show his choice. 提醒时轻敲 gates the tap when something new waits (WatchRoot).
+/// The wrist's own settings, kept on the watch (UserDefaults). 提醒时轻敲 gates the tap when something new waits (WatchRoot). 她说出声 and 只在戴耳机时
+/// are 以后 in v1: the page shows 她说出声 greyed, and these keys wait for her voice on the watch.
 enum WatchSettings {
     static let speaks = "watch.speaks"                      // 她说出声: off, words only
     static let headphonesOnly = "watch.speaksHeadphonesOnly"  // 只在戴耳机时: shown once she speaks

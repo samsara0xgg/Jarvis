@@ -31,10 +31,7 @@ extension Words {
         static var settings: String { pick(zh: "设置", en: "Settings") }
         static var settingsHer: String { pick(zh: "她", en: "Her") }
         static var speaks: String { pick(zh: "她说出声", en: "She speaks aloud") }
-        static var speaksOff: String { pick(zh: "关着时只出字", en: "Off: words only") }
-        static var speaksOn: String { pick(zh: "从手表喇叭或耳机", en: "From the watch or headphones") }
-        static var headphonesOnly: String { pick(zh: "只在戴耳机时", en: "Only with headphones") }
-        static var headphonesOnlyNote: String { pick(zh: "外面人多时不外放", en: "Not out loud in a crowd") }
+        static var speaksOff: String { pick(zh: "现在只出字", en: "Words only for now") }
         static var taps: String { pick(zh: "提醒时轻敲", en: "Tap me for reminders") }
         static var link: String { pick(zh: "连接", en: "Connection") }
         static var iPhone: String { pick(zh: "iPhone", en: "iPhone") }
