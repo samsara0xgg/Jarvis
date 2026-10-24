@@ -56,7 +56,7 @@ final class WatchDayMakerTests: XCTestCase {
     func testTheStretchNowIsInTheListsWords() {
         let c = day().current
         XCTAssertEqual(c?.title, "做 Jarvis")
-        XCTAssertEqual(c?.symbol, "laptopcomputer")
+        XCTAssertEqual(c?.symbol, "briefcase")
         XCTAssertEqual(c?.rgb, 0x5B8CFF)
         XCTAssertEqual(c?.sub, "家")
         XCTAssertEqual(c?.right, "2 小时 15 分")

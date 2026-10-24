@@ -15,17 +15,18 @@ struct TLCategory: Equatable {
 
     static func of(_ name: String?) -> TLCategory {
         switch name {
-        case "work": TLCategory(color: RGB(91, 140, 255), symbol: "laptopcomputer")
-        case "study": TLCategory(color: RGB(155, 123, 255), symbol: "book.fill")
+        // what he was doing, never the device he did it on (跨端UI标准 §4): thin outline symbols, as on the bar
+        case "work": TLCategory(color: RGB(91, 140, 255), symbol: "briefcase")
+        case "study": TLCategory(color: RGB(155, 123, 255), symbol: "book")
         case "meal": TLCategory(color: RGB(240, 176, 79), symbol: "fork.knife")
-        case "rest": TLCategory(color: RGB(111, 168, 200), symbol: "sofa.fill")
-        case "sleep": TLCategory(color: TLPaint.sleep, symbol: "moon.fill")
+        case "rest": TLCategory(color: RGB(111, 168, 200), symbol: "sofa")
+        case "sleep": TLCategory(color: TLPaint.sleep, symbol: "moon")
         case "exercise": TLCategory(color: RGB(76, 195, 138), symbol: "figure.run")
-        case "commute": TLCategory(color: TLPaint.trip, symbol: "arrow.right")         // a trip is drawn as its way (a bus for a ride): the row takes the symbol from the trip inside it
-        case "errand": TLCategory(color: RGB(232, 135, 90), symbol: "bag.fill")
-        case "social": TLCategory(color: RGB(233, 121, 166), symbol: "person.2.fill")
-        case "home": TLCategory(color: RGB(168, 159, 145), symbol: "house.fill")
-        default: TLCategory(color: nil, symbol: "questionmark")                          // unknown, and one this phone has not heard of
+        case "commute": TLCategory(color: TLPaint.trip, symbol: "tram")                 // by the way he went: the stretch picks it from the trips inside it (`segmentRow`)
+        case "errand": TLCategory(color: RGB(232, 135, 90), symbol: "bag")
+        case "social": TLCategory(color: RGB(233, 121, 166), symbol: "person.2")
+        case "home": TLCategory(color: RGB(168, 159, 145), symbol: "house")
+        default: TLCategory(color: nil, symbol: "circle.dashed")                         // unknown, and one this phone has not heard of
         }
     }
 }
@@ -117,8 +118,10 @@ extension DayTimelineModel {
         e.time = clock(st.t0); e.t1 = st.t1; e.going = st.going
         e.unknown = hole
         e.right = tlDur(tlInt(st.t1 - st.t0))
-        // a trip wears the way he went (a bus for a ride), else the trip's symbol
-        e.symbol = s.category == "commute" ? inside.first { $0.row.kind == .trip }?.row.symbol ?? cat.symbol : call ? "phone.fill" : cat.symbol
+        // a commute wears the way he went: a bus for a ride, walking for walks alone, else transit; a hole a question mark
+        let trips = inside.filter { $0.row.kind == .trip }
+        let way = trips.contains { $0.row.ride } ? "bus" : !trips.isEmpty && trips.allSatisfy({ $0.item.activity == "walking" }) ? "figure.walk" : cat.symbol
+        e.symbol = hole ? "questionmark" : s.category == "commute" ? way : call ? "phone" : cat.symbol
         e.color = cat.color
         // where he was: the place he keeps that the brain points to (its stay names it and gives its hue), else the stay that holds most of the stretch
         let kept = s.place_id.flatMap { id in inside.first { $0.row.place?.keptId == id }?.row ?? places.first { $0.kind == .stay && $0.place?.keptId == id } }

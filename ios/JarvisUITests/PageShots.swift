@@ -118,6 +118,12 @@ final class PageShots: XCTestCase {
         shot("18-row-messages")
     }
 
+    func testTodayCategories() {
+        _ = open("时间线:按在干嘛")
+        sleep(3)
+        shot("19-today-categories")
+    }
+
     func testRowStay() {
         _ = open("时间线:开:stay-14")
         sleep(2)

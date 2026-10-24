@@ -164,16 +164,23 @@ final class DayTimelineDoingRowsTests: XCTestCase {
 
     func testCategoriesAreDrawnInTheirColourAndSymbolAndACommuteWearsItsWay() throws {
         let m = try day()
-        let want: [(String, RGB?, String)] = [("d1", RGB(240, 176, 79), "fork.knife"), ("d2", RGB(91, 140, 255), "laptopcomputer"), ("d3", nil, "questionmark"),
-                                              ("d4", TLPaint.trip, "bus.fill"), ("d5", RGB(240, 176, 79), "fork.knife"), ("d6", RGB(111, 168, 200), "sofa.fill")]
+        let want: [(String, RGB?, String)] = [("d1", RGB(240, 176, 79), "fork.knife"), ("d2", RGB(91, 140, 255), "briefcase"), ("d3", nil, "questionmark"),
+                                              ("d4", TLPaint.trip, "bus"), ("d5", RGB(240, 176, 79), "fork.knife"), ("d6", RGB(111, 168, 200), "sofa")]
         for (id, color, symbol) in want {
             let e = try entry(m, id)
             XCTAssertEqual(e.color, color, id)
             XCTAssertEqual(e.symbol, symbol, id)
         }
-        let table: [(String, String, RGB?)] = [("study", "book.fill", RGB(155, 123, 255)), ("sleep", "moon.fill", TLPaint.sleep), ("exercise", "figure.run", RGB(76, 195, 138)), ("errand", "bag.fill", RGB(232, 135, 90)),
-                                               ("social", "person.2.fill", RGB(233, 121, 166)), ("home", "house.fill", RGB(168, 159, 145)), ("unknown", "questionmark", nil), ("something new", "questionmark", nil)]
+        let table: [(String, String, RGB?)] = [("work", "briefcase", RGB(91, 140, 255)), ("study", "book", RGB(155, 123, 255)), ("rest", "sofa", RGB(111, 168, 200)), ("social", "person.2", RGB(233, 121, 166)),
+                                               ("meal", "fork.knife", RGB(240, 176, 79)), ("home", "house", RGB(168, 159, 145)), ("sleep", "moon", TLPaint.sleep), ("exercise", "figure.run", RGB(76, 195, 138)),
+                                               ("errand", "bag", RGB(232, 135, 90)), ("commute", "tram", TLPaint.trip), ("unknown", "circle.dashed", nil), ("something new", "circle.dashed", nil)]
         for (name, symbol, color) in table { XCTAssertEqual(TLCategory.of(name), TLCategory(color: color, symbol: symbol), name) }
+        XCTAssertFalse(table.contains { ["laptopcomputer", "iphone", "ipad"].contains($0.1) }, "what he was doing, never the device")
+        // a commute by the way he went: walks alone, else transit
+        let walked = try reply([item("w", "move", 600, 620, #""activity": "walking""#)], spans: [span("c", 600, 620, "走回家", "commute", items: ["w"])])
+        let drove = try reply([item("w", "move", 600, 620, #""activity": "walking""#), item("a", "move", 620, 650, #""activity": "automotive""#)], spans: [span("c", 600, 650, "回家", "commute", items: ["w", "a"])])
+        XCTAssertEqual(try entry(DayTimelineModel.build(walked, now: 900), "c").symbol, "figure.walk")
+        XCTAssertEqual(try entry(DayTimelineModel.build(drove, now: 900), "c").symbol, "tram")
     }
 
     func testAStretchThatReachesPastNowEndsThereAndOneThatBeginsAfterItIsNotARow() throws {
@@ -323,7 +330,7 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertTrue(fills.contains(.doing(RGB(91, 140, 255))))
         XCTAssertFalse(m.scene.pieces.contains { $0.id == "s-home" }, "no place pieces")
         let work = try XCTUnwrap(m.scene.pieces.first { $0.id == "d2" })
-        XCTAssertEqual([work.name, work.icon], ["做 Jarvis", "laptopcomputer"], "a piece wears what he was doing and its category's symbol")
+        XCTAssertEqual([work.name, work.icon], ["做 Jarvis", "briefcase"], "a piece wears what he was doing and its category's symbol")
         let hole = try XCTUnwrap(m.scene.pieces.first { $0.t0 == 720 })
         XCTAssertEqual(hole.fill, .blank, "drawn like where nothing was recorded")
         XCTAssertEqual(hole.icon, "questionmark", "with a question mark")
