@@ -69,6 +69,8 @@ struct PadHome: View {
     @State private var leftAt: Date?
     @State private var listRoom = 600.0             // how tall the list is: a row opened from the bar in one column is carried up within it
     @State private var chatFolded = false           // 聊天's left column folded away
+    @State private var focused = false              // 聊天's field has the keyboard
+    @State private var keyboard = 0.0               // how far the keyboard reaches up from the window's foot
     @Environment(\.scenePhase) private var phase
 
     private var ui: StarUI { engine.ui }
@@ -80,31 +82,11 @@ struct PadHome: View {
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width, wide = w >= Self.wideMin, top = geo.safeAreaInsets.top
-            TimelineView(.everyMinute) { ctx in
-                let built = builtDay()
-                ZStack(alignment: .topLeading) {
-                    page(built, width: w, height: geo.size.height + geo.safeAreaInsets.bottom + top, top: top, wide: wide)
-                    // over every page: her card, her, the number on her, the bar at the foot (跨端UI标准 §1)
-                    if ui.page != .talk {
-                        HerWordsCard(engine: engine, ui: ui).frame(width: W, height: H)
-                            .offset(x: (w - W) / 2, y: top + Self.herY + padHerSize / 2 + 1 - HerWordsCard.top)
-                    }
-                    PadHer(engine: engine).position(x: w / 2, y: top + Self.herY)
-                    HerBadge(engine: engine, ui: ui, seat: (CGPoint(x: W / 2, y: top + Self.herY), padHerSize / 2)).frame(width: W, height: H).offset(x: (w - W) / 2)
-                    tabBar(width: w, height: geo.size.height + geo.safeAreaInsets.bottom + top)
-                    PadFlightView(flight: flight)
-                }
-                .frame(width: w, height: geo.size.height + top + geo.safeAreaInsets.bottom, alignment: .topLeading)
-                .coordinateSpace(name: "padHome")
-                .onChange(of: ctx.date) { _, _ in tl.rollOver() }
-                .onChange(of: wide) { _, _ in tl.close() }          // a row open on the stage is not one opened where it stands, nor the other way
-                .onChange(of: built != nil, initial: true) { _, has in reveal(has) }
-                .onChange(of: tl.enter) { _, _ in reveal(built != nil) }
-                .onChange(of: (built?.model.waiting.count ?? 0) + Waiting.shared.cards.count, initial: true) { _, n in tl.waitingCount = n }          // what waits on him: the amber number on her
-                .onChange(of: tl.waitingTap) { _, _ in withAnimation(padMotion) { tl.openRow = nil } }          // a tap on that number: the stage shows what waits
-            }
+            let h = geo.size.height + geo.safeAreaInsets.bottom + top          // the whole window, under the status bar and the home indicator
+            TimelineView(.everyMinute) { ctx in home(builtDay(), date: ctx.date, width: w, height: h, top: top, wide: wide) }
             .ignoresSafeArea(.container, edges: [.top, .bottom])
         }
+        .ignoresSafeArea(.keyboard)          // the keyboard moves 聊天's field only (`keyboard`), not the page
         .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255).ignoresSafeArea())
         .preferredColorScheme(.dark)
         .onChange(of: phase) { _, p in
@@ -113,8 +95,33 @@ struct PadHome: View {
             else if p == .active, let t = leftAt { leftAt = nil; if Date().timeIntervalSince(t) > 300 { engine.comeBack() } }
         }
         .onAppear(perform: appear)
+        .onChange(of: focused) { _, f in StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { n in
+            guard let f = n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            // ponytail: the screen's foot is the window's, true full screen; a Stage Manager window that does not reach the foot would want the frame converted into it
+            let d = (n.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25, curve = (n.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int) ?? 7
+            withAnimation(StarChrome.keyboardAnimation(duration: d, curve: curve)) { keyboard = max(0, UIScreen.main.bounds.height - f.minY) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: CardsRequest.notification)) { _ in openCards() }
         .sheet(item: Bindable(tl).sayWhat) { TLSayWhatSheet(tl: tl, s: $0) }
+    }
+
+    /// the page, 聊天 kept made beside it, and over them her and the bar
+    private func home(_ built: TLBuilt?, date: Date, width w: Double, height h: Double, top: Double, wide: Bool) -> some View {
+        ZStack(alignment: .topLeading) {
+            page(built, width: w, height: h, top: top, wide: wide)
+            if wide { chat(width: w, height: h, top: top) }
+            over(width: w, height: h, top: top)
+            PadFlightView(flight: flight)
+        }
+        .frame(width: w, height: h, alignment: .topLeading)
+        .coordinateSpace(name: "padHome")
+        .onChange(of: date) { _, _ in tl.rollOver() }
+        .onChange(of: wide) { _, _ in tl.close() }          // a row open on the stage is not one opened where it stands, nor the other way
+        .onChange(of: built != nil, initial: true) { _, has in reveal(has) }
+        .onChange(of: tl.enter) { _, _ in reveal(built != nil) }
+        .onChange(of: (built?.model.waiting.count ?? 0) + Waiting.shared.cards.count, initial: true) { _, n in tl.waitingCount = n }          // what waits on him: the amber number on her
+        .onChange(of: tl.waitingTap) { _, _ in withAnimation(padMotion) { tl.openRow = nil } }          // a tap on that number: the stage shows what waits
     }
 
     /// her middle under the status bar, the strip's buttons on the same line (the mock's 58 with a status bar of 24)
@@ -129,13 +136,36 @@ struct PadHome: View {
         switch ui.page {
         case .day: PadToday(engine: engine, built: built, width: w, top: top, wide: wide, flight: flight, nowInView: $nowInView, listRoom: $listRoom, empty: empty)
         case .talk:
-            // ponytail: in one column the phone's page at the phone's width, centred, until narrow windows are revisited
-            if wide { PadChat(engine: engine, width: w, height: h, top: top, folded: $chatFolded) }
-            else { phonePage { TalkPanel(engine: engine, ui: ui, pull: .constant(nil), page: true) }.offset(x: (w - W) / 2, y: top) }
+            // ponytail: in one column the phone's page at the phone's width, centred, its field at the window's foot, until narrow windows are revisited
+            if !wide {
+                ZStack(alignment: .topLeading) {
+                    phonePage { TalkPanel(engine: engine, ui: ui, pull: .constant(nil), page: true) }.offset(x: (w - W) / 2, y: top)
+                    PadChat.field(engine: engine, focused: $focused, x: (w - W) / 2 + TalkPage.side, width: W - 2 * TalkPage.side, foot: PadChat.fieldFoot(height: h, keyboard: keyboard))
+                }
+            }
         // ponytail: the phone's own pages at the phone's width, centred, until each has its two panes
         case .map: phonePage { FootprintDayLayer(engine: engine, ui: ui) }.offset(x: (w - W) / 2)
         case .settings: SettingsSheet(asPage: true, cardUp: ui.herCardOn, tuneNear: { engine.showPage(.day) }).frame(width: W).frame(maxWidth: .infinity).padding(.top, top)
         }
+    }
+
+    /// over every page: her card, her, the number on her, the bar at the foot (跨端UI标准 §1)
+    @ViewBuilder private func over(width w: Double, height h: Double, top: Double) -> some View {
+        if ui.page != .talk {
+            HerWordsCard(engine: engine, ui: ui, compact: true).frame(width: W, height: H)
+                .offset(x: (w - W) / 2, y: top + Self.herY + padHerSize / 2 + 1 - HerWordsCard.top)
+        }
+        PadHer(engine: engine).position(x: w / 2, y: top + Self.herY)
+        HerBadge(engine: engine, ui: ui, seat: (CGPoint(x: W / 2, y: top + Self.herY), padHerSize / 2)).frame(width: W, height: H).offset(x: (w - W) / 2)
+        tabBar(width: w, height: h)
+    }
+
+    /// 聊天 in a wide window stays made while another page is on, so that coming back to it finds the talk where he left it
+    private func chat(width w: Double, height h: Double, top: Double) -> some View {
+        let on = ui.page == .talk
+        return PadChat(engine: engine, width: w, height: h, top: top, folded: $chatFolded, focused: $focused, keyboard: keyboard)
+            .opacity(on ? 1 : 0).allowsHitTesting(on).accessibilityHidden(!on)
+            .animation(.easeOut(duration: on ? 0.25 : 0.2), value: on)
     }
 
     private func phonePage<P: View>(@ViewBuilder _ p: () -> P) -> some View {
@@ -180,7 +210,11 @@ struct PadHome: View {
 
     private func appear() {
         HomeModule.shared.kind = .timeline          // the iPad's home is the timeline's
-        engine.beginEditing = { engine.showPage(.talk) }          // ponytail: 聊天 has no field yet to take the keyboard; the phone's composer, once a view of its own, brings one
+        engine.endEditing = { focused = false }
+        engine.beginEditing = {          // the field is on 聊天: from any other page the page comes first, then the field takes the keyboard
+            engine.showPage(.talk)
+            DispatchQueue.main.async { focused = true }
+        }
         StallLog.context = { [engine] in engine.stallContext() }
         engine.watchVoice()
         if CardsRequest.pending { openCards() }
@@ -212,6 +246,7 @@ struct PadHome: View {
             }
             return
         case "fold": chatFolded = true; return          // 聊天's left column folded away
+        case "type": engine.beginEditing?(); return     // a hold on her: 聊天 with the keyboard
         default: break
         }
         guard let m = builtDay()?.model else { return }
@@ -227,10 +262,10 @@ struct PadHome: View {
 }
 
 extension TimelineState {
-    /// A tap on a row of the iPad's list beside the stage: a row with more to show goes on the stage; one with nothing more frames its time on the bar for a moment, and the stage
-    /// stays as it is (as on the phone, ADR 0376).
+    /// A tap on a row of the iPad's list beside the stage: a row with more to show goes on the stage, and the same row tapped again gives the stage back to now; one with nothing more
+    /// frames its time on the bar for a moment, and the stage stays as it is (as on the phone, ADR 0376).
     func padTapRow(_ e: TLEntry) {
-        if e.expands { withAnimation(padMotion) { openRow = e.id } } else { flashRow(e) }
+        if e.expands { withAnimation(padMotion) { openRow = openRow == e.id ? nil : e.id } } else { flashRow(e) }
     }
 
     /// A tap on the iPad's bar at `minute`: past now goes back to now; on a block of the row on the stage, the stage's line at that minute lights; on any other block the list goes to
@@ -328,7 +363,8 @@ private struct PadToday: View {
             }
             .padding(.horizontal, side)
             .padding(.top, PadHome.herY - HomeTop.button / 2)
-            (Text(ui.dateText) + Text(ui.dateLabel.map { " · " + $0 } ?? ""))
+            // the day on show in the Words tables' language (the phone's `dateText` is always in Chinese); unpaired the engine keeps the sample day, and this is today
+            (Text(Words.Pad.date(Cal.cur.real ? Cal.cur.date(tl.day) : Cal.now())) + Text(ui.dateLabel.map { " · " + $0 } ?? ""))
                 .font(.system(size: Look.note)).tracking(0.4).foregroundStyle(Look.ink2).lineLimit(1)
                 .fadeThrough(on: !holding && !ui.herCardOn, reduce: reduce)
                 .allowsHitTesting(false)

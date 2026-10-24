@@ -2,7 +2,8 @@ import SwiftUI
 
 // Her stage, the right of the iPad's home. By default it shows 「现在」, the stretch he is in now as its opened row says it (what it was spent on, what is inside it),
 // and under it 「等你」, each thing that waits on him with its own buttons, answered on the spot. A tap on a row of the list on the left puts that row here instead
-// (the bar outlines its span, so the list, the bar and the stage show the same stretch); 今天 brings back what is now. It changes in place: no sheet, no push.
+// (the bar outlines its span, so the list, the bar and the stage show the same stretch), with what waits still under it; a tap on the same row again, or on now on the bar,
+// brings back what is now. It changes in place: no sheet, no push, no way back to press.
 
 /// A row's icon flying from its place in the list to the stage's title when the row is tapped (the one motion `padMotion`; under Reduce Motion the title just cross-fades in).
 /// The rows say where their icons are (in the home's space `padHome`, which no view of the phone has), the title says where it stands, and the home draws the flight over both.
@@ -73,7 +74,7 @@ struct PadStage: View {
         let opened = tl.openRow.flatMap { id in model?.entries.first { $0.id == id } }
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
-                if let e = opened { page(e) } else if let m = model { now(m); waiting(m) } else { waitingCards }
+                if let e = opened, let m = model { page(e); waiting(m, but: e.id) } else if let m = model { now(m); waiting(m) } else { waitingCards }
             }
             .padding(.horizontal, side).padding(.top, 18).padding(.bottom, PadHome.barRoom)          // its foot clear of the bar
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,17 +93,10 @@ struct PadStage: View {
 
     private func page(_ e: TLEntry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { tl.openRow = nil } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
-                    Text(Words.Pad.backToNow).font(.system(size: 14, weight: .medium))
-                }
-                .foregroundStyle(ink.opacity(0.8)).frame(minHeight: 32).contentShape(Rectangle())
-            }
-            .buttonStyle(PressScale())
-            head(e).padding(.top, 10)
+            head(e)
             TLOpenView(e: e, tl: tl, engine: engine, mapWidth: width - 2 * side).padding(.top, 18)
         }
+        .padding(.bottom, 28)
     }
 
     /// the row's icon in its circle, its title large, and its line: the hours, how long, where
@@ -116,9 +110,15 @@ struct PadStage: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(e.title).font(.system(size: 22, weight: .semibold)).foregroundStyle(e.unknown ? muted : ink).fixedSize(horizontal: false, vertical: true)
-                Text(e.pageLine).font(.system(size: 13)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
+                Text(line(e)).font(.system(size: 13)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// the row's line: a row still going already says when it began (`18:50 起`) in its own words at the right, so those stand first and the hours are not said again
+    private func line(_ e: TLEntry) -> String {
+        guard e.going, e.right.contains(e.time) else { return e.pageLine }
+        return [e.right, (e.kind == .segment ? DayTimelineModel.line(e, solo: true) : e.detail) ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     // MARK: now
@@ -136,8 +136,8 @@ struct PadStage: View {
     // MARK: what waits
 
     /// the day's rows that wait on him (a reminder that rang, an event his mail made) with what their opened row offers, and the brain's cards with their own buttons
-    @ViewBuilder private func waiting(_ m: DayTimelineModel) -> some View {
-        let rows = m.waiting.compactMap { id in m.entries.first { $0.id == id } }, cards = Waiting.shared.cards
+    @ViewBuilder private func waiting(_ m: DayTimelineModel, but shown: String? = nil) -> some View {
+        let rows = m.waiting.filter { $0 != shown }.compactMap { id in m.entries.first { $0.id == id } }, cards = Waiting.shared.cards          // the row on the stage is not listed again under it
         if !rows.isEmpty || !cards.isEmpty {
             label(Words.Pad.waiting(rows.count + cards.count), color: amber)
             VStack(alignment: .leading, spacing: 12) {
@@ -156,7 +156,7 @@ struct PadStage: View {
                     .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
                     .overlay(RoundedRectangle(cornerRadius: 16).stroke(amber.opacity(0.18), lineWidth: 0.5))
                 }
-                ForEach(cards) { c in WaitingCardView(card: c) }
+                ForEach(cards) { c in WaitingCardView(card: c).environment(\.cardCompact, true) }
             }
             .padding(.top, 10)
         }
@@ -167,7 +167,7 @@ struct PadStage: View {
         let cards = Waiting.shared.cards
         if !cards.isEmpty {
             label(Words.Pad.waiting(cards.count), color: amber)
-            VStack(alignment: .leading, spacing: 12) { ForEach(cards) { c in WaitingCardView(card: c) } }.padding(.top, 10)
+            VStack(alignment: .leading, spacing: 12) { ForEach(cards) { c in WaitingCardView(card: c).environment(\.cardCompact, true) } }.padding(.top, 10)
         }
     }
 

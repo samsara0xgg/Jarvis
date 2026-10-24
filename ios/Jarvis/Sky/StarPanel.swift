@@ -428,6 +428,8 @@ struct TalkPanel: View {
     private var bottom: Double { (ui.typing && ui.voiceNote == nil ? H - StarUI.restGap - 48 - StarUI.keyGap : 836) - ui.attach.rise - ui.footLift }
     /// the phone's own page (`TalkPage`), not the iPad's sheet or the dial's panel
     private var phonePage: Bool { page && (!ui.padHome || column != nil) }
+    /// the iPad's column, back on 聊天: a jump or a topic followed, or his own scroll up, stays where he left it
+    private var keepsPlace: Bool { !follow || ui.trail != nil || ui.following != nil }
     /// the page's own size: the phone's design, or the iPad's column
     private var size: CGSize { column?.size ?? CGSize(width: W, height: H) }
     /// what waits on him is the amber number on her (Sky/DayTimelineSeat.swift): under her the chip says only what she is doing, on the phone's page
@@ -461,7 +463,7 @@ struct TalkPanel: View {
         .opacity(ui.panelOpen ? 1 : 0).allowsHitTesting(ui.panelOpen)
         .animation(.easeOut(duration: ui.panelOpen ? 0.25 : 0.2), value: ui.panelOpen)
         .animation(.easeOut(duration: 0.2), value: ui.trail == nil && ui.following == nil)
-        .onChange(of: ui.panelOpen) { _, on in if !on { ui.chipOpen = false; setPast(false) } else { follow = true } }
+        .onChange(of: ui.panelOpen) { _, on in if !on { ui.chipOpen = false; setPast(false) } else if column == nil { follow = true } }          // the iPad's column keeps his place (`keepsPlace`)
     }
 
     /// The page's two soft edges, over the stream that runs on under both: at the top, behind the status bar, the strip and her, and at the foot from a little over the field down
@@ -751,9 +753,9 @@ struct TalkPanel: View {
                     DispatchQueue.main.async { probe.following = false; StallLog.count("follow"); pos.scrollTo(edge: .bottom) }
                 }
             }
-            .onChange(of: ui.panelOpen) { _, on in if on { pos.scrollTo(edge: .bottom) } }
-            // made with the page already open (the iPad's 聊天 is made when its tab is picked): to the bottom once its rows are laid out, as opening does
-            .onAppear { if ui.panelOpen { DispatchQueue.main.async { pos.scrollTo(edge: .bottom) } } }
+            .onChange(of: ui.panelOpen) { _, on in if on && (column == nil || !keepsPlace) { pos.scrollTo(edge: .bottom) } }
+            // the iPad's column made with the page already open: to the bottom once its rows are laid out, as opening does
+            .onAppear { if ui.panelOpen && column != nil && !keepsPlace { DispatchQueue.main.async { pos.scrollTo(edge: .bottom) } } }
             // his line going out and her reply coming in each take him to the bottom and back to following, wherever he had scrolled, the panel open or shut.
             // Rows leaving (the talk handed over to the conversation, a failed send) are not new rows: the place stays.
             .onChange(of: ui.liveTurns.count) { old, new in

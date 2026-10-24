@@ -2,7 +2,8 @@ import SwiftUI
 
 // 聊天 on the iPad in a wide window (跨端UI标准 §5, §11; 聊天-搜索和话题.jpg): at the left a column that stays open, 「搜我们说过的…」 and her topics (the phone's `ChatSearchCard`
 // as a column), at the right the one conversation (the phone's page, `TalkPanel`, laid out in the column), running up under her to the status bar's narrow blur. The round button at
-// the top left folds the column away, the one at the top right is 她出不出声. A topic's 前情, 看原话 and the ‹ › bar over the field are the phone's own.
+// the top left folds the column away, the one at the top right is 她出不出声. A topic's 前情, 看原话 and the ‹ › bar over the field are the phone's own, and so is the field
+// (`ChatComposer`), 8 pt over the bar and 8 pt over the keys while he types.
 // Laid out at the mock's places (13" landscape, design/ipad-src/ipad.html), from the top of the window.
 
 struct PadChat: View {
@@ -11,6 +12,8 @@ struct PadChat: View {
     let height: Double                  // the window's, to its foot under the bar
     let top: Double                     // the status bar's height
     @Binding var folded: Bool
+    @Binding var focused: Bool          // the field has the keyboard (the home's, which the engine's beginEditing / endEditing set)
+    let keyboard: Double                // how far the keyboard reaches up from the foot
     @State private var past = ChatSearchModel()
     @AppStorage(VoicePrefs.key) private var spoken = true      // 她出不出声
 
@@ -18,8 +21,18 @@ struct PadChat: View {
     private static let columnW = 380.0, side = 28.0
     /// the conversation's own width, the column's room beside the left one (the mock's 404 on): folded, the same width in the middle, so no row wraps again
     private var talkW: Double { width - Self.columnW - 24 }
-    /// ponytail: the field's place, kept clear until the phone's composer is a view of its own to host here: as on the phone, 52 pt tall and 8 pt over the bar
-    private var fieldTop: Double { height - PadHome.barH - 8 - 52 }
+    /// where the field's foot is: 8 pt over the bar, and over the keys while they are up (the bar goes while he types)
+    static func fieldFoot(height: Double, keyboard: Double) -> Double { keyboard > 0 ? height - keyboard - StarUI.keyGap : height - PadHome.barH - 8 }
+    /// The phone's field with what it attaches, its foot at `foot`; what is attached grows it upward, and the panel that picks it opens over it as on the phone
+    static func field(engine: StarEngine, focused: Binding<Bool>, x: Double, width: Double, foot: Double) -> some View {
+        let ui = engine.ui
+        return ZStack(alignment: .topLeading) {
+            ChatComposer(engine: engine, ui: ui, focused: focused, width: width).offset(x: x, y: foot - ChatComposer.fieldBox - ui.attach.rise)
+            AttachOverlay(model: ui.attach, kbLift: 0).offset(x: x - TalkPage.side, y: foot - (H - StarUI.restGap))          // laid out over the phone's field: moved onto this one
+        }
+    }
+    /// the stream ends over the field: 34 pt over it at rest, as on the phone's page, 4 pt while he types
+    private var streamFoot: Double { Self.fieldFoot(height: height, keyboard: keyboard) - ChatComposer.fieldBox - ui.attach.rise - (ui.typing ? 4 : 34) }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -34,21 +47,25 @@ struct PadChat: View {
             }
             edge
             buttons
+            Self.field(engine: engine, focused: $focused, x: talkX + 20 + TalkPage.side, width: talkW - 40 - 2 * TalkPage.side, foot: Self.fieldFoot(height: height, keyboard: keyboard))
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .animation(padMotion, value: folded)
+        .task(id: ui.page == .talk) { if ui.page == .talk { await past.refreshTopics() } }          // the page stays made under the others: her topics as they are now each time it comes up
     }
 
     /// the phone's page in the right column, 40 pt in from each side as the mock's messages; its rows as wide as the mock's (62% of the room)
     private var conversation: some View {
-        let w = talkW - 40, x = folded ? (width - talkW) / 2 : width - talkW
+        let w = talkW - 40
         return TalkPanel(engine: engine, ui: ui, pull: .constant(nil), page: true,
-                         column: .init(size: CGSize(width: w, height: height), inset: top + 84, line: top + 72, bottom: fieldTop - 34))
+                         column: .init(size: CGSize(width: w, height: height), inset: top + 84, line: top + 72, bottom: streamFoot))
             .environment(\.talkCardWidth, ((w - 2 * TalkPage.side) * 0.62).rounded())
             .frame(width: w, height: height, alignment: .topLeading)
             .coordinateSpace(name: "design")
-            .offset(x: x + 20)
+            .offset(x: talkX + 20)
     }
+    /// where the conversation's room begins: beside the column, or in the middle when it is folded
+    private var talkX: Double { folded ? (width - talkW) / 2 : width - talkW }
 
     /// the one soft edge of the page: a narrow blur under the status bar, so the clock reads over the messages that went by under it (the phone's `statusEdge`, the mock's `.topblur`)
     private var edge: some View {
