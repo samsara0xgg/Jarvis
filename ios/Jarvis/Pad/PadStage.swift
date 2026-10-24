@@ -39,7 +39,7 @@ struct PadFlightView: View {
 
         var body: some View {
             let r = go ? (it.to ?? it.from) : it.from
-            Image(systemName: it.symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(it.color)
+            TLSymbol(name: it.symbol, size: 16).fontWeight(.medium).foregroundStyle(it.color)
                 .frame(width: r.width, height: r.height).background(Circle().fill(Color.white.opacity(0.06)))
                 .position(x: r.midX, y: r.midY)
                 .allowsHitTesting(false)
@@ -102,7 +102,7 @@ struct PadStage: View {
     private func head(_ e: TLEntry) -> some View {
         HStack(alignment: .center, spacing: 12) {
             if !e.symbol.isEmpty {
-                Image(systemName: e.symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(e.color.map { $0.color } ?? ink.opacity(0.82))
+                TLSymbol(name: e.symbol, size: 16).fontWeight(.medium).foregroundStyle(e.color.map { $0.color } ?? ink.opacity(0.82))
                     .frame(width: 36, height: 36).background(Circle().fill(Color.white.opacity(0.06)))
                     .opacity(flight.item?.id == e.id ? 0 : 1)          // while the row's icon is flying here
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("padHome")) } action: { flight.land(e.id, at: $0) }

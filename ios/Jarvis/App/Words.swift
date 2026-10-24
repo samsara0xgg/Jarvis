@@ -38,7 +38,7 @@ final class Words {
     /// the one choice between two wordings: both are always written
     static func pick(zh: String, en: String) -> String { shared.language == .zh ? zh : en }
 
-    /// a day as the phone writes it: 「10月23日 周五」, "Fri, Oct 23" (the iPad's `Words.Pad.date` writes the same), on `cal`'s days
+    /// a day as the phone writes it: 「10月23日 周五」, "Fri, Oct 23", on `cal`'s days
     static func date(_ d: Date, in cal: Calendar = .current) -> String {
         let c = cal.dateComponents([.month, .day, .weekday], from: d)
         var en = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day().locale(Locale(identifier: "en_US"))

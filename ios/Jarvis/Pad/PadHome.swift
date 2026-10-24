@@ -374,8 +374,8 @@ private struct PadToday: View {
             }
             .padding(.horizontal, side)
             .padding(.top, PadHome.herY - HomeTop.button / 2)
-            // the day on show in the Words tables' language (the phone's `dateText` is always in Chinese); unpaired the engine keeps the sample day, and this is today
-            (Text(Words.Pad.date(Cal.cur.real ? Cal.cur.date(tl.day) : Cal.now())) + Text(ui.dateLabel.map { " · " + $0 } ?? ""))
+            // the day on show; unpaired the engine keeps the sample day, and this is today
+            (Text(Words.date(Cal.cur.real ? Cal.cur.date(tl.day) : Cal.now(), in: Cal.cur.cal)) + Text(ui.dateLabel.map { " · " + $0 } ?? ""))
                 .font(.system(size: Look.note)).tracking(0.4).foregroundStyle(Look.ink2).lineLimit(1)
                 .fadeThrough(on: !holding && !ui.herCardOn, reduce: reduce)
                 .allowsHitTesting(false)

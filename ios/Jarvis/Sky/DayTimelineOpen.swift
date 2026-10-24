@@ -446,7 +446,7 @@ struct TLOpenView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 14) {
                 if !e.symbol.isEmpty {
-                    Image(systemName: e.symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(e.color.map { $0.color } ?? iconColor)
+                    TLSymbol(name: e.symbol, size: 14).fontWeight(.medium).foregroundStyle(e.color.map { $0.color } ?? iconColor)
                         .frame(width: 32, height: 32).background(Circle().fill(Color.white.opacity(0.06)))
                 }
                 VStack(alignment: .leading, spacing: 2) {
