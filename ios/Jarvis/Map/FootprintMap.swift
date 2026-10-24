@@ -112,6 +112,8 @@ struct FootprintMapView: UIViewRepresentable {
     var fitPadding: UIEdgeInsets = .zero
     /// the map frames its content when this changes, not on every update, so his pan and pinch survive a scrub
     var fitKey = ""
+    /// bumped when he asks to be shown where he is: the map frames his mark of now, in the same clear room
+    var locateTick = 0
     /// room kept under the map's own marks (Apple's logo and legal label) so that a fade over its foot does not hide them
     var legalInset: CGFloat = 0
     /// a finger lands on the map (the replay stops there)
@@ -175,6 +177,7 @@ final class FootprintRoute: NSObject, MKOverlay {
 final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
     private var view: FootprintMapView?
     private var fitKey: String?
+    private var locating = false          // a locate has been asked and his mark of now is not there yet (another day's page is on its way)
     private var staticMarks: [FootprintMark.Note] = []
     private var nowNote: FootprintMark.Note?
     private var dotNote: FootprintMark.Note?
@@ -226,6 +229,12 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
             fitKey = v.fitKey
             m.pendingFit = { [weak m, weak self] in if let m { self?.fit(m, animated: !first) } }
             if !m.bounds.isEmpty { m.setNeedsLayout() }
+        }
+        if let old, old.locateTick != v.locateTick { locating = true }
+        if locating, v.follow == nil, let n = v.now {
+            locating = false
+            let go = { [weak m, weak self] in if let m { self?.locate(m, n.coord) } }
+            if let fit = m.pendingFit { m.pendingFit = { fit(); go() } } else { go() }          // after the frame of the day, where the day is just arriving
         }
         if let f = v.follow { track(f, on: m) } else if cam != nil, !returning { release(m) }
         if link == nil { flush(m) }
@@ -290,6 +299,11 @@ final class FootprintMapCoordinator: NSObject, MKMapViewDelegate, UIGestureRecog
     private func fit(_ m: MKMapView, animated: Bool) {
         guard let v = view, !v.fitCoordinates.isEmpty else { return }
         m.setVisibleMapRect(Self.rect(PlaceFit.region(v.fitCoordinates)), edgePadding: v.fitPadding, animated: animated)
+    }
+
+    /// the street he is on: a square a kilometre across round his mark of now, framed clear of the strip and her as the day's whole is
+    private func locate(_ m: MKMapView, _ c: CLLocationCoordinate2D) {
+        m.setVisibleMapRect(Self.rect(MKCoordinateRegion(center: c, latitudinalMeters: 1000, longitudinalMeters: 1000)), edgePadding: view?.fitPadding ?? .zero, animated: true)
     }
 
     // MARK: first person

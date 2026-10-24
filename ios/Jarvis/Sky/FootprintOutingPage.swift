@@ -11,6 +11,7 @@ private let muted = SetColor.muted
 struct FootprintOutingPage: View {
     let model: FootprintModel
     let outing: FootprintOuting
+    var phone = true                    // the phone's strip at the top and the map to the top edge; the iPad's sheet keeps the old head and its map under it
     let back: () -> Void
     @State private var moment: FootprintMoment?          // under a finger on a curve or played by the replay
     @State private var player = FootprintPlayer()
@@ -23,8 +24,8 @@ struct FootprintOutingPage: View {
     private let firstFixMs: Int64?, lastFixMs: Int64?
     private var steps: [Step] { Step.list(model, outing, end: end, firstFixMs: firstFixMs, lastFixMs: lastFixMs) }          // read when drawn: a stop's street may come after the page
 
-    init(model: FootprintModel, outing: FootprintOuting, back: @escaping () -> Void) {
-        self.model = model; self.outing = outing; self.back = back
+    init(model: FootprintModel, outing: FootprintOuting, phone: Bool = true, back: @escaping () -> Void) {
+        self.model = model; self.outing = outing; self.phone = phone; self.back = back
         let end = outing.end_ms ?? max(model.reply.now_ms, outing.points.last?.at_ms ?? outing.start_ms)
         self.end = end
         track = model.tracks[outing.id]
@@ -43,12 +44,12 @@ struct FootprintOutingPage: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            mapView.padding(.top, 76)
+            mapView.padding(.top, phone ? 0 : 76)
             if model.replay(.outing(outing.id)) != nil {
                 FootprintReplayButton(player: player, play: play).offset(x: W - 30 - 36, y: 372)          // clear of the map's fade
             }
             FootprintBeatCaption(beat: moment?.beat, model: model).frame(width: W).offset(y: 298)
-            head
+            if phone { strip } else { head }
             VStack(alignment: .leading, spacing: 0) {
                 figures
                 curveBlock
@@ -101,6 +102,25 @@ struct FootprintOutingPage: View {
 
     // MARK: head
 
+    /// the phone's top (跨端UI标准 §2): the glass ‹ at the left and the two-line title after it, clear of her at the right
+    private var strip: some View {
+        ZStack(alignment: .topLeading) {
+            TopStrip {
+                TopGlassButton(symbol: "chevron.left", label: Words.Footprint.back, action: back)
+            } middle: {
+                EmptyView()
+            } right: {
+                EmptyView()
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: Look.title, weight: .semibold)).foregroundStyle(Look.ink).lineLimit(1)
+                Text(dateLine).font(Look.figures(Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
+            }
+            .frame(width: W - 72 - 80, height: HomeTop.button, alignment: .leading)          // 80 pt kept at the right for her
+            .offset(x: HomeTop.side + HomeTop.button + 12, y: HomeTop.buttonY)
+        }
+    }
+
     private var head: some View {
         ZStack(alignment: .topLeading) {
             Button(action: back) {
@@ -109,7 +129,7 @@ struct FootprintOutingPage: View {
             }
             .buttonStyle(PressScale())
             .accessibilityLabel(Words.Footprint.back)
-            .offset(x: TLSeat.corner.x + 19, y: 57)        // 4 pt clear of her disc
+            .offset(x: 66, y: 57)        // 4 pt clear of her disc in the iPad sheet's corner
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.system(size: 17, weight: .semibold)).foregroundStyle(ink).lineLimit(1)
                 Text(dateLine).font(.system(size: 12.5).monospacedDigit()).foregroundStyle(muted).lineLimit(1)
@@ -138,10 +158,11 @@ struct FootprintOutingPage: View {
     // MARK: map
 
     private var mapView: some View {
-        FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, follow: moment?.follow, lineWidth: 4.6,
-                         fitPadding: UIEdgeInsets(top: 44, left: 30, bottom: 44, right: 115), fitKey: outing.id, touched: { player.touch() })
-            .frame(width: W, height: 371)
-            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 62 / 371), .init(color: .black, location: 340 / 371), .init(color: .clear, location: 1)],
+        let top = phone ? 76.0 : 0.0          // on the phone the map runs 76 pt higher, to the top edge, and keeps its route where it stood
+        return FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, follow: moment?.follow, lineWidth: 4.6,
+                         fitPadding: UIEdgeInsets(top: 44 + top, left: 30, bottom: 44, right: 115), fitKey: outing.id, touched: { player.touch() })
+            .frame(width: W, height: 371 + top)
+            .mask(LinearGradient(stops: [.init(color: phone ? .black : .clear, location: 0), .init(color: .black, location: phone ? 0 : 62 / 371), .init(color: .black, location: (340 + top) / (371 + top)), .init(color: .clear, location: 1)],
                                  startPoint: .top, endPoint: .bottom))
     }
 

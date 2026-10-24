@@ -74,10 +74,13 @@ struct FootprintDayPage: View {
 
     private var tl: TimelineState { ui.tl }
     private var state: FootprintDayState { ui.footprint }
+    private var phone: Bool { back == nil }          // the iPad's sheet has a way out and keeps its head and its map where they were
 
     /// where things stand, in the design space
     enum Y {
         static let head = 57.0, line = 108.0, map = 109.0, mapH = 371.0, legend = 484.0, bar = 520.0, chips = 560.0, list = 612.0
+        static let groundH = map + mapH          // the phone's map runs from the top edge down to where the iPad's map ends
+        static let clear = 190.0                 // and keeps the route this far from the top: under the strip and her sentence
         static var viewport: Double { TLLayout.listBottom - list }
     }
 
@@ -92,16 +95,31 @@ struct FootprintDayPage: View {
             Color.clear.contentShape(Rectangle())           // the sky under the page takes no touch that the page leaves
             ZStack(alignment: .topLeading) {
                 scrim
-                FootprintDayMap(ui: ui, content: content, model: model, fitKey: reply == nil ? "" : iso)
-                    .frame(width: W, height: Y.mapH).offset(y: Y.map)
+                FootprintDayMap(ui: ui, content: content, model: model, fitKey: reply == nil ? "" : iso, ground: phone)
+                    .frame(width: W, height: phone ? Y.groundH : Y.mapH).offset(y: phone ? 0 : Y.map)
                 FootprintDayLegend().offset(x: 30, y: Y.legend)
                     .opacity(state.holding ? 0 : 1).animation(TLMotion.tripMorph(reduce: reduce), value: state.holding)          // the held bar's capsule takes its row
-                FootprintDayHead(ui: ui, back: back).offset(x: back == nil ? 74 : 60, y: Y.head)          // with no way out, 12 pt right of her in the corner (Sky/DayTimelineSeat.swift)
+                if phone {
+                    TopStrip {
+                        FootprintDayPicker(ui: ui)
+                    } middle: {
+                        EmptyView()
+                    } right: {
+                        TopGlassButton(symbol: "location.fill", label: Words.PhoneMap.locate) { Haptic.selection(); if tl.day != tl.today { tl.goToday() }; state.locateTick += 1 }
+                    }
                     .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
-                FootprintDayPicker(ui: ui).offset(x: W - 30 - 36, y: Y.head + 4)          // 36 pt, centred on the head's row
-                    .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
+                } else {
+                    FootprintDayHead(ui: ui, back: back).offset(x: 60, y: Y.head)          // the iPad's sheet: its way out, then the date
+                        .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
+                    FootprintDayPicker(ui: ui).offset(x: W - 30 - 40, y: Y.head + 2)          // 40 pt, centred on the head's row
+                        .opacity(ui.tlHome ? 1 : 0).animation(TLMotion.dayChange(reduce: reduce), value: ui.tlHome)
+                }
                 Group {
-                    FootprintDayLine(ui: ui, summary: content.summary, bar: built?.model, model: model).offset(x: 30, y: Y.line)
+                    if phone {
+                        FootprintDayStrip(ui: ui, summary: content.summary, bar: built?.model, model: model).offset(x: HomeTop.side, y: HomeTop.lineY)
+                    } else {
+                        FootprintDayLine(ui: ui, summary: content.summary, bar: built?.model, model: model).offset(x: 30, y: Y.line)
+                    }
                     if let model { FootprintDayReplay(ui: ui, model: model, entries: content.entries) }
                     if let built {
                         FootprintDayBar(ui: ui, built: built, model: model, extra: content.chips, lead: content.place, tripSymbol: content.tripSymbol, entries: content.entries)
@@ -114,12 +132,13 @@ struct FootprintDayPage: View {
             }
             .opacity(opened == nil ? 1 : 0).allowsHitTesting(opened == nil)
             if let model, let opened {
-                FootprintOutingPage(model: model, outing: opened, back: { state.openOuting = nil })
+                FootprintOutingPage(model: model, outing: opened, phone: phone, back: { state.openOuting = nil })
                     .transition(reduce ? .opacity : .move(edge: .trailing).combined(with: .opacity))
             }
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .animation(TLMotion.detail(reduce: reduce), value: state.openOuting)
+        .onChange(of: content.summary, initial: true) { _, text in state.summary = text }          // for the strip's line under her
         .onChange(of: iso) { _, _ in state.player.stop(); state.release() }          // another day: the replay is of the one before
         .task(id: "\(iso) \(BrainLink.shared.openTick)") { store.ensure(iso) }          // on appear, on another day, and when the app has been opened since
         .task(id: model?.unnamedStops.map(\.id) ?? []) { FootprintStreets.shared.ask(model?.unnamedStops.map(\.coord) ?? []) }          // the streets of the stops nobody named
