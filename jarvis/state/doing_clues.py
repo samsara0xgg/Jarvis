@@ -18,9 +18,9 @@ did. :func:`gather` reads them, each tagged with one of :data:`jarvis.state.doin
 
 A source that cannot be read leaves its clues out, logged. Nothing is stored and nothing is
 guessed: a clue is what the source holds, cut short, except what he and she said, which is whole
-(ADR 0332). ``photo`` has no source yet, so none is read. ``screen`` is no longer read: the work
+(ADR 0394). ``photo`` has no source yet, so none is read. ``screen`` is no longer read: the work
 state's summary of his screen is another model's conclusion, and the writer reads the screen text
-itself when it needs to (ADR 9901); runs written before keep the ones they cited.
+itself when it needs to (ADR 0395); runs written before keep the ones they cited.
 
 Layer rules: ``jarvis.state`` and ``jarvis.shared`` only (L2).
 """

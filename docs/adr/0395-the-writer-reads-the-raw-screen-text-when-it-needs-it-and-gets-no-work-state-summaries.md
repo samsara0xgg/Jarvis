@@ -1,4 +1,4 @@
-# ADR 9901 — The writer reads the raw screen text when it needs it, and gets no work-state summaries
+# ADR 0395 — The writer reads the raw screen text when it needs it, and gets no work-state summaries
 
 **Status:** Accepted
 **Date:** 2026-10-23

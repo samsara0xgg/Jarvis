@@ -1,4 +1,4 @@
-# ADR 0330 — Each stretch tells where his attention went, each page of a site its own key
+# ADR 0392 — Each stretch tells where his attention went, each page of a site its own key
 
 **Status:** Accepted
 **Date:** 2026-10-21

@@ -2,10 +2,10 @@
 
 For a day, the writer folds the day line, cuts the waking window into segments, gathers the clues
 and the day's keys of his attention nobody told yet or told to vary, and asks one model for what
-he was doing, what each new key served (ADR 0331) and what each key that varies served in each
-span (ADR 9902), on a dedicated client pinned to ``doing.preset``. While it writes, the model may
+he was doing, what each new key served (ADR 0393) and what each key that varies served in each
+span (ADR 0396), on a dedicated client pinned to ``doing.preset``. While it writes, the model may
 read his Mac's screen text, as often as :data:`~jarvis.decision.screen_reads.MAX_ROUNDS` rounds
-allow (ADR 9901). L3 builds the input and gates the answer; L2 reads the screen and appends the
+allow (ADR 0395). L3 builds the input and gates the answer; L2 reads the screen and appends the
 run and the told keys. A run that fails or is gated out stores nothing and the run before it
 stays; a telling gated out leaves its keys untold.
 
@@ -17,7 +17,7 @@ off the loop, and asks the model only when the inputs changed (ADR 0310, ADR 031
   written span starts and keeps the spans before it (:func:`narrow`);
 - a day that is over (it is a day before today, or he has gone to bed): one final run of the
   whole day, once his phone and tablet use is known past its end or :data:`FINAL_WAIT` after it,
-  and never again on the clock (ADR 9903).
+  and never again on the clock (ADR 0397).
 
 The inputs are told apart by a digest of the facts and clues (:func:`inputs_digest`).
 """
@@ -187,7 +187,7 @@ def read_brief(
 def _keys(sources: DaySources, waking: Waking) -> dict[str, Any]:
     """The waking window's keys nobody told yet or told to vary, and the threads told so far.
 
-    With where those keys held him (ADR 0331, ADR 9902). None of it without memory.db, or when no
+    With where those keys held him (ADR 0393, ADR 0396). None of it without memory.db, or when no
     key is untold and none that varies held him; a read that fails leaves them out, logged, and
     the day is written without them.
     """
@@ -318,10 +318,10 @@ def compose_run(
 ) -> Composed:
     """Ask the model for ``brief``'s day and gate the answer; a rejected one is asked once more.
 
-    With ``read`` the model may read his Mac's screen while it writes (ADR 9901). The spans and
+    With ``read`` the model may read his Mac's screen while it writes (ADR 0395). The spans and
     what the new keys served are gated apart: either refused asks again, and a part that passed
     in either answer is kept, the later one when both passed. What a span says a key that varies
-    served is gated with the spans, by the keys the same answer told to vary (ADR 9902). The
+    served is gated with the spans, by the keys the same answer told to vary (ADR 0396). The
     second ask shows the model its answer and why the gates refused it, so it fixes that rather
     than writing the day afresh. Blocking. A call that raises propagates, with nothing stored.
     """
@@ -384,7 +384,7 @@ def settled(brief: Brief, now: datetime) -> bool:
 
     His phone and tablet use reaches the brain hours late; the final waits until every device is
     known past the waking window, or none reaches the brain, or :data:`FINAL_WAIT` has passed
-    since the window ended (ADR 9903).
+    since the window ended (ADR 0397).
     """
     if not brief.screen:
         return True
@@ -484,7 +484,7 @@ class DoingSchedule:
         """Why ``brief``'s day is not written now (``unchanged`` or ``waiting``), else None."""
         recent = False
         if latest is not None:
-            # A finished day has one final (ADR 9903); late rows do not rewrite it unasked.
+            # A finished day has one final (ADR 0397); late rows do not rewrite it unasked.
             if brief.final and not latest.draft and not asked:
                 return "unchanged"
             # A draft whose inputs did not change still becomes the final run once the day is over.

@@ -7,9 +7,9 @@ lane, the stretches of the day before that run past its midnight: the same spans
 ids, as a sleep across midnight shows on both days. An answer about one of them is kept for the
 day it belongs to.
 
-Each stretch the page shows also tells where his attention went in it (ADR 0330,
-:func:`jarvis.state.attention.within`), by the threads its keys were told to serve (ADR 0331),
-and a key that varies by what the day's run said it served in each of its spans (ADR 9902); a
+Each stretch the page shows also tells where his attention went in it (ADR 0392,
+:func:`jarvis.state.attention.within`), by the threads its keys were told to serve (ADR 0393),
+and a key that varies by what the day's run said it served in each of its spans (ADR 0396); a
 planned one, which has not happened, tells nothing.
 
 Layer rules: runtime may wire across layers.
@@ -100,9 +100,9 @@ class DayDoing(NamedTuple):
     pieces: list[Piece]
     """Where his attention was through the stretches the page shows."""
     threads: dict[str, Thread]
-    """What the keys told so far served (ADR 0331)."""
+    """What the keys told so far served (ADR 0393)."""
     told: Sequence[Told] = ()
-    """What keys that vary served in the spans of the two days' runs (ADR 9902)."""
+    """What keys that vary served in the spans of the two days' runs (ADR 0396)."""
 
     def before(self) -> list[dict[str, Any]]:
         """The day before's doing spans that run past this day's start, by start."""

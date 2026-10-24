@@ -1,4 +1,4 @@
-r"""Show where his attention went in each stretch of past days (ADR 0330).
+r"""Show where his attention went in each stretch of past days (ADR 0392).
 
     .venv/bin/python -m scripts.attention_replay --date 2026-10-19 [--date ...]
         [--now 2026-10-20T12:00] [--event-log PATH] [--memory-db PATH] [--shipped DIR]
@@ -7,7 +7,7 @@ r"""Show where his attention went in each stretch of past days (ADR 0330).
 For each day it serves the doing lane as ``GET /inherent/day`` does and prints, for every doing
 stretch, its time and title, then where his attention went in it: each thread with its minutes,
 typing and keys, the rows, and what was alongside, by the keys told so far. No model is asked and
-nothing is written; ``scripts.doing_replay`` has the writer tell new keys (ADR 0331).
+nothing is written; ``scripts.doing_replay`` has the writer tell new keys (ADR 0393).
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def threads_of(
 
 
 def tellings(spans: Iterable[Mapping[str, Any]]) -> list[attention.Told]:
-    """What each span of a run says the keys that vary served in it (ADR 9902)."""
+    """What each span of a run says the keys that vary served in it (ADR 0396)."""
     return [
         attention.Told(
             span["start_ms"], span["end_ms"], str(one["key"]),

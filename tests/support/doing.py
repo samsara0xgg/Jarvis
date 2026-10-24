@@ -130,7 +130,7 @@ def world(tmp_path: Path) -> World:
     say_words(memory, "r1", doing_at(9, 5), "allen", "我在图书馆写论文")
     say_words(memory, "r2", doing_at(9, 6), "jarvis", "好的，加油")
     say_words(memory, "r3", doing_at(10), "allen", "在 Overleaf 上改第三章")
-    screen_row(log, doing_at(10, 1), "Writing the thesis in Overleaf")  # not a clue (ADR 9901)
+    screen_row(log, doing_at(10, 1), "Writing the thesis in Overleaf")  # not a clue (ADR 0395)
     world = World(memory, log, DaySources(VANCOUVER, None, memory))
     picture_row(world, "noodles", doing_at(12, 20), "A bowl of noodles on a wooden table")
     return world

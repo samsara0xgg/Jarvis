@@ -1,4 +1,4 @@
-# ADR 0332 — The writer reads every word he and she said that day, whole
+# ADR 0394 — The writer reads every word he and she said that day, whole
 
 **Status:** Accepted
 **Date:** 2026-10-21

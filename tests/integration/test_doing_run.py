@@ -8,8 +8,8 @@ The checks, as tables of input to expected output:
   the seconds typed in it, another device's spans left out;
 - the clues: each kind of day-line item that holds one, his words and hers, interview mail and
   his answers (this day's, and earlier ones near a place he stayed at), bounded in count and in
-  length, and a source that fails leaving the rest; the work state's screen is none (ADR 9901);
-- the screen reads (ADR 9901): each read the writer asks for answered before it is asked again,
+  length, and a source that fails leaving the rest; the work state's screen is none (ADR 0395);
+- the screen reads (ADR 0395): each read the writer asks for answered before it is asked again,
   at most :data:`MAX_ROUNDS` rounds, then told to answer with no tool;
 - what the writer is shown: the times it may name, the segments with their facts, the clues
   with ids and local times, the language of the titles;
@@ -23,7 +23,7 @@ The checks, as tables of input to expected output:
 - the schedule, on a fake clock: a run at most every two hours and only when the inputs changed,
   after the first one only the newest part, at once when he asks (her tool and the timeline's
   route), one final run once the day is over and his late phone and tablet use is in or twelve
-  hours have passed (ADR 9903), a refused one asked again only when its inputs change, a final
+  hours have passed (ADR 0397), a refused one asked again only when its inputs change, a final
   kept unless he asks;
 - the replay script, with and without ``--dry-run``.
 """
@@ -391,7 +391,7 @@ def test_what_was_said_is_a_clue_of_his_and_of_hers_without_markup_or_notes(worl
 
 
 def test_what_the_work_state_says_he_is_doing_is_no_clue(world: World) -> None:
-    """ADR 9901: the work state's summary of his screen is another model's word, never a clue."""
+    """ADR 0395: the work state's summary of his screen is another model's word, never a clue."""
     screen_row(world.log, doing_at(11), "Writing the thesis in Overleaf", "Earlier: Slack")
     screen_row(world.log, doing_at(12), "Watching a film together")
     assert [c for c in _clues(world) if c.kind == "screen"] == []
@@ -2045,7 +2045,7 @@ def test_a_finished_day_has_one_final_and_a_refused_one_waits_for_new_inputs(
     world: World,
     clock: Clock,
 ) -> None:
-    """ADR 9903: one final per finished day, never rewritten by late rows.
+    """ADR 0397: one final per finished day, never rewritten by late rows.
 
     A failed call waits two hours, a refused one for its inputs to change.
     """
@@ -2076,7 +2076,7 @@ def test_a_finished_day_has_one_final_and_a_refused_one_waits_for_new_inputs(
 def test_a_final_waits_for_his_late_phone_and_tablet_use_at_most_twelve_hours(
     brief: Brief,
 ) -> None:
-    """ADR 9903: a final waits while a device is known only up to before the window's end."""
+    """ADR 0397: a final waits while a device is known only up to before the window's end."""
     over = replace(brief, final=True)
     ended = datetime.fromtimestamp(over.waking.end_ms / 1000, VANCOUVER)
     behind = replace(over, screen={"iPhone": over.waking.end_ms - 3_600_000})

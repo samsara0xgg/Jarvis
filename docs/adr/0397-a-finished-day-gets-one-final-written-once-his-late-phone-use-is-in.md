@@ -1,4 +1,4 @@
-# ADR 9903 — A finished day gets one final, written once his late phone use is in
+# ADR 0397 — A finished day gets one final, written once his late phone use is in
 
 **Status:** Accepted
 **Date:** 2026-10-23

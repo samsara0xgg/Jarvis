@@ -68,7 +68,7 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # of the log depends on; the log stays the source and a row can be dropped and refolded.
     # ADR 0302: doing_runs are a model's whole account of a day's doing lane, and doing_answers
     # his answers about it; both append-only, neither a projection of events.
-    # ADR 0331: attention_threads say what each key of his attention served, appended per telling.
+    # ADR 0393: attention_threads say what each key of his attention served, appended per telling.
     "jarvis/state/memory_db.py": frozenset(
         {
             "records", "summaries", "sent", "day_summaries", "day_prose", "day_highlight_marks",

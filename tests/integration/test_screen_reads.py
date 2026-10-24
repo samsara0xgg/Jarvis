@@ -1,4 +1,4 @@
-"""ADR 9901: the doing-lane writer reads what his Mac's screen said, window by window.
+"""ADR 0395: the doing-lane writer reads what his Mac's screen said, window by window.
 
 Checks, input to expected output:
 

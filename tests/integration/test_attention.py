@@ -1,4 +1,4 @@
-"""ADR 0330: where his attention went, read from what his Mac and his devices had in front.
+"""ADR 0392: where his attention went, read from what his Mac and his devices had in front.
 
 Checks, input to expected output:
 
@@ -8,14 +8,14 @@ Checks, input to expected output:
 - the keys: a site by app, domain and page title, else document, else title; a device app by its
   bundle, the same on both devices; a key under half a minute is not listed but still counted;
 - threads: a key nobody told is its own thread; keys told to serve one thread are summed as it;
-  a key told to vary goes to the thread a span told it served there (ADR 9902), and stays itself
+  a key told to vary goes to the thread a span told it served there (ADR 0396), and stays itself
   where none did;
 - rows: a lead change is cut only when the new lead holds more than ten minutes the row around it
   would leave out; a short excursion stays inside as the others' minutes and a switch;
 - ``GET /inherent/day``: every doing stretch tells its own attention, the day before's tail too;
   a planned one tells nothing; with nothing shipped, a stretch tells no attention.
 
-ADR 0331, telling keys:
+ADR 0393, telling keys:
 
 - the writer's one call is shown the day's untold keys with the threads told so far, and its
   answer tells them; the told keys are kept and the page names their threads; a key already told
@@ -26,7 +26,7 @@ ADR 0331, telling keys:
 - the gates: every key told once, by a label asked, a thread is a short name with a category, or
   null with none; with no key asked nothing is read.
 
-ADR 9902, keys that vary: each span tells what each one that held him a minute there served, once,
+ADR 0396, keys that vary: each span tells what each one that held him a minute there served, once,
 by its label; the later runs show them as VARYING KEYS, and the page sums each as its span told.
 """
 
@@ -417,7 +417,7 @@ def test_a_planned_stretch_tells_no_attention() -> None:
     assert DayDoing(lane, None, 0, [], {}).served(set())[0]["attention"] is None
 
 
-# --- telling keys (ADR 0331) ---------------------------------------------------------------------
+# --- telling keys (ADR 0393) ---------------------------------------------------------------------
 
 TOLD = {"Ghostty jarvis": ("Jarvis", "work"), "Claude": (None, None), "WeChat": ("微信", "social")}
 SERVES: dict[str, tuple[str | None, str | None]] = {"Claude": ("Jarvis", "work")}

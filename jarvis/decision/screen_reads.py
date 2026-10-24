@@ -2,7 +2,7 @@
 
 The writer is given the day's cheap facts (ADR 0302); when they do not show what a stretch or a
 key served, it may call :data:`SCREEN_TOOL` for the screen text of one key, or of every window,
-between two of the times it was given (ADR 9901). The program answers with the windows
+between two of the times it was given (ADR 0395). The program answers with the windows
 :mod:`jarvis.state.screen_text` reads, each line once per window with the time it was first seen,
 cut into pages of at most :data:`PAGE_CHARS` characters at line ends; a call names the page it
 wants. Times and keys are named by the labels the writer was given, so a call can only read the

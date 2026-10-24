@@ -9,9 +9,9 @@ For each day it folds the day line from the event log and memory.db, cuts the wa
 gathers the clues and the keys of his attention nobody told yet or told to vary, asks the
 ``doing.preset`` model once (twice when its first answer fails a gate; the key comes from the
 environment, filled from the runtime root's saved keys as the brain fills it), letting it read
-the shipped screen text as the brain does (ADR 9901), and prints the gated spans, one per line,
-with what the keys that vary served in each (ADR 9902), then what it told of the new keys (ADR
-0331), where his attention went in each span by them, and what the calls cost.
+the shipped screen text as the brain does (ADR 0395), and prints the gated spans, one per line,
+with what the keys that vary served in each (ADR 0396), then what it told of the new keys (ADR
+0393), where his attention went in each span by them, and what the calls cost.
 Without ``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a
 final run when the day is over as of ``--now``, else a draft), and what it told with them, exactly
 as the daemon's schedule would; with it nothing is stored. The event log is only read: the

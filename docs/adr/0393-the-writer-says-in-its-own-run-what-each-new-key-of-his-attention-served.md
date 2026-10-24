@@ -1,4 +1,4 @@
-# ADR 0331 — The writer says, in its own run, what each new key of his attention served
+# ADR 0393 — The writer says, in its own run, what each new key of his attention served
 
 **Status:** Accepted
 **Date:** 2026-10-21
@@ -6,7 +6,7 @@
 
 ## Context
 
-- A stretch's attention is summed by key (ADR 0330): an app with its page, document or window
+- A stretch's attention is summed by key (ADR 0392): an app with its page, document or window
   title, or a phone app. A key is not a project. Which project, person or show a key served is a
   judgement; in Jarvis code computes facts and a model judges, and a table of apps and sites is a
   rule per case, which he ruled out (2026-10-16).
@@ -61,7 +61,7 @@ Keep each answer per key in memory.db, and sum keys by it whenever a stretch is 
 ## Consequences
 
 - The writer's answer grows by one line per new key: about $0.03 of Opus output for 70 keys, and
-  page-title keys (ADR 0330) bring more new keys each day than domains did.
+  page-title keys (ADR 0392) bring more new keys each day than domains did.
 - A refused telling costs one more writer call.
 - A key that first appears during the day shows as itself until the next run, at night or when
   he asks. A wrong first answer stays until he corrects it, and a site that later serves something

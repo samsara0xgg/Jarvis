@@ -1,11 +1,11 @@
-"""L3 attention threads — what each key of his attention served, told by the writer (ADR 0331).
+"""L3 attention threads — what each key of his attention served, told by the writer (ADR 0393).
 
 The writer of the doing lane is shown, besides the day, the day's keys that nobody has told yet
 (:mod:`jarvis.state.attention`), each with how long it held him, how long he typed in it, where
 and when, the keys told before to serve different things at different times that held him today,
 and the threads already told, each with a few of its keys. Its answer names a thread and its
 category for each new key, or says the key serves different things at different times; then, in
-each span it writes, what each such key served there (:func:`read_serves`, ADR 9902). Keys are
+each span it writes, what each such key served there (:func:`read_serves`, ADR 0396). Keys are
 named by short labels (``k1``, ``v1``) the program gave, so an answer can only tell a key that was
 asked about. The runtime owns when it runs and the client; L2 owns the pieces and the write.
 """

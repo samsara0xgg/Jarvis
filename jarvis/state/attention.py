@@ -1,4 +1,4 @@
-"""ADR 0330: where his attention went, from what his Mac, phone and tablet had in front of him.
+"""ADR 0392: where his attention went, from what his Mac, phone and tablet had in front of him.
 
 At any moment his attention is in at most one place:
 
@@ -97,7 +97,7 @@ class Thread(NamedTuple):
 class Told(NamedTuple):
     """What a key that varies served from ``start_ms`` to ``end_ms``, as a run of the writer said.
 
-    ``thread`` has no name when the writer could not tell (ADR 9902).
+    ``thread`` has no name when the writer could not tell (ADR 0396).
     """
 
     start_ms: int
@@ -459,10 +459,10 @@ def within(
     found: Sequence[Piece], start_ms: int, end_ms: int, threads: Mapping[str, Thread],
     told: Sequence[Told] = (),
 ) -> dict[str, Any]:
-    """Where his attention went in ``[start_ms, end_ms)``, in the served shape (ADR 0330).
+    """Where his attention went in ``[start_ms, end_ms)``, in the served shape (ADR 0392).
 
     ``threads`` says what keys served (a key not in it is its own thread), and ``told`` what a key
-    that varies served in a stretch (ADR 9902). ``front_ms`` is the
+    that varies served in a stretch (ADR 0396). ``front_ms`` is the
     time a screen had him; ``threads`` what held it, most first, each ``{"id", "name",
     "category", "where", "ms", "typed_ms", "keys"}`` (``where`` is ``mac``, ``iPhone`` or
     ``iPad``, the one it held most on; ``category`` is null for a key nobody told; ``keys`` each

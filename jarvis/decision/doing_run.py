@@ -4,11 +4,11 @@ One day's facts go in: the waking window, the program's cut of it with the facts
 segment, the clues, and the day's keys of his attention nobody told yet or told to vary; the day's
 spans come out in the shape a stored run holds, each with what the keys that vary served in it, or
 the reason to store nothing, and what each new key served
-(:mod:`jarvis.decision.attention_threads`, ADR 0331, ADR 9902). The model names times, clues and
+(:mod:`jarvis.decision.attention_threads`, ADR 0393, ADR 0396). The model names times, clues and
 keys by short labels (``t3``, ``c12``, ``k4``, ``v2``) that the program gave it, never by
 milliseconds or text of its own, so a time that is not a boundary of the facts, a clue that does
 not exist and a key that was not asked about cannot get through. While it writes it may read the
-screen (:mod:`jarvis.decision.screen_reads`, ADR 9901). The runtime owns when it runs and the
+screen (:mod:`jarvis.decision.screen_reads`, ADR 0395). The runtime owns when it runs and the
 client; L2 owns the facts, the clues and the write.
 """
 
@@ -78,8 +78,8 @@ class Brief:
     spans before the window that a short run keeps as written (ADR 0310, :func:`narrow`).
     ``foreground`` is what was in front of him at his Mac in each quarter hour of the window, as
     (start, end, text). ``asked`` are the day's keys of his attention nobody told yet,
-    ``varies`` those told to serve different things at different times that held him (ADR 9902),
-    ``known`` the threads told so far (ADR 0331), and ``pieces`` where the keys of ``asked`` and
+    ``varies`` those told to serve different things at different times that held him (ADR 0396),
+    ``known`` the threads told so far (ADR 0393), and ``pieces`` where the keys of ``asked`` and
     ``varies`` held him, which says what each span must tell.
     """
 
