@@ -360,16 +360,19 @@ private struct PadToday: View {
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
     }
 
-    /// 日历 at the left and ✦ 润色 at the right, on her line; the date under her, which gives way to her card and to the minute under a finger on the bar (the phone's `TLTopView`)
+    /// 日历 at the left and, at the right, his Mac (Jarvis Remote, ADR 0406: unpaired it opens the pair card, out of reach it is fainter and still opens) and ✦ 润色, on her line; the date under her, which gives way to her card and to the minute under a finger on the bar (the phone's `TLTopView`)
     private func strip(_ m: DayTimelineModel?) -> some View {
         let holding = tl.scrub != nil
         return ZStack(alignment: .top) {
             HStack {
                 FootprintDayPicker(ui: ui)
                 Spacer()
-                if tl.tidyShown {
-                    TopGlassButton(symbol: "sparkles", label: Words.PhoneToday.polish, on: tl.tidy != .running) { tl.tidyDay() }
-                        .allowsHitTesting(tl.tidy != .running)
+                HStack(spacing: 10) {
+                    TopGlassButton(symbol: "laptopcomputer", label: Words.Remote.title, on: !RemoteMac.shared.isPaired || RemoteMac.shared.isReachable) { RemoteMac.open() }
+                    if tl.tidyShown {
+                        TopGlassButton(symbol: "sparkles", label: Words.PhoneToday.polish, on: tl.tidy != .running) { tl.tidyDay() }
+                            .allowsHitTesting(tl.tidy != .running)
+                    }
                 }
             }
             .padding(.horizontal, side)
