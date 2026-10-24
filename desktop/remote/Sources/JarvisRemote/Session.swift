@@ -33,6 +33,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private let conn: NWConnection
     private let secret: String
     private let q = DispatchQueue(label: "jarvis.remote.session")
+    // The low-latency encoder's call returns only when the frame is done (~10 ms here): on `q` it held up the iPad's acks behind it,
+    // which read as a late link. It runs on its own queue, one frame at a time; a screen that came meanwhile goes next, the newest.
+    private let encodeQ = DispatchQueue(label: "jarvis.remote.encode")
+    private var encoding = false, missed = false
     private var inbox = Data()
     private var authed = false
     private var ended = false
@@ -64,7 +68,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var locked: Bool?
     private var lockWatch: DispatchSourceTimer?
     // the bitrate follows the link: down by a third in a second the link fell behind, up a little after three clear ones
-    private static let topRate = 150_000_000, floorRate = 4_000_000, sharpRate = 60_000_000
+    private static let topRate = 150_000_000, floorRate = 8_000_000, sharpRate = 60_000_000
     private var rate = 20_000_000       // under what his tailnet carries (~25-30 Mbit/s measured); it climbs from here
     private var encodeBusy: UInt64 = 0  // time spent inside the encode call this second: the encoder, not the link, capped him at ~74 fps
     private var stalls = 0
@@ -271,6 +275,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
                                    outputCallback: nil, refcon: nil, compressionSessionOut: &s)
         guard let s else { return nil }
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         // the average is only a ceiling: on text the encoder spends far less and lets detail go soft; a cap on the quantiser keeps it sharp
@@ -304,14 +309,23 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private func encode(_ pixels: CVPixelBuffer, at t: CMTime) {
         guard let encoder, !ended else { return }
         let props = needKey ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
+        if encoding { missed = true; return }
+        encoding = true
         needKey = false
-        let t0 = DispatchTime.now().uptimeNanoseconds
-        VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixels, presentationTimeStamp: t, duration: .invalid,
-                                        frameProperties: props, infoFlagsOut: nil) { [self] status, _, out in
-            guard status == noErr, let out else { return }
-            q.async { self.ship(out) }
+        encodeQ.async { [self] in
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixels, presentationTimeStamp: t, duration: .invalid,
+                                            frameProperties: props, infoFlagsOut: nil) { [self] status, _, out in
+                guard status == noErr, let out else { return }
+                q.async { self.ship(out) }
+            }
+            let dt = DispatchTime.now().uptimeNanoseconds - t0
+            q.async { [self] in
+                encodeBusy += dt
+                encoding = false
+                if missed { missed = false; reencodeLast() }
+            }
         }
-        encodeBusy += DispatchTime.now().uptimeNanoseconds - t0
     }
 
     /// Every encoded frame goes: a link that falls behind holds back the capture instead (above), so no frame is missing from the chain.
@@ -354,7 +368,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         ended = true
         stream?.stopCapture()
         lockWatch?.cancel()
-        if let e = encoder { VTCompressionSessionInvalidate(e) }
+        if let e = encoder { encodeQ.sync { VTCompressionSessionInvalidate(e) } }
         conn.cancel()
         guard authed else { return }
         let awake = awake
