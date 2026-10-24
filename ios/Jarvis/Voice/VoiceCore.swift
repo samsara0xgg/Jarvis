@@ -67,9 +67,10 @@ func shortCommand(_ text: String) -> VoiceCommand? {
 
 private let wakeWords = ["jarvis", "贾维斯"]
 
+/// "Hey Jarvis", the Mac's wake word too (ADR 0042), as either recognizer writes it: the greeting, then the name, only spaces or
+/// punctuation between. The name alone does not wake her.
 func heardWake(_ text: String) -> Bool {
-    let t = text.lowercased()
-    return wakeWords.contains { t.contains($0) }
+    text.contains(/(hey|嘿|嗨|黑)[\s\p{P}]*(jarvis|贾维斯)/.ignoresCase())
 }
 
 /// The words after the first wake word, without the punctuation that follows it. Text with no wake word comes back as it was.
@@ -225,7 +226,8 @@ func demoVoiceCore() {
         assert(shortCommand(t) == c, t)
     }
     for t in ["退下 吧 好", "stop the music", "不要停", "wait for me", "", "。", "退下退", "退下吧退下"] { assert(shortCommand(t) == nil, t) }
-    assert(heardWake("Hey Jarvis, what time is it") && heardWake("贾维斯你好") && !heardWake("hello"))
+    assert(heardWake("Hey Jarvis, what time is it") && heardWake("hey, jarvis") && heardWake("嘿，贾维斯，你好") && heardWake("嘿Jarvis"))
+    assert(!heardWake("Jarvis, what time is it") && !heardWake("贾维斯你好") && !heardWake("hello"))
     assert(stripWake("Jarvis, what time is it") == "what time is it")
     assert(stripWake("嘿，贾维斯，几点了") == "几点了")
     assert(stripWake("Jarvis.") == "" && stripWake("no wake") == "no wake")
