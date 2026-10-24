@@ -25,6 +25,16 @@ const sp = (id, start, end, extra) => ({ id, lane: 'doing', kind: 'doing', start
 const home = { id: 'p-home', name: '家', role: 'home' };
 const HEX = 'c1'.repeat(16);
 const TITLES = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 个聊天的标题，写得比较长一点点`).join('; ');
+// A 25-minute stretch at the desk's edge: three worktree sessions of Jarvis (one he prompted, two that ran by themselves), a Remote Control session he prompted, six
+// 小红书 bursts that only came in (each spans 2 minutes, first message to last, which is no time spent) and one 微信 burst he answered.
+const code = (id, from, to, extra) => it(id, 'code', T(14, from), T(14, to), { project: 'Jarvis', account: 'A', session_id: id, ...extra });
+const burst = (id, who, extra) => it(id, 'messages', T(14, 2), T(14, 4), { device: 'iPhone', app: '小红书', conversation: who, sent: 0, received: 2, ...extra });
+const BREAK = [
+  code('code-b1', 4, 25, { title: '', prompts: 3 }), code('code-b2', 4, 25, { title: '', prompts: 0 }), code('code-b3', 4, 25, { title: '', prompts: 0 }),
+  code('code-rc', 4, 6, { title: 'Remote Control session', prompts: 2 }),
+  ...['贝小贝贝', 'yooi三要鱼', 'zoey是美少女吖', '不知道起什么网名的小女孩', 'meiyy~', '分享到小红书'].map((who, i) => burst(`msg-xhs-${i}`, who)),
+  burst('msg-reply', 'Mia', { app: '微信', sent: 2, received: 3 }),
+];
 const day = (date = DATE) => ({
   date, tz: TZ, start_ms: T(0), end_ms: T(24), now_ms: NOW,
   items: [
@@ -36,9 +46,11 @@ const day = (date = DATE) => ({
     it('claude-day-1', 'claude_day', T(9, 40), T(22, 5), { source: 'claude_daily', text: TITLES, chats: 40 }),
     it('reminder-2', 'reminder', T(9, 30), null, { text: '给银行打电话', fired: true, acknowledged: false }, 'her'),
     it('reminder-1', 'reminder', T(22, 0), null, { text: '把垃圾拿出去', fired: false, acknowledged: false }, 'her'),
+    ...date === DATE ? BREAK : [],
     it(`commitment-${HEX}@${DATE}`, 'event', T(22, 30), T(23, 30), { title: '小组讨论', place: 'Library', private: false, source: 'mail', confirmed: false }),
   ],
   spans: date !== DATE ? [] : [
+    sp('doing-3', T(14, 0), T(14, 25), { title: '离开电脑休息', category: 'rest', basis: 'inferred', confidence: 'low', item_ids: BREAK.map(x => x.id) }),
     sp('doing-1', T(18, 50), T(19, 35), { title: null }),
     sp('doing-2', T(19, 35), null, { title: 'Jarvis', category: 'work', basis: 'observed', detail: '对照桌面端的行文案，中间去写了论文第三章的数据，现在还在做。', place_id: 'stay-home-3',
       clues: [{ kind: 'app', at_ms: null, text: 'Xcode 和终端在前台' }, { kind: 'app', at_ms: null, text: 'Claude Code 会话 3 个' }], item_ids: ['stay-home-3', 'work-2', 'pay-1', 'picture-1'] }),
@@ -136,6 +148,20 @@ try {
   check('问她 in the head opens the input at the pane foot with the row as its chip', await count('.notch .dt-dock .dt-about') === 1);
   await shot('detail-ask');
   await page.keyboard.press('Escape'); await settle(400);
+
+  // ---- sessions and message bursts: icons and names, counts and no minutes ----
+  await pick('doing-3');
+  const il = await page.evaluate(sel => [...document.querySelectorAll(`${sel} .dt-il`)].map(l => ({ at: l.querySelector('time').textContent, title: l.querySelector('.dt-il-t').childNodes[0].textContent, detail: l.querySelector('.dt-il-t em')?.textContent ?? '', side: l.querySelector('.dt-il-s')?.textContent ?? '', icon: !!l.querySelector('.dt-il-i svg') })), side);
+  const lineOf = title => il.find(x => x.title === title);
+  const W = en ? { jarvis: 'Jarvis', two: '2 sessions', bg: '2 more background sessions', xhs: '小红书', xhsDetail: '6 people · 12 received', reply: 'Sent 2 · Received 3' } : { jarvis: 'Jarvis', two: '2 个会话', bg: '另有 2 个后台会话', xhs: '小红书', xhsDetail: '6 人 · 收到 12 条', reply: '发 2 · 收 3' };
+  check('a stretch with three worktree sessions and a Remote Control one has four lines for the lot: Jarvis with how many, the background ones together, the received bursts and the reply, each with its time', il.length === 4 && il.every(x => x.at), JSON.stringify(il));
+  check('his two sessions are one line named for the project, with how many and their time together; no "Claude Code", no worktree folder, no session title', lineOf(W.jarvis)?.detail === W.two && lineOf(W.jarvis).icon && lineOf(W.jarvis).side === (en ? '21 min' : '21 分钟') && il.every(x => !/Claude Code|bridge-cse|Remote Control/.test(x.title + x.detail)), JSON.stringify(il));
+  check('the two sessions that ran by themselves are one line of their own', lineOf(W.bg)?.side === (en ? '21 min' : '21 分钟') && lineOf(W.bg).icon, JSON.stringify(lineOf(W.bg)));
+  check('the six bursts only received are one line: the app, how many people, how many messages; no minutes', lineOf(W.xhs)?.detail === W.xhsDetail && lineOf(W.xhs).side === '' && lineOf(W.xhs).icon, JSON.stringify(lineOf(W.xhs)));
+  check('a burst he replied to stays its own line with sent and received, and no minutes', lineOf('Mia')?.detail === W.reply && lineOf('Mia').side === '', JSON.stringify(lineOf('Mia')));
+  check('no line of the stretch says a span of minutes for messages', il.filter(x => x.icon && /^(Mia|小红书)$/.test(x.title)).every(x => !/min|分钟/.test(x.detail + x.side)));
+  check('the row badge still counts the seven bursts', await page.evaluate(() => /7/.test(document.querySelector('.notch .dt-list [data-key="doing-3"]').textContent)));
+  await shot('detail-sessions-messages');
 
   // ---- a stretch nothing says the words of ----
   await pick('doing-1');

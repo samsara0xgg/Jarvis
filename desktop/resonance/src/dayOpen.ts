@@ -1,6 +1,6 @@
 import type { L } from './companionSettings';
 import { endClock, hm } from './barView.ts';
-import { accountOf, askable, ATTACHMENT, clean, clock, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Rgb, type Say } from './dayView.ts';
+import { accountOf, askable, ATTACHMENT, clean, clock, codeName, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Rgb, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0308, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
@@ -13,7 +13,7 @@ import { accountOf, askable, ATTACHMENT, clean, clock, dur, endText, moneyText, 
 export type Tone = 'ink' | 'muted';
 export type Words = { text: string; tone: Tone };
 export type Bar = { name: string; text: string; share: number };
-// One Claude Code session: when it began, its title, `project · A`, how long, and its recap in full.
+// One Claude Code session: when it began, its name (its project), the account `A`, how long, and its recap in full.
 export type Session = { id: string; at: string; title: string; meta: string; length: string; recap: string };
 // What the night looked like: where each stage was on the row's own time scale, and the totals in words.
 export type Night = { from: number; to: number; at: [string, string]; slices: { stage: string; s: number; e: number }[]; totals: string };
@@ -85,7 +85,7 @@ export function night(it: DayItem, m: DayModel, t: Say): Night | null {
     .filter((x): x is string => !!x).join(' · ');
   return { from, to, at: [clock(from, m.tz), clock(to, m.tz)], slices, totals };
 }
-const session = (it: DayItem, m: DayModel, t: Say): Session => ({ id: it.id, at: clock(it.start_ms, m.tz), title: clean(it.title) || t(['Claude Code', 'Claude Code']), meta: [clean(it.project), accountOf(it)].filter(Boolean).join(' · '),
+const session = (it: DayItem, m: DayModel, t: Say): Session => ({ id: it.id, at: clock(it.start_ms, m.tz), title: codeName(it, t), meta: accountOf(it),
   length: dur(Math.max(1, lengthOf(it, m)), t), recap: clean(it.detail) });
 
 // A stretch of what he was doing opens to its detail, what is inside it (the items it lists, one compact line each) and how she knows.
@@ -94,7 +94,7 @@ function openSegment(m: DayModel, key: string): Open | null {
   if (!seg) return null;
   const parts: Part[] = [];
   if (seg.detail) parts.push(lines(say(seg.detail, 'ink')));
-  if (seg.inside.length) parts.push({ type: 'inside', list: seg.inside.map(x => { const it = m.items.find(i => i.id === x.key); return { ...x, at: it ? clock(Math.max(it.start_ms, seg.start), m.tz) : m.rows.get(x.key)?.at ?? '' }; }) });
+  if (seg.inside.length) parts.push({ type: 'inside', list: seg.inside.map(x => { const it = m.reply.items.find(i => i.id === x.key); return { ...x, at: it ? clock(Math.max(it.start_ms, seg.start), m.tz) : m.rows.get(x.key)?.at ?? '' }; }) });
   if (seg.knows) parts.push({ type: 'knows', text: seg.knows });
   return { key, kind: 'doing', parts, rename: null, name: null, ack: null, summarize: false, star: false, commit: null };
 }

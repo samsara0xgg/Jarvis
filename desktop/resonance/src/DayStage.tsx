@@ -62,9 +62,10 @@ type Part = { key: string; ms: number; rgb: Rgb | null; label: string };
 export function partsOf(m: DayModel, seg: Segment, now: number): Part[] {
   const byId = new Map(m.items.map(it => [it.id, it])), found: { key: string; s: number; e: number; kind: string; label: string }[] = [];
   for (const x of seg.inside) {
-    const it = byId.get(x.key);
+    const it = byId.get(x.key), all = (x.ids ?? [x.key]).flatMap(id => byId.get(id) ?? []);
     if (!it || MOMENT.has(it.kind)) continue;
-    const s = Math.max(it.start_ms, seg.start), e = Math.min(it.end_ms ?? now, seg.end);
+    // A line of several sessions or bursts is one part, from the first to the last.
+    const s = Math.max(Math.min(...all.map(y => y.start_ms)), seg.start), e = Math.min(Math.max(...all.map(y => y.end_ms ?? now)), seg.end);
     if (e - s >= MINUTE) found.push({ key: x.key, s, e, kind: it.kind, label: it.kind === 'work' ? x.detail.split(' · ')[0] || x.title : x.title });
   }
   found.sort((a, b) => a.s - b.s || a.e - b.e);

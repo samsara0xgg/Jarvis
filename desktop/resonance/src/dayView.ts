@@ -19,6 +19,8 @@ export type DayItem = {
   credit?: string; ended_reason?: string; detail?: string;
   // What his phone and iPad sync (ADR 0304, 0305): a media block's app and its top titles, a message burst's conversation and counts, a phone call's person and seconds, a phone-use block's device.
   titles?: { title: string; artist?: string }[]; conversation?: string; person?: string; device?: string; sent?: number; received?: number; duration_s?: number;
+  // How many prompts he sent in a Claude Code session (0: it ran by itself); a brain that does not say has him in all of them.
+  prompts?: number;
   // Where a stay was, as the phone has it.
   lat?: number; lng?: number;
 };
@@ -66,7 +68,7 @@ const MAX_MS = 8.64e15, time = (v: unknown): v is number => typeof v === 'number
 const own = <T>(table: Record<string, T>, key: string): T | undefined => Object.hasOwn(table, key) ? table[key] : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
 const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail', 'conversation', 'person', 'device'] as const;
-const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr', 'lat', 'lng', 'sent', 'received', 'duration_s'] as const;
+const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr', 'lat', 'lng', 'sent', 'received', 'duration_s', 'prompts'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 // A place he keeps, as the day carries it under a stay and as the brain answers a write of one (an id and a name are needed).
 export function keptOf(raw: unknown): NonNullable<DayItem['kept_place']> | null {
@@ -241,8 +243,9 @@ export type Row = {
   // A stretch of what he was doing (ADR 0302): its category's colour (none when nothing says what it was), and what is inside it as small icons with a number each.
   seg?: { rgb: Rgb | null; unknown: boolean; counts: { icon: Icon; n: number }[]; lenses: LensKind[] };
 };
-// One line inside an opened stretch: an item of the day, the words its own row has (the detail only where short), its time or length, and a picture's id.
-export type Inside = { key: string; icon: Icon; title: string; detail: string; side: string; picture: string; note: string };
+// One line inside an opened stretch: an item of the day, the words its own row has (the detail only where short), its time or length, and a picture's id; `ids` when
+// it is several of them (sessions of one project, bursts of one app), `key` then the earliest.
+export type Inside = { key: string; ids?: string[]; icon: Icon; title: string; detail: string; side: string; picture: string; note: string };
 // A stretch of what he was doing as the pane keeps it for its row, the bar and its opening: `end` is cut to now, `place` the stay's name (empty when it has none), `knows` how she knows.
 export type Segment = { span: DoingSpan; start: number; end: number; words: string | null; place: string; placeRgb: Rgb | null; rgb: Rgb | null; icon: Icon; unknown: boolean; category: string; detail: string; inside: Inside[]; knows: string };
 // `star`: null when the stay is not one of the day's highlights, else its label (which may be empty); `hers`: it is her pick, not his mark.
@@ -392,6 +395,21 @@ export function doingAt(spans: readonly DoingSpan[] | undefined, ms: number, t: 
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';
+// What a Claude Code session is called: its project (a worktree's folder, `bridge-cse_…`, is no name), else its title, else just Claude Code. The glyph says the rest.
+const WORKTREE = /^bridge-cse_/i, named = (s: string) => WORKTREE.test(s) ? '' : s;
+export const codeName = (it: DayItem, t: Say) => named(clean(it.project)) || named(clean(it.title)) || t(['Claude Code', 'Claude Code']);
+// Sessions as the lines of a stretch or of the card: his (prompts above 0, or not said) are one line per project, with how many when more than one; the ones that ran by
+// themselves are one line together. Each line's key is its earliest session's id; `items` are in time order.
+export type CodeLine = { key: string; title: string; detail: string; items: DayItem[] };
+export function codeLines(list: DayItem[], t: Say): CodeLine[] {
+  const mine = new Map<string, DayItem[]>(), bg: DayItem[] = [];
+  for (const it of [...list].sort((a, b) => a.start_ms - b.start_ms)) {
+    if ((it.prompts ?? 1) > 0) { const name = codeName(it, t); mine.set(name, [...mine.get(name) ?? [], it]); } else bg.push(it);
+  }
+  const out: CodeLine[] = [...mine].map(([title, items]) => ({ key: items[0].id, title, detail: items.length > 1 ? t([`${items.length} sessions`, `${items.length} 个会话`]) : '', items }));
+  if (bg.length) out.push({ key: bg[0].id, title: out.length ? t([`${bg.length} more background ${bg.length === 1 ? 'session' : 'sessions'}`, `另有 ${bg.length} 个后台会话`]) : t([`${bg.length} background ${bg.length === 1 ? 'session' : 'sessions'}`, `${bg.length} 个后台会话`]), detail: '', items: bg });
+  return out.sort((a, b) => a.items[0].start_ms - b.items[0].start_ms);
+}
 type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string>; stars: Map<string, Mark> };
 const hersOf = (id: string, c: Ctx) => c.stars.get(id)?.by === 'her';
 
@@ -402,6 +420,9 @@ export const endText = (ms: number, reply: DayReply, tz: string, t: Say) => ms =
 const dayBefore = (it: DayItem, c: Ctx) => it.start_ms < c.reply.start_ms ? c.t(['yesterday ', '昨天 ']) : '';
 export const EVENT_SOURCES: Record<string, L> = { mail: ['Mail', '邮件'], said: ['You said', '你说的'], plan: ['Plan', '计划'] };
 const TWO_HOURS = 2 * 3_600_000;
+// What a burst of messages counted: what he sent and got, or only what he got.
+const messageCounts = (sent: number | undefined, received: number | undefined, t: Say) => sent === undefined && received === undefined ? '' : sent
+  ? t([`Sent ${sent} · Received ${received ?? 0}`, `发 ${sent} · 收 ${received ?? 0}`]) : t([`${received ?? 0} received`, `收到 ${received ?? 0} 条`]);
 function rowOf(it: DayItem, c: Ctx): Row | null {
   const { t, tz, reply } = c;
   let icon: Icon, title: string, detail = '', right = '', value = false, wait = false;
@@ -411,8 +432,7 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
     case 'ride': icon = 'bus'; title = rideWords(it, t); detail = [clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '); break;
     case 'workout': { const w = workoutOf(it, t); icon = w.icon; title = w.word; detail = w.facts.join(' · ') || w.note; break; }
     case 'code':
-      icon = 'code'; title = [t(['Claude Code', 'Claude Code']), clean(it.title)].filter(Boolean).join(' · ');
-      detail = [clean(it.project), accountOf(it)].filter(Boolean).join(' · '); break;
+      icon = 'code'; title = codeName(it, t); detail = accountOf(it); break;
     case 'talk': icon = 'talk'; title = t(['Talked with her', '和她说话']); detail = it.turns ? t([`${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `${it.turns} 句`]) : ''; break;
     case 'picture': icon = 'picture'; title = t(['Photo', '照片']); detail = clean(it.note).split('\n')[0]; break;
     case 'event': {
@@ -455,7 +475,7 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
     case 'media': icon = 'music'; title = clean(it.app) || t(['Media', '媒体']); detail = clean(it.titles?.[0]?.title); break;
     case 'messages':
       icon = 'message'; title = clean(it.conversation) || clean(it.app) || t(['Messages', '消息']);
-      detail = it.sent !== undefined || it.received !== undefined ? t([`Sent ${it.sent ?? 0} · Received ${it.received ?? 0}`, `发 ${it.sent ?? 0} · 收 ${it.received ?? 0}`]) : ''; break;
+      detail = messageCounts(it.sent, it.received, t); break;
     case 'phone_call':
       icon = 'call'; title = clean(it.person) || clean(it.app) || t(['Call', '通话']);
       detail = it.direction === 'sent' ? t(['Outgoing', '打出']) : it.direction === 'received' ? t(['Incoming', '打进']) : ''; break;
@@ -473,7 +493,8 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
   if (going) length = ((c.today ? c.now : reply.end_ms) - it.start_ms) / 60_000;
   else if (span) length = (it.end_ms! - it.start_ms) / 60_000;
   if (it.kind === 'sleep' && it.minutes != null) length = it.minutes;
-  if (!right && length > 0 && it.kind !== 'claude_day') right = dur(Math.max(1, length), t);
+  // A burst's length is first message to last, not time spent: it says its counts instead.
+  if (!right && length > 0 && it.kind !== 'claude_day' && it.kind !== 'messages') right = dur(Math.max(1, length), t);
   // What is still to come within two hours says how long until it (a departure keeps its own words).
   if (future && !value && it.start_ms - c.now <= TWO_HOURS) { const left = dur(Math.ceil((it.start_ms - c.now) / 60_000), t); right = t([`in ${left}`, `还有 ${left}`]); }
   const mark = c.marks.get(it.id);
@@ -488,12 +509,11 @@ function stopRow(it: DayItem, c: Ctx): Row {
     future: false, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait: false, leaving: false, connector: true, onWay: false };
 }
 
-// The Claude Code sessions of one stay that were not marked, two or more, are one row: how many, the two newest titles, and how long they
+// The Claude Code sessions of one stay that were not marked, two or more, are one row: their project (or how many, when they are of several) and how long they
 // covered together (sessions that ran side by side count once).
 function foldRow(list: DayItem[], stay: DayItem, c: Ctx): Row {
-  const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms;
-  const newest = [...list].sort((a, b) => b.start_ms - a.start_ms).slice(0, 2).map(x => clean(x.title)).filter(Boolean);
-  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: t([`Claude Code · ${n} sessions`, `Claude Code · ${n} 个会话`]), detail: newest.join(' · '), at: clock(first.start_ms, tz),
+  const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms, lines = codeLines(list, t), one = lines.length === 1 ? lines[0] : null;
+  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: one ? one.title : t([`${n} sessions`, `${n} 个会话`]), detail: one ? one.detail : lines.map(x => x.title).join(' · '), at: clock(first.start_ms, tz),
     ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, hers: false, wait: false, leaving: false, connector: false, onWay: false };
 }
 
@@ -515,7 +535,7 @@ const CATEGORIES: Record<string, { rgb: Rgb | null; icon: Icon }> = {
 const COUNTED: [string[], Icon][] = [[['picture'], 'picture'], [['payment'], 'payment'], [['call', 'phone_call'], 'call'], [['messages'], 'message']];
 // What a stretch is not asked to show inside it: he talked with her (the chip says it), the place he was at and the night; the day's letter on his chats is about the whole day.
 const NOT_INSIDE = new Set(['talk', 'stay', 'sleep', 'claude_day']);
-const SHORT = 40;
+const SHORT = 40, TEN_MINUTES = 10 * 60_000;
 const BASES: Record<string, L> = { stated: ['You said so', '你说的'], observed: ['From your records', '记录里看到的'], inferred: ['Her guess', '她猜的'] };
 export const ATTACHMENT = /^[0-9a-f]{32}$/;
 // A doing span as the list's row and as what it opens to. Its words are the doing words (none: nothing says what he did, and the row says so); the items it lists by
@@ -529,21 +549,42 @@ function segmentOf(sp: DoingSpan, c: Ctx, byId: Map<string, DayItem>): { row: Ro
   const hit = words ? own(CATEGORIES, sp.category) ?? CATEGORIES.unknown : CATEGORIES.unknown, unknown = !words;
   const icon: Icon = unknown ? 'unknown' : sp.category === 'commute' ? items.some(x => x.kind === 'ride') ? 'bus' : moveIcon(items.find(x => x.kind === 'move')?.activity)
     : sp.category === 'unknown' && sp.basis === 'observed' ? 'call' : hit.icon;
-  const inside: Inside[] = [];
+  // What he sent nothing in, from one app within ten minutes of each other, is one line; sessions are a line per project (codeLines). A marked session keeps its own line.
+  const inside: { at: number; line: Inside }[] = [], folded = (it: DayItem) => it.kind === 'code' && !c.marks.has(it.id) || it.kind === 'messages' && !it.sent && !!clean(it.app);
   for (const it of items) {
-    const row = NOT_INSIDE.has(it.kind) ? null : rowOf(it, c);
+    const row = NOT_INSIDE.has(it.kind) || folded(it) ? null : rowOf(it, c);
     if (!row) continue;
     const e0 = it.end_ms ?? limit, lap = Math.min(e0, end) - Math.max(it.start_ms, sp.start_ms), cut = !INSTANT.has(it.kind) && e0 > it.start_ms && (it.start_ms < sp.start_ms || e0 > end);
     const picture = it.kind === 'picture' && ATTACHMENT.test(clean(it.attachment)) ? clean(it.attachment) : '';
-    inside.push({ key: it.id, icon: row.icon === 'dot' ? 'pin' : row.icon, title: row.title, detail: row.detail.length <= SHORT ? row.detail : '', side: cut && lap >= 60_000 ? dur(lap / 60_000, t) : row.right || row.at, picture, note: clean(it.note) });
+    inside.push({ at: it.start_ms, line: { key: it.id, icon: row.icon === 'dot' ? 'pin' : row.icon, title: row.title, detail: row.detail.length <= SHORT ? row.detail : '', side: it.kind === 'messages' ? '' : cut && lap >= 60_000 ? dur(lap / 60_000, t) : row.right || row.at, picture, note: clean(it.note) } });
   }
+  const sessions = codeLines(items.filter(it => it.kind === 'code' && folded(it)), t);
+  for (const g of sessions) {
+    // Sessions side by side count once; what runs past the stretch counts only inside it.
+    const cutIn = g.items.map(it => ({ start_ms: Math.max(it.start_ms, sp.start_ms), end_ms: Math.min(it.end_ms ?? limit, end) })), minutes = covered(cutIn, end);
+    inside.push({ at: g.items[0].start_ms, line: { key: g.key, ids: g.items.map(x => x.id), icon: 'code', title: g.title, detail: g.detail, side: minutes >= 1 ? dur(minutes, t) : '', picture: '', note: '' } });
+  }
+  const apps = new Map<string, DayItem[][]>();
+  for (const it of items) {
+    if (it.kind !== 'messages' || !folded(it)) continue;
+    const app = clean(it.app), groups = apps.get(app) ?? [];
+    const last = groups.at(-1);
+    if (last && it.start_ms - Math.max(...last.map(x => x.end_ms ?? x.start_ms)) <= TEN_MINUTES) last.push(it); else groups.push([it]);
+    apps.set(app, groups);
+  }
+  for (const [app, groups] of apps) for (const g of groups) {
+    const got = g.reduce((n, x) => n + (x.received ?? 0), 0), people = new Set(g.map(x => clean(x.conversation) || x.id)).size;
+    const one = g.length === 1 ? rowOf(g[0], c) : null;
+    inside.push({ at: g[0].start_ms, line: { key: g[0].id, ids: g.map(x => x.id), icon: 'message', title: one ? one.title : app, detail: one ? one.detail : [t([`${people} ${people === 1 ? 'person' : 'people'}`, `${people} 人`]), t([`${got} received`, `收到 ${got} 条`])].join(' · '), side: '', picture: '', note: '' } });
+  }
+  inside.sort((a, b) => a.at - b.at);
   const counts = COUNTED.map(([kinds, icon]) => ({ icon, n: items.filter(x => kinds.includes(x.kind)).length })).filter(x => x.n > 0);
   const basis = own(BASES, sp.basis), clues = sp.clues.map(x => clean(x.text)).filter(Boolean).join(t(['; ', '；']));
   const knows = [basis ? t(basis) : '', clues].filter(Boolean).join(basis && clues ? t([': ', '：']) : '');
   const row: Row = { key: sp.id, kind: 'doing', lens: null, icon, title: words ?? t(['No idea', '不知道在干嘛']), detail: [name, sp.confidence === 'low' && t(['Not sure', '不太确定'])].filter(Boolean).join(' · '), at: clock(sp.start_ms, tz),
     ago: sp.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, (end - sp.start_ms) / 60_000), t), value: false, future: c.today && sp.start_ms > c.now, star: false, hers: false, wait: false, leaving: false, connector: false, onWay: false,
     seg: { rgb: hit.rgb, unknown, counts, lenses: [...new Set(items.flatMap(x => lensOf(x.kind) ?? []))] } };
-  return { row, seg: { span: sp, start: sp.start_ms, end, words, place: name, placeRgb: place?.rgb ?? null, rgb: hit.rgb, icon, unknown, category: sp.category, detail: clean(sp.detail), inside, knows } };
+  return { row, seg: { span: sp, start: sp.start_ms, end, words, place: name, placeRgb: place?.rgb ?? null, rgb: hit.rgb, icon, unknown, category: sp.category, detail: clean(sp.detail), inside: inside.map(x => x.line), knows } };
 }
 
 const byTime = (a: DayItem, b: DayItem) => a.start_ms - b.start_ms || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

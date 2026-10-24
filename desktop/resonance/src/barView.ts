@@ -1,4 +1,4 @@
-import { clean, clock, covered, dur, durShort, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
+import { clean, clock, codeLines, codeName, covered, dur, durShort, endText, lensOf, moneyText, moveIcon, moveWords, names, rideWords, SLEEP, stageMinutes, stageSlices, stayLook, TRANSIT, workoutOf, type DayItem, type DayModel, type Icon, type LensKind, type Rgb, type Segment, type Say } from './dayView.ts';
 
 // The day in one bar (ADR 0308): the axis, the pieces the bar is made of, what the pointer finds at a minute (the stretch it is in and
 // what else was going on), a range of the bar, and the day's numbers. Pure (no DOM), so scripts/verify-notch-timeline.mjs runs it in
@@ -178,7 +178,7 @@ function lineOf(it: DayItem, m: DayModel, t: Say): Line {
       const top = [names(it.projects)[0], names(it.apps)[0]].filter(Boolean).join(' · '), active = it.active_s ? dur(it.active_s / 60, t) : '';
       return put('work', top || t(['Working on the Mac', '在 Mac 上工作']), active ? t([`${active} active`, `活跃 ${active}`]) : span.length);
     }
-    case 'code': return put('code', [t(['Claude Code', 'Claude Code']), clean(it.title)].filter(Boolean).join(' · '), span.length);
+    case 'code': return put('code', codeName(it, t), span.length);
     case 'workout': { const w = workoutOf(it, t); return put(w.icon, [w.word, w.facts[0]].filter(Boolean).join(' · '), span.length); }
     case 'call': return put('call', clean(it.app) ? t([`Call · ${it.app}`, `通话 · ${it.app}`]) : t(['Call', '通话']), span.length);
     case 'talk': return put('talk', it.turns ? t([`Talked with her · ${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `和她说话 · ${it.turns} 句`]) : t(['Talked with her', '和她说话']), span.length || time);
@@ -241,10 +241,10 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
     if (d <= NEAR_MIN * MIN) near.push({ it, rank, d, at: d <= (POINT.has(it.kind) ? AT_MIN * MIN : 0) });
   }
   near.sort((x, y) => +!x.at - +!y.at || x.rank - y.rank || x.d - y.d || x.it.start_ms - y.it.start_ms);
-  // Sessions of Claude Code run side by side: more than one near is one line (how many, how long together), so they cannot fill the card.
-  const codes = near.filter(x => x.it.kind === 'code' && !model.stars.has(x.it.id)), lead = codes.length > 1 ? codes[0] : null;
-  const lines = near.filter(x => !lead || x === lead || !codes.includes(x)).slice(0, 4).map(x => x !== lead ? lineOf(x.it, model, t)
-    : { key: `code:${x.it.id}`, kind: 'code', icon: 'code' as Icon, text: t([`Claude Code · ${codes.length} sessions`, `Claude Code · ${codes.length} 个会话`]), side: dur(Math.max(1, covered(codes.map(c => c.it), limit)), t), star: false, picture: null });
+  // Sessions of Claude Code run side by side: more than one near is a line per project (how many, how long together), so they cannot fill the card.
+  const codes = near.filter(x => x.it.kind === 'code' && !model.stars.has(x.it.id)), lead = codes[0] ?? null;
+  const lines = near.filter(x => x === lead || !codes.includes(x)).flatMap(x => x !== lead ? [lineOf(x.it, model, t)]
+    : codeLines(codes.map(c => c.it), t).map(g => ({ key: `code:${g.key}`, kind: 'code', icon: 'code' as Icon, text: [g.title, g.detail].filter(Boolean).join(' · '), side: dur(Math.max(1, covered(g.items, limit)), t), star: false, picture: null }))).slice(0, 4);
   const mark = item ? model.stars.get(item.id) ?? null : null;
   return { ms, at: clock(ms, model.tz), id, row: pieceAt(bar, ms), lines, star: mark, stretch };
 }
