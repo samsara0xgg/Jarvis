@@ -33,13 +33,14 @@ struct WatchCardView: View {
     var dismiss: () -> Void
 
     private static let shape = RoundedRectangle(cornerRadius: 30, style: .continuous)
+    @State private var natural: CGFloat = 0
 
     var body: some View {
-        ViewThatFits(in: .vertical) {
-            content
-            ScrollView { content }
-        }
-        .frame(maxWidth: .infinity, maxHeight: maxHeight)
+        // its own height, up to `maxHeight`, past which it scrolls (ViewThatFits took all the height it was offered, so a short card stood tall)
+        ScrollView { content.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { natural = $0 } }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity)
+        .frame(height: natural > 0 ? min(natural, maxHeight) : nil)
         .background(.regularMaterial, in: Self.shape)
         .overlay(Self.shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.22), .clear], startPoint: .top, endPoint: .init(x: 0.5, y: 0.25)), lineWidth: 0.7))
         .shadow(color: .black.opacity(0.45), radius: 12, y: -6)
