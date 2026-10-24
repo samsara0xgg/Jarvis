@@ -27,6 +27,7 @@ from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.tidy_tool import build_tidy_tool
 from jarvis.execution.tools import build_default_registry
+from jarvis.execution.topics_tool import build_topics_tool
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import device_tools
 from jarvis.runtime.bootstrap.day import _highlight_marks, _wire_plan_reader
@@ -223,6 +224,12 @@ def _register_conversation(registry: ToolRegistry, memory_db: Path, runtime_root
         registry.register(tool)
 
 
+def _register_topics(registry: ToolRegistry, memory_db: Path) -> None:
+    """``topics`` (ADR 0390): the topics she keeps over the conversation, read and changed."""
+    for tool in build_topics_tool(memory_db):
+        registry.register(tool)
+
+
 def _register_archive(registry: ToolRegistry, memory_db: Path, runtime_root: Path) -> None:
     """``archive`` (ADR 0259): the payments and Claude conversations he handed over."""
     embedder = embedding.shared(default_meaning_dir(runtime_root))
@@ -289,6 +296,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     _register_jobs(registry, job_mail, ledger)
     _register_mail(registry, home)
     _register_conversation(registry, memory_db, paths.root)
+    _register_topics(registry, memory_db)
     _register_archive(registry, memory_db, paths.root)
     _register_tidy(registry, doing)
     _register_my_day(registry, ledger)

@@ -358,6 +358,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "audio_artifact_ref",
             # ADR 0214: the item a paired phone has open when it speaks.
             "about",
+            # ADR 0390: the listed topic he spoke from.
+            "topic",
             # ADR 0271: a phone's sentence that goes on from its last. ``transcript`` is then
             # the whole thought, ``segment`` the words this event carried, ``continues`` the
             # turn it took over from and ``folded`` the record ids whose words it holds.
@@ -795,9 +797,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # ADR 0214: ``about`` is the item a paired phone has open, checked by
         # ``jarvis.shared.about.clean_about``.
         # ADR 0401: ``via`` is ``"watch"`` when the paired phone asked for its watch.
+        # ADR 0390: ``topic`` is the listed topic the words were sent from.
         optional_payload=(
             "channel", "language", "record_id", "confirmation_decision", "attachments", "about",
-            "via",
+            "via", "topic",
         ),
         schema_version=1,
     ),

@@ -48,6 +48,7 @@ from jarvis.runtime.plan_run import build_watch, leg_session, make_route_legs
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
 from jarvis.runtime.source_silence import SourceSilenceWatch
 from jarvis.runtime.spend_cap import SpendCap
+from jarvis.runtime.topics_night import TopicsSettings
 from jarvis.runtime.work_state import auto_refresh
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.day_line import DaySources
@@ -379,6 +380,7 @@ def _start_day_schedules(
                     ),
                     jev_log=build_jev_log(runtime.config.jev, runtime.runtime_paths.root),
                     ledger=runtime.ledger,
+                    topics=TopicsSettings.from_config(runtime.config.raw.get("topics")),
                 ).run(),
                 name="day_summary_schedule",
             ),

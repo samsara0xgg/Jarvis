@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from jarvis.state.attachments import AttachmentRef, Attachments
     from jarvis.state.lifelog import Lifelog
     from jarvis.state.shipments import Shipments
+    from jarvis.state.topics import Listed
     from jarvis.surface.codex_sessions import CodexSession
     from jarvis.surface.device_pairing import DevicePairing
     from jarvis.surface.inherent_output import InherentBroadcaster
@@ -196,6 +197,22 @@ class InherentDeps:
     # cursor or before one. ``(after, limit, before) -> {"since", "rows",
     # "has_more"}``; ``None`` leaves the route unregistered.
     conversation_read: Callable[[int, int, int], dict[str, Any]] | None = None
+    # ADR 0390: ``(record_id, limit) -> page`` of the rows around one message, as
+    # ``conversation_read`` shapes them plus ``has_newer``, or ``None`` when no message has that
+    # id. It blocks and runs on a worker thread; ``None`` answers ``around`` with 501.
+    conversation_around: Callable[[str, int], dict[str, Any] | None] | None = None
+    # ADR 0390: the topics she keeps. ``topics_read()`` lists them for ``GET /inherent/topics``
+    # (``None`` leaves it unregistered); ``topic_resolve(id)`` is the id of the listed topic an id
+    # names now (a merged one names the topic it went into), or ``None``; ``submit_in_topic(device,
+    # text, ids, about, utterance_id, topic)`` starts the turn of words sent from a topic, as
+    # ``submit_as_device`` does (``device`` ``None`` for this host's own). All three block.
+    topics_read: Callable[[], list[Listed]] | None = None
+    topic_resolve: Callable[[str], str | None] | None = None
+    submit_in_topic: (
+        Callable[
+            [str | None, str, Sequence[str], dict[str, Any] | None, str | None, str], str,
+        ] | None
+    ) = None
     # ADR 0062: the card waiting for Allen's button (``{"card": ... | None}``, a
     # small fold off the loop thread) and his answer to it, which starts a turn
     # under the device that answered and returns its id. ``None`` leaves both
