@@ -209,7 +209,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         // ponytail: fixed bitrate sized for the tailnet at home (direct over the LAN); adapt to the link if he drives it from outside
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 80_000_000 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 150_000_000 as CFNumber)
+        // the average is only a ceiling: on text the encoder spends far less and lets detail go soft; a cap on the quantiser keeps it sharp
+        let qp = VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: 20 as CFNumber)
+        print("max frame QP: \(qp == noErr ? "20" : "unsupported (\(qp))")")
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 120 as CFNumber)
         // the capture is sRGB-converted BT.709 video range: say so, or the iPad guesses and the colours wash out
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
