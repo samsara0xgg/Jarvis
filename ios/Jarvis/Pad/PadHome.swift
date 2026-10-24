@@ -246,7 +246,7 @@ struct PadHome: View {
             // a moment after the page has listed its rows, as a tap would come
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [engine] in
                 guard let t = ChatSearchModel.sceneTopics?.first else { return }
-                engine.goTrail(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, seq: $0.seq, lines: $0.lines) }, at: t.places.count - 1), to: t.places.count - 1)
+                engine.goTrail(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, lines: $0.lines) }, at: t.places.count - 1), to: t.places.count - 1)
             }
             return
         case "fold": chatFolded = true; return          // 聊天's left column folded away
