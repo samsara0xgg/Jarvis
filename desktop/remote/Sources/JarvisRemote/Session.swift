@@ -53,6 +53,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var unacked: [(bytes: Int, sent: UInt64)] = []
     private var unackedBytes = 0
     private var delivered = 0           // bytes the iPad acked this second
+    private var ackCount = 0, ackSum: UInt64 = 0, ackMax: UInt64 = 0   // how long frames took to be acked, this second
     private static let lag: UInt64 = 100_000_000
     private var held: Bool {
         guard acks else { return inFlight >= Session.fullLink }
@@ -133,9 +134,11 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         case Wire.keyframe: needKey = true; reencodeLast()
         case Wire.got:
             guard !unacked.isEmpty else { return }
-            let n = unacked.removeFirst().bytes
-            unackedBytes -= n
-            delivered += n
+            let f = unacked.removeFirst()
+            let age = DispatchTime.now().uptimeNanoseconds - f.sent
+            ackCount += 1; ackSum += age; ackMax = max(ackMax, age)
+            unackedBytes -= f.bytes
+            delivered += f.bytes
             if behind && !held { behind = false; reencodeLast() }
         default: break
         }
@@ -233,11 +236,13 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let was = rate
         // one line a second while the screen moves: what the capture gave, what went, how much, and how often the link was full
         if captured > 0 {
-            print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000)")
+            print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000) ack avg \(ackCount > 0 ? ackSum / UInt64(ackCount) / 1_000_000 : 0) max \(ackMax / 1_000_000) ms")
         }
-        captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0
+        // stalls while the link carried well under the bitrate are the link stuttering, not too little room: a lower bitrate cures nothing
+        let roomy = acks && delivered * 8 < rate * 6 / 10
+        captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0; ackCount = 0; ackSum = 0; ackMax = 0
         if stalls > 0 {
-            rate = max(rate * 2 / 3, Session.floorRate)
+            if !roomy { rate = max(rate * 2 / 3, Session.floorRate) }
             clear = 0
         } else {
             clear += 1
